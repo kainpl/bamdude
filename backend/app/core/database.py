@@ -456,6 +456,13 @@ async def init_db():
 
     created_schema = await run_all_migrations(engine, async_session)
 
+    # A restored database can already record m219 yet lack the runtime anchor.
+    # Bootstrap/restore may initialize it; ordinary credential editors may not.
+    from backend.app.core.credential_config import initialize_credential_config_anchor
+
+    async with engine.begin() as conn:
+        await initialize_credential_config_anchor(conn)
+
     # Boot self-check: fail loudly if the tri-state calibration columns are
     # missing rather than serving a drifted schema (see the function docstring).
     await _verify_calibration_mode_columns(engine)

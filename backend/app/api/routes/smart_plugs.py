@@ -1,16 +1,17 @@
 """API routes for smart plug management."""
 
 import logging
+import os
 from datetime import datetime, timedelta, timezone
 from typing import Literal
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.api.routes.settings import get_setting
-from backend.app.core.auth import RequirePermission
+from backend.app.core.auth import RequestCredentials, RequirePermission, request_credentials, require_permission
+from backend.app.core.credential_config import canonical_url, lock_credential_config, merge_secret_fields
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.core.tasks import spawn_background_task
@@ -18,6 +19,7 @@ from backend.app.models.printer import Printer
 from backend.app.models.smart_plug import SmartPlug
 from backend.app.models.user import User
 from backend.app.schemas.smart_plug import (
+    SMART_PLUG_SECRET_FIELDS,
     HAEntity,
     HASensorEntity,
     HATestConnectionRequest,
@@ -25,6 +27,7 @@ from backend.app.schemas.smart_plug import (
     MeterIncidentOut,
     RESTTestConnectionRequest,
     RESTTestConnectionResponse,
+    SmartPlugBase,
     SmartPlugControl,
     SmartPlugCreate,
     SmartPlugEnergy,
@@ -46,6 +49,69 @@ from backend.app.services.tasmota import tasmota_service
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/smart-plugs", tags=["smart-plugs"])
+
+
+def _plug_values(plug: SmartPlug | None) -> dict:
+    return {field: getattr(plug, field) for field in SmartPlugBase.model_fields} if plug else {}
+
+
+def _plug_scope(values: dict) -> tuple:
+    kind = values.get("plug_type") or "tasmota"
+    if kind == "tasmota":
+        return kind, values.get("ip_address") or "", values.get("username") or ""
+    return (
+        kind,
+        values.get("rest_method") or "POST",
+        values.get("username") or "",
+        *(
+            canonical_url(values.get(field), strip_trailing_slash=False)
+            for field in ("rest_on_url", "rest_off_url", "rest_status_url", "rest_power_url", "rest_energy_url")
+        ),
+    )
+
+
+def _resolve_plug(plug: SmartPlug | None, changes: dict, actions: dict | None = None) -> dict:
+    def endpoint_scope(field):
+        return lambda values: (values.get("plug_type"), canonical_url(values.get(field), strip_trailing_slash=False))
+
+    def body_scope(field):
+        return lambda values: (*endpoint_scope(field)(values), values.get("rest_method") or "POST")
+
+    scopes = {field: endpoint_scope(field) for field in SMART_PLUG_SECRET_FIELDS if field.endswith("_url")}
+    scopes.update(
+        {
+            "password": _plug_scope,
+            "rest_headers": _plug_scope,
+            "rest_on_body": body_scope("rest_on_url"),
+            "rest_off_body": body_scope("rest_off_url"),
+        }
+    )
+    resolved = merge_secret_fields(
+        _plug_values(plug),
+        changes,
+        SMART_PLUG_SECRET_FIELDS,
+        actions,
+        creating=plug is None,
+        scope=scopes,
+        clear_values=dict.fromkeys(SMART_PLUG_SECRET_FIELDS),
+    )
+    if plug is not None and resolved.get("enabled"):
+        active = (
+            ("password",)
+            if resolved.get("plug_type") == "tasmota"
+            else ("rest_headers", "rest_on_body", "rest_off_body")
+            if resolved.get("plug_type") == "rest"
+            else ()
+        )
+        if any(getattr(plug, field) and not resolved.get(field) for field in active):
+            raise HTTPException(400, "Disable the smart plug when removing an authentication credential")
+    try:
+        SmartPlugBase.model_validate(resolved)
+    except ValidationError as exc:
+        raise HTTPException(
+            422, "Invalid effective smart plug configuration; check the required fields for its type"
+        ) from exc
+    return resolved
 
 
 @router.get("/", response_model=list[SmartPlugResponse])
@@ -84,6 +150,12 @@ async def create_smart_plug(
     _: User | None = RequirePermission(Permission.SMART_PLUGS_CREATE),
 ):
     """Create a new smart plug."""
+    await lock_credential_config(db)
+    changes = data.model_dump(exclude={"secret_actions"})
+    for field in SMART_PLUG_SECRET_FIELDS:
+        if field not in data.model_fields_set:
+            changes.pop(field, None)
+    plug_data = _resolve_plug(None, changes, data.secret_actions)
     # Validate printer_id if provided
     if data.printer_id:
         result = await db.execute(select(Printer).where(Printer.id == data.printer_id))
@@ -134,37 +206,19 @@ async def create_smart_plug(
         if not info.is_plug:
             raise HTTPException(400, info.reject_reason or "That Zigbee device cannot be switched.")
 
-    # For MQTT plugs, ensure MQTT broker is configured and service is connected
-    if data.plug_type == "mqtt":
-        # Try to configure the smart plug service if not already configured
+    # Runtime applies share the settings writer's service lock and reload the
+    # latest complete pair after acquiring it. Never reconnect an old snapshot
+    # after a newer settings request has already installed its credentials.
+    if data.plug_type == "mqtt" and not mqtt_relay.smart_plug_service.is_configured():
+        from backend.app.api.routes.settings import _apply_mqtt_runtime
+
+        await db.rollback()
+        await _apply_mqtt_runtime(db, smart_plug_only=True)
         if not mqtt_relay.smart_plug_service.is_configured():
-            # Get MQTT broker settings from database
-            mqtt_broker = await get_setting(db, "mqtt_broker") or ""
-            if not mqtt_broker:
-                raise HTTPException(
-                    400,
-                    "MQTT broker not configured. Please set MQTT broker address in Settings → Network → MQTT Publishing.",
-                )
-
-            # Configure the smart plug service with broker settings
-            mqtt_settings = {
-                "mqtt_enabled": True,  # Enable for smart plug subscription
-                "mqtt_broker": mqtt_broker,
-                "mqtt_port": int(await get_setting(db, "mqtt_port") or "1883"),
-                "mqtt_username": await get_setting(db, "mqtt_username") or "",
-                "mqtt_password": await get_setting(db, "mqtt_password") or "",
-                "mqtt_use_tls": (await get_setting(db, "mqtt_use_tls") or "false") == "true",
-            }
-            await mqtt_relay.smart_plug_service.configure(mqtt_settings)
-
-            # Check if connection succeeded
-            if not mqtt_relay.smart_plug_service.is_configured():
-                raise HTTPException(
-                    400,
-                    f"Failed to connect to MQTT broker at {mqtt_broker}. Please check your MQTT settings.",
-                )
-
-    plug_data = data.model_dump()
+            raise HTTPException(400, "MQTT broker connection failed. Check the broker settings in Settings → Network.")
+        await lock_credential_config(db)
+        if data.printer_id and not await db.scalar(select(Printer.id).where(Printer.id == data.printer_id)):
+            raise HTTPException(400, "Printer not found")
 
     # For HA entities, default auto_on and auto_off to False
     # (they're for automations, not power control like Tasmota plugs)
@@ -180,6 +234,7 @@ async def create_smart_plug(
     db.add(plug)
     await db.commit()
     await db.refresh(plug)
+    await db.commit()
 
     # Subscribe MQTT plugs to their topics
     if plug.plug_type == "mqtt":
@@ -475,20 +530,90 @@ async def get_discovered_tasmota_devices(
 @router.post("/ha/test-connection", response_model=HATestConnectionResponse)
 async def test_ha_connection(
     request: HATestConnectionRequest,
+    db: AsyncSession = Depends(get_db),
+    credentials: RequestCredentials = Depends(request_credentials),
     _: User | None = RequirePermission(Permission.SMART_PLUGS_CONTROL),
 ):
     """Test connection to Home Assistant."""
-    result = await homeassistant_service.test_connection(request.url, request.token)
+    from backend.app.api.routes.settings import resolve_settings_credentials
+
+    actions = request.secret_actions
+    if actions is not None and set(actions) - {"ha_token", "ha_url"}:
+        raise HTTPException(422, "Unknown secret action field")
+    for submitted, field in (("url", "ha_url"), ("token", "ha_token")):
+        if submitted in request.model_fields_set and (actions or {}).get(field) in {"keep", "clear"}:
+            raise HTTPException(422, "A keep or clear action requires the credential value to be omitted")
+    if request.url is None or request.token is None or os.environ.get("HA_TOKEN") or os.environ.get("HA_URL"):
+        user = await credentials.check(require_permission(Permission.SETTINGS_UPDATE))
+        if user is None or not user.is_admin:
+            raise HTTPException(403, "Requires admin role")
+    await lock_credential_config(db)
+    changes = {}
+    if request.url is not None:
+        changes["ha_url"] = request.url
+    if request.token is not None:
+        changes["ha_token"] = request.token
+    merged = await resolve_settings_credentials(db, changes, actions)
+    url = os.environ.get("HA_URL") or merged.get("ha_url") or ""
+    token = os.environ.get("HA_TOKEN") or merged.get("ha_token") or ""
+    if not token:
+        raise HTTPException(400, "A Home Assistant token is required")
+    await db.rollback()
+    result = await homeassistant_service.test_connection(url, token)
+    if result.get("success"):
+        result = {"success": True, "message": "Home Assistant connection successful."}
+    else:
+        result = {"success": False, "error": "Home Assistant connection failed. Check the URL and credentials."}
     return HATestConnectionResponse(**result)
 
 
 @router.post("/rest/test-connection", response_model=RESTTestConnectionResponse)
 async def test_rest_connection(
     request: RESTTestConnectionRequest,
+    db: AsyncSession = Depends(get_db),
+    credentials: RequestCredentials = Depends(request_credentials),
     _: User | None = RequirePermission(Permission.SMART_PLUGS_CONTROL),
 ):
     """Test connection to a REST/HTTP endpoint."""
-    result = await rest_smart_plug_service.test_connection(request.url, request.method, request.headers)
+    body = None
+    if request.draft is not None or request.plug_id is not None:
+        if request.plug_id is not None:
+            await credentials.check(require_permission(Permission.SMART_PLUGS_UPDATE))
+        await lock_credential_config(db)
+        plug = (
+            (await db.execute(select(SmartPlug).where(SmartPlug.id == request.plug_id))).scalar_one_or_none()
+            if request.plug_id is not None
+            else None
+        )
+        if request.plug_id is not None and plug is None:
+            raise HTTPException(404, "Smart plug not found")
+        draft = request.draft or SmartPlugUpdate()
+        changes = draft.model_dump(exclude_unset=True, exclude={"secret_actions"})
+        if request.url is not None or request.headers is not None:
+            raise HTTPException(422, "Use the complete draft for a saved REST test")
+        values = _resolve_plug(plug, changes, draft.secret_actions)
+        if values.get("plug_type") != "rest":
+            raise HTTPException(400, "A REST plug is required")
+        url = values.get(request.endpoint)
+        if request.endpoint in {"rest_power_url", "rest_energy_url"}:
+            url = url or values.get("rest_status_url")
+        method = values.get("rest_method") or "POST" if request.endpoint in {"rest_on_url", "rest_off_url"} else "GET"
+        headers = values.get("rest_headers")
+        if request.endpoint in {"rest_on_url", "rest_off_url"}:
+            body = values.get("rest_on_body" if request.endpoint == "rest_on_url" else "rest_off_body")
+        await db.rollback()
+    else:
+        url, method, headers = request.url, request.method, request.headers
+    if not url:
+        raise HTTPException(400, "No REST endpoint configured")
+    if body is not None:
+        result = await rest_smart_plug_service.test_connection(url, method, headers, body=body)
+    else:
+        result = await rest_smart_plug_service.test_connection(url, method, headers)
+    result = {
+        "success": bool(result.get("success")),
+        "error": None if result.get("success") else "REST connection failed. Check the endpoint and credentials.",
+    }
     return RESTTestConnectionResponse(**result)
 
 
@@ -700,87 +825,93 @@ async def update_smart_plug(
         source_guard,
     )
 
-    result = await db.execute(select(SmartPlug).where(SmartPlug.id == plug_id))
-    plug = result.scalar_one_or_none()
-    if not plug:
-        raise HTTPException(404, "Smart plug not found")
-    identity_before = identity_of(plug)
-    watch_policy_before = (plug.meter_min_expected_wh, plug.mqtt_expected_power_interval_seconds)
-    ieee_before = plug.zigbee_ieee
+    async with source_guard():
+        await lock_credential_config(db)
+        result = await db.execute(select(SmartPlug).where(SmartPlug.id == plug_id))
+        plug = result.scalar_one_or_none()
+        if not plug:
+            raise HTTPException(404, "Smart plug not found")
+        identity_before = identity_of(plug)
+        watch_policy_before = (plug.meter_min_expected_wh, plug.mqtt_expected_power_interval_seconds)
+        ieee_before = plug.zigbee_ieee
 
-    update_data = data.model_dump(exclude_unset=True)
+        submitted = data.model_dump(exclude_unset=True, exclude={"secret_actions"})
+        resolved = _resolve_plug(plug, submitted, data.secret_actions)
+        update_data = {
+            field: value for field, value in resolved.items() if field in submitted or field in SMART_PLUG_SECRET_FIELDS
+        }
 
-    # Validate new printer_id if being changed
-    if "printer_id" in update_data and update_data["printer_id"]:
-        new_printer_id = update_data["printer_id"]
+        # Validate new printer_id if being changed
+        if "printer_id" in update_data and update_data["printer_id"]:
+            new_printer_id = update_data["printer_id"]
 
-        # Check printer exists
-        result = await db.execute(select(Printer).where(Printer.id == new_printer_id))
-        if not result.scalar_one_or_none():
-            raise HTTPException(400, "Printer not found")
+            # Check printer exists
+            result = await db.execute(select(Printer).where(Printer.id == new_printer_id))
+            if not result.scalar_one_or_none():
+                raise HTTPException(400, "Printer not found")
 
-        # Check if that printer already has a different Tasmota plug assigned
-        # Tasmota plugs: only one per printer (physical power device)
-        # HA entities: allow multiple per printer (for different automations)
-        new_plug_type = update_data.get("plug_type", plug.plug_type)
-        if new_plug_type == "tasmota":
-            result = await db.execute(
-                select(SmartPlug).where(
-                    SmartPlug.printer_id == new_printer_id,
-                    SmartPlug.id != plug_id,
-                    SmartPlug.plug_type == "tasmota",
+            # Check if that printer already has a different Tasmota plug assigned
+            # Tasmota plugs: only one per printer (physical power device)
+            # HA entities: allow multiple per printer (for different automations)
+            new_plug_type = update_data.get("plug_type", plug.plug_type)
+            if new_plug_type == "tasmota":
+                result = await db.execute(
+                    select(SmartPlug).where(
+                        SmartPlug.printer_id == new_printer_id,
+                        SmartPlug.id != plug_id,
+                        SmartPlug.plug_type == "tasmota",
+                    )
                 )
-            )
-            if result.scalar_one_or_none():
-                raise HTTPException(400, "This printer already has a Tasmota plug assigned")
+                if result.scalar_one_or_none():
+                    raise HTTPException(400, "This printer already has a Tasmota plug assigned")
 
-    # The old printer's in-flight measurement dies with the binding, whether the
-    # plug is moving to another printer or being unlinked entirely. Read the OLD
-    # printer_id here — after the setattr loop below it is gone.
-    if (
-        "printer_id" in update_data
-        and update_data["printer_id"] != plug.printer_id
-        and plug.printer_id
-        and plug.controls_printer_power
-    ):
-        await _void_inflight_energy(db, plug.printer_id, plug_id)
+        # The old printer's in-flight measurement dies with the binding, whether the
+        # plug is moving to another printer or being unlinked entirely. Read the OLD
+        # printer_id here — after the setattr loop below it is gone.
+        if (
+            "printer_id" in update_data
+            and update_data["printer_id"] != plug.printer_id
+            and plug.printer_id
+            and plug.controls_printer_power
+        ):
+            await _void_inflight_energy(db, plug.printer_id, plug_id)
 
-    # Track old MQTT settings for comparison
-    old_plug_type = plug.plug_type
-    old_mqtt_config = {
-        "power_topic": plug.mqtt_power_topic or plug.mqtt_topic,
-        "power_path": plug.mqtt_power_path,
-        "power_multiplier": plug.mqtt_power_multiplier,
-        "energy_topic": plug.mqtt_energy_topic or plug.mqtt_topic,
-        "energy_path": plug.mqtt_energy_path,
-        "energy_multiplier": plug.mqtt_energy_multiplier,
-        "state_topic": plug.mqtt_state_topic or plug.mqtt_topic,
-        "state_path": plug.mqtt_state_path,
-        "state_on_value": plug.mqtt_state_on_value,
-    }
+        # Track old MQTT settings for comparison
+        old_plug_type = plug.plug_type
+        old_mqtt_config = {
+            "power_topic": plug.mqtt_power_topic or plug.mqtt_topic,
+            "power_path": plug.mqtt_power_path,
+            "power_multiplier": plug.mqtt_power_multiplier,
+            "energy_topic": plug.mqtt_energy_topic or plug.mqtt_topic,
+            "energy_path": plug.mqtt_energy_path,
+            "energy_multiplier": plug.mqtt_energy_multiplier,
+            "state_topic": plug.mqtt_state_topic or plug.mqtt_topic,
+            "state_path": plug.mqtt_state_path,
+            "state_on_value": plug.mqtt_state_on_value,
+        }
 
-    for field, value in update_data.items():
-        setattr(plug, field, value)
+        for field, value in update_data.items():
+            setattr(plug, field, value)
 
-    # What the readings mean changed: a new measurement source, with a strict cutoff, in the same
-    # step as the flush's token check (spec plug-meter-watchdog W2). A rename rotates nothing.
-    rotated = identity_of(plug) != identity_before
-    policy_changed = (plug.meter_min_expected_wh, plug.mqtt_expected_power_interval_seconds) != watch_policy_before
-    if policy_changed:
-        # The same source under another policy: its last day is evaluated again (spec r4 W4/W5).
-        plug.meter_watch_cursor = None
-    if rotated or policy_changed:
-        # Under the lock the sweep checks its basis under, so an evaluation of the old source or the
-        # old policy is either committed before this or discarded after it (review r2 MW2-R2).
-        async with source_guard():
+        # What the readings mean changed: a new measurement source, with a strict cutoff, in the same
+        # step as the flush's token check (spec plug-meter-watchdog W2). A rename rotates nothing.
+        rotated = identity_of(plug) != identity_before
+        policy_changed = (plug.meter_min_expected_wh, plug.mqtt_expected_power_interval_seconds) != watch_policy_before
+        if policy_changed:
+            # The same source under another policy: its last day is evaluated again (spec r4 W4/W5).
+            plug.meter_watch_cursor = None
+        if rotated or policy_changed:
+            # Under the lock the sweep checks its basis under, so an evaluation of the old source or the
+            # old policy is either committed before this or discarded after it (review r2 MW2-R2).
             if rotated:
                 await rotate_source(db, plug)
             else:
                 await reset_watch_cursor(db, plug.id)
             await db.commit()
-    else:
-        await db.commit()
+        else:
+            await db.commit()
     await db.refresh(plug)
+    await db.commit()
     if rotated and plug.plug_type == "zigbee":
         from backend.app.services.zigbee.driver import zigbee_smart_plug_service
 
@@ -832,6 +963,7 @@ async def delete_smart_plug(
     _: User | None = RequirePermission(Permission.SMART_PLUGS_DELETE),
 ):
     """Delete a smart plug."""
+    await lock_credential_config(db)
     result = await db.execute(select(SmartPlug).where(SmartPlug.id == plug_id))
     plug = result.scalar_one_or_none()
     if not plug:
@@ -839,17 +971,6 @@ async def delete_smart_plug(
 
     plug_name = plug.name
     plug_type = plug.plug_type
-
-    # Unsubscribe MQTT plug before deletion
-    if plug_type == "mqtt":
-        mqtt_relay.smart_plug_service.unsubscribe(plug_id)
-    elif plug_type == "zigbee":
-        # The counterpart of the line above, and its absence is what let a
-        # deleted plug keep spending the radio: the shared read task ran on, the
-        # listeners stayed bound, and the cache entry outlived the row.
-        from backend.app.services.zigbee.driver import zigbee_smart_plug_service
-
-        await zigbee_smart_plug_service.teardown(plug_id)
 
     # SQLite runs no FK actions: the plug's stall episodes go with it in code.
     from sqlalchemy import delete as sql_delete
@@ -859,6 +980,15 @@ async def delete_smart_plug(
     await db.execute(sql_delete(SmartPlugMeterIncident).where(SmartPlugMeterIncident.plug_id == plug_id))
     await db.delete(plug)
     await db.commit()
+
+    # Runtime cleanup follows the atomic row removal; no installation lock is
+    # held while awaiting a worker's shutdown.
+    if plug_type == "mqtt":
+        mqtt_relay.smart_plug_service.unsubscribe(plug_id)
+    elif plug_type == "zigbee":
+        from backend.app.services.zigbee.driver import zigbee_smart_plug_service
+
+        await zigbee_smart_plug_service.teardown(plug_id)
 
     logger.info("Deleted smart plug '%s'", plug_name)
     return {"message": "Smart plug deleted"}
@@ -1229,20 +1359,35 @@ async def check_power_alerts(plug: SmartPlug, current_power: float | None, db: A
 @router.post("/test-connection")
 async def test_connection(
     data: SmartPlugTestConnection,
+    db: AsyncSession = Depends(get_db),
+    credentials: RequestCredentials = Depends(request_credentials),
     _: User | None = RequirePermission(Permission.SMART_PLUGS_CONTROL),
 ):
     """Test connection to a Tasmota device."""
-    result = await tasmota_service.test_connection(
-        data.ip_address,
-        data.username,
-        data.password,
+    await lock_credential_config(db)
+    plug = None
+    if data.plug_id is not None:
+        await credentials.check(require_permission(Permission.SMART_PLUGS_UPDATE))
+        plug = (await db.execute(select(SmartPlug).where(SmartPlug.id == data.plug_id))).scalar_one_or_none()
+        if plug is None:
+            raise HTTPException(404, "Smart plug not found")
+    changes = {"plug_type": "tasmota", "ip_address": data.ip_address, "username": data.username}
+    if "password" in data.model_fields_set:
+        changes["password"] = data.password
+    values = merge_secret_fields(
+        _plug_values(plug), changes, {"password"}, data.secret_actions, creating=plug is None, scope=_plug_scope
     )
+    password = values.get("password")
+    await db.rollback()
+    result = await tasmota_service.test_connection(data.ip_address, data.username, password)
 
     if not result["success"]:
-        raise HTTPException(503, result.get("error", "Failed to connect to device"))
+        raise HTTPException(503, "Failed to connect to device. Check the address and credentials.")
 
     return {
         "success": True,
         "state": result["state"],
-        "device_name": result.get("device_name"),
+        "device_name": str(result["device_name"]).replace(password, "[REDACTED]")
+        if password and result.get("device_name")
+        else result.get("device_name"),
     }

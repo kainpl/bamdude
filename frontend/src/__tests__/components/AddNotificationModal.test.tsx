@@ -14,16 +14,19 @@ import { http, HttpResponse } from 'msw';
 import { render } from '../utils';
 import { server } from '../mocks/server';
 import { AddNotificationModal } from '../../components/AddNotificationModal';
+import { NOTIFICATION_SECRET_FIELDS } from '../../components/notificationCredentials';
 import { PROVIDER_EVENTS } from '../fixtures/providerEvents';
 import type { NotificationProvider } from '../../api/client';
 
 function buildProvider(provider_type: string, name: string, config: Record<string, unknown>) {
+  const fields = NOTIFICATION_SECRET_FIELDS[provider_type as keyof typeof NOTIFICATION_SECRET_FIELDS] || [];
   return {
     id: 1,
     name,
     provider_type,
     enabled: true,
-    config,
+    config: Object.fromEntries(Object.entries(config).filter(([key]) => !fields.includes(key))),
+    secrets_configured: Object.fromEntries(fields.map(key => [key, !!config[key]])),
     created_at: '2026-01-01T00:00:00Z',
     updated_at: '2026-01-01T00:00:00Z',
   } as unknown as NotificationProvider;
@@ -47,7 +50,8 @@ describe('AddNotificationModal — Bark', () => {
 
     await screen.findByDisplayValue('My iPhone');
     expect(screen.getByRole('option', { name: 'Bark' })).toBeInTheDocument();
-    expect(screen.getByDisplayValue('abc123')).toBeInTheDocument();
+    expect(screen.queryByDisplayValue('abc123')).not.toBeInTheDocument();
+    expect(screen.getByPlaceholderText('Configured. Leave blank to keep.')).toHaveValue('');
     // The relay is the default, so the field is a placeholder rather than a value.
     expect(screen.getByPlaceholderText('https://api.day.app')).toBeInTheDocument();
     expect(screen.getByText(/interruption level/i)).toBeInTheDocument();
@@ -74,10 +78,10 @@ describe('AddNotificationModal — Bark', () => {
 
     await waitFor(() => expect(onClose).toHaveBeenCalled());
     expect(captured!.config).toMatchObject({
-      device_key: 'abc123',
       group: 'Printers',
       level: 'critical',
     });
+    expect(captured!.config).not.toHaveProperty('device_key');
   });
 
   it('refuses to save without a device key', async () => {

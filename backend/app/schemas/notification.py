@@ -2,7 +2,7 @@
 
 from datetime import datetime
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -29,6 +29,7 @@ class NotificationProviderBase(BaseModel):
     provider_type: ProviderType = Field(..., description="Type of notification provider")
     enabled: bool = Field(default=True, description="Whether notifications are enabled")
     config: dict[str, Any] = Field(..., description="Provider-specific configuration")
+    secret_actions: dict[str, Literal["keep", "clear", "replace"]] | None = Field(default=None, exclude=True)
 
     # Event triggers - print lifecycle
     on_print_start: bool = Field(default=False, description="Notify on print start")
@@ -153,6 +154,7 @@ class NotificationProviderUpdate(BaseModel):
     provider_type: ProviderType | None = None
     enabled: bool | None = None
     config: dict[str, Any] | None = None
+    secret_actions: dict[str, Literal["keep", "clear", "replace"]] | None = Field(default=None, exclude=True)
 
     # Event triggers - print lifecycle
     on_print_start: bool | None = None
@@ -231,6 +233,8 @@ class NotificationProviderResponse(NotificationProviderBase):
     """Schema for notification provider API responses."""
 
     id: int
+    secrets_configured: dict[str, bool] = Field(default_factory=dict)
+    destination_display: dict[str, str] = Field(default_factory=dict)
     last_success: datetime | None = None
     last_error: str | None = None
     last_error_at: datetime | None = None
@@ -246,6 +250,8 @@ class NotificationTestRequest(BaseModel):
 
     provider_type: ProviderType
     config: dict[str, Any]
+    provider_id: int | None = Field(default=None, gt=0)
+    secret_actions: dict[str, Literal["keep", "clear", "replace"]] | None = None
 
 
 class NotificationTestResponse(BaseModel):

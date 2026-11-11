@@ -251,6 +251,9 @@ class GitBackupService:
 
         try:
             async with async_session() as db:
+                from backend.app.core.credential_config import lock_credential_config
+
+                await lock_credential_config(db)
                 # Get config
                 result = await db.execute(select(GitBackupConfig).where(GitBackupConfig.id == config_id))
                 config = result.scalar_one_or_none()
@@ -261,6 +264,10 @@ class GitBackupService:
                 if not config.enabled:
                     return {"success": False, "message": "Backup is disabled", "log_id": None}
 
+                # The session does not expire on commit: this authorized pair is
+                # frozen for this run, while its database lock ends before I/O.
+                await db.commit()
+
                 # Defense in depth: re-verify the repo is still private before
                 # each push. The save endpoint already enforces this on every
                 # config change, but a user can flip the repo from private to
@@ -270,7 +277,10 @@ class GitBackupService:
                 # access codes (via K-profiles) — failing closed is the only
                 # safe behaviour. Upstream Bambuddy commit 48a7024b.
                 privacy_check = await self.test_connection(
-                    config.repository_url, config.access_token, provider=config.provider
+                    config.repository_url,
+                    config.access_token,
+                    provider=config.provider,
+                    api_base_url=config.api_base_url,
                 )
                 if not privacy_check.get("success") or privacy_check.get("is_private") is not True:
                     visibility_note = (
@@ -328,6 +338,7 @@ class GitBackupService:
                     # Push to provider
                     provider_name = (config.provider or "github").title()
                     self._backup_progress = f"Pushing to {provider_name}..."
+                    await db.commit()
                     push_result = await self._push_to_provider(config, backup_data)
 
                     # Update log and config
@@ -576,7 +587,9 @@ class GitBackupService:
         settings = result.scalars().all()
 
         # Filter out sensitive settings
-        sensitive_keys = {"bambu_cloud_token", "auth_secret_key"}
+        from backend.app.core.credential_config import CONFIG_GUARD_KEY
+
+        sensitive_keys = {"bambu_cloud_token", "auth_secret_key", CONFIG_GUARD_KEY}
         settings_data = {s.key: s.value for s in settings if s.key not in sensitive_keys}
 
         files["settings/app_settings.json"] = {

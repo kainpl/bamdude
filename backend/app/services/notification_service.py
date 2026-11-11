@@ -23,6 +23,7 @@ from backend.app.core.config import APP_VERSION
 from backend.app.models.notification import NotificationDigestQueue, NotificationLog, NotificationProvider
 from backend.app.models.notification_template import NotificationTemplate
 from backend.app.services import notification_inbox
+from backend.app.services.notification_credentials import credential_safe_sender, safe_provider_message
 from backend.app.services.notification_events import SENSOR_ALERT_FIELDS
 
 logger = logging.getLogger(__name__)
@@ -268,9 +269,10 @@ class NotificationService:
             else:
                 return False, f"Unknown provider type: {provider_type}"
         except Exception as e:
-            logger.exception("Error sending test notification via %s", provider_type)
-            return False, str(e)
+            logger.warning("Error sending test notification via %s (%s)", provider_type, type(e).__name__)
+            return False, safe_provider_message(str(e), provider_type, config)
 
+    @credential_safe_sender("callmebot")
     async def _send_callmebot(self, config: dict, message: str) -> tuple[bool, str]:
         """Send notification via CallMeBot (WhatsApp)."""
         phone = config.get("phone", "").strip()
@@ -289,8 +291,12 @@ class NotificationService:
         if response.status_code == 200:
             return True, "Message sent successfully"
         else:
-            return False, f"HTTP {response.status_code}: {response.text[:200]}"
+            return (
+                False,
+                f"HTTP {response.status_code}: {safe_provider_message(response.text, 'callmebot', config)[:200]}",
+            )
 
+    @credential_safe_sender("ntfy")
     async def _send_ntfy(
         self,
         config: dict,
@@ -374,8 +380,9 @@ class NotificationService:
                 "Fight Mode, or front the server with Cloudflare Access using a "
                 "service token. (#1534)"
             )
-        return False, f"HTTP {response.status_code}: {response.text[:200]}"
+        return False, f"HTTP {response.status_code}: {safe_provider_message(response.text, 'ntfy', config)[:200]}"
 
+    @credential_safe_sender("pushover")
     async def _send_pushover(
         self, config: dict, title: str, message: str, image_data: bytes | None = None
     ) -> tuple[bool, str]:
@@ -442,8 +449,12 @@ class NotificationService:
                 errors = error_data.get("errors", [])
                 return False, f"Pushover error: {', '.join(errors)}"
             except Exception:
-                return False, f"HTTP {response.status_code}: {response.text[:200]}"
+                return (
+                    False,
+                    f"HTTP {response.status_code}: {safe_provider_message(response.text, 'pushover', config)[:200]}",
+                )
 
+    @credential_safe_sender("bark")
     async def _send_bark(self, config: dict, title: str, message: str) -> tuple[bool, str]:
         """Send notification via Bark, the account-free iOS push service (upstream Bambuddy #1495).
 
@@ -497,7 +508,10 @@ class NotificationService:
             except ValueError:
                 body = None
             if isinstance(body, dict) and body.get("code") not in (200, None):
-                return False, f"Bark error {body.get('code')}: {str(body.get('message'))[:200]}"
+                return (
+                    False,
+                    f"Bark error {body.get('code')}: {safe_provider_message(str(body.get('message')), 'bark', config)[:200]}",
+                )
             return True, "Message sent successfully"
         if _looks_like_cloudflare_challenge(response):
             # A self-hosted bark-server behind a Cloudflare Tunnel hits exactly
@@ -507,7 +521,7 @@ class NotificationService:
                 "challenge, which cannot be solved from a backend. Add a security-skip "
                 "rule for this hostname or front it with Cloudflare Access."
             )
-        return False, f"HTTP {response.status_code}: {response.text[:200]}"
+        return False, f"HTTP {response.status_code}: {safe_provider_message(response.text, 'bark', config)[:200]}"
 
     @staticmethod
     def _passes_progress_floor(effective_floor: int, estimated_minutes: float | None) -> bool:
@@ -519,6 +533,7 @@ class NotificationService:
         """
         return effective_floor <= 0 or estimated_minutes is None or estimated_minutes >= effective_floor
 
+    @credential_safe_sender("telegram")
     async def _send_telegram_to_chats(
         self,
         config: dict,
@@ -611,6 +626,7 @@ class NotificationService:
         else:
             return False, f"Failed to send to all chats: {'; '.join(errors)}"
 
+    @credential_safe_sender("telegram")
     async def _send_telegram_digest_to_chats(
         self,
         config: dict,
@@ -708,6 +724,7 @@ class NotificationService:
             # digest mechanism behaves like before for non-telegram paths.
             return True
 
+    @credential_safe_sender("telegram")
     async def _send_telegram(
         self,
         config: dict,
@@ -779,7 +796,9 @@ class NotificationService:
                 # rare double beats a silent loss.
                 logger.warning("aiogram send did not confirm delivery, falling back to httpx")
             except Exception as e:
-                logger.warning("aiogram send failed, falling back to httpx: %s", e)
+                logger.warning(
+                    "aiogram send failed, falling back to httpx: %s", safe_provider_message(str(e), "telegram", config)
+                )
 
         # Fallback to direct httpx (different token or bot not running)
         if "\n" in message:
@@ -812,8 +831,12 @@ class NotificationService:
             else:
                 return False, f"Telegram error: {result.get('description', 'Unknown error')}"
         else:
-            return False, f"HTTP {response.status_code}: {response.text[:200]}"
+            return (
+                False,
+                f"HTTP {response.status_code}: {safe_provider_message(response.text, 'telegram', config)[:200]}",
+            )
 
+    @credential_safe_sender("email")
     async def _send_email(
         self,
         config: dict,
@@ -941,6 +964,7 @@ class NotificationService:
         except Exception as e:
             return False, f"Email error: {str(e)}"
 
+    @credential_safe_sender("discord")
     async def _send_discord(
         self, config: dict, title: str, message: str, image_data: bytes | None = None
     ) -> tuple[bool, str]:
@@ -986,8 +1010,12 @@ class NotificationService:
         if response.status_code in (200, 204):
             return True, "Message sent successfully"
         else:
-            return False, f"HTTP {response.status_code}: {response.text[:200]}"
+            return (
+                False,
+                f"HTTP {response.status_code}: {safe_provider_message(response.text, 'discord', config)[:200]}",
+            )
 
+    @credential_safe_sender("webhook")
     async def _send_webhook(
         self,
         config: dict,
@@ -1061,10 +1089,14 @@ class NotificationService:
             if response.status_code in (200, 201, 202, 204):
                 return True, "Webhook delivered successfully"
             else:
-                return False, f"HTTP {response.status_code}: {response.text[:200]}"
+                return (
+                    False,
+                    f"HTTP {response.status_code}: {safe_provider_message(response.text, 'webhook', config)[:200]}",
+                )
         except Exception as e:
             return False, f"Webhook error: {str(e)}"
 
+    @credential_safe_sender("signal")
     async def _send_signal(
         self,
         config: dict,
@@ -1138,10 +1170,14 @@ class NotificationService:
             if response.status_code in (200, 201, 202, 204):
                 return True, "Message sent successfully"
             else:
-                return False, f"HTTP {response.status_code}: {response.text[:200]}"
+                return (
+                    False,
+                    f"HTTP {response.status_code}: {safe_provider_message(response.text, 'signal', config)[:200]}",
+                )
         except Exception as e:
             return False, f"Signal error: {str(e)}"
 
+    @credential_safe_sender("homeassistant")
     async def _send_homeassistant(
         self, config: dict, title: str, message: str, db: AsyncSession | None = None
     ) -> tuple[bool, str]:
@@ -1163,7 +1199,7 @@ class NotificationService:
                 ha_url = ha_settings.get("ha_url", "")
                 ha_token = ha_settings.get("ha_token", "")
             except Exception as e:
-                logger.warning("Failed to read HA settings from database: %s", e)
+                logger.warning("Failed to read HA settings from database (%s)", type(e).__name__)
         else:
             # Fallback: read directly from environment if no DB session
             import os
@@ -1235,7 +1271,10 @@ class NotificationService:
                 payload["data"] = parsed_data
 
         client = await self._get_client()
-        response = await client.post(url, json=payload, headers=headers)
+        try:
+            response = await client.post(url, json=payload, headers=headers)
+        except Exception as exc:
+            return False, safe_provider_message(str(exc), "homeassistant", config, extra_secrets=(ha_url, ha_token))
 
         if response.status_code in (200, 201):
             return True, "Notification sent via Home Assistant"
@@ -1308,8 +1347,8 @@ class NotificationService:
             else:
                 return False, f"Unknown provider type: {provider.provider_type}"
         except Exception as e:
-            logger.exception("Error sending notification via %s", provider.provider_type)
-            return False, str(e)
+            logger.warning("Error sending notification via %s (%s)", provider.provider_type, type(e).__name__)
+            return False, safe_provider_message(str(e), provider.provider_type, config)
 
     async def _build_telegram_actions(
         self,

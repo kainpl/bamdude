@@ -40,16 +40,19 @@ function ProviderForm({
   onSave,
   onCancel,
   isPending,
+  secretConfigured = false,
 }: {
   initial: OIDCProviderCreate;
   isEdit?: boolean;
   onSave: (data: OIDCProviderCreate) => void;
   onCancel: () => void;
   isPending: boolean;
+  secretConfigured?: boolean;
 }) {
   const { t } = useTranslation();
   const [form, setForm] = useState<OIDCProviderCreate>(initial);
   const [secretChanged, setSecretChanged] = useState(false);
+  const [secretCleared, setSecretCleared] = useState(false);
   const set = (key: keyof OIDCProviderCreate, value: unknown) =>
     setForm((prev) => ({ ...prev, [key]: value }));
 
@@ -70,6 +73,10 @@ function ProviderForm({
     if (isEdit && !secretChanged) {
       delete (payload as Partial<OIDCProviderCreate>).client_secret;
     }
+    payload.secret_actions = secretCleared || secretChanged || !isEdit || secretConfigured
+      ? { client_secret: secretCleared ? 'clear' : secretChanged || !isEdit ? 'replace' : 'keep' }
+      : undefined;
+    if (secretCleared) delete (payload as Partial<OIDCProviderCreate>).client_secret;
     onSave(payload);
   };
 
@@ -101,9 +108,16 @@ function ProviderForm({
             placeholder={isEdit && !secretChanged ? '••••••••' : t('settings.oidc.form.secretPlaceholder')}
             onChange={(e) => {
               setSecretChanged(true);
+              setSecretCleared(false);
               set('client_secret', e.target.value);
             }}
           />
+          {isEdit && <Button variant="secondary" onClick={() => {
+            setSecretCleared(true);
+            setSecretChanged(true);
+            set('client_secret', '');
+            set('is_enabled', false);
+          }}>{t('settings.oidc.form.clearSecret')}</Button>}
         </div>
         <div>
           <label className={labelCls}>{t('settings.oidc.form.scopes')}</label>
@@ -198,7 +212,7 @@ function ProviderForm({
         <Button
           variant="primary"
           className="flex-1"
-          disabled={!form.name || !form.issuer_url || !form.client_id || (!isEdit && !form.client_secret) || (isEdit && secretChanged && !form.client_secret) || isPending}
+          disabled={!form.name || !form.issuer_url || !form.client_id || (!isEdit && !form.client_secret) || (isEdit && secretChanged && !secretCleared && !form.client_secret) || (secretCleared && form.is_enabled) || isPending}
           onClick={handleSave}
         >
           {isPending ? t('common.saving') : t('common.save')}
@@ -391,6 +405,7 @@ export function OIDCProviderSettings() {
               <div className="border-t border-bambu-dark-tertiary pt-4">
                 <ProviderForm
                   isEdit={true}
+                  secretConfigured={provider.client_secret_configured ?? true}
                   initial={{
                     name: provider.name,
                     issuer_url: provider.issuer_url,

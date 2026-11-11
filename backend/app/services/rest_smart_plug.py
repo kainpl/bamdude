@@ -288,7 +288,9 @@ class RESTSmartPlugService:
         except Exception:
             return None
 
-    async def test_connection(self, url: str, method: str = "GET", headers: str | None = None) -> dict:
+    async def test_connection(
+        self, url: str, method: str = "GET", headers: str | None = None, body: str | None = None
+    ) -> dict:
         """Test connection to a REST endpoint.
 
         Returns dict with:
@@ -302,7 +304,16 @@ class RESTSmartPlugService:
 
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
-                response = await client.request(method.upper(), url, headers=parsed_headers)
+                kwargs: dict[str, Any] = {"headers": parsed_headers}
+                if body is not None:
+                    kwargs["content"] = body
+                    try:
+                        json.loads(body)
+                        if "Content-Type" not in parsed_headers:
+                            parsed_headers["Content-Type"] = "application/json"
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+                response = await client.request(method.upper(), url, **kwargs)
                 response.raise_for_status()
                 return {"success": True, "error": None}
         except httpx.TimeoutException:

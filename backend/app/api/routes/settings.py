@@ -1,26 +1,35 @@
+import asyncio
 import logging
 import math
 import os
 import zipfile
 from datetime import datetime
 from pathlib import Path
+from typing import Literal
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import delete, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core import query_timing
 from backend.app.core.auth import RequireAdmin, RequirePermission, get_current_user_optional, require_energy_cost_update
 from backend.app.core.config import settings as app_settings
+from backend.app.core.credential_config import canonical_url, lock_credential_config, merge_secret_fields
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.core.tasks import spawn_background_task
 from backend.app.i18n.api_errors import json_error
 from backend.app.models.settings import Settings
 from backend.app.models.user import User
-from backend.app.schemas.settings import AppSettings, AppSettingsUpdate
+from backend.app.schemas.settings import (
+    SERVICE_CREDENTIAL_URL_FIELDS,
+    AppSettings,
+    AppSettingsRead,
+    AppSettingsUpdate,
+    opaque_service_url,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -94,11 +103,7 @@ async def _enforce_admin_settings(db: AsyncSession, changes: dict, user: User | 
     protected = ADMIN_SETTING_FIELDS & changes.keys()
     if not protected or (user is not None and user.is_admin):
         return
-    current = (await get_settings(db=db, _=None)).model_dump()
-    # The read DTO intentionally hides the LDAP password. Compare the real
-    # stored value so submitting the read mask cannot clear it as a "no-op".
-    if "ldap_bind_password" in protected:
-        current["ldap_bind_password"] = await get_setting(db, "ldap_bind_password") or ""
+    current = (await _load_settings(db, effective_env=False)).model_dump()
     if any(changes[key] != current.get(key) for key in protected):
         raise HTTPException(status_code=403, detail="Requires admin role for protected settings")
     # Equal protected fields are accepted as read-only full-form baggage. Do
@@ -147,18 +152,94 @@ async def _lock_mcp_http_policy(db: AsyncSession) -> None:
     if db.get_bind().dialect.name == "postgresql":
         # Dedicated settings lock; the two-int namespace is separate from bigint locks.
         await db.execute(text("SELECT pg_advisory_xact_lock(215, 1)"))
-    else:
-        # SQLite needs the writer reservation before the first policy read.
-        await db.execute(text("BEGIN IMMEDIATE"))
+    # The credential anchor is already SQLite's writer reservation.
 
 
-@router.get("", response_model=AppSettings)
-@router.get("/", response_model=AppSettings)
+SETTINGS_SECRETS = frozenset(
+    {
+        "mqtt_password",
+        "ha_token",
+        "ldap_bind_password",
+        "obico_ml_token",
+        "prometheus_token",
+        "virtual_printer_access_code",
+    }
+)
+_mqtt_apply_lock = asyncio.Lock()
+
+
+async def _apply_mqtt_runtime(db: AsyncSession, *, smart_plug_only: bool = False) -> None:
+    from backend.app.services.mqtt_relay import mqtt_relay
+
+    # Re-read after taking the service lock so a queued apply cannot restore
+    # an older writer's pair. The database lock is released before network I/O.
+    async with _mqtt_apply_lock:
+        await lock_credential_config(db)
+        snapshot = (await _load_settings(db, effective_env=False)).model_dump()
+        mqtt_settings = {key: value for key, value in snapshot.items() if key.startswith("mqtt_")}
+        await db.rollback()
+        if smart_plug_only:
+            # Plug subscriptions are independently enabled by their owning
+            # adapter even when outbound printer-status publishing is off.
+            mqtt_settings["mqtt_enabled"] = True
+            await mqtt_relay.smart_plug_service.configure(mqtt_settings)
+        else:
+            await mqtt_relay.configure(mqtt_settings)
+
+
+def _ldap_credential_scope(config: dict) -> tuple:
+    from backend.app.services.ldap_service import _create_server, parse_ldap_config
+
+    if opaque_service_url(config.get("ldap_server_url")):
+        # Preserve opaque/malformed legacy tuples for unrelated metadata edits.
+        # Any destination/security change still differs and requires reissue.
+        return (
+            config.get("ldap_server_url"),
+            config.get("ldap_security"),
+            str(config.get("ldap_bind_dn") or "").strip(),
+        )
+    ldap = parse_ldap_config(
+        {
+            "ldap_enabled": "true",
+            "ldap_server_url": config.get("ldap_server_url") or "",
+            "ldap_security": config.get("ldap_security") or "starttls",
+        }
+    )
+    if ldap is None:
+        return ("", None, None, str(config.get("ldap_bind_dn") or "").strip())
+    try:
+        server = _create_server(ldap)  # Parses the sender's defaults; no connection or I/O.
+    except (ValueError, TypeError):
+        raise HTTPException(422, "Invalid LDAP destination") from None
+    transport = (
+        "ldaps"
+        if server.ssl
+        else "starttls"
+        if ldap.security == "starttls" and not ldap.server_url.startswith("ldaps://")
+        else "plain"
+    )
+    return (server.host.lower(), server.port, transport, str(config.get("ldap_bind_dn") or "").strip())
+
+
+@router.get("", response_model=AppSettingsRead)
+@router.get("/", response_model=AppSettingsRead)
 async def get_settings(
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.SETTINGS_READ),
 ):
-    """Get all application settings."""
+    """Get settings without exposing stored or environment credentials."""
+    raw = (await _load_settings(db)).model_dump()
+    presence = {f"{key}_configured": bool(raw.get(key)) for key in SETTINGS_SECRETS}
+    for key in SERVICE_CREDENTIAL_URL_FIELDS:
+        presence[f"{key}_configured"] = bool(raw.get(key))
+        presence[f"{key}_opaque"] = opaque_service_url(raw.get(key))
+        if presence[f"{key}_opaque"]:
+            raw[key] = ""
+    return AppSettingsRead(**raw, **presence)
+
+
+async def _load_settings(db: AsyncSession, *, effective_env: bool = True) -> AppSettings:
+    """Private typed snapshot; never use this as an HTTP response model."""
     settings_dict = DEFAULT_SETTINGS.model_dump()
 
     # Load saved settings from database
@@ -280,16 +361,90 @@ async def get_settings(
                 settings_dict[setting.key] = setting.value
 
     # Get Home Assistant settings (with environment variable overrides)
-    ha_settings = await get_homeassistant_settings(db)
-    settings_dict.update(ha_settings)
-
-    # Never return LDAP bind password in API responses
-    settings_dict["ldap_bind_password"] = ""
+    if effective_env:
+        settings_dict.update(await get_homeassistant_settings(db))
 
     return AppSettings(**settings_dict)
 
 
-@router.put("/", response_model=AppSettings)
+async def resolve_settings_credentials(db: AsyncSession, changes: dict, actions: dict | None = None) -> dict:
+    """Resolve a locked raw draft, comparing the effective sender destination.
+
+    Callers own the anchor transaction and release it before any network I/O.
+    Environment values are used only in comparison and never copied to storage.
+    """
+    stored = (await _load_settings(db, effective_env=False)).model_dump()
+    touched = changes.keys() | (actions or {}).keys()
+    if any(key in changes and changes[key] is None for key in SETTINGS_SECRETS):
+        raise HTTPException(422, "Credential values must be strings; use an explicit clear action")
+
+    def ha_scope(config):
+        return canonical_url(os.environ.get("HA_URL") or config.get("ha_url"))
+
+    scopes = {
+        "mqtt_password": lambda c: (
+            str(c.get("mqtt_broker") or "").strip().lower(),
+            c.get("mqtt_port"),
+            c.get("mqtt_use_tls"),
+            c.get("mqtt_username") or "",
+        ),
+        "ha_token": ha_scope,
+        "ldap_bind_password": _ldap_credential_scope,
+        "obico_ml_token": lambda c: canonical_url(c.get("obico_ml_url")),
+    }
+    opaque_fields = {key for key in SERVICE_CREDENTIAL_URL_FIELDS if opaque_service_url(stored.get(key))}
+    for key in SERVICE_CREDENTIAL_URL_FIELDS & changes.keys():
+        if opaque_service_url(changes[key]):
+            raise HTTPException(422, "Base URL must not contain credentials, query parameters or fragments")
+    effective_actions = dict(actions or {})
+    # An environment credential is a real retained source, but it must never
+    # be materialized into the DB snapshot just to satisfy explicit keep.
+    if os.environ.get("HA_TOKEN") and effective_actions.get("ha_token") == "keep" and "ha_token" not in changes:
+        effective_actions.pop("ha_token")
+    merged = merge_secret_fields(stored, changes, SETTINGS_SECRETS | opaque_fields, effective_actions, scope=scopes)
+    if os.environ.get("HA_TOKEN") and ha_scope(stored) != ha_scope(merged):
+        raise HTTPException(400, "ha_token: environment credential requires an unchanged effective destination")
+    effective_ha_token = os.environ.get("HA_TOKEN") or merged.get("ha_token")
+    if (
+        {"ha_enabled", "ha_url", "ha_token"} & touched
+        and merged.get("ha_enabled")
+        and (not effective_ha_token or not (os.environ.get("HA_URL") or merged.get("ha_url")))
+    ):
+        raise HTTPException(400, "ha_token: enabled integration requires a credential")
+    if (
+        any(k.startswith("mqtt_") for k in touched)
+        and merged.get("mqtt_enabled")
+        and merged.get("mqtt_username")
+        and not merged.get("mqtt_password")
+    ):
+        raise HTTPException(400, "mqtt_password: authenticated MQTT requires a credential")
+    if (
+        any(k.startswith("ldap_") for k in touched)
+        and merged.get("ldap_enabled")
+        and merged.get("ldap_bind_dn")
+        and not merged.get("ldap_bind_password")
+    ):
+        raise HTTPException(400, "ldap_bind_password: authenticated LDAP requires a credential")
+    if "prometheus_token" in touched and merged.get("prometheus_enabled") and not merged.get("prometheus_token"):
+        raise HTTPException(400, "prometheus_token: disable metrics before clearing its credential")
+    code = merged.get("virtual_printer_access_code")
+    if "virtual_printer_access_code" in touched and code and len(code) != 8:
+        raise HTTPException(400, "virtual_printer_access_code: access code must be exactly 8 characters")
+    if (
+        any(k.startswith("virtual_printer_") for k in touched)
+        and merged.get("virtual_printer_enabled")
+        and merged.get("virtual_printer_mode") != "proxy"
+        and not code
+    ):
+        raise HTTPException(400, "virtual_printer_access_code: enabled integration requires a credential")
+    try:
+        AppSettings(**merged)
+    except ValidationError:
+        raise HTTPException(422, "Invalid effective settings configuration") from None
+    return merged
+
+
+@router.put("/", response_model=AppSettingsRead)
 async def update_settings(
     settings_update: AppSettingsUpdate,
     db: AsyncSession = Depends(get_db),
@@ -297,7 +452,14 @@ async def update_settings(
 ):
     """Update application settings."""
     update_data = settings_update.model_dump(exclude_unset=True)
+    actions = update_data.pop("secret_actions", None)
+    await lock_credential_config(db)
+    if actions and not (current_user is not None and current_user.is_admin):
+        raise HTTPException(403, "Requires admin role for protected settings")
     await _enforce_admin_settings(db, update_data, current_user)
+    merged = await resolve_settings_credentials(db, update_data, actions)
+    for key in (SETTINGS_SECRETS | SERVICE_CREDENTIAL_URL_FIELDS) & (update_data.keys() | (actions or {}).keys()):
+        update_data[key] = merged[key]
     risk_ack = update_data.pop("mcp_http_risk_acknowledged", False)
     network_ack = update_data.pop("mcp_http_trusted_network_acknowledged", False)
     if {"mcp_allow_http", "mcp_endpoint_url"} & update_data.keys():
@@ -445,18 +607,7 @@ async def update_settings(
     # Reconfigure MQTT relay if any MQTT settings changed
     if mqtt_updated:
         try:
-            from backend.app.services.mqtt_relay import mqtt_relay
-
-            mqtt_settings = {
-                "mqtt_enabled": (await get_setting(db, "mqtt_enabled") or "false") == "true",
-                "mqtt_broker": await get_setting(db, "mqtt_broker") or "",
-                "mqtt_port": int(await get_setting(db, "mqtt_port") or "1883"),
-                "mqtt_username": await get_setting(db, "mqtt_username") or "",
-                "mqtt_password": await get_setting(db, "mqtt_password") or "",
-                "mqtt_topic_prefix": await get_setting(db, "mqtt_topic_prefix") or "bamdude",
-                "mqtt_use_tls": (await get_setting(db, "mqtt_use_tls") or "false") == "true",
-            }
-            await mqtt_relay.configure(mqtt_settings)
+            await _apply_mqtt_runtime(db)
         except Exception:
             pass  # Don't fail the settings update if MQTT reconfiguration fails
 
@@ -464,8 +615,8 @@ async def update_settings(
     return await get_settings(db)
 
 
-@router.patch("/", response_model=AppSettings)
-@router.patch("", response_model=AppSettings)
+@router.patch("/", response_model=AppSettingsRead)
+@router.patch("", response_model=AppSettingsRead)
 async def patch_settings(
     settings_update: AppSettingsUpdate,
     db: AsyncSession = Depends(get_db),
@@ -488,7 +639,7 @@ class ElectricityPriceUpdate(BaseModel):
     energy_cost_per_kwh: float = Field(ge=0)
 
 
-@router.post("/electricity-price", response_model=AppSettings)
+@router.post("/electricity-price", response_model=AppSettingsRead)
 async def update_electricity_price(
     payload: ElectricityPriceUpdate,
     db: AsyncSession = Depends(get_db),
@@ -516,21 +667,27 @@ async def update_electricity_price(
     return await get_settings(db, _)
 
 
-@router.post("/reset", response_model=AppSettings, dependencies=[RequireAdmin()])
+@router.post("/reset", response_model=AppSettingsRead, dependencies=[RequireAdmin()])
 async def reset_settings(
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.SETTINGS_UPDATE),
 ):
     """Reset all settings to defaults."""
+    from backend.app.core.credential_config import CONFIG_GUARD_KEY
+
+    await lock_credential_config(db)
     await _lock_mcp_http_policy(db)
-    # Delete all settings
-    result = await db.execute(select(Settings))
+    # The installation transaction anchor is infrastructure, not a preference.
+    # Keep it locked and present across reset; a later editor must never lazily
+    # create its own independent serialization row.
+    result = await db.execute(select(Settings).where(Settings.key != CONFIG_GUARD_KEY).order_by(Settings.key))
     for setting in result.scalars().all():
         await db.delete(setting)
 
     await db.commit()
 
-    return DEFAULT_SETTINGS
+    await _apply_mqtt_runtime(db)
+    return await get_settings(db=db, _=None)
 
 
 # Curated, non-sensitive UI-rendering settings exposed without SETTINGS_READ
@@ -758,9 +915,11 @@ async def get_homeassistant_settings(db: AsyncSession) -> dict:
     ha_token_env = os.environ.get("HA_TOKEN")
 
     # Fall back to database values
-    ha_url = ha_url_env or await get_setting(db, "ha_url") or ""
-    ha_token = ha_token_env or await get_setting(db, "ha_token") or ""
-    ha_enabled_db = await get_setting(db, "ha_enabled") or "false"
+    result = await db.execute(select(Settings).where(Settings.key.in_(("ha_url", "ha_token", "ha_enabled"))))
+    snapshot = {row.key: row.value for row in result.scalars().all()}
+    ha_url = ha_url_env or snapshot.get("ha_url") or ""
+    ha_token = ha_token_env or snapshot.get("ha_token") or ""
+    ha_enabled_db = snapshot.get("ha_enabled") or "false"
 
     # Track which settings come from environment
     ha_url_from_env = bool(ha_url_env)
@@ -1215,15 +1374,22 @@ async def get_virtual_printer_settings(
     }
 
 
+class GlobalVirtualPrinterUpdate(BaseModel):
+    model_config = {"extra": "forbid"}
+    enabled: bool | None = None
+    access_code: str | None = None
+    mode: str | None = None
+    model: str | None = None
+    target_printer_id: int | None = None
+    remote_interface_ip: str | None = None
+    archive_name_source: str | None = None
+    secret_actions: dict[str, Literal["keep", "clear", "replace"]] | None = None
+
+
 @router.put("/virtual-printer", dependencies=[RequireAdmin()])
 async def update_virtual_printer_settings(
-    enabled: bool = None,
-    access_code: str = None,
-    mode: str = None,
-    model: str = None,
-    target_printer_id: int = None,
-    remote_interface_ip: str = None,
-    archive_name_source: str = None,
+    payload: GlobalVirtualPrinterUpdate,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.SETTINGS_UPDATE),
 ):
@@ -1242,9 +1408,35 @@ async def update_virtual_printer_settings(
         virtual_printer_manager,
     )
 
+    if "access_code" in request.query_params:
+        raise HTTPException(422, "Credentials must be submitted in the JSON body")
+    enabled, access_code, mode, model = payload.enabled, payload.access_code, payload.mode, payload.model
+    target_printer_id, remote_interface_ip = payload.target_printer_id, payload.remote_interface_ip
+    archive_name_source = payload.archive_name_source
+    changes = {
+        "virtual_printer_" + key: value
+        for key, value in payload.model_dump(exclude_unset=True).items()
+        if key != "secret_actions" and (value is not None or key == "access_code")
+    }
+    actions = payload.secret_actions or {}
+    if any(key != "access_code" for key in actions):
+        raise HTTPException(422, "Invalid secret action")
+    await lock_credential_config(db)
+    if (
+        mode is not None
+        and mode != "proxy"
+        and enabled is None
+        and access_code is None
+        and "access_code" not in actions
+        and not await get_setting(db, "virtual_printer_access_code")
+    ):
+        # Preserve the existing mode-switch auto-disable when no credential
+        # existed. An explicit credential clear must still refuse while on.
+        changes["virtual_printer_enabled"] = False
+    resolved = await resolve_settings_credentials(db, changes, {"virtual_printer_" + k: v for k, v in actions.items()})
+
     # Get current values
     current_enabled = await get_setting(db, "virtual_printer_enabled") == "true"
-    current_access_code = await get_setting(db, "virtual_printer_access_code") or ""
     current_mode = await get_setting(db, "virtual_printer_mode") or "file_manager"
     current_model = await get_setting(db, "virtual_printer_model") or DEFAULT_VIRTUAL_PRINTER_MODEL
     current_target_id_str = await get_setting(db, "virtual_printer_target_printer_id")
@@ -1253,7 +1445,7 @@ async def update_virtual_printer_settings(
 
     # Apply updates
     new_enabled = enabled if enabled is not None else current_enabled
-    new_access_code = access_code if access_code is not None else current_access_code
+    new_access_code = resolved["virtual_printer_access_code"]
     new_mode = mode if mode is not None else current_mode
     new_model = model if model is not None else current_model
     new_target_id = target_printer_id if target_printer_id is not None else current_target_id
@@ -1313,8 +1505,8 @@ async def update_virtual_printer_settings(
 
     # Save settings
     await set_setting(db, "virtual_printer_enabled", "true" if new_enabled else "false")
-    if access_code is not None:
-        await set_setting(db, "virtual_printer_access_code", access_code)
+    if access_code is not None or "access_code" in actions:
+        await set_setting(db, "virtual_printer_access_code", new_access_code)
     await set_setting(db, "virtual_printer_mode", new_mode)
     if model is not None:
         await set_setting(db, "virtual_printer_model", model)

@@ -1,8 +1,11 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Loader2, ScanEye, Check, X, AlertTriangle } from 'lucide-react';
 import { api } from '../api/client';
+import type { SecretAction } from '../api/client';
+import { SecretInput } from './SecretInput';
+import { credentialDraft } from '../utils/credentialDraft';
 import { Card, CardContent, CardHeader } from './Card';
 import { Button } from './Button';
 import { Toggle } from './Toggle';
@@ -24,12 +27,17 @@ export function FailureDetectionSettings() {
   const [saveDetections, setSaveDetections] = useState(false);
   const [mlUrl, setMlUrl] = useState('');
   const [mlToken, setMlToken] = useState('');
+  const [tokenAction, setTokenAction] = useState<SecretAction>('keep');
+  const [urlAction, setUrlAction] = useState<SecretAction>('keep');
   const [sensitivity, setSensitivity] = useState<'low' | 'medium' | 'high'>('medium');
   const [action, setAction] = useState<'notify' | 'pause' | 'pause_and_off'>('notify');
   const [pollInterval, setPollInterval] = useState(10);
   const [enabledPrinters, setEnabledPrinters] = useState<number[] | null>(null); // null = all
   const [testResult, setTestResult] = useState<TestResult>(null);
   const [initialized, setInitialized] = useState(false);
+  const connectionVersion = useRef(0);
+  const savedConnectionVersion = useRef(0);
+  const editConnection = (edit: () => void) => { connectionVersion.current += 1; edit(); };
 
   const { data: settings } = useQuery({
     queryKey: ['settings'],
@@ -51,8 +59,12 @@ export function FailureDetectionSettings() {
     if (!settings) return;
     setEnabled(settings.obico_enabled ?? false);
     setSaveDetections(settings.obico_save_detections ?? false);
-    setMlUrl(settings.obico_ml_url ?? '');
-    setMlToken(settings.obico_ml_token ?? '');
+    if (connectionVersion.current === savedConnectionVersion.current) {
+      setMlUrl(settings.obico_ml_url ?? '');
+      setMlToken('');
+      setTokenAction('keep');
+      setUrlAction('keep');
+    }
     setSensitivity(settings.obico_sensitivity ?? 'medium');
     setAction(settings.obico_action ?? 'notify');
     setPollInterval(settings.obico_poll_interval ?? 10);
@@ -67,10 +79,16 @@ export function FailureDetectionSettings() {
     setInitialized(true);
   }, [settings]);
 
+  const connectionDraft = () => {
+    const token = credentialDraft('obico_ml_token', mlToken, tokenAction, settings?.obico_ml_token_configured);
+    const url = settings?.obico_ml_url_opaque ? credentialDraft('obico_ml_url', mlUrl, urlAction, true) : { obico_ml_url: mlUrl };
+    return { ...token, ...url, secret_actions: { ...token.secret_actions, ...('secret_actions' in url ? url.secret_actions : {}) } };
+  };
+
   const saveMutation = useMutation({
     mutationFn: () =>
       api.updateSettings({
-        ...(isAdmin ? { obico_enabled: enabled, obico_ml_url: mlUrl, obico_ml_token: mlToken } : {}),
+        ...(isAdmin ? { obico_enabled: enabled } : {}),
         obico_save_detections: saveDetections,
         obico_sensitivity: sensitivity,
         obico_action: action,
@@ -82,15 +100,33 @@ export function FailureDetectionSettings() {
       queryClient.invalidateQueries({ queryKey: ['obico-status'] });
       showToast(t('settings.toast.settingsSaved'));
     },
+    onError: (error: Error) => showToast(error.message, 'error'),
   });
+
+  const saveConnection = useMutation({
+    mutationFn: ({ draft }: { draft: ReturnType<typeof connectionDraft>; version: number }) => api.updateSettings(draft),
+    onSuccess: (data, submitted) => {
+      if (connectionVersion.current === submitted.version) {
+        savedConnectionVersion.current = submitted.version;
+        setMlUrl(data.obico_ml_url ?? '');
+        setMlToken('');
+        setTokenAction('keep');
+        setUrlAction('keep');
+      }
+      queryClient.invalidateQueries({ queryKey: ['settings'] });
+      queryClient.invalidateQueries({ queryKey: ['obico-status'] });
+      showToast(t('settings.toast.settingsSaved'));
+    },
+    onError: (error: Error) => showToast(error.message, 'error'),
+  });
+  const connectionChanged = initialized && !!settings && (settings.obico_ml_url !== mlUrl ||
+    mlToken !== '' || tokenAction !== 'keep' || urlAction !== 'keep');
 
   const hasUnsavedChanges =
     initialized &&
     !!settings &&
     (settings.obico_enabled !== enabled ||
       (settings.obico_save_detections ?? false) !== saveDetections ||
-      settings.obico_ml_url !== mlUrl ||
-      settings.obico_ml_token !== mlToken ||
       settings.obico_sensitivity !== sensitivity ||
       settings.obico_action !== action ||
       settings.obico_poll_interval !== pollInterval ||
@@ -102,19 +138,13 @@ export function FailureDetectionSettings() {
     const id = setTimeout(() => saveMutation.mutate(), 500);
     return () => clearTimeout(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [enabled, saveDetections, mlUrl, mlToken, sensitivity, action, pollInterval, enabledPrinters, initialized]);
+  }, [enabled, saveDetections, sensitivity, action, pollInterval, enabledPrinters, initialized, isAdmin]);
 
   const handleTest = async () => {
     setTestResult(null);
     try {
-      // Save first, so a green result describes the configuration the
-      // detection loop actually runs with (it reads the saved settings) — not
-      // what sits in the boxes inside the auto-save debounce, or after a save
-      // that failed (upstream #2952).
-      if (hasUnsavedChanges) {
-        await saveMutation.mutateAsync();
-      }
-      const res = await api.testObicoConnection(mlUrl, mlToken);
+      const draft = connectionDraft();
+      const res = await api.testObicoConnection(draft.obico_ml_url, draft.obico_ml_token, draft.secret_actions);
       if (res.ok) {
         setTestResult({ ok: true, message: t('failureDetection.testSuccess') });
       } else {
@@ -167,38 +197,40 @@ export function FailureDetectionSettings() {
               <label className="block text-sm text-bambu-gray mb-1">
                 {t('failureDetection.mlUrl')}
               </label>
-              <div className="flex gap-2">
-                <input
+              <div className="flex gap-2 flex-wrap">
+                {settings?.obico_ml_url_opaque ? <SecretInput value={mlUrl} action={urlAction} configured
+                  onActionChange={value => editConnection(() => setUrlAction(value))}
+                  onChange={value => editConnection(() => setMlUrl(value))} disabled={!canConfigure} /> : <input
                   type="text"
                   value={mlUrl}
-                  onChange={(e) => setMlUrl(e.target.value)}
+                  onChange={(e) => editConnection(() => setMlUrl(e.target.value))}
                   placeholder="http://192.168.1.10:3333"
                   className="flex-1 bg-gray-800 border border-gray-700 rounded px-3 py-2 text-white text-sm"
-                  disabled={!enabled || !canConfigure}
-                />
+                  disabled={!canConfigure}
+                />}
                 <Button
                   onClick={handleTest}
-                  disabled={!canConfigure || !mlUrl || saveMutation.isPending}
+                  disabled={!canConfigure || !(mlUrl || settings?.obico_ml_url_configured) || saveMutation.isPending}
                   variant="secondary"
                 >
                   {t('failureDetection.test')}
                 </Button>
+                <Button onClick={() => saveConnection.mutate({ draft: connectionDraft(), version: connectionVersion.current })}
+                  disabled={!canConfigure || !connectionChanged || saveConnection.isPending}>
+                  {t('settings.credentials.saveConnection')}
+                </Button>
               </div>
               <p className="text-xs text-bambu-gray mt-1">{t('failureDetection.mlUrlHint')}</p>
+              <p className="text-xs text-bambu-gray mt-1">{t('settings.credentials.draftHint')}</p>
             </div>
 
             <div>
               <label className="block text-sm text-bambu-gray mb-1">
                 {t('failureDetection.mlToken')}
               </label>
-              <input
-                type="password"
-                value={mlToken}
-                onChange={(e) => setMlToken(e.target.value)}
-                autoComplete="off"
-                className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-white text-sm"
-                disabled={!enabled || !canConfigure}
-              />
+              <SecretInput value={mlToken} action={tokenAction} configured={settings?.obico_ml_token_configured}
+                onChange={value => editConnection(() => setMlToken(value))}
+                onActionChange={value => editConnection(() => setTokenAction(value))} disabled={!canConfigure} />
               <p className="text-xs text-bambu-gray mt-1">{t('failureDetection.mlTokenHint')}</p>
               {testResult && (
                 <div

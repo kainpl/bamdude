@@ -25,6 +25,7 @@ from backend.app.core.auth import (
     require_permission,
 )
 from backend.app.core.config import settings
+from backend.app.core.credential_config import lock_credential_config
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.core.tasks import spawn_background_task
@@ -87,6 +88,7 @@ from backend.app.services.bambu_mqtt import (
     airduct_mode_effective,
     airduct_parts_effective,
 )
+from backend.app.services.camera_credentials import CAMERA_SECRET_FIELDS, resolve_camera_credentials
 from backend.app.services.cloud_link.service import cloud_link_service
 from backend.app.services.mqtt_recorder import mqtt_recorder
 from backend.app.services.plate_answers import FilingRefused, InvalidPlateAssessment, answer_plate_run
@@ -263,6 +265,9 @@ async def create_printer(
     creds: RequestCredentials = Depends(request_credentials),
 ):
     """Add a new printer."""
+    # Bootstrap/restore must publish the anchor before any configuration probe.
+    # Release this transaction before MQTT and reacquire before INSERT.
+    await lock_credential_config(db)
     # Check if serial number already exists. An archived printer keeps its
     # serial, so re-adding the same physical machine collides — point the
     # operator at unarchive instead of a dead-end duplicate error.
@@ -277,6 +282,14 @@ async def create_printer(
     await _require_known_location(db, printer_data.location_id)
 
     data = printer_data.model_dump()
+    camera_actions = data.pop("secret_actions", None)
+    camera_draft = {
+        key: value
+        for key, value in printer_data.model_dump(exclude_unset=True).items()
+        if key.startswith("external_camera_")
+    }
+    resolved_camera = resolve_camera_credentials({}, camera_draft, camera_actions, creating=True)
+    data.update({key: value for key, value in resolved_camera.items() if key in CAMERA_SECRET_FIELDS})
     tag_ids = data.pop("tag_ids", [])
     await _require_known_tags(db, tag_ids)
     # One namespaced JSON object, written whole — the validated policy, not the
@@ -295,6 +308,7 @@ async def create_printer(
     # (upstream Bambuddy "empty-card" fix / b51598ea). The printer must be
     # powered on and reachable at add time — which it is in the normal flow,
     # since you read the access code off its screen.
+    await db.rollback()  # No configuration transaction across the MQTT probe.
     try:
         probe = await printer_manager.test_connection(
             ip_address=printer_data.ip_address,
@@ -310,6 +324,7 @@ async def create_printer(
             "code, and confirm the printer is powered on with LAN-Only Mode enabled.",
         )
 
+    await lock_credential_config(db)
     db.add(printer)
     await db.flush()
     await replace_links(db, printer.id, tag_ids)
@@ -544,12 +559,24 @@ async def update_printer(
     creds: RequestCredentials = Depends(request_credentials),
 ):
     """Update a printer."""
-    result = await db.execute(select(Printer).where(Printer.id == printer_id))
+    await lock_credential_config(db)
+    result = await db.execute(select(Printer).where(Printer.id == printer_id).with_for_update())
     printer = result.scalar_one_or_none()
     if not printer:
         raise HTTPException(404, "Printer not found")
 
     update_data = printer_data.model_dump(exclude_unset=True)
+    camera_actions = update_data.pop("secret_actions", None)
+    resolved_camera = resolve_camera_credentials(
+        {
+            key: getattr(printer, key)
+            for key in (*CAMERA_SECRET_FIELDS, "external_camera_enabled", "external_camera_type")
+        },
+        {key: value for key, value in update_data.items() if key.startswith("external_camera_")},
+        camera_actions,
+    )
+    for key in CAMERA_SECRET_FIELDS & (update_data.keys() | (camera_actions or {}).keys()):
+        update_data[key] = resolved_camera.get(key)
     if "tag_ids" in update_data:
         # ``or []`` because the field is optional and an explicit null is a
         # thing a GET → edit → PATCH client sends. It reads as "no tags", the

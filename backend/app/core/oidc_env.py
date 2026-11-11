@@ -175,14 +175,23 @@ async def apply_env_oidc_provider(db: AsyncSession) -> None:
         # in this path takes the boot down.
         with contextlib.suppress(Exception):
             await db.rollback()
+    finally:
+        # Rejected/empty configuration returns early without a commit. It must
+        # still release the installation anchor before startup continues.
+        with contextlib.suppress(Exception):
+            if db.in_transaction():
+                await db.rollback()
 
 
 async def _apply_env_oidc_provider(db: AsyncSession) -> None:
     # Imported here rather than at module scope: app.core is imported by the
     # models themselves, so a top-level import would be a cycle.
+    from backend.app.core.credential_config import lock_credential_config
     from backend.app.models.group import Group
     from backend.app.models.oidc_provider import OIDCProvider
     from backend.app.schemas.auth import OIDCProviderCreate
+
+    await lock_credential_config(db)
 
     try:
         config = read_env_oidc_config()

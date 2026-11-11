@@ -2,15 +2,18 @@
 
 import hashlib
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Literal
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Query, Request, Response
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from pydantic import BaseModel, ValidationError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.api_key_scope import key_printer_scope
 from backend.app.core.auth import RequireAdmin, RequirePermission
+from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.models.user import User
 from backend.app.services.obico_detection import obico_detection_service, pop_frame
@@ -22,11 +25,34 @@ router = APIRouter(prefix="/obico", tags=["obico"])
 
 
 class TestConnectionRequest(BaseModel):
-    url: str
+    model_config = {"extra": "forbid"}
+    url: str | None = None
     # None means "use the saved token"; "" means "test with no token at all", which
     # is a distinct and useful case — it is how you check a server that runs
     # without ML_API_TOKEN.
     token: str | None = None
+    secret_actions: dict[str, Literal["keep", "clear", "replace"]] | None = None
+
+
+def _public_obico_error(message: str | None) -> str | None:
+    """Keep actionable categories without serializing driver URLs or peer text."""
+    if message is None:
+        return None
+    if isinstance(message, str):
+        if message.startswith("Obico ML API rejected the token."):
+            return "Obico ML API rejected the token. Verify the ML API token in Failure detection settings."
+        match = re.match(r"ML API call failed for printer (\d+):", message)
+        if match:
+            return (
+                f"ML API call failed for printer {match.group(1)}. Verify the ML API address and service availability."
+            )
+        if re.fullmatch(r"Failed to capture snapshot for printer \d+|Printer \d+ not found", message):
+            return message
+        if message.startswith("external_url setting is empty"):
+            return "External URL is empty. Set Settings → General → External URL so the ML API can fetch snapshots."
+        if message.startswith("Action dispatch failed:"):
+            return "Failure detection could not dispatch the configured action."
+    return "Obico failure detection is temporarily unavailable."
 
 
 @router.get("/status")
@@ -42,8 +68,12 @@ async def get_status(
     scope = key_printer_scope(request)
     if scope is not None:
         status["last_error"] = None
+    else:
+        status["last_error"] = _public_obico_error(status.get("last_error"))
     status["per_printer"] = {
-        pid: value for pid, value in status["per_printer"].items() if scope is None or int(pid) in scope
+        pid: {**value, "error": _public_obico_error(value.get("error"))}
+        for pid, value in status["per_printer"].items()
+        if scope is None or int(pid) in scope
     }
     status["history"] = [ev for ev in status["history"] if scope is None or ev["printer_id"] in scope]
     states = {}
@@ -55,10 +85,13 @@ async def get_status(
     else:
         status["history"] = []
     status["history"] = [{**ev, "state": states.get(ev.get("id"), "not_saved")} for ev in status["history"]]
+    from backend.app.schemas.settings import opaque_service_url
+
     return {
         **status,
         "enabled": settings["enabled"],
-        "ml_url": settings["ml_url"],
+        "ml_url": "" if opaque_service_url(settings["ml_url"]) else settings["ml_url"],
+        "ml_url_configured": bool(settings["ml_url"]),
         "sensitivity": settings["sensitivity"],
         "action": settings["action"],
         "poll_interval": settings["poll_interval"],
@@ -95,12 +128,18 @@ async def get_printer_status(
         # their print is not being watched. Only the reason, which can name a
         # URL, is withheld (upstream #2952).
         per_printer = {pid: {**entry, "error": None} for pid, entry in per_printer.items()}
+    else:
+        per_printer = {
+            pid: {**entry, "error": _public_obico_error(entry.get("error"))} for pid, entry in per_printer.items()
+        }
     return {
         "enabled": settings["enabled"],
         # None means every printer is monitored.
         "monitored_printers": sorted(enabled_printers) if enabled_printers is not None else None,
         "per_printer": per_printer,
-        "last_error": obico_detection_service._last_error if can_see_error and scope is None else None,
+        "last_error": _public_obico_error(obico_detection_service._last_error)
+        if can_see_error and scope is None
+        else None,
     }
 
 
@@ -193,6 +232,7 @@ async def clear_history(_: User | None = RequirePermission(Permission.SETTINGS_U
 async def test_connection(
     req: TestConnectionRequest,
     _: User = RequirePermission(Permission.SETTINGS_UPDATE),
+    db: AsyncSession = Depends(get_db),
 ):
     """Ping the Obico ML API and check the token. Returns ok + raw body + auth_ok.
 
@@ -200,20 +240,47 @@ async def test_connection(
     can test an already-configured server without retyping a secret the form does
     not echo back.
     """
-    if not req.url:
+    actions = req.secret_actions or {}
+    if any(key not in {"obico_ml_token", "obico_ml_url"} for key in actions):
+        raise HTTPException(422, "Invalid secret action")
+    for field, key in (("token", "obico_ml_token"), ("url", "obico_ml_url")):
+        if field in req.model_fields_set and actions.get(key) in {"keep", "clear"}:
+            raise HTTPException(422, "Secret keep/clear requires an omitted value")
+    if req.url == "":
         return {"ok": False, "status_code": None, "body": None, "error": "URL is empty", "auth_ok": None}
 
-    token = req.token
-    if token is None:
-        from sqlalchemy import select
+    from backend.app.api.routes.settings import resolve_settings_credentials
+    from backend.app.core.credential_config import lock_credential_config
+    from backend.app.schemas.settings import AppSettingsUpdate
 
-        from backend.app.core.database import async_session
-        from backend.app.models.settings import Settings
-
-        async with async_session() as db:
-            row = (await db.execute(select(Settings).where(Settings.key == "obico_ml_token"))).scalar_one_or_none()
-            token = row.value if row else ""
-    return await obico_detection_service.test_connection(req.url, token)
+    changes = {"obico_ml_url": req.url} if req.url is not None else {}
+    if req.token is not None:
+        changes["obico_ml_token"] = req.token
+    # Reuse URL admission validation before resolving or contacting the sender.
+    try:
+        AppSettingsUpdate(**changes)
+    except ValidationError:
+        raise HTTPException(422, "Invalid Obico destination") from None
+    await lock_credential_config(db)
+    merged = await resolve_settings_credentials(db, changes, req.secret_actions)
+    await db.rollback()
+    result = await obico_detection_service.test_connection(merged["obico_ml_url"], merged["obico_ml_token"])
+    ok = result.get("ok") is True
+    auth_ok = result.get("auth_ok") if type(result.get("auth_ok")) is bool else None
+    status_code = result.get("status_code")
+    if type(status_code) is not int or not 100 <= status_code <= 599:
+        status_code = None
+    return {
+        "ok": ok,
+        "status_code": status_code,
+        "auth_ok": auth_ok,
+        "body": "ok" if ok else None,
+        "error": None
+        if ok
+        else "Obico ML API rejected the token. Verify the configured credential."
+        if auth_ok is False
+        else "Obico connection test failed. Verify the ML API address and service availability.",
+    }
 
 
 @router.get("/cached-frame/{nonce}")

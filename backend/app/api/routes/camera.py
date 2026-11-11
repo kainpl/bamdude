@@ -4,18 +4,24 @@ import asyncio
 import logging
 import time
 import uuid
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core import database
 from backend.app.core.auth import (
+    RequestCredentials,
     RequireCameraStreamToken,
     RequirePermission,
     create_camera_stream_token,
+    request_credentials,
+    require_permission,
 )
+from backend.app.core.credential_config import lock_credential_config
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.models.printer import Printer
@@ -843,30 +849,45 @@ async def camera_status(
     }
 
 
+class ExternalCameraTestRequest(BaseModel):
+    url: str | None = None
+    camera_type: Literal["mjpeg", "rtsp", "snapshot", "usb"] | None = None
+    source: Literal["stream", "snapshot"] = "stream"
+    secret_actions: dict[str, Literal["keep", "clear", "replace"]] | None = None
+
+
 @router.post("/{printer_id}/camera/external/test")
 async def test_external_camera(
     printer_id: int,
-    url: str,
-    camera_type: str,
+    payload: ExternalCameraTestRequest,
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.CAMERA_VIEW),
+    creds: RequestCredentials = Depends(request_credentials),
 ):
-    """Test external camera connection.
-
-    Args:
-        printer_id: Printer ID (for authorization)
-        url: Camera URL or USB device path to test
-        camera_type: Camera type ("mjpeg", "rtsp", "snapshot", "usb")
-
-    Returns:
-        Dict with {success: bool, error?: str, resolution?: str}
-    """
-    # Verify printer exists (for authorization)
-    await get_printer_or_404(printer_id, db)
-
+    """Probe a frozen draft through the worker, never persist its credentials."""
+    from backend.app.services.camera_credentials import CAMERA_SECRET_FIELDS, resolve_camera_credentials
     from backend.app.services.camera_runtime import test_external_connection
 
-    return await test_external_connection(url, camera_type)
+    field = "external_camera_snapshot_url" if payload.source == "snapshot" else "external_camera_url"
+    supplied = "url" in payload.model_fields_set
+    if not supplied:
+        await creds.check(require_permission(Permission.PRINTERS_UPDATE))
+        await lock_credential_config(db)
+    printer = await get_printer_or_404(printer_id, db)
+    changes = {field: payload.url} if supplied else {}
+    stored = {key: getattr(printer, key) for key in CAMERA_SECRET_FIELDS} if not supplied else {}
+    config = resolve_camera_credentials(stored, changes, payload.secret_actions)
+    url = config.get(field)
+    camera_type = "snapshot" if payload.source == "snapshot" else payload.camera_type or printer.external_camera_type
+    if not url or camera_type not in {"mjpeg", "rtsp", "snapshot", "usb"}:
+        raise HTTPException(422, "A camera URL and supported camera type are required")
+    await db.rollback()
+    result = await test_external_connection(url, camera_type)
+    if not result.get("success"):
+        # The worker owns transport diagnostics. An untrusted peer's error can
+        # echo all or part of an opaque URL; the draft response never does.
+        return {"success": False, "error": "External camera connection failed"}
+    return {"success": True, "resolution": result.get("resolution")}
 
 
 @router.get("/{printer_id}/camera/check-plate")

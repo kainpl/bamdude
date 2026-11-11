@@ -173,13 +173,10 @@ async def save_smtp_settings(db: AsyncSession, smtp_settings: SMTPSettings) -> N
         "smtp_from_name": smtp_settings.smtp_from_name,
     }
 
-    # Only save username if auth is enabled or if provided
-    if smtp_settings.smtp_username:
-        settings_data["smtp_username"] = smtp_settings.smtp_username
-
-    # Only save password if provided
-    if smtp_settings.smtp_password:
-        settings_data["smtp_password"] = smtp_settings.smtp_password
+    # The route has already resolved keep/clear/replace under the credential
+    # anchor. Persist the exact resolved snapshot, including deliberate clears.
+    settings_data["smtp_username"] = smtp_settings.smtp_username or ""
+    settings_data["smtp_password"] = smtp_settings.smtp_password or ""
 
     # ⚠️ Through upsert_setting, never a hand-rolled ON CONFLICT: building the
     # statement with dialects.sqlite.insert on a PostgreSQL install hands the PG

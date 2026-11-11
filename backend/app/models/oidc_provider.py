@@ -81,11 +81,15 @@ class OIDCProvider(Base):
 
     @property
     def client_secret(self) -> str:
-        return mfa_decrypt(self._client_secret_enc)
+        return mfa_decrypt(self._client_secret_enc) if self._client_secret_enc else ""
+
+    @property
+    def client_secret_configured(self) -> bool:
+        return bool(self._client_secret_enc)
 
     @client_secret.setter
     def client_secret(self, value: str) -> None:
-        self._client_secret_enc = mfa_encrypt(value)
+        self._client_secret_enc = mfa_encrypt(value) if value else ""
 
     # Space-separated scopes; must include "openid"
     scopes: Mapped[str] = mapped_column(String(500), default="openid email profile")

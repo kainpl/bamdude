@@ -228,7 +228,7 @@ class TestEnforcePrivateRepoHelper:
 
         from backend.app.api.routes.git_backup import _enforce_private_repo
 
-        async def _stub(repo_url, token, provider=None):  # noqa: ARG001
+        async def _stub(repo_url, token, provider=None, api_base_url=None):  # noqa: ARG001
             return {"success": True, "is_private": False, "message": "Connection successful"}
 
         from backend.app.services import git_backup as svc
@@ -249,7 +249,7 @@ class TestEnforcePrivateRepoHelper:
 
         from backend.app.api.routes.git_backup import _enforce_private_repo
 
-        async def _stub(repo_url, token, provider=None):  # noqa: ARG001
+        async def _stub(repo_url, token, provider=None, api_base_url=None):  # noqa: ARG001
             return {"success": True, "is_private": None, "message": "Connection successful"}
 
         from backend.app.services import git_backup as svc
@@ -268,7 +268,7 @@ class TestEnforcePrivateRepoHelper:
     async def test_accepts_confirmed_private(self):
         from backend.app.api.routes.git_backup import _enforce_private_repo
 
-        async def _stub(repo_url, token, provider=None):  # noqa: ARG001
+        async def _stub(repo_url, token, provider=None, api_base_url=None):  # noqa: ARG001
             return {"success": True, "is_private": True, "message": "Connection successful"}
 
         from backend.app.services import git_backup as svc
@@ -287,7 +287,7 @@ class TestEnforcePrivateRepoHelper:
 
         from backend.app.api.routes.git_backup import _enforce_private_repo
 
-        async def _stub(repo_url, token, provider=None):  # noqa: ARG001
+        async def _stub(repo_url, token, provider=None, api_base_url=None):  # noqa: ARG001
             return {"success": False, "is_private": None, "message": "Invalid access token"}
 
         from backend.app.services import git_backup as svc

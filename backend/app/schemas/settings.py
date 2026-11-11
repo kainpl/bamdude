@@ -1,6 +1,7 @@
 import json
 import re
-from typing import Annotated
+from typing import Annotated, Literal
+from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import AfterValidator, BaseModel, Field, field_validator
@@ -31,6 +32,29 @@ OPERATOR_TIME_PATTERN = r"^([01][0-9]|2[0-3]):[0-5][0-9]$"
 # setting belongs here** — or, if it must be reachable on the public internet, on
 # the stricter OIDC guard instead.
 LAN_SERVICE_URL_SETTINGS = ("ha_url", "obico_ml_url", "orcaslicer_api_url", "bambu_studio_api_url")
+SERVICE_CREDENTIAL_URL_FIELDS = frozenset({"ha_url", "obico_ml_url", "ldap_server_url"})
+
+
+def opaque_service_url(value: str | None) -> bool:
+    """Legacy base URLs may themselves carry credentials; never echo them."""
+    if not value:
+        return False
+    try:
+        parsed = urlsplit(value)
+        return bool(
+            not parsed.scheme
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.query
+            or parsed.fragment
+            or parsed.port is not None
+            and not 1 <= parsed.port <= 65535
+            or any(char.isspace() for char in value)
+        )
+    except ValueError:
+        return True
+
 
 # ⚠️ ``docker_compose_dir`` is unusual among the string settings: BamDude never
 # consumes it. It is interpolated into a shell command that the Settings page
@@ -731,10 +755,42 @@ class AppSettings(BaseModel):
     )
 
 
+class AppSettingsRead(AppSettings):
+    """Public projection. Runtime settings retain their private secret fields."""
+
+    mqtt_password: str = Field(default="", exclude=True)
+    ha_token: str = Field(default="", exclude=True)
+    ldap_bind_password: str = Field(default="", exclude=True)
+    obico_ml_token: str = Field(default="", exclude=True)
+    prometheus_token: str = Field(default="", exclude=True)
+    virtual_printer_access_code: str = Field(default="", exclude=True)
+    mqtt_password_configured: bool = False
+    ha_token_configured: bool = False
+    ldap_bind_password_configured: bool = False
+    obico_ml_token_configured: bool = False
+    prometheus_token_configured: bool = False
+    virtual_printer_access_code_configured: bool = False
+    ha_url_configured: bool = False
+    ha_url_opaque: bool = False
+    obico_ml_url_configured: bool = False
+    obico_ml_url_opaque: bool = False
+    ldap_server_url_configured: bool = False
+    ldap_server_url_opaque: bool = False
+
+
 class AppSettingsUpdate(BaseModel):
     """Schema for updating settings (all fields optional)."""
 
     model_config = {"extra": "forbid"}
+
+    secret_actions: dict[str, Literal["keep", "clear", "replace"]] | None = None
+
+    @field_validator("ha_url", "obico_ml_url", "ldap_server_url")
+    @classmethod
+    def validate_credential_base_url(cls, value):
+        if opaque_service_url(value):
+            raise ValueError("Base URL must not contain credentials, query parameters or fragments")
+        return value
 
     mcp_enabled: bool | None = None
     mcp_allow_http: bool | None = None

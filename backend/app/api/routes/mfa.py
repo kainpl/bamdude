@@ -26,6 +26,7 @@ import secrets
 import string
 import urllib.parse
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import httpx
 import jwt
@@ -51,6 +52,7 @@ from backend.app.core.auth import (
     get_user_by_username,
     verify_password,
 )
+from backend.app.core.credential_config import canonical_url, lock_credential_config, merge_secret_fields
 from backend.app.core.database import take_write_lock
 from backend.app.core.oidc_env import env_bool
 from backend.app.core.permissions import Permission
@@ -1426,6 +1428,11 @@ async def create_oidc_provider(
     400 — no half-configured provider is left in the DB. Upstream
     Bambuddy #1333.
     """
+    await lock_credential_config(db)
+    values = body.model_dump(exclude={"secret_actions"})
+    values = merge_secret_fields({}, values, {"client_secret"}, body.secret_actions, creating=True)
+    if values["is_enabled"] and not values.get("client_secret"):
+        raise HTTPException(400, "A client secret is required for an enabled OIDC provider")
     # Validate default_group_id references an existing group. Pydantic only
     # checks the shape (int | None); the cross-row sanity belongs in the
     # route layer because it depends on DB state. Raises 422 on a stale or
@@ -1445,13 +1452,18 @@ async def create_oidc_provider(
     icon_content_type: str | None = None
     icon_etag: str | None = None
     if body.icon_url:
+        await db.rollback()
         icon_data, icon_content_type, icon_etag = await _fetch_icon_or_400(body.icon_url)
+        await lock_credential_config(db)
+        if body.default_group_id is not None:
+            if not (await db.execute(select(Group).where(Group.id == body.default_group_id))).scalar_one_or_none():
+                raise HTTPException(422, "default_group_id references a non-existent group")
 
     provider = OIDCProvider(
         name=body.name,
         issuer_url=body.issuer_url.rstrip("/"),
         client_id=body.client_id,
-        client_secret=body.client_secret,
+        client_secret=values["client_secret"],
         scopes=body.scopes,
         is_enabled=body.is_enabled,
         auto_create_users=body.auto_create_users,
@@ -1495,6 +1507,16 @@ def _refuse_if_env_managed(provider) -> None:
         )
 
 
+def _oidc_snapshot(provider: OIDCProvider) -> dict:
+    return {
+        field: getattr(provider, field) for field in OIDCProviderCreate.model_fields if field != "secret_actions"
+    } | {"is_env_managed": provider.is_env_managed, "icon_etag": provider.icon_etag}
+
+
+def _oidc_scope(values: dict) -> tuple:
+    return canonical_url(values.get("issuer_url")), values.get("client_id") or ""
+
+
 @router.put("/oidc/providers/{provider_id}", response_model=OIDCProviderResponse, dependencies=[RequireAdmin()])
 async def update_oidc_provider(
     provider_id: int,
@@ -1517,6 +1539,7 @@ async def update_oidc_provider(
     existing cached bytes (if any) remain untouched. Upstream Bambuddy
     #1333.
     """
+    await lock_credential_config(db)
     result2 = await db.execute(select(OIDCProvider).where(OIDCProvider.id == provider_id))
     provider = result2.scalar_one_or_none()
     if not provider:
@@ -1535,12 +1558,23 @@ async def update_oidc_provider(
                 detail="default_group_id references a non-existent group",
             )
 
-    dumped = body.model_dump(exclude_none=True)
+    before = _oidc_snapshot(provider)
+    submitted = body.model_dump(exclude_unset=True, exclude={"secret_actions"})
+    # Legacy non-secret nulls keep their previous semantics; a supplied secret
+    # null is an intentional clear and must pass the disabled-mode check.
+    changes = {
+        key: value for key, value in submitted.items() if value is not None or key in {"client_secret", "icon_url"}
+    }
+    resolved = merge_secret_fields(before, changes, {"client_secret"}, body.secret_actions, scope=_oidc_scope)
+    if resolved.get("is_enabled") and not resolved.get("client_secret"):
+        raise HTTPException(400, "A client secret is required for an enabled OIDC provider")
+    _enforce_auto_link_safety(SimpleNamespace(**resolved))
+    dumped = {key: value for key, value in resolved.items() if key not in {"is_env_managed", "icon_etag"}}
 
     # Decide whether an icon refetch is needed BEFORE mutating the ORM
     # object, so the comparison sees provider.icon_url / icon_content_type
     # as they are in the database.
-    new_icon_url = dumped.get("icon_url")
+    new_icon_url = changes.get("icon_url")
     needs_icon_refetch = new_icon_url is not None and (
         new_icon_url != provider.icon_url or provider.icon_content_type is None
     )
@@ -1552,7 +1586,19 @@ async def update_oidc_provider(
     # get_db()'s rollback).
     fetched_icon: tuple[bytes, str, str] | None = None
     if needs_icon_refetch:
+        await db.rollback()
         fetched_icon = await _fetch_icon_or_400(new_icon_url)
+        await lock_credential_config(db)
+        provider = (
+            await db.execute(
+                select(OIDCProvider).where(OIDCProvider.id == provider_id).execution_options(populate_existing=True)
+            )
+        ).scalar_one_or_none()
+        if provider is None or _oidc_snapshot(provider) != before:
+            raise HTTPException(409, "OIDC provider changed during icon verification; reload and retry")
+        if body.default_group_id is not None:
+            if not (await db.execute(select(Group).where(Group.id == body.default_group_id))).scalar_one_or_none():
+                raise HTTPException(422, "default_group_id references a non-existent group")
 
     # Explicit ``icon_url: null`` in the PUT body means "clear the icon".
     # ``exclude_none=True`` above drops None values, which would otherwise
@@ -1676,6 +1722,7 @@ async def delete_oidc_provider(
     db: AsyncSession = Depends(get_auth_db),
 ) -> dict:
     """Delete an OIDC provider and all its user links (admin only)."""
+    await lock_credential_config(db)
     result2 = await db.execute(select(OIDCProvider).where(OIDCProvider.id == provider_id))
     provider = result2.scalar_one_or_none()
     if not provider:

@@ -9,6 +9,7 @@ from sqlalchemy import delete, desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.auth import RequirePermission
+from backend.app.core.credential_config import lock_credential_config
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.models.notification import PROVIDER_EVENT_DEFAULTS, NotificationLog, NotificationProvider
@@ -22,6 +23,12 @@ from backend.app.schemas.notification import (
     NotificationTestRequest,
     NotificationTestResponse,
     ProviderEventInfo,
+)
+from backend.app.services.notification_credentials import (
+    config_dict,
+    provider_projection,
+    resolve_provider_config,
+    safe_provider_message,
 )
 from backend.app.services.notification_events import EVENT_CATALOG, catalog_rows, events_of_flag
 from backend.app.services.notification_service import notification_service
@@ -79,12 +86,16 @@ async def _restart_bot_if_the_session_moved(providers_before: list[tuple[int, st
 
 def _provider_to_dict(provider: NotificationProvider) -> dict:
     """Convert a NotificationProvider model to a response dictionary."""
+    config = config_dict(provider.config)
+    safe, configured, display = provider_projection(provider.provider_type, config)
     return {
         "id": provider.id,
         "name": provider.name,
         "provider_type": provider.provider_type,
         "enabled": provider.enabled,
-        "config": json.loads(provider.config) if isinstance(provider.config, str) else provider.config,
+        "config": safe,
+        "secrets_configured": configured,
+        "destination_display": display,
         # Print lifecycle events
         # All 34 event booleans, computed from the JSON subscription list
         # (m157) — the wire contract is unchanged.
@@ -101,7 +112,9 @@ def _provider_to_dict(provider: NotificationProvider) -> dict:
         "printer_ids": provider.printer_ids,
         # Status tracking
         "last_success": provider.last_success,
-        "last_error": provider.last_error,
+        "last_error": safe_provider_message(provider.last_error, provider.provider_type, config)
+        if provider.last_error
+        else None,
         "last_error_at": provider.last_error_at,
         # Timestamps
         "created_at": provider.created_at,
@@ -205,6 +218,15 @@ async def create_notification_provider(
     """Create a new notification provider."""
     from backend.app.services.telegram_bot import current_bot_providers
 
+    await lock_credential_config(db)
+    config = resolve_provider_config(
+        provider_data.provider_type.value,
+        provider_data.config,
+        provider_data.secret_actions,
+        creating=True,
+        enabled=provider_data.enabled,
+    )
+
     # Asked BEFORE the write; compared again after the commit (see the helper).
     bot_providers_before = await current_bot_providers()
 
@@ -212,7 +234,7 @@ async def create_notification_provider(
         name=provider_data.name,
         provider_type=provider_data.provider_type.value,
         enabled=provider_data.enabled,
-        config=json.dumps(provider_data.config),
+        config=json.dumps(config),
         # One JSON list instead of 34 boolean kwargs (m157): the schema
         # still speaks booleans; they fold into the explicit list here.
         subscribed_events=sorted(field for field in PROVIDER_EVENT_DEFAULTS if getattr(provider_data, field)),
@@ -256,9 +278,14 @@ async def test_notification_config(
     _: User | None = RequirePermission(Permission.NOTIFICATIONS_CREATE),
 ):
     """Test notification configuration before saving."""
-    success, message = await notification_service.send_test_notification(
-        test_request.provider_type.value, test_request.config, db
+    if test_request.provider_id is not None:
+        raise HTTPException(403, "Use the addressed provider draft test with update permission")
+    config = resolve_provider_config(
+        test_request.provider_type.value, test_request.config, test_request.secret_actions, creating=True
     )
+    await db.commit()
+    success, message = await notification_service.send_test_notification(test_request.provider_type.value, config, db)
+    message = safe_provider_message(message, test_request.provider_type.value, config)
 
     return NotificationTestResponse(success=success, message=message)
 
@@ -269,8 +296,16 @@ async def test_all_notification_providers(
     _: User | None = RequirePermission(Permission.NOTIFICATIONS_UPDATE),
 ):
     """Send a test notification to all enabled providers."""
-    result = await db.execute(select(NotificationProvider).where(NotificationProvider.enabled.is_(True)))
+    await lock_credential_config(db)
+    result = await db.execute(
+        select(NotificationProvider)
+        .where(NotificationProvider.enabled.is_(True))
+        .order_by(NotificationProvider.id)
+        .execution_options(populate_existing=True)
+    )
     providers = result.scalars().all()
+    frozen = [(p.id, p.name, p.provider_type, config_dict(p.config)) for p in providers]
+    await db.commit()
 
     if not providers:
         return {"tested": 0, "success": 0, "failed": 0, "results": []}
@@ -279,30 +314,36 @@ async def test_all_notification_providers(
     success_count = 0
     failed_count = 0
 
-    for provider in providers:
-        config = json.loads(provider.config) if isinstance(provider.config, str) else provider.config
+    for provider_id, provider_name, provider_type, config in frozen:
         success, message = await notification_service.send_test_notification(
-            provider.provider_type, config, db, provider_id=provider.id
+            provider_type, config, db, provider_id=provider_id
         )
+        message = safe_provider_message(message, provider_type, config)
+        provider = await db.get(NotificationProvider, provider_id)
 
         # Update provider status
         if success:
-            provider.last_success = datetime.now(timezone.utc)
+            if provider is not None:
+                provider.last_success = datetime.now(timezone.utc)
             success_count += 1
         else:
-            provider.last_error = message
-            provider.last_error_at = datetime.now(timezone.utc)
+            if provider is not None:
+                provider.last_error = message
+                provider.last_error_at = datetime.now(timezone.utc)
             failed_count += 1
 
         results.append(
             {
-                "provider_id": provider.id,
-                "provider_name": provider.name,
-                "provider_type": provider.provider_type,
+                "provider_id": provider_id,
+                "provider_name": provider_name,
+                "provider_type": provider_type,
                 "success": success,
                 "message": message,
             }
         )
+        # Never carry a previous provider's pending status write through the
+        # next sender's template query/autoflush and network operation.
+        await db.commit()
 
     await db.commit()
 
@@ -401,10 +442,24 @@ async def get_notification_logs(
                 provider_name=provider.name if provider else None,
                 provider_type=provider.provider_type if provider else None,
                 event_type=log.event_type,
-                title=log.title,
-                message=log.message,
+                title=safe_provider_message(
+                    log.title,
+                    provider.provider_type if provider else "",
+                    config_dict(provider.config) if provider else {},
+                ),
+                message=safe_provider_message(
+                    log.message,
+                    provider.provider_type if provider else "",
+                    config_dict(provider.config) if provider else {},
+                ),
                 success=log.success,
-                error_message=log.error_message,
+                error_message=safe_provider_message(
+                    log.error_message,
+                    provider.provider_type if provider else "",
+                    config_dict(provider.config) if provider else {},
+                )
+                if log.error_message
+                else None,
                 printer_id=log.printer_id,
                 printer_name=log.printer_name,
                 created_at=log.created_at,
@@ -507,7 +562,12 @@ async def update_notification_provider(
     _: User | None = RequirePermission(Permission.NOTIFICATIONS_UPDATE),
 ):
     """Update a notification provider."""
-    result = await db.execute(select(NotificationProvider).where(NotificationProvider.id == provider_id))
+    await lock_credential_config(db)
+    result = await db.execute(
+        select(NotificationProvider)
+        .where(NotificationProvider.id == provider_id)
+        .execution_options(populate_existing=True)
+    )
     provider = result.scalar_one_or_none()
 
     if not provider:
@@ -535,6 +595,23 @@ async def update_notification_provider(
 
     # Update only provided fields
     update_dict = update_data.model_dump(exclude_unset=True)
+    kind = update_data.provider_type.value if update_data.provider_type is not None else provider.provider_type
+    if (
+        "config" in update_dict
+        or update_data.secret_actions is not None
+        or kind != provider.provider_type
+        or update_data.enabled is True
+    ):
+        resolved_config = resolve_provider_config(
+            kind,
+            update_data.config,
+            update_data.secret_actions,
+            stored=provider.config,
+            stored_type=provider.provider_type,
+            enabled=provider.enabled if update_data.enabled is None else update_data.enabled,
+            validate_required=update_data.enabled is True,
+        )
+        update_dict["config"] = resolved_config
 
     for key, value in update_dict.items():
         if key == "config" and value is not None:
@@ -582,7 +659,12 @@ async def delete_notification_provider(
     _: User | None = RequirePermission(Permission.NOTIFICATIONS_DELETE),
 ):
     """Delete a notification provider."""
-    result = await db.execute(select(NotificationProvider).where(NotificationProvider.id == provider_id))
+    await lock_credential_config(db)
+    result = await db.execute(
+        select(NotificationProvider)
+        .where(NotificationProvider.id == provider_id)
+        .execution_options(populate_existing=True)
+    )
     provider = result.scalar_one_or_none()
 
     if not provider:
@@ -617,6 +699,36 @@ async def delete_notification_provider(
     return {"message": f"Notification provider '{name}' deleted"}
 
 
+@router.post("/{provider_id}/test-config", response_model=NotificationTestResponse)
+async def test_provider_draft(
+    provider_id: int,
+    draft: NotificationTestRequest,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.NOTIFICATIONS_UPDATE),
+):
+    await lock_credential_config(db)
+    provider = (
+        await db.execute(
+            select(NotificationProvider)
+            .where(NotificationProvider.id == provider_id)
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one_or_none()
+    if provider is None:
+        raise HTTPException(404, "Notification provider not found")
+    if draft.provider_id is not None and draft.provider_id != provider_id:
+        raise HTTPException(422, "Provider identity mismatch")
+    kind = draft.provider_type.value
+    config = resolve_provider_config(
+        kind, draft.config, draft.secret_actions, stored=provider.config, stored_type=provider.provider_type
+    )
+    await db.commit()
+    success, message = await notification_service.send_test_notification(
+        kind, config, db, provider_id=provider_id if kind == "telegram" and provider.provider_type == kind else None
+    )
+    return NotificationTestResponse(success=success, message=safe_provider_message(message, kind, config))
+
+
 @router.post("/{provider_id}/test", response_model=NotificationTestResponse)
 async def test_notification_provider(
     provider_id: int,
@@ -624,16 +736,22 @@ async def test_notification_provider(
     _: User | None = RequirePermission(Permission.NOTIFICATIONS_UPDATE),
 ):
     """Send a test notification using an existing provider."""
-    result = await db.execute(select(NotificationProvider).where(NotificationProvider.id == provider_id))
+    await lock_credential_config(db)
+    result = await db.execute(
+        select(NotificationProvider)
+        .where(NotificationProvider.id == provider_id)
+        .execution_options(populate_existing=True)
+    )
     provider = result.scalar_one_or_none()
 
     if not provider:
         raise HTTPException(status_code=404, detail="Notification provider not found")
 
-    config = json.loads(provider.config) if isinstance(provider.config, str) else provider.config
-    success, message = await notification_service.send_test_notification(
-        provider.provider_type, config, db, provider_id=provider.id
-    )
+    config = config_dict(provider.config)
+    kind = provider.provider_type
+    await db.commit()
+    success, message = await notification_service.send_test_notification(kind, config, db, provider_id=provider_id)
+    message = safe_provider_message(message, kind, config)
 
     # Update provider status
     if success:

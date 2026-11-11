@@ -3,7 +3,9 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Shield, Lock, Unlock, AlertTriangle, CheckCircle, Loader2, Send, ChevronDown } from 'lucide-react';
 import { api } from '../api/client';
-import type { AppSettings } from '../api/client';
+import type { AppSettingsUpdate, SecretAction } from '../api/client';
+import { SecretInput } from './SecretInput';
+import { credentialDraft } from '../utils/credentialDraft';
 import { Card, CardContent, CardHeader } from './Card';
 import { Button } from './Button';
 import { useToast } from '../contexts/ToastContext';
@@ -53,6 +55,8 @@ function LDAPSettingsContent() {
   // collapsed by default — a basic LDAP bind only needs the server/search
   // fields above. Mirrors upstream Bambuddy's LDAP layout (#1297).
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [passwordAction, setPasswordAction] = useState<SecretAction>('keep');
+  const [urlAction, setUrlAction] = useState<SecretAction>('keep');
 
   // Fetch settings
   const { data: settings, isLoading } = useQuery({
@@ -86,12 +90,14 @@ function LDAPSettingsContent() {
         ldap_auto_provision: settings.ldap_auto_provision ?? false,
         ldap_default_group: settings.ldap_default_group || '',
       });
+      setPasswordAction('keep');
+      setUrlAction('keep');
     }
   }, [settings]);
 
   // Save settings
   const saveMutation = useMutation({
-    mutationFn: (data: Partial<AppSettings>) => api.updateSettings(data),
+    mutationFn: (data: AppSettingsUpdate) => api.updateSettings(data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['settings'] });
       queryClient.invalidateQueries({ queryKey: ['ldapStatus'] });
@@ -122,7 +128,7 @@ function LDAPSettingsContent() {
 
   // Test connection
   const testMutation = useMutation({
-    mutationFn: () => api.testLDAP(),
+    mutationFn: () => api.testLDAP(draftSettings()),
     onSuccess: (data: { success: boolean; message: string }) => {
       showToast(data.message, data.success ? 'success' : 'error');
     },
@@ -132,7 +138,7 @@ function LDAPSettingsContent() {
   });
 
   const handleSave = () => {
-    if (!form.ldap_server_url) {
+    if (!form.ldap_server_url && !settings?.ldap_server_url_configured) {
       showToast(t('settings.ldap.errors.serverRequired') || 'LDAP server URL is required', 'error');
       return;
     }
@@ -141,21 +147,15 @@ function LDAPSettingsContent() {
       return;
     }
 
-    // Build the update payload -- only include password if user entered one
-    const update: Record<string, unknown> = {
-      ldap_server_url: form.ldap_server_url,
-      ldap_bind_dn: form.ldap_bind_dn,
-      ldap_search_base: form.ldap_search_base,
-      ldap_user_filter: form.ldap_user_filter,
-      ldap_security: form.ldap_security,
-      ldap_group_mapping: form.ldap_group_mapping,
-      ldap_auto_provision: form.ldap_auto_provision,
-      ldap_default_group: form.ldap_default_group,
-    };
-    if (form.ldap_bind_password) {
-      update.ldap_bind_password = form.ldap_bind_password;
-    }
-    saveMutation.mutate(update as Partial<AppSettings>);
+    saveMutation.mutate(draftSettings());
+  };
+
+  const draftSettings = (): AppSettingsUpdate => {
+    const { ldap_bind_password, ldap_server_url, ...rest } = form;
+    const password = credentialDraft('ldap_bind_password', ldap_bind_password, passwordAction, settings?.ldap_bind_password_configured);
+    const url = settings?.ldap_server_url_opaque
+      ? credentialDraft('ldap_server_url', ldap_server_url, urlAction, true) : { ldap_server_url };
+    return { ...rest, ...password, ...url, secret_actions: { ...password.secret_actions, ...('secret_actions' in url ? url.secret_actions : {}) } };
   };
 
   const handleToggle = () => {
@@ -261,13 +261,14 @@ function LDAPSettingsContent() {
               <label className="block text-sm font-medium text-bambu-gray mb-2">
                 {t('settings.ldap.serverUrl') || 'Server URL'}
               </label>
-              <input
+              {settings?.ldap_server_url_opaque ? <SecretInput value={form.ldap_server_url} action={urlAction}
+                configured onActionChange={setUrlAction} onChange={value => setForm({ ...form, ldap_server_url: value })} /> : <input
                 type="text"
                 className={inputClasses}
                 placeholder="ldaps://ldap.example.com:636"
                 value={form.ldap_server_url}
                 onChange={e => setForm({ ...form, ldap_server_url: e.target.value })}
-              />
+              />}
               <p className="text-xs text-bambu-gray mt-1">
                 {t('settings.ldap.serverUrlHint') || 'Use ldaps:// for SSL or ldap:// with StartTLS'}
               </p>
@@ -317,13 +318,9 @@ function LDAPSettingsContent() {
               <label className="block text-sm font-medium text-bambu-gray mb-2">
                 {t('settings.ldap.bindPassword') || 'Bind Password'}
               </label>
-              <input
-                type="password"
-                className={inputClasses}
-                placeholder={settings?.ldap_bind_dn ? '••••••••' : ''}
-                value={form.ldap_bind_password}
-                onChange={e => setForm({ ...form, ldap_bind_password: e.target.value })}
-              />
+              <SecretInput value={form.ldap_bind_password} action={passwordAction}
+                configured={settings?.ldap_bind_password_configured} onActionChange={setPasswordAction}
+                onChange={value => setForm({ ...form, ldap_bind_password: value })} />
             </div>
 
             {/* Search Base */}

@@ -1,7 +1,19 @@
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, computed_field, model_validator
+
+SMART_PLUG_SECRET_FIELDS = (
+    "password",
+    "rest_headers",
+    "rest_on_url",
+    "rest_off_url",
+    "rest_status_url",
+    "rest_power_url",
+    "rest_energy_url",
+    "rest_on_body",
+    "rest_off_body",
+)
 
 
 class SmartPlugBase(BaseModel):
@@ -137,7 +149,7 @@ class SmartPlugBase(BaseModel):
             if not has_power and not has_energy and not has_state:
                 raise ValueError("At least one MQTT topic must be configured for power, energy, or state monitoring")
         if self.plug_type == "rest":
-            if not self.rest_on_url and not self.rest_off_url:
+            if self.enabled and not self.rest_on_url and not self.rest_off_url:
                 raise ValueError("At least one of ON URL or OFF URL is required for REST plugs")
         if self.plug_type == "zigbee" and not self.zigbee_ieee:
             # Only the shape is checked here. Whether the address is actually on
@@ -148,10 +160,11 @@ class SmartPlugBase(BaseModel):
 
 
 class SmartPlugCreate(SmartPlugBase):
-    pass
+    secret_actions: dict[str, str] | None = None
 
 
 class SmartPlugUpdate(BaseModel):
+    secret_actions: dict[str, str] | None = None
     name: str | None = None
     plug_type: Literal["tasmota", "homeassistant", "mqtt", "rest", "zigbee"] | None = None
     zigbee_ieee: str | None = None
@@ -234,6 +247,21 @@ class SmartPlugUpdate(BaseModel):
 
 
 class SmartPlugResponse(SmartPlugBase):
+    password: str | None = Field(default=None, exclude=True, repr=False)
+    rest_headers: str | None = Field(default=None, exclude=True, repr=False)
+    rest_on_url: str | None = Field(default=None, exclude=True, repr=False)
+    rest_off_url: str | None = Field(default=None, exclude=True, repr=False)
+    rest_status_url: str | None = Field(default=None, exclude=True, repr=False)
+    rest_power_url: str | None = Field(default=None, exclude=True, repr=False)
+    rest_energy_url: str | None = Field(default=None, exclude=True, repr=False)
+    rest_on_body: str | None = Field(default=None, exclude=True, repr=False)
+    rest_off_body: str | None = Field(default=None, exclude=True, repr=False)
+
+    @computed_field
+    @property
+    def configured_secrets(self) -> dict[str, bool]:
+        return {field: bool(getattr(self, field)) for field in SMART_PLUG_SECRET_FIELDS}
+
     id: int
     # ⚠️ Whether this is the plug the printer card treats as the machine's power
     # — computed by ``_main_plug_rank``, never by the client. Anything that
@@ -292,6 +320,8 @@ class SmartPlugStatus(BaseModel):
 
 
 class SmartPlugTestConnection(BaseModel):
+    plug_id: int | None = None
+    secret_actions: dict[str, str] | None = None
     ip_address: str = Field(..., pattern=r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$")
     username: str | None = None
     password: str | None = None
@@ -301,8 +331,9 @@ class SmartPlugTestConnection(BaseModel):
 class HATestConnectionRequest(BaseModel):
     """Request to test Home Assistant connection."""
 
-    url: str = Field(..., min_length=1)
-    token: str = Field(..., min_length=1)
+    url: str | None = Field(default=None, min_length=1)
+    token: str | None = Field(default=None, min_length=1, repr=False)
+    secret_actions: dict[str, str] | None = None
 
 
 class HATestConnectionResponse(BaseModel):
@@ -334,9 +365,16 @@ class HASensorEntity(BaseModel):
 class RESTTestConnectionRequest(BaseModel):
     """Request to test a REST smart plug connection."""
 
-    url: str = Field(..., min_length=1)
+    model_config = {"extra": "forbid"}
+
+    url: str | None = Field(default=None, min_length=1)
     method: str = Field(default="GET")
     headers: str | None = None  # JSON string of custom headers
+    plug_id: int | None = None
+    draft: SmartPlugUpdate | None = None
+    endpoint: Literal["rest_on_url", "rest_off_url", "rest_status_url", "rest_power_url", "rest_energy_url"] = (
+        "rest_on_url"
+    )
 
 
 class RESTTestConnectionResponse(BaseModel):

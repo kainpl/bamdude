@@ -7,6 +7,7 @@ from sqlalchemy import delete, desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.auth import RequireAdmin, RequirePermission
+from backend.app.core.credential_config import canonical_url, lock_credential_config, merge_secret_fields
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.models.git_backup import GitBackupConfig, GitBackupLog
@@ -26,6 +27,8 @@ from backend.app.schemas.git_backup import (
     GitTestConnectionRequest,
     GitTestConnectionResponse,
     RestoreCategory,
+    _validate_api_base_url,
+    _validate_repo_url,
 )
 from backend.app.services.git_backup import git_backup_service
 from backend.app.services.git_restore import git_restore_service
@@ -55,7 +58,7 @@ _UNKNOWN_VISIBILITY_ERROR = (
 )
 
 
-async def _enforce_private_repo(repo_url: str, token: str, provider: str) -> None:
+async def _enforce_private_repo(repo_url: str, token: str, provider: str, api_base_url: str | None = None) -> None:
     """Run a test_connection and refuse if the repo isn't confirmed private.
 
     Used by POST /config and PATCH /config (when URL / token / provider
@@ -64,10 +67,9 @@ async def _enforce_private_repo(repo_url: str, token: str, provider: str) -> Non
     cost of one false-positive rejection is far below the cost of one
     silently leaked credentials bundle.
     """
-    result = await git_backup_service.test_connection(repo_url, token, provider=provider)
+    result = await git_backup_service.test_connection(repo_url, token, provider=provider, api_base_url=api_base_url)
     if not result.get("success"):
-        message = result.get("message") or "Connection test failed"
-        raise HTTPException(status_code=400, detail=f"Cannot verify repository: {message}")
+        raise HTTPException(status_code=400, detail="Cannot verify repository. Check the provider and credentials.")
     is_private = result.get("is_private")
     if is_private is None:
         raise HTTPException(status_code=400, detail=_UNKNOWN_VISIBILITY_ERROR)
@@ -77,13 +79,18 @@ async def _enforce_private_repo(repo_url: str, token: str, provider: str) -> Non
 
 def _config_to_response(config: GitBackupConfig) -> dict:
     """Convert config model to response dict."""
+    try:
+        public_api_base = _validate_api_base_url(config.api_base_url)
+    except ValueError:
+        public_api_base = None
     return {
         "id": config.id,
         "provider": config.provider,
         "repository_url": config.repository_url,
         "has_token": bool(config.access_token),
         "branch": config.branch,
-        "api_base_url": config.api_base_url,
+        "api_base_url": public_api_base,
+        "api_base_url_private": bool(config.api_base_url and public_api_base is None),
         "schedule_enabled": config.schedule_enabled,
         "schedule_type": config.schedule_type,
         "backup_kprofiles": config.backup_kprofiles,
@@ -94,12 +101,107 @@ def _config_to_response(config: GitBackupConfig) -> dict:
         "enabled": config.enabled,
         "last_backup_at": config.last_backup_at,
         "last_backup_status": config.last_backup_status,
-        "last_backup_message": config.last_backup_message,
+        "last_backup_message": _safe_backup_message(config.last_backup_status) if config.last_backup_message else None,
         "last_backup_commit_sha": config.last_backup_commit_sha,
         "next_scheduled_run": config.next_scheduled_run,
         "created_at": config.created_at,
         "updated_at": config.updated_at,
     }
+
+
+def _safe_backup_message(status: str | None) -> str:
+    if status == "success":
+        return "Git backup completed."
+    if status == "skipped":
+        return "No Git backup changes were written."
+    return "Git backup did not complete. Check repository visibility, credentials and provider configuration."
+
+
+def _connection_response(result: dict) -> GitTestConnectionResponse:
+    success = bool(result.get("success"))
+    message = "Connection successful." if success else "Connection failed. Check the provider and credentials."
+    if success and result.get("is_private") is False:
+        message = "Connected, but the repository is not private. Git backups require a private repository."
+    return GitTestConnectionResponse(success=success, message=message, is_private=result.get("is_private"))
+
+
+_CONFIG_FIELDS = tuple(GitBackupConfigCreate.model_fields.keys() - {"secret_actions"})
+
+
+def _snapshot(config: GitBackupConfig | None) -> dict:
+    return {field: getattr(config, field) for field in _CONFIG_FIELDS} if config else {}
+
+
+def _git_scope(values: dict) -> tuple:
+    from backend.app.services.git_providers import get_provider_backend
+
+    provider = values.get("provider") or "github"
+    repository = values.get("repository_url") or ""
+    try:
+        derived_api = get_provider_backend(provider).get_api_base(repository)
+    except ValueError:
+        derived_api = ""
+    return (provider, canonical_url(repository), canonical_url(derived_api), canonical_url(values.get("api_base_url")))
+
+
+async def _write_config(
+    db: AsyncSession, body: GitBackupConfigCreate | GitBackupConfigUpdate, *, partial: bool
+) -> dict:
+    await lock_credential_config(db)
+    config = (await db.execute(select(GitBackupConfig).limit(1))).scalar_one_or_none()
+    if partial and config is None:
+        raise HTTPException(404, "No configuration found")
+    before = _snapshot(config)
+    config_id = config.id if config else None
+    changes = body.model_dump(exclude_unset=partial, exclude={"secret_actions", "access_token"}, mode="json")
+    if config and "api_base_url" not in body.model_fields_set:
+        try:
+            _validate_api_base_url(before.get("api_base_url"))
+        except ValueError:
+            # An opaque legacy endpoint cannot be reconstructed from its read
+            # DTO. Omission keeps it even in the legacy singleton POST writer.
+            changes.pop("api_base_url", None)
+    if "access_token" in body.model_fields_set:
+        changes["access_token"] = body.access_token
+    resolved = merge_secret_fields(
+        before, changes, {"access_token"}, body.secret_actions, creating=config is None, scope=_git_scope
+    )
+    if any(resolved.get(field) is None for field in _CONFIG_FIELDS if field not in {"access_token", "api_base_url"}):
+        raise HTTPException(422, "Required Git backup configuration fields cannot be null")
+    resolved["access_token"] = resolved.get("access_token") or ""
+    try:
+        resolved["repository_url"] = _validate_repo_url(resolved.get("repository_url") or "", resolved.get("provider"))
+    except ValueError as exc:
+        raise HTTPException(422, "Invalid repository URL for the selected provider") from exc
+    if not resolved.get("access_token") and (resolved.get("enabled") or resolved.get("schedule_enabled")):
+        raise HTTPException(400, "A token is required while Git backup or its schedule is enabled")
+    # Privacy calls use a frozen pair outside the short database transaction.
+    verify = bool(resolved.get("access_token")) and (
+        not config
+        or any(before.get(k) != resolved.get(k) for k in ("provider", "repository_url", "api_base_url", "access_token"))
+    )
+    if verify:
+        await db.rollback()
+        await _enforce_private_repo(
+            resolved["repository_url"], resolved["access_token"], resolved["provider"], resolved.get("api_base_url")
+        )
+        await lock_credential_config(db)
+        config = (
+            await db.execute(select(GitBackupConfig).limit(1).execution_options(populate_existing=True))
+        ).scalar_one_or_none()
+        if (config.id if config else None) != config_id or _snapshot(config) != before:
+            raise HTTPException(409, "Git backup configuration changed during verification; reload and retry")
+    if config is None:
+        config = GitBackupConfig()
+        db.add(config)
+    for field, value in resolved.items():
+        setattr(config, field, value)
+    config.next_scheduled_run = (
+        git_backup_service._calculate_next_run(config.schedule_type) if config.schedule_enabled else None
+    )
+    await db.commit()
+    await db.refresh(config)
+    return _config_to_response(config)
 
 
 @router.get("/config", response_model=GitBackupConfigResponse | None, dependencies=[RequireAdmin()])
@@ -123,74 +225,8 @@ async def save_config(
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.GIT_BACKUP),
 ):
-    """Create or update Git backup configuration.
-
-    Only one configuration is supported. If one exists, it will be updated.
-    The target repository must be private — BamDude backups carry MQTT
-    credentials, HA / Prometheus tokens, the Bambu Cloud email, and printer
-    access codes (via K-profiles), so a public repo is a hard reject.
-    """
-    await _enforce_private_repo(
-        config_data.repository_url,
-        config_data.access_token,
-        config_data.provider,
-    )
-
-    # Check for existing config
-    result = await db.execute(select(GitBackupConfig).limit(1))
-    config = result.scalar_one_or_none()
-
-    if config:
-        # Update existing
-        config.provider = config_data.provider
-        config.repository_url = config_data.repository_url
-        config.access_token = config_data.access_token
-        config.branch = config_data.branch
-        config.api_base_url = config_data.api_base_url
-        config.schedule_enabled = config_data.schedule_enabled
-        config.schedule_type = config_data.schedule_type.value
-        config.backup_kprofiles = config_data.backup_kprofiles
-        config.backup_cloud_profiles = config_data.backup_cloud_profiles
-        config.backup_settings = config_data.backup_settings
-        config.backup_spools = config_data.backup_spools
-        config.backup_archives = config_data.backup_archives
-        config.enabled = config_data.enabled
-
-        # Calculate next scheduled run if enabled
-        if config.schedule_enabled:
-            config.next_scheduled_run = git_backup_service._calculate_next_run(config.schedule_type)
-        else:
-            config.next_scheduled_run = None
-
-        logger.info("Updated Git backup config: %s", config.repository_url)
-    else:
-        # Create new
-        config = GitBackupConfig(
-            provider=config_data.provider,
-            repository_url=config_data.repository_url,
-            access_token=config_data.access_token,
-            branch=config_data.branch,
-            api_base_url=config_data.api_base_url,
-            schedule_enabled=config_data.schedule_enabled,
-            schedule_type=config_data.schedule_type.value,
-            backup_kprofiles=config_data.backup_kprofiles,
-            backup_cloud_profiles=config_data.backup_cloud_profiles,
-            backup_settings=config_data.backup_settings,
-            backup_spools=config_data.backup_spools,
-            backup_archives=config_data.backup_archives,
-            enabled=config_data.enabled,
-        )
-
-        if config.schedule_enabled:
-            config.next_scheduled_run = git_backup_service._calculate_next_run(config.schedule_type)
-
-        db.add(config)
-        logger.info("Created Git backup config: %s", config.repository_url)
-
-    await db.commit()
-    await db.refresh(config)
-
-    return _config_to_response(config)
+    """Create or replace the singleton config, preserving only scoped secrets."""
+    return await _write_config(db, config_data, partial=False)
 
 
 @router.patch("/config", response_model=GitBackupConfigResponse, dependencies=[RequireAdmin()])
@@ -199,46 +235,8 @@ async def update_config(
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.GIT_BACKUP),
 ):
-    """Partially update Git backup configuration."""
-    result = await db.execute(select(GitBackupConfig).limit(1))
-    config = result.scalar_one_or_none()
-
-    if not config:
-        raise HTTPException(status_code=404, detail="No configuration found")
-
-    update_dict = update_data.model_dump(exclude_unset=True)
-
-    # Re-verify the repo is private whenever the target changes — new URL,
-    # new token, or new provider. We deliberately don't re-test on every
-    # unrelated PATCH (e.g. toggling backup_archives) so flipping schedule
-    # / payload toggles doesn't round-trip a live API call.
-    target_changed = "repository_url" in update_dict or "access_token" in update_dict or "provider" in update_dict
-    if target_changed:
-        await _enforce_private_repo(
-            update_dict.get("repository_url", config.repository_url),
-            update_dict.get("access_token", config.access_token),
-            update_dict.get("provider", config.provider),
-        )
-
-    for key, value in update_dict.items():
-        if key == "schedule_type" and value is not None:
-            setattr(config, key, value.value)
-        else:
-            setattr(config, key, value)
-
-    # Recalculate next scheduled run if schedule settings changed
-    if "schedule_enabled" in update_dict or "schedule_type" in update_dict:
-        if config.schedule_enabled:
-            config.next_scheduled_run = git_backup_service._calculate_next_run(config.schedule_type)
-        else:
-            config.next_scheduled_run = None
-
-    await db.commit()
-    await db.refresh(config)
-
-    logger.info("Updated Git backup config: %s", config.repository_url)
-
-    return _config_to_response(config)
+    """Partially update the singleton config under the shared credential guard."""
+    return await _write_config(db, update_data, partial=True)
 
 
 @router.delete("/config", dependencies=[RequireAdmin()])
@@ -247,6 +245,7 @@ async def delete_config(
     _: User | None = RequirePermission(Permission.GIT_BACKUP),
 ):
     """Delete the Git backup configuration and all logs."""
+    await lock_credential_config(db)
     result = await db.execute(select(GitBackupConfig).limit(1))
     config = result.scalar_one_or_none()
 
@@ -264,13 +263,36 @@ async def delete_config(
 @router.post("/test", response_model=GitTestConnectionResponse, dependencies=[RequireAdmin()])
 async def test_connection(
     body: GitTestConnectionRequest,
+    db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.GIT_BACKUP),
 ):
-    """Test Git provider connection with provided credentials."""
-    result = await git_backup_service.test_connection(
-        body.repo_url, body.token, provider=body.provider.value, api_base_url=body.api_base_url
+    """Resolve the complete draft pair; a test never persists the draft."""
+    await lock_credential_config(db)
+    config = (await db.execute(select(GitBackupConfig).limit(1))).scalar_one_or_none()
+    stored = _snapshot(config)
+    changes = {"repository_url": body.repo_url, "provider": body.provider.value}
+    if "api_base_url" in body.model_fields_set:
+        changes["api_base_url"] = body.api_base_url
+    if "token" in body.model_fields_set:
+        changes["access_token"] = body.token
+    actions = body.secret_actions
+    if actions is not None:
+        if set(actions) - {"token"}:
+            raise HTTPException(422, "Unknown secret action field")
+        actions = {"access_token": actions["token"]} if "token" in actions else {}
+    resolved = merge_secret_fields(
+        stored, changes, {"access_token"}, actions, creating=config is None, scope=_git_scope
     )
-    return GitTestConnectionResponse(**result)
+    token = resolved.get("access_token")
+    if not token:
+        raise HTTPException(400, "No access token configured")
+    await db.rollback()
+    result = await git_backup_service.test_connection(
+        body.repo_url, token, provider=body.provider.value, api_base_url=resolved.get("api_base_url")
+    )
+    if not result.get("success"):
+        result = {"success": False, "message": "Connection failed. Check the provider and credentials."}
+    return _connection_response(result)
 
 
 @router.post("/test-stored", response_model=GitTestConnectionResponse, dependencies=[RequireAdmin()])
@@ -278,20 +300,24 @@ async def test_stored_connection(
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.GIT_BACKUP),
 ):
-    """Test Git provider connection using stored configuration."""
-    result = await db.execute(select(GitBackupConfig).limit(1))
-    config = result.scalar_one_or_none()
-
+    """Test the stored pair without applying any draft destination."""
+    await lock_credential_config(db)
+    config = (await db.execute(select(GitBackupConfig).limit(1))).scalar_one_or_none()
     if not config:
-        raise HTTPException(status_code=404, detail="No configuration found")
-
-    if not config.access_token:
-        raise HTTPException(status_code=400, detail="No access token configured")
-
-    test_result = await git_backup_service.test_connection(
-        config.repository_url, config.access_token, provider=config.provider, api_base_url=config.api_base_url
+        raise HTTPException(404, "No configuration found")
+    frozen = _snapshot(config)
+    if not frozen["access_token"]:
+        raise HTTPException(400, "No access token configured")
+    await db.rollback()
+    result = await git_backup_service.test_connection(
+        frozen["repository_url"],
+        frozen["access_token"],
+        provider=frozen["provider"],
+        api_base_url=frozen["api_base_url"],
     )
-    return GitTestConnectionResponse(**test_result)
+    if not result.get("success"):
+        result = {"success": False, "message": "Connection failed. Check the provider and credentials."}
+    return _connection_response(result)
 
 
 @router.post("/run", response_model=GitBackupTriggerResponse, dependencies=[RequireAdmin()])
@@ -311,7 +337,9 @@ async def trigger_backup(
 
     backup_result = await git_backup_service.run_backup(config.id, trigger="manual")
 
-    return GitBackupTriggerResponse(**backup_result)
+    return GitBackupTriggerResponse(
+        **{**backup_result, "message": _safe_backup_message("success" if backup_result.get("success") else "failed")}
+    )
 
 
 @router.get("/status", response_model=GitBackupStatus)
@@ -383,7 +411,7 @@ async def get_logs(
             trigger=log.trigger,
             commit_sha=log.commit_sha,
             files_changed=log.files_changed,
-            error_message=log.error_message,
+            error_message=_safe_backup_message(log.status) if log.error_message else None,
         )
         for log in logs
     ]

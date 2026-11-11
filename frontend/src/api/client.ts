@@ -890,10 +890,13 @@ export interface Printer {
   auto_archive: boolean;
   cleanup_after_print: boolean;
   mqtt_connection_timeout: number;
-  external_camera_url: string | null;
+  external_camera_url?: string | null; // Write-only in current servers.
+  external_camera_url_configured?: boolean;
+  external_camera_snapshot_url_configured?: boolean;
+  external_camera_host?: string | null;
   external_camera_type: string | null;  // "mjpeg", "rtsp", "snapshot"
   external_camera_enabled: boolean;
-  external_camera_snapshot_url: string | null;  // optional single-frame override (#1177)
+  external_camera_snapshot_url?: string | null;  // optional single-frame override (#1177)
   camera_rotation: number;  // 0, 90, 180, 270 degrees
   // Chamber light for the camera: defer to the farm setting, or decide here
   camera_light_auto: CameraLightPolicy;
@@ -1463,6 +1466,7 @@ export interface PrinterCreate {
   is_active?: boolean;
   cleanup_after_print?: boolean;
   mqtt_connection_timeout?: number;
+  secret_actions?: Partial<Record<'external_camera_url' | 'external_camera_snapshot_url', 'keep' | 'clear' | 'replace'>>;
   external_camera_url?: string | null;
   external_camera_type?: string | null;
   external_camera_enabled?: boolean;
@@ -4704,7 +4708,21 @@ export interface LongLivedTokenCreate {
 }
 
 // Settings types
+export type SecretAction = 'keep' | 'clear' | 'replace';
+
 export interface AppSettings {
+  ha_url_configured?: boolean;
+  ha_url_opaque?: boolean;
+  obico_ml_url_configured?: boolean;
+  obico_ml_url_opaque?: boolean;
+  ldap_server_url_configured?: boolean;
+  ldap_server_url_opaque?: boolean;
+  mqtt_password_configured?: boolean;
+  ha_token_configured?: boolean;
+  ldap_bind_password_configured?: boolean;
+  obico_ml_token_configured?: boolean;
+  prometheus_token_configured?: boolean;
+  virtual_printer_access_code_configured?: boolean;
   mcp_enabled?: boolean;
   mcp_allow_http?: boolean;
   mcp_endpoint_url?: string;
@@ -4925,6 +4943,7 @@ export interface AppSettings {
 }
 
 export type AppSettingsUpdate = Partial<AppSettings> & {
+  secret_actions?: Record<string, SecretAction>;
   mcp_http_risk_acknowledged?: boolean;
   mcp_http_trusted_network_acknowledged?: boolean;
 };
@@ -5841,6 +5860,7 @@ export interface CloudDevice {
 
 // Smart Plug types
 export interface SmartPlug {
+  configured_secrets?: Record<string, boolean>;
   /** Whether this is the plug the printer card treats as that machine's power.
    * Decided by the backend so every surface that switches a printer agrees;
    * never re-derive it here. False for plugs with no printer. */
@@ -6139,6 +6159,7 @@ export interface ZigbeePort {
 }
 
 export interface SmartPlugCreate {
+  secret_actions?: Record<string, 'keep' | 'clear' | 'replace'>;
   name: string;
   plug_type?: 'tasmota' | 'homeassistant' | 'mqtt' | 'rest' | 'zigbee';
   zigbee_ieee?: string | null;  // Required for Zigbee
@@ -6231,6 +6252,7 @@ export interface MeterIncident {
 }
 
 export interface SmartPlugUpdate {
+  secret_actions?: Record<string, 'keep' | 'clear' | 'replace'>;
   name?: string;
   plug_type?: 'tasmota' | 'homeassistant' | 'mqtt' | 'rest' | 'zigbee';
   zigbee_ieee?: string | null;
@@ -7344,6 +7366,8 @@ export interface NotificationProvider {
   provider_type: ProviderType;
   enabled: boolean;
   config: Record<string, unknown>;
+  secrets_configured?: Record<string, boolean>;
+  destination_display?: Record<string, string>;
   // Print lifecycle events
   on_print_start: boolean;
   on_print_complete: boolean;
@@ -7421,6 +7445,7 @@ export interface NotificationProviderCreate {
   provider_type: ProviderType;
   enabled?: boolean;
   config: Record<string, unknown>;
+  secret_actions?: Record<string, 'keep' | 'clear' | 'replace'>;
   // Print lifecycle events
   on_print_start?: boolean;
   on_print_complete?: boolean;
@@ -7491,6 +7516,7 @@ export interface NotificationProviderUpdate {
   provider_type?: ProviderType;
   enabled?: boolean;
   config?: Record<string, unknown>;
+  secret_actions?: Record<string, 'keep' | 'clear' | 'replace'>;
   // Print lifecycle events
   on_print_start?: boolean;
   on_print_complete?: boolean;
@@ -7560,6 +7586,7 @@ export interface NotificationProviderUpdate {
 export type ScheduleType = 'hourly' | 'daily' | 'weekly';
 
 export interface GitBackupConfig {
+  api_base_url_private?: boolean;
   id: number;
   repository_url: string;
   has_token: boolean;
@@ -7585,7 +7612,8 @@ export interface GitBackupConfig {
 
 export interface GitBackupConfigCreate {
   repository_url: string;
-  access_token: string;
+  access_token?: string;
+  secret_actions?: Record<'access_token', 'keep' | 'clear' | 'replace'>;
   branch?: string;
   schedule_enabled?: boolean;
   schedule_type?: ScheduleType;
@@ -7690,6 +7718,8 @@ export interface LocalBackupDeleteResponse {
 export interface NotificationTestRequest {
   provider_type: ProviderType;
   config: Record<string, unknown>;
+  provider_id?: number;
+  secret_actions?: Record<string, 'keep' | 'clear' | 'replace'>;
 }
 
 export interface NotificationTestResponse {
@@ -9080,6 +9110,7 @@ export interface OIDCLoginProvider {
 
 // OIDC administration interfaces (§18.2)
 export interface OIDCProvider {
+  client_secret_configured?: boolean;
   id: number;
   name: string;
   issuer_url: string;
@@ -9114,6 +9145,7 @@ export interface OIDCProviderCreate {
   issuer_url: string;
   client_id: string;
   client_secret: string;
+  secret_actions?: Record<'client_secret', 'keep' | 'clear' | 'replace'>;
   scopes?: string;
   is_enabled?: boolean;
   auto_create_users?: boolean;
@@ -9208,6 +9240,8 @@ export interface ResetPasswordResponse {
 }
 
 export interface SMTPSettings {
+  smtp_password_configured?: boolean;
+  secret_actions?: Record<string, SecretAction>;
   smtp_host: string;
   smtp_port: number;
   smtp_username?: string;
@@ -9220,6 +9254,7 @@ export interface SMTPSettings {
 
 export interface TestSMTPRequest {
   test_recipient: string;
+  settings?: SMTPSettings;
 }
 
 export interface TestSMTPResponse {
@@ -9871,9 +9906,10 @@ export const api = {
   getAdvancedAuthStatus: () => request<AdvancedAuthStatus>('/auth/advanced-auth/status'),
   // LDAP Authentication
   getLDAPStatus: () => request<LDAPStatus>('/auth/ldap/status'),
-  testLDAP: () =>
+  testLDAP: (data?: AppSettingsUpdate) =>
     request<LDAPTestResponse>('/auth/ldap/test', {
       method: 'POST',
+      body: data ? JSON.stringify(data) : undefined,
     }),
   forgotPassword: (data: ForgotPasswordRequest) =>
     request<ForgotPasswordResponse>('/auth/forgot-password', {
@@ -10134,10 +10170,10 @@ export const api = {
     request<{ connected: boolean }>(`/printers/${id}/disconnect`, {
       method: 'POST',
     }),
-  testExternalCamera: (printerId: number, url: string, cameraType: string) =>
+  testExternalCamera: (printerId: number, url: string | undefined, cameraType: string, source: 'stream' | 'snapshot' = 'stream') =>
     request<{ success: boolean; error?: string; resolution?: string }>(
-      `/printers/${printerId}/camera/external/test?url=${encodeURIComponent(url)}&camera_type=${encodeURIComponent(cameraType)}`,
-      { method: 'POST' }
+      `/printers/${printerId}/camera/external/test`,
+      { method: 'POST', body: JSON.stringify({ ...(url ? { url } : {}), camera_type: cameraType, source }) }
     ),
 
   // Print Control
@@ -11854,10 +11890,10 @@ export const api = {
     request<{ thresholds: BindingThreshold[] }>(`/zigbee/sensors/${sensorId}/bindings/${bindingId}/thresholds`, {
       method: 'PUT', body: JSON.stringify({ thresholds }),
     }),
-  testSmartPlugConnection: (ip_address: string, username?: string | null, password?: string | null) =>
+  testSmartPlugConnection: (ip_address: string, username?: string | null, password?: string | null, plug_id?: number, secret_actions?: Record<string, 'keep' | 'clear' | 'replace'>) =>
     request<SmartPlugTestResult>('/smart-plugs/test-connection', {
       method: 'POST',
-      body: JSON.stringify({ ip_address, username, password }),
+      body: JSON.stringify({ ip_address, username, password, plug_id, secret_actions }),
     }),
 
   // Tasmota Discovery (auto-detects network)
@@ -11871,10 +11907,10 @@ export const api = {
     request<DiscoveredTasmotaDevice[]>('/smart-plugs/discover/devices'),
 
   // Home Assistant Integration
-  testHAConnection: (url: string, token: string) =>
+  testHAConnection: (url?: string, token?: string, secret_actions?: Record<string, SecretAction>) =>
     request<HATestConnectionResult>('/smart-plugs/ha/test-connection', {
       method: 'POST',
-      body: JSON.stringify({ url, token }),
+      body: JSON.stringify({ url, token, secret_actions }),
     }),
   getHAEntities: (search?: string) => {
     const params = search ? `?search=${encodeURIComponent(search)}` : '';
@@ -11932,6 +11968,10 @@ export const api = {
     request<{ success: boolean; error: string | null }>('/smart-plugs/rest/test-connection', {
       method: 'POST',
       body: JSON.stringify({ url, method, headers }),
+    }),
+  testRESTDraft: (plug_id: number | undefined, draft: SmartPlugUpdate, endpoint: string = 'rest_on_url') =>
+    request<{ success: boolean; error: string | null }>('/smart-plugs/rest/test-connection', {
+      method: 'POST', body: JSON.stringify({ plug_id, draft, endpoint }),
     }),
 
   // Print Queue
@@ -12302,7 +12342,7 @@ export const api = {
   testNotificationProvider: (id: number) =>
     request<NotificationTestResponse>(`/notifications/${id}/test`, { method: 'POST' }),
   testNotificationConfig: (data: NotificationTestRequest) =>
-    request<NotificationTestResponse>('/notifications/test-config', {
+    request<NotificationTestResponse>(data.provider_id ? `/notifications/${data.provider_id}/test-config` : '/notifications/test-config', {
       method: 'POST',
       body: JSON.stringify(data),
     }),
@@ -14523,10 +14563,10 @@ export const api = {
   deleteGitBackupConfig: () =>
     request<{ message: string }>('/git-backup/config', { method: 'DELETE' }),
 
-  testGitConnection: (repoUrl: string, token: string, provider?: string, apiBaseUrl?: string) => {
+  testGitConnection: (repoUrl: string, token?: string, provider?: string, apiBaseUrl?: string, secretActions?: Record<'token', 'keep' | 'clear' | 'replace'>) => {
     return request<GitTestConnectionResponse>('/git-backup/test', {
       method: 'POST',
-      body: JSON.stringify({ repo_url: repoUrl, token, provider, api_base_url: apiBaseUrl }),
+      body: JSON.stringify({ repo_url: repoUrl, token, provider, api_base_url: apiBaseUrl, secret_actions: secretActions }),
     });
   },
 
@@ -14595,10 +14635,10 @@ export const api = {
 
   // `token` omitted means "use the saved one" — the form never echoes a secret
   // back, so testing an already-configured server must not require retyping it.
-  testObicoConnection: (url: string, token?: string) =>
+  testObicoConnection: (url?: string, token?: string, secret_actions?: Record<string, SecretAction>) =>
     request<ObicoTestConnection>('/obico/test-connection', {
       method: 'POST',
-      body: JSON.stringify(token === undefined ? { url } : { url, token }),
+      body: JSON.stringify({ url, token, secret_actions }),
     }),
 
   // Server-side slicing (B.4) — Phase 2 of 0.5.x cycle
@@ -15810,23 +15850,16 @@ export const virtualPrinterApi = {
   updateSettings: (data: {
     enabled?: boolean;
     access_code?: string;
+    secret_actions?: Record<string, SecretAction>;
     mode?: VirtualPrinterMode;
     model?: string;
     target_printer_id?: number;
     remote_interface_ip?: string;
     archive_name_source?: 'metadata' | 'filename';
   }) => {
-    const params = new URLSearchParams();
-    if (data.enabled !== undefined) params.set('enabled', String(data.enabled));
-    if (data.access_code !== undefined) params.set('access_code', data.access_code);
-    if (data.mode !== undefined) params.set('mode', data.mode);
-    if (data.model !== undefined) params.set('model', data.model);
-    if (data.target_printer_id !== undefined) params.set('target_printer_id', String(data.target_printer_id));
-    if (data.remote_interface_ip !== undefined) params.set('remote_interface_ip', data.remote_interface_ip);
-    if (data.archive_name_source !== undefined) params.set('archive_name_source', data.archive_name_source);
-
-    return request<VirtualPrinterSettings>(`/settings/virtual-printer?${params.toString()}`, {
+    return request<VirtualPrinterSettings>('/settings/virtual-printer', {
       method: 'PUT',
+      body: JSON.stringify(data),
     });
   },
 };
