@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import JSON, DateTime, ForeignKey
+from sqlalchemy import JSON, DateTime, ForeignKey, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from backend.app.core.database import Base
@@ -22,8 +22,8 @@ class ActivePrintSession(Base):
     One row per printer — a printer runs one print at a time. Written at print
     start, appended to on every tray change, deleted at completion. A leaked row
     (a completion we never saw) is harmless: print start overwrites it, and the
-    restore path refuses a row whose ``print_name`` isn't what the printer says
-    it is running.
+    restore path refuses a row that does not belong to the print the printer is
+    running — by its ``archive_identity`` when stamped, else by ``print_name``.
 
     ⚠️ **No ``plate_id`` here, unlike upstream.** Our plate authority is
     ``PrintArchive.plate_index``, which is already in the database — the
@@ -64,3 +64,9 @@ class ActivePrintSession(Base):
 
     # [[global_tray_id, layer_num], ...] mirroring PrinterState.tray_change_log.
     tray_change_log: Mapped[list | None] = mapped_column(JSON, nullable=True)
+
+    # The ``recovery_identity`` of the archive this session's start bound (m221): the execution it belongs
+    # to, whatever name the printer reports later (GH #115). Stamped by ``usage_tracker.claim_session`` once
+    # the start's archive is decided, or at creation by an adoption. NULL is a row an earlier version wrote,
+    # or a start whose archive never claimed it -- see ``usage_tracker.session_belongs_to``.
+    archive_identity: Mapped[str | None] = mapped_column(String(36), nullable=True)

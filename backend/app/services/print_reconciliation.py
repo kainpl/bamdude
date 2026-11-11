@@ -272,20 +272,6 @@ def _name_matches_subtask(archive: PrintArchive, live_subtask_name: str) -> bool
     )
 
 
-def print_names_match(recorded: str | None, live: str | None) -> bool:
-    """Whether two names the printer gave name the same print, under :func:`_subtask_norm`.
-
-    For a name recorded earlier from the printer (the usage session's ``print_name``) against
-    the one it reports now. After a power cycle an A1 mini reports ``subtask_name`` as the
-    file name — ``X.3mf`` where it echoed the ``X`` we sent (GH #115) — so a raw comparison
-    threw the session away mid-print. Against an archive, ask :func:`_name_matches_subtask`:
-    a multi-plate ``print_name`` never equals a subtask, its filename does.
-    """
-    if not (recorded or "").strip() or not (live or "").strip():
-        return False
-    return _norm_names_match(_subtask_norm(recorded), _subtask_norm(live))
-
-
 # How the printer marks a name it had to cut short. Observed by upstream on real
 # hardware at ~100 characters, but the cut-off is not a fixed count — a name with
 # multibyte characters came back at 98 — so match the marker, never a length.
@@ -516,7 +502,6 @@ async def _reconcile_complete_archive(
                     )
                 ).scalar()
                 if not already_booked:
-                    persisted_name = await usage_tracker.get_persisted_print_name(db, archive.printer_id)
                     await usage_tracker.on_print_complete(
                         archive.printer_id,
                         {"status": "completed"},
@@ -534,8 +519,10 @@ async def _reconcile_complete_archive(
                         archive_snapshot=archive,
                         expected_identity=archive.recovery_identity,
                     )
-                    if persisted_name and _name_matches_subtask(archive, persisted_name):
-                        await usage_tracker.clear_persisted_session(db, archive.printer_id)
+                    # Only this execution's own session row, addressed by its archive stamp in one
+                    # statement: a print that started during the awaits above keeps its row, whatever
+                    # its name (GH #115, Codex USN-1).
+                    await usage_tracker.clear_persisted_session_of(db, archive.printer_id, archive.recovery_identity)
             except Exception:
                 logger.exception("reconcile: usage booking failed for archive %s", archive.id)
 

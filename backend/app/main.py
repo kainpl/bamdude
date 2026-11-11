@@ -4201,8 +4201,8 @@ def _load_objects_from_archive(archive, printer_id: int, logger, *, is_retrigger
 
 def _bind_print_file_analysis_context(
     printer_id: int, archive, *, expected_generation: int | None = None, origin: str = "observed", observation=None
-) -> None:
-    """Bind one manager-owned analysis context to the print archive.
+) -> bool:
+    """Bind one manager-owned analysis context to the print archive. False when the start is no longer current.
 
     This is intentionally only lifecycle wiring.  A bind or a later 3MF
     arrival does not parse G-code; the shared analysis remains lazy until the
@@ -4224,7 +4224,7 @@ def _bind_print_file_analysis_context(
     if expected_generation is not None and not print_effect_is_current(
         printer_manager, PrintEffectToken(printer_id, archive.id, expected_generation)
     ):
-        return
+        return False
 
     # This is the one lifecycle choke point shared by own, external, adopted
     # and recovered starts.  The archive is already authoritative here; retain
@@ -4285,6 +4285,32 @@ def _bind_print_file_analysis_context(
         getattr(archive, "plate_index", None),
         expected_identity=getattr(archive, "recovery_identity", None),
     )
+    return True
+
+
+async def _claim_usage_session(printer_id: int, started_at, archive, bound: bool) -> None:
+    """Stamp the usage session this start created with the archive it just bound (GH #115).
+
+    Called by the three ``_on_print_start_impl`` branches that bind an archive, right after the bind. Each
+    caller has committed its own session there, so this short session of its own waits on no writer, and a
+    failure here never touches the caller's objects. Only a bind that happened (``bound``) claims, and
+    ``usage_tracker.claim_session`` stamps only the session with this ``started_at``: a newer start's session
+    is never given an older archive. A failure leaves the session unstamped, which a reconcile never lends
+    or deletes.
+    """
+    identity = getattr(archive, "recovery_identity", None)
+    if not bound or started_at is None or not identity:
+        return
+    archive_id = archive.id
+    try:
+        from backend.app.services.usage_tracker import claim_session
+
+        async with async_session() as db:
+            await claim_session(db, printer_id, started_at=started_at, archive_identity=identity)
+    except Exception:  # noqa: BLE001 -- attribution bookkeeping must never break a print start
+        logging.getLogger(__name__).exception(
+            "[UsageTracker] Could not stamp the usage session of printer %s with archive %s", printer_id, archive_id
+        )
 
 
 _PENDING_TERMINAL_TIMEOUT_SECONDS = 45
@@ -4747,13 +4773,17 @@ async def _on_print_start_impl(printer_id: int, data: dict):
     # layers when AMS filament backup swaps trays mid-print. Capturing it on one
     # side only would leave Spoolman users with the mid-print restart bug this
     # fixes for everyone else.
+    #
+    # The session is made before this start's archive is decided; each branch below that binds the archive
+    # stamps it with that archive (``_claim_usage_session``), by the ``started_at`` returned here.
+    usage_session_started = None
     try:
         async with async_session() as db:
             from backend.app.api.routes.settings import get_setting
             from backend.app.services.usage_tracker import on_print_start as usage_on_print_start
 
             _spoolman_on = await get_setting(db, "spoolman_enabled")
-            await usage_on_print_start(
+            usage_session_started = await usage_on_print_start(
                 printer_id,
                 data,
                 printer_manager,
@@ -4975,13 +5005,14 @@ async def _on_print_start_impl(printer_id: int, data: dict):
                 await db.commit()
 
                 # Our own dispatch, registered by the dispatcher itself: a proven run.
-                _bind_print_file_analysis_context(
+                bound = _bind_print_file_analysis_context(
                     printer_id,
                     archive,
                     expected_generation=start_generation,
                     origin="dispatch",
                     observation=data.get("_print_observation"),
                 )
+                await _claim_usage_session(printer_id, usage_session_started, archive, bound)
 
                 # Track as active print
                 _remember_active_print((printer_id, archive.filename), archive)
@@ -5175,7 +5206,10 @@ async def _on_print_start_impl(printer_id: int, data: dict):
             # Also set up energy tracking if not already tracked (#941: persisted column)
             if existing_archive.energy_start_kwh is None:
                 await _record_energy_start(existing_archive, printer_id, db, context="existing-printing")
-            _bind_print_file_analysis_context(printer_id, existing_archive, expected_generation=start_generation)
+            bound = _bind_print_file_analysis_context(
+                printer_id, existing_archive, expected_generation=start_generation
+            )
+            await _claim_usage_session(printer_id, usage_session_started, existing_archive, bound)
             # Send notification with archive data (existing archive)
             if not notification_sent and owns_start():
                 archive_data = {
@@ -5275,13 +5309,14 @@ async def _on_print_start_impl(printer_id: int, data: dict):
             return
         await db.refresh(archive)
         logger.info("Created archive %s for %s at print start (3MF to follow)", archive.id, print_name)
-        _bind_print_file_analysis_context(
+        bound = _bind_print_file_analysis_context(
             printer_id,
             archive,
             expected_generation=start_generation,
             origin="external",
             observation=data.get("_print_observation"),
         )
+        await _claim_usage_session(printer_id, usage_session_started, archive, bound)
 
         # Prefer the colours of the built-in-inventory spools loaded on the
         # used slots over the raw MQTT tray colours. Applied again after the
@@ -6160,24 +6195,45 @@ async def _restore_usage_tracking_session_locked(
     """
     try:
         from backend.app.api.routes.settings import get_setting
-        from backend.app.services.print_reconciliation import print_names_match
         from backend.app.services.usage_tracker import (
             clear_persisted_session,
+            get_persisted_archive_identity,
             get_persisted_print_name,
             restore_session,
         )
 
         persisted_name = await get_persisted_print_name(db, printer_id)
         current_name = (state.subtask_name or "").strip()
-        # The same print however the printer renames it: after a power cycle an A1 mini reports
-        # ``X.3mf`` for the ``X`` it echoed at start (GH #115).
-        if persisted_name and current_name and not print_names_match(persisted_name, current_name):
-            logger.info(
-                "[RESTART] Discarding stale print session for printer %s (%r != running %r)",
-                printer_id,
-                persisted_name,
-                current_name,
+        owner = await get_persisted_archive_identity(db, printer_id) if persisted_name is not None else None
+        if owner is not None:
+            # A stamped row is this print's only when the running print resolves to the very archive it
+            # names -- by the run binding, the firmware id or the one printing row its name fits. A name
+            # proves nothing alone: an A1 mini reports ``X.3mf`` for ``X`` after a power cycle, and another
+            # print may share the name (GH #115, Codex USN-1).
+            live = await _live_archive_for_running_print(
+                printer_id, {"subtask_name": state.subtask_name, "subtask_id": getattr(state, "subtask_id", None)}
             )
+            stale = live.archive_identity != owner
+            if stale:
+                logger.info(
+                    "[RESTART] Discarding print session of another execution for printer %s "
+                    "(session archive %s, running print %s: %s)",
+                    printer_id,
+                    owner,
+                    live.archive_identity,
+                    live.reason,
+                )
+        else:
+            # A row an earlier version wrote, or one no archive claimed: the name exactly as recorded.
+            stale = bool(persisted_name and current_name and persisted_name.strip() != current_name)
+            if stale:
+                logger.info(
+                    "[RESTART] Discarding stale print session for printer %s (%r != running %r)",
+                    printer_id,
+                    persisted_name,
+                    current_name,
+                )
+        if stale:
             await clear_persisted_session(db, printer_id)
             # Fall through to seeding: the print on the printer is real, it just
             # isn't the one the row described.
@@ -6622,6 +6678,8 @@ async def _adopt_running_print(printer_id: int, data: dict, logger, *, still_cur
                     printer_manager,
                     db=db,
                     spoolman_owns_usage=bool(_spoolman_on) and _spoolman_on.lower() == "true",
+                    # The archive is already bound: the session belongs to it from birth (GH #115).
+                    archive_identity=archive.recovery_identity,
                 )
             except Exception as e:
                 logger.warning("[ADOPT] Usage tracker on_print_start failed for archive %s: %s", archive_id, e)

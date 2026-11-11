@@ -255,6 +255,8 @@ class TestTheHookAdoptsThePrintItFound:
         # Without the session ``on_ams_change`` keeps running the remain%-based
         # weight sync until completion and the final write-off double-counts.
         spies["usage_session"].assert_awaited_once()
+        # Born owned by the adopted archive: no later name can lend it elsewhere (GH #115).
+        assert spies["usage_session"].await_args.kwargs["archive_identity"] == row.recovery_identity
 
         assert spawned.names == ["adopt-running-print-download"], f"download task not scheduled: {spawned.names}"
         assert spawned.locals[0].get("archive_id") == row.id

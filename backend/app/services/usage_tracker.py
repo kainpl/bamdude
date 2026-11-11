@@ -274,6 +274,30 @@ class PrintSession:
     # the substitute tray when a spool runs dry, so read at completion it names
     # the tray that finished the print rather than the one the slicer assigned.
     ams_mapping: list[int] | None = None
+    # The ``recovery_identity`` of the archive this session's start bound -- see ``session_belongs_to``.
+    archive_identity: str | None = None
+    # True for a session ``on_print_start`` created in this process (never persisted). Until its archive
+    # claims it, nothing proves which execution it belongs to.
+    observed_here: bool = False
+
+
+def session_belongs_to(session: PrintSession, *, archive_identity: str | None, archive_print_name: str | None) -> bool:
+    """Whether ``session`` may lend its start context to the execution ``archive_identity`` names.
+
+    A name is no proof (GH #115, Codex review USN-1). After a power cycle an A1 mini reports ``X.3mf`` for
+    the ``X`` it echoed at start, and printers fold spaces into underscores. Two different prints can share
+    a folded, truncated or legacy name. So:
+
+    - a session stamped with its archive belongs to that execution and to no other, whatever the names;
+    - a session this process created for a start its archive has not claimed is unproven and never lent;
+    - only an unstamped session restored from a row an earlier version wrote keeps the old rule: the name
+      exactly as recorded.
+    """
+    if session.archive_identity is not None:
+        return archive_identity is not None and session.archive_identity == archive_identity
+    if session.observed_here:
+        return False
+    return not session.print_name or not archive_print_name or session.print_name == archive_print_name
 
 
 # Module-level storage, keyed by printer_id. Mirrored to the
@@ -341,8 +365,36 @@ async def persist_session(
         remain_json[_tray_key_to_str(key)] = {"remain": remain, "uuid": uuid} if uuid else remain
     row.tray_remain_start = remain_json or None
     row.tray_change_log = [list(entry) for entry in (tray_change_log or [])] or None
+    row.archive_identity = session.archive_identity
 
     await db.commit()
+
+
+async def claim_session(db: AsyncSession, printer_id: int, *, started_at: datetime, archive_identity: str) -> bool:
+    """Stamp the session a start created with the archive that start bound (GH #115).
+
+    Only that session: the one whose ``started_at`` the caller captured and which no archive has claimed
+    yet. A newer start's session is never stamped with an older archive. The row and the in-memory session
+    are stamped separately; each condition holds for itself. True when the row was stamped.
+    """
+    from sqlalchemy import update
+
+    from backend.app.models.active_print_session import ActivePrintSession
+
+    session = _active_sessions.get(printer_id)
+    if session is not None and session.started_at == started_at and session.archive_identity is None:
+        session.archive_identity = archive_identity
+    result = await db.execute(
+        update(ActivePrintSession)
+        .where(
+            ActivePrintSession.printer_id == printer_id,
+            ActivePrintSession.started_at == started_at.replace(tzinfo=None),
+            ActivePrintSession.archive_identity.is_(None),
+        )
+        .values(archive_identity=archive_identity)
+    )
+    await db.commit()
+    return bool(result.rowcount)
 
 
 async def record_tray_change(db: AsyncSession, printer_id: int, tray_global: int, layer_num: int) -> None:
@@ -434,6 +486,14 @@ async def get_persisted_print_name(db: AsyncSession, printer_id: int) -> str | N
     return row.print_name if row is not None else None
 
 
+async def get_persisted_archive_identity(db: AsyncSession, printer_id: int) -> str | None:
+    """The archive stamp on the persisted row (``claim_session``), None for an unstamped or missing row."""
+    from backend.app.models.active_print_session import ActivePrintSession
+
+    row = await db.get(ActivePrintSession, printer_id)
+    return row.archive_identity if row is not None else None
+
+
 async def restore_session(db: AsyncSession, printer_id: int, register_active: bool = True) -> list[list[int]] | None:
     """Rebuild the in-memory session for ``printer_id`` from the persisted row.
 
@@ -480,6 +540,7 @@ async def restore_session(db: AsyncSession, printer_id: int, register_active: bo
         tray_now_at_start=row.tray_now_at_start,
         spool_assignments=_tray_map_from_json(row.spool_assignments),
         ams_mapping=list(row.ams_mapping) if row.ams_mapping else None,
+        archive_identity=row.archive_identity,
     )
     if register_active:
         _active_sessions[printer_id] = session
@@ -529,6 +590,29 @@ async def clear_persisted_session(db: AsyncSession, printer_id: int) -> None:
     if row is not None:
         await db.delete(row)
         await db.commit()
+
+
+async def clear_persisted_session_of(db: AsyncSession, printer_id: int, archive_identity: str | None) -> bool:
+    """Drop the printer's persisted row only if it is the session of the execution ``archive_identity`` names.
+
+    One statement, so it still addresses that session after the caller's awaits. A newer start's row (another
+    identity, or none yet) is left alone. An unstamped row proves no owner and is overwritten by the next
+    start. True when a row went.
+    """
+    if not archive_identity:
+        return False
+    from sqlalchemy import delete
+
+    from backend.app.models.active_print_session import ActivePrintSession
+
+    result = await db.execute(
+        delete(ActivePrintSession).where(
+            ActivePrintSession.printer_id == printer_id,
+            ActivePrintSession.archive_identity == archive_identity,
+        )
+    )
+    await db.commit()
+    return bool(result.rowcount)
 
 
 async def discard_session(db: AsyncSession, printer_id: int) -> None:
@@ -1196,8 +1280,13 @@ async def on_print_start(
     printer_manager,
     db: AsyncSession | None = None,
     spoolman_owns_usage: bool = False,
-) -> None:
+    archive_identity: str | None = None,
+) -> datetime | None:
     """Capture AMS tray remain% and spool assignments at print start.
+
+    Returns the new session's ``started_at`` -- the key ``claim_session`` stamps it by once the start's
+    archive is decided -- or None when no session was made. ``archive_identity`` stamps it at creation, for
+    a caller that already holds the archive (an adoption).
 
     The capture runs for **both** inventory backends. The persisted row carries
     the tray-change log, which is the only record of which spool fed which
@@ -1215,7 +1304,7 @@ async def on_print_start(
     state = printer_manager.get_status(printer_id)
     if not state or not state.raw_data:
         logger.debug("[UsageTracker] No state for printer %d, skipping", printer_id)
-        return
+        return None
 
     ams_raw = state.raw_data.get("ams", [])
     ams_data = ams_raw.get("ams", []) if isinstance(ams_raw, dict) else ams_raw if isinstance(ams_raw, list) else []
@@ -1295,6 +1384,8 @@ async def on_print_start(
         tray_now_at_start=tray_now_at_start,
         spool_assignments=spool_assignments,
         ams_mapping=data.get("ams_mapping"),
+        archive_identity=archive_identity,
+        observed_here=True,
     )
     if spoolman_owns_usage:
         _active_sessions.pop(printer_id, None)
@@ -1323,6 +1414,7 @@ async def on_print_start(
         )
     else:
         logger.debug("[UsageTracker] No valid remain%% for printer %d, 3MF fallback available", printer_id)
+    return session.started_at
 
 
 class _UsageArchiveChanged(RuntimeError):
@@ -1416,21 +1508,19 @@ async def _on_print_complete(
     # Reconcile-driven completions name the print they are closing. A session
     # that belongs to a DIFFERENT print (the printer moved on during an
     # unsupervised gap) must not lend its mapping — put it back untouched and
-    # book from the 3MF estimate alone. "The same print" is the reconcile's own
-    # name rule: the printer folds spaces into underscores and may come back
-    # with the file's extension (GH #115), and a multi-plate archive's
-    # print_name never equals a subtask — its filename does.
-    if session is not None and expected_print_name and session.print_name:
-        from backend.app.services.print_reconciliation import _name_matches_subtask, print_names_match
-
-        belongs = (
-            _name_matches_subtask(snapshot, session.print_name)
-            if snapshot is not None
-            else print_names_match(session.print_name, expected_print_name)
+    # book from the 3MF estimate alone. Belonging is the session's archive
+    # stamp, never a name the printer may have renamed (GH #115).
+    if (
+        session is not None
+        and expected_print_name
+        and not session_belongs_to(
+            session,
+            archive_identity=snapshot.recovery_identity if snapshot is not None else None,
+            archive_print_name=expected_print_name,
         )
-        if not belongs:
-            _active_sessions[printer_id] = session
-            session = None
+    ):
+        _active_sessions[printer_id] = session
+        session = None
 
     # The caller's mapping comes from the MQTT request-topic capture and the
     # in-memory ``_print_ams_mappings`` dict, both of which a restart destroys.
