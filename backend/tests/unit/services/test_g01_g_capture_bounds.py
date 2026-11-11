@@ -2,7 +2,6 @@
 
 import asyncio
 import gzip
-import threading
 from contextlib import asynccontextmanager
 from io import BytesIO
 from unittest.mock import AsyncMock, Mock
@@ -110,9 +109,9 @@ async def test_body_stall_obeys_capture_deadline_and_closes_response():
 
 
 @pytest.mark.asyncio
-async def test_four_http_operations_no_queue_and_cancel_restores_capacity(monkeypatch):
-    # Hold actual response bodies; the fifth call must do no outbound I/O.
-    monkeypatch.setattr(ec, "_SNAPSHOT_HTTP_SLOTS", threading.BoundedSemaphore(4))
+async def test_four_http_operations_wait_deadline_and_cancel_restores_capacity(monkeypatch):
+    # Hold actual bodies; the fifth call waits out its budget without I/O.
+    monkeypatch.setattr(ec, "_SNAPSHOT_HTTP_SLOTS", ec.SnapshotAdmission(4))
     reached = 0
     ready, release = asyncio.Event(), asyncio.Event()
 
@@ -130,7 +129,7 @@ async def test_four_http_operations_no_queue_and_cancel_restores_capacity(monkey
         tasks = [asyncio.create_task(ec._capture_snapshot(f"{url}/{index}", 2)) for index in range(4)]
         try:
             await asyncio.wait_for(ready.wait(), 1)
-            assert await ec._capture_snapshot(f"{url}/fifth", 1) is None
+            assert await ec._capture_snapshot(f"{url}/fifth", 0.03) is None
             assert reached == 4
             tasks[0].cancel()
             with pytest.raises(asyncio.CancelledError):

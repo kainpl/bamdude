@@ -13,7 +13,6 @@ import logging
 import random
 import re
 import shutil
-import threading
 import time
 import uuid
 from collections.abc import AsyncGenerator, Callable
@@ -29,6 +28,7 @@ from backend.app.services.camera_http import _sanitize_camera_url, _validated_ca
 from backend.app.services.camera_profiles import CameraProfile
 from backend.app.services.camera_snapshot import (
     MAX_SNAPSHOT_BYTES,
+    SnapshotAdmission,
     _decode_snapshot,
     decode_snapshot,
     read_snapshot_body,
@@ -39,7 +39,20 @@ from backend.app.utils.ffmpeg_output import NO_FFMPEG_OUTPUT, summarize_ffmpeg_s
 logger = logging.getLogger(__name__)
 
 _RTSP_PROTOCOL_WHITELIST = "rtsp,rtp,udp,tcp,tls,crypto"
-_SNAPSHOT_HTTP_SLOTS = threading.BoundedSemaphore(4)
+_SNAPSHOT_HTTP_SLOTS = SnapshotAdmission(4)
+_snapshot_warnings: dict[str, tuple[float, int]] = {}
+
+
+def _snapshot_warning(message: str) -> None:
+    """Aggregate repeated failures across cameras; never include source URLs."""
+    now = time.monotonic()
+    last, suppressed = _snapshot_warnings.get(message, (float("-inf"), 0))
+    if now - last >= 60:
+        logger.warning("%s (suppressed since prior report: %s)", message, suppressed)
+        _snapshot_warnings[message] = (now, 0)
+    else:
+        _snapshot_warnings[message] = (last, suppressed + 1)
+
 
 # In-flight one-shot captures, keyed by (url, camera_type, snapshot_url).
 # ``snapshot_url`` belongs in the key rather than just url/camera_type: a
@@ -542,16 +555,21 @@ async def _capture_snapshot(url: str, timeout: int) -> bytes | None:
     # Sanitize URL - returns reconstructed URL from validated components
     safe_url = _sanitize_camera_url(url, ("http", "https"))
     if not safe_url:
-        logger.error("Invalid snapshot URL format: %s...", redact_url_credentials(url)[:50])
+        _snapshot_warning("Invalid snapshot URL format")
         return None
 
-    # Bound whole HTTP/body operations as well as native decode futures. A
-    # timed-out codec retains its separate slot; it cannot admit queued work.
-    if not _SNAPSHOT_HTTP_SLOTS.acquire(blocking=False):
-        logger.warning("Camera snapshot capacity is busy")
+    # Waiting starts before I/O and shares the caller's original deadline.
+    # Only four admitted operations can retain a body while waiting to decode.
+    deadline = asyncio.get_running_loop().time() + timeout
+    if not await _SNAPSHOT_HTTP_SLOTS.acquire(deadline):
+        _snapshot_warning("Camera snapshot capacity deadline exceeded")
         return None
     try:
-        return await _fetch_snapshot(safe_url, timeout)
+        remaining = deadline - asyncio.get_running_loop().time()
+        if remaining <= 0:
+            _snapshot_warning("Camera snapshot capacity deadline exceeded")
+            return None
+        return await _fetch_snapshot(safe_url, remaining)
     finally:
         _SNAPSHOT_HTTP_SLOTS.release()
 
@@ -571,26 +589,26 @@ async def _fetch_snapshot(safe_url: str, timeout: int) -> bytes | None:
                 _validated_camera_get(session, safe_url, timeout=timeout) as response,
             ):
                 if response.status != 200:
-                    logger.error("Snapshot URL returned status %s", response.status)
+                    _snapshot_warning("Snapshot URL returned status " + str(response.status))
                     return None
                 data = await read_snapshot_body(response)
             if data is None:
-                logger.warning("Camera snapshot body was rejected")
+                _snapshot_warning("Camera snapshot body was rejected")
                 return None
             camera_metrics.record_frame(data, output=False)
             frame = await decode_snapshot(data, deadline - asyncio.get_running_loop().time())
             if frame is None:
-                logger.warning("Camera snapshot decode unavailable or rejected")
+                _snapshot_warning("Camera snapshot decode unavailable or rejected")
                 return None
             return camera_metrics.captured_frame(frame)
     except TimeoutError:
-        logger.warning("Snapshot capture exceeded its deadline")
+        _snapshot_warning("Snapshot capture exceeded its deadline")
         return None
     except ValueError:
-        logger.warning("Snapshot camera URL or redirect was rejected")
+        _snapshot_warning("Snapshot camera URL or redirect was rejected")
         return None
     except (aiohttp.ClientError, OSError) as exc:
-        logger.error("Snapshot transport failed (%s)", type(exc).__name__)
+        _snapshot_warning("Snapshot transport failed (" + type(exc).__name__ + ")")
         return None
 
 

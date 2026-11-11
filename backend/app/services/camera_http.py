@@ -20,6 +20,7 @@ _REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 _MAX_HTTP_REDIRECTS = 3
 _NUMERIC_HOST = re.compile(r"(?:0x[0-9a-f]+|[0-9]+)(?:\.(?:0x[0-9a-f]+|[0-9]+))*", re.I)
 _DNS_HOST = re.compile(r"[a-z0-9_-]+(?:\.[a-z0-9_-]+)*\.?", re.I)
+_NAT64_WELL_KNOWN_PREFIX = ipaddress.IPv6Network("64:ff9b::/96")
 
 
 def _blocked_camera_host(hostname: str) -> bool:
@@ -33,8 +34,14 @@ def _blocked_camera_host(hostname: str) -> bool:
     except ValueError:
         # libc accepts abbreviated/octal/hex IPv4 that ipaddress refuses.
         return bool(_NUMERIC_HOST.fullmatch(host)) or not bool(_DNS_HOST.fullmatch(hostname))
+    embedded = None
+    if isinstance(address, ipaddress.IPv6Address):
+        embedded = address.sixtofour
+        if address in _NAT64_WELL_KNOWN_PREFIX:
+            embedded = ipaddress.IPv4Address(int(address) & 0xFFFFFFFF)
     return (
         address in CLOUD_METADATA_IPS
+        or embedded in CLOUD_METADATA_IPS
         or address.is_link_local
         or address.is_unspecified
         or address.is_multicast
@@ -48,16 +55,24 @@ def _sanitize_camera_url(url: str, allowed_schemes=("http", "https", "rtsp", "rt
     if not isinstance(url, str) or not 0 < len(url) <= 4096:
         return None
     # urlsplit silently strips some controls; clients also disagree on '\\'.
-    if any(ord(char) <= 32 or 127 <= ord(char) <= 159 or char.isspace() or char == "\\" for char in url):
+    if any(
+        ord(char) < 32 or 127 <= ord(char) <= 159 or (char.isspace() and char != " ") or char == "\\" for char in url
+    ):
         return None
     try:
         parsed = urlsplit(url)
-        if parsed.scheme.lower() not in allowed_schemes or not parsed.netloc or parsed.netloc.count("@") > 1:
+        if parsed.scheme.lower() not in allowed_schemes or not parsed.netloc:
+            return None
+        # urlsplit strips leading spaces. Only userinfo/path/query may carry
+        # raw ASCII spaces; the scheme and host/port must remain unambiguous.
+        if url[: len(parsed.scheme) + 3].lower() != f"{parsed.scheme.lower()}://":
             return None
         if _blocked_camera_host(parsed.hostname or ""):
             return None
+        # Every transport resolves the host after the last @. Earlier raw @
+        # characters belong to the saved username/password, not another host.
         authority = parsed.netloc.rsplit("@", 1)[-1]
-        if authority.endswith(":") or (parsed.port is not None and not 1 <= parsed.port <= 65535):
+        if " " in authority or authority.endswith(":") or (parsed.port is not None and not 1 <= parsed.port <= 65535):
             return None
         # Preserve opaque encoded credentials, path and query. Fragments never
         # belong to the server's request target, matching the previous contract.
@@ -116,7 +131,14 @@ async def _validated_camera_get(session: aiohttp.ClientSession, url: str, *, tim
             if hop == _MAX_HTTP_REDIRECTS:
                 raise ValueError("camera redirect limit exceeded")
             # Check the raw header before urljoin can discard controls.
-            if not location or any(ord(char) <= 32 or 127 <= ord(char) <= 159 or char == "\\" for char in location):
+            if (
+                not location
+                or location.startswith(" ")
+                or any(
+                    ord(char) < 32 or 127 <= ord(char) <= 159 or char == "\\" or (char.isspace() and char != " ")
+                    for char in location
+                )
+            ):
                 raise ValueError("camera redirect location was rejected")
             target = _sanitize_camera_url(urljoin(current, location), ("http", "https"))
             if target is None or (current.startswith("https:") and target.startswith("http:")):

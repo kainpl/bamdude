@@ -274,7 +274,7 @@ async def test_invalid_body_magic_and_empty_body_are_rejected_early():
 
 
 @pytest.mark.asyncio
-async def test_timeout_and_cancellation_keep_both_slots_until_actual_completion(monkeypatch):
+async def test_wait_deadline_and_cancellation_keep_both_native_slots_until_actual_completion(monkeypatch):
     started = threading.Barrier(3)
     release = threading.Event()
     finished = threading.Event()
@@ -301,7 +301,7 @@ async def test_timeout_and_cancellation_keep_both_slots_until_actual_completion(
 
     monkeypatch.setattr(snapshot, "_decode_snapshot", blocked)
     monkeypatch.setattr(snapshot, "_decoder_finished", completed)
-    data = image_bytes()
+    data = image_bytes("PNG")
     cancelled = asyncio.create_task(snapshot.decode_snapshot(data, timeout=5))
     timed_out = asyncio.create_task(snapshot.decode_snapshot(data, timeout=0.05))
     try:
@@ -312,7 +312,7 @@ async def test_timeout_and_cancellation_keep_both_slots_until_actual_completion(
         assert await timed_out is None
         assert len(snapshot._DECODER_FUTURES) == 2
         for _ in range(5):
-            assert await snapshot.decode_snapshot(data, timeout=1) is None
+            assert await snapshot.decode_snapshot(data, timeout=0.01) is None
         assert calls == 2  # no queued/submitted third job after either waiter ended
     finally:
         release.set()

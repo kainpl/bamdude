@@ -25,6 +25,10 @@ from backend.app.services import external_camera as ec
         "%31%36%39.254.169.254",
         "[fd00:ec2::254]",
         "[::ffff:100.100.100.200]",
+        "[64:ff9b::a9fe:a9fe]",
+        "[64:ff9b::6464:64c8]",
+        "[2002:a9fe:a9fe::1]",
+        "[2002:6464:64c8::1]",
         "169.254.169.0254",
         ":80",
         "example.com:0",
@@ -44,7 +48,12 @@ def test_ambiguous_or_metadata_target_is_refused_without_network(host):
         "http://camera.local/\tframe",
         " http://camera.local/frame",
         "http://camera.local\\@169.254.169.254/frame",
-        "http://u:p@extra@camera.local/frame",
+        "http://camera .local/frame",
+        "http://camera.local: 80/frame",
+        "http ://camera.local/frame",
+        "http://camera.local/\x7fframe",
+        "http://camera.local/\x85frame",
+        "http://camera.local/\u2003frame",
     ],
 )
 def test_parser_ambiguous_authority_or_controls_refused(url):
@@ -63,6 +72,12 @@ def test_parser_ambiguous_authority_or_controls_refused(url):
         "http://[fd12::123]/frame",
         "rtsp://camera.local:554/live",
         "http://user%40name:p%3Ass@[::1]:1984/api/stream.mjpeg?src=cam",
+        "http://u:p@extra@camera.local/frame",
+        "rtsp://admin:my pass@camera.local/stream1",
+        "http://admin:p@ss with space@camera.local/frame path?pwd=my pass",
+        "http://metadata.google.internal:p@ss@camera.local/frame",
+        "http://[64:ff9b::c000:201]/frame",
+        "http://[2002:c000:201::1]/frame",
     ],
 )
 def test_intentional_camera_lan_and_go2rtc_remain_supported(url):
@@ -81,6 +96,100 @@ async def endpoint(handler):
         yield f"http://127.0.0.1:{runner.addresses[0][1]}"
     finally:
         await runner.cleanup()
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://admin:p@ss@169.254.169.254/frame path?pwd=my pass",
+        "http://169.254.169.254:p@ss@metadata.google.internal./frame",
+        "http://admin:p@ss@[64:ff9b::a9fe:a9fe]/frame",
+        "http://admin:p@ss@2852039166/frame",
+    ],
+)
+@pytest.mark.asyncio
+async def test_last_at_does_not_hide_restricted_target_before_network(url):
+    class Session:
+        def get(self, *args, **kwargs):
+            pytest.fail("restricted target after last @ reached network")
+
+    assert ec._sanitize_camera_url(url) is None
+    with pytest.raises(ValueError):
+        async with ec._validated_camera_get(Session(), url):
+            pytest.fail("restricted target admitted")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("username,password", [("admin", "p@ss"), ("cam@user", "my pass"), ("cam user", "p@ss word")])
+async def test_raw_userinfo_and_path_spaces_keep_original_basic_and_drop_it_after_crossing(username, password):
+    seen = []
+
+    async def other(request):
+        seen.append((request.path, request.query.get("pwd"), request.headers.get("Authorization")))
+        return web.Response(text="ok")
+
+    async with endpoint(other) as target:
+
+        async def origin(request):
+            seen.append((request.path, request.query.get("pwd"), request.headers.get("Authorization")))
+            if request.path == "/start path":
+                # Use a raw Location, avoiding web.HTTPFound's URL quoting.
+                return web.Response(status=302, headers={"Location": "/same path?pwd=my pass"})
+            return web.Response(
+                status=302,
+                headers={"Location": target.replace("://", "://peer:p@ss word@") + "/final path?pwd=my pass"},
+            )
+
+        async with endpoint(origin) as source, aiohttp.ClientSession() as session:
+            url = source.replace("://", f"://{username}:{password}@") + "/start path?pwd=my pass"
+            assert ec._sanitize_camera_url(url) == url
+            async with ec._validated_camera_get(session, url) as response:
+                assert await response.text() == "ok"
+    basic = aiohttp.BasicAuth(username, password).encode()
+    assert seen == [
+        ("/start path", "my pass", basic),
+        ("/same path", "my pass", basic),
+        ("/final path", "my pass", None),
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "location",
+    [
+        "/frame\tbad",
+        "/frame\r\nbad",
+        "/frame\x7fbad",
+        "/frame\x85bad",
+        "/frame\\bad",
+        " http://camera.local/frame",
+        "http://camera .local/frame",
+        "http://camera.local: 80/frame",
+    ],
+)
+async def test_redirect_controls_and_authority_whitespace_still_fail_before_next_get(location):
+    requests = []
+    closed = []
+
+    class Request:
+        async def __aenter__(self):
+            self.status = 302
+            self.headers = {"Location": location}
+            return self
+
+        async def __aexit__(self, *_args):
+            closed.append(True)
+
+    class Session:
+        def get(self, url, **kwargs):
+            requests.append(url)
+            return Request()
+
+    with pytest.raises(ValueError):
+        async with ec._validated_camera_get(Session(), "http://camera.local/start"):
+            pytest.fail("unsafe redirect admitted")
+    assert requests == ["http://camera.local/start"]
+    assert closed == [True]
 
 
 @pytest.mark.asyncio
