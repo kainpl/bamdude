@@ -276,9 +276,10 @@ class PrintSession:
     ams_mapping: list[int] | None = None
     # The ``recovery_identity`` of the archive this session's start bound -- see ``session_belongs_to``.
     archive_identity: str | None = None
-    # True for a session ``on_print_start`` created in this process (never persisted). Until its archive
-    # claims it, nothing proves which execution it belongs to.
-    observed_here: bool = False
+    # True for every session an owner-aware start made, persisted with it (``owner_tracked``), so it survives
+    # a restore -- in Spoolman mode too, where no in-memory session exists (Codex USO-3). Without an
+    # ``archive_identity`` it is a start no archive has claimed: nothing proves its execution.
+    owner_tracked: bool = False
 
 
 def session_belongs_to(session: PrintSession, *, archive_identity: str | None, archive_print_name: str | None) -> bool:
@@ -289,15 +290,33 @@ def session_belongs_to(session: PrintSession, *, archive_identity: str | None, a
     a folded, truncated or legacy name. So:
 
     - a session stamped with its archive belongs to that execution and to no other, whatever the names;
-    - a session this process created for a start its archive has not claimed is unproven and never lent;
-    - only an unstamped session restored from a row an earlier version wrote keeps the old rule: the name
-      exactly as recorded.
+    - a session an owner-aware start made, which no archive has claimed, is unproven and never lent;
+    - only an unstamped session from a row an earlier version wrote keeps the old rule: the name exactly as
+      recorded.
     """
     if session.archive_identity is not None:
         return archive_identity is not None and session.archive_identity == archive_identity
-    if session.observed_here:
+    if session.owner_tracked:
         return False
     return not session.print_name or not archive_print_name or session.print_name == archive_print_name
+
+
+@dataclass(frozen=True)
+class PersistedSessionSnapshot:
+    """One read of the persisted row: what a decision about it was made on, and the key to act on that row only."""
+
+    print_name: str
+    started_at: datetime  # as stored: naive UTC
+    archive_identity: str | None
+    owner_tracked: bool
+
+    def matches(self, row) -> bool:
+        return (
+            row is not None
+            and row.started_at == self.started_at
+            and row.archive_identity == self.archive_identity
+            and bool(row.owner_tracked) == self.owner_tracked
+        )
 
 
 # Module-level storage, keyed by printer_id. Mirrored to the
@@ -366,6 +385,7 @@ async def persist_session(
     row.tray_remain_start = remain_json or None
     row.tray_change_log = [list(entry) for entry in (tray_change_log or [])] or None
     row.archive_identity = session.archive_identity
+    row.owner_tracked = session.owner_tracked
 
     await db.commit()
 
@@ -486,15 +506,55 @@ async def get_persisted_print_name(db: AsyncSession, printer_id: int) -> str | N
     return row.print_name if row is not None else None
 
 
-async def get_persisted_archive_identity(db: AsyncSession, printer_id: int) -> str | None:
-    """The archive stamp on the persisted row (``claim_session``), None for an unstamped or missing row."""
-    from backend.app.models.active_print_session import ActivePrintSession
+async def read_persisted_snapshot(db: AsyncSession, printer_id: int) -> PersistedSessionSnapshot | None:
+    """The persisted row as the database holds it now -- a plain SELECT, never the session's identity map."""
+    from sqlalchemy import select
 
-    row = await db.get(ActivePrintSession, printer_id)
-    return row.archive_identity if row is not None else None
+    from backend.app.models.active_print_session import ActivePrintSession as S
+
+    row = (
+        await db.execute(
+            select(S.print_name, S.started_at, S.archive_identity, S.owner_tracked).where(S.printer_id == printer_id)
+        )
+    ).one_or_none()
+    if row is None:
+        return None
+    return PersistedSessionSnapshot(row.print_name or "", row.started_at, row.archive_identity, bool(row.owner_tracked))
 
 
-async def restore_session(db: AsyncSession, printer_id: int, register_active: bool = True) -> list[list[int]] | None:
+async def clear_persisted_snapshot(db: AsyncSession, printer_id: int, snapshot: PersistedSessionSnapshot) -> bool:
+    """Drop the persisted row only if it is still the one ``snapshot`` read (Codex USO-1).
+
+    A decision taken on that read must not delete a row a newer start wrote meanwhile. False when the row
+    changed or went: the caller decides again on what is there now.
+    """
+    from sqlalchemy import delete, or_
+
+    from backend.app.models.active_print_session import ActivePrintSession as S
+
+    owner = (
+        S.archive_identity.is_(None)
+        if snapshot.archive_identity is None
+        else S.archive_identity == snapshot.archive_identity
+    )
+    tracked = (
+        S.owner_tracked.is_(True)
+        if snapshot.owner_tracked
+        else or_(S.owner_tracked.is_(None), S.owner_tracked.is_(False))
+    )
+    result = await db.execute(
+        delete(S).where(S.printer_id == printer_id, S.started_at == snapshot.started_at, owner, tracked)
+    )
+    await db.commit()
+    return bool(result.rowcount)
+
+
+async def restore_session(
+    db: AsyncSession,
+    printer_id: int,
+    register_active: bool = True,
+    expect: PersistedSessionSnapshot | None = None,
+) -> list[list[int]] | None:
     """Rebuild the in-memory session for ``printer_id`` from the persisted row.
 
     Returns the persisted tray-change log so the caller can put it back on
@@ -504,11 +564,14 @@ async def restore_session(db: AsyncSession, printer_id: int, register_active: bo
     ``_active_sessions`` — for Spoolman users, who need the tray-change log
     restored but whose remain%-sync must not be suppressed by it (see
     ``on_print_start``).
+
+    ``expect`` restores only the row a caller's decision was made on: a row a
+    newer start wrote since is left alone, and None is returned (Codex USO-1).
     """
     from backend.app.models.active_print_session import ActivePrintSession
 
-    row = await db.get(ActivePrintSession, printer_id)
-    if row is None:
+    row = await db.get(ActivePrintSession, printer_id, populate_existing=expect is not None)
+    if row is None or (expect is not None and not expect.matches(row)):
         return None
 
     started_at = row.started_at
@@ -541,6 +604,7 @@ async def restore_session(db: AsyncSession, printer_id: int, register_active: bo
         spool_assignments=_tray_map_from_json(row.spool_assignments),
         ams_mapping=list(row.ams_mapping) if row.ams_mapping else None,
         archive_identity=row.archive_identity,
+        owner_tracked=bool(row.owner_tracked),
     )
     if register_active:
         _active_sessions[printer_id] = session
@@ -1385,7 +1449,7 @@ async def on_print_start(
         spool_assignments=spool_assignments,
         ams_mapping=data.get("ams_mapping"),
         archive_identity=archive_identity,
-        observed_here=True,
+        owner_tracked=True,
     )
     if spoolman_owns_usage:
         _active_sessions.pop(printer_id, None)
@@ -1463,8 +1527,13 @@ async def _on_print_complete(
     archive_snapshot=None,
     expected_identity: str | None = None,
     expected_epoch: int | None = None,
+    owner_only: bool = False,
 ) -> list[dict]:
     """Compute consumption deltas and update spool weight_used/last_used.
+
+    ``owner_only`` is for a caller that did not watch the print end (the reconcile): a session is lent only
+    if it belongs to the closing archive, by ``session_belongs_to`` -- whether or not that archive has a name
+    (Codex USO-2). ``expected_print_name`` is only the exact-name fallback for a pre-m221 row.
 
     Uses two tracking strategies in priority order:
     1. 3MF per-filament estimates (primary) - precise slicer data for all spools
@@ -1494,6 +1563,7 @@ async def _on_print_complete(
         expected_identity = snapshot.recovery_identity
 
     session = _active_sessions.pop(printer_id, None)
+    from_row = False
     if session is None:
         # Restart mid-print: the in-memory session is gone but the print-start
         # row survived. Without this the completion path loses the dispatched
@@ -1504,22 +1574,35 @@ async def _on_print_complete(
         except Exception:
             logger.exception("[UsageTracker] Failed to restore print session for printer %d", printer_id)
         session = _active_sessions.pop(printer_id, None)
+        from_row = session is not None
 
     # Reconcile-driven completions name the print they are closing. A session
     # that belongs to a DIFFERENT print (the printer moved on during an
     # unsupervised gap) must not lend its mapping — put it back untouched and
     # book from the 3MF estimate alone. Belonging is the session's archive
-    # stamp, never a name the printer may have renamed (GH #115).
-    if (
-        session is not None
-        and expected_print_name
-        and not session_belongs_to(
-            session,
-            archive_identity=snapshot.recovery_identity if snapshot is not None else None,
-            archive_print_name=expected_print_name,
+    # stamp, never a name the printer may have renamed (GH #115). A session
+    # stamped with another archive is never lent, by any caller, whatever the
+    # closing archive is called (Codex USO-2); a caller that did not watch the
+    # print end (``owner_only``) also refuses an unclaimed start, and only a
+    # pre-m221 session keeps the exact-name rule.
+    closing_identity = snapshot.recovery_identity if snapshot is not None else None
+    if session is None:
+        refuse = False
+    elif owner_only or expected_print_name:
+        refuse = not session_belongs_to(
+            session, archive_identity=closing_identity, archive_print_name=expected_print_name
         )
-    ):
-        _active_sessions[printer_id] = session
+    else:
+        refuse = (
+            session.archive_identity is not None
+            and closing_identity is not None
+            and session.archive_identity != closing_identity
+        )
+    if refuse:
+        # "Back" is where it was: a session read from the row was never in memory -- a Spoolman print's
+        # never is -- and registering it would switch off that print's remain% sync (Codex USO-3).
+        if not from_row:
+            _active_sessions[printer_id] = session
         session = None
 
     # The caller's mapping comes from the MQTT request-topic capture and the

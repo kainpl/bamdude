@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import JSON, DateTime, ForeignKey, String
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from backend.app.core.database import Base
@@ -67,6 +67,9 @@ class ActivePrintSession(Base):
 
     # The ``recovery_identity`` of the archive this session's start bound (m221): the execution it belongs
     # to, whatever name the printer reports later (GH #115). Stamped by ``usage_tracker.claim_session`` once
-    # the start's archive is decided, or at creation by an adoption. NULL is a row an earlier version wrote,
-    # or a start whose archive never claimed it -- see ``usage_tracker.session_belongs_to``.
+    # the start's archive is decided, or at creation by an adoption. See ``usage_tracker.session_belongs_to``.
     archive_identity: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    # True on every row an owner-aware start wrote (m221). With no ``archive_identity`` such a row is a start
+    # no archive has claimed -- proof of nothing, never lent. NULL marks a row an earlier version wrote: only
+    # those keep the exact-name rule (Codex USO-3).
+    owner_tracked: Mapped[bool | None] = mapped_column(Boolean, nullable=True)

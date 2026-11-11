@@ -6151,6 +6151,11 @@ async def _seed_runout_detector_from_journal(printer_id: int, logger, *, generat
         )
 
 
+#: Reads of the persisted usage session a restart restore decides on before it gives up (Codex USO-1): a row
+#: replaced during the decision is decided again, never deleted or restored on the old evidence.
+_SESSION_RESTORE_ATTEMPTS = 3
+
+
 async def _restore_usage_tracking_session(
     printer_id: int, state, db, logger, *, generation: int | None = None, retry: bool = True
 ) -> bool:
@@ -6196,58 +6201,70 @@ async def _restore_usage_tracking_session_locked(
     try:
         from backend.app.api.routes.settings import get_setting
         from backend.app.services.usage_tracker import (
-            clear_persisted_session,
-            get_persisted_archive_identity,
+            clear_persisted_snapshot,
             get_persisted_print_name,
+            read_persisted_snapshot,
             restore_session,
         )
 
         persisted_name = await get_persisted_print_name(db, printer_id)
         current_name = (state.subtask_name or "").strip()
-        owner = await get_persisted_archive_identity(db, printer_id) if persisted_name is not None else None
-        if owner is not None:
-            # A stamped row is this print's only when the running print resolves to the very archive it
-            # names -- by the run binding, the firmware id or the one printing row its name fits. A name
-            # proves nothing alone: an A1 mini reports ``X.3mf`` for ``X`` after a power cycle, and another
-            # print may share the name (GH #115, Codex USN-1).
-            live = await _live_archive_for_running_print(
-                printer_id, {"subtask_name": state.subtask_name, "subtask_id": getattr(state, "subtask_id", None)}
-            )
-            stale = live.archive_identity != owner
-            if stale:
-                logger.info(
-                    "[RESTART] Discarding print session of another execution for printer %s "
-                    "(session archive %s, running print %s: %s)",
-                    printer_id,
-                    owner,
-                    live.archive_identity,
-                    live.reason,
+        # Spoolman users get the tray-change log back but no in-memory
+        # session — see ``usage_tracker.on_print_start`` on why that dict is
+        # load-bearing for the remain%-sync guard.
+        _spoolman_on = await get_setting(db, "spoolman_enabled")
+        register_active = not (bool(_spoolman_on) and _spoolman_on.lower() == "true")
+        persisted_log = None
+        # Every decision is taken on ONE read of the row and acts on that row only. Across the resolver's
+        # await a newer start may write its own session there, and neither the discard nor the restore may
+        # touch that row (Codex USO-1). A row that changed under a decision is read and decided again.
+        # Only a pre-m221 row of another print is deleted, as before; a stamped or unclaimed row that is not
+        # this print's is left to its owner -- the reconcile of a print that ended meanwhile books with it.
+        for _attempt in range(_SESSION_RESTORE_ATTEMPTS if persisted_name is not None else 0):
+            await db.commit()  # end the read snapshot: the read below sees the row as it is now
+            snapshot = await read_persisted_snapshot(db, printer_id)
+            if snapshot is None:
+                break
+            await db.commit()  # no read held across the resolver's await: the writes below see it fresh
+            if snapshot.archive_identity is not None:
+                # A stamped row is this print's only when the running print resolves to the very archive it
+                # names -- by the run binding, the firmware id or the one printing row its name fits. A name
+                # proves nothing alone: an A1 mini reports ``X.3mf`` for ``X`` after a power cycle, and
+                # another print may share the name (GH #115, Codex USN-1).
+                live = await _live_archive_for_running_print(
+                    printer_id, {"subtask_name": state.subtask_name, "subtask_id": getattr(state, "subtask_id", None)}
                 )
-        else:
-            # A row an earlier version wrote, or one no archive claimed: the name exactly as recorded.
-            stale = bool(persisted_name and current_name and persisted_name.strip() != current_name)
-            if stale:
-                logger.info(
-                    "[RESTART] Discarding stale print session for printer %s (%r != running %r)",
-                    printer_id,
-                    persisted_name,
-                    current_name,
+                verdict = "restore" if live.archive_identity == snapshot.archive_identity else "leave"
+                why = (
+                    f"session archive {snapshot.archive_identity}, running print {live.archive_identity}: {live.reason}"
                 )
-        if stale:
-            await clear_persisted_session(db, printer_id)
-            # Fall through to seeding: the print on the printer is real, it just
-            # isn't the one the row described.
-            persisted_log = None
+            elif snapshot.owner_tracked:
+                # A start no archive has claimed -- maybe still being decided: proof of nothing.
+                verdict, why = "leave", "no archive has claimed it"
+            else:
+                # A row an earlier version wrote: the name exactly as recorded.
+                mismatch = bool(snapshot.print_name and current_name and snapshot.print_name.strip() != current_name)
+                verdict = "discard" if mismatch else "restore"
+                why = f"{snapshot.print_name!r} != running {current_name!r}"
+            if verdict == "restore":
+                persisted_log = await restore_session(db, printer_id, register_active=register_active, expect=snapshot)
+                if persisted_log is not None:
+                    break
+                continue
+            if verdict == "discard":
+                logger.info("[RESTART] Discarding stale print session for printer %s (%s)", printer_id, why)
+                if await clear_persisted_snapshot(db, printer_id, snapshot):
+                    # Fall through to seeding: the print on the printer is real, it just
+                    # isn't the one the row described.
+                    break
+                continue
+            logger.info("[RESTART] Not restoring the print session of printer %s (%s)", printer_id, why)
+            await db.commit()
+            if await read_persisted_snapshot(db, printer_id) == snapshot:
+                break
         else:
-            # Spoolman users get the tray-change log back but no in-memory
-            # session — see ``usage_tracker.on_print_start`` on why that dict is
-            # load-bearing for the remain%-sync guard.
-            _spoolman_on = await get_setting(db, "spoolman_enabled")
-            persisted_log = await restore_session(
-                db,
-                printer_id,
-                register_active=not (bool(_spoolman_on) and _spoolman_on.lower() == "true"),
-            )
+            if persisted_name is not None:
+                logger.info("[RESTART] Print session of printer %s changed on every read; nothing restored", printer_id)
         log = list(state.tray_change_log or [])
         if persisted_log:
             restored = [tuple(entry) for entry in persisted_log if isinstance(entry, (list, tuple)) and len(entry) == 2]

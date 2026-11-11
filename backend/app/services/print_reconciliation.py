@@ -518,6 +518,7 @@ async def _reconcile_complete_archive(
                         analysis_attempted=True,
                         archive_snapshot=archive,
                         expected_identity=archive.recovery_identity,
+                        owner_only=True,
                     )
                     # Only this execution's own session row, addressed by its archive stamp in one
                     # statement: a print that started during the awaits above keeps its row, whatever
