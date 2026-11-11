@@ -225,8 +225,20 @@ class SMTPSettings(BaseModel):
     smtp_use_tls: bool | None = None
 
 
+class SMTPSettingsRead(SMTPSettings):
+    smtp_password: str | None = Field(default=None, exclude=True)
+    smtp_password_configured: bool = False
+
+
+class SMTPSettingsUpdate(SMTPSettings):
+    model_config = {"extra": "forbid"}
+    secret_actions: dict[str, Literal["keep", "clear", "replace"]] | None = None
+
+
 class TestSMTPRequest(BaseModel):
+    model_config = {"extra": "forbid"}
     test_recipient: str
+    settings: SMTPSettingsUpdate | None = None
 
 
 class TestSMTPResponse(BaseModel):
@@ -435,6 +447,7 @@ def _validate_scopes(v: str | None) -> str | None:
 
 
 class OIDCProviderCreate(BaseModel):
+    secret_actions: dict[str, str] | None = None
     name: str = Field(..., max_length=100)  # L-NEW-4
     issuer_url: str
     client_id: str = Field(..., max_length=256)  # L-NEW-4
@@ -487,6 +500,7 @@ class OIDCProviderCreate(BaseModel):
 
 
 class OIDCProviderUpdate(BaseModel):
+    secret_actions: dict[str, str] | None = None
     name: str | None = Field(default=None, max_length=100)
     issuer_url: str | None = None
 
@@ -552,6 +566,7 @@ class OIDCProviderPublicResponse(BaseModel):
 
 
 class OIDCProviderResponse(BaseModel):
+    client_secret_configured: bool = False
     id: int
     name: str
     issuer_url: str

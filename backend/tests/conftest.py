@@ -250,6 +250,11 @@ async def test_engine(monkeypatch):
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        # Production init_db initializes this before opening admission. The
+        # harness builds tables directly, so reproduce that bootstrap seam.
+        from backend.app.core.credential_config import initialize_credential_config_anchor
+
+        await initialize_credential_config_anchor(conn)
 
     from backend.app.core import database as database_module
 

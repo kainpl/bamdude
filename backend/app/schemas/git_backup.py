@@ -3,6 +3,7 @@
 import re
 from datetime import datetime
 from enum import StrEnum
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -24,15 +25,40 @@ class ProviderType(StrEnum):
     FORGEJO = "forgejo"
 
 
+def _validate_api_base_url(value: str | None) -> str | None:
+    if not value:
+        return value
+    try:
+        parsed = urlsplit(value)
+        if (
+            parsed.scheme.lower() not in {"https", "http"}
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError
+        _ = parsed.port
+    except ValueError as exc:
+        raise ValueError(
+            "API base URL must be an HTTP(S) address without embedded credentials, query or fragment"
+        ) from exc
+    return value
+
+
 class GitTestConnectionRequest(BaseModel):
     """Credentials belong in the request body, never in a URL or access log."""
 
     model_config = {"extra": "forbid"}
 
     repo_url: str = Field(min_length=1, max_length=2048)
-    token: str = Field(min_length=1, max_length=4096, repr=False)
+    token: str | None = Field(default=None, min_length=1, max_length=4096, repr=False)
+    secret_actions: dict[str, str] | None = None
     provider: ProviderType = ProviderType.GITHUB
     api_base_url: str | None = Field(default=None, max_length=2048)
+
+    _safe_api_base = field_validator("api_base_url")(_validate_api_base_url)
 
 
 # URL patterns per provider
@@ -110,9 +136,12 @@ class GitBackupConfigCreate(BaseModel):
         description="Git provider: github, gitlab, gitea, or forgejo",
     )
     repository_url: str = Field(..., min_length=1, max_length=500, description="Repository URL")
-    access_token: str = Field(..., min_length=1, description="Personal Access Token")
+    access_token: str | None = Field(default=None, min_length=1, description="Personal Access Token", repr=False)
+    secret_actions: dict[str, str] | None = None
     branch: str = Field(default="main", max_length=100, description="Branch to push to")
     api_base_url: str | None = Field(default=None, max_length=500, description="API base URL for self-hosted GitLab")
+
+    _safe_api_base = field_validator("api_base_url")(_validate_api_base_url)
 
     schedule_enabled: bool = Field(default=False, description="Enable scheduled backups")
     schedule_type: ScheduleType = Field(default=ScheduleType.DAILY, description="Schedule frequency")
@@ -138,8 +167,11 @@ class GitBackupConfigUpdate(BaseModel):
     provider: ProviderType | None = None
     repository_url: str | None = Field(default=None, max_length=500)
     access_token: str | None = Field(default=None)
+    secret_actions: dict[str, str] | None = None
     branch: str | None = Field(default=None, max_length=100)
     api_base_url: str | None = Field(default=None, max_length=500)
+
+    _safe_api_base = field_validator("api_base_url")(_validate_api_base_url)
 
     schedule_enabled: bool | None = None
     schedule_type: ScheduleType | None = None
@@ -177,6 +209,7 @@ class GitBackupConfigResponse(BaseModel):
     has_token: bool = Field(description="Whether an access token is configured")
     branch: str
     api_base_url: str | None
+    api_base_url_private: bool = False
 
     schedule_enabled: bool
     schedule_type: str

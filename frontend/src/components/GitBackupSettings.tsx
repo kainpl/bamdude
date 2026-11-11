@@ -226,7 +226,11 @@ function GitBackupSettingsContent() {
 
   // Auto-save debounce
   const autoSaveTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const clearingTokenRef = useRef(false);
   const isInitializedRef = useRef(false);
+  const connectionVersion = useRef(0);
+  const savedConnectionVersion = useRef(0);
+  const editConnection = (edit: () => void) => { connectionVersion.current += 1; edit(); };
 
   // Provider display name
   const providerName =
@@ -298,9 +302,12 @@ function GitBackupSettingsContent() {
   // Initialize form from config
   useEffect(() => {
     if (config) {
-      setProvider((config.provider as GitProvider) || 'github');
-      setApiBaseUrl(config.api_base_url || '');
-      setRepoUrl(config.repository_url);
+      if (connectionVersion.current === savedConnectionVersion.current) {
+        setProvider((config.provider as GitProvider) || 'github');
+        setApiBaseUrl(config.api_base_url || '');
+        setRepoUrl(config.repository_url);
+        setAccessToken('');
+      }
       setBranch(config.branch);
       setScheduleEnabled(config.schedule_enabled);
       setScheduleType(config.schedule_type);
@@ -310,106 +317,66 @@ function GitBackupSettingsContent() {
       setBackupSpools(config.backup_spools);
       setBackupArchives(config.backup_archives);
       setEnabled(config.enabled);
-      setAccessToken(''); // Don't show stored token
       // Mark as initialized after a tick to avoid auto-save on initial load
       setTimeout(() => { isInitializedRef.current = true; }, 100);
     }
   }, [config]);
 
-  // Auto-save function for existing configs
-  const autoSave = useCallback(async (includeToken: boolean = false) => {
-    if (!config?.has_token) return; // Only auto-save if config already exists
-
+  // Scheduling and payload preferences autosave against the committed pair.
+  // Connection drafts are explicit saves, and testing never queues persistence.
+  const autoSave = useCallback(async () => {
+    if (!config?.has_token || clearingTokenRef.current) return;
     try {
-      if (includeToken && accessToken) {
-        // Full save with new token
-        await api.saveGitBackupConfig({
-          repository_url: repoUrl,
-          access_token: accessToken,
-          branch,
-          schedule_enabled: scheduleEnabled,
-          schedule_type: scheduleType,
-          backup_kprofiles: backupKProfiles,
-          backup_cloud_profiles: backupCloudProfiles,
-          backup_settings: backupSettings,
-          backup_spools: backupSpools,
-          backup_archives: backupArchives,
-          enabled,
-          provider,
-          api_base_url: apiBaseUrl || null,
-        });
-        setAccessToken(''); // Clear after save
-        showToast(t('backup.tokenUpdated'));
-      } else {
-        // Update without token
-        await api.updateGitBackupConfig({
-          repository_url: repoUrl,
-          branch,
-          schedule_enabled: scheduleEnabled,
-          schedule_type: scheduleType,
-          backup_kprofiles: backupKProfiles,
-          backup_cloud_profiles: backupCloudProfiles,
-          backup_settings: backupSettings,
-          backup_spools: backupSpools,
-          backup_archives: backupArchives,
-          enabled,
-          provider,
-          api_base_url: apiBaseUrl || null,
-        });
-        showToast(t('backup.settingsSaved'));
-      }
+      await api.updateGitBackupConfig({ branch, schedule_enabled: scheduleEnabled, schedule_type: scheduleType,
+        backup_kprofiles: backupKProfiles, backup_cloud_profiles: backupCloudProfiles, backup_settings: backupSettings,
+        backup_spools: backupSpools, backup_archives: backupArchives, enabled });
       setSaveError(null);
       queryClient.invalidateQueries({ queryKey: ['git-backup-config'] });
       queryClient.invalidateQueries({ queryKey: ['git-backup-status'] });
+      showToast(t('backup.settingsSaved'));
     } catch (error) {
       const message = (error as Error).message;
       setSaveError(message);
       showToast(t('backup.failedToSave', { message }), 'error');
     }
-  }, [config?.has_token, repoUrl, accessToken, branch, scheduleEnabled, scheduleType, backupKProfiles, backupCloudProfiles, backupSettings, backupSpools, backupArchives, enabled, provider, apiBaseUrl, queryClient, showToast, t]);
+  }, [config?.has_token, branch, scheduleEnabled, scheduleType, backupKProfiles, backupCloudProfiles, backupSettings,
+    backupSpools, backupArchives, enabled, queryClient, showToast, t]);
 
-  // Auto-save effect for existing configs (debounced)
   useEffect(() => {
-    if (!isInitializedRef.current || !config?.has_token) return;
+    if (!isInitializedRef.current || !config?.has_token || clearingTokenRef.current) return;
+    if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
+    autoSaveTimerRef.current = setTimeout(() => autoSave(), 500);
+    return () => { if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current); };
+  }, [autoSave, config?.has_token]);
 
-    if (autoSaveTimerRef.current) {
-      clearTimeout(autoSaveTimerRef.current);
-    }
-
-    autoSaveTimerRef.current = setTimeout(() => {
-      autoSave(false);
-    }, 500);
-
-    return () => {
-      if (autoSaveTimerRef.current) {
-        clearTimeout(autoSaveTimerRef.current);
+  const connectionChanged = !!config && (provider !== config.provider || repoUrl !== config.repository_url ||
+    apiBaseUrl !== (config.api_base_url || '') || accessToken !== '');
+  const saveConnectionMutation = useMutation({
+    mutationFn: ({ draft }: { draft: Partial<GitBackupConfigCreate>; version: number }) => api.updateGitBackupConfig(draft),
+    onSuccess: (_data, submitted) => {
+      if (connectionVersion.current === submitted.version) {
+        savedConnectionVersion.current = submitted.version;
+        setAccessToken('');
       }
-    };
-  }, [repoUrl, branch, scheduleEnabled, scheduleType, backupKProfiles, backupCloudProfiles, backupSettings, backupSpools, backupArchives, enabled, provider, apiBaseUrl, autoSave, config?.has_token]);
-
-  // Auto-save token when it changes (with longer debounce)
-  useEffect(() => {
-    if (!isInitializedRef.current || !config?.has_token || !accessToken) return;
-
-    if (autoSaveTimerRef.current) {
-      clearTimeout(autoSaveTimerRef.current);
-    }
-
-    autoSaveTimerRef.current = setTimeout(() => {
-      autoSave(true);
-    }, 1000);
-
-    return () => {
-      if (autoSaveTimerRef.current) {
-        clearTimeout(autoSaveTimerRef.current);
-      }
-    };
-  }, [accessToken, autoSave, config?.has_token]);
+      setSaveError(null);
+      queryClient.invalidateQueries({ queryKey: ['git-backup-config'] });
+      queryClient.invalidateQueries({ queryKey: ['git-backup-status'] });
+      showToast(t('backup.settingsSaved'));
+    },
+    onError: (error: Error) => { setSaveError(error.message); showToast(error.message, 'error'); },
+  });
+  const saveConnection = () => saveConnectionMutation.mutate({ version: connectionVersion.current, draft: {
+    provider, repository_url: repoUrl,
+    api_base_url: config?.api_base_url_private && !apiBaseUrl ? undefined : apiBaseUrl || null,
+    ...(accessToken ? { access_token: accessToken, secret_actions: { access_token: 'replace' as const } }
+      : config?.has_token ? { secret_actions: { access_token: 'keep' as const } } : {}),
+  } });
 
   // Mutations
   const saveConfigMutation = useMutation({
     mutationFn: (data: GitBackupConfigCreate) => api.saveGitBackupConfig(data),
     onSuccess: () => {
+      savedConnectionVersion.current = connectionVersion.current;
       setSaveError(null);
       queryClient.invalidateQueries({ queryKey: ['git-backup-config'] });
       queryClient.invalidateQueries({ queryKey: ['git-backup-status'] });
@@ -466,10 +433,11 @@ function GitBackupSettingsContent() {
           setTestLoading(false);
           return;
         }
-        result = await api.testGitConnection(repoUrl, accessToken, provider, apiBaseUrl || undefined);
+        result = await api.testGitConnection(repoUrl, accessToken, provider, apiBaseUrl || undefined, { token: 'replace' });
       } else if (config?.has_token) {
-        // Use stored credentials
-        result = await api.testStoredGitConnection();
+        // Resolve this draft destination against the stored token. A changed
+        // target requires a replacement before any provider receives it.
+        result = await api.testGitConnection(repoUrl, undefined, provider, apiBaseUrl || undefined, { token: 'keep' });
       } else {
         showToast(t('backup.enterRepoAndToken'), 'error');
         setTestLoading(false);
@@ -507,7 +475,7 @@ function GitBackupSettingsContent() {
       backup_archives: backupArchives,
       enabled,
       provider,
-      api_base_url: apiBaseUrl || null,
+      api_base_url: config?.api_base_url_private && !apiBaseUrl ? undefined : apiBaseUrl || null,
     });
   };
 
@@ -558,7 +526,7 @@ function GitBackupSettingsContent() {
                         name="provider"
                         value="github"
                         checked={provider === 'github'}
-                        onChange={() => { setProvider('github'); setTestResult(null); setSaveError(null); }}
+                        onChange={() => { editConnection(() => setProvider('github')); setTestResult(null); setSaveError(null); }}
                         className="accent-bambu-green w-4 h-4 text-bambu-green focus:ring-bambu-green bg-bambu-dark border-bambu-dark-tertiary"
                       />
                       <GitHubIcon className="w-4 h-4 text-white" />
@@ -570,7 +538,7 @@ function GitBackupSettingsContent() {
                         name="provider"
                         value="gitlab"
                         checked={provider === 'gitlab'}
-                        onChange={() => { setProvider('gitlab'); setTestResult(null); setSaveError(null); }}
+                        onChange={() => { editConnection(() => setProvider('gitlab')); setTestResult(null); setSaveError(null); }}
                         className="accent-bambu-green w-4 h-4 text-bambu-green focus:ring-bambu-green bg-bambu-dark border-bambu-dark-tertiary"
                       />
                       <GitLabIcon className="w-4 h-4 text-white" />
@@ -582,7 +550,7 @@ function GitBackupSettingsContent() {
                         name="provider"
                         value="gitea"
                         checked={provider === 'gitea'}
-                        onChange={() => { setProvider('gitea'); setTestResult(null); setSaveError(null); }}
+                        onChange={() => { editConnection(() => setProvider('gitea')); setTestResult(null); setSaveError(null); }}
                         className="accent-bambu-green w-4 h-4 text-bambu-green focus:ring-bambu-green bg-bambu-dark border-bambu-dark-tertiary"
                       />
                       <GitHubIcon className="w-4 h-4 text-white" />
@@ -594,7 +562,7 @@ function GitBackupSettingsContent() {
                         name="provider"
                         value="forgejo"
                         checked={provider === 'forgejo'}
-                        onChange={() => { setProvider('forgejo'); setTestResult(null); setSaveError(null); }}
+                        onChange={() => { editConnection(() => setProvider('forgejo')); setTestResult(null); setSaveError(null); }}
                         className="accent-bambu-green w-4 h-4 text-bambu-green focus:ring-bambu-green bg-bambu-dark border-bambu-dark-tertiary"
                       />
                       <GitHubIcon className="w-4 h-4 text-white" />
@@ -612,12 +580,12 @@ function GitBackupSettingsContent() {
                     <input
                       type="text"
                       value={apiBaseUrl}
-                      onChange={(e) => { setApiBaseUrl(e.target.value); setTestResult(null); }}
+                      onChange={(e) => { editConnection(() => setApiBaseUrl(e.target.value)); setTestResult(null); }}
                       placeholder={t('backup.apiBaseUrlPlaceholder')}
                       className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
                     />
                     <p className="text-xs text-bambu-gray mt-1">
-                      {t('backup.apiBaseUrlHint')}
+                      {config?.api_base_url_private ? t('backup.privateApiBaseHint') : t('backup.apiBaseUrlHint')}
                     </p>
                   </div>
                 )}
@@ -630,7 +598,7 @@ function GitBackupSettingsContent() {
                   <input
                     type="text"
                     value={repoUrl}
-                    onChange={(e) => { setRepoUrl(e.target.value); setTestResult(null); setSaveError(null); }}
+                    onChange={(e) => { editConnection(() => setRepoUrl(e.target.value)); setTestResult(null); setSaveError(null); }}
                     placeholder={
                       provider === 'github'
                         ? 'https://github.com/username/repo'
@@ -650,7 +618,7 @@ function GitBackupSettingsContent() {
                   <input
                     type="password"
                     value={accessToken}
-                    onChange={(e) => { setAccessToken(e.target.value); setTestResult(null); setSaveError(null); }}
+                    onChange={(e) => { editConnection(() => setAccessToken(e.target.value)); setTestResult(null); setSaveError(null); }}
                     placeholder={
                       config?.has_token
                         ? t('backup.enterNewToken')
@@ -665,6 +633,25 @@ function GitBackupSettingsContent() {
                   <p className="text-xs text-bambu-gray mt-1">
                     {t(PROVIDER_TOKEN_HINT_I18N_KEY[provider])}
                   </p>
+                  {config?.has_token && (
+                    <Button variant="secondary" onClick={async () => {
+                      clearingTokenRef.current = true;
+                      if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
+                      try {
+                        await api.updateGitBackupConfig({ enabled: false, schedule_enabled: false, secret_actions: { access_token: 'clear' } });
+                        savedConnectionVersion.current = ++connectionVersion.current;
+                        setAccessToken('');
+                        setEnabled(false);
+                        setScheduleEnabled(false);
+                        await queryClient.invalidateQueries({ queryKey: ['git-backup-config'] });
+                        await queryClient.invalidateQueries({ queryKey: ['git-backup-status'] });
+                      } catch (error) {
+                        showToast((error as Error).message, 'error');
+                      } finally {
+                        clearingTokenRef.current = false;
+                      }
+                    }}>{t('backup.clearToken')}</Button>
+                  )}
                 </div>
 
             {/* Branch - inline with schedule */}
@@ -832,6 +819,11 @@ function GitBackupSettingsContent() {
                 </div>
               )}
 
+              <p className="text-xs text-bambu-gray">{t('settings.credentials.draftHint')}</p>
+              {config && <Button variant="secondary" onClick={saveConnection}
+                disabled={!connectionChanged || saveConnectionMutation.isPending || !repoUrl}>
+                {t('settings.credentials.saveConnection')}
+              </Button>}
               {/* Action buttons */}
               <div className="flex flex-wrap items-center gap-2">
                 {status?.configured ? (

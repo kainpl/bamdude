@@ -11,6 +11,7 @@ import { Toggle } from './Toggle';
 import { ProviderEventToggles } from './ProviderEventToggles';
 import { useEventLabel, useProviderEvents } from './providerEvents';
 import { Select } from './Select';
+import { notificationSecretFields } from './notificationCredentials';
 
 interface AddNotificationModalProps {
   provider?: NotificationProvider | null;
@@ -23,6 +24,8 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const isEditing = !!provider;
+  const secretFields = notificationSecretFields(provider?.provider_type || 'email', provider);
+  const [secretActions, setSecretActions] = useState<Record<string, 'keep' | 'clear' | 'replace'>>({});
 
   const [name, setName] = useState(provider?.name || '');
   const [providerType, setProviderType] = useState<ProviderType>(provider?.provider_type || 'email');
@@ -73,7 +76,7 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
     provider?.config
       ? Object.fromEntries(
           Object.entries(provider.config)
-            .filter(([k]) => k !== 'event_priorities')
+            .filter(([k]) => k !== 'event_priorities' && !secretFields.includes(k))
             .map(([k, v]) => [k, String(v)]),
         )
       : {},
@@ -117,20 +120,41 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
   // in. Shared by the test button and the actual save so a test always
   // reflects what would be persisted.
   const buildFinalConfig = (): Record<string, unknown> => {
+    const safeConfig = { ...config };
+    if (['ntfy', 'webhook', 'signal'].includes(providerType)) {
+      safeConfig.auth_mode ||= (config.auth_token || config.auth_header || provider?.secrets_configured?.auth_token || provider?.secrets_configured?.auth_header) ? 'authenticated' : 'anonymous';
+    }
+    for (const key of notificationSecretFields(providerType, provider)) {
+      if (!safeConfig[key]?.trim() || secretActions[key] === 'clear') delete safeConfig[key];
+    }
     if (providerType === 'ntfy' && Object.keys(eventPriorities).length > 0) {
-      return { ...config, event_priorities: eventPriorities };
+      return { ...safeConfig, event_priorities: eventPriorities };
     }
     if (providerType === 'signal') {
       return {
-        ...config,
+        ...safeConfig,
         recipient_type: signalRecipientType,
         ...(signalRecipientType === 'numbers'
           ? { numbers: signalNumbers.map((n) => n.trim()).filter(Boolean).join(',') }
           : { group_id: signalGroupId.trim() }),
       };
     }
-    return config;
+    return safeConfig;
   };
+
+  const configured = (key: string) => provider?.provider_type === providerType && !!provider.secrets_configured?.[key];
+  const buildSecretActions = (): Record<string, 'keep' | 'clear' | 'replace'> => {
+    const actions: Record<string, 'keep' | 'clear' | 'replace'> = {};
+    for (const key of notificationSecretFields(providerType, provider)) {
+      if (secretActions[key] === 'clear') actions[key] = 'clear';
+      else if (config[key]?.trim()) actions[key] = 'replace';
+      else if (configured(key)) actions[key] = 'keep';
+    }
+    return actions;
+  };
+  const hasFieldValue = (key: string) => !!config[key]?.trim() ||
+    (configured(key) && secretActions[key] !== 'clear') ||
+    (provider?.enabled === false && notificationSecretFields(providerType, provider).includes(key));
 
   // Fetch printers for linking
   const { data: printers } = useQuery({
@@ -140,7 +164,7 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
 
   // Test configuration mutation
   const testMutation = useMutation({
-    mutationFn: () => api.testNotificationConfig({ provider_type: providerType, config: buildFinalConfig() }),
+    mutationFn: () => api.testNotificationConfig({ provider_type: providerType, config: buildFinalConfig(), secret_actions: buildSecretActions(), ...(provider ? { provider_id: provider.id } : {}) }),
     onSuccess: (result) => {
       setTestResult(result);
       setError(null);
@@ -186,7 +210,7 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
     // Validate provider-specific config
     const requiredFields = getRequiredFields(providerType);
     for (const field of requiredFields) {
-      if (!config[field.key]?.trim()) {
+      if (!hasFieldValue(field.key)) {
         setError(t('notifications.fieldRequired', { field: field.label }));
         return;
       }
@@ -229,6 +253,7 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
       name: name.trim(),
       provider_type: providerType,
       config: finalConfig,
+      secret_actions: buildSecretActions(),
       printer_ids: printerIds,
       quiet_hours_enabled: quietHoursEnabled,
       quiet_hours_start: quietHoursEnabled ? quietHoursStart : null,
@@ -263,6 +288,7 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
           { key: 'server', label: 'Server URL', placeholder: 'https://ntfy.sh', type: 'text', required: false },
           { key: 'topic', label: 'Topic', placeholder: 'my-bamdude', type: 'text', required: true },
           { key: 'auth_token', label: 'Auth Token', placeholder: 'Optional authentication', type: 'password', required: false },
+          { key: 'auth_mode', label: t('notifications.authenticationMode'), type: 'select', required: false, options: [{value:'authenticated', label:t('notifications.authenticated')}, {value:'anonymous', label:t('notifications.anonymous')}] },
         ];
       case 'pushover':
         return [
@@ -336,6 +362,7 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
             { value: 'slack', label: 'Slack / Mattermost' },
           ]},
           { key: 'auth_header', label: 'Authorization', placeholder: 'Bearer token (optional)', type: 'password', required: false },
+          { key: 'auth_mode', label: t('notifications.authenticationMode'), type: 'select', required: false, options: [{value:'authenticated', label:t('notifications.authenticated')}, {value:'anonymous', label:t('notifications.anonymous')}] },
           { key: 'field_title', label: 'Title Field Name', placeholder: 'title', type: 'text', required: false, showIf: (cfg: Record<string, string>) => cfg.payload_format !== 'slack' },
           { key: 'field_message', label: 'Message Field Name', placeholder: 'message', type: 'text', required: false, showIf: (cfg: Record<string, string>) => cfg.payload_format !== 'slack' },
         ];
@@ -349,6 +376,7 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
           { key: 'server', label: 'Signal API URL', placeholder: 'http://localhost:8080 (base URL, not /v2/send)', type: 'text', required: true },
           { key: 'sender_number', label: 'Sender Number', placeholder: '+15551234567', type: 'text', required: true },
           { key: 'auth_header', label: 'Authorization', placeholder: 'Bearer token (optional)', type: 'password', required: false },
+          { key: 'auth_mode', label: t('notifications.authenticationMode'), type: 'select', required: false, options: [{value:'authenticated', label:t('notifications.authenticated')}, {value:'anonymous', label:t('notifications.anonymous')}] },
         ];
       default:
         return [];
@@ -396,6 +424,7 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
             onChange={(e) => {
               setProviderType(e.target.value as ProviderType);
               setConfig({}); // Reset config when changing type
+              setSecretActions({});
               setSignalRecipientType('numbers');
               setSignalNumbers(['']);
               setSignalGroupId('');
@@ -427,9 +456,10 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
               {field.type === 'select' && 'options' in field && field.options ? (
                 <Select
                   className="w-full"
-                  value={config[field.key] || field.options[0]?.value || ''}
+                  value={config[field.key] || (field.key === 'auth_mode' ? ((config.auth_token || config.auth_header || configured('auth_token') || configured('auth_header')) ? 'authenticated' : 'anonymous') : field.options[0]?.value) || ''}
                   onChange={(e) => {
                     setConfig({ ...config, [field.key]: e.target.value });
+                    if (notificationSecretFields(providerType, provider).includes(field.key)) setSecretActions({ ...secretActions, [field.key]: e.target.value ? 'replace' : 'keep' });
                     setTestResult(null);
                   }}
                 >
@@ -452,15 +482,26 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
                 />
               ) : (
                 <input
-                  type={field.type}
+                  type={notificationSecretFields(providerType, provider).includes(field.key) ? 'password' : field.type}
                   value={config[field.key] || ''}
                   onChange={(e) => {
                     setConfig({ ...config, [field.key]: e.target.value });
+                    if (notificationSecretFields(providerType, provider).includes(field.key)) setSecretActions({ ...secretActions, [field.key]: e.target.value ? 'replace' : 'keep' });
                     setTestResult(null);
                   }}
-                  placeholder={field.placeholder}
+                  placeholder={configured(field.key) ? t('notifications.secretConfigured') : field.placeholder}
                   className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
                 />
+              )}
+              {configured(field.key) && (
+                <div className="flex items-center justify-between gap-2 mt-1 text-xs text-bambu-gray">
+                  <span>{secretActions[field.key] === 'clear' ? t('notifications.secretWillClear') : t('notifications.secretConfigured')}</span>
+                  <button type="button" className="text-bambu-green" onClick={() => {
+                    setSecretActions({ ...secretActions, [field.key]: secretActions[field.key] === 'clear' ? 'keep' : 'clear' });
+                    setConfig({ ...config, [field.key]: '' });
+                    setTestResult(null);
+                  }}>{secretActions[field.key] === 'clear' ? t('notifications.secretKeep') : t('notifications.secretClear')}</button>
+                </div>
               )}
             </div>
           ))}
@@ -552,7 +593,7 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
                 setTestResult(null);
                 testMutation.mutate();
               }}
-              disabled={testMutation.isPending || (getRequiredFields(providerType).length > 0 && !config[getRequiredFields(providerType)[0]?.key])}
+              disabled={testMutation.isPending || getRequiredFields(providerType).some(field => !hasFieldValue(field.key))}
               className="flex-1"
             >
               {testMutation.isPending ? (

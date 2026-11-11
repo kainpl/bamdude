@@ -494,22 +494,8 @@ class TestRestoreDoesNotOpenTheMetricsEndpoint:
         assert "bamdude_build_info" in authorised.text
 
 
-class TestSettingsRestoreNeedsSettingsUpdate(TestOwnershipPermissionsSetup):
-    """A Backup-only role must not reach around the gate that owns the rows (#2656).
-
-    Each category rewrites rows some other endpoint already owns —
-    ``PUT /api/v1/settings/`` gates on ``settings:update``, the inventory writes
-    on ``inventory:update``, an archive that is not yours on
-    ``archives:update_all``, and the K-profile batch on ``kprofiles:update``.
-    Backup is its own permission group, so gating the restore endpoint on
-    ``git:restore`` alone let a role holding only Backup write, through a
-    restore, what it could not write through the endpoint that owns them. This
-    module already makes that argument — it is why the four protected auth keys
-    are refused outright — so the gap was an inconsistency in ours.
-
-    Settings was gated first; the other three followed on review, because gating
-    one and not the rest is the only state that is not defensible.
-    """
+class TestRestoreRequiresAdmin(TestOwnershipPermissionsSetup):
+    """A's admin ceiling applies even when a custom role owns every category."""
 
     async def _token_for(self, async_client: AsyncClient, admin_token: str, name: str, permissions: list[str]) -> str:
         headers = {"Authorization": f"Bearer {admin_token}"}
@@ -551,7 +537,7 @@ class TestSettingsRestoreNeedsSettingsUpdate(TestOwnershipPermissionsSetup):
             )
 
         assert response.status_code == 403
-        assert "settings:update" in response.json()["detail"]
+        assert response.json()["detail"] == "Requires admin role"
         mock.assert_not_awaited(), "the refusal has to happen before anything is written"
 
     @pytest.mark.asyncio
@@ -584,17 +570,13 @@ class TestSettingsRestoreNeedsSettingsUpdate(TestOwnershipPermissionsSetup):
             )
 
         assert response.status_code == 403
-        assert permission in response.json()["detail"]
+        assert response.json()["detail"] == "Requires admin role"
         mock.assert_not_awaited(), "the refusal has to happen before anything is written"
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_every_missing_permission_is_named_at_once(self, async_client: AsyncClient, auth_setup):
-        """One round trip tells the caller everything to fix, not just the first.
-
-        A restore is a multi-select, so reporting one category at a time turns
-        picking four into four refusals.
-        """
+    async def test_admin_ceiling_precedes_category_permission_details(self, async_client: AsyncClient, auth_setup):
+        """A non-admin receives the same refusal for a multi-category restore."""
         token = await self._token_for(
             async_client, auth_setup["admin_token"], "backuponly-all", ["git:backup", "git:restore"]
         )
@@ -611,14 +593,12 @@ class TestSettingsRestoreNeedsSettingsUpdate(TestOwnershipPermissionsSetup):
             )
 
         assert response.status_code == 403
-        detail = response.json()["detail"]
-        for permission in ("settings:update", "inventory:update", "archives:update_all", "kprofiles:update"):
-            assert permission in detail
+        assert response.json()["detail"] == "Requires admin role"
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_the_gate_is_per_category_not_a_blanket_demotion(self, async_client: AsyncClient, auth_setup):
-        """Control: holding one category's permission is enough to restore that one."""
+    async def test_inventory_permissions_do_not_bypass_admin_ceiling(self, async_client: AsyncClient, auth_setup):
+        """Owning inventory writes does not grant administrative restore access."""
         token = await self._token_for(
             async_client,
             auth_setup["admin_token"],
@@ -630,14 +610,16 @@ class TestSettingsRestoreNeedsSettingsUpdate(TestOwnershipPermissionsSetup):
         with patch(
             "backend.app.services.git_restore.git_restore_service.run_restore",
             new=AsyncMock(return_value={"success": True, "message": "", "log_id": 1, "ref": "aaa1111", "results": {}}),
-        ):
+        ) as mock:
             response = await async_client.post(
                 "/api/v1/git-backup/restore",
                 headers={"Authorization": f"Bearer {token}"},
                 json={"categories": ["spools"]},
             )
 
-        assert response.status_code == 200
+        assert response.status_code == 403
+        assert response.json()["detail"] == "Requires admin role"
+        mock.assert_not_awaited()
 
     @pytest.mark.asyncio
     @pytest.mark.integration
@@ -655,8 +637,8 @@ class TestSettingsRestoreNeedsSettingsUpdate(TestOwnershipPermissionsSetup):
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_a_role_holding_both_can_restore_settings(self, async_client: AsyncClient, auth_setup):
-        """Control: the gate must not lock out a role that legitimately holds both."""
+    async def test_settings_permissions_do_not_bypass_admin_ceiling(self, async_client: AsyncClient, auth_setup):
+        """Settings and backup permissions alone do not grant admin restore."""
         token = await self._token_for(
             async_client,
             auth_setup["admin_token"],
@@ -668,14 +650,16 @@ class TestSettingsRestoreNeedsSettingsUpdate(TestOwnershipPermissionsSetup):
         with patch(
             "backend.app.services.git_restore.git_restore_service.run_restore",
             new=AsyncMock(return_value={"success": True, "message": "", "log_id": 1, "ref": "aaa1111", "results": {}}),
-        ):
+        ) as mock:
             response = await async_client.post(
                 "/api/v1/git-backup/restore",
                 headers={"Authorization": f"Bearer {token}"},
                 json={"categories": ["settings"]},
             )
 
-        assert response.status_code == 200
+        assert response.status_code == 403
+        assert response.json()["detail"] == "Requires admin role"
+        mock.assert_not_awaited()
 
     @pytest.mark.asyncio
     @pytest.mark.integration

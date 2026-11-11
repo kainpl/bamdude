@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, computed_field, field_validator, model_validator
 
 from backend.app.schemas.archive import ArchivePartDefective, ArchivePartRow
 from backend.app.schemas.auto_stock_spool import AutoStockSpoolPolicy
@@ -113,6 +113,7 @@ class PrinterBase(BaseModel):
 
 
 class PrinterCreate(PrinterBase):
+    secret_actions: dict[str, Literal["keep", "clear", "replace"]] | None = None
     # access_code lives on the input shapes only — never on the default PrinterResponse.
     # Direct exposure on PRINTERS_READ would let a Viewer connect to the printer's MQTT
     # and bypass RBAC (upstream 9a432f00).
@@ -134,6 +135,7 @@ class PlateDetectionROI(BaseModel):
 
 
 class PrinterUpdate(BaseModel):
+    secret_actions: dict[str, Literal["keep", "clear", "replace"]] | None = None
     name: str | None = None
     ip_address: str | None = Field(
         default=None,
@@ -188,10 +190,31 @@ class PrinterResponse(PrinterBase):
     archived_at: datetime | None = None
     nozzle_count: int = 1  # 1 or 2, auto-detected from MQTT
     print_hours_offset: float = 0.0
-    external_camera_url: str | None = None
+    external_camera_url: str | None = Field(default=None, exclude=True)
     external_camera_type: str | None = None
     external_camera_enabled: bool = False
-    external_camera_snapshot_url: str | None = None  # upstream #1177
+    external_camera_snapshot_url: str | None = Field(default=None, exclude=True)
+
+    @computed_field
+    @property
+    def external_camera_url_configured(self) -> bool:
+        return bool(self.external_camera_url)
+
+    @computed_field
+    @property
+    def external_camera_snapshot_url_configured(self) -> bool:
+        return bool(self.external_camera_snapshot_url)
+
+    @computed_field
+    @property
+    def external_camera_host(self) -> str | None:
+        from urllib.parse import urlsplit
+
+        try:
+            return urlsplit(self.external_camera_url or "").hostname
+        except ValueError:
+            return None
+
     camera_rotation: int = 0  # 0, 90, 180, 270 degrees
     camera_light_auto: Literal["inherit", "on", "off"] = "inherit"
     plate_detection_enabled: bool = False

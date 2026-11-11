@@ -884,10 +884,14 @@ class TestSmartPlugsAPI:
         result = response.json()
         assert result["name"] == "REST Plug"
         assert result["plug_type"] == "rest"
-        assert result["rest_on_url"] == "http://openhab:8080/rest/items/MyPlug"
-        assert result["rest_on_body"] == "ON"
-        assert result["rest_off_url"] == "http://openhab:8080/rest/items/MyPlug"
-        assert result["rest_off_body"] == "OFF"
+        assert "rest_on_url" not in result
+        assert result["configured_secrets"]["rest_on_url"] is True
+        assert "rest_on_body" not in result
+        assert result["configured_secrets"]["rest_on_body"] is True
+        assert "rest_off_url" not in result
+        assert result["configured_secrets"]["rest_off_url"] is True
+        assert "rest_off_body" not in result
+        assert result["configured_secrets"]["rest_off_body"] is True
         assert result["rest_method"] == "POST"
         assert result["ip_address"] is None
         assert result["ha_entity_id"] is None
@@ -908,8 +912,10 @@ class TestSmartPlugsAPI:
 
         assert response.status_code == 200
         result = response.json()
-        assert result["rest_on_url"] == "http://iobroker:8087/set/plug?value=true"
-        assert result["rest_off_url"] is None
+        assert "rest_on_url" not in result
+        assert result["configured_secrets"]["rest_on_url"] is True
+        assert "rest_off_url" not in result
+        assert result["configured_secrets"]["rest_off_url"] is False
         assert result["rest_method"] == "GET"
 
     @pytest.mark.asyncio
@@ -949,8 +955,10 @@ class TestSmartPlugsAPI:
 
         assert response.status_code == 200
         result = response.json()
-        assert result["rest_headers"] == '{"Authorization": "Bearer test-token"}'
-        assert result["rest_status_url"] == "http://ha:8080/api/plug/status"
+        assert "rest_headers" not in result
+        assert result["configured_secrets"]["rest_headers"] is True
+        assert "rest_status_url" not in result
+        assert result["configured_secrets"]["rest_status_url"] is True
         assert result["rest_status_path"] == "state"
         assert result["rest_status_on_value"] == "ON"
         assert result["rest_power_path"] == "power.current"
@@ -967,12 +975,14 @@ class TestSmartPlugsAPI:
             json={
                 "rest_on_url": "http://new-host:8080/on",
                 "rest_method": "PUT",
+                "secret_actions": {"rest_off_url": "clear"},
             },
         )
 
         assert response.status_code == 200
         result = response.json()
-        assert result["rest_on_url"] == "http://new-host:8080/on"
+        assert "rest_on_url" not in result
+        assert result["configured_secrets"]["rest_on_url"] is True
         assert result["rest_method"] == "PUT"
 
     @pytest.mark.asyncio

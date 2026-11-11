@@ -125,16 +125,13 @@ export function SmartPlugCard({ plug, onEdit }: SmartPlugCardProps) {
   const isReachable = (status?.reachable ?? false) || hasMqttData;
   const isPending = controlMutation.isPending;
 
-  // Generate admin URL with auto-login credentials (Tasmota only)
+  // Credentials remain on the server; the device UI handles its own login.
   const getAdminUrl = () => {
     if (plug.plug_type !== 'tasmota' || !plug.ip_address) return null;
-    const ip = plug.ip_address;
-    if (plug.username && plug.password) {
-      // Use HTTP Basic Auth in URL for auto-login
-      return `http://${encodeURIComponent(plug.username)}:${encodeURIComponent(plug.password)}@${ip}/`;
-    }
-    return `http://${ip}/`;
+    return `http://${plug.ip_address}/`;
   };
+  const restSummary = t(plug.configured_secrets?.rest_on_url || plug.configured_secrets?.rest_off_url
+    ? 'settings.credentials.configured' : 'settings.credentials.notConfigured');
 
   const adminUrl = getAdminUrl();
 
@@ -171,9 +168,9 @@ export function SmartPlugCard({ plug, onEdit }: SmartPlugCardProps) {
                     is loaded anyway. */}
                 <p
                   className="text-sm text-bambu-gray truncate"
-                  title={plug.plug_type === 'mqtt' ? plug.mqtt_topic ?? undefined : plug.plug_type === 'homeassistant' ? plug.ha_entity_id ?? undefined : plug.plug_type === 'rest' ? plug.rest_on_url ?? plug.rest_off_url ?? undefined : plug.plug_type === 'zigbee' ? plug.zigbee_ieee ?? undefined : plug.ip_address ?? undefined}
+                  title={plug.plug_type === 'mqtt' ? plug.mqtt_topic ?? undefined : plug.plug_type === 'homeassistant' ? plug.ha_entity_id ?? undefined : plug.plug_type === 'rest' ? restSummary : plug.plug_type === 'zigbee' ? plug.zigbee_ieee ?? undefined : plug.ip_address ?? undefined}
                 >
-                  {plug.plug_type === 'mqtt' ? plug.mqtt_topic : plug.plug_type === 'homeassistant' ? plug.ha_entity_id : plug.plug_type === 'rest' ? (plug.rest_on_url || plug.rest_off_url) : plug.plug_type === 'zigbee' ? plug.zigbee_ieee : plug.ip_address}
+                  {plug.plug_type === 'mqtt' ? plug.mqtt_topic : plug.plug_type === 'homeassistant' ? plug.ha_entity_id : plug.plug_type === 'rest' ? restSummary : plug.plug_type === 'zigbee' ? plug.zigbee_ieee : plug.ip_address}
                 </p>
               </div>
             </div>

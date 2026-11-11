@@ -407,11 +407,15 @@ if app_settings.log_to_file:
     # correlate with.
     uvicorn_access_logger.addFilter(TraceIDFilter())
 
-# Reduce noise from third-party libraries in production
+# HTTP wire logs contain opaque capability paths/headers that a generic
+# formatter cannot recognize, even in debug mode. Adapters retain safe
+# destination/status diagnostics instead.
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+
+# Reduce other third-party noise in production
 if not app_settings.debug:
     logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
-    logging.getLogger("httpcore").setLevel(logging.WARNING)
-    logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("paho.mqtt").setLevel(logging.WARNING)
 
 # Drop SQLAlchemy pool noise driven by Starlette's BaseHTTPMiddleware

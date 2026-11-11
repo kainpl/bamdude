@@ -25,6 +25,7 @@ import { describe, expect, it } from 'vitest';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const source = readFileSync(resolve(here, '../../pages/SettingsPage.tsx'), 'utf8');
+const manualConnectionFields = ['ha_url', 'ha_token'];
 
 /** Keys of the object literal handed to the settings mutation. */
 function savedKeys(): string[] {
@@ -66,7 +67,7 @@ describe('SettingsPage save/dirty-check drift', () => {
 
   it('can notice a change in every setting it saves', () => {
     const body = dirtyCheckBody();
-    const unnoticed = savedKeys().filter((key) => !body.includes(key));
+    const unnoticed = savedKeys().filter((key) => !manualConnectionFields.includes(key) && !body.includes(key));
 
     expect(
       unnoticed,
@@ -77,5 +78,22 @@ describe('SettingsPage save/dirty-check drift', () => {
 
   it('still watches the setting that first exposed this', () => {
     expect(dirtyCheckBody()).toContain('delete_timelapse_after_attach');
+  });
+
+  it('keeps HA connection drafts out of autosave and observes them in their explicit save contract', () => {
+    const payloadStart = source.indexOf('const settingsToSave: AppSettingsUpdate = {');
+    const payloadEnd = source.indexOf('updateMutation.mutate(settingsToSave)', payloadStart);
+    const autosave = source.slice(payloadStart, payloadEnd);
+    const manualStart = source.indexOf('const haConnectionChanged =');
+    const manualEnd = source.indexOf('const saveHAConnection =', manualStart);
+    expect(manualStart).toBeGreaterThan(-1);
+    expect(manualEnd).toBeGreaterThan(manualStart);
+    for (const field of manualConnectionFields) {
+      expect(savedKeys()).toContain(field);
+      expect(autosave).toContain(`delete settingsToSave.${field};`);
+      expect(source.slice(manualStart, manualEnd)).toContain(field);
+    }
+    expect(source).toContain('saveHAConnection.mutate(haConnectionDraft())');
+    expect(source).toContain('mutationFn: (draft: AppSettingsUpdate) => api.updateSettings(draft)');
   });
 });

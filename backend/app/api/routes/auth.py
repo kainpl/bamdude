@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Annotated
 
 import jwt
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response, status
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, Request, Response, status
 from fastapi.security import HTTPAuthorizationCredentials
 from jwt.exceptions import PyJWTError as JWTError
 from sqlalchemy import select
@@ -71,10 +71,13 @@ from backend.app.schemas.auth import (
     SetupRequest,
     SetupResponse,
     SMTPSettings,
+    SMTPSettingsRead,
+    SMTPSettingsUpdate,
     TestSMTPRequest,
     TestSMTPResponse,
     UserResponse,
 )
+from backend.app.schemas.settings import AppSettingsUpdate
 from backend.app.services.email_service import (
     create_password_reset_email_from_template,
     create_password_reset_link_email_from_template,
@@ -1016,6 +1019,49 @@ async def mint_media_token(current_user: User = Depends(get_current_active_user)
 # Advanced Authentication Endpoints
 
 
+async def _resolve_smtp_draft(db: AsyncSession, draft: SMTPSettingsUpdate | None) -> SMTPSettings | None:
+    from backend.app.core.credential_config import lock_credential_config, merge_secret_fields
+
+    await lock_credential_config(db)
+    stored_model = await get_smtp_settings(db)
+    if draft is None:
+        return stored_model
+    stored = stored_model.model_dump() if stored_model else {}
+    changes = draft.model_dump(exclude_unset=True)
+    actions = changes.pop("secret_actions", None)
+    # Honor the old TLS selector only when the new selector is absent.
+    if "smtp_use_tls" in changes and "smtp_security" not in changes:
+        changes["smtp_security"] = "starttls" if changes["smtp_use_tls"] else "ssl"
+
+    def scope(c):
+        # Auth-off never transmits the retained password. Its destination and
+        # account remain bound, including while disabled, for safe re-enabling.
+        return (
+            str(c.get("smtp_host") or "").strip().lower(),
+            c.get("smtp_port", 587),
+            c.get("smtp_security", "starttls"),
+            c.get("smtp_username") or "",
+        )
+
+    merged = merge_secret_fields(
+        stored,
+        changes,
+        {"smtp_password"},
+        actions,
+        creating=stored_model is None,
+        legacy_blank_keep={"smtp_password"},
+        scope=scope,
+    )
+    resolved = SMTPSettings(**merged)
+    if not resolved.smtp_host.strip() or not resolved.smtp_from_email.strip():
+        raise HTTPException(422, "SMTP host and sender are required")
+    if resolved.smtp_security not in {"none", "ssl", "starttls"} or not 1 <= resolved.smtp_port <= 65535:
+        raise HTTPException(422, "Invalid SMTP transport")
+    if resolved.smtp_auth_enabled and (not resolved.smtp_username or not resolved.smtp_password):
+        raise HTTPException(400, "Authenticated SMTP requires a username and password")
+    return resolved
+
+
 @router.post("/smtp/test", response_model=TestSMTPResponse, dependencies=[RequireAdmin()])
 async def test_smtp_connection(
     test_request: TestSMTPRequest,
@@ -1027,8 +1073,9 @@ async def test_smtp_connection(
 
     logger = logging.getLogger(__name__)
 
+    smtp_settings = await _resolve_smtp_draft(db, test_request.settings)
+    await db.rollback()  # Draft tests never persist or hold locks across I/O.
     try:
-        smtp_settings = await get_smtp_settings(db)
         if not smtp_settings:
             return TestSMTPResponse(success=False, message="SMTP settings not configured. Save SMTP settings first.")
 
@@ -1043,28 +1090,29 @@ async def test_smtp_connection(
 
         logger.info(f"Test email sent successfully to {test_request.test_recipient}")
         return TestSMTPResponse(success=True, message="Test email sent successfully")
-    except Exception as e:
-        logger.error("Failed to send test email: %s", e)
+    except Exception:
+        logger.error("Failed to send test email")
         # Driver exceptions can contain credentials; keep the UI response generic.
         return TestSMTPResponse(success=False, message="Failed to send test email. Check the server logs.")
 
 
-@router.get("/smtp", response_model=SMTPSettings | None, dependencies=[RequireAdmin()])
+@router.get("/smtp", response_model=SMTPSettingsRead | None, dependencies=[RequireAdmin()])
 async def get_smtp_config(
     current_user: User | None = RequirePermission(Permission.SETTINGS_READ),
     db: AsyncSession = Depends(get_auth_db),
 ):
     """Get SMTP settings (admin only when auth enabled). Password is not returned."""
     smtp_settings = await get_smtp_settings(db)
-    if smtp_settings:
-        # Don't return password in response
-        smtp_settings.smtp_password = None
-    return smtp_settings
+    return (
+        SMTPSettingsRead(**smtp_settings.model_dump(), smtp_password_configured=bool(smtp_settings.smtp_password))
+        if smtp_settings
+        else None
+    )
 
 
 @router.post("/smtp", response_model=dict, dependencies=[RequireAdmin()])
 async def save_smtp_config(
-    smtp_settings: SMTPSettings,
+    smtp_settings: SMTPSettingsUpdate,
     current_user: User | None = RequirePermission(Permission.SETTINGS_UPDATE),
     db: AsyncSession = Depends(get_auth_db),
 ):
@@ -1073,14 +1121,15 @@ async def save_smtp_config(
 
     logger = logging.getLogger(__name__)
 
+    resolved = await _resolve_smtp_draft(db, smtp_settings)
     try:
-        await save_smtp_settings(db, smtp_settings)
+        await save_smtp_settings(db, resolved)
         await db.commit()
         logger.info(f"SMTP settings updated by admin user: {current_user.username if current_user else 'anonymous'}")
         return {"message": "SMTP settings saved successfully"}
-    except Exception as e:
+    except Exception:
         await db.rollback()
-        logger.error("Failed to save SMTP settings: %s", e)
+        logger.error("Failed to save SMTP settings")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to save SMTP settings",
@@ -1582,6 +1631,7 @@ async def _sync_ldap_user(db: AsyncSession, user: User, ldap_user, ldap_config) 
 
 @router.post("/ldap/test", dependencies=[RequireAdmin()])
 async def test_ldap(
+    draft: Annotated[AppSettingsUpdate | None, Body()] = None,
     current_user: User | None = RequirePermission(Permission.SETTINGS_UPDATE),
     db: AsyncSession = Depends(get_auth_db),
 ):
@@ -1592,36 +1642,44 @@ async def test_ldap(
 
     logger = logging.getLogger(__name__)
 
-    ldap_settings = await _get_ldap_settings(db)
-    if not ldap_settings:
-        # LDAP might not be enabled yet but settings might still exist - read all keys
-        ldap_keys = [
-            "ldap_enabled",
-            "ldap_server_url",
-            "ldap_bind_dn",
-            "ldap_bind_password",
-            "ldap_search_base",
-            "ldap_user_filter",
-            "ldap_security",
-            "ldap_group_mapping",
-            "ldap_auto_provision",
-            "ldap_default_group",
-        ]
-        result = await db.execute(select(Settings).where(Settings.key.in_(ldap_keys)))
-        ldap_settings = {s.key: s.value for s in result.scalars().all()}
-        # Force enabled for test
-        ldap_settings["ldap_enabled"] = "true"
+    from backend.app.api.routes.settings import _validate_ldap_destination, get_setting, resolve_settings_credentials
+    from backend.app.core.credential_config import lock_credential_config
+
+    changes = draft.model_dump(exclude_unset=True) if draft else {}
+    actions = changes.pop("secret_actions", None)
+    if any(not key.startswith("ldap_") for key in changes) or any(
+        key not in {"ldap_bind_password", "ldap_server_url"} for key in actions or {}
+    ):
+        raise HTTPException(422, "Only LDAP settings are accepted")
+    await lock_credential_config(db)
+    merged = await resolve_settings_credentials(db, changes, actions)
+    ldap_settings = {
+        key: str(value).lower() if isinstance(value, bool) else str(value)
+        for key, value in merged.items()
+        if key.startswith("ldap_")
+    }
+    ldap_settings["ldap_enabled"] = "true"
+    # Runtime-only restored/operator CA settings are deliberately not draftable.
+    # Preserve them so Test verifies exactly as login does.
+    ldap_settings["ldap_ca_cert_path"] = await get_setting(db, "ldap_ca_cert_path") or ""
+    _validate_ldap_destination(merged)
+    await db.rollback()
 
     config = parse_ldap_config(ldap_settings)
     if not config:
         return {"success": False, "message": "LDAP server URL is not configured"}
 
-    success, message = test_ldap_connection(config)
+    success, _message = test_ldap_connection(config)
     if success:
         logger.info("LDAP connection test successful")
     else:
-        logger.warning("LDAP connection test failed: %s", message)
-    return {"success": success, "message": message}
+        logger.warning("LDAP connection test failed")
+    return {
+        "success": success,
+        "message": "LDAP connection successful"
+        if success
+        else "LDAP connection failed. Verify the server, security mode and bind credentials.",
+    }
 
 
 @router.get("/ldap/status")

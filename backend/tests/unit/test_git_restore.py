@@ -245,7 +245,12 @@ class TestRestoreSettings:
         await _service()._restore_settings(db_session, payload, overwrite=False, tally=tally)
         await db_session.commit()
 
-        rows = {s.key: s.value for s in (await db_session.execute(select(Settings))).scalars().all()}
+        rows = {
+            s.key: s.value
+            for s in (await db_session.execute(select(Settings).where(Settings.key != "_credential_config_guard")))
+            .scalars()
+            .all()
+        }
         assert rows == {"currency": "EUR", "theme": "dark"}
         assert tally.restored == 2
 
@@ -285,7 +290,12 @@ class TestRestoreSettings:
         await _service()._restore_settings(db_session, payload, overwrite=True, tally=tally)
         await db_session.commit()
 
-        keys = {s.key for s in (await db_session.execute(select(Settings))).scalars().all()}
+        keys = {
+            s.key
+            for s in (await db_session.execute(select(Settings).where(Settings.key != "_credential_config_guard")))
+            .scalars()
+            .all()
+        }
         assert keys == {"currency"}
         # Refusals are notes, not tally rows: the preview never counted these
         # keys, so counting them here would put the total above what the user
@@ -313,7 +323,12 @@ class TestRestoreSettings:
         await _service()._restore_settings(db_session, payload, overwrite=True, tally=tally)
         await db_session.commit()
 
-        rows = {s.key: s.value for s in (await db_session.execute(select(Settings))).scalars().all()}
+        rows = {
+            s.key: s.value
+            for s in (await db_session.execute(select(Settings).where(Settings.key != "_credential_config_guard")))
+            .scalars()
+            .all()
+        }
         assert rows["auth_enabled"] == "true"
         assert rows["local_login_enabled"] == "true"
         assert "advanced_auth_enabled" not in rows
@@ -323,7 +338,7 @@ class TestRestoreSettings:
         # As above: refused keys are outside the preview's count, so outside the
         # tally too.
         assert tally.skipped == 0
-        assert any("authentication setting" in note for note in _messages(tally))
+        assert any("authentication/integration setting" in note for note in _messages(tally))
 
     @pytest.mark.asyncio
     async def test_missing_payload_is_noted_not_fatal(self, db_session):
@@ -377,7 +392,12 @@ class TestCompanionCredentials:
         return tally
 
     async def _rows(self, db) -> dict:
-        return {s.key: s.value for s in (await db.execute(select(Settings))).scalars().all()}
+        return {
+            s.key: s.value
+            for s in (await db.execute(select(Settings).where(Settings.key != "_credential_config_guard")))
+            .scalars()
+            .all()
+        }
 
     # --- The refusal itself ------------------------------------------------
 
@@ -437,7 +457,7 @@ class TestCompanionCredentials:
 
         rows = await self._rows(db_session)
         assert "ha_enabled" not in rows
-        assert rows["ha_url"] == "http://ha.local"
+        assert "ha_url" not in rows, "partial restore cannot rebind the retained HA token"
 
     @pytest.mark.asyncio
     async def test_a_blank_local_credential_row_is_not_usable(self, db_session):
@@ -3037,7 +3057,7 @@ class TestMqttRelayReconfigure:
 
         # Skipped keys are not "written", or a blocked mqtt_password would
         # trigger a pointless reconnect.
-        assert written == {"mqtt_broker", "currency"}
+        assert written == {"currency"}, "destination and credential are both edited locally"
 
     @pytest.mark.asyncio
     async def test_keys_skipped_for_overwrite_off_are_not_reported(self, db_session):
@@ -3074,7 +3094,7 @@ class TestMqttRelayReconfigure:
             keys_written=written,
         )
 
-        assert written == {"mqtt_broker"}
+        assert written == set(), "partial restore cannot rebind the local MQTT password"
 
 
 class TestApplyOrdering:
@@ -3175,7 +3195,7 @@ class TestKprofilePhaseFailure:
     leaving the relay pointed at the pre-restore broker.
     """
 
-    _SETTINGS = {"version": "1.0", "settings": {"mqtt_broker": "restored.local", "currency": "EUR"}}
+    _SETTINGS = {"version": "1.0", "settings": {"mqtt_topic_prefix": "restored/topic", "currency": "EUR"}}
 
     def _payload(self, profiles=None):
         return {
@@ -3216,8 +3236,15 @@ class TestKprofilePhaseFailure:
         )
 
         assert results[RestoreCategory.SETTINGS.value].restored == 2
-        rows = {s.key: s.value for s in (await db_session.execute(select(Settings))).scalars().all()}
-        assert rows == {"mqtt_broker": "restored.local", "currency": "EUR"}, "committed before the phase that failed"
+        rows = {
+            s.key: s.value
+            for s in (await db_session.execute(select(Settings).where(Settings.key != "_credential_config_guard")))
+            .scalars()
+            .all()
+        }
+        assert rows == {"mqtt_topic_prefix": "restored/topic", "currency": "EUR"}, (
+            "committed before the phase that failed"
+        )
 
     @pytest.mark.asyncio
     async def test_the_failure_is_counted_and_explained(self, db_session):
@@ -3254,7 +3281,7 @@ class TestKprofilePhaseFailure:
         assert result["results"][RestoreCategory.SETTINGS.value]["restored"] == 2
         assert result["results"][RestoreCategory.KPROFILES.value]["failed"] == 1
         relay.configure.assert_awaited_once()
-        assert relay.configure.await_args.args[0]["mqtt_broker"] == "restored.local"
+        assert relay.configure.await_args.args[0]["mqtt_topic_prefix"] == "restored/topic"
 
     @pytest.mark.asyncio
     async def test_a_failure_before_the_commit_still_reports_nothing_restored(self, db_session):
@@ -3271,7 +3298,9 @@ class TestKprofilePhaseFailure:
 
         assert result["success"] is False
         assert result["results"] == {}
-        assert (await db_session.execute(select(Settings))).scalars().first() is None
+        assert (
+            await db_session.execute(select(Settings).where(Settings.key != "_credential_config_guard"))
+        ).scalars().first() is None
         relay.configure.assert_not_awaited()
 
     @pytest.mark.asyncio

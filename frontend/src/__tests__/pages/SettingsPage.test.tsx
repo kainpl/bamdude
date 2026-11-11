@@ -5,7 +5,7 @@
 import { useEffect } from 'react';
 import { useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { describe, it, expect, beforeEach } from 'vitest';
-import { act, fireEvent, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { render } from '../utils';
 import { SettingsPage } from '../../pages/SettingsPage';
@@ -48,6 +48,9 @@ const toggleFor = (label: string): HTMLInputElement => {
 
 describe('SettingsPage', () => {
   beforeEach(() => {
+    // BrowserRouter shares the document URL. A preceding Printing test must
+    // not decide the next test's initial tab, including after a failed wait.
+    window.history.replaceState({}, '', '/');
     server.use(
       http.get('/api/v1/settings/', () => {
         return HttpResponse.json(mockSettings);
@@ -78,6 +81,177 @@ describe('SettingsPage', () => {
         return HttpResponse.json({ auth_enabled: false, requires_setup: false });
       })
     );
+  });
+
+  it.each([
+    ['MQTT Publishing', 'mqtt_password'],
+    ['Prometheus Metrics', 'prometheus_token'],
+  ] as const)('keeps %s replace/typing/clear drafts manual across elapsed autosave timers', async (heading, field) => {
+    const saved: Record<string, unknown>[] = [];
+    let releaseResponse!: () => void;
+    const responseGate = new Promise<void>(resolve => { releaseResponse = resolve; });
+    const initial = { ...mockSettings, external_url: window.location.origin, mqtt_enabled: true, mqtt_broker: 'old.local',
+      mqtt_username: 'account', mqtt_use_tls: false, mqtt_password_configured: true,
+      prometheus_enabled: true, prometheus_token_configured: true };
+    server.use(
+      http.get('/api/v1/settings/', () => HttpResponse.json(initial)),
+      http.put('/api/v1/settings/', async ({ request }) => {
+        const body = await request.json() as Record<string, unknown>;
+        saved.push(body);
+        if (saved.length === 1) await responseGate;
+        const { secret_actions: _actions, mqtt_password: _mqtt, prometheus_token: _prom, ...safe } = body;
+        return HttpResponse.json({ ...initial, ...safe, [`${field}_configured`]: (body.secret_actions as Record<string, string>)?.[field] !== 'clear' });
+      }),
+    );
+    render(<SettingsPage />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Network' }));
+    const card = (await screen.findByRole('heading', { name: heading })).closest<HTMLElement>('[class*="card-shadow"]')!;
+    await act(() => new Promise(resolve => setTimeout(resolve, 150)));
+    fireEvent.change(within(card).getByLabelText('Credential action'), { target: { value: 'replace' } });
+    await act(() => new Promise(resolve => setTimeout(resolve, 750)));
+    expect(saved).toEqual([]);
+    expect(within(card).getByRole('button', { name: 'Save connection' })).toBeDisabled();
+    fireEvent.change(within(card).getByLabelText('New credential'), { target: { value: 'partial' } });
+    await act(() => new Promise(resolve => setTimeout(resolve, 750)));
+    expect(saved).toEqual([]);
+    fireEvent.change(within(card).getByLabelText('New credential'), { target: { value: 'complete-canary' } });
+    fireEvent.click(within(card).getByRole('button', { name: 'Save connection' }));
+    await waitFor(() => expect(saved).toHaveLength(1));
+    expect(within(card).getByLabelText('Credential action')).toBeDisabled();
+    const pendingInput = within(card).getByLabelText('New credential');
+    expect(pendingInput).toBeDisabled();
+    await userEvent.type(pendingInput, '-later-edit');
+    expect(pendingInput).toHaveValue('complete-canary');
+    releaseResponse();
+    await waitFor(() => expect(within(card).getByLabelText('Credential action')).not.toBeDisabled());
+    expect(saved[0][field]).toBe('complete-canary');
+    expect(saved[0].secret_actions).toEqual({ [field]: 'replace' });
+    expect(saved[0]).not.toHaveProperty(field === 'mqtt_password' ? 'prometheus_token' : 'mqtt_password');
+    if (field === 'mqtt_password') expect(saved[0]).toMatchObject({ mqtt_broker: 'old.local', mqtt_port: 1883, mqtt_username: 'account', mqtt_use_tls: false, mqtt_enabled: true });
+    fireEvent.change(within(card).getByLabelText('Credential action'), { target: { value: 'clear' } });
+    await act(() => new Promise(resolve => setTimeout(resolve, 750)));
+    expect(saved).toHaveLength(1);
+    // Required-auth clear remains a draft until the operator explicitly disables and saves.
+    const toggle = field === 'mqtt_password' ? toggleFor('Publish events to external MQTT broker') : toggleFor('Enable Metrics Endpoint');
+    fireEvent.click(toggle);
+    await act(() => new Promise(resolve => setTimeout(resolve, 750)));
+    expect(saved).toHaveLength(1);
+    fireEvent.click(within(card).getByRole('button', { name: 'Save connection' }));
+    await waitFor(() => expect(saved).toHaveLength(2));
+    expect(saved[1]).not.toHaveProperty(field);
+    expect(saved[1].secret_actions).toEqual({ [field]: 'clear' });
+    if (field === 'prometheus_token') {
+      fireEvent.click(toggleFor('Enable Metrics Endpoint'));
+      await act(() => new Promise(resolve => setTimeout(resolve, 750)));
+      expect(saved).toHaveLength(2);
+      expect(within(card).getByRole('button', { name: 'Save connection' })).toBeDisabled();
+      fireEvent.change(within(card).getByLabelText('Credential action'), { target: { value: 'replace' } });
+      fireEvent.change(within(card).getByLabelText('New credential'), { target: { value: 'new-metrics-canary' } });
+      fireEvent.click(within(card).getByRole('button', { name: 'Save connection' }));
+      await waitFor(() => expect(saved).toHaveLength(3));
+      expect(saved[2]).toEqual({ prometheus_enabled: true, prometheus_token: 'new-metrics-canary', secret_actions: { prometheus_token: 'replace' } });
+    }
+  }, 20_000);
+
+  it('keeps a changed MQTT destination and secret draft out of unrelated preference autosaves', async () => {
+    const saved: Record<string, unknown>[] = [];
+    const initial = { ...mockSettings, external_url: window.location.origin, mqtt_enabled: true, mqtt_broker: 'old.local',
+      mqtt_username: 'account', mqtt_use_tls: false, mqtt_password_configured: true };
+    server.use(
+      http.get('/api/v1/settings/', () => HttpResponse.json(initial)),
+      http.put('/api/v1/settings/', async ({ request }) => {
+        const body = await request.json() as Record<string, unknown>;
+        saved.push(body);
+        return HttpResponse.json({ ...initial, ...body });
+      }),
+    );
+    render(<SettingsPage />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Network' }));
+    const broker = await screen.findByPlaceholderText('mqtt.example.com or 192.168.1.100');
+    const card = broker.closest<HTMLElement>('[class*="card-shadow"]')!;
+    await act(() => new Promise(resolve => setTimeout(resolve, 150)));
+    fireEvent.change(broker, { target: { value: 'new.local' } });
+    await act(() => new Promise(resolve => setTimeout(resolve, 750)));
+    expect(saved).toEqual([]);
+    expect(within(card).getByRole('button', { name: 'Save connection' })).toBeDisabled();
+    expect(within(card).getByText(/connection destination changed/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'General' }));
+    const date = await screen.findByText('Date Format');
+    fireEvent.change(date.parentElement!.querySelector('select')!, { target: { value: 'iso' } });
+    await waitFor(() => expect(saved.at(-1)?.date_format).toBe('iso'), { timeout: 5000 });
+    expect(saved.every(body => !Object.keys(body).some(key => key.startsWith('mqtt_') || key.startsWith('prometheus_')) && !body.secret_actions)).toBe(true);
+    fireEvent.click(screen.getByRole('button', { name: 'Network' }));
+    const returnedBroker = await screen.findByPlaceholderText('mqtt.example.com or 192.168.1.100');
+    expect(returnedBroker).toHaveValue('new.local');
+    const returnedCard = returnedBroker.closest<HTMLElement>('[class*="card-shadow"]')!;
+    fireEvent.change(within(returnedCard).getByLabelText('Credential action'), { target: { value: 'replace' } });
+    fireEvent.change(within(returnedCard).getByLabelText('New credential'), { target: { value: 'new-broker-canary' } });
+    await act(() => new Promise(resolve => setTimeout(resolve, 750)));
+    const before = saved.length;
+    fireEvent.click(within(returnedCard).getByRole('button', { name: 'Save connection' }));
+    await waitFor(() => expect(saved).toHaveLength(before + 1));
+    expect(saved.at(-1)).toMatchObject({ mqtt_broker: 'new.local', mqtt_password: 'new-broker-canary',
+      secret_actions: { mqtt_password: 'replace' } });
+  }, 15_000);
+
+  it('omits an opaque HA connection while autosaving a normal preference', async () => {
+    const saved: Record<string, unknown>[] = [];
+    const initial = { ...mockSettings, external_url: window.location.origin, ha_enabled: true, ha_url: '',
+      ha_url_configured: true, ha_url_opaque: true, ha_token_configured: true };
+    server.use(
+      http.get('/api/v1/settings/', () => HttpResponse.json(initial)),
+      http.put('/api/v1/settings/', async ({ request }) => {
+        const body = await request.json() as Record<string, unknown>;
+        saved.push(body);
+        return HttpResponse.json({ ...initial, ...body });
+      }),
+    );
+    render(<SettingsPage />);
+    await act(() => new Promise(resolve => setTimeout(resolve, 150)));
+    const label = await screen.findByText('Date Format');
+    fireEvent.change(label.parentElement!.querySelector('select')!, { target: { value: 'iso' } });
+    await waitFor(() => expect(saved.at(-1)?.date_format).toBe('iso'), { timeout: 5000 });
+    expect(saved.at(-1)).not.toHaveProperty('ha_url');
+    expect(saved.at(-1)).not.toHaveProperty('ha_token');
+    expect(saved.at(-1)?.secret_actions ?? {}).not.toHaveProperty('ha_url');
+    expect(saved.at(-1)?.secret_actions ?? {}).not.toHaveProperty('ha_token');
+  });
+
+  it('keeps HA test drafts unsaved beyond debounce and saves the pair only with Save connection', async () => {
+    const saved: Record<string, unknown>[] = [];
+    const probes: Record<string, unknown>[] = [];
+    const initial = { ...mockSettings, external_url: window.location.origin, ha_enabled: true,
+      ha_url: 'http://ha.old:8123', ha_url_configured: true, ha_token_configured: true };
+    server.use(
+      http.get('/api/v1/settings/', () => HttpResponse.json(initial)),
+      http.put('/api/v1/settings/', async ({ request }) => {
+        const body = await request.json() as Record<string, unknown>;
+        saved.push(body);
+        return HttpResponse.json({ ...initial, ha_url: body.ha_url ?? initial.ha_url });
+      }),
+      http.post('/api/v1/smart-plugs/ha/test-connection', async ({ request }) => {
+        probes.push(await request.json() as Record<string, unknown>);
+        return HttpResponse.json({ success: true, message: 'Connected', error: null });
+      }),
+    );
+    render(<SettingsPage />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Network' }));
+    const url = await screen.findByPlaceholderText('http://192.168.1.100:8123');
+    await act(() => new Promise(resolve => setTimeout(resolve, 150)));
+    fireEvent.change(url, { target: { value: 'http://ha.draft:8123' } });
+    const card = url.closest<HTMLElement>('[class*="card-shadow"]')!;
+    fireEvent.change(within(card).getByLabelText('Credential action'), { target: { value: 'replace' } });
+    fireEvent.change(within(card).getByLabelText('New credential'), { target: { value: 'ha-draft-canary' } });
+    await act(() => new Promise(resolve => setTimeout(resolve, 750)));
+    expect(saved).toEqual([]);
+    fireEvent.click(within(card).getByRole('button', { name: 'Test Connection' }));
+    await waitFor(() => expect(probes).toHaveLength(1));
+    await act(() => new Promise(resolve => setTimeout(resolve, 750)));
+    expect(saved).toEqual([]);
+    expect(probes[0]).toEqual({ url: 'http://ha.draft:8123', token: 'ha-draft-canary', secret_actions: { ha_token: 'replace' } });
+    fireEvent.click(within(card).getByRole('button', { name: 'Save connection' }));
+    await waitFor(() => expect(saved).toHaveLength(1));
+    expect(saved[0]).toEqual({ ha_url: 'http://ha.draft:8123', ha_token: 'ha-draft-canary', secret_actions: { ha_token: 'replace' } });
   });
 
   it('keeps ordinary preferences editable but disables and omits protected fields for a custom settings editor', async () => {
@@ -220,7 +394,7 @@ describe('SettingsPage', () => {
     await waitFor(() => expect(saved.at(-1)?.forecast_operator_absence_start).toBe('22:30'), { timeout: 5000 });
     expect(saved.at(-1)?.forecast_operator_timezone).toBe('Europe/Kyiv');
     await user.click(screen.getByRole('button', { name: 'General' }));
-  });
+  }, 15_000); // Two independently bounded autosave waits, each up to 5 s.
 
   describe('slicing settings', () => {
     it('keeps slicer configuration out of General and opens it from Slicing', async () => {
@@ -616,6 +790,55 @@ describe('SettingsPage', () => {
         expect(screen.getByPlaceholderText(/api\/frame\.jpeg\?src=printer/)).toBeInTheDocument();
       });
     });
+
+    it('keeps opaque camera URLs out of the editor and tests saved endpoints via JSON', async () => {
+      const bodies: Array<Record<string, unknown>> = [];
+      server.use(
+        http.get('/api/v1/printers/', () => HttpResponse.json([{
+          ...mjpegPrinter,
+          external_camera_url: undefined,
+          external_camera_url_configured: true,
+          external_camera_snapshot_url_configured: true,
+          external_camera_host: 'camera.example',
+        }])),
+        http.post('/api/v1/printers/7/camera/external/test', async ({ request }) => {
+          expect(new URL(request.url).search).toBe('');
+          bodies.push(await request.json() as Record<string, unknown>);
+          return HttpResponse.json({ success: true, resolution: '640x480' });
+        }),
+      );
+      render(<SettingsPage />);
+      await switchToPrintingTab();
+      const input = await screen.findByPlaceholderText('Configured — enter a new URL to replace');
+      expect(input).toHaveValue('');
+      const testButtons = within(input.parentElement!).getAllByRole('button', { name: 'Test' });
+      const user = userEvent.setup();
+      await user.click(testButtons[0]);
+      await waitFor(() => expect(bodies[0]).toEqual({ camera_type: 'mjpeg', source: 'stream' }));
+      await waitFor(() => expect(testButtons[1]).toBeEnabled());
+      await user.click(testButtons[1]);
+      await waitFor(() => expect(bodies[1]).toEqual({ camera_type: 'snapshot', source: 'snapshot' }));
+    }, 15000);
+
+    it('clears a configured stream explicitly and disables the external source', async () => {
+      let body: Record<string, unknown> | null = null;
+      server.use(
+        http.get('/api/v1/printers/', () => HttpResponse.json([{
+          ...mjpegPrinter, external_camera_url: undefined, external_camera_url_configured: true,
+        }])),
+        http.patch('/api/v1/printers/7', async ({ request }) => {
+          body = await request.json() as Record<string, unknown>;
+          return HttpResponse.json({ ...mjpegPrinter, external_camera_enabled: false, external_camera_url_configured: false });
+        }),
+      );
+      render(<SettingsPage />);
+      await switchToPrintingTab();
+      const user = userEvent.setup();
+      await user.click(await screen.findByRole('button', { name: 'Clear saved URL' }));
+      await waitFor(() => expect(body).toEqual({
+        external_camera_enabled: false, secret_actions: { external_camera_url: 'clear' },
+      }));
+    }, 15000);
 
     it('hides the snapshot URL input when camera_type is snapshot (already a single-frame source)', async () => {
       server.use(

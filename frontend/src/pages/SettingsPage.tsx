@@ -4,6 +4,9 @@ import { availableEngines, hasEngineChoice, resolveEngine, type SliceEngineId } 
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useSearchParams } from 'react-router';
 import { api, macrosApi } from '../api/client';
+import type { SecretAction } from '../api/client';
+import { SecretInput } from '../components/SecretInput';
+import { credentialDraft } from '../utils/credentialDraft';
 import { checkPasswordComplexity, isPasswordValid } from '../utils/password';
 import { useAuth } from '../contexts/AuthContext';
 import { formatDateOnly, type DateFormat } from '../utils/date';
@@ -281,6 +284,7 @@ export function SettingsPage() {
   const releaseNotesHeadingId = useId();
   const macroHeadingId = useId();
   const [localSettings, setLocalSettings] = useState<AppSettings | null>(null);
+  const [secretActions, setSecretActions] = useState<Record<string, SecretAction>>({});
   // Transient typed strings for the per-filament humidity threshold inputs
   // (#1605). Committed back to localSettings.ams_humidity_thresholds on blur so
   // intermediate values ("", "3", "5") aren't eaten by the [5, 95] clamp mid-type.
@@ -1233,7 +1237,7 @@ export function SettingsPage() {
   };
 
   const updatePrinterMutation = useMutation({
-    mutationFn: ({ id, data }: { id: number; data: Partial<{ external_camera_url: string | null; external_camera_type: string | null; external_camera_enabled: boolean; external_camera_snapshot_url: string | null; camera_rotation: number; camera_light_auto: CameraLightPolicy }> }) =>
+    mutationFn: ({ id, data }: { id: number; data: Partial<{ secret_actions: Partial<Record<'external_camera_url' | 'external_camera_snapshot_url', 'keep' | 'clear' | 'replace'>>; external_camera_url: string | null; external_camera_type: string | null; external_camera_enabled: boolean; external_camera_snapshot_url: string | null; camera_rotation: number; camera_light_auto: CameraLightPolicy }> }) =>
       api.updatePrinter(id, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['printers'] });
@@ -1347,17 +1351,8 @@ export function SettingsPage() {
       baseline.ftp_retry_count !== localSettings.ftp_retry_count ||
       baseline.ftp_retry_delay !== localSettings.ftp_retry_delay ||
       baseline.ftp_timeout !== localSettings.ftp_timeout ||
-      baseline.mqtt_enabled !== localSettings.mqtt_enabled ||
-      baseline.mqtt_broker !== localSettings.mqtt_broker ||
-      baseline.mqtt_port !== localSettings.mqtt_port ||
-      baseline.mqtt_username !== localSettings.mqtt_username ||
-      baseline.mqtt_password !== localSettings.mqtt_password ||
-      baseline.mqtt_topic_prefix !== localSettings.mqtt_topic_prefix ||
-      baseline.mqtt_use_tls !== localSettings.mqtt_use_tls ||
       baseline.external_url !== localSettings.external_url ||
       baseline.ha_enabled !== localSettings.ha_enabled ||
-      baseline.ha_url !== localSettings.ha_url ||
-      baseline.ha_token !== localSettings.ha_token ||
       Number(baseline.library_disk_warning_gb ?? 5) !== Number(localSettings.library_disk_warning_gb ?? 5) ||
       (baseline.library_all_files_recursive ?? false) !== (localSettings.library_all_files_recursive ?? false) ||
       (baseline.camera_view_mode ?? 'window') !== (localSettings.camera_view_mode ?? 'window') ||
@@ -1368,8 +1363,6 @@ export function SettingsPage() {
       (baseline.orcaslicer_api_url ?? '') !== (localSettings.orcaslicer_api_url ?? '') ||
       (baseline.bambu_studio_api_url ?? '') !== (localSettings.bambu_studio_api_url ?? '') ||
       (baseline.slicer_stall_timeout_minutes ?? 15) !== (localSettings.slicer_stall_timeout_minutes ?? 15) ||
-      baseline.prometheus_enabled !== localSettings.prometheus_enabled ||
-      baseline.prometheus_token !== localSettings.prometheus_token ||
       (baseline.session_max_hours ?? 720) !== (localSettings.session_max_hours ?? 720) ||
       (baseline.user_notifications_enabled ?? true) !== (localSettings.user_notifications_enabled ?? true);
 
@@ -1478,13 +1471,6 @@ export function SettingsPage() {
         ftp_retry_count: localSettings.ftp_retry_count,
         ftp_retry_delay: localSettings.ftp_retry_delay,
         ftp_timeout: localSettings.ftp_timeout,
-        mqtt_enabled: localSettings.mqtt_enabled,
-        mqtt_broker: localSettings.mqtt_broker,
-        mqtt_port: localSettings.mqtt_port,
-        mqtt_username: localSettings.mqtt_username,
-        mqtt_password: localSettings.mqtt_password,
-        mqtt_topic_prefix: localSettings.mqtt_topic_prefix,
-        mqtt_use_tls: localSettings.mqtt_use_tls,
         external_url: localSettings.external_url,
         ha_enabled: localSettings.ha_enabled,
         ha_url: localSettings.ha_url,
@@ -1499,8 +1485,6 @@ export function SettingsPage() {
         orcaslicer_api_url: localSettings.orcaslicer_api_url,
         bambu_studio_api_url: localSettings.bambu_studio_api_url,
         slicer_stall_timeout_minutes: localSettings.slicer_stall_timeout_minutes,
-        prometheus_enabled: localSettings.prometheus_enabled,
-        prometheus_token: localSettings.prometheus_token,
         session_max_hours: localSettings.session_max_hours,
         user_notifications_enabled: localSettings.user_notifications_enabled,
       };
@@ -1511,6 +1495,10 @@ export function SettingsPage() {
           if (ADMIN_SETTING_FIELDS.has(key)) delete (settingsToSave as Record<string, unknown>)[key];
         }
       }
+      // Read responses contain presence flags, never reusable credentials.
+      // Blank inputs keep by omission; explicit clear/replace carry actions.
+      delete settingsToSave.ha_url;
+      delete settingsToSave.ha_token;
       updateMutation.mutate(settingsToSave);
     }, 500);
 
@@ -1520,7 +1508,7 @@ export function SettingsPage() {
         clearTimeout(saveTimeoutRef.current);
       }
     };
-  }, [localSettings, settings, updateMutation, hasPermission, isAdmin, showToast, t]);
+  }, [localSettings, settings, updateMutation, hasPermission, isAdmin, showToast, t, secretActions]);
 
   const updateSetting = useCallback(<K extends keyof AppSettings>(key: K, value: AppSettings[K]) => {
     // Gate at the point of user interaction (not in the debounced-save
@@ -1534,19 +1522,100 @@ export function SettingsPage() {
     setLocalSettings(prev => prev ? { ...prev, [key]: value } : null);
   }, [hasPermission, isAdmin, showToast, t]);
 
+  const haConnectionDraft = (): AppSettingsUpdate => {
+    if (!localSettings) return {};
+    const token = localSettings.ha_token_from_env ? {} : credentialDraft('ha_token', localSettings.ha_token,
+      secretActions.ha_token, localSettings.ha_token_configured);
+    const url = localSettings.ha_url_from_env ? {} : localSettings.ha_url_opaque
+      ? credentialDraft('ha_url', localSettings.ha_url, secretActions.ha_url, true) : { ha_url: localSettings.ha_url };
+    return { ...url, ...token, secret_actions: { ...('secret_actions' in url ? url.secret_actions : {}),
+      ...('secret_actions' in token ? token.secret_actions : {}) } };
+  };
+  const haConnectionChanged = !!localSettings && !!settings && ((localSettings.ha_url ?? '') !== (settings.ha_url ?? '') ||
+    (localSettings.ha_token ?? '') !== '' || !!secretActions.ha_url || !!secretActions.ha_token);
+  const saveHAConnection = useMutation({
+    mutationFn: (draft: AppSettingsUpdate) => api.updateSettings(draft),
+    onSuccess: (data, submitted) => {
+      serverBaselineRef.current = data;
+      setLocalSettings(previous => {
+        if (!previous) return previous;
+        const next = { ...previous };
+        if (('ha_url' in submitted || submitted.secret_actions?.ha_url) && (previous.ha_url ?? '') === (submitted.ha_url ?? '')) {
+          next.ha_url = data.ha_url;
+          next.ha_url_configured = data.ha_url_configured;
+          next.ha_url_opaque = data.ha_url_opaque;
+        }
+        if (('ha_token' in submitted || submitted.secret_actions?.ha_token) && (previous.ha_token ?? '') === (submitted.ha_token ?? '')) {
+          next.ha_token = '';
+          next.ha_token_configured = data.ha_token_configured;
+        }
+        return next;
+      });
+      setSecretActions(previous => Object.fromEntries(Object.entries(previous).filter(([field, action]) => submitted.secret_actions?.[field] !== action)));
+      queryClient.setQueryData(['settings'], data);
+      showToast(t('settings.toast.settingsSaved'), 'success');
+    },
+    onError: (error: Error) => showToast(error.message, 'error'),
+  });
+
+  const mqttConnectionFields = ['mqtt_enabled', 'mqtt_broker', 'mqtt_port', 'mqtt_use_tls', 'mqtt_username', 'mqtt_topic_prefix'] as const;
+  const mqttConnectionChanged = !!localSettings && !!settings && (mqttConnectionFields.some(field => localSettings[field] !== settings[field]) ||
+    !!localSettings.mqtt_password || !!secretActions.mqtt_password);
+  const mqttNeedsReplacement = !!localSettings?.mqtt_password_configured && (secretActions.mqtt_password ?? 'keep') === 'keep' &&
+    ['mqtt_broker', 'mqtt_port', 'mqtt_use_tls', 'mqtt_username'].some(field => localSettings?.[field as keyof AppSettings] !== settings?.[field as keyof AppSettings]);
+  const prometheusConnectionChanged = !!localSettings && !!settings && (localSettings.prometheus_enabled !== settings.prometheus_enabled ||
+    !!localSettings.prometheus_token || !!secretActions.prometheus_token);
+  const invalidReplacement = (field: 'mqtt_password' | 'prometheus_token') => secretActions[field] === 'replace' && !localSettings?.[field]?.trim();
+  const prometheusHasToken = secretActions.prometheus_token === 'replace' ? !!localSettings?.prometheus_token?.trim() :
+    secretActions.prometheus_token !== 'clear' && !!localSettings?.prometheus_token_configured;
+  const manualConnectionDraft = (kind: 'mqtt' | 'prometheus'): AppSettingsUpdate => {
+    if (!localSettings) return {};
+    if (kind === 'prometheus') return { prometheus_enabled: localSettings.prometheus_enabled,
+      ...credentialDraft('prometheus_token', localSettings.prometheus_token, secretActions.prometheus_token, localSettings.prometheus_token_configured) };
+    return { mqtt_enabled: localSettings.mqtt_enabled, mqtt_broker: localSettings.mqtt_broker, mqtt_port: localSettings.mqtt_port,
+      mqtt_use_tls: localSettings.mqtt_use_tls, mqtt_username: localSettings.mqtt_username, mqtt_topic_prefix: localSettings.mqtt_topic_prefix,
+      ...credentialDraft('mqtt_password', localSettings.mqtt_password, secretActions.mqtt_password, localSettings.mqtt_password_configured) };
+  };
+  const saveManualConnection = useMutation({
+    mutationFn: ({ draft }: { kind: 'mqtt' | 'prometheus'; draft: AppSettingsUpdate }) => api.updateSettings(draft),
+    onSuccess: (data, { kind, draft }) => {
+      serverBaselineRef.current = data;
+      const secret = kind === 'mqtt' ? 'mqtt_password' : 'prometheus_token';
+      setLocalSettings(previous => {
+        if (!previous) return previous;
+        const next = { ...previous };
+        for (const field of kind === 'mqtt' ? mqttConnectionFields : ['prometheus_enabled'] as const) {
+          if (previous[field] === draft[field]) Object.assign(next, { [field]: data[field] });
+        }
+        if ((previous[secret] ?? '') === (draft[secret] ?? '')) {
+          next[secret] = '';
+          next[`${secret}_configured`] = data[`${secret}_configured`];
+        }
+        return next;
+      });
+      setSecretActions(previous => previous[secret] === draft.secret_actions?.[secret] &&
+        (localSettings?.[secret] ?? '') === (draft[secret] ?? '') ? Object.fromEntries(Object.entries(previous).filter(([field]) => field !== secret)) : previous);
+      queryClient.setQueryData(['settings'], data);
+      showToast(t('settings.toast.settingsSaved'), 'success');
+    },
+    onError: (error: Error) => showToast(error.message, 'error'),
+  });
+
   // With a split on, the concurrent cap is per group, not farm-wide — so the
   // field has to say so, or the same number reads as a very different promise.
   const staggerSplitOn = !!(localSettings?.stagger_split_by_tags || localSettings?.stagger_split_by_location);
 
-  const handleTestExternalCamera = async (printerId: number, url: string, cameraType: string) => {
-    if (!url) {
+  const handleTestExternalCamera = async (printerId: number, url: string, cameraType: string, source: 'stream' | 'snapshot' = 'stream') => {
+    const printer = printers?.find(item => item.id === printerId);
+    const saved = source === 'snapshot' ? printer?.external_camera_snapshot_url_configured : printer?.external_camera_url_configured;
+    if (!url && !saved) {
       showToast(t('settings.toast.enterCameraUrl'), 'error');
       return;
     }
     setExtCameraTestLoading(prev => ({ ...prev, [printerId]: true }));
     setExtCameraTestResults(prev => ({ ...prev, [printerId]: null }));
     try {
-      const result = await api.testExternalCamera(printerId, url, cameraType);
+      const result = await api.testExternalCamera(printerId, url || undefined, cameraType, source);
       setExtCameraTestResults(prev => ({ ...prev, [printerId]: result }));
       if (result.success) {
         showToast(t('settings.toast.cameraConnected', { resolution: result.resolution || '' }), 'success');
@@ -1565,35 +1634,9 @@ export function SettingsPage() {
   // Local state for camera URL inputs (to avoid saving on every keystroke)
   const [localCameraUrls, setLocalCameraUrls] = useState<Record<number, string>>({});
   const cameraUrlSaveTimeoutRef = useRef<Record<number, ReturnType<typeof setTimeout>>>({});
-  const initializedPrinterUrlsRef = useRef<Set<number>>(new Set());
   // Same debounced-save pattern for the optional snapshot URL override (#1177).
   const [localSnapshotUrls, setLocalSnapshotUrls] = useState<Record<number, string>>({});
   const snapshotUrlSaveTimeoutRef = useRef<Record<number, ReturnType<typeof setTimeout>>>({});
-  const initializedPrinterSnapshotUrlsRef = useRef<Set<number>>(new Set());
-
-  // Initialize local camera URLs from printer data
-  useEffect(() => {
-    if (printers) {
-      const urls: Record<number, string> = {};
-      const snapUrls: Record<number, string> = {};
-      printers.forEach(p => {
-        if (p.external_camera_url && !initializedPrinterUrlsRef.current.has(p.id)) {
-          urls[p.id] = p.external_camera_url;
-          initializedPrinterUrlsRef.current.add(p.id);
-        }
-        if (p.external_camera_snapshot_url && !initializedPrinterSnapshotUrlsRef.current.has(p.id)) {
-          snapUrls[p.id] = p.external_camera_snapshot_url;
-          initializedPrinterSnapshotUrlsRef.current.add(p.id);
-        }
-      });
-      if (Object.keys(urls).length > 0) {
-        setLocalCameraUrls(prev => ({ ...prev, ...urls }));
-      }
-      if (Object.keys(snapUrls).length > 0) {
-        setLocalSnapshotUrls(prev => ({ ...prev, ...snapUrls }));
-      }
-    }
-  }, [printers]);
 
   const handleCameraUrlChange = (printerId: number, url: string) => {
     // Update local state immediately for responsive UI
@@ -1604,11 +1647,13 @@ export function SettingsPage() {
       clearTimeout(cameraUrlSaveTimeoutRef.current[printerId]);
     }
 
+    // Blank means keep; removal is a separate explicit action.
+    if (!url) return;
     // Debounce the save (800ms delay)
     cameraUrlSaveTimeoutRef.current[printerId] = setTimeout(() => {
       updatePrinterMutation.mutate({
         id: printerId,
-        data: { external_camera_url: url || null }
+        data: { external_camera_url: url, secret_actions: { external_camera_url: 'replace' } }
       });
     }, 800);
   };
@@ -1620,10 +1665,11 @@ export function SettingsPage() {
       clearTimeout(snapshotUrlSaveTimeoutRef.current[printerId]);
     }
 
+    if (!url) return;
     snapshotUrlSaveTimeoutRef.current[printerId] = setTimeout(() => {
       updatePrinterMutation.mutate({
         id: printerId,
-        data: { external_camera_snapshot_url: url || null }
+        data: { external_camera_snapshot_url: url, secret_actions: { external_camera_snapshot_url: 'replace' } }
       });
     }, 800);
   };
@@ -3318,12 +3364,23 @@ export function SettingsPage() {
                         {printer.external_camera_enabled && (
                           <div className="space-y-2 mt-2">
                             <input
-                              type="text"
-                              placeholder={printer.external_camera_type === 'usb' ? t('settings.cameraPlaceholderUsb') : t('settings.cameraPlaceholderUrl')}
-                              value={localCameraUrls[printer.id] ?? printer.external_camera_url ?? ''}
+                              type="password"
+                              autoComplete="new-password"
+                              placeholder={printer.external_camera_url_configured ? t('settings.cameraCredentialStored') : printer.external_camera_type === 'usb' ? t('settings.cameraPlaceholderUsb') : t('settings.cameraPlaceholderUrl')}
+                              value={localCameraUrls[printer.id] ?? ''}
                               onChange={(e) => handleCameraUrlChange(printer.id, e.target.value)}
                               className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded text-white text-sm focus:border-bambu-green focus:outline-none"
                             />
+                            {printer.external_camera_url_configured && (
+                              <div className="flex items-center justify-between gap-2 text-xs text-bambu-gray">
+                                <span>{printer.external_camera_host || t('settings.cameraCredentialStored')}</span>
+                                <Button size="sm" variant="secondary" onClick={() => {
+                                  clearTimeout(cameraUrlSaveTimeoutRef.current[printer.id]);
+                                  setLocalCameraUrls(prev => ({ ...prev, [printer.id]: '' }));
+                                  updatePrinterMutation.mutate({ id: printer.id, data: { external_camera_enabled: false, secret_actions: { external_camera_url: 'clear' } } });
+                                }}>{t('settings.clearCameraUrl')}</Button>
+                              </div>
+                            )}
                             <div className="flex gap-2">
                               <Select
                                 tone="raised"
@@ -3339,8 +3396,8 @@ export function SettingsPage() {
                               <Button
                                 size="sm"
                                 variant="secondary"
-                                onClick={() => handleTestExternalCamera(printer.id, localCameraUrls[printer.id] ?? printer.external_camera_url ?? '', printer.external_camera_type || 'mjpeg')}
-                                disabled={extCameraTestLoading[printer.id] || !(localCameraUrls[printer.id] ?? printer.external_camera_url)}
+                                onClick={() => handleTestExternalCamera(printer.id, localCameraUrls[printer.id] ?? '', printer.external_camera_type || 'mjpeg')}
+                                disabled={extCameraTestLoading[printer.id] || !(localCameraUrls[printer.id] || printer.external_camera_url_configured)}
                               >
                                 {extCameraTestLoading[printer.id] ? (
                                   <Loader2 className="w-4 h-4 animate-spin" />
@@ -3369,17 +3426,18 @@ export function SettingsPage() {
                                 <label className="text-xs text-bambu-gray">{t('settings.cameraSnapshotUrl', 'Snapshot URL (optional)')}</label>
                                 <div className="flex gap-2">
                                   <input
-                                    type="text"
+                                    type="password"
+                                    autoComplete="new-password"
                                     placeholder={t('settings.cameraSnapshotUrlPlaceholder', 'http://192.168.1.61:1984/api/frame.jpeg?src=printer')}
-                                    value={localSnapshotUrls[printer.id] ?? printer.external_camera_snapshot_url ?? ''}
+                                    value={localSnapshotUrls[printer.id] ?? ''}
                                     onChange={(e) => handleSnapshotUrlChange(printer.id, e.target.value)}
                                     className="flex-1 px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded text-white text-sm focus:border-bambu-green focus:outline-none"
                                   />
                                   <Button
                                     size="sm"
                                     variant="secondary"
-                                    onClick={() => handleTestExternalCamera(printer.id, localSnapshotUrls[printer.id] ?? printer.external_camera_snapshot_url ?? '', 'snapshot')}
-                                    disabled={extCameraTestLoading[printer.id] || !(localSnapshotUrls[printer.id] ?? printer.external_camera_snapshot_url)}
+                                    onClick={() => handleTestExternalCamera(printer.id, localSnapshotUrls[printer.id] ?? '', 'snapshot', 'snapshot')}
+                                    disabled={extCameraTestLoading[printer.id] || !(localSnapshotUrls[printer.id] || printer.external_camera_snapshot_url_configured)}
                                   >
                                     {extCameraTestLoading[printer.id] ? (
                                       <Loader2 className="w-4 h-4 animate-spin" />
@@ -3388,6 +3446,13 @@ export function SettingsPage() {
                                     )}
                                   </Button>
                                 </div>
+                                {printer.external_camera_snapshot_url_configured && (
+                                  <Button size="sm" variant="secondary" onClick={() => {
+                                    clearTimeout(snapshotUrlSaveTimeoutRef.current[printer.id]);
+                                    setLocalSnapshotUrls(prev => ({ ...prev, [printer.id]: '' }));
+                                    updatePrinterMutation.mutate({ id: printer.id, data: { secret_actions: { external_camera_snapshot_url: 'clear' } } });
+                                  }}>{t('settings.clearCameraUrl')}</Button>
+                                )}
                                 <p className="text-xs text-bambu-gray opacity-75">
                                   {t('settings.cameraSnapshotUrlHelp', 'Single-frame URL used for notification thumbnails, finish photos, timelapse and plate detection. Leave blank to capture from the live stream above. Useful for go2rtc (/api/frame.jpeg) and IP cameras with a dedicated snapshot endpoint.')}
                                 </p>
@@ -4385,7 +4450,7 @@ export function SettingsPage() {
                 </label>
               </div>
 
-              {localSettings.ha_enabled && (
+              {(localSettings.ha_enabled || localSettings.ha_token_configured || localSettings.ha_url_configured || isAdmin) && (
                 <>
                   <div>
                     <label className="block text-sm text-bambu-gray mb-1">
@@ -4397,7 +4462,10 @@ export function SettingsPage() {
                       )}
                     </label>
                     <div className="relative">
-                      <input
+                      {localSettings.ha_url_opaque ? <SecretInput value={localSettings.ha_url ?? ''} action={secretActions.ha_url}
+                        configured onActionChange={action => setSecretActions(previous => ({ ...previous, ha_url: action }))}
+                        onChange={value => updateSetting('ha_url', value)}
+                        disabled={!isAdmin || !hasPermission('settings:update') || localSettings.ha_url_from_env} /> : <input
                         type="text"
                         value={localSettings.ha_url ?? ''}
                         onChange={(e) => updateSetting('ha_url', e.target.value)}
@@ -4406,7 +4474,7 @@ export function SettingsPage() {
                         className={`w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none ${
                           localSettings.ha_url_from_env ? 'opacity-60 cursor-not-allowed' : ''
                         }`}
-                      />
+                      />}
                       {localSettings.ha_url_from_env && (
                         <Lock className="absolute right-3 top-2.5 w-4 h-4 text-bambu-gray" />
                       )}
@@ -4428,15 +4496,11 @@ export function SettingsPage() {
                       )}
                     </label>
                     <div className="relative">
-                      <input
-                        type="password"
-                        value={localSettings.ha_token ?? ''}
-                        onChange={(e) => updateSetting('ha_token', e.target.value)}
-                        placeholder="eyJ0eXAiOiJKV1QiLC..."
+                      <SecretInput value={localSettings.ha_token ?? ''} action={secretActions.ha_token}
+                        configured={localSettings.ha_token_configured}
+                        onChange={value => updateSetting('ha_token', value)}
+                        onActionChange={action => setSecretActions(previous => ({ ...previous, ha_token: action }))}
                         disabled={!isAdmin || !hasPermission('settings:update') || (localSettings.ha_token_from_env)}
-                        className={`w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none ${
-                          localSettings.ha_token_from_env ? 'opacity-60 cursor-not-allowed' : ''
-                        }`}
                       />
                       {localSettings.ha_token_from_env && (
                         <Lock className="absolute right-3 top-2.5 w-4 h-4 text-bambu-gray" />
@@ -4453,7 +4517,7 @@ export function SettingsPage() {
                     )}
                   </div>
 
-                  {localSettings.ha_url && localSettings.ha_token && (
+                  {(localSettings.ha_url || localSettings.ha_url_configured) && (localSettings.ha_token || localSettings.ha_token_configured) && (
                     <div className="pt-2 border-t border-bambu-dark-tertiary">
                       <Button
                         variant="secondary"
@@ -4463,7 +4527,8 @@ export function SettingsPage() {
                           setHaTestLoading(true);
                           setHaTestResult(null);
                           try {
-                            const result = await api.testHAConnection(localSettings.ha_url!, localSettings.ha_token!);
+                            const draft = haConnectionDraft();
+                            const result = await api.testHAConnection(draft.ha_url, draft.ha_token, draft.secret_actions);
                             setHaTestResult(result);
                           } catch (e) {
                             setHaTestResult({ success: false, message: null, error: e instanceof Error ? e.message : t('common.unknownError') });
@@ -4477,6 +4542,13 @@ export function SettingsPage() {
                       </Button>
                     </div>
                   )}
+                  <div className="space-y-2 pt-2 border-t border-bambu-dark-tertiary">
+                    <Button onClick={() => saveHAConnection.mutate(haConnectionDraft())}
+                      disabled={!isAdmin || !hasPermission('settings:update') || !haConnectionChanged || saveHAConnection.isPending}>
+                      {t('settings.credentials.saveConnection')}
+                    </Button>
+                    <p className="text-xs text-bambu-gray">{t('settings.credentials.draftHint')}</p>
+                  </div>
                 </>
               )}
             </CardContent>
@@ -4523,7 +4595,7 @@ export function SettingsPage() {
                 </label>
               </div>
 
-              {localSettings.mqtt_enabled && (
+              {(localSettings.mqtt_enabled || localSettings.mqtt_password_configured) && (
                 <div className="space-y-4 pt-2 border-t border-bambu-dark-tertiary">
                   <div>
                     <label className="block text-sm text-bambu-gray mb-1">
@@ -4593,13 +4665,11 @@ export function SettingsPage() {
                     <label className="block text-sm text-bambu-gray mb-1">
                       {t('settings.passwordOptional')}
                     </label>
-                    <input disabled={!isAdmin || !hasPermission('settings:update')}
-                      type="password"
-                      value={localSettings.mqtt_password ?? ''}
-                      onChange={(e) => updateSetting('mqtt_password', e.target.value)}
-                      placeholder={t('settings.leaveEmptyForAnonymous')}
-                      className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
-                    />
+                    <SecretInput disabled={!isAdmin || !hasPermission('settings:update') || saveManualConnection.isPending}
+                      value={localSettings.mqtt_password ?? ''} action={secretActions.mqtt_password}
+                      configured={localSettings.mqtt_password_configured}
+                      onChange={value => updateSetting('mqtt_password', value)}
+                      onActionChange={action => setSecretActions(previous => ({ ...previous, mqtt_password: action }))} />
                   </div>
 
                   <div>
@@ -4635,6 +4705,11 @@ export function SettingsPage() {
                   )}
                 </div>
               )}
+              {mqttNeedsReplacement && <p className="text-sm text-amber-400">{t('settings.credentials.destinationChanged')}</p>}
+              <Button onClick={() => saveManualConnection.mutate({ kind: 'mqtt', draft: manualConnectionDraft('mqtt') })}
+                disabled={!isAdmin || !hasPermission('settings:update') || !mqttConnectionChanged || mqttNeedsReplacement || invalidReplacement('mqtt_password') || saveManualConnection.isPending}>
+                {t('settings.credentials.saveConnection')}
+              </Button>
             </CardContent>
           </Card>
         </div>
@@ -4669,21 +4744,19 @@ export function SettingsPage() {
                 </label>
               </div>
 
-              {localSettings.prometheus_enabled && (
+              {(localSettings.prometheus_enabled || localSettings.prometheus_token_configured) && (
                 <div className="space-y-4 pt-2 border-t border-bambu-dark-tertiary">
                   <div>
                     <label className="block text-sm text-bambu-gray mb-1">
-                      {t('settings.bearerTokenOptional')}
+                      {t('settings.credentials.metricsToken')}
                     </label>
-                    <input disabled={!isAdmin || !hasPermission('settings:update')}
-                      type="password"
-                      value={localSettings.prometheus_token ?? ''}
-                      onChange={(e) => updateSetting('prometheus_token', e.target.value)}
-                      placeholder={t('settings.leaveEmptyForNoAuth')}
-                      className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
-                    />
+                    <SecretInput disabled={!isAdmin || !hasPermission('settings:update') || saveManualConnection.isPending}
+                      value={localSettings.prometheus_token ?? ''} action={secretActions.prometheus_token}
+                      configured={localSettings.prometheus_token_configured}
+                      onChange={value => updateSetting('prometheus_token', value)}
+                      onActionChange={action => setSecretActions(previous => ({ ...previous, prometheus_token: action }))} />
                     <p className="text-xs text-bambu-gray mt-1">
-                      {t('settings.bearerTokenHint')}
+                      {t('settings.credentials.metricsTokenRequired')}
                     </p>
                   </div>
 
@@ -4701,6 +4774,11 @@ export function SettingsPage() {
                   </div>
                 </div>
               )}
+              {localSettings.prometheus_enabled && !prometheusHasToken && <p className="text-sm text-amber-400">{t('settings.credentials.metricsTokenRequired')}</p>}
+              <Button onClick={() => saveManualConnection.mutate({ kind: 'prometheus', draft: manualConnectionDraft('prometheus') })}
+                disabled={!isAdmin || !hasPermission('settings:update') || !prometheusConnectionChanged || invalidReplacement('prometheus_token') || (!!localSettings.prometheus_enabled && !prometheusHasToken) || saveManualConnection.isPending}>
+                {t('settings.credentials.saveConnection')}
+              </Button>
             </CardContent>
           </Card>
 

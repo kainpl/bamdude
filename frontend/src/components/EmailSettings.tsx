@@ -3,7 +3,9 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Mail, Send, Lock, Unlock, AlertTriangle, CheckCircle, Loader2 } from 'lucide-react';
 import { api } from '../api/client';
-import type { SMTPSettings, TestSMTPRequest } from '../api/client';
+import type { SecretAction, SMTPSettings, TestSMTPRequest } from '../api/client';
+import { SecretInput } from './SecretInput';
+import { credentialDraft } from '../utils/credentialDraft';
 import { Card, CardContent, CardHeader } from './Card';
 import { Button } from './Button';
 import { useToast } from '../contexts/ToastContext';
@@ -44,6 +46,7 @@ function EmailSettingsContent() {
     smtp_from_name: 'BamDude',
   });
   const [testEmail, setTestEmail] = useState('');
+  const [passwordAction, setPasswordAction] = useState<SecretAction>('keep');
 
   // Fetch SMTP settings
   const { data: existingSettings, isLoading } = useQuery({
@@ -66,6 +69,7 @@ function EmailSettingsContent() {
         ...existingSettings,
         smtp_password: '', // Never show password
       });
+      setPasswordAction('keep');
     }
   }, [existingSettings]);
 
@@ -90,7 +94,6 @@ function EmailSettingsContent() {
     setSMTPSettings({
       ...smtpSettings,
       smtp_auth_enabled: enabled,
-      ...(!enabled ? { smtp_username: '', smtp_password: '' } : {}),
     });
   };
 
@@ -142,7 +145,13 @@ function EmailSettingsContent() {
       showToast(t('settings.email.errors.usernameRequired'), 'error');
       return;
     }
-    saveMutation.mutate(smtpSettings);
+    saveMutation.mutate(draftSettings());
+  };
+
+  const draftSettings = (): SMTPSettings => {
+    const { smtp_password, smtp_password_configured, ...rest } = smtpSettings;
+    delete rest.secret_actions;
+    return { ...rest, ...credentialDraft('smtp_password', smtp_password, passwordAction, smtp_password_configured) };
   };
 
   const handleTest = () => {
@@ -152,6 +161,7 @@ function EmailSettingsContent() {
     }
     testMutation.mutate({
       test_recipient: testEmail,
+      settings: draftSettings(),
     });
   };
 
@@ -294,14 +304,9 @@ function EmailSettingsContent() {
                   <label className="block text-sm font-medium text-white mb-2">
                     {t('settings.email.password') || 'Password'}
                   </label>
-                  <input
-                    type="password"
-                    value={smtpSettings.smtp_password || ''}
-                    onChange={(e) => setSMTPSettings({ ...smtpSettings, smtp_password: e.target.value })}
-                    placeholder={existingSettings ? '••••••••' : 'App password'}
-                    disabled={!smtpSettings.smtp_auth_enabled}
-                    className={smtpSettings.smtp_auth_enabled ? inputClasses : disabledInputClasses}
-                  />
+                  <SecretInput value={smtpSettings.smtp_password || ''} action={passwordAction}
+                    configured={existingSettings?.smtp_password_configured} onActionChange={setPasswordAction}
+                    onChange={value => setSMTPSettings({ ...smtpSettings, smtp_password: value })} />
                 </div>
               </div>
 

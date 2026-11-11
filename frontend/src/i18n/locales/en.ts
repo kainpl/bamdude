@@ -3062,6 +3062,20 @@ export default {
     },
   },
   settings: {
+    credentials: {
+      destinationChanged: 'The connection destination changed. Replace or explicitly clear its credential before saving.',
+      metricsToken: 'Bearer token',
+      metricsTokenRequired: 'A bearer token is required to enable the metrics endpoint.',
+      configured: 'Credential configured',
+      notConfigured: 'No credential configured',
+      action: 'Credential action',
+      keep: 'Keep current credential',
+      replace: 'Replace credential',
+      clear: 'Clear credential',
+      replacement: 'New credential',
+      saveConnection: 'Save connection',
+      draftHint: 'Connection changes stay as a draft until you save them. Testing does not save changes.',
+    },
     sliceEngine: 'Slice engine',
     sliceEngineSidecar: 'Server sidecar',
     sliceEngineSidecarHint: 'Slicing runs on the server, in the slicer sidecar container.',
@@ -4195,6 +4209,8 @@ export default {
     cameraViewModeDefaultHint: 'The default for a browser that has not chosen yet — each browser remembers what was last picked on a printer\'s camera button.',
     externalCamerasDescription: 'Configure external cameras to replace the built-in printer camera. Supports MJPEG streams, RTSP, HTTP snapshots, and USB cameras (V4L2). When enabled, the external camera is used for live view and finish photos.',
     cameraPlaceholderUsb: 'Device path (/dev/video0)',
+    cameraCredentialStored: 'Configured — enter a new URL to replace',
+    clearCameraUrl: 'Clear saved URL',
     cameraPlaceholderUrl: 'Camera URL (rtsp://... or http://...)',
     cameraTypeMjpeg: 'MJPEG Stream',
     cameraTypeRtsp: 'RTSP Stream',
@@ -4202,7 +4218,7 @@ export default {
     cameraTypeUsb: 'USB Camera (V4L2)',
     cameraSnapshotUrl: 'Snapshot URL (optional)',
     cameraSnapshotUrlPlaceholder: 'http://192.168.1.61:1984/api/frame.jpeg?src=printer',
-    cameraSnapshotUrlHelp: 'Single-frame URL used for notification thumbnails, finish photos, timelapse and plate detection. Leave blank to capture from the live stream above. Useful for go2rtc (/api/frame.jpeg) and IP cameras with a dedicated snapshot endpoint. Timelapse and plate detection each require their own per-printer toggle - this URL is just the image source they pull from when active.',
+    cameraSnapshotUrlHelp: 'Single-frame URL used for notification thumbnails, finish photos, timelapse and plate detection. Blank keeps the saved URL. Use Clear saved URL to capture from the live stream above. Useful for go2rtc (/api/frame.jpeg) and IP cameras with a dedicated snapshot endpoint. Timelapse and plate detection each require their own per-printer toggle - this URL is just the image source they pull from when active.',
     cameraRotation: 'Rotation',
     test: 'Test',
     connected: 'Connected',
@@ -4399,6 +4415,7 @@ export default {
         autologin: 'Autologin',
         autologinDesc: 'Redirect unauthenticated visitors straight to this provider. Only one provider can carry this flag.',
         secretHint: 'leave blank to keep current',
+        clearSecret: 'Remove secret and disable provider',
         secretPlaceholder: 'new secret'
       }
     }
@@ -10022,6 +10039,8 @@ export default {
     repositoryUrl: 'Repository URL',
     personalAccessToken: 'Personal Access Token',
     tokenSaved: '(saved)',
+    privateApiBaseHint: 'The saved API address contains private credentials and is hidden. Leave blank to keep it, or enter a plain API address together with a new token.',
+    clearToken: 'Remove token and disable Git backup',
     enterNewToken: 'Enter new token to update',
     tokenHintGitHub: 'Fine-grained token with Contents read/write permission',
     tokenHintGitLab: 'Personal Access Token with api or write_repository scope',
@@ -10183,7 +10202,7 @@ export default {
         spoolUsageUnlinked: '{{count}} usage record(s) restored without their print-history link - select Print archives alongside Spool inventory to keep it.',
         spoolTagKept: '{{count}} spool tag(s) left as they are - the backup would have cleared a tag that has since been scanned, or moved one onto a second spool.',
         settingsCredentialsSkipped: '{{count}} credential-like key(s) skipped - re-enter secrets manually',
-        settingsAuthSkipped: '{{count}} authentication setting(s) skipped - change those in Settings > Authentication so the lockout checks still run',
+        settingsAuthSkipped: '{{count}} authentication/integration setting(s) skipped - use the owning Settings editor so lockout and credential checks still run',
         settingsCompanionSkipped: '{{keys}} left switched off - the credential each one needs cannot be restored from a backup and this instance has none stored, so switching them on would leave the integration unauthenticated',
         settingsMqttRelayFailed: 'MQTT settings restored, but the relay could not be reconnected - restart BamDude',
         kprofilesAlwaysOverwrite: 'K-profiles always overwrite the matching slot on the printer',
@@ -10896,6 +10915,8 @@ export default {
     },
   },
   smartPlugs: {
+    savedSecretHint: 'Saved credentials stay private. Leave fields blank to keep them. Removing a password, header or body disables this plug. Changing a REST destination requires replacing or removing its saved credentials.',
+    removeSecret: 'Remove saved {{field}}',
     powerOn: {
       label: 'Power-on behavior',
       hint: 'What the relay does when mains power returns. "Restore last state" means a plug that reboots mid-print comes back exactly as it was.',
@@ -11132,6 +11153,13 @@ export default {
 
   // Notifications
   notifications: {
+    secretConfigured: 'Configured. Leave blank to keep.',
+    secretWillClear: 'This credential will be removed.',
+    secretKeep: 'Keep stored credential',
+    secretClear: 'Clear stored credential',
+    authenticationMode: 'Authentication mode',
+    authenticated: 'Authenticated',
+    anonymous: 'Anonymous',
     // Provider types
     providerTypes: {
       callmebot: 'CallMeBot/WhatsApp',

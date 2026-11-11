@@ -104,6 +104,19 @@ describe('SmartPlugCard', () => {
     vi.clearAllMocks();
   });
 
+  it('opens the device login without embedding a legacy readable password', async () => {
+    render(<SmartPlugCard plug={createMockPlug({ username: 'admin', password: 'LEGACY-CANARY' })} onEdit={mockOnEdit} />);
+    const link = (await screen.findAllByRole('link')).find(item => item.getAttribute('href')?.includes('192.168.1.100'));
+    expect(link).toHaveAttribute('href', 'http://192.168.1.100/');
+    expect(document.body.innerHTML).not.toContain('LEGACY-CANARY');
+  });
+
+  it('shows a configured REST endpoint without rendering a legacy capability URL', async () => {
+    render(<SmartPlugCard plug={createMockPlug({ plug_type: 'rest', rest_on_url: 'https://device.invalid/CAPABILITY-CANARY', configured_secrets: { rest_on_url: true } })} onEdit={mockOnEdit} />);
+    expect(await screen.findByText('Credential configured')).toBeInTheDocument();
+    expect(document.body.innerHTML).not.toContain('CAPABILITY-CANARY');
+  });
+
   describe('meter watch', () => {
     it('shows a suspected counter stall with the safe advice', async () => {
       server.use(

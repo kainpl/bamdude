@@ -15,6 +15,12 @@ interface AddSmartPlugModalProps {
   onClose: () => void;
 }
 
+const SECRET_LABELS = {
+  password: 'password', rest_headers: 'restHeaders', rest_on_url: 'restOnUrl', rest_off_url: 'restOffUrl',
+  rest_status_url: 'restStatusUrl', rest_power_url: 'restPowerUrl', rest_energy_url: 'restEnergyUrl',
+  rest_on_body: 'restOnBody', rest_off_body: 'restOffBody',
+} as const;
+
 export function AddSmartPlugModal({ plug, onClose }: AddSmartPlugModalProps) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
@@ -28,7 +34,8 @@ export function AddSmartPlugModal({ plug, onClose }: AddSmartPlugModalProps) {
   // Tasmota fields
   const [ipAddress, setIpAddress] = useState(plug?.ip_address || '');
   const [username, setUsername] = useState(plug?.username || '');
-  const [password, setPassword] = useState(plug?.password || '');
+  const [password, setPassword] = useState('');
+  const [clearedSecrets, setClearedSecrets] = useState<Record<string, boolean>>({});
   // Home Assistant fields
   const [haEntityId, setHaEntityId] = useState(plug?.ha_entity_id || '');
   // MQTT fields - Power
@@ -56,19 +63,19 @@ export function AddSmartPlugModal({ plug, onClose }: AddSmartPlugModalProps) {
   const [mqttStatePath, setMqttStatePath] = useState(plug?.mqtt_state_path || '');
   const [mqttStateOnValue, setMqttStateOnValue] = useState(plug?.mqtt_state_on_value || '');
   // REST fields
-  const [restOnUrl, setRestOnUrl] = useState(plug?.rest_on_url || '');
-  const [restOnBody, setRestOnBody] = useState(plug?.rest_on_body || '');
-  const [restOffUrl, setRestOffUrl] = useState(plug?.rest_off_url || '');
-  const [restOffBody, setRestOffBody] = useState(plug?.rest_off_body || '');
+  const [restOnUrl, setRestOnUrl] = useState('');
+  const [restOnBody, setRestOnBody] = useState('');
+  const [restOffUrl, setRestOffUrl] = useState('');
+  const [restOffBody, setRestOffBody] = useState('');
   const [restMethod, setRestMethod] = useState(plug?.rest_method || 'POST');
-  const [restHeaders, setRestHeaders] = useState(plug?.rest_headers || '');
-  const [restStatusUrl, setRestStatusUrl] = useState(plug?.rest_status_url || '');
+  const [restHeaders, setRestHeaders] = useState('');
+  const [restStatusUrl, setRestStatusUrl] = useState('');
   const [restStatusPath, setRestStatusPath] = useState(plug?.rest_status_path || '');
   const [restStatusOnValue, setRestStatusOnValue] = useState(plug?.rest_status_on_value || '');
-  const [restPowerUrl, setRestPowerUrl] = useState(plug?.rest_power_url || '');
+  const [restPowerUrl, setRestPowerUrl] = useState('');
   const [restPowerPath, setRestPowerPath] = useState(plug?.rest_power_path || '');
   const [restPowerMultiplier, setRestPowerMultiplier] = useState<string>((plug?.rest_power_multiplier ?? 1).toString());
-  const [restEnergyUrl, setRestEnergyUrl] = useState(plug?.rest_energy_url || '');
+  const [restEnergyUrl, setRestEnergyUrl] = useState('');
   const [restEnergyPath, setRestEnergyPath] = useState(plug?.rest_energy_path || '');
   const [restEnergyMultiplier, setRestEnergyMultiplier] = useState<string>((plug?.rest_energy_multiplier ?? 1).toString());
   const [restEnergyTotalPath, setRestEnergyTotalPath] = useState(plug?.rest_energy_total_path || '');
@@ -151,7 +158,7 @@ export function AddSmartPlugModal({ plug, onClose }: AddSmartPlugModalProps) {
   });
 
   // Check if HA is properly configured
-  const haConfigured = !!(settings?.ha_enabled && settings?.ha_url && settings?.ha_token);
+  const haConfigured = !!(settings?.ha_enabled && settings?.ha_url && settings?.ha_token_configured);
 
   // Debounce search input
   useEffect(() => {
@@ -271,8 +278,33 @@ export function AddSmartPlugModal({ plug, onClose }: AddSmartPlugModalProps) {
   };
 
   // Test connection mutation
+  const credentialEdits = (): SmartPlugUpdate => {
+    const values = { password, rest_headers: restHeaders, rest_on_url: restOnUrl, rest_off_url: restOffUrl,
+      rest_status_url: restStatusUrl, rest_power_url: restPowerUrl, rest_energy_url: restEnergyUrl,
+      rest_on_body: restOnBody, rest_off_body: restOffBody };
+    const edits: SmartPlugUpdate = { secret_actions: {} };
+    for (const field of Object.keys(values) as (keyof typeof values)[]) {
+      const active = field === 'password' ? plugType === 'tasmota' : plugType === 'rest';
+      if (active && values[field]) {
+        edits[field] = values[field];
+        edits.secret_actions![field] = 'replace';
+      } else if (clearedSecrets[field] || (!active && plug?.configured_secrets?.[field])) {
+        edits.secret_actions![field] = 'clear';
+        if (active && ['password', 'rest_headers', 'rest_on_body', 'rest_off_body'].includes(field)) edits.enabled = false;
+      } else if (plug?.configured_secrets?.[field]) {
+        edits.secret_actions![field] = 'keep';
+      }
+    }
+    return edits;
+  };
+
   const testMutation = useMutation({
-    mutationFn: () => api.testSmartPlugConnection(ipAddress, username || null, password || null),
+    mutationFn: () => {
+      const edits = credentialEdits();
+      const action = edits.secret_actions?.password;
+      return api.testSmartPlugConnection(ipAddress, username || null, edits.password, plug?.id,
+        action ? { password: action } : undefined);
+    },
     onSuccess: (result) => {
       setTestResult(result);
       setError(null);
@@ -383,7 +415,7 @@ export function AddSmartPlugModal({ plug, onClose }: AddSmartPlugModalProps) {
     }
 
     if (plugType === 'rest') {
-      if (!restOnUrl.trim() && !restOffUrl.trim()) {
+      if (!restOnUrl.trim() && !restOffUrl.trim() && !plug?.configured_secrets?.rest_on_url && !plug?.configured_secrets?.rest_off_url) {
         setError(t('smartPlugs.restUrlRequired'));
         return;
       }
@@ -456,6 +488,10 @@ export function AddSmartPlugModal({ plug, onClose }: AddSmartPlugModalProps) {
       phantom_watts_risk: phantomPolicy === 'default' ? null : phantomPolicy === 'risk',
     };
 
+    // Secret inputs are always blank on open; blank means retain, while a
+    // separate remove control carries intentional clears.
+    for (const field of Object.keys(SECRET_LABELS)) delete (data as Record<string, unknown>)[field];
+    Object.assign(data, credentialEdits());
     if (isEditing) {
       updateMutation.mutate(data);
     } else {
@@ -473,6 +509,15 @@ export function AddSmartPlugModal({ plug, onClose }: AddSmartPlugModalProps) {
     >
       {/* Form */}
       <form onSubmit={handleSubmit} className="p-4 space-y-4 overflow-y-auto">
+        {Object.values(plug?.configured_secrets ?? {}).some(Boolean) && <div className="space-y-2 text-sm text-bambu-gray">
+          <p>{t('smartPlugs.savedSecretHint')}</p>
+          {Object.entries(SECRET_LABELS).filter(([field]) => plug?.configured_secrets?.[field]).map(([field, label]) => (
+            <label key={field} className="flex items-center gap-2">
+              <input type="checkbox" checked={!!clearedSecrets[field]} onChange={e => setClearedSecrets(prev => ({ ...prev, [field]: e.target.checked }))} />
+              {t('smartPlugs.removeSecret', { field: t(`smartPlugs.${label}`) })}
+            </label>
+          ))}
+        </div>}
         {error && (
           <div className="p-3 bg-red-100 dark:bg-red-500/20 border border-red-400 dark:border-red-500/50 rounded-lg text-sm text-red-700 dark:text-red-400">
             {error}
@@ -1236,7 +1281,7 @@ export function AddSmartPlugModal({ plug, onClose }: AddSmartPlugModalProps) {
                 <input
                   type="text"
                   value={restOnUrl}
-                  onChange={(e) => { setRestOnUrl(e.target.value); setTestResult(null); }}
+                  onChange={(e) => { setRestOnUrl(e.target.value); setClearedSecrets(prev => ({ ...prev, rest_on_url: false })); setTestResult(null); }}
                   placeholder="http://openhab:8080/rest/items/MyPlug"
                   className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none"
                 />
@@ -1246,7 +1291,7 @@ export function AddSmartPlugModal({ plug, onClose }: AddSmartPlugModalProps) {
                 <input
                   type="text"
                   value={restOnBody}
-                  onChange={(e) => setRestOnBody(e.target.value)}
+                  onChange={(e) => { setRestOnBody(e.target.value); setClearedSecrets(prev => ({ ...prev, rest_on_body: false })); }}
                   placeholder={t('smartPlugs.restBodyHint')}
                   className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none"
                 />
@@ -1256,7 +1301,7 @@ export function AddSmartPlugModal({ plug, onClose }: AddSmartPlugModalProps) {
                 <input
                   type="text"
                   value={restOffUrl}
-                  onChange={(e) => { setRestOffUrl(e.target.value); setTestResult(null); }}
+                  onChange={(e) => { setRestOffUrl(e.target.value); setClearedSecrets(prev => ({ ...prev, rest_off_url: false })); setTestResult(null); }}
                   placeholder="http://openhab:8080/rest/items/MyPlug"
                   className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none"
                 />
@@ -1266,7 +1311,7 @@ export function AddSmartPlugModal({ plug, onClose }: AddSmartPlugModalProps) {
                 <input
                   type="text"
                   value={restOffBody}
-                  onChange={(e) => setRestOffBody(e.target.value)}
+                  onChange={(e) => { setRestOffBody(e.target.value); setClearedSecrets(prev => ({ ...prev, rest_off_body: false })); }}
                   placeholder={t('smartPlugs.restBodyHint')}
                   className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none"
                 />
@@ -1279,7 +1324,7 @@ export function AddSmartPlugModal({ plug, onClose }: AddSmartPlugModalProps) {
               <div>
                 <textarea
                   value={restHeaders}
-                  onChange={(e) => setRestHeaders(e.target.value)}
+                  onChange={(e) => { setRestHeaders(e.target.value); setClearedSecrets(prev => ({ ...prev, rest_headers: false })); }}
                   placeholder={t('smartPlugs.restHeadersHint')}
                   rows={2}
                   className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none font-mono text-sm"
@@ -1295,7 +1340,7 @@ export function AddSmartPlugModal({ plug, onClose }: AddSmartPlugModalProps) {
                 <input
                   type="text"
                   value={restStatusUrl}
-                  onChange={(e) => setRestStatusUrl(e.target.value)}
+                  onChange={(e) => { setRestStatusUrl(e.target.value); setClearedSecrets(prev => ({ ...prev, rest_status_url: false })); }}
                   placeholder={t('smartPlugs.restStatusHint')}
                   className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none"
                 />
@@ -1334,7 +1379,7 @@ export function AddSmartPlugModal({ plug, onClose }: AddSmartPlugModalProps) {
                 <input
                   type="text"
                   value={restPowerUrl}
-                  onChange={(e) => setRestPowerUrl(e.target.value)}
+                  onChange={(e) => { setRestPowerUrl(e.target.value); setClearedSecrets(prev => ({ ...prev, rest_power_url: false })); }}
                   placeholder={t('smartPlugs.restPowerUrlHint')}
                   className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none"
                 />
@@ -1368,7 +1413,7 @@ export function AddSmartPlugModal({ plug, onClose }: AddSmartPlugModalProps) {
                 <input
                   type="text"
                   value={restEnergyUrl}
-                  onChange={(e) => setRestEnergyUrl(e.target.value)}
+                  onChange={(e) => { setRestEnergyUrl(e.target.value); setClearedSecrets(prev => ({ ...prev, rest_energy_url: false })); }}
                   placeholder={t('smartPlugs.restEnergyUrlHint')}
                   className="w-full px-3 py-2 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white placeholder-bambu-gray focus:border-bambu-green focus:outline-none"
                 />
@@ -1432,7 +1477,7 @@ export function AddSmartPlugModal({ plug, onClose }: AddSmartPlugModalProps) {
             </div>
 
             {/* Test Connection */}
-            {(restOnUrl.trim() || restOffUrl.trim()) && (
+            {(restOnUrl.trim() || restOffUrl.trim() || plug?.configured_secrets?.rest_on_url || plug?.configured_secrets?.rest_off_url) && (
               <div className="flex gap-2">
                 <Button
                   type="button"
@@ -1440,8 +1485,8 @@ export function AddSmartPlugModal({ plug, onClose }: AddSmartPlugModalProps) {
                   onClick={async () => {
                     setTestResult(null);
                     try {
-                      const url = restOnUrl.trim() || restOffUrl.trim();
-                      const result = await api.testRESTConnection(url, restMethod, restHeaders.trim() || null);
+                      const endpoint = restOnUrl || plug?.configured_secrets?.rest_on_url ? 'rest_on_url' : 'rest_off_url';
+                      const result = await api.testRESTDraft(plug?.id, { ...credentialEdits(), plug_type: 'rest', rest_method: restMethod, username: username || null, name: name || 'Connection test' }, endpoint);
                       setTestResult({ success: result.success });
                       if (!result.success) {
                         setError(result.error || t('smartPlugs.addSmartPlug.connectionFailed'));
@@ -1557,7 +1602,7 @@ export function AddSmartPlugModal({ plug, onClose }: AddSmartPlugModalProps) {
                 <input
                   type="password"
                   value={password}
-                  onChange={(e) => setPassword(e.target.value)}
+                  onChange={(e) => { setPassword(e.target.value); setClearedSecrets(prev => ({ ...prev, password: false })); }}
                   placeholder="********"
                   className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
                 />

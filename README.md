@@ -70,6 +70,8 @@ support is a bug report, a translation PR or a star. If you would rather chip in
 
 **Access and diagnostics in current development:** sensitive authentication, integration and backup controls require an administrator as well as the usual permission. Temporary authentication-storage outages preserve browser and kiosk credentials. Historical log views and support exports redact credentials before searching or truncating; stopping a bug report restores logging even when its log tail is unavailable. See [authentication](https://docs.bamdude.top/features/authentication/) and [diagnostics](https://docs.bamdude.top/features/system-info/). These changes are not included in stable 0.7.3.
 
+Integration editors show configured credentials without returning them. Keeping a saved credential requires an unchanged effective destination; connection tests use the draft without saving it. API clients can use explicit keep/replace/clear actions as described in the [credential-editing contract](docs/development/credential-edits.md). These changes are also in development after 0.7.3.
+
 Docker `latest` follows the latest **stable release tag**; `dev` follows the beta channel. Check the release changelog for what your image includes.
 
 ## What's different from Bambuddy?

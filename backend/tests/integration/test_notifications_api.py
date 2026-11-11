@@ -3,6 +3,7 @@
 Tests the full request/response cycle for /api/v1/notifications/ endpoints.
 """
 
+import json
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -55,7 +56,7 @@ class TestNotificationsAPI:
             "name": "Test CallMeBot",
             "provider_type": "callmebot",
             "enabled": True,
-            "config": {"phone_number": "+1234567890", "api_key": "test-api-key"},
+            "config": {"phone": "+1234567890", "apikey": "test-api-key"},
             "on_print_start": True,
             "on_print_complete": True,
             "on_print_failed": True,
@@ -842,7 +843,7 @@ class TestTelegramProviderRestarts:
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_a_config_key_beside_the_token_does_not_restart(
-        self, async_client: AsyncClient, notification_provider_factory, restart_bot
+        self, async_client: AsyncClient, notification_provider_factory, restart_bot, db_session
     ):
         """The comparison is the token, not the config blob."""
         provider = await self._telegram(notification_provider_factory, config={"bot_token": "111:AAold"})
@@ -853,7 +854,10 @@ class TestTelegramProviderRestarts:
         )
 
         assert response.status_code == 200
-        assert response.json()["config"] == {"bot_token": "111:AAold", "chat_id": "42"}
+        assert response.json()["config"] == {}
+        assert response.json()["secrets_configured"]["bot_token"] is True
+        await db_session.refresh(provider)
+        assert json.loads(provider.config) == {"bot_token": "111:AAold", "chat_id": "42"}
         assert restart_bot.await_count == 0
 
     @pytest.mark.asyncio
@@ -926,7 +930,7 @@ class TestTelegramProviderRestarts:
 
         response = await async_client.patch(
             f"/api/v1/notifications/{provider.id}",
-            json={"provider_type": "ntfy"},
+            json={"provider_type": "ntfy", "config": {"topic": "fresh-topic"}},
         )
 
         assert response.status_code == 200
@@ -1294,7 +1298,7 @@ class TestTelegramTokenIsUnique:
 
         response = await async_client.post(
             "/api/v1/notifications/",
-            json={"name": "Also half", "provider_type": "telegram", "enabled": True, "config": {}},
+            json={"name": "Also half", "provider_type": "telegram", "enabled": False, "config": {}},
         )
 
         assert response.status_code == 200
@@ -1306,7 +1310,7 @@ class TestTelegramTokenIsUnique:
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_updating_a_row_onto_anothers_token_is_refused_and_persists_nothing(
-        self, async_client: AsyncClient, notification_provider_factory, restart_bot
+        self, async_client: AsyncClient, notification_provider_factory, restart_bot, db_session
     ):
         """The refusal lands after the attributes were applied, so the rollback is the contract."""
         await self._telegram(notification_provider_factory, name="Farm bot", config={"bot_token": "111:AAbot"})
@@ -1324,13 +1328,16 @@ class TestTelegramTokenIsUnique:
         assert restart_bot.await_count == 0
 
         kept = (await async_client.get(f"/api/v1/notifications/{other.id}")).json()
-        assert kept["config"] == {"bot_token": "222:AAother"}
+        assert kept["config"] == {}
+        assert kept["secrets_configured"]["bot_token"] is True
+        await db_session.refresh(other)
+        assert json.loads(other.config) == {"bot_token": "222:AAother"}
         assert kept["name"] == "Shop bot"
 
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_re_sending_a_rows_own_token_is_not_a_duplicate(
-        self, async_client: AsyncClient, notification_provider_factory, restart_bot
+        self, async_client: AsyncClient, notification_provider_factory, restart_bot, db_session
     ):
         """The row is never its own owner — and the pair the reader answers with has not moved."""
         provider = await self._telegram(
@@ -1344,7 +1351,10 @@ class TestTelegramTokenIsUnique:
 
         assert response.status_code == 200
         assert response.json()["name"] == "Renamed"
-        assert response.json()["config"] == {"bot_token": "111:AAbot"}
+        assert response.json()["config"] == {}
+        assert response.json()["secrets_configured"]["bot_token"] is True
+        await db_session.refresh(provider)
+        assert json.loads(provider.config) == {"bot_token": "111:AAbot"}
         assert restart_bot.await_count == 0
 
     @pytest.mark.asyncio

@@ -201,11 +201,17 @@ def _is_blocked_setting_key(key: str) -> bool:
 
 
 def _is_protected_setting_key(key: str) -> bool:
+    from backend.app.core.credential_config import CREDENTIAL_SETTING_KEYS
+
     # Lowered for the prefix test for the same reason _is_blocked_setting_key
     # lowers: the key comes from the backup's JSON, not from our own writer, so
     # its casing is whatever the file says. An exact-match name stays exact —
     # those four are ours and are only ever written lowercase.
-    return key in _PROTECTED_SETTING_KEYS or key.lower().startswith(_PROTECTED_SETTING_PREFIXES)
+    return (
+        key in _PROTECTED_SETTING_KEYS
+        or key.lower() in CREDENTIAL_SETTING_KEYS
+        or key.lower().startswith(_PROTECTED_SETTING_PREFIXES)
+    )
 
 
 # There used to be an ``_is_skipped_setting_key`` here, the union of the two
@@ -1604,10 +1610,13 @@ class GitRestoreService:
         # Planned before the first write, so the companion rule reads genuinely
         # pre-restore local state, and so the preview and this run classify the
         # payload identically.
+        from backend.app.core.credential_config import lock_credential_config
+
+        await lock_credential_config(db)
         plan = await self._plan_settings(db, values)
         refused = plan.refused
 
-        for key, value in values.items():
+        for key, value in sorted(values.items(), key=lambda item: str(item[0])):
             if not isinstance(key, str) or not key:
                 tally.failed += 1
                 continue
@@ -1649,8 +1658,8 @@ class GitRestoreService:
         if plan.protected:
             tally.note(
                 "settingsAuthSkipped",
-                f"{len(plan.protected)} authentication setting(s) skipped — change those in Settings > "
-                "Authentication so the lockout checks still run",
+                f"{len(plan.protected)} authentication/integration setting(s) skipped — use the owning Settings "
+                "editor so lockout and credential checks still run",
                 count=len(plan.protected),
             )
         if plan.companion:

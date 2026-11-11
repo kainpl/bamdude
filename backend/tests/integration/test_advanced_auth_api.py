@@ -80,8 +80,8 @@ class TestSMTPConfigAPI:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_get_smtp_settings_masks_password(self, async_client: AsyncClient, admin_token: str):
-        """GET /auth/smtp returns settings with password masked (None)."""
+    async def test_get_smtp_settings_omits_password(self, async_client: AsyncClient, admin_token: str):
+        """GET /auth/smtp returns presence without a reusable password."""
         headers = {"Authorization": f"Bearer {admin_token}"}
         # Save settings first
         await async_client.post("/api/v1/auth/smtp", headers=headers, json=SMTP_DATA)
@@ -90,7 +90,8 @@ class TestSMTPConfigAPI:
         assert response.status_code == 200
         result = response.json()
         assert result["smtp_host"] == "smtp.test.com"
-        assert result["smtp_password"] is None
+        assert "smtp_password" not in result
+        assert result["smtp_password_configured"] is True
 
     @pytest.mark.asyncio
     @pytest.mark.integration

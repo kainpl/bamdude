@@ -59,7 +59,7 @@ export function HASensorModal({ sensor, printers, onClose, initialEntity, config
     queryFn: api.getSettings,
     enabled: hasPermission('settings:read'),
   });
-  const haConfigured = configured ?? !!(settings?.ha_enabled && settings?.ha_url && settings?.ha_token);
+  const haConfigured = configured ?? !!(settings?.ha_enabled && (settings?.ha_url || settings?.ha_url_configured) && settings?.ha_token_configured);
 
   const { data: entities, isLoading: entitiesLoading, error: entitiesError } = useQuery({
     queryKey: ['bindableHAEntities'],

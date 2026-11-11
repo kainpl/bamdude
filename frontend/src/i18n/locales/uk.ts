@@ -3075,6 +3075,20 @@ export default {
     },
   },
   settings: {
+    credentials: {
+      destinationChanged: 'Адресу підключення змінено. Замініть або явно очистьте облікові дані перед збереженням.',
+      metricsToken: 'Bearer-токен',
+      metricsTokenRequired: 'Для ввімкнення метрик потрібен bearer-токен.',
+      configured: 'Облікові дані налаштовано',
+      notConfigured: 'Облікові дані не налаштовано',
+      action: 'Дія з обліковими даними',
+      keep: 'Залишити поточні облікові дані',
+      replace: 'Замінити облікові дані',
+      clear: 'Очистити облікові дані',
+      replacement: 'Нові облікові дані',
+      saveConnection: 'Зберегти підключення',
+      draftHint: 'Зміни підключення залишаються чернеткою до збереження. Перевірка не зберігає зміни.',
+    },
     sliceEngine: 'Рушій нарізки',
     sliceEngineSidecar: 'Серверний сайдкар',
     sliceEngineSidecarHint: 'Нарізка виконується на сервері, у контейнері сайдкара.',
@@ -4215,6 +4229,8 @@ export default {
     cameraViewModeDefaultHint: 'Типовий режим для браузера, який ще не обирав, — кожен браузер пам\'ятає, що востаннє обрали на кнопці камери принтера.',
     externalCamerasDescription: 'Налаштуйте зовнішні камери для заміни вбудованої камери принтера. Підтримує MJPEG потоки, RTSP, HTTP знімки та USB камери (V4L2). Коли увімкнено, зовнішня камера використовується для живого перегляду та фото по завершенню.',
     cameraPlaceholderUsb: 'Шлях до пристрою (/dev/video0)',
+    cameraCredentialStored: 'Налаштовано — введіть новий URL для заміни',
+    clearCameraUrl: 'Очистити збережений URL',
     cameraPlaceholderUrl: 'URL камери (rtsp://... або http://...)',
     cameraTypeMjpeg: 'MJPEG потік',
     cameraTypeRtsp: 'RTSP потік',
@@ -4222,7 +4238,7 @@ export default {
     cameraTypeUsb: 'USB камера (V4L2)',
     cameraSnapshotUrl: 'URL знімка (опційно)',
     cameraSnapshotUrlPlaceholder: 'http://192.168.1.61:1984/api/frame.jpeg?src=printer',
-    cameraSnapshotUrlHelp: 'URL для single-frame захоплення (notification thumbnails, finish photos, timelapse, plate detection). Залиш порожнім - кадр буде братись з live-стріма вище. Корисно для go2rtc (/api/frame.jpeg) та IP-камер з окремим snapshot-ендпоінтом. Timelapse та plate detection вимагають окремих per-printer тогглів - цей URL лише джерело зображення для них.',
+    cameraSnapshotUrlHelp: 'URL для single-frame захоплення (notification thumbnails, finish photos, timelapse, plate detection). Порожнє поле зберігає налаштований URL. Натисніть «Очистити збережений URL», щоб брати кадр з live-стріма вище. Корисно для go2rtc (/api/frame.jpeg) та IP-камер з окремим snapshot-ендпоінтом. Timelapse та plate detection вимагають окремих per-printer тогглів - цей URL лише джерело зображення для них.',
     cameraRotation: 'Поворот',
     test: 'Тест',
     connected: 'Підключено',
@@ -4425,6 +4441,7 @@ export default {
         autologin: 'Автоматичний вхід',
         autologinDesc: 'Перенаправляти неавтентифікованих відвідувачів одразу до цього провайдера. Лише один провайдер може мати цей прапорець.',
         secretHint: 'залишіть порожнім для збереження',
+        clearSecret: 'Видалити секрет і вимкнути провайдер',
         secretPlaceholder: 'новий secret'
       }
     }
@@ -10215,6 +10232,8 @@ export default {
     repositoryUrl: 'URL репозиторію',
     personalAccessToken: 'Персональний токен доступу',
     tokenSaved: '(збережено)',
+    privateApiBaseHint: 'Збережена API-адреса містить приватні дані й прихована. Залишіть поле порожнім для збереження або введіть звичайну API-адресу разом із новим токеном.',
+    clearToken: 'Видалити токен і вимкнути Git-бекап',
     enterNewToken: 'Введіть новий токен для оновлення',
     tokenHintGitHub: 'Fine-grained token з дозволом Contents: Read and write',
     tokenHintGitLab: 'Personal access token з правами api або write_repository',
@@ -10371,7 +10390,7 @@ export default {
         spoolUsageUnlinked: "Записів використання відновлено без зв'язку з історією друку: {{count}} - виберіть «Архіви друку» разом з «Інвентарем котушок», щоб зберегти зв'язок.",
         spoolTagKept: "Міток котушок залишено без змін: {{count}} - резервна копія стерла б мітку, відскановану пізніше, або перенесла б її на іншу котушку.",
         settingsCredentialsSkipped: "Ключів, схожих на облікові дані, пропущено: {{count}} - введіть секрети вручну",
-        settingsAuthSkipped: "Налаштувань автентифікації пропущено: {{count}} - змінюйте їх у розділі «Налаштування > Автентифікація», щоб перевірки блокування й далі працювали",
+        settingsAuthSkipped: "Пропущено налаштувань автентифікації/інтеграцій: {{count}} - змінюйте їх у відповідному редакторі налаштувань, щоб перевірки доступу й облікових даних і далі працювали",
         settingsCompanionSkipped: "{{keys}} залишено вимкненими - потрібні їм облікові дані не можна відновити з резервної копії, і в цьому екземплярі вони не збережені, тож увімкнення залишило б інтеграцію без автентифікації",
         settingsMqttRelayFailed: "Налаштування MQTT відновлено, але реле не вдалося перепідключити - перезапустіть BamDude",
         kprofilesAlwaysOverwrite: "K-профілі завжди перезаписують відповідний слот на принтері",
@@ -11087,6 +11106,8 @@ export default {
     },
   },
   smartPlugs: {
+    savedSecretHint: 'Збережені облікові дані приховані. Порожнє поле залишає їх без змін. Видалення пароля, заголовків або тіла запиту вимикає розетку. Зміна адреси REST потребує заміни або видалення збережених облікових даних.',
+    removeSecret: 'Видалити збережене поле «{{field}}»',
     powerOn: {
       label: 'Поведінка при подачі живлення',
       hint: 'Що робить реле, коли живлення повертається. «Відновити останній стан» — розетка, що перезавантажилась посеред друку, повернеться рівно такою, як була.',
@@ -11323,6 +11344,13 @@ export default {
 
   // Notifications
   notifications: {
+    secretConfigured: 'Налаштовано. Залиште порожнім, щоб зберегти.',
+    secretWillClear: 'Цей секрет буде видалено.',
+    secretKeep: 'Зберегти наявний секрет',
+    secretClear: 'Видалити наявний секрет',
+    authenticationMode: 'Режим автентифікації',
+    authenticated: 'З автентифікацією',
+    anonymous: 'Анонімний',
     // Provider types
     providerTypes: {
       callmebot: 'CallMeBot/WhatsApp',
