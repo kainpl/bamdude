@@ -27,7 +27,10 @@ ACTIONS = (
     RUNTIME_ACTION,
     "cancel_terminal_claims",
     "settle_swap_by_operator",
+    "restore_gate_owner_row",
 )
+#: The row a plate gate waits on, put back in the queue by an earlier Retry (spec plate-gate-owner-requeue B).
+GATE_OWNER_ACTION = "restore_gate_owner_row"
 #: Every in-process owner that can still use a run, read by ``print_state_recovery_store.runtime_snapshot``.
 #: A missing or ``None`` answer is unknown, never "no owner".
 RUNTIME_OWNERS = (
@@ -75,6 +78,9 @@ class RecoveryFacts:
     foreign_active_users: int = 0
     repair_runtime: dict | None = None
     target_kind: str | None = None
+    #: The printer's plate gate as the database holds it (``armed``, ``archive_id``, ``token``),
+    #: read beside the rows so a preview names the gate it was made for.
+    gate: dict | None = None
 
 
 def utc(value):
@@ -635,9 +641,79 @@ def _addressed(f: RecoveryFacts):
     return {"code": code, "actions": [] if reasons else [action], "blocked_reasons": sorted(reasons)}
 
 
+def is_requeued_gate_owner(f: RecoveryFacts) -> bool:
+    """A pending item whose printer's armed plate gate waits on its archive (spec plate-gate-owner-requeue B1)."""
+    i, gate = f.item, f.gate or {}
+    return bool(
+        f.target_kind == "item"
+        and i
+        and i.get("status") == "pending"
+        and gate.get("armed")
+        and gate.get("archive_id") is not None
+        and i.get("archive_id") == gate.get("archive_id")
+    )
+
+
+def _classify_requeued_gate_owner(f: RecoveryFacts) -> dict:
+    """Return the row to its run's outcome only on full proof (B3); the gate itself is never touched.
+
+    Once the row is finished again the plate answer finds it, and Repeat print on the card does what the
+    earlier Retry meant to do. The archive must be THIS row's run, not a source it was queued from.
+    """
+    q, i, a = f.queue, f.item, f.archive
+    reasons = []
+    if not q.get("recovery_identity") or not i.get("recovery_identity") or not (a or {}).get("recovery_identity"):
+        reasons.append("identity_missing")
+    if (
+        a is None
+        or a.get("printer_id") != f.printer_id
+        or a.get("queue_id") != q["id"]
+        or i.get("queue_id") != q["id"]
+        or q.get("printer_id") != f.printer_id
+        or a.get("deleted_at") is not None
+    ):
+        reasons.append("execution_unproven")
+    elif a.get("status") not in OUTCOMES:
+        reasons.append("outcome_unknown")
+    snapshot = i.get("source_snapshot")
+    provenance = snapshot.get("provenance") if isinstance(snapshot, dict) else None
+    if (
+        isinstance(provenance, dict)
+        and provenance.get("kind") == "archive"
+        and provenance.get("id") == (a or {}).get("id")
+    ):
+        reasons.append("source_archive")
+    claim, start = utc(i.get("started_at")), utc((a or {}).get("started_at"))
+    if not claim or not start or start < claim:
+        reasons.append("invalid_run_times")
+    # A missing archive end is no veto: the row then takes the apply's own clock, recorded in the audit (B4).
+    if i.get("dispatch_attempts") != 0:
+        reasons.append("dispatch_started")
+    if (
+        q.get("status") == "printing"
+        or q.get("current_item_id") == i["id"]
+        or f.active_item_ids
+        or f.printing_archive_ids
+    ):
+        reasons.append("ambiguous_owner")
+    if f.live.get("busy"):
+        reasons.append("live_busy")
+    if f.live.get("mode") != "inactive":
+        reasons.append("live_unknown")
+    if effects_pending(a) or f.live.get("effects"):
+        reasons.append("effects_pending")
+    return {
+        "code": "plate_gate_owner_requeued",
+        "actions": [] if reasons else [GATE_OWNER_ACTION],
+        "blocked_reasons": sorted(set(reasons)),
+    }
+
+
 def classify(f: RecoveryFacts) -> dict | None:
     if f.live.get("observation_unproven") and (not f.archive or f.archive.get("status") == "printing"):
         return {"code": "run_identity_unproven", "actions": [], "blocked_reasons": ["run_identity_unproven"]}
+    if is_requeued_gate_owner(f):
+        return _classify_requeued_gate_owner(f)
     if f.target_kind == "archive":
         addressed = _addressed(f)
         if addressed and addressed["code"] == "swap_settlement_required":
@@ -678,6 +754,18 @@ def plan_action(
         raise ValueError("recovery_not_allowed")
     q, i, a = f.queue, f.item, f.archive
     plan = {"item": {}, "archive": {}, "queue": {}, "delete_item": False}
+    if action == GATE_OWNER_ACTION:
+        # The row only: the gate, the archive, the queue's pause and every other row stay as they are (B4, B5).
+        # Without an archive end the row takes the apply's one clock ("apply", as a stale-claim group's members),
+        # outside the plan so the preview's hash holds; the waiting and error fields are left empty.
+        plan["item"] = {
+            "status": OUTCOMES[a["status"]],
+            "completed_at": a["completed_at"] or "apply",
+            "waiting_reason": None,
+            "error_code": None,
+            "error_message": None,
+        }
+        return plan
     if action in {"cancel_terminal_claims", "settle_swap_by_operator"}:
         if f.target_kind != ("header" if action == "cancel_terminal_claims" else "archive"):
             raise ValueError("recovery_not_allowed")

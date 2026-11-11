@@ -1632,6 +1632,8 @@ function IssuesSection({
     ids: number[];
     failed: number;
     cancelled: number[];
+    // Rows a plate gate waits on: never sent, but named in the confirmation and the result (spec A4).
+    held: number;
   } | null>(null);
   const retryAllInFlight = useRef(false);
 
@@ -1645,10 +1647,13 @@ function IssuesSection({
       if (mounted.current) setConfirmRetryAll(null);
       const complete = result.retried.length === ids.length;
       const summary = t(complete ? 'queueCard.issues.retryAllDone' : 'queueCard.issues.retryAllPartial', { count: result.retried.length, total: ids.length });
-      const reasons = [...new Set(result.left_in_place.map(row => row.reason))].map(reason =>
-        t(`queueCard.issues.retryReasons.${reason}`, { count: result.left_in_place.filter(row => row.reason === reason).length }));
+      // What the server left in place, plus the rows held for their plate answer that were never sent.
+      const left = new Map<string, number>();
+      for (const row of result.left_in_place) left.set(row.reason, (left.get(row.reason) ?? 0) + 1);
+      if (selection.held) left.set('plate_answer_required', (left.get('plate_answer_required') ?? 0) + selection.held);
+      const reasons = [...left].map(([reason, count]) => t(`queueCard.issues.retryReasons.${reason}`, { count }));
       if (result.not_attempted.length) reasons.push(t('queueCard.issues.retryNotAttempted', { count: result.not_attempted.length }));
-      showToast([summary, ...reasons].join(' '), complete ? 'success' : 'warning');
+      showToast([summary, ...reasons].join(' '), complete && !selection.held ? 'success' : 'warning');
     },
     onError: (error: Error) => {
       if (mounted.current) setConfirmRetryAll(null);
@@ -1696,11 +1701,16 @@ function IssuesSection({
       } while (cursor !== undefined);
       if (controller.signal.aborted) return;
       if (action === 'retry') {
-        const failed = rows.filter(item => item.status === 'failed' && !isStaleClaim(item.error_code));
-        const cancelled = rows.filter(item => item.status === 'cancelled' && !isStaleClaim(item.error_code));
+        // A row the printer's plate gate waits on is answered on the printer card, never retried here.
+        const candidate = (item: PrintQueueItem) =>
+          (item.status === 'failed' || item.status === 'cancelled') && !isStaleClaim(item.error_code);
+        const retryable = (item: PrintQueueItem) => candidate(item) && !item.plate_answer_required;
+        const failed = rows.filter(item => item.status === 'failed' && retryable(item));
+        const cancelled = rows.filter(item => item.status === 'cancelled' && retryable(item));
+        const held = new Set(rows.filter(item => candidate(item) && item.plate_answer_required).map(item => item.id)).size;
         const ids = [...new Set([...failed, ...cancelled].map(item => item.id))];
-        if (!ids.length) showToast(t('queueCard.issues.retryAllNone'), 'info');
-        else setConfirmRetryAll({ ids, failed: new Set(failed.map(item => item.id)).size, cancelled: [...new Set(cancelled.map(item => item.id))] });
+        if (!ids.length) showToast(held ? t('queueCard.issues.retryAllOnlyHeld', { count: held }) : t('queueCard.issues.retryAllNone'), 'info');
+        else setConfirmRetryAll({ ids, failed: new Set(failed.map(item => item.id)).size, cancelled: [...new Set(cancelled.map(item => item.id))], held });
         return;
       }
       const failed = rows.filter(item => item.status === 'failed' && canModify('queue', 'delete', item.created_by_id));
@@ -1798,9 +1808,9 @@ function IssuesSection({
                 <div className="flex items-center gap-0.5 flex-shrink-0">
                   <button
                     onClick={() => retryMutation.mutate(item.id)}
-                    disabled={retryMutation.isPending || retryRowsBusy || !canUpdate || isStaleClaim(item.error_code)}
+                    disabled={retryMutation.isPending || retryRowsBusy || !canUpdate || isStaleClaim(item.error_code) || !!item.plate_answer_required}
                     className="p-0.5 rounded hover:bg-bambu-green/20 text-bambu-green disabled:opacity-50"
-                    title={t('queueCard.actions.retry')}
+                    title={item.plate_answer_required ? t('queueCard.actions.answerPlateFirst') : t('queueCard.actions.retry')}
                   >
                     <Play className="w-3.5 h-3.5" />
                   </button>
@@ -1836,9 +1846,9 @@ function IssuesSection({
                 <div className="flex items-center gap-0.5 flex-shrink-0">
                   <button
                     onClick={() => retryMutation.mutate(item.id)}
-                    disabled={retryMutation.isPending || retryRowsBusy || !canUpdate || isStaleClaim(item.error_code)}
+                    disabled={retryMutation.isPending || retryRowsBusy || !canUpdate || isStaleClaim(item.error_code) || !!item.plate_answer_required}
                     className="p-0.5 rounded hover:bg-bambu-green/20 text-bambu-green disabled:opacity-50"
-                    title={t('queueCard.actions.restart')}
+                    title={item.plate_answer_required ? t('queueCard.actions.answerPlateFirst') : t('queueCard.actions.restart')}
                   >
                     <RotateCcw className="w-3.5 h-3.5" />
                   </button>
@@ -1898,8 +1908,10 @@ function IssuesSection({
       )}
       {confirmRetryAll && <ConfirmModal
         title={t('queueCard.issues.retryAllTitle')}
-        message={t('queueCard.issues.retryAllMessage', { count: confirmRetryAll.ids.length,
-          failed: confirmRetryAll.failed, cancelled: confirmRetryAll.cancelled.length, printer: printerName })}
+        message={[t('queueCard.issues.retryAllMessage', { count: confirmRetryAll.ids.length,
+          failed: confirmRetryAll.failed, cancelled: confirmRetryAll.cancelled.length, printer: printerName }),
+        ...(confirmRetryAll.held ? [t('queueCard.issues.retryReasons.plate_answer_required', { count: confirmRetryAll.held })] : []),
+        ].join('\n')}
         confirmText={t('queueCard.issues.retryAllConfirm')}
         isLoading={retryAllMutation.isPending}
         loadingText={t('queueCard.issues.retryAllSending')}

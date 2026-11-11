@@ -13,6 +13,7 @@ RecoveryAction = Literal[
     "clear_terminal_runtime_context",
     "cancel_terminal_claims",
     "settle_swap_by_operator",
+    "restore_gate_owner_row",
 ]
 
 

@@ -27,7 +27,14 @@ from backend.app.models.printer import Printer
 from backend.app.models.printer_queue import PrinterQueue
 from backend.app.services import dispatch_phase, print_state_recovery_preview as previews, queue_sources
 from backend.app.services.archive_write_scope import load_active_archive_for_write
-from backend.app.services.print_state_recovery import RUNTIME_ACTION, RecoveryFacts, classify, plan_action, utc
+from backend.app.services.print_state_recovery import (
+    GATE_OWNER_ACTION,
+    RUNTIME_ACTION,
+    RecoveryFacts,
+    classify,
+    plan_action,
+    utc,
+)
 from backend.app.services.queue_ops import claim_lanes
 from backend.app.utils.failure_reasons import row_class
 
@@ -81,6 +88,8 @@ _ITEM_FIELDS = (
     "auto_eject_settings",
     "swap_macro_events",
     "execute_swap_macros",
+    # A Retry resets it to 0; any dispatch since makes the row no longer the one an old gate waits on.
+    "dispatch_attempts",
 )
 _ARCHIVE_FIELDS = (
     "id",
@@ -427,6 +436,25 @@ async def read_facts(db, printer_ids: list[int], targets: list[tuple[int, str, i
         ).all()
     )
     unknown_ref = unknown_inbound_refs()
+    # The plate gate as stored, one read for the page (spec plate-gate-owner-requeue B2). Part of each row's
+    # facts, so a preview names the gate it was made for and apply refuses a gate armed or answered since.
+    gates = {
+        row.id: {
+            "armed": bool(row.awaiting_plate_clear),
+            "archive_id": row.awaiting_plate_clear_archive_id,
+            "token": row.awaiting_plate_clear_token,
+        }
+        for row in (
+            await db.execute(
+                select(
+                    Printer.id,
+                    Printer.awaiting_plate_clear,
+                    Printer.awaiting_plate_clear_archive_id,
+                    Printer.awaiting_plate_clear_token,
+                ).where(Printer.id.in_(printer_ids))
+            )
+        ).all()
+    }
     # Read once for the page: a boot is proof only while this process holds the owner lock (I-R2).
     current_boot = dispatch_phase.current_boot_id()
     result = {}
@@ -547,6 +575,7 @@ async def read_facts(db, printer_ids: list[int], targets: list[tuple[int, str, i
             else 0,
             repair_runtime=repair_runtime,
             target_kind=kind,
+            gate=gates.get(pid),
         )
     return result, qs, (items, archives)
 
@@ -857,7 +886,27 @@ async def list_issues_page(
         )
         .exists(),
     )
-    candidates = union_all(headers, items, archives, owed_archives, paused_by_repair).subquery()
+    # A pending row its printer's armed plate gate still waits on: an earlier Retry put it back in the queue and
+    # every plate answer refuses (spec plate-gate-owner-requeue B1). A printing header's current row is already an
+    # ``items`` candidate, so it is not listed twice.
+    from backend.app.services.plate_hold import plate_gate_owner_predicate
+
+    requeued_gate_owners = (
+        select(PrinterQueue.printer_id, literal("item"), PrintQueueItem.id)
+        .join(PrintQueueItem, PrintQueueItem.queue_id == PrinterQueue.id)
+        .join(Printer, Printer.id == PrinterQueue.printer_id)
+        .where(
+            PrinterQueue.printer_id.in_(pids),
+            PrintQueueItem.status == "pending",
+            plate_gate_owner_predicate(),
+            or_(
+                PrinterQueue.status != "printing",
+                PrinterQueue.current_item_id.is_(None),
+                PrinterQueue.current_item_id != PrintQueueItem.id,
+            ),
+        )
+    )
+    candidates = union_all(headers, items, archives, owed_archives, paused_by_repair, requeued_gate_owners).subquery()
     query = select(candidates).order_by(candidates.c.pid, candidates.c.kind, candidates.c.target)
     if target is not None:
         query = query.where(candidates.c.kind == target[0], candidates.c.target == target[1])
@@ -1262,7 +1311,22 @@ async def apply_preview(session_factory, payload, actor, actor_label, *, recheck
                 extra = plan["archive"]["extra_data"]
                 extra["operator_recovery_end"]["action_id"] = nonce
                 archive.extra_data = json.loads(previews.canonical(extra))
-            if plan["item"] and not plan["item"].get("close"):
+            after = public_plan(plan)
+            if plan["item"] and not plan["item"].get("close") and payload["action"] == GATE_OWNER_ACTION:
+                # B4: the archive's own end, else this apply's one clock -- the row and the audit carry the same
+                # moment. The waiting and error fields stay empty, as the preview showed; the archive is untouched.
+                completed = ended_at if plan["item"]["completed_at"] == "apply" else plan["item"]["completed_at"]
+                item.status = plan["item"]["status"]
+                item.completed_at = completed
+                item.waiting_reason = None
+                item.error_code, item.error_message = None, None
+                after = {**after, "item": {**plan["item"], "completed_at": completed}}
+                # A pending row became finished again: the queue's counts follow it.
+                from backend.app.services.queue_counters import update_queue_counters
+
+                await db.flush()
+                await update_queue_counters(db, queue_id)
+            elif plan["item"] and not plan["item"].get("close"):
                 item.status = plan["item"]["status"]
                 item.completed_at = plan["item"]["completed_at"]
                 item.waiting_reason = None
@@ -1293,7 +1357,7 @@ async def apply_preview(session_factory, payload, actor, actor_label, *, recheck
                             "completed_at": (f.archive or {}).get("completed_at"),
                             "queue": f.queue,
                         },
-                        "after": public_plan(plan),
+                        "after": after,
                         "note": payload["note"],
                         "members": [
                             {

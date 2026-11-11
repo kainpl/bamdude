@@ -34,6 +34,7 @@ ISSUE_CODES = frozenset(
         "terminal_archive_conflicting_claims",
         "swap_settlement_required",
         "run_identity_unproven",
+        "plate_gate_owner_requeued",
     }
 )
 # Unknown future policy/episode reasons remain incomplete evidence, never raw prose.
@@ -49,6 +50,7 @@ REASONS = frozenset(
         "outcome_unknown",
         "invalid_run_times",
         "missing_run_times",
+        "dispatch_started",
         "delete_has_dependencies",
         "recovery_has_dependencies",
         "estimated_time",

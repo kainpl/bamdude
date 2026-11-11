@@ -263,7 +263,7 @@ async def staged_requirements(
 
 @asynccontextmanager
 async def reusing_sources(
-    db: AsyncSession, source_ids: Iterable[int | None], *, queue_ids=()
+    db: AsyncSession, source_ids: Iterable[int | None], *, queue_ids=(), storage_held: bool = False
 ) -> AsyncIterator[dict[int, QueueSource]]:
     """Hold the storage guard while EXISTING bytes gain an owner (§9, Task 3's C1).
 
@@ -286,6 +286,11 @@ async def reusing_sources(
 
     An empty set of ids (a legacy job, or one of §2's exemptions) takes no guard at
     all, so a farm that has never captured anything pays nothing for this.
+
+    ``storage_held`` is for a caller that already took the storage guard FIRST, before
+    its archive guard — the order every storage + archive writer keeps (a plate
+    Repeat, spec plate-gate-owner-requeue RG-1). The guard is not reentrant, so this
+    body then only asks; it never takes the guard under an archive.
     """
     from contextlib import AsyncExitStack
 
@@ -293,6 +298,8 @@ async def reusing_sources(
 
     ids = sorted({int(source_id) for source_id in source_ids if source_id})
     lanes = sorted(set(queue_ids))
+    if storage_held and (lanes or not queue_sources._guard().locked()):
+        raise RuntimeError("storage_held needs the caller's own storage guard and no lanes")
     if lanes:
         # End the preflight snapshot before process locks and SQLite's writer.
         await db.commit()
@@ -300,7 +307,8 @@ async def reusing_sources(
         yield {}
         return
     async with AsyncExitStack() as guards:
-        await guards.enter_async_context(queue_sources.storage_mutation())
+        if not storage_held:
+            await guards.enter_async_context(queue_sources.storage_mutation())
         if lanes:
             await guards.enter_async_context(claim_lanes(db, lanes))
         blobs = {}

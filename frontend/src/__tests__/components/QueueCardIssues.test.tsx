@@ -360,6 +360,39 @@ describe('QueueCard Issues — Retry all failed', () => {
     expect(await screen.findByText(/Check execution archive 249/)).toBeInTheDocument();
     expect(screen.queryByText(/Retry result could not be confirmed/)).not.toBeInTheDocument();
   });
+  it('leaves the row a plate gate waits on to the printer card, in Retry all and on its own row', async () => {
+    // Spec plate-gate-owner-requeue A4: Retry would re-arm the row the plate answer needs.
+    mockQueue({ failed: [row(1, 'failed')], cancelled: [{ ...row(3, 'cancelled'), plate_answer_required: true }] });
+    renderCard();
+    fireEvent.click(await screen.findByText('Issues (2)'));
+    const held = await screen.findByTitle(/answer on the printer card/);
+    expect(held).toBeDisabled();
+    expect(screen.getByTitle('Retry')).toBeEnabled();
+    fireEvent.click(await screen.findByRole('button', { name: 'Retry all…' }));
+    const dialog = await screen.findByRole('dialog');
+    expect(dialog).toHaveTextContent('failed: 1, cancelled: 0');
+    // Not sent, but said: the confirmation and the result both name the row left for its plate answer.
+    expect(dialog).toHaveTextContent('Waiting for a plate answer on the printer card: 1.');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Retry' }));
+    await waitFor(() => expect(requests).toHaveLength(1));
+    expect(requests[0]).toEqual({ queue_id: 7, item_ids: [1] });
+    expect(await screen.findByText(/1 returned to the queue Waiting for a plate answer on the printer card: 1\./)).toBeInTheDocument();
+  });
+  it('says why Retry all has nothing to send when every row waits for its plate answer', async () => {
+    mockQueue({ cancelled: [{ ...row(3, 'cancelled'), plate_answer_required: true }] });
+    renderCard();
+    fireEvent.click(await screen.findByRole('button', { name: 'Retry all…' }));
+    expect(await screen.findByText(/every failed or cancelled job waits for a plate answer on the printer card \(1\)/)).toBeInTheDocument();
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(requests).toEqual([]);
+  });
+  it('names a row left for its plate answer in the Retry all result', async () => {
+    server.use(http.post('/api/v1/queue/bulk-retry', () => HttpResponse.json({
+      retried: [1, 2], left_in_place: [{ id: 3, reason: 'plate_answer_required' }], not_attempted: [],
+    })));
+    renderCard(); await confirm();
+    expect(await screen.findByText(/Waiting for a plate answer on the printer card: 1/)).toBeInTheDocument();
+  });
   it('offers Retry all for cancelled-only issues and confirms each status count', async () => {
     mockQueue({ cancelled: [row(8, 'cancelled')], skipped: [row(9, 'skipped')] });
     renderCard();

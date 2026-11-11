@@ -19,7 +19,8 @@ import { farmRead, farmReadBudget } from './farmReadBudget';
 
 export type PrintStateAction =
   | 'align_terminal_item' | 'fill_estimated_end_and_align' | 'release_orphan_header' | 'delete_stale_item'
-  | 'close_interrupted_attempt' | 'clear_terminal_runtime_context' | 'cancel_terminal_claims' | 'settle_swap_by_operator';
+  | 'close_interrupted_attempt' | 'clear_terminal_runtime_context' | 'cancel_terminal_claims' | 'settle_swap_by_operator'
+  | 'restore_gate_owner_row';
 /** A run the printer's process still holds in memory (kind ``runtime``): what the operator reads beside it. */
 export interface PrintStateRuntimeView {
   context: { archive_id: number; queue_item_id: number | null; origin: string } | null;
@@ -6669,6 +6670,8 @@ export interface PrintQueueItem {
   source_thumbnail?: boolean;
   archive_name?: string | null;
   archive_thumbnail?: string | null;
+  /** The printer's plate gate waits on this row: the answer is on the printer card, and Retry refuses it. */
+  plate_answer_required?: boolean;
   library_file_name?: string | null;
   library_file_thumbnail?: string | null;
   printer_name?: string | null;
@@ -12075,7 +12078,10 @@ export const api = {
   bulkRetryQueueItems: (queueId: number, itemIds: number[], cancelledItemIds: number[] = []) =>
     request<{
       retried: number[];
-      left_in_place: { id: number; reason: 'missing' | 'different_queue' | 'not_failed' | 'source_unavailable' }[];
+      left_in_place: {
+        id: number;
+        reason: 'missing' | 'different_queue' | 'not_failed' | 'source_unavailable' | 'plate_answer_required';
+      }[];
       not_attempted: number[];
     }>('/queue/bulk-retry', { method: 'POST', body: JSON.stringify({ queue_id: queueId, item_ids: itemIds,
       ...(cancelledItemIds.length ? { cancelled_item_ids: cancelledItemIds } : {}) }) }),

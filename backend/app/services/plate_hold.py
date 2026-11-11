@@ -46,6 +46,34 @@ class StalePlateAnswer(Exception):
     """A completion card names a run that is no longer this printer's hold."""
 
 
+class PlateOwnerRequeued(StalePlateAnswer):
+    """The row the plate gate waits on was put back in the queue, so no answer can find it.
+
+    A Retry from before spec plate-gate-owner-requeue could do that. The gate stays as it
+    is: the operator cancels that queue row (or restores it in Print state diagnostics) and
+    then answers on the printer card.
+    """
+
+    def __init__(self, item_id: int):
+        super().__init__("The row this plate gate waits on is back in the queue")
+        self.item_id = item_id
+
+
+async def requeued_gate_owner(db: AsyncSession, printer_id: int, archive_id: int) -> int | None:
+    """The pending queue row on this printer that still names the gate's archive, if any."""
+    return await db.scalar(
+        select(PrintQueueItem.id)
+        .join(PrinterQueue, PrintQueueItem.queue_id == PrinterQueue.id)
+        .where(
+            PrinterQueue.printer_id == printer_id,
+            PrintQueueItem.archive_id == archive_id,
+            PrintQueueItem.status == "pending",
+        )
+        .order_by(PrintQueueItem.id)
+        .limit(1)
+    )
+
+
 async def should_hold_for_plate_clear(db: AsyncSession, printer_id: int, *, plate_auto_cleared: bool) -> bool:
     """Whether this printer's finished row waits for an answer.
 
@@ -175,6 +203,7 @@ async def answer_by_repeating(
     expected_archive_id: int | None = None,
     commit: bool = True,
     source_guards: AsyncExitStack | None = None,
+    storage_held: bool = False,
 ) -> PrintQueueItem | None:
     """The operator took the part off and wants another: re-arm the same row.
 
@@ -195,6 +224,12 @@ async def answer_by_repeating(
     blob's state — never on the routing intent's provenance, which records
     ``id: None`` for a job whose original references were already NULL when it was
     last edited, and so cannot answer it.
+
+    ⚠️ ``storage_held``: the plate answer took that guard itself, BEFORE the
+    archive's (``plate_answers.answer_plate_run``). Taking it here, under the
+    archive, inverted the order every other storage + archive writer keeps and
+    deadlocked against an operator recovery apply (spec plate-gate-owner-requeue
+    RG-1); then the blob is only asked about here.
     """
     from backend.app.services.queue_source_capture import reusing_sources
     from backend.app.services.queue_sources import QueueSourceError
@@ -216,13 +251,15 @@ async def answer_by_repeating(
         # here cannot swallow anything else.
         try:
             if source_guards is None:
-                async with reusing_sources(db, [row.queue_source_id]):
+                async with reusing_sources(db, [row.queue_source_id], storage_held=storage_held):
                     await _rearm(db, row, commit=commit)
             else:
                 # The outer plate answer commits defects, receipt, gate and
                 # re-arm together.  Holding the source guard until that commit
                 # stops the collector from deleting bytes in the tiny gap.
-                await source_guards.enter_async_context(reusing_sources(db, [row.queue_source_id]))
+                await source_guards.enter_async_context(
+                    reusing_sources(db, [row.queue_source_id], storage_held=storage_held)
+                )
                 await _rearm(db, row, commit=commit)
         except QueueSourceError as exc:
             raise RepeatNotPossible(
@@ -342,6 +379,40 @@ async def repeat_available(printer_id: int) -> bool:
         return await has_waiting_row(db, printer_id)
 
 
+def plate_gate_owner_predicate() -> ColumnElement[bool]:
+    """The queue row its printer's armed plate gate waits on; callers join the row to its printer.
+
+    Only the plate answer may move that row out of its finished state: Repeat print re-arms it
+    and releases the gate in one transaction. A Retry that re-armed it left the gate pointing at
+    a row that was no longer finished, and every answer was refused while the queue could not
+    start (incident 2026-11-11, spec plate-gate-owner-requeue).
+    """
+    return and_(
+        Printer.awaiting_plate_clear.is_(True),
+        Printer.awaiting_plate_clear_archive_id.is_not(None),
+        PrintQueueItem.archive_id == Printer.awaiting_plate_clear_archive_id,
+    )
+
+
+async def plate_gate_owner_ids(db: AsyncSession, item_ids) -> set[int]:
+    """Which of ``item_ids`` an armed plate gate waits on, read in the caller's transaction.
+
+    Read, not locked: both finishers arm the gate before the row turns terminal
+    (``tests/unit/test_plate_gate_arms_before_the_row_ends.py``), so a row a Retry
+    door sees finished already has its gate in the database.
+    """
+    ids = list(dict.fromkeys(item_ids))
+    if not ids:
+        return set()
+    rows = await db.scalars(
+        select(PrintQueueItem.id)
+        .join(PrinterQueue, PrintQueueItem.queue_id == PrinterQueue.id)
+        .join(Printer, PrinterQueue.printer_id == Printer.id)
+        .where(PrintQueueItem.id.in_(ids), plate_gate_owner_predicate())
+    )
+    return set(rows)
+
+
 def waiting_row_predicate() -> ColumnElement[bool]:
     """Shared held-row eligibility; callers join the queue row to its printer."""
     from backend.app.services.print_execution import STALE_CLAIM_CODES
@@ -354,8 +425,7 @@ def waiting_row_predicate() -> ColumnElement[bool]:
                 PrintQueueItem.status == "completed",
             ),
             and_(
-                Printer.awaiting_plate_clear.is_(True),
-                PrintQueueItem.archive_id == Printer.awaiting_plate_clear_archive_id,
+                plate_gate_owner_predicate(),
                 PrintQueueItem.status.in_(("completed", "cancelled", "failed")),
             ),
         ),

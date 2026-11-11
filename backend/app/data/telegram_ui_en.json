@@ -72,6 +72,7 @@
     "clear_plate_ok": "Plate cleared! Next print starts shortly.",
     "clear_plate_fail": "Failed to clear plate",
     "plate_action_stale": "This completion card is no longer current. Open the printer again.",
+    "plate_owner_requeued": "The print on this plate was put back in the queue. Cancel that queue job or restore it in Print state diagnostics, then answer the plate.",
     "next_in_queue": "Next: {name}"
   },
   "maintenance": {

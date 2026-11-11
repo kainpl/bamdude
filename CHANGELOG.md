@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+- A cancelled or failed job that the printer's plate prompt is waiting on can no longer be retried from the queue; answer on the printer card instead, where Repeat print runs it again. Before, that retry left the prompt unable to find its print: Clear plate and Repeat print were refused and the queue stood still, even after a restart. Where an earlier version left that state behind, Clear plate now names the queue job that blocks it, and Print state diagnostics can return that job to its finished state.
+
 - Starting or stopping MQTT recording updates the printer card's recording badge immediately, including other open browser sessions. Live status also carries the recording size, and the initiating dialog refreshes the card when WebSocket is unavailable.
 
 SSO sign-in offers Remember Me even when local login is disabled. Its choice survives the provider callback, all 2FA methods and refresh rotation, while respecting the administrator's session limit. LDAP group resolution supports schema-aware AD, lldap, OpenLDAP and POSIX membership; incomplete directory answers cannot apply a default group or remove existing assignments. StartTLS reads directory metadata after authentication and distinguishes server refusal from TLS failures. New LDAP accounts are provisioned once, while later logins preserve manual group assignments.

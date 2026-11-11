@@ -60,6 +60,8 @@ export function PrintStateRecoveryDialog({ issue, action, onClose, onApplied }: 
     if ((key === 'error_code' || key === 'failure_reason') && typeof value === 'string') return failureText(t, value, null, issue.archive_id);
     if (key === 'waiting_reason' && value === true) return t('printStateRecovery.recordedReason');
     if (typeof value === 'boolean') return t(value ? 'common.yes' : 'common.no');
+    // A plan without a recorded end takes the apply's own clock, which the preview cannot know yet.
+    if (key === 'completed_at' && value === 'apply') return t('printStateRecovery.applyTime');
     if (key === 'completed_at' && typeof value === 'string') return formatDateTime(value);
     if (key === 'status') return t(`printStateRecovery.states.${String(value)}`);
     if (key === 'time_source') return t('printStateRecovery.slicerEstimate');

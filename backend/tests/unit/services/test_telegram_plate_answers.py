@@ -136,3 +136,31 @@ async def test_missing_permission_never_calls_the_answer_service():
         await cb_repeat_print(_callback("action:repeat_print:5:77"))
 
     answer_run.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("handler_name", "callback_data"),
+    [("cb_clear_plate", "action:clear_plate:5:77"), ("cb_repeat_print", "action:repeat_print:5:77")],
+)
+async def test_a_gate_whose_row_was_requeued_says_what_to_do(handler_name, callback_data):
+    """Spec plate-gate-owner-requeue C: not "this card is stale" but the real blocker."""
+    from backend.app.services.plate_hold import PlateOwnerRequeued
+    from backend.app.services.telegram_handlers import actions
+
+    callback = _callback(callback_data)
+    detail = AsyncMock()
+    p1, p2, p3, p4, _p5 = _allowed()
+    with (
+        p1,
+        p2,
+        p3,
+        p4,
+        patch("backend.app.services.telegram_handlers.printers.show_printer_detail", detail),
+        patch("backend.app.services.plate_answers.answer_plate_run", AsyncMock(side_effect=PlateOwnerRequeued(834))),
+    ):
+        await getattr(actions, handler_name)(callback)
+
+    detail.assert_not_awaited()
+    text = callback.answer.await_args.args[0]
+    assert "put back in the queue" in text
+    assert callback.answer.await_args.kwargs["show_alert"] is True

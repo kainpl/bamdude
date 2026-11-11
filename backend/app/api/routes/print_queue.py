@@ -198,7 +198,17 @@ def queue_item_load_options() -> tuple:
         selectinload(PrintQueueItem.queue_source),
         selectinload(PrintQueueItem.queue)
         .selectinload(PrinterQueue.printer)
-        .options(load_only(Printer.id, Printer.name), lazyload(Printer.tags), lazyload(Printer.location)),
+        .options(
+            # The two gate columns answer ``plate_answer_required`` (spec plate-gate-owner-requeue A4).
+            load_only(
+                Printer.id,
+                Printer.name,
+                Printer.awaiting_plate_clear,
+                Printer.awaiting_plate_clear_archive_id,
+            ),
+            lazyload(Printer.tags),
+            lazyload(Printer.location),
+        ),
         selectinload(PrintQueueItem.library_file),
         selectinload(PrintQueueItem.created_by),
         selectinload(PrintQueueItem.project),
@@ -425,7 +435,17 @@ def _enrich_response(item: PrintQueueItem) -> PrintQueueItemResponse:
                 else:
                     response.library_file_name = name
     if item.queue and item.queue.printer:
-        response.printer_name = item.queue.printer.name
+        printer = item.queue.printer
+        response.printer_name = printer.name
+        # Only when the reader loaded the gate (``queue_item_load_options`` does): an
+        # unloaded column here would be a MissingGreenlet, not a lazy read. Retry asks
+        # the database itself; this flag only tells the card which button to offer.
+        if item.archive_id is not None and not (
+            {"awaiting_plate_clear", "awaiting_plate_clear_archive_id"} & sa_inspect(printer).unloaded
+        ):
+            response.plate_answer_required = bool(
+                printer.awaiting_plate_clear and printer.awaiting_plate_clear_archive_id == item.archive_id
+            )
     return response
 
 
@@ -1959,6 +1979,21 @@ async def retry_failed_item(
             if item is None or item.status not in ("failed", "cancelled"):
                 raise HTTPException(409, "recovery_changed")
             await require_repeatable(db, item)
+            from backend.app.services.plate_hold import plate_gate_owner_ids
+
+            # The plate gate waits on this very row: only the plate answer may re-arm it
+            # (Repeat print releases the gate in the same transaction). Re-armed here, the
+            # gate would keep pointing at a row that is no longer finished and refuse every
+            # answer while the queue could not start (spec plate-gate-owner-requeue A1).
+            if await plate_gate_owner_ids(db, [item.id]):
+                raise HTTPException(
+                    409,
+                    detail={
+                        "error": "plate_answer_required",
+                        "message": "The printer is waiting for a plate answer about this print. "
+                        "Answer on the printer card: Repeat print runs it again",
+                    },
+                )
             max_pos = (
                 await db.execute(
                     select(func.max(PrintQueueItem.position))
