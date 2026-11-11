@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+- Smart-plug printer links and virtual-printer target links now validate an explicitly supplied zero ID instead of treating it as omitted. Missing targets are refused before saving, including the MQTT plug recheck after reconnecting its runtime. Existing handling of omitted fields, null values and explicit clear flags is preserved.
+
 - Inventory CSV imports preserve the UTC instant of last-used dates with timezone offsets. Portable backups and restores also use UTC when filling a missing required timestamp, instead of the host's local time; existing timestamps are unchanged.
 
 - PostgreSQL's connection check before pool checkout can be disabled with `DB_POOL_PRE_PING=false` and a restart. It remains enabled by default; disabling it may let the next request fail on a connection the server has closed. SQLite ignores this setting.

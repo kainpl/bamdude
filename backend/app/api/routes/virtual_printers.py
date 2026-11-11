@@ -238,7 +238,7 @@ async def create_virtual_printer(
 
     # Validate proxy target printer exists
     target_printer = None
-    if body.target_printer_id:
+    if body.target_printer_id is not None:
         from backend.app.models.printer import Printer
 
         result = await db.execute(select(Printer).where(Printer.id == body.target_printer_id))
@@ -257,7 +257,7 @@ async def create_virtual_printer(
         effective_access_code = target_printer.access_code
 
     # Validate target folder exists (NULL is fine — means library root).
-    if body.target_folder_id:
+    if body.target_folder_id is not None:
         from backend.app.models.library import LibraryFolder
 
         result = await db.execute(select(LibraryFolder).where(LibraryFolder.id == body.target_folder_id))
