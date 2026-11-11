@@ -92,6 +92,13 @@ async def test_archive_print_with_dispatched_file_records_patched_hash_as_conten
     assert archive.source_content_hash == src_hash
     # And those two MUST differ — that's the whole point of the split.
     assert archive.content_hash != archive.source_content_hash
+    # The layer source stamp fences the row's identity, not a digest of the
+    # parsed bytes (which are deliberately different from the upload).
+    marker = archive.extra_data.get("_layer_source_v1")
+    assert marker is not None
+    assert marker["file_path"] == archive.file_path
+    assert marker["content_hash"] == dispatched_hash
+    assert marker["source_content_hash"] == src_hash
 
     # The on-disk copy is the UNPATCHED source (so reprint can re-run the
     # patcher against a clean source and toggle patches in either direction).

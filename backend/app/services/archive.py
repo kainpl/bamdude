@@ -1123,6 +1123,7 @@ class ArchiveService:
 
         resolved_plate_index = plate_for_parser or parser.plate_number
 
+        plates_payload = None
         # Per-plate cache so the gallery / list endpoint doesn't reopen the
         # ZIP every time. Same idea as the library upload route.
         try:
@@ -1249,6 +1250,9 @@ class ArchiveService:
         # guessed from a name or from the linked library row, an unknown included. The writer replaces the
         # reserved key, so nothing the file's parsed metadata carried under it survives.
         swap_compatibility.write_archive_fact(archive, source_swap_compatible)
+        from backend.app.services.layer_source import write_layer_source
+
+        write_layer_source(archive, plates_payload)
 
         self.db.add(archive)
         await self.db.flush()
@@ -1563,6 +1567,7 @@ class ArchiveService:
             if archive.plate_index is None and parser_plate_number is not None:
                 archive.plate_index = parser_plate_number
 
+            plates_payload = None
             # Per-plate cache populated alongside the rest of the metadata.
             if prepared is not None:
                 plates_payload = prepared.plates_payload
@@ -1601,6 +1606,8 @@ class ArchiveService:
             # drop the retry / no-3mf flags now that we have the file.
             merged_extra = dict(archive.extra_data or {})
             preserved_print_data = merged_extra.get("_print_data")
+            for key in ("_layer_source_v1", "plates", "is_multi_plate"):
+                merged_extra.pop(key, None)
             # The file's parsed metadata may not touch the declaration's record.
             merged_extra.update(swap_compatibility.strip_reserved(metadata))
             if preserved_print_data is not None:
@@ -1642,6 +1649,9 @@ class ArchiveService:
             archive.makerworld_url = metadata.get("makerworld_url")
             archive.designer = metadata.get("designer")
             archive.extra_data = merged_extra
+            from backend.app.services.layer_source import write_layer_source
+
+            write_layer_source(archive, plates_payload)
             # The fallback row was created with no 3MF, so it defaulted to
             # False. Now that the file has landed we know the real answer.
             archive.skip_objects_supported = skip_objects_supported_from_metadata(metadata)
