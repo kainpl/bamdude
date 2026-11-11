@@ -12,7 +12,7 @@ import re
 import sqlite3
 import tempfile
 from contextlib import asynccontextmanager, closing, contextmanager
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 from sqlalchemy import MetaData, text
@@ -200,7 +200,7 @@ async def _export_pg_to_sqlite(engine, metadata, output_path: Path) -> None:
                 # Cyclic FKs require loading without enforcement. Constraints
                 # remain in the portable DDL, and are checked after all rows land.
                 dst.execute("PRAGMA foreign_keys = OFF")
-                now = datetime.now()  # noqa: DTZ005
+                now = datetime.now(timezone.utc).replace(tzinfo=None)
                 for table in portable.tables.values():
                     columns = list(table.c)
                     defaults = {}
@@ -938,7 +938,7 @@ async def import_sqlite_to_postgres(engine, metadata, sqlite_path: Path) -> int:
                         if col.name in datetime_columns:
                             not_null_defaults[col.name] = "__now__"
 
-                now = datetime.now()  # noqa: DTZ005
+                now = datetime.now(timezone.utc).replace(tzinfo=None)
 
                 def _convert_row(
                     row,

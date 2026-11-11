@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+- Inventory CSV imports preserve the UTC instant of last-used dates with timezone offsets. Portable backups and restores also use UTC when filling a missing required timestamp, instead of the host's local time; existing timestamps are unchanged.
+
 - PostgreSQL's connection check before pool checkout can be disabled with `DB_POOL_PRE_PING=false` and a restart. It remains enabled by default; disabling it may let the next request fail on a connection the server has closed. SQLite ignores this setting.
 
 - PostgreSQL's default connection pool now allows up to 80 connections per engine instead of 100, leaving room on a stock 100-connection server. Explicit pool settings and SQLite defaults are preserved; multiple workers and other database clients still share the server's connection budget.
