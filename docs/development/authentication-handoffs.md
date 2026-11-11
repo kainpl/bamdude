@@ -10,6 +10,10 @@ The additive `auth_remember_me` migration adds a nullable boolean without backfi
 
 LDAP service and user binds use the configured transport without retrying requested TLS as plaintext. Schema information is read after authenticated service bind. A configured CA file remains authoritative for both Test and login; explicitly configured legacy plaintext remains supported. LDAP Test failures include an optional safe `error` category (StartTLS refusal, TLS failure, bind, connection, search, groups or configuration), with localized UI text and no driver exception or credential echo.
 
+Selecting LDAPS with an explicit `ldap://` URL is refused before connecting; use `ldaps://` or a bare hostname with LDAPS. New destination saves and connection tests return 422 for this contradictory configuration. Existing unrelated settings remain editable. An unreachable LDAPS host reports a connection failure; certificate and TLS handshake failures remain a separate category.
+
 Group lookup uses supported memberOf, member, uniqueMember and POSIX membership methods in the directory naming context. A complete empty result retains the configured default-group policy. A partial, refused, time/size-limited or referred membership result refuses the LDAP attempt before account/group changes. Existing manual assignments outside the LDAP-managed set remain untouched; a newly provisioned user does not receive a duplicate sync.
+
+Successful user, administrator and Test searches ignore AD continuation references to other naming contexts. Group searches still refuse continuation references because membership may be incomplete. Operation referrals (LDAP result 10) are refused on every search; no referral is followed.
 
 Validation uses signed mocked IdP callbacks, offline LDAP schema/directory fixtures and disposable SQLite/PostgreSQL databases. It does not claim compatibility acceptance against a live operator directory or identity provider. G01 C/D identity and continuous revocation remain separate units.

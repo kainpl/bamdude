@@ -11,11 +11,12 @@ from __future__ import annotations
 
 import json
 import logging
+import ssl
 from collections.abc import Mapping
 from dataclasses import dataclass
 
 from ldap3 import ALL, SUBTREE, Connection, Server, Tls
-from ldap3.core.exceptions import LDAPException
+from ldap3.core.exceptions import LDAPCertificateError, LDAPException
 from ldap3.utils.conv import escape_filter_chars
 from ldap3.utils.dn import parse_dn
 
@@ -128,8 +129,6 @@ def _create_server(config: LDAPConfig) -> Server:
     The explicit legacy ``none`` transport remains compatible. A requested
     StartTLS/LDAPS transport never falls back to it after a TLS failure.
     """
-    import ssl
-
     if config.security not in {"none", "starttls", "ldaps"}:
         raise LDAPOperationError("configuration_failed")
     use_ssl = config.security == "ldaps" or config.server_url.startswith("ldaps://")
@@ -139,7 +138,12 @@ def _create_server(config: LDAPConfig) -> Server:
     else:
         tls = Tls(validate=ssl.CERT_NONE)
 
-    return Server(config.server_url, use_ssl=use_ssl, tls=tls, get_info=ALL, connect_timeout=10)
+    server = Server(config.server_url, use_ssl=use_ssl, tls=tls, get_info=ALL, connect_timeout=10)
+    # ldap3 lets an explicit ldap:// URL override use_ssl=True. Refuse that
+    # contradictory tuple before any connection rather than send a plain bind.
+    if config.security == "ldaps" and not server.ssl:
+        raise LDAPOperationError("configuration_failed")
+    return server
 
 
 def _open_service_connection(config: LDAPConfig, server: Server, *, check_names: bool = True) -> Connection:
@@ -206,6 +210,10 @@ def _open_bound_connection(
                 logger.info("LDAP authenticated schema is unavailable")
         return conn
     except Exception as exc:
+        # unbind clears last_error. Capture only ldap3's own TLS-stage marker,
+        # never expose the appended exception/peer text.
+        last_error = getattr(conn, "last_error", None)
+        tls_wrap_failed = isinstance(last_error, str) and last_error.startswith("socket ssl wrapping error:")
         _close_connection(conn)
         if isinstance(exc, LDAPOperationError):
             raise
@@ -213,7 +221,11 @@ def _open_bound_connection(
             result = conn.result if isinstance(conn.result, dict) else {}
             code = "starttls_refused" if result.get("result") not in (None, 0) else "tls_failed"
         elif stage == "connection" and server.ssl:
-            code = "tls_failed"
+            code = (
+                "tls_failed"
+                if tls_wrap_failed or isinstance(exc, (ssl.SSLError, LDAPCertificateError))
+                else "connection_failed"
+            )
         else:
             code = "bind_failed" if stage == "bind" else "connection_failed"
         raise LDAPOperationError(code) from None
@@ -252,9 +264,15 @@ def _search_entries(conn: Connection, *, groups: bool = False, allow_size_limit:
     try:
         conn.search(**kwargs)
         result = conn.result if isinstance(conn.result, dict) else {}
-        if result.get("result") == 10 or any(
-            isinstance(item, dict) and item.get("type") == "searchResRef"
-            for item in (getattr(conn, "response", None) or [])
+        # Successful identity/admin/Test searches may carry AD continuation
+        # references to other naming contexts; ldap3 never follows these.
+        # Membership must still be complete, and result10 is always refused.
+        if result.get("result") == 10 or (
+            groups
+            and any(
+                isinstance(item, dict) and item.get("type") == "searchResRef"
+                for item in (getattr(conn, "response", None) or [])
+            )
         ):
             raise LDAPReferralError()
         # False is also the successful empty result. ldap3 does not raise for
