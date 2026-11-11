@@ -23,7 +23,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from enum import Enum
 
-from sqlalchemy import DateTime, Integer, String
+from sqlalchemy import Boolean, DateTime, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from backend.app.core.database import Base
@@ -89,6 +89,11 @@ class AuthEphemeralToken(Base):
     # (XSS can read JS memory but cannot read HttpOnly cookies).
     challenge_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
 
+    # m220: server-bound OIDC choice, carried through exchange / optional 2FA
+    # and refresh rotation. NULL preserves local pre-auth and legacy semantics;
+    # new OIDC attempts and refresh rows always store an explicit bool.
+    remember_me: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+
     # refresh (m015): timestamp when a refresh token was consumed by /auth/refresh.
     # Kept for reuse detection — an already-used refresh token coming back in is
     # treated as a replay / stolen-cookie attack and collapses the whole family.
@@ -119,9 +124,11 @@ class AuthEphemeralToken(Base):
         username: str,
         expires_at: datetime,
         challenge_id: str | None = None,
+        remember_me: bool | None = None,
     ) -> AuthEphemeralToken:
         """Create a pre-auth token (issued after password check, before 2FA)."""
         return cls(
+            remember_me=remember_me,
             token=token,
             token_type=TokenType.PRE_AUTH,
             username=username,
@@ -137,9 +144,11 @@ class AuthEphemeralToken(Base):
         nonce: str,
         code_verifier: str,
         expires_at: datetime,
+        remember_me: bool | None = False,
     ) -> AuthEphemeralToken:
         """Create an OIDC state token (CSRF protection + PKCE for authorize redirect)."""
         return cls(
+            remember_me=remember_me,
             token=token,
             token_type=TokenType.OIDC_STATE,
             provider_id=provider_id,
@@ -154,9 +163,11 @@ class AuthEphemeralToken(Base):
         token: str,
         username: str,
         expires_at: datetime,
+        remember_me: bool | None = False,
     ) -> AuthEphemeralToken:
         """Create an OIDC exchange token (bridge from callback to SPA)."""
         return cls(
+            remember_me=remember_me,
             token=token,
             token_type=TokenType.OIDC_EXCHANGE,
             username=username,
@@ -185,6 +196,7 @@ class AuthEphemeralToken(Base):
         username: str,
         family_id: str,
         expires_at: datetime,
+        remember_me: bool | None = None,
     ) -> AuthEphemeralToken:
         """Create a refresh token row (m015 sliding session).
 
@@ -193,6 +205,7 @@ class AuthEphemeralToken(Base):
         so reuse detection can collapse the whole chain at once.
         """
         return cls(
+            remember_me=remember_me,
             token=token_hash,
             token_type=TokenType.REFRESH,
             username=username,

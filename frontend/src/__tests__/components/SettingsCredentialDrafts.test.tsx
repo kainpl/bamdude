@@ -3,6 +3,7 @@ import { act, fireEvent, screen, waitFor } from '@testing-library/react';
 import { render } from '../utils';
 import { api } from '../../api/client';
 import { EmailSettings } from '../../components/EmailSettings';
+import i18n from '../../i18n';
 import { LDAPSettings } from '../../components/LDAPSettings';
 
 describe('Settings credential draft tests', () => {
@@ -84,4 +85,26 @@ describe('Settings credential draft tests', () => {
     expect(probe.mock.calls[0][0]).not.toHaveProperty('ldap_bind_password');
     expect(probe.mock.calls[0][0]?.secret_actions).toEqual({ ldap_server_url: 'keep', ldap_bind_password: 'keep' });
   });
+  it.each([
+    ['en', 'Test Connection', 'The LDAP server refused StartTLS.'],
+    ['uk', "Тест з'єднання", 'LDAP-сервер відхилив StartTLS.'],
+  ])('shows the safe LDAP Test category in %s', async (language, button, expected) => {
+    await i18n.changeLanguage(language);
+    try {
+      vi.spyOn(api, 'getSettings').mockResolvedValue({ ldap_enabled: true,
+        ldap_server_url: 'ldap://directory.old', ldap_bind_dn: 'cn=operator',
+        ldap_search_base: 'dc=example', ldap_bind_password_configured: true } as never);
+      vi.spyOn(api, 'getLDAPStatus').mockResolvedValue({ ldap_enabled: true, ldap_configured: true });
+      vi.spyOn(api, 'getGroups').mockResolvedValue([]);
+      vi.spyOn(api, 'testLDAP').mockResolvedValue({ success: false, error: 'starttls_refused', message: 'safe English fallback' });
+      render(<LDAPSettings />);
+      await screen.findByDisplayValue('cn=operator');
+      fireEvent.click(screen.getByRole('button', { name: button }));
+      expect(await screen.findByText(expected)).toBeInTheDocument();
+      expect(screen.queryByText('safe English fallback')).toBeNull();
+    } finally {
+      await i18n.changeLanguage('en');
+    }
+  });
+
 });

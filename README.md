@@ -72,6 +72,8 @@ support is a bug report, a translation PR or a star. If you would rather chip in
 
 Integration editors show configured credentials without returning them. Keeping a saved credential requires an unchanged effective destination; connection tests use the draft without saving it. API clients can use explicit keep/replace/clear actions as described in the [credential-editing contract](docs/development/credential-edits.md). These changes are also in development after 0.7.3.
 
+**G01 F review candidate (`audit/g01-f`):** SSO Remember Me works through callback and 2FA; LDAP groups support AD, lldap, OpenLDAP and POSIX with safe handling of incomplete searches. This candidate is awaiting acceptance and is not yet in `feature/v0.7.3-fixes` or stable 0.7.3. The [authentication handoff contract](docs/development/authentication-handoffs.md) covers API behavior and upgrade compatibility.
+
 Docker `latest` follows the latest **stable release tag**; `dev` follows the beta channel. Check the release changelog for what your image includes.
 
 ## What's different from Bambuddy?
@@ -427,8 +429,9 @@ BamDude AI includes a setup panel, client packages and a shared diagnostic skill
 - JWT tokens, API key support
 - **OIDC (OpenID Connect)** — PocketID, Authentik, Keycloak, Authelia, Google, **Azure Entra ID** (`preferred_username` / `upn` claim, optional skip of `email_verified` gate)
 - **SSO autologin** and an option to **disable local username/password login** (lockout-guarded)
+- **SSO Remember Me** — manual sign-in keeps your choice through the provider and two-factor checks, within the administrator's session limit; automatic SSO uses a browser-session cookie
 - **Admin session-lifetime ceiling** (Settings → Users → Session Policy, up to 30 days)
-- LDAP/Active Directory with group mapping
+- LDAP/Active Directory with schema-aware group mapping for AD, OpenLDAP/lldap and POSIX directories; manually assigned groups outside LDAP management survive sign-in
 - Per-user Bambu Cloud accounts
 - Advanced Auth via Email (SMTP)
 - Per-user email notifications

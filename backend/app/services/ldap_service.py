@@ -2,7 +2,7 @@
 
 Supports:
 - LDAP bind authentication (simple bind with user's credentials)
-- StartTLS, LDAPS, and plaintext connections
+- StartTLS, LDAPS, and explicitly configured legacy plaintext connections
 - User search with configurable filter
 - Group membership resolution for role mapping
 """
@@ -11,12 +11,44 @@ from __future__ import annotations
 
 import json
 import logging
+import ssl
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 from ldap3 import ALL, SUBTREE, Connection, Server, Tls
+from ldap3.core.exceptions import LDAPCertificateError, LDAPException
 from ldap3.utils.conv import escape_filter_chars
+from ldap3.utils.dn import parse_dn
 
 logger = logging.getLogger(__name__)
+
+LDAP_ERROR_MESSAGES = {
+    "starttls_refused": "LDAP StartTLS operation refused by the server",
+    "tls_failed": "LDAP TLS certificate or handshake failed",
+    "bind_failed": "LDAP account bind failed",
+    "connection_failed": "LDAP connection failed",
+    "search_failed": "LDAP directory search failed",
+    "groups_incomplete": "LDAP group lookup incomplete",
+    "configuration_failed": "LDAP transport configuration is invalid",
+}
+
+
+class LDAPOperationError(LDAPException):
+    """Safe category only: never carry a driver message, URL or credential."""
+
+    def __init__(self, code: str):
+        self.code = code
+        super().__init__(LDAP_ERROR_MESSAGES[code])
+
+
+class LDAPGroupLookupError(LDAPOperationError):
+    def __init__(self):
+        super().__init__("groups_incomplete")
+
+
+class LDAPReferralError(LDAPOperationError):
+    def __init__(self):
+        super().__init__("search_failed")
 
 
 @dataclass
@@ -27,6 +59,7 @@ class LDAPUserInfo:
     email: str | None
     display_name: str | None
     groups: list[str]  # List of group DNs the user belongs to
+    groups_complete: bool = True
 
 
 @dataclass
@@ -93,11 +126,11 @@ def parse_ldap_config(settings: dict[str, str]) -> LDAPConfig | None:
 def _create_server(config: LDAPConfig) -> Server:
     """Create an ldap3 Server instance from config.
 
-    Always uses TLS - either LDAPS (TLS from start) or StartTLS (upgrade after connect).
-    Plaintext LDAP is not supported.
+    The explicit legacy ``none`` transport remains compatible. A requested
+    StartTLS/LDAPS transport never falls back to it after a TLS failure.
     """
-    import ssl
-
+    if config.security not in {"none", "starttls", "ldaps"}:
+        raise LDAPOperationError("configuration_failed")
     use_ssl = config.security == "ldaps" or config.server_url.startswith("ldaps://")
 
     if config.ca_cert_path:
@@ -105,7 +138,12 @@ def _create_server(config: LDAPConfig) -> Server:
     else:
         tls = Tls(validate=ssl.CERT_NONE)
 
-    return Server(config.server_url, use_ssl=use_ssl, tls=tls, get_info=ALL, connect_timeout=10)
+    server = Server(config.server_url, use_ssl=use_ssl, tls=tls, get_info=ALL, connect_timeout=10)
+    # ldap3 lets an explicit ldap:// URL override use_ssl=True. Refuse that
+    # contradictory tuple before any connection rather than send a plain bind.
+    if config.security == "ldaps" and not server.ssl:
+        raise LDAPOperationError("configuration_failed")
+    return server
 
 
 def _open_service_connection(config: LDAPConfig, server: Server, *, check_names: bool = True) -> Connection:
@@ -120,28 +158,161 @@ def _open_service_connection(config: LDAPConfig, server: Server, *, check_names:
     schema doesn't define one of the names. Upstream Bambuddy commit
     d6364646 / #1298.
     """
+    return _open_bound_connection(config, server, config.bind_dn, config.bind_password, check_names=check_names)
+
+
+def _close_connection(conn: Connection) -> None:
+    try:
+        conn.unbind()
+    except Exception:
+        logger.warning("LDAP connection cleanup failed")
+
+
+def _open_bound_connection(
+    config: LDAPConfig,
+    server: Server,
+    user: str,
+    password: str,
+    *,
+    check_names: bool = True,
+    refresh_schema: bool = True,
+) -> Connection:
     conn = Connection(
         server,
-        user=config.bind_dn,
-        password=config.bind_password,
+        user=user,
+        password=password,
         auto_bind=False,
+        # Keep every operation on the configured, explicitly authenticated
+        # transport. Hidden range/referral requests cannot prove completeness.
+        auto_range=False,
+        auto_referrals=False,
         raise_exceptions=True,
         read_only=True,
         check_names=check_names,
     )
-    conn.open()
-    if config.security == "starttls" and not config.server_url.startswith("ldaps://"):
-        conn.start_tls()
-    conn.bind()
-    return conn
+    stage = "connection"
+    try:
+        # Suppress every anonymous metadata read. Some directories reveal their
+        # schema only after the service account has authenticated over TLS.
+        conn.open(read_server_info=False)
+        if config.security == "starttls" and not server.ssl:
+            stage = "tls"
+            if not conn.start_tls(read_server_info=False):
+                raise LDAPOperationError("starttls_refused")
+        stage = "bind"
+        if not conn.bind(read_server_info=False):
+            raise LDAPOperationError("bind_failed")
+        if refresh_schema:
+            try:
+                conn.refresh_server_info()
+            except LDAPException:
+                # Unknown/unavailable schema is a supported capability state.
+                logger.info("LDAP authenticated schema is unavailable")
+        return conn
+    except Exception as exc:
+        # unbind clears last_error. Capture only ldap3's own TLS-stage marker,
+        # never expose the appended exception/peer text.
+        last_error = getattr(conn, "last_error", None)
+        tls_wrap_failed = isinstance(last_error, str) and last_error.startswith("socket ssl wrapping error:")
+        _close_connection(conn)
+        if isinstance(exc, LDAPOperationError):
+            raise
+        if stage == "tls":
+            result = conn.result if isinstance(conn.result, dict) else {}
+            code = "starttls_refused" if result.get("result") not in (None, 0) else "tls_failed"
+        elif stage == "connection" and server.ssl:
+            code = (
+                "tls_failed"
+                if tls_wrap_failed or isinstance(exc, (ssl.SSLError, LDAPCertificateError))
+                else "connection_failed"
+            )
+        else:
+            code = "bind_failed" if stage == "bind" else "connection_failed"
+        raise LDAPOperationError(code) from None
+
+
+def _entry_values(entry, name: str) -> list[str]:
+    try:
+        attributes = getattr(entry, "entry_attributes_as_dict", None)
+        if isinstance(attributes, Mapping):
+            value = next((value for key, value in attributes.items() if key.casefold() == name.casefold()), None)
+        else:
+            value = getattr(entry, name, None)
+    except (AttributeError, LDAPException):
+        return []
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple, set)):
+        return [str(item) for item in value if item is not None and str(item)]
+    return [str(value)] if str(value) else []
+
+
+def _schema_keys(conn: Connection, name: str) -> set[str] | None:
+    schema = getattr(conn.server, "schema", None)
+    values = getattr(schema, name, None)
+    return {str(key).casefold() for key in values} if isinstance(values, Mapping) and values else None
+
+
+def _user_attributes(conn: Connection) -> list[str]:
+    attributes = _schema_keys(conn, "attribute_types")
+    if attributes is None:
+        return ["*", "+"]
+    return ["*", "memberOf"] if "memberof" in attributes else ["*"]
+
+
+def _search_entries(conn: Connection, *, groups: bool = False, allow_size_limit: bool = False, **kwargs) -> list:
+    try:
+        conn.search(**kwargs)
+        result = conn.result if isinstance(conn.result, dict) else {}
+        # Successful identity/admin/Test searches may carry AD continuation
+        # references to other naming contexts; ldap3 never follows these.
+        # Membership must still be complete, and result10 is always refused.
+        if result.get("result") == 10 or (
+            groups
+            and any(
+                isinstance(item, dict) and item.get("type") == "searchResRef"
+                for item in (getattr(conn, "response", None) or [])
+            )
+        ):
+            raise LDAPReferralError()
+        # False is also the successful empty result. ldap3 does not raise for
+        # time/size limits or referrals, so inspect the result independently.
+        if result.get("result") not in ({0, 4} if allow_size_limit else {0}):
+            raise LDAPGroupLookupError() if groups else LDAPOperationError("search_failed")
+        return list(conn.entries)
+    except LDAPOperationError:
+        raise
+    except Exception:
+        raise LDAPGroupLookupError() if groups else LDAPOperationError("search_failed") from None
+
+
+def _group_search_base(conn: Connection, config: LDAPConfig, user_dn: str) -> str:
+    contexts = getattr(getattr(conn.server, "info", None), "naming_contexts", None)
+    if isinstance(contexts, (list, tuple)):
+        matches = [
+            value
+            for value in contexts
+            if isinstance(value, str)
+            and (user_dn.casefold() == value.casefold() or user_dn.casefold().endswith("," + value.casefold()))
+        ]
+        if matches:
+            return max(matches, key=len)
+    try:
+        parts = parse_dn(user_dn)
+        for index, (name, _, _) in enumerate(parts):
+            if name.casefold() == "dc":
+                return "".join(name + "=" + value + separator for name, value, separator in parts[index:])
+    except LDAPException:
+        pass
+    return config.search_base
 
 
 def _pick_canonical_username(entry, fallback: str) -> str:
     """Prefer ``sAMAccountName``, then ``uid``, then the supplied fallback."""
-    if hasattr(entry, "sAMAccountName") and entry.sAMAccountName:
-        return str(entry.sAMAccountName)
-    if hasattr(entry, "uid") and entry.uid:
-        return str(entry.uid)
+    for name in ("sAMAccountName", "uid"):
+        values = _entry_values(entry, name)
+        if values:
+            return values[0]
     return fallback
 
 
@@ -150,55 +321,60 @@ def _extract_user_info(
 ) -> LDAPUserInfo:
     """Build an ``LDAPUserInfo`` from an already-fetched directory entry.
 
-    Collects ``memberOf`` groups, POSIX ``memberUid`` groups, and the
-    primary ``gidNumber`` group; dedups DNs case-insensitively. Uses the
-    supplied service-bound connection to resolve POSIX groups. Shared by
-    the login and manual-lookup paths so they produce identical
-    LDAPUserInfo shapes.
+    A partial lookup never returns an apparently complete list: callers must
+    not use it to select a privileged default or remove managed groups.
     """
-    email = str(user_entry.mail) if hasattr(user_entry, "mail") and user_entry.mail else None
-    display_name = (
-        str(user_entry.displayName) if hasattr(user_entry, "displayName") and user_entry.displayName else None
-    )
-
-    # Collect groups from memberOf attribute (Active Directory / groupOfNames)
-    groups = [str(g) for g in user_entry.memberOf] if hasattr(user_entry, "memberOf") and user_entry.memberOf else []
-
+    email = next(iter(_entry_values(user_entry, "mail")), None)
+    display_name = next(iter(_entry_values(user_entry, "displayName")), None)
+    returned = getattr(user_entry, "entry_attributes_as_dict", {})
+    if isinstance(returned, Mapping) and any(key.casefold().startswith("memberof;range=") for key in returned):
+        raise LDAPGroupLookupError()
+    groups = _entry_values(user_entry, "memberOf")
     canonical_username = _pick_canonical_username(user_entry, fallback_username)
-
-    # Also search for POSIX groups (memberUid-based) using the service account
-    posix_filter = f"(&(objectClass=posixGroup)(memberUid={_ldap_escape(canonical_username)}))"
-    service_conn.search(
-        search_base=config.search_base,
-        search_filter=posix_filter,
-        search_scope=SUBTREE,
-        attributes=["cn"],
+    attributes = _schema_keys(service_conn, "attribute_types")
+    classes = _schema_keys(service_conn, "object_classes")
+    # AD's authenticated memberOf is authoritative. Do not query the whole
+    # domain for POSIX/forward membership that its backlink already describes.
+    ad_backlink = bool(_entry_values(user_entry, "sAMAccountName")) and (
+        bool(groups) or (attributes is not None and "memberof" in attributes)
     )
-    for entry in service_conn.entries:
-        groups.append(str(entry.entry_dn))
+    if not ad_backlink:
+        base = _group_search_base(service_conn, config, str(user_entry.entry_dn))
 
-    # POSIX primary group: user's gidNumber matches a posixGroup's
-    # gidNumber. Standard Unix semantics treat this as full group
-    # membership, so we resolve it to a group DN alongside the
-    # memberUid results.
-    if hasattr(user_entry, "gidNumber") and user_entry.gidNumber:
-        primary_gid = str(user_entry.gidNumber)
-        primary_filter = f"(&(objectClass=posixGroup)(gidNumber={_ldap_escape(primary_gid)}))"
-        service_conn.search(
-            search_base=config.search_base,
-            search_filter=primary_filter,
-            search_scope=SUBTREE,
-            attributes=["cn"],
-        )
-        for entry in service_conn.entries:
-            groups.append(str(entry.entry_dn))
+        def supported(object_class: str, attribute: str) -> bool:
+            return (classes is None or object_class.casefold() in classes) and (
+                attributes is None or attribute.casefold() in attributes
+            )
+
+        filters = []
+        dn = _ldap_escape(str(user_entry.entry_dn))
+        for object_class, attribute in (("groupOfNames", "member"), ("groupOfUniqueNames", "uniqueMember")):
+            if supported(object_class, attribute):
+                filters.append(f"(&(objectClass={object_class})({attribute}={dn}))")
+        if supported("posixGroup", "memberUid"):
+            filters.append(f"(&(objectClass=posixGroup)(memberUid={_ldap_escape(canonical_username)}))")
+        primary_gid = next(iter(_entry_values(user_entry, "gidNumber")), None)
+        if primary_gid is not None and supported("posixGroup", "gidNumber"):
+            filters.append(f"(&(objectClass=posixGroup)(gidNumber={_ldap_escape(primary_gid)}))")
+        # Separate queries let every result be checked before consuming any
+        # groups; an unsupported class proven absent in schema is simply skipped.
+        for search_filter in filters:
+            entries = _search_entries(
+                service_conn,
+                groups=True,
+                search_base=base,
+                search_filter=search_filter,
+                search_scope=SUBTREE,
+                attributes=["1.1"],
+            )
+            groups.extend(str(entry.entry_dn) for entry in entries)
 
     # Dedupe group DNs (user may be in a group via both memberUid and
     # primary gidNumber). LDAP DNs are case-insensitive by spec.
     seen_lower: set[str] = set()
     deduped_groups: list[str] = []
     for g in groups:
-        key = g.lower()
+        key = g.casefold()
         if key not in seen_lower:
             seen_lower.add(key)
             deduped_groups.append(g)
@@ -223,48 +399,37 @@ def authenticate_ldap_user(config: LDAPConfig, username: str, password: str) -> 
     if not password:
         return None
 
-    server = _create_server(config)
-
     try:
+        server = _create_server(config)
         service_conn = _open_service_connection(config, server)
-    except Exception as e:
-        logger.warning("LDAP service account bind failed: %s", e)
+    except Exception:
+        logger.warning("LDAP service account connection failed")
         return None
 
     try:
         # Search for the user
         search_filter = config.user_filter.replace("{username}", _ldap_escape(username))
-        service_conn.search(
+        entries = _search_entries(
+            service_conn,
             search_base=config.search_base,
             search_filter=search_filter,
             search_scope=SUBTREE,
-            attributes=["*"],
+            attributes=_user_attributes(service_conn),
         )
 
-        if not service_conn.entries:
+        if not entries:
             logger.info("LDAP user not found: %s", username)
             return None
 
-        user_entry = service_conn.entries[0]
+        user_entry = entries[0]
         user_dn = str(user_entry.entry_dn)
 
         # Step 2: Bind as the user to verify password
         try:
-            user_conn = Connection(
-                server,
-                user=user_dn,
-                password=password,
-                auto_bind=False,
-                raise_exceptions=True,
-                read_only=True,
-            )
-            user_conn.open()
-            if config.security == "starttls" and not config.server_url.startswith("ldaps://"):
-                user_conn.start_tls()
-            user_conn.bind()
-            user_conn.unbind()
-        except Exception as e:
-            logger.info("LDAP bind failed for user %s: %s", username, e)
+            user_conn = _open_bound_connection(config, server, user_dn, password, refresh_schema=False)
+            _close_connection(user_conn)
+        except Exception:
+            logger.info("LDAP user credential verification failed")
             return None
 
         info = _extract_user_info(service_conn, config, user_entry, username)
@@ -280,7 +445,7 @@ def authenticate_ldap_user(config: LDAPConfig, username: str, password: str) -> 
         )
         return info
     finally:
-        service_conn.unbind()
+        _close_connection(service_conn)
 
 
 def lookup_ldap_user(config: LDAPConfig, username: str) -> LDAPUserInfo | None:
@@ -298,24 +463,25 @@ def lookup_ldap_user(config: LDAPConfig, username: str) -> LDAPUserInfo | None:
 
     try:
         service_conn = _open_service_connection(config, server)
-    except Exception as e:
-        logger.warning("LDAP service account bind failed during lookup: %s", e)
+    except Exception:
+        logger.warning("LDAP service account connection failed during lookup")
         raise
 
     try:
         search_filter = config.user_filter.replace("{username}", _ldap_escape(username))
-        service_conn.search(
+        entries = _search_entries(
+            service_conn,
             search_base=config.search_base,
             search_filter=search_filter,
             search_scope=SUBTREE,
-            attributes=["*"],
+            attributes=_user_attributes(service_conn),
         )
-        if not service_conn.entries:
+        if not entries:
             logger.info("LDAP lookup: user not found: %s", username)
             return None
-        return _extract_user_info(service_conn, config, service_conn.entries[0], username)
+        return _extract_user_info(service_conn, config, entries[0], username)
     finally:
-        service_conn.unbind()
+        _close_connection(service_conn)
 
 
 def search_ldap_users(config: LDAPConfig, query: str, limit: int = 25) -> list[LDAPSearchResult]:
@@ -348,8 +514,8 @@ def search_ldap_users(config: LDAPConfig, query: str, limit: int = 25) -> list[L
         # displayName in schema) don't reject the cross-schema OR filter
         # — see helper docstring.
         service_conn = _open_service_connection(config, server, check_names=False)
-    except Exception as e:
-        logger.warning("LDAP service account bind failed during search: %s", e)
+    except Exception:
+        logger.warning("LDAP service account connection failed during search")
         raise
 
     try:
@@ -360,7 +526,9 @@ def search_ldap_users(config: LDAPConfig, query: str, limit: int = 25) -> list[L
         # the AD names. The ``*`` wildcard is hardcoded in ldap3's
         # ``ATTRIBUTES_EXCLUDED_FROM_CHECK`` so it bypasses that validation,
         # and the server returns whatever it has.
-        service_conn.search(
+        entries = _search_entries(
+            service_conn,
+            allow_size_limit=True,
             search_base=config.search_base,
             search_filter=search_filter,
             search_scope=SUBTREE,
@@ -368,15 +536,15 @@ def search_ldap_users(config: LDAPConfig, query: str, limit: int = 25) -> list[L
             size_limit=limit,
         )
         results: list[LDAPSearchResult] = []
-        for entry in service_conn.entries:
+        for entry in entries:
             username = _pick_canonical_username(entry, "")
-            if not username and hasattr(entry, "cn") and entry.cn:
+            if not username and _entry_values(entry, "cn"):
                 # Last resort — some OpenLDAP layouts only have cn
-                username = str(entry.cn)
+                username = _entry_values(entry, "cn")[0]
             if not username:
                 continue
-            email = str(entry.mail) if hasattr(entry, "mail") and entry.mail else None
-            display_name = str(entry.displayName) if hasattr(entry, "displayName") and entry.displayName else None
+            email = next(iter(_entry_values(entry, "mail")), None)
+            display_name = next(iter(_entry_values(entry, "displayName")), None)
             results.append(
                 LDAPSearchResult(
                     username=username,
@@ -388,7 +556,7 @@ def search_ldap_users(config: LDAPConfig, query: str, limit: int = 25) -> list[L
         logger.info("LDAP directory search for %r returned %d result(s)", query, len(results))
         return results
     finally:
-        service_conn.unbind()
+        _close_connection(service_conn)
 
 
 def resolve_group_mapping(ldap_groups: list[str], group_mapping: dict[str, str]) -> list[str]:
@@ -401,11 +569,11 @@ def resolve_group_mapping(ldap_groups: list[str], group_mapping: dict[str, str])
         return []
 
     # Build case-insensitive lookup
-    mapping_lower = {k.lower(): v for k, v in group_mapping.items()}
+    mapping_lower = {k.casefold(): v for k, v in group_mapping.items()}
     result = []
     for ldap_group in ldap_groups:
-        bamdude_group = mapping_lower.get(ldap_group.lower())
-        if bamdude_group:
+        bamdude_group = mapping_lower.get(ldap_group.casefold())
+        if bamdude_group and bamdude_group not in result:
             result.append(bamdude_group)
     return result
 
@@ -417,30 +585,24 @@ def test_ldap_connection(config: LDAPConfig) -> tuple[bool, str]:
     """
     try:
         server = _create_server(config)
-        conn = Connection(
-            server,
-            user=config.bind_dn,
-            password=config.bind_password,
-            auto_bind=False,
-            raise_exceptions=True,
-            read_only=True,
-        )
-        conn.open()
-        if config.security == "starttls" and not config.server_url.startswith("ldaps://"):
-            conn.start_tls()
-        conn.bind()
-
-        # Try a search to verify search base
-        conn.search(
-            search_base=config.search_base,
-            search_filter="(objectClass=*)",
-            search_scope=SUBTREE,
-            size_limit=1,
-        )
-        conn.unbind()
+        conn = _open_service_connection(config, server)
+        try:
+            # A bounded connectivity probe is not a complete group lookup.
+            _search_entries(
+                conn,
+                allow_size_limit=True,
+                search_base=config.search_base,
+                search_filter="(objectClass=*)",
+                search_scope=SUBTREE,
+                size_limit=1,
+            )
+        finally:
+            _close_connection(conn)
         return True, "LDAP connection successful"
-    except Exception as e:
-        return False, f"LDAP connection failed: {e}"
+    except LDAPOperationError as exc:
+        return False, str(exc)
+    except Exception:
+        return False, LDAP_ERROR_MESSAGES["connection_failed"]
 
 
 def _ldap_escape(value: str) -> str:

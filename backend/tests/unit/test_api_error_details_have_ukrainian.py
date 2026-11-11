@@ -116,3 +116,12 @@ def test_queue_refusals_translate_the_message_without_changing_the_code(code, fo
     assert translated["code"] == code
     assert translated["message"] != detail["message"]
     assert re.search("[А-Яа-яІіЇїЄєҐґ]", translated["message"])
+
+
+def test_ldap_safe_domain_categories_are_required_and_translated(found, catalog):
+    from backend.app.services.ldap_service import LDAP_ERROR_MESSAGES
+
+    for message in LDAP_ERROR_MESSAGES.values():
+        assert message in found
+        assert any(site.kind == "forwarded" for site in found[message])
+        assert catalog.get(message)

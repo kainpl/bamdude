@@ -678,6 +678,7 @@ async def create_refresh_token(
         username=username,
         family_id=family_id,
         expires_at=expires_at,
+        remember_me=remember_me,
     )
     db.add(row)
     await db.flush()

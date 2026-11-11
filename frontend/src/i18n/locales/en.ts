@@ -3341,6 +3341,15 @@ export default {
       groupMapping: 'Group Mapping (JSON)',
       groupMappingHint: 'Map LDAP group DNs to BamDude groups. Available groups: ',
       testConnection: 'Test Connection',
+      testErrors: {
+        starttls_refused: 'The LDAP server refused StartTLS.',
+        tls_failed: 'LDAP certificate verification or TLS handshake failed.',
+        bind_failed: 'LDAP account authentication failed.',
+        connection_failed: 'Could not connect to the LDAP server.',
+        search_failed: 'LDAP directory search failed.',
+        groups_incomplete: 'LDAP group lookup was incomplete. No account groups were changed.',
+        configuration_failed: 'The LDAP transport configuration is invalid.',
+      },
       settingsSaved: 'LDAP settings saved',
       errors: {
         serverRequired: 'LDAP server URL is required',

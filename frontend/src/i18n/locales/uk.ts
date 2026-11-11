@@ -3359,6 +3359,15 @@ export default {
       groupMapping: 'Відображення груп (JSON)',
       groupMappingHint: 'Відображення DN груп LDAP на групи BamDude. Доступні групи: ',
       testConnection: 'Тест з\'єднання',
+      testErrors: {
+        starttls_refused: 'LDAP-сервер відхилив StartTLS.',
+        tls_failed: 'Не вдалося перевірити сертифікат LDAP або встановити TLS-з’єднання.',
+        bind_failed: 'Не вдалося автентифікувати обліковий запис LDAP.',
+        connection_failed: 'Не вдалося підключитися до LDAP-сервера.',
+        search_failed: 'Не вдалося виконати пошук у каталозі LDAP.',
+        groups_incomplete: 'Отримано неповний список груп LDAP. Групи облікового запису не змінено.',
+        configuration_failed: 'Неприпустимі налаштування захищеного з’єднання LDAP.',
+      },
       settingsSaved: 'Налаштування LDAP збережено',
       errors: {
         serverRequired: 'URL LDAP сервера є обов\'язковим',

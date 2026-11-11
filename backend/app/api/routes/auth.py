@@ -586,6 +586,8 @@ async def login(
     if ldap_settings:
         try:
             from backend.app.services.ldap_service import (
+                LDAPGroupLookupError,
+                LDAPReferralError,
                 authenticate_ldap_user,
                 parse_ldap_config,
             )
@@ -593,15 +595,24 @@ async def login(
             ldap_config = parse_ldap_config(ldap_settings)
             if ldap_config:
                 ldap_user = authenticate_ldap_user(ldap_config, request.username, request.password)
-        except Exception as e:
+        except LDAPGroupLookupError:
+            raise HTTPException(
+                status_code=503, detail="LDAP group lookup incomplete", headers={"Retry-After": "5"}
+            ) from None
+        except LDAPReferralError:
+            raise HTTPException(
+                status_code=503, detail="LDAP directory search failed", headers={"Retry-After": "5"}
+            ) from None
+        except Exception:
             import logging
 
-            logging.getLogger(__name__).warning("LDAP authentication error, falling back to local: %s", e)
+            logging.getLogger(__name__).warning("LDAP authentication unavailable, falling back to local")
             ldap_user = None
 
         # Local persistence is outside the directory fallback. Infrastructure
         # failures are 503 at the auth DB boundary; programming errors stay 500.
         if ldap_user:
+            newly_provisioned = False
             user = await get_user_by_username(db, ldap_user.username)
             if user and user.auth_source != "ldap":
                 user = None
@@ -611,7 +622,8 @@ async def login(
                     ldap_user = None
                 else:
                     user = await _provision_ldap_user(db, ldap_user, ldap_config)
-            if user and ldap_user:
+                    newly_provisioned = True
+            if user and ldap_user and not newly_provisioned:
                 await _sync_ldap_user(db, user, ldap_user, ldap_config)
 
     # #1589: local username/password gate. LDAP keeps its own switch
@@ -749,14 +761,10 @@ async def refresh_access_token(
 
     Invalid / expired / missing cookies → 401 without family side effects.
 
-    Remember-me is preserved across rotations: if the original login had a
-    30-day cookie, each rotation keeps the ``remember_me=True`` behaviour;
-    otherwise both the DB TTL (12 h) and the cookie (session) stay short.
-    Detection heuristic: a cookie that still carries a ``Max-Age`` attribute
-    tells the browser it's a persistent cookie, and the original request
-    gets a ``max_age`` resolved from the current session's DB expiry — if
-    the DB-side expiry of the CURRENT refresh token is more than the
-    session TTL, treat as remember-me. Simpler than round-tripping a flag.
+    New refresh rows carry an explicit Remember Me preference, preserved even
+    when the administrator's session ceiling makes both lifetimes equal.
+    Only legacy rows without a flag retain the historical lifespan heuristic.
+    The shared cookie issuer applies the current ceiling on every rotation.
     """
     from backend.app.core.auth import REFRESH_TOKEN_EXPIRE_HOURS_SESSION
 
@@ -767,9 +775,8 @@ async def refresh_access_token(
             detail="No refresh token",
         )
 
-    # We need the current row's expires_at BEFORE it gets mutated to decide
-    # whether this session is "remember-me" or not. The verify-and-consume
-    # path doesn't return the expiry, so peek first via the same hash.
+    # Read preference before the atomic consume. This peek grants no session:
+    # verification/consume below still enforces expiry, reuse and current user.
     from backend.app.core.auth import _hash_refresh_token
     from backend.app.models.auth_ephemeral import AuthEphemeralToken, TokenType
 
@@ -782,14 +789,14 @@ async def refresh_access_token(
     ).scalar_one_or_none()
     was_remember_me = False
     if peeked is not None:
-        # Inherit remember-me from the original login: if the refresh row
-        # lives longer than the session-cookie TTL, it was created via
-        # remember_me=True. Exact-match comparison would break the moment
-        # we tweak TTL constants, hence the >-with-slack guard (any refresh
-        # with > session TTL + 1 h headroom is definitely a remember-me row).
-        session_secs = REFRESH_TOKEN_EXPIRE_HOURS_SESSION * 3600
-        lifespan_secs = (peeked.expires_at - peeked.created_at).total_seconds()
-        was_remember_me = lifespan_secs > session_secs + 3600
+        if peeked.remember_me is not None:
+            was_remember_me = peeked.remember_me
+        else:
+            # Legacy rows have no explicit preference; retain their historical
+            # inference. New rows preserve opt-in even under a <=24 h ceiling.
+            session_secs = REFRESH_TOKEN_EXPIRE_HOURS_SESSION * 3600
+            lifespan_secs = (peeked.expires_at - peeked.created_at).total_seconds()
+            was_remember_me = lifespan_secs > session_secs + 3600
 
     username, family_id, result_status = await verify_and_consume_refresh_token(db, raw_refresh)
 
@@ -1529,6 +1536,9 @@ async def _provision_ldap_user(db: AsyncSession, ldap_user, ldap_config) -> User
 
     logger = logging.getLogger(__name__)
 
+    if getattr(ldap_user, "groups_complete", True) is False:
+        raise HTTPException(503, "LDAP group lookup incomplete")
+
     new_user = User(
         username=ldap_user.username,
         email=ldap_user.email,
@@ -1576,6 +1586,9 @@ async def _sync_ldap_user(db: AsyncSession, user: User, ldap_user, ldap_config) 
     from backend.app.services.ldap_service import resolve_group_mapping
 
     logger = logging.getLogger(__name__)
+
+    if getattr(ldap_user, "groups_complete", True) is False:
+        raise HTTPException(503, "LDAP group lookup incomplete")
 
     changed = False
 
@@ -1638,7 +1651,7 @@ async def test_ldap(
     """Test LDAP connection using saved settings (admin only when auth enabled)."""
     import logging
 
-    from backend.app.services.ldap_service import parse_ldap_config, test_ldap_connection
+    from backend.app.services.ldap_service import LDAP_ERROR_MESSAGES, parse_ldap_config, test_ldap_connection
 
     logger = logging.getLogger(__name__)
 
@@ -1669,15 +1682,26 @@ async def test_ldap(
     if not config:
         return {"success": False, "message": "LDAP server URL is not configured"}
 
-    success, _message = test_ldap_connection(config)
+    success, message = test_ldap_connection(config)
     if success:
         logger.info("LDAP connection test successful")
     else:
         logger.warning("LDAP connection test failed")
     return {
         "success": success,
+        **(
+            {
+                "error": next(
+                    (code for code, safe in LDAP_ERROR_MESSAGES.items() if safe == message), "connection_failed"
+                )
+            }
+            if not success
+            else {}
+        ),
         "message": "LDAP connection successful"
         if success
+        else message
+        if message in LDAP_ERROR_MESSAGES.values()
         else "LDAP connection failed. Verify the server, security mode and bind credentials.",
     }
 
@@ -1723,7 +1747,7 @@ async def search_ldap_directory(
 
     from sqlalchemy import func as sa_func
 
-    from backend.app.services.ldap_service import parse_ldap_config, search_ldap_users
+    from backend.app.services.ldap_service import LDAPOperationError, parse_ldap_config, search_ldap_users
 
     logger = logging.getLogger(__name__)
 
@@ -1750,14 +1774,15 @@ async def search_ldap_directory(
 
     try:
         results = search_ldap_users(config, query, limit=25)
-    except Exception as e:
-        logger.exception("LDAP directory search failed")
-        # Admin-only endpoint — surface the underlying reason so the
-        # operator can fix it (USERS_CREATE permission already gated).
+    except LDAPOperationError as exc:
+        logger.warning("LDAP directory search failed (%s)", exc.code)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"LDAP search failed: {type(e).__name__}: {e}",
-        )
+            detail=str(exc),
+        ) from None
+    except Exception:
+        logger.warning("LDAP directory search unavailable")
+        raise HTTPException(503, "LDAP directory search failed") from None
 
     if not results:
         return []
@@ -1802,7 +1827,7 @@ async def provision_ldap_user(
 
     from sqlalchemy import func as sa_func
 
-    from backend.app.services.ldap_service import lookup_ldap_user, parse_ldap_config
+    from backend.app.services.ldap_service import LDAPOperationError, lookup_ldap_user, parse_ldap_config
 
     logger = logging.getLogger(__name__)
 
@@ -1833,12 +1858,15 @@ async def provision_ldap_user(
     # UI.
     try:
         ldap_user = lookup_ldap_user(config, username)
-    except Exception as e:
-        logger.exception("LDAP lookup failed during provision")
+    except LDAPOperationError as exc:
+        logger.warning("LDAP lookup failed during provision (%s)", exc.code)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"LDAP lookup failed: {type(e).__name__}: {e}",
-        )
+            detail=str(exc),
+        ) from None
+    except Exception:
+        logger.warning("LDAP lookup unavailable during provision")
+        raise HTTPException(503, "LDAP directory lookup failed") from None
 
     if ldap_user is None:
         raise HTTPException(

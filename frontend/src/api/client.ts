@@ -9300,6 +9300,8 @@ export interface LDAPStatus {
 export interface LDAPTestResponse {
   success: boolean;
   message: string;
+  error?: 'starttls_refused' | 'tls_failed' | 'bind_failed' | 'connection_failed' |
+    'search_failed' | 'groups_incomplete' | 'configuration_failed';
 }
 
 export interface SetupResponse {
@@ -10004,8 +10006,8 @@ export const api = {
     }),
   deleteOIDCProvider: (id: number) =>
     request<{ message: string }>(`/auth/oidc/providers/${id}`, { method: 'DELETE' }),
-  getOIDCAuthorizeUrl: (providerId: number) =>
-    request<{ auth_url: string }>(`/auth/oidc/authorize/${providerId}`),
+  getOIDCAuthorizeUrl: (providerId: number, rememberMe = false) =>
+    request<{ auth_url: string }>(`/auth/oidc/authorize/${providerId}?remember_me=${rememberMe}`),
   exchangeOIDCToken: (oidcToken: string) =>
     request<LoginResponse>('/auth/oidc/exchange', {
       method: 'POST',

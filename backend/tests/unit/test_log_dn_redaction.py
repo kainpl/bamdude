@@ -153,6 +153,8 @@ class TestSourceSideHygiene:
         entry = MagicMock()
         entry.entry_dn = "CN=Joe Schmoe,CN=Users,DC=ad,DC=example,DC=com"
         service_conn = MagicMock()
+        service_conn.result = {"result": 0}
+        service_conn.response = []
         service_conn.entries = [entry]
 
         info = SimpleNamespace(username="jschmoe", groups=["Operators", "Staff", "All"])

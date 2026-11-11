@@ -129,8 +129,11 @@ function LDAPSettingsContent() {
   // Test connection
   const testMutation = useMutation({
     mutationFn: () => api.testLDAP(draftSettings()),
-    onSuccess: (data: { success: boolean; message: string }) => {
-      showToast(data.message, data.success ? 'success' : 'error');
+    onSuccess: (data) => {
+      const message = !data.success && data.error
+        ? t(`settings.ldap.testErrors.${data.error}`, { defaultValue: data.message })
+        : data.message;
+      showToast(message, data.success ? 'success' : 'error');
     },
     onError: (error: Error) => {
       showToast(error.message, 'error');
