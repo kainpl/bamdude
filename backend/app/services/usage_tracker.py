@@ -1389,6 +1389,7 @@ async def _on_print_complete(
     if expected_epoch is not None and queue_sources.current_epoch() != expected_epoch:
         return []
 
+    snapshot = None
     if archive_id:
         from backend.app.models.archive import PrintArchive
         from backend.app.services.print_execution import NONCURRENT
@@ -1415,10 +1416,21 @@ async def _on_print_complete(
     # Reconcile-driven completions name the print they are closing. A session
     # that belongs to a DIFFERENT print (the printer moved on during an
     # unsupervised gap) must not lend its mapping — put it back untouched and
-    # book from the 3MF estimate alone.
-    if session is not None and expected_print_name and session.print_name and session.print_name != expected_print_name:
-        _active_sessions[printer_id] = session
-        session = None
+    # book from the 3MF estimate alone. "The same print" is the reconcile's own
+    # name rule: the printer folds spaces into underscores and may come back
+    # with the file's extension (GH #115), and a multi-plate archive's
+    # print_name never equals a subtask — its filename does.
+    if session is not None and expected_print_name and session.print_name:
+        from backend.app.services.print_reconciliation import _name_matches_subtask, print_names_match
+
+        belongs = (
+            _name_matches_subtask(snapshot, session.print_name)
+            if snapshot is not None
+            else print_names_match(session.print_name, expected_print_name)
+        )
+        if not belongs:
+            _active_sessions[printer_id] = session
+            session = None
 
     # The caller's mapping comes from the MQTT request-topic capture and the
     # in-memory ``_print_ams_mappings`` dict, both of which a restart destroys.

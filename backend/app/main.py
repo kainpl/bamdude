@@ -6160,6 +6160,7 @@ async def _restore_usage_tracking_session_locked(
     """
     try:
         from backend.app.api.routes.settings import get_setting
+        from backend.app.services.print_reconciliation import print_names_match
         from backend.app.services.usage_tracker import (
             clear_persisted_session,
             get_persisted_print_name,
@@ -6168,7 +6169,9 @@ async def _restore_usage_tracking_session_locked(
 
         persisted_name = await get_persisted_print_name(db, printer_id)
         current_name = (state.subtask_name or "").strip()
-        if persisted_name and current_name and persisted_name.strip() != current_name:
+        # The same print however the printer renames it: after a power cycle an A1 mini reports
+        # ``X.3mf`` for the ``X`` it echoed at start (GH #115).
+        if persisted_name and current_name and not print_names_match(persisted_name, current_name):
             logger.info(
                 "[RESTART] Discarding stale print session for printer %s (%r != running %r)",
                 printer_id,
