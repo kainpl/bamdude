@@ -323,7 +323,7 @@ async def start_library_file_runtime(base: Path):
 async def stop_library_file_runtime():
     global runtime
     if not await upload_writes.quiesce():
-        raise RuntimeError("library upload writes have not stopped")
+        logger.warning("Library upload writes were still running at shutdown")
     if runtime:
         await runtime.stop()
         runtime = None

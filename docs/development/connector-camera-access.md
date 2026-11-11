@@ -15,6 +15,10 @@ The same check applies before releasing queued data after a viewer resumes.
 It stops issuing new private chunks on revoke, delete, expiry, scope/owner
 changes, printer replacement, storage-epoch change or an uncertain database.
 Data already handed to HTTP or network buffers cannot be retracted.
+HTTP middleware can also buffer already-issued chunks: each
+`BaseHTTPMiddleware` layer may hold one while a client is stalled.
+Setting `connector_enabled=false` refuses new key streams; existing streams
+continue until their access is revoked, restore closes them or their lease ends.
 
 The guard keeps scalar key incarnation/hash/owner and printer incarnation,
 never the raw credential, request or an open session. It uses the connector's
@@ -49,3 +53,7 @@ request cancellation. Restore closes write admission and drains those writes
 before replacing storage; an unproven drain refuses restore. Only lifespan
 startup can reopen this owner. This covers the initial raw write, not a new
 transaction or lifecycle contract for the entire library ingest pipeline.
+Shutdown logs an unproven write drain and continues stopping the library worker
+and the remaining services, so the farm can record a clean shutdown. Admission
+stays closed; actual write threads remain owned and are joined at interpreter
+exit. Restore still refuses to replace storage until those writes have ended.

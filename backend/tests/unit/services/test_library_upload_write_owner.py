@@ -1,7 +1,11 @@
 """IW1: actual disk I/O remains owned after cancellation, with restore admission/drain and no DB/spool lock."""
 
 import asyncio
+import json
 import threading
+from contextlib import asynccontextmanager
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -78,3 +82,87 @@ async def test_restore_gate_refuses_before_preview_or_storage_work(monkeypatch):
     with pytest.raises(HTTPException) as error:
         await settings._quiesce_library_previews()
     assert error.value.status_code == 409
+
+
+@pytest.mark.parametrize("write_running", [True, False])
+@pytest.mark.parametrize("runtime_present", [True, False])
+async def test_lifespan_shutdown_completes_cleanly_when_upload_outlives_drain(
+    tmp_path, monkeypatch, caplog, write_running, runtime_present
+):
+    from backend.app import main
+    from backend.app.mcp_server.runtime import mcp_runtime
+    from backend.app.services import farm_startup_guard, library_file_runtime
+    from backend.app.services.connector_runtime import connector_runtime
+
+    guard = farm_startup_guard.FarmStartupGuard()
+    monkeypatch.setattr(main, "farm_startup_guard", guard)
+    monkeypatch.setattr(farm_startup_guard, "farm_startup_guard", guard)
+    monkeypatch.setattr(main.app_settings, "data_dir", tmp_path)
+    monkeypatch.setattr(main.process_gc, "prepare_startup_heap", lambda: None)
+    for target, methods in ((mcp_runtime, ("reload", "shutdown")), (connector_runtime, ("startup", "shutdown"))):
+        for name in methods:
+            monkeypatch.setattr(target, name, AsyncMock())
+    state_dir = tmp_path / "runtime-state" / "farm-startup"
+    state_dir.mkdir(parents=True)
+    state_path = state_dir / "state.json"
+    state_path.write_text(
+        json.dumps(
+            {"version": 1, "boot_id": "00000000-0000-4000-8000-000000000001", "lifecycle": "clean", "hold": None}
+        ),
+        encoding="utf-8",
+    )
+    owner = UploadWriteOwner()
+    monkeypatch.setattr(library_file_runtime, "upload_writes", owner)
+    quiesce = owner.quiesce
+
+    async def short_drain():
+        return await quiesce(0.01)
+
+    monkeypatch.setattr(owner, "quiesce", short_drain)
+    worker = SimpleNamespace(stop=AsyncMock())
+    monkeypatch.setattr(library_file_runtime, "runtime", worker if runtime_present else None)
+    later_steps = []
+
+    @asynccontextmanager
+    async def application_services(app):
+        yield
+        await library_file_runtime.stop_library_file_runtime()
+        later_steps.append("remaining shutdown, including database stop")
+
+    monkeypatch.setattr(main, "_application_lifespan", application_services)
+    entered, release = threading.Event(), threading.Event()
+    target = tmp_path / "upload-secret-path"
+
+    def write():
+        entered.set()
+        assert release.wait(10)
+        target.write_bytes(b"complete")
+
+    task = None
+    try:
+        with caplog.at_level("WARNING", logger=library_file_runtime.__name__):
+            async with main.lifespan(main.app):
+                assert guard.state["hold"] is None
+                if write_running:
+                    task = asyncio.create_task(owner.run(write))
+                    assert await asyncio.to_thread(entered.wait, 2)
+        assert later_steps and owner.closed and library_file_runtime.runtime is None
+        assert worker.stop.await_count == int(runtime_present)
+        assert json.loads(state_path.read_text(encoding="utf-8"))["lifecycle"] == "clean"
+        if task is not None:
+            assert not task.done() and len(owner.tasks) == 1
+        warnings = [r for r in caplog.records if r.name == library_file_runtime.__name__]
+        assert [r.getMessage() for r in warnings] == (
+            ["Library upload writes were still running at shutdown"] if write_running else []
+        )
+        assert all(r.exc_info is None for r in warnings)
+        guard.start(tmp_path)
+        assert guard.state["hold"] is None
+    finally:
+        release.set()
+        if task is not None:
+            await task
+        guard.finish(clean=False)
+    assert not owner.tasks and owner.closed
+    if write_running:
+        assert target.read_bytes() == b"complete"

@@ -90,6 +90,8 @@ Migration seeds name historical columns for reads and writes. For INSERT use a l
 `library_file_runtime.upload_writes` registers it before yielding; repeated
 request cancellation cannot detach it. Restore closes admission and proves
 that these writes have drained before replacing storage, or refuses restore.
+Shutdown instead logs an unproven drain and continues stopping services; write
+admission stays closed and actual threads remain owned until interpreter exit.
 Only lifespan startup reopens admission. This owner adds no database or queue
 spool lock and covers the initial raw write, not the whole ingest transaction.
 Vault: `40-invariants/inv-library-upload-write-is-restore-owned.md`.
