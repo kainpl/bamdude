@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+- Recalculating archive filament costs uses only usage linked to that physical print. Unlinked usage with the same name no longer charges repeated prints or replaces a cost already priced from Spoolman; archives without linked pricing evidence use the configured filament estimate.
+
 - Smart-plug printer links and virtual-printer target links now validate an explicitly supplied zero ID instead of treating it as omitted. Missing targets are refused before saving, including the MQTT plug recheck after reconnecting its runtime. Existing handling of omitted fields, null values and explicit clear flags is preserved.
 
 - Inventory CSV imports preserve the UTC instant of last-used dates with timezone offsets. Portable backups and restores also use UTC when filling a missing required timestamp, instead of the host's local time; existing timestamps are unchanged.
