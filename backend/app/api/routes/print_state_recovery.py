@@ -38,6 +38,8 @@ WRITE_PERMISSIONS = {
         Permission.ARCHIVES_UPDATE_ALL,
     ),
     "align_terminal_item": (Permission.QUEUE_UPDATE_ALL, Permission.PRINTERS_CONTROL),
+    # Returns one requeued row to its run's outcome; the plate gate and the printer are not touched.
+    "restore_gate_owner_row": (Permission.QUEUE_UPDATE_ALL, Permission.PRINTERS_CONTROL),
     "release_orphan_header": (Permission.QUEUE_UPDATE_ALL, Permission.PRINTERS_CONTROL),
     "fill_estimated_end_and_align": (
         Permission.QUEUE_UPDATE_ALL,
