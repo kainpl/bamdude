@@ -66,6 +66,21 @@ function statuses(socket: Socket, count = 20) {
 }
 
 describe('WebSocket cache and lifecycle contract', () => {
+  it('replaces a file total with explicit unknown without retaining its provenance', async () => {
+    const { socket } = await mounted();
+    client.setQueryData(['printerStatus', 3], { layer_num: 14, total_layers: 693, total_layers_source: 'file' });
+    act(() => socket.emit({ type: 'printer_status', printer_id: 3,
+      data: { layer_num: 15, total_layers: 0, total_layers_source: 'unknown' } }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+    expect(client.getQueryData(['printerStatus', 3])).toMatchObject({
+      layer_num: 15, total_layers: 0, total_layers_source: 'unknown',
+    });
+    act(() => socket.emit({ type: 'printer_status', printer_id: 3,
+      data: { layer_num: 15, total_layers: 693, total_layers_source: 'mqtt' } }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+    expect(client.getQueryData(['printerStatus', 3])).toMatchObject({ total_layers: 693, total_layers_source: 'mqtt' });
+  });
+
   it('uses bounded exponential reconnect delays with jitter', () => {
     expect([0, 1, 2, 3, 4].map(attempt => wsReconnectDelay(attempt, 1)))
       .toEqual([3000, 6000, 12000, 24000, 30000]);

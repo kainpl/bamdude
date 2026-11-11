@@ -21,6 +21,7 @@ export interface MonitorPrinter {
   remaining_seconds: number | null;
   layer_num: number | null;
   total_layers: number | null;
+  total_layers_source?: 'mqtt' | 'file' | 'unknown';
   temperatures: Record<string, number>;
   status_received_at: string | null;
   source_stale: boolean;
