@@ -248,15 +248,82 @@ async def test_the_skip_sends_nothing_when_the_flap_is_already_right_or_absent(m
 async def test_an_explicit_request_still_heats_the_bed(options):
     client, _sleep = await _run(options)
 
-    client.set_bed_temperature.assert_called_once_with(60)
+    assert client.set_bed_temperature.call_args_list[0].args == (60,)  # initial set; refreshes follow
 
 
 @pytest.mark.asyncio
 async def test_a_print_that_wants_the_chamber_still_runs_the_stage():
     client, _sleep = await _run({"ams_mapping": [1]}, chamber=50)  # the ASA
 
-    client.set_bed_temperature.assert_called_once_with(60)
-    client.set_chamber_temperature.assert_called_once_with(45)
+    assert client.set_bed_temperature.call_args_list[0].args == (60,)
+    assert client.set_chamber_temperature.call_args_list[0].args == (45,)
+
+
+@pytest.mark.asyncio
+async def test_setpoints_are_re_sent_every_minute_through_the_soak():
+    # X2D firmware drops a setpoint ~300 s after it is set; the 300 s soak alone outlasts that.
+    client, _sleep = await _run({"ams_mapping": [1]}, chamber=50)  # ASA: set once, then 300 s soak
+
+    # Initial set + 5 refreshes; the fifth is a dip, so one exact send closes the stage.
+    assert client.set_bed_temperature.call_count == 1 + 5 + 1
+    assert client.set_chamber_temperature.call_count == 1 + 5 + 1
+
+
+@pytest.mark.asyncio
+async def test_refreshes_alternate_the_setpoint_because_a_repeat_does_not_restart_the_firmware_timer():
+    # Same value re-sent leaves the X2D's 300 s expiry running; a changed value restarts it.
+    client, _sleep = await _run({"ams_mapping": [1]}, chamber=50)  # ASA: chamber target 45
+
+    # ...and the stage never hands the print the dipped value: it ends on the exact target.
+    assert [c.args[0] for c in client.set_chamber_temperature.call_args_list] == [45, 44, 45, 44, 45, 44, 45]
+    assert [c.args[0] for c in client.set_bed_temperature.call_args_list] == [60, 59, 60, 59, 60, 59, 60]
+
+
+async def _run_soak(*, soak, get_client):
+    """An ASA print whose targets are already reached, with a chosen soak and client lookup."""
+    with (
+        patch.object(preheat, "_get_bool_setting", AsyncMock(return_value=True)),
+        patch.object(
+            preheat,
+            "_get_int_setting",
+            AsyncMock(side_effect=lambda _d, key, default: soak if key == "preheat_soak_seconds" else default),
+        ),
+        patch.object(preheat, "_get_preheat_filament_targets", AsyncMock(return_value=_TARGETS)),
+        patch.object(preheat.printer_manager, "get_client", side_effect=get_client),
+        patch.object(preheat.printer_manager, "get_status", return_value=_make_state(bed=60, chamber=50)),
+        patch.object(preheat.printer_manager, "get_feed_snapshot", return_value=_feed("PLA", "ASA")),
+        patch.object(preheat.asyncio, "sleep", AsyncMock()),
+    ):
+        await preheat_and_soak(
+            _make_db(), _make_printer("H2D"), _make_archive(bed_temperature=60), options={"ams_mapping": [1]}
+        )
+
+
+@pytest.mark.asyncio
+async def test_an_even_number_of_refreshes_ends_on_the_target_without_an_extra_send():
+    client = _make_client()
+    await _run_soak(soak=240, get_client=lambda _pid: client)  # 4 refreshes: dip, target, dip, target
+
+    assert [c.args[0] for c in client.set_chamber_temperature.call_args_list] == [45, 44, 45, 44, 45]
+    assert [c.args[0] for c in client.set_bed_temperature.call_args_list] == [60, 59, 60, 59, 60]
+
+
+@pytest.mark.asyncio
+async def test_refreshes_reach_the_client_that_replaced_a_reconnected_one():
+    # A reconnect replaces the manager's client; the retired one only answers "not connected".
+    first, second = _make_client(), _make_client()
+    current = [first]
+
+    def get_client(_pid):
+        if first.set_bed_temperature.call_count >= 3:  # initial set + two refreshes, then reconnect
+            current[0] = second
+        return current[0]
+
+    await _run_soak(soak=300, get_client=get_client)
+
+    assert [c.args[0] for c in first.set_bed_temperature.call_args_list] == [60, 59, 60]
+    assert [c.args[0] for c in second.set_bed_temperature.call_args_list] == [59, 60, 59, 60]
+    assert [c.args[0] for c in second.set_chamber_temperature.call_args_list] == [44, 45, 44, 45]
 
 
 # --- preheat_and_soak: override resolution ----------------------------------
