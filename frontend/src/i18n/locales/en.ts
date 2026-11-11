@@ -220,6 +220,7 @@ export default {
       release_orphan_header: 'Release stale queue claim', delete_stale_item: 'Remove stale item, keep archive',
       close_interrupted_attempt: 'Close the interrupted attempt',
       clear_terminal_runtime_context: 'Release the finished context',
+      restore_gate_owner_row: 'Return the job to its finished state',
     },
     issues: {
       terminal_archive_conflicting_claims: "Active queue claims refer to a finished print",
@@ -234,6 +235,7 @@ export default {
       dispatch_no_progress: 'A start keeps being deferred without progress',
       runtime_phase_lingering: 'A print start or completion is still in progress',
       queue_paused_by_repair: 'The queue is still paused after a release attempt',
+      plate_gate_owner_requeued: 'The job this plate is waiting on was put back in the queue without a plate answer. After restoring it, answer on the printer card.',
     },
     reasons: {
       run_identity_unproven: "The client did not observe a proven new execution. This print may be missing from the archive and accounting until the next reconnect resolves the old context.",
@@ -244,6 +246,7 @@ export default {
       execution_unproven: 'The archive and item have not been proven to describe one execution.', source_archive: 'This archive may be the source of a reprint.',
       outcome_unknown: 'The actual print outcome is unknown.', invalid_run_times: 'The recorded run times do not establish this execution.',
       missing_run_times: 'Required run times or a valid slicer estimate are missing.', delete_has_dependencies: 'Deletion is unavailable because other records refer to this item.',
+      dispatch_started: 'The job has been dispatched since it was put back in the queue.',
       recovery_has_dependencies: 'Recovery is unavailable because other records still depend on this execution.',
       estimated_time: 'An estimated completion time cannot justify deleting this item.',
       owner_alive: 'This dispatch was started since BamDude last started and has no answer yet; it can be closed here after a restart.',
@@ -2319,6 +2322,7 @@ export default {
       viewArchive: 'View archive',
       retry: 'Retry',
       restart: 'Restart',
+      answerPlateFirst: 'The printer is waiting for a plate answer about this print: answer on the printer card (Repeat print runs it again)',
       more: 'More',
       drag: 'Drag to reorder',
       remove: 'Remove from queue'
@@ -2342,6 +2346,7 @@ export default {
         different_queue: 'Moved to another queue: {{count}}.',
         not_failed: 'Job state changed: {{count}}.',
         source_unavailable: 'Saved source unavailable: {{count}}.',
+        plate_answer_required: 'Waiting for a plate answer on the printer card: {{count}}.',
       },
       retryAllDone: '{{count}} returned to the queue',
       retryAllPartial: 'Confirmed for {{count}} of {{total}} jobs. Check the rest in the queue.',

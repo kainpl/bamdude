@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+- A cancelled or failed job that the printer's plate prompt is waiting on can no longer be retried from the queue; answer on the printer card instead, where Repeat print runs it again. Before, that retry left the prompt unable to find its print: Clear plate and Repeat print were refused and the queue stood still, even after a restart. Where an earlier version left that state behind, Clear plate now names the queue job that blocks it, and Print state diagnostics can return that job to its finished state.
+
 - Starting or stopping MQTT recording updates the printer card's recording badge immediately, including other open browser sessions. Live status also carries the recording size, and the initiating dialog refreshes the card when WebSocket is unavailable.
 
 MQTT and metrics credentials now use explicit connection saves, preventing partial passwords from being saved during typing. Metrics cannot be enabled without a token. LDAP connection tests preserve the configured CA certificate, SMTP authentication can be disabled without resubmitting a password, and older smart plugs remain editable. Standalone cameras now keep complete source URLs private on read and require editor rights to test saved sources. Diagnostic logs preserve useful messages while omitting REST capabilities and HTTP wire payloads, including in debug mode.

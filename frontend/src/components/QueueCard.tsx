@@ -1696,8 +1696,10 @@ function IssuesSection({
       } while (cursor !== undefined);
       if (controller.signal.aborted) return;
       if (action === 'retry') {
-        const failed = rows.filter(item => item.status === 'failed' && !isStaleClaim(item.error_code));
-        const cancelled = rows.filter(item => item.status === 'cancelled' && !isStaleClaim(item.error_code));
+        // A row the printer's plate gate waits on is answered on the printer card, never retried here.
+        const retryable = (item: PrintQueueItem) => !isStaleClaim(item.error_code) && !item.plate_answer_required;
+        const failed = rows.filter(item => item.status === 'failed' && retryable(item));
+        const cancelled = rows.filter(item => item.status === 'cancelled' && retryable(item));
         const ids = [...new Set([...failed, ...cancelled].map(item => item.id))];
         if (!ids.length) showToast(t('queueCard.issues.retryAllNone'), 'info');
         else setConfirmRetryAll({ ids, failed: new Set(failed.map(item => item.id)).size, cancelled: [...new Set(cancelled.map(item => item.id))] });
@@ -1798,9 +1800,9 @@ function IssuesSection({
                 <div className="flex items-center gap-0.5 flex-shrink-0">
                   <button
                     onClick={() => retryMutation.mutate(item.id)}
-                    disabled={retryMutation.isPending || retryRowsBusy || !canUpdate || isStaleClaim(item.error_code)}
+                    disabled={retryMutation.isPending || retryRowsBusy || !canUpdate || isStaleClaim(item.error_code) || !!item.plate_answer_required}
                     className="p-0.5 rounded hover:bg-bambu-green/20 text-bambu-green disabled:opacity-50"
-                    title={t('queueCard.actions.retry')}
+                    title={item.plate_answer_required ? t('queueCard.actions.answerPlateFirst') : t('queueCard.actions.retry')}
                   >
                     <Play className="w-3.5 h-3.5" />
                   </button>
@@ -1836,9 +1838,9 @@ function IssuesSection({
                 <div className="flex items-center gap-0.5 flex-shrink-0">
                   <button
                     onClick={() => retryMutation.mutate(item.id)}
-                    disabled={retryMutation.isPending || retryRowsBusy || !canUpdate || isStaleClaim(item.error_code)}
+                    disabled={retryMutation.isPending || retryRowsBusy || !canUpdate || isStaleClaim(item.error_code) || !!item.plate_answer_required}
                     className="p-0.5 rounded hover:bg-bambu-green/20 text-bambu-green disabled:opacity-50"
-                    title={t('queueCard.actions.restart')}
+                    title={item.plate_answer_required ? t('queueCard.actions.answerPlateFirst') : t('queueCard.actions.restart')}
                   >
                     <RotateCcw className="w-3.5 h-3.5" />
                   </button>
