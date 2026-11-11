@@ -28,7 +28,8 @@ from backend.app.services.camera_http import _sanitize_camera_url, _validated_ca
 from backend.app.services.camera_profiles import CameraProfile
 from backend.app.services.camera_snapshot import (
     MAX_SNAPSHOT_BYTES,
-    SnapshotAdmission,
+    SnapshotByteBudget,
+    SnapshotCapacityError,
     _decode_snapshot,
     decode_snapshot,
     read_snapshot_body,
@@ -39,7 +40,7 @@ from backend.app.utils.ffmpeg_output import NO_FFMPEG_OUTPUT, summarize_ffmpeg_s
 logger = logging.getLogger(__name__)
 
 _RTSP_PROTOCOL_WHITELIST = "rtsp,rtp,udp,tcp,tls,crypto"
-_SNAPSHOT_HTTP_SLOTS = SnapshotAdmission(4)
+_SNAPSHOT_BYTE_BUDGET = SnapshotByteBudget(4 * MAX_SNAPSHOT_BYTES)
 _snapshot_warnings: dict[str, tuple[float, int]] = {}
 
 
@@ -568,14 +569,15 @@ async def _capture_snapshot(url: str, timeout: int) -> bytes | None:
 
 
 async def _fetch_snapshot(safe_url: str, timeout: int) -> bytes | None:
-    """Connect under the caller deadline, admitting only body/decode work."""
+    """Own a finite capture and charge only its received encoded payload."""
 
     deadline = asyncio.get_running_loop().time() + timeout
     parsed = urlparse(safe_url)
     host = parsed.hostname or "<unavailable>"
     host = f"[{host}]" if ":" in host else host
     source_host = f"{host}:{parsed.port}" if parsed.port is not None else host
-    body_admitted = False
+    lease = _SNAPSHOT_BYTE_BUDGET.lease()
+    data = None
     phase = "headers"
     try:
         async with asyncio.timeout_at(deadline):
@@ -591,28 +593,23 @@ async def _fetch_snapshot(safe_url: str, timeout: int) -> bytes | None:
                 if response.status != 200:
                     _snapshot_warning("Snapshot URL returned status " + str(response.status), source_host=source_host)
                     return None
-                # A missing connect/header response must not occupy another
-                # camera's body capacity. aiohttp prefetch is separately bounded
-                # by its reader high-water; application buffers start here.
-                phase = "body admission"
-                if not await _SNAPSHOT_HTTP_SLOTS.acquire(deadline):
-                    _snapshot_warning("Snapshot body admission deadline exceeded", source_host=source_host)
-                    return None
-                body_admitted = True
                 phase = "body"
-                data = await read_snapshot_body(response)
+                data = await read_snapshot_body(response, lease=lease)
             if data is None:
                 _snapshot_warning("Camera snapshot body was rejected", source_host=source_host)
                 return None
             camera_metrics.record_frame(data, output=False)
             phase = "decode"
-            frame = await decode_snapshot(data, deadline - asyncio.get_running_loop().time())
+            frame = await decode_snapshot(data, deadline - asyncio.get_running_loop().time(), lease=lease)
             if frame is None:
                 _snapshot_warning("Camera snapshot decode unavailable or rejected", source_host=source_host)
                 return None
             return camera_metrics.captured_frame(frame)
     except TimeoutError:
         _snapshot_warning(f"Snapshot {phase} deadline exceeded", source_host=source_host)
+        return None
+    except SnapshotCapacityError:
+        _snapshot_warning("Snapshot encoded-payload byte budget exhausted", source_host=source_host)
         return None
     except ValueError:
         _snapshot_warning("Snapshot camera URL or redirect was rejected", source_host=source_host)
@@ -621,8 +618,8 @@ async def _fetch_snapshot(safe_url: str, timeout: int) -> bytes | None:
         _snapshot_warning("Snapshot transport failed (" + type(exc).__name__ + ")", source_host=source_host)
         return None
     finally:
-        if body_admitted:
-            _SNAPSHOT_HTTP_SLOTS.release()
+        data = None
+        lease.release()
 
 
 async def test_connection(url: str, camera_type: str) -> dict:

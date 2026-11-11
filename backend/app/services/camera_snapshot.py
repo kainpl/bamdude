@@ -62,6 +62,66 @@ class SnapshotAdmission:
 _DECODER_SLOTS = SnapshotAdmission(2)
 
 
+class SnapshotCapacityError(Exception):
+    """The worker's retained encoded-payload budget cannot accept a chunk."""
+
+
+class SnapshotByteBudget:
+    """Count retained encoded payload, not network operations or process RSS."""
+
+    def __init__(self, capacity: int):
+        self.capacity = capacity
+        self._used = 0
+        self._peak = 0
+        self._lock = threading.Lock()
+
+    @property
+    def used_bytes(self) -> int:
+        with self._lock:
+            return self._used
+
+    @property
+    def peak_bytes(self) -> int:
+        with self._lock:
+            return self._peak
+
+    def lease(self) -> "SnapshotByteLease":
+        return SnapshotByteLease(self)
+
+
+class SnapshotByteLease:
+    """One payload charge, shared by its caller and any actual native future."""
+
+    def __init__(self, budget: SnapshotByteBudget):
+        self._budget = budget
+        self._size = 0
+        self._owners = 1
+
+    def try_grow(self, size: int) -> bool:
+        # Never wait with partial bodies: that can deadlock a full byte budget.
+        with self._budget._lock:
+            assert self._owners == 1 and size >= 0
+            if self._budget._used + size > self._budget.capacity:
+                return False
+            self._size += size
+            self._budget._used += size
+            self._budget._peak = max(self._budget._peak, self._budget._used)
+            return True
+
+    def retain(self) -> None:
+        with self._budget._lock:
+            assert self._owners > 0
+            self._owners += 1
+
+    def release(self) -> None:
+        with self._budget._lock:
+            assert self._owners > 0
+            self._owners -= 1
+            if not self._owners:
+                self._budget._used -= self._size
+                self._size = 0
+
+
 def _image_format(data: bytes | bytearray) -> str | None:
     if data.startswith(b"\xff\xd8\xff"):
         return "JPEG"
@@ -175,7 +235,9 @@ def _checked_jpeg(data: bytes) -> bytes | None:
     return None
 
 
-async def read_snapshot_body(response: aiohttp.ClientResponse) -> bytes | None:
+async def read_snapshot_body(
+    response: aiohttp.ClientResponse, *, lease: SnapshotByteLease | None = None
+) -> bytes | None:
     """Read at most 10 MiB, accepting only supported image MIME/magic.
 
     Missing/octet-stream MIME is compatible with simple camera firmwares, but
@@ -196,14 +258,21 @@ async def read_snapshot_body(response: aiohttp.ClientResponse) -> bytes | None:
             return None
         if length < 0 or length > MAX_SNAPSHOT_BYTES:
             return None
-    body = bytearray()
-    async for chunk in response.content.iter_chunked(_CHUNK_SIZE):
-        if len(body) + len(chunk) > MAX_SNAPSHOT_BYTES:
-            return None
-        body.extend(chunk)
-        if len(body) >= 12 and not _image_format(body):
-            return None
-    return bytes(body) if body and _image_format(body) else None
+    body, chunk = bytearray(), None
+    try:
+        async for chunk in response.content.iter_chunked(_CHUNK_SIZE):
+            if len(body) + len(chunk) > MAX_SNAPSHOT_BYTES:
+                return None
+            if lease is not None and not lease.try_grow(len(chunk)):
+                raise SnapshotCapacityError
+            body.extend(chunk)
+            if len(body) >= 12 and not _image_format(body):
+                return None
+        return bytes(body) if body and _image_format(body) else None
+    finally:
+        # A retained cancellation/error traceback must not own an uncharged prefix.
+        body.clear()
+        chunk = None
 
 
 class _BoundedOutput(BytesIO):
@@ -242,32 +311,69 @@ def _decoder_finished(future: Future) -> None:
     _DECODER_SLOTS.release()
 
 
-async def decode_snapshot(data: bytes, timeout: float) -> bytes | None:
+class _SnapshotDecodeJob:
+    """Drop the input before Future completion and its budget-release callback."""
+
+    def __init__(self, data: bytes, lease: SnapshotByteLease | None):
+        self.data = data
+        self.lease = lease
+        if lease is not None:
+            lease.retain()
+
+    def run(self) -> bytes | None:
+        try:
+            return _decode_snapshot(self.data)
+        except BaseException:
+            # Executor threads otherwise store even SystemExit/KeyboardInterrupt
+            # tracebacks, retaining raw input after the future releases its lease.
+            return None
+        finally:
+            self.data = None
+
+    def finished(self, future: Future) -> None:
+        if self.lease is not None:
+            self.lease.release()
+        _decoder_finished(future)
+
+    def submission_failed(self) -> None:
+        self.data = None
+        if self.lease is not None:
+            self.lease.release()
+
+
+async def decode_snapshot(data: bytes, timeout: float, *, lease: SnapshotByteLease | None = None) -> bytes | None:
     """Check JPEG headers, or wait within budget for an owned native decoder.
 
     The concurrent future and slot survive caller cancellation/timeout. Only
     actual completion releases capacity; no thread-kill guarantee is implied.
     """
-    if not _input_allowed(data) or not math.isfinite(timeout) or timeout <= 0:
-        return None
-    if _image_format(data) == "JPEG":
-        return _checked_jpeg(data)
-    deadline = asyncio.get_running_loop().time() + timeout
-    if not await _DECODER_SLOTS.acquire(deadline):
-        return None
-    if asyncio.get_running_loop().time() >= deadline:
-        _DECODER_SLOTS.release()
-        return None
     try:
-        future = _DECODER_EXECUTOR.submit(_decode_snapshot, data)
-    except Exception:
-        _DECODER_SLOTS.release()
-        return None
-    with _DECODER_LOCK:
-        _DECODER_FUTURES.add(future)
-    future.add_done_callback(_decoder_finished)
-    try:
-        remaining = max(0, deadline - asyncio.get_running_loop().time())
-        return await asyncio.wait_for(asyncio.shield(asyncio.wrap_future(future)), timeout=remaining)
-    except TimeoutError:
-        return None
+        if not _input_allowed(data) or not math.isfinite(timeout) or timeout <= 0:
+            return None
+        if _image_format(data) == "JPEG":
+            return _checked_jpeg(data)
+        deadline = asyncio.get_running_loop().time() + timeout
+        if not await _DECODER_SLOTS.acquire(deadline):
+            return None
+        if asyncio.get_running_loop().time() >= deadline:
+            _DECODER_SLOTS.release()
+            return None
+        job = _SnapshotDecodeJob(data, lease)
+        try:
+            future = _DECODER_EXECUTOR.submit(job.run)
+        except BaseException as exc:
+            job.submission_failed()
+            _DECODER_SLOTS.release()
+            if isinstance(exc, Exception):
+                return None
+            raise
+        with _DECODER_LOCK:
+            _DECODER_FUTURES.add(future)
+        future.add_done_callback(job.finished)
+        try:
+            remaining = max(0, deadline - asyncio.get_running_loop().time())
+            return await asyncio.wait_for(asyncio.shield(asyncio.wrap_future(future)), timeout=remaining)
+        except TimeoutError:
+            return None
+    finally:
+        data = None

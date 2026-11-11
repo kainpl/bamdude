@@ -109,48 +109,53 @@ async def test_body_stall_obeys_capture_deadline_and_closes_response():
 
 
 @pytest.mark.asyncio
-async def test_four_body_consumers_wait_deadline_and_cancel_restores_capacity(monkeypatch):
-    # Headers may arrive; the fifth call must wait before consuming its body.
-    monkeypatch.setattr(ec, "_SNAPSHOT_HTTP_SLOTS", ec.SnapshotAdmission(4))
-    reached = readers = 0
-    ready, release = asyncio.Event(), asyncio.Event()
-    replacement_reader = asyncio.Event()
-    original_read = ec.read_snapshot_body
+async def test_partial_body_timeout_and_cancel_release_actual_byte_charge(monkeypatch):
+    budget = ec.SnapshotByteBudget(4096)
+    monkeypatch.setattr(ec, "_SNAPSHOT_BYTE_BUDGET", budget)
+    entered, release = asyncio.Event(), asyncio.Event()
+    charged = asyncio.Event()
     data = image_bytes("JPEG")
 
     async def handler(request):
-        nonlocal reached
-        reached += 1
-        return web.Response(body=data, content_type="image/jpeg")
-
-    async def held_body(response):
-        nonlocal readers
-        readers += 1
-        if readers == 4:
-            ready.set()
-        if readers == 5:
-            replacement_reader.set()
+        response = web.StreamResponse(headers={"Content-Type": "image/jpeg"})
+        await response.prepare(request)
+        await response.write(data[:128])
+        entered.set()
         await release.wait()
-        return await original_read(response)
+        return response
 
-    monkeypatch.setattr(ec, "read_snapshot_body", held_body)
+    original_lease = budget.lease
+
+    def observed_lease():
+        lease = original_lease()
+        original_grow = lease.try_grow
+
+        def grow(size):
+            admitted = original_grow(size)
+            if budget.used_bytes:
+                charged.set()
+            return admitted
+
+        lease.try_grow = grow
+        return lease
+
+    monkeypatch.setattr(budget, "lease", observed_lease)
     async with endpoint(handler) as url:
-        tasks = [asyncio.create_task(ec._capture_snapshot(f"{url}/{index}", 2)) for index in range(4)]
+        task = asyncio.create_task(ec._capture_snapshot(url, 2))
         try:
-            await asyncio.wait_for(ready.wait(), 1)
-            assert await ec._capture_snapshot(f"{url}/fifth", 0.03) is None
-            assert reached == 5 and readers == 4
-            tasks[0].cancel()
+            await asyncio.wait_for(charged.wait(), 1)
+            assert budget.used_bytes == 128
+            task.cancel()
             with pytest.raises(asyncio.CancelledError):
-                await tasks[0]
-            sixth = asyncio.create_task(ec._capture_snapshot(f"{url}/sixth", 1))
-            tasks.append(sixth)
-            await asyncio.wait_for(replacement_reader.wait(), 1)
-            assert reached == 6 and readers == 5
+                await task
+            assert budget.used_bytes == 0
+            charged.clear()
+            assert await ec._capture_snapshot(url, 0.05) is None
+            assert budget.used_bytes == 0
+            assert budget.peak_bytes == 128
         finally:
-            for task in tasks:
-                task.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
             release.set()
 
 

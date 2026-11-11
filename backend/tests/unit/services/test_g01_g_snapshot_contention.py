@@ -37,7 +37,7 @@ async def endpoint(handler):
 
 
 @pytest.mark.parametrize("hold_phase", ["body", "decode"])
-async def test_six_headers_allow_only_four_body_consumers_then_all_publish(monkeypatch, hold_phase):
+async def test_six_body_consumers_below_byte_budget_all_publish(monkeypatch, hold_phase):
     data = encoded_image()
     headers_ready, bodies_ready, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
     reached = active = peak = reads = 0
@@ -55,24 +55,24 @@ async def test_six_headers_allow_only_four_body_consumers_then_all_publish(monke
         nonlocal active, peak
         active += 1
         peak = max(peak, active)
-        if active == 4:
+        if active == 6:
             bodies_ready.set()
         try:
             await release.wait()
         finally:
             active -= 1
 
-    async def held_body(response):
+    async def held_body(response, *, lease=None):
         nonlocal reads
         reads += 1
         if hold_phase == "body":
             await hold_consumer()
-        return await original_read(response)
+        return await original_read(response, lease=lease)
 
-    async def held_decode(source, timeout):
+    async def held_decode(source, timeout, *, lease=None):
         if hold_phase == "decode":
             await hold_consumer()
-        return await original_decode(source, timeout)
+        return await original_decode(source, timeout, lease=lease)
 
     monkeypatch.setattr(camera, "read_snapshot_body", held_body)
     monkeypatch.setattr(camera, "decode_snapshot", held_decode)
@@ -81,12 +81,12 @@ async def test_six_headers_allow_only_four_body_consumers_then_all_publish(monke
         try:
             await asyncio.wait_for(headers_ready.wait(), 2)
             await asyncio.wait_for(bodies_ready.wait(), 2)
-            assert reached == 6 and reads == active == 4
+            assert reached == 6 and reads == active == 6
             assert all(not task.done() for task in tasks)
             release.set()
             results = await asyncio.wait_for(asyncio.gather(*tasks), 3)
             assert results == [data] * 6
-            assert reached == 6 and peak <= 4
+            assert reached == 6 and peak == 6
         finally:
             release.set()
             for task in tasks:
@@ -110,9 +110,9 @@ async def test_six_stalled_headers_do_not_starve_two_healthy_cameras_and_one_sho
             await release.wait()  # no response headers until cleanup
         return web.Response(body=data, content_type="image/jpeg")
 
-    async def observed_body(response):
+    async def observed_body(response, *, lease=None):
         reads.append(response.url.path)
-        return await original_read(response)
+        return await original_read(response, lease=lease)
 
     monkeypatch.setattr(camera, "read_snapshot_body", observed_body)
     async with endpoint(handler) as url:
@@ -133,7 +133,7 @@ async def test_six_stalled_headers_do_not_starve_two_healthy_cameras_and_one_sho
         assert await camera._capture_snapshot(f"{url}/recovery", 1) == data
 
 
-async def test_headers_body_admission_and_decode_share_original_capture_budget(monkeypatch):
+async def test_headers_and_body_and_decode_share_original_capture_budget(monkeypatch):
     ordinary, target = encoded_image(), encoded_image(progressive=True)
     holders_ready, release_holders = asyncio.Event(), asyncio.Event()
     target_request, release_headers, target_headers = asyncio.Event(), asyncio.Event(), asyncio.Event()
@@ -150,7 +150,7 @@ async def test_headers_body_admission_and_decode_share_original_capture_budget(m
             return web.Response(body=target, content_type="image/jpeg")
         return web.Response(body=ordinary, content_type="image/jpeg")
 
-    async def held_body(response):
+    async def held_body(response, *, lease=None):
         nonlocal readers
         if response.url.path == "/target":
             target_body.set()
@@ -160,12 +160,12 @@ async def test_headers_body_admission_and_decode_share_original_capture_budget(m
             if readers == 4:
                 holders_ready.set()
             await release_holders.wait()
-        return await original_read(response)
+        return await original_read(response, lease=lease)
 
-    async def observed_decode(source, timeout):
+    async def observed_decode(source, timeout, *, lease=None):
         if source == target:
             decode_budgets.append((asyncio.get_running_loop().time(), timeout))
-        return await original_decode(source, timeout)
+        return await original_decode(source, timeout, lease=lease)
 
     monkeypatch.setattr(camera, "read_snapshot_body", held_body)
     monkeypatch.setattr(camera, "decode_snapshot", observed_decode)
@@ -181,7 +181,7 @@ async def test_headers_body_admission_and_decode_share_original_capture_budget(m
             release_headers.set()
             await asyncio.wait_for(target_headers.wait(), 1)
             await asyncio.sleep(0.08)
-            assert not target_body.is_set()  # admission still belongs to four holders
+            assert target_body.is_set()  # unrelated bodies cannot gate this request
             release_holders.set()
             await asyncio.wait_for(target_body.wait(), 1)
             await asyncio.sleep(0.08)
@@ -195,65 +195,6 @@ async def test_headers_body_admission_and_decode_share_original_capture_budget(m
             release_headers.set()
             release_holders.set()
             release_body.set()
-            for task in tasks:
-                task.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
-
-
-async def test_body_admission_timeout_cancel_reads_nothing_then_recovers(monkeypatch):
-    data = encoded_image()
-    ready, release = asyncio.Event(), asyncio.Event()
-    cancel_headers, recovery_headers = asyncio.Event(), asyncio.Event()
-    requests, reads = [], []
-    active = peak = 0
-    original_read = camera.read_snapshot_body
-
-    async def handler(request):
-        requests.append(request.path)
-        if request.path == "/cancel":
-            cancel_headers.set()
-        if request.path == "/recovery":
-            recovery_headers.set()
-        return web.Response(body=data, content_type="image/jpeg")
-
-    async def held_body(response):
-        nonlocal active, peak
-        reads.append(response.url.path)
-        active += 1
-        peak = max(peak, active)
-        if len(reads) == 4:
-            ready.set()
-        try:
-            await release.wait()
-            return await original_read(response)
-        finally:
-            active -= 1
-
-    monkeypatch.setattr(camera, "read_snapshot_body", held_body)
-    async with endpoint(handler) as url:
-        tasks = [asyncio.create_task(camera._capture_snapshot(f"{url}/{index}", 3)) for index in range(4)]
-        try:
-            await asyncio.wait_for(ready.wait(), 2)
-            # Headers are allowed; the deadline expires before body consumption.
-            assert await asyncio.wait_for(camera._capture_snapshot(f"{url}/deadline", 0.05), 0.5) is None
-            assert "/deadline" in requests and "/deadline" not in reads
-            assert len(reads) == active == 4 and all(not task.done() for task in tasks)
-            waiter = asyncio.create_task(camera._capture_snapshot(f"{url}/cancel", 3))
-            tasks.append(waiter)
-            await asyncio.wait_for(cancel_headers.wait(), 1)
-            waiter.cancel()
-            with pytest.raises(asyncio.CancelledError):
-                await waiter
-            assert "/cancel" not in reads and active == 4
-            recovery = asyncio.create_task(camera._capture_snapshot(f"{url}/recovery", 3))
-            tasks.append(recovery)
-            await asyncio.wait_for(recovery_headers.wait(), 1)
-            assert "/recovery" not in reads
-            release.set()
-            assert await asyncio.wait_for(asyncio.gather(*tasks[:4], recovery), 3) == [data] * 5
-            assert len(requests) == 7 and peak <= 4
-        finally:
-            release.set()
             for task in tasks:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)

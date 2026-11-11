@@ -74,10 +74,32 @@ def test_warning_aggregation_is_by_category_with_representative_host(monkeypatch
     monkeypatch.setattr(camera.time, "monotonic", lambda: now[0])
     monkeypatch.setattr(camera, "_snapshot_warnings", {})
     for index in range(100):
-        camera._snapshot_warning("Snapshot body admission deadline exceeded", source_host=f"camera{index}.example")
+        camera._snapshot_warning("Snapshot encoded-payload byte budget exhausted", source_host=f"camera{index}.example")
     now[0] = 61
-    camera._snapshot_warning("Snapshot body admission deadline exceeded", source_host="current.example")
+    camera._snapshot_warning("Snapshot encoded-payload byte budget exhausted", source_host="current.example")
     assert len(camera._snapshot_warnings) == 1
     assert len(caplog.records) == 2
     assert "events=100; sample_host=current.example" in caplog.records[-1].message
     assert "suppressed since prior report: 99" in caplog.records[-1].message
+
+
+@pytest.mark.asyncio
+async def test_real_byte_capacity_warning_omits_url_secrets_and_releases_budget(monkeypatch, caplog):
+    budget = camera.SnapshotByteBudget(16)
+    monkeypatch.setattr(camera, "_SNAPSHOT_BYTE_BUDGET", budget)
+    monkeypatch.setattr(camera, "_snapshot_warnings", {})
+
+    async def handler(request):
+        return web.Response(body=b"\xff\xd8\xff" + b"x" * 64, content_type="image/jpeg")
+
+    async with endpoint(handler) as url:
+        url = url.replace("://", "://CANARYUSER:CANARY@PASS WORD@") + "/SECRET_PATH?token=SECRET_QUERY"
+        assert await camera._capture_snapshot(url, 1) is None
+    # The synthetic camera's own access logger records its received URL; this
+    # assertion concerns the BamDude capture diagnostic, not that peer's logs.
+    diagnostics = "\n".join(record.getMessage() for record in caplog.records if record.name == camera.__name__)
+    assert "Snapshot encoded-payload byte budget exhausted" in diagnostics
+    assert "events=1; sample_host=127.0.0.1:" in diagnostics
+    assert budget.used_bytes == budget.peak_bytes == 0
+    for secret in ("CANARYUSER", "PASS WORD", "SECRET_PATH", "SECRET_QUERY"):
+        assert secret not in diagnostics
