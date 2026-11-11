@@ -72,6 +72,8 @@ support is a bug report, a translation PR or a star. If you would rather chip in
 
 Integration editors show configured credentials without returning them. Keeping a saved credential requires an unchanged effective destination; connection tests use the draft without saving it. API clients can use explicit keep/replace/clear actions as described in the [credential-editing contract](docs/development/credential-edits.md). These changes are also in development after 0.7.3.
 
+**G01 F review candidate (`audit/g01-f`):** SSO Remember Me works through callback and 2FA; LDAP groups support AD, lldap, OpenLDAP and POSIX with safe handling of incomplete searches. This candidate is awaiting acceptance and is not yet in `feature/v0.7.3-fixes` or stable 0.7.3. The [authentication handoff contract](docs/development/authentication-handoffs.md) covers API behavior and upgrade compatibility.
+
 Docker `latest` follows the latest **stable release tag**; `dev` follows the beta channel. Check the release changelog for what your image includes.
 
 ## What's different from Bambuddy?

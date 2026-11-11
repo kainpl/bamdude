@@ -100,6 +100,8 @@ class TestSearchLdapUsersResultMapping:
             displayName=None,
         )
         mock_conn = MagicMock()
+        mock_conn.result = {"result": 0}
+        mock_conn.response = []
         mock_conn.entries = [entry_alice, entry_bob]
         mock_conn.search = MagicMock()
         mock_conn.unbind = MagicMock()
@@ -126,6 +128,8 @@ class TestSearchLdapUsersResultMapping:
     @pytest.mark.asyncio
     async def test_empty_search_returns_empty_list(self):
         mock_conn = MagicMock()
+        mock_conn.result = {"result": 0}
+        mock_conn.response = []
         mock_conn.entries = []
         mock_conn.search = MagicMock()
         mock_conn.unbind = MagicMock()
@@ -164,6 +168,8 @@ class TestSearchLdapUsersUsesUncheckedNames:
         def fake_open(config, server, *, check_names=True):
             captured["check_names"] = check_names
             conn = MagicMock()
+            conn.result = {"result": 0}
+            conn.response = []
             conn.entries = []
             conn.search = MagicMock()
             conn.unbind = MagicMock()
@@ -196,6 +202,8 @@ class TestLookupLdapUser:
             gidNumber=None,
         )
         mock_conn = MagicMock()
+        mock_conn.result = {"result": 0}
+        mock_conn.response = []
         mock_conn.entries = [entry]
         mock_conn.search = MagicMock()
         mock_conn.unbind = MagicMock()
@@ -215,6 +223,8 @@ class TestLookupLdapUser:
     @pytest.mark.asyncio
     async def test_returns_none_when_user_not_found(self):
         mock_conn = MagicMock()
+        mock_conn.result = {"result": 0}
+        mock_conn.response = []
         mock_conn.entries = []
         mock_conn.search = MagicMock()
         mock_conn.unbind = MagicMock()
@@ -248,6 +258,8 @@ class TestLookupLdapUser:
         def fake_open(config, server, *, check_names=True):
             captured["check_names"] = check_names
             conn = MagicMock()
+            conn.result = {"result": 0}
+            conn.response = []
             conn.entries = []
             conn.search = MagicMock()
             conn.unbind = MagicMock()

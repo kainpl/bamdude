@@ -175,7 +175,9 @@ def _generate_backup_codes() -> tuple[list[str], list[str]]:
 # ---------------------------------------------------------------------------
 # DB-backed pre-auth token helpers
 # ---------------------------------------------------------------------------
-async def create_pre_auth_token(db: AsyncSession, username: str, challenge_id: str | None = None) -> str:
+async def create_pre_auth_token(
+    db: AsyncSession, username: str, challenge_id: str | None = None, *, remember_me: bool | None = None
+) -> str:
     """Create a single-use pre-auth token stored in the DB.
 
     Pass ``challenge_id`` (from the HttpOnly 2fa_challenge cookie) to bind the
@@ -197,6 +199,7 @@ async def create_pre_auth_token(db: AsyncSession, username: str, challenge_id: s
             token_type=TokenType.PRE_AUTH,
             username=username,
             challenge_id=challenge_id,
+            remember_me=remember_me,
             expires_at=now + PRE_AUTH_TOKEN_TTL,
         )
     )
@@ -222,6 +225,9 @@ async def consume_pre_auth_token(db: AsyncSession, token: str, challenge_id: str
             AuthEphemeralToken.expires_at > now,
         )
         .returning(AuthEphemeralToken.username, AuthEphemeralToken.challenge_id)
+        # A validated ORM row can still be live while consuming it. Let the DB
+        # match expiry; Python evaluation mixes SQLite naive and aware dates.
+        .execution_options(synchronize_session="fetch")
     )
     row = result.one_or_none()
     if row is None:
@@ -236,8 +242,10 @@ async def consume_pre_auth_token(db: AsyncSession, token: str, challenge_id: str
     return username
 
 
-async def peek_pre_auth_token(db: AsyncSession, token: str, challenge_id: str | None = None) -> str | None:
-    """Validate a pre-auth token and return the username WITHOUT consuming it.
+async def _peek_pre_auth_record(
+    db: AsyncSession, token: str, challenge_id: str | None = None
+) -> AuthEphemeralToken | None:
+    """Validate a pre-auth token WITHOUT consuming it.
 
     When the stored token has a ``challenge_id`` (client-binding cookie), the
     caller must supply the matching value.  A mismatch is treated as an invalid
@@ -258,7 +266,13 @@ async def peek_pre_auth_token(db: AsyncSession, token: str, challenge_id: str | 
     # cookie must match.  Treat a mismatch as if the token doesn't exist.
     if eph.challenge_id is not None and eph.challenge_id != challenge_id:
         return None
-    return eph.username
+    return eph
+
+
+async def peek_pre_auth_token(db: AsyncSession, token: str, challenge_id: str | None = None) -> str | None:
+    """Compatibility helper for callers that only need the validated username."""
+    record = await _peek_pre_auth_record(db, token, challenge_id)
+    return record.username if record is not None else None
 
 
 # ---------------------------------------------------------------------------
@@ -1036,9 +1050,10 @@ async def send_email_otp(
     # Peek (validate without consuming) first so a rate-limit rejection does not
     # permanently burn the caller's pre-auth token.
     challenge_id = request.cookies.get("2fa_challenge")
-    username = await peek_pre_auth_token(db, body.pre_auth_token, challenge_id=challenge_id)
-    if not username:
+    pre_auth = await _peek_pre_auth_record(db, body.pre_auth_token, challenge_id=challenge_id)
+    if pre_auth is None or not pre_auth.username:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired pre-auth token")
+    username, bound_remember_me = pre_auth.username, pre_auth.remember_me
 
     # Enforce rate limit BEFORE consuming the token to prevent OTP email flooding.
     await check_email_otp_send_rate(db, username)
@@ -1106,7 +1121,7 @@ async def send_email_otp(
 
     # Re-issue a fresh pre-auth token bound to the same cookie so the binding
     # carries forward through the email → verify step.
-    fresh_token = await create_pre_auth_token(db, username, challenge_id=challenge_id)
+    fresh_token = await create_pre_auth_token(db, username, challenge_id=challenge_id, remember_me=bound_remember_me)
 
     # Return the fresh pre-auth token so the frontend can proceed to verify
     return {"message": "Code sent to your email address", "pre_auth_token": fresh_token}
@@ -1130,9 +1145,10 @@ async def verify_2fa(
     # Peek without consuming — bad codes must not burn the session token.
     # Pass the HttpOnly challenge cookie so the binding check is enforced.
     challenge_id = request.cookies.get("2fa_challenge")
-    username = await peek_pre_auth_token(db, body.pre_auth_token, challenge_id=challenge_id)
-    if not username:
+    pre_auth = await _peek_pre_auth_record(db, body.pre_auth_token, challenge_id=challenge_id)
+    if pre_auth is None or not pre_auth.username:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired pre-auth token")
+    username, bound_remember_me = pre_auth.username, pre_auth.remember_me
 
     await check_rate_limit(db, username)
 
@@ -1223,22 +1239,12 @@ async def verify_2fa(
         updated_codes = [c for i, c in enumerate(totp_record.backup_code_hashes) if i != matched_index]
         totp_record.backup_code_hashes = updated_codes
         await db.commit()
-        await clear_failed_attempts(db, username)
-
-        access_token = create_access_token(
-            data={"sub": user.username},
-            expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES),
-        )
-        result = await db.execute(select(User).where(User.id == user.id).options(selectinload(User.groups)))
-        user = result.scalar_one()
-        return TwoFAVerifyResponse(access_token=access_token, token_type="bearer", user=_user_to_response(user))
-
-    # Verification succeeded (TOTP or email) — consume the pre-auth token.
-    # C-1: Check the return value; if None the token was already consumed by a
-    # concurrent request (race condition) — reject to prevent double-use.
-    consumed_username = await consume_pre_auth_token(db, body.pre_auth_token, challenge_id=challenge_id)
-    if not consumed_username:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired pre-auth token")
+    if method != "backup":
+        # Backup consumed above before removing its code. Every other factor
+        # must also win the atomic single-use gate before minting a session.
+        consumed_username = await consume_pre_auth_token(db, body.pre_auth_token, challenge_id=challenge_id)
+        if not consumed_username:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired pre-auth token")
     await clear_failed_attempts(db, username)
 
     access_token = create_access_token(
@@ -1260,7 +1266,7 @@ async def verify_2fa(
         response,
         request,
         username=user.username,
-        remember_me=body.remember_me,
+        remember_me=bound_remember_me if bound_remember_me is not None else body.remember_me,
     )
     await db.commit()
 
@@ -1737,6 +1743,7 @@ async def delete_oidc_provider(
 @router.get("/oidc/authorize/{provider_id}", response_model=OIDCAuthorizeResponse)
 async def oidc_authorize(
     provider_id: int,
+    remember_me: bool = False,
     db: AsyncSession = Depends(get_auth_db),
 ) -> OIDCAuthorizeResponse:
     """Return the OIDC authorization URL for the given provider."""
@@ -1796,6 +1803,7 @@ async def oidc_authorize(
             provider_id=provider_id,
             nonce=nonce,
             code_verifier=code_verifier,
+            remember_me=remember_me,
             expires_at=now + OIDC_STATE_TTL,
         )
     )
@@ -1851,6 +1859,7 @@ async def oidc_callback(
                 AuthEphemeralToken.provider_id,
                 AuthEphemeralToken.nonce,
                 AuthEphemeralToken.code_verifier,
+                AuthEphemeralToken.remember_me,
             )
         )
         state_row = state_del.one_or_none()
@@ -1858,7 +1867,8 @@ async def oidc_callback(
             await db.rollback()
             return RedirectResponse(url=f"{frontend_error_url}invalid_state", status_code=302)
 
-        provider_id, nonce, code_verifier = state_row
+        provider_id, nonce, code_verifier, stored_remember_me = state_row
+        remember_me = stored_remember_me is True
         await db.commit()
 
         # Load provider
@@ -2165,6 +2175,7 @@ async def oidc_callback(
                     token=exchange_token,
                     token_type=TokenType.OIDC_EXCHANGE,
                     username=user.username,
+                    remember_me=remember_me,
                     expires_at=now2 + OIDC_EXCHANGE_TTL,
                 )
             )
@@ -2214,13 +2225,14 @@ async def oidc_exchange(
             AuthEphemeralToken.token_type == TokenType.OIDC_EXCHANGE,
             AuthEphemeralToken.expires_at > now,  # reject expired tokens atomically
         )
-        .returning(AuthEphemeralToken.username)
+        .returning(AuthEphemeralToken.username, AuthEphemeralToken.remember_me)
     )
     row = consume_result.one_or_none()
     if row is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired OIDC exchange token")
 
-    (username,) = row
+    username, stored_remember_me = row
+    remember_me = stored_remember_me is True
     await db.commit()
 
     user = await get_user_by_username(db, username)
@@ -2248,7 +2260,9 @@ async def oidc_exchange(
         if totp_enabled:
             two_fa_methods.append("backup")
         challenge_id = secrets.token_urlsafe(32)
-        pre_auth_token = await create_pre_auth_token(db, user.username, challenge_id=challenge_id)
+        pre_auth_token = await create_pre_auth_token(
+            db, user.username, challenge_id=challenge_id, remember_me=remember_me
+        )
         response.set_cookie(
             key="2fa_challenge",
             value=challenge_id,
@@ -2270,10 +2284,8 @@ async def oidc_exchange(
         expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES),
     )
 
-    # §18.14: OIDC-authenticated users also get a sliding-session refresh
-    # cookie. Remember-me defaults to False for this path — the OIDC popup
-    # /redirect flow has no obvious place to surface a checkbox yet, and
-    # provider-level "remember this device" is a better fit anyway.
+    # Use only the preference bound to the consumed one-time exchange token;
+    # callback query parameters and the current browser UI cannot override it.
     from backend.app.api.routes.auth import _issue_refresh_cookie
 
     await _issue_refresh_cookie(
@@ -2281,7 +2293,7 @@ async def oidc_exchange(
         response,
         raw_request,
         username=user.username,
-        remember_me=False,
+        remember_me=remember_me,
     )
     await db.commit()
 

@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+SSO sign-in offers Remember Me even when local login is disabled. Its choice survives the provider callback, all 2FA methods and refresh rotation, while respecting the administrator's session limit. LDAP group resolution supports schema-aware AD, lldap, OpenLDAP and POSIX membership; incomplete directory answers cannot apply a default group or remove existing assignments. StartTLS reads directory metadata after authentication and distinguishes server refusal from TLS failures. New LDAP accounts are provisioned once, while later logins preserve manual group assignments.
+
 MQTT and metrics credentials now use explicit connection saves, preventing partial passwords from being saved during typing. Metrics cannot be enabled without a token. LDAP connection tests preserve the configured CA certificate, SMTP authentication can be disabled without resubmitting a password, and older smart plugs remain editable. Standalone cameras now keep complete source URLs private on read and require editor rights to test saved sources. Diagnostic logs preserve useful messages while omitting REST capabilities and HTTP wire payloads, including in debug mode.
 
 

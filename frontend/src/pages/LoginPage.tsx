@@ -78,7 +78,7 @@ export function LoginPage() {
   const [password, setPassword] = useState('');
   // Sliding-session remember-me (§18.14). Default unchecked — standard web
   // UX expects a deliberate opt-in for 30-day persistence. Unchecked maps
-  // to a session cookie that dies with the browser + 12 h DB cap.
+  // to a session cookie that dies with the browser + 24 h DB cap (subject to the server ceiling).
   const [rememberMe, setRememberMe] = useState(false);
   const [showForgotPassword, setShowForgotPassword] = useState(false);
   const [forgotEmail, setForgotEmail] = useState('');
@@ -236,7 +236,7 @@ export function LoginPage() {
     const timeoutPromise = new Promise<never>((_resolve, reject) =>
       setTimeout(() => reject(new Error('autologin timeout')), 5000),
     );
-    Promise.race([api.getOIDCAuthorizeUrl(providerId), timeoutPromise])
+    Promise.race([api.getOIDCAuthorizeUrl(providerId, false), timeoutPromise])
       .then((result) => {
         window.location.href = (result as { auth_url: string }).auth_url;
       })
@@ -331,7 +331,8 @@ export function LoginPage() {
 
   // OIDC login
   const oidcLoginMutation = useMutation({
-    mutationFn: (providerId: number) => api.getOIDCAuthorizeUrl(providerId),
+    mutationFn: ({ providerId, remember }: { providerId: number; remember: boolean }) =>
+      api.getOIDCAuthorizeUrl(providerId, remember),
     onSuccess: (data) => {
       // Stash the post-login destination from router state so it survives the
       // provider round-trip (window.location.href kills React state). If the
@@ -381,6 +382,21 @@ export function LoginPage() {
     // Re-focus the code input after method switch (autoFocus only fires on mount)
     setTimeout(() => twoFAInputRef.current?.focus(), 0);
   };
+
+  const rememberMeControl = (
+    <div className="flex items-center gap-2">
+      <input
+        id="rememberMe"
+        type="checkbox"
+        checked={rememberMe}
+        onChange={(e) => setRememberMe(e.target.checked)}
+        className="accent-bambu-green h-4 w-4 rounded border-bambu-dark-tertiary bg-bambu-dark-secondary text-bambu-green focus:ring-bambu-green/50 focus:ring-2 focus:ring-offset-0 cursor-pointer"
+      />
+      <label htmlFor="rememberMe" className="text-sm text-bambu-gray cursor-pointer select-none">
+        {t('login.rememberMe')}
+      </label>
+    </div>
+  );
 
   // Fresh install gate: if the backend still reports no admin, every API
   // call (including /login) will 503 with setup_required. Send the user
@@ -696,19 +712,7 @@ export function LoginPage() {
               required
             />
 
-            {/* Remember-me — sliding-session opt-in for 30-day persistence. */}
-            <div className="flex items-center gap-2">
-              <input
-                id="rememberMe"
-                type="checkbox"
-                checked={rememberMe}
-                onChange={(e) => setRememberMe(e.target.checked)}
-                className="accent-bambu-green h-4 w-4 rounded border-bambu-dark-tertiary bg-bambu-dark-secondary text-bambu-green focus:ring-bambu-green/50 focus:ring-2 focus:ring-offset-0 cursor-pointer"
-              />
-              <label htmlFor="rememberMe" className="text-sm text-bambu-gray cursor-pointer select-none">
-                {t('login.rememberMe')}
-              </label>
-            </div>
+            {rememberMeControl}
           </div>
 
           <div>
@@ -742,6 +746,8 @@ export function LoginPage() {
         </form>
         )}
 
+        {!localLoginEnabled && oidcProviders && oidcProviders.length > 0 && rememberMeControl}
+
         {/* OIDC provider buttons */}
         {oidcProviders && oidcProviders.length > 0 && (
           <div className="space-y-3">
@@ -759,7 +765,7 @@ export function LoginPage() {
                 <button
                   key={provider.id}
                   type="button"
-                  onClick={() => oidcLoginMutation.mutate(provider.id)}
+                  onClick={() => oidcLoginMutation.mutate({ providerId: provider.id, remember: rememberMe })}
                   disabled={oidcLoginMutation.isPending}
                   className="w-full flex items-center justify-center gap-3 py-3 px-4 bg-bambu-dark-secondary border border-bambu-dark-tertiary hover:border-bambu-green/50 rounded-lg text-white font-medium transition-colors disabled:opacity-50"
                 >

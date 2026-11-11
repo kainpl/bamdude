@@ -100,6 +100,10 @@ FORWARDED_EXCEPTIONS = frozenset(
     }
 )
 
+# Safe domain error maps forwarded by code instead of a literal constructor
+# argument. Keep this explicit: arbitrary dictionaries are not API messages.
+FORWARDED_MESSAGE_MAPS = frozenset({"LDAP_ERROR_MESSAGES"})
+
 # Kinds the guard requires a translation for. ``value`` is optional (see module doc).
 REQUIRED_KINDS = frozenset({"http", "json", "forwarded"})
 
@@ -223,6 +227,14 @@ def scan(app_dir: Path = APP_DIR) -> dict[str, set[Site]]:
         consts = {**global_consts, **per_module[path]}
         rel = path.relative_to(ROOT).as_posix()
         for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Assign)
+                and isinstance(node.value, ast.Dict)
+                and any(isinstance(target, ast.Name) and target.id in FORWARDED_MESSAGE_MAPS for target in node.targets)
+            ):
+                for value in node.value.values:
+                    for sentence in _sentences(value, consts):
+                        found[sentence].add(Site(rel, value.lineno, "forwarded"))
             if isinstance(node, ast.Call):
                 name = _call_name(node.func)
                 if name == "HTTPException":
