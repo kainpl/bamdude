@@ -508,6 +508,8 @@ BamDude uses **SQLite** by default — nothing to set up. One variable, `DATABAS
 
 The bundled server comes from our open-source [embedded-postgres](https://github.com/kainpl/embedded-postgres) package (PostgreSQL 18 + pgvector + pg_stat_statements; Linux x86_64/aarch64/armv7l, macOS, Windows) and arrives with the Python dependencies — nothing to install by hand. It lives under `DATA_DIR/postgres/`, listens on `127.0.0.1` only, and generates its own password. Pin `EMBEDDED_PG_PORT=6432` if you want to reach it with psql or DBeaver.
 
+The PostgreSQL connection pool defaults to 20 persistent connections plus up to 60 overflow connections per engine. `DB_POOL_SIZE` and `DB_MAX_OVERFLOW` override these values. Allow room in the server's `max_connections` for all workers, other clients and PostgreSQL's reserved slots; 80 per engine is not a shared limit across processes. The bundled server keeps its minimum of 120 connections. SQLite pool defaults are unchanged.
+
 Every installer asks which one you want: `install.sh --db sqlite|embedded|external`, a **Database** page in the Windows installer (where the bundled server can run as its own `BamDudePostgres` service), and the same question in `docker-install.sh`. Switching from SQLite imports your existing database automatically on the next start.
 
 Full manual: **<https://docs.bamdude.top/features/postgresql/>**
