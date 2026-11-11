@@ -531,12 +531,17 @@ class TestRtspUrlHandling:
 
     @pytest.mark.asyncio
     async def test_rtsp_passes_the_narrow_protocol_whitelist_to_ffmpeg(self):
+        import asyncio
         from unittest.mock import AsyncMock, Mock
 
         from backend.app.services import external_camera as ec
 
-        process = Mock(pid=42, returncode=0, stdout=None)
-        process.communicate = AsyncMock(return_value=(_make_jpeg(), b""))
+        stdout, stderr = asyncio.StreamReader(), asyncio.StreamReader()
+        stdout.feed_data(_make_jpeg())
+        stdout.feed_eof()
+        stderr.feed_eof()
+        process = Mock(pid=42, returncode=0, stdout=stdout, stderr=stderr)
+        process.wait = AsyncMock(return_value=0)
         spawn = AsyncMock(return_value=process)
         with (
             patch.object(ec, "get_ffmpeg_path", return_value="ffmpeg"),
@@ -687,6 +692,7 @@ def _fake_snapshot_session(body: bytes, status: int = 200):
         def __init__(self):
             self.status = status
             self.headers = {}
+            self.content = self
 
         async def __aenter__(self):
             return self
@@ -696,6 +702,10 @@ def _fake_snapshot_session(body: bytes, status: int = 200):
 
         async def read(self):
             return body
+
+        async def iter_chunked(self, size):
+            for offset in range(0, len(body), size):
+                yield body[offset : offset + size]
 
     class _Session:
         def __init__(self, *a, **k):
@@ -718,8 +728,8 @@ class TestSnapshotTranscode:
     broke the browser MJPEG stream, because every multipart part is hard-labelled
     ``Content-Type: image/jpeg`` — the browser rejected the non-JPEG payload and
     dropped the whole stream ("connection lost"). ``_capture_snapshot`` now
-    transcodes non-JPEG stills to JPEG; only genuinely undecodable payloads fall
-    through to the raw bytes (unchanged last-resort behaviour)."""
+    transcodes supported non-JPEG stills to JPEG and rejects undecodable
+    payloads before publishing a multipart part."""
 
     def test_transcode_png_to_jpeg(self):
         from backend.app.services.external_camera import _transcode_to_jpeg
@@ -739,7 +749,7 @@ class TestSnapshotTranscode:
 
     def test_transcode_returns_none_for_non_image(self):
         """HTML error pages / auth redirects / empty bodies aren't images —
-        transcode returns None so the caller can log and fall back."""
+        transcode returns None so the caller can reject the response."""
         from backend.app.services.external_camera import _transcode_to_jpeg
 
         assert _transcode_to_jpeg(b"<html><body>404 Not Found</body></html>") is None
@@ -768,15 +778,14 @@ class TestSnapshotTranscode:
         assert out == jpeg  # identical object bytes — proves no transcode ran
 
     @pytest.mark.asyncio
-    async def test_capture_snapshot_non_image_falls_back_to_raw(self):
-        """Undecodable (non-image) responses return the raw bytes unchanged, so
-        behaviour is never worse than before the fix."""
+    async def test_capture_snapshot_rejects_non_image(self):
+        """An error page must never be published as a JPEG frame."""
         from backend.app.services import external_camera as ec
 
         html = b"<html><body>unauthorized</body></html>"
         with patch.object(ec.aiohttp, "ClientSession", _fake_snapshot_session(html)):
             out = await ec._capture_snapshot("http://192.168.50.50/snapshot", 10)
-        assert out == html
+        assert out is None
 
     @pytest.mark.asyncio
     async def test_snapshot_rejects_a_redirect_to_metadata_before_following_it(self):

@@ -313,6 +313,7 @@ def test_external_direct_fallback_is_preserved(run, monkeypatch, caplog):
         monkeypatch.setattr(camera, "create_tls_proxy", AsyncMock(side_effect=OSError(url)))
         process = FakeProcess(123)
         process.returncode = 0
+        process.wait = AsyncMock(return_value=0)
         spawn = AsyncMock(return_value=process)
         monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
         assert await external_camera._capture_rtsp_frame(url, 1) == FRAME

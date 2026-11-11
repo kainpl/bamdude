@@ -9,32 +9,37 @@ to ensure they are well-formed before use.
 
 import asyncio
 import functools
-import ipaddress
 import logging
 import random
 import re
 import shutil
+import threading
 import time
 import uuid
 from collections.abc import AsyncGenerator, Callable
-from contextlib import asynccontextmanager
 from pathlib import Path
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urlparse
 
 import aiohttp
 
 from backend.app.core.logging_filters import redact_url_credentials
 from backend.app.services import camera_metrics
 from backend.app.services.camera_cleanup import CameraAttempt, CameraCleanupError
+from backend.app.services.camera_http import _sanitize_camera_url, _validated_camera_get
 from backend.app.services.camera_profiles import CameraProfile
+from backend.app.services.camera_snapshot import (
+    MAX_SNAPSHOT_BYTES,
+    _decode_snapshot,
+    decode_snapshot,
+    read_snapshot_body,
+)
 from backend.app.services.ffmpeg_stderr import FfmpegStderrDrain
 from backend.app.utils.ffmpeg_output import NO_FFMPEG_OUTPUT, summarize_ffmpeg_stderr
 
 logger = logging.getLogger(__name__)
 
 _RTSP_PROTOCOL_WHITELIST = "rtsp,rtp,udp,tcp,tls,crypto"
-_REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
-_MAX_HTTP_REDIRECTS = 3
+_SNAPSHOT_HTTP_SLOTS = threading.BoundedSemaphore(4)
 
 # In-flight one-shot captures, keyed by (url, camera_type, snapshot_url).
 # ``snapshot_url`` belongs in the key rather than just url/camera_type: a
@@ -62,91 +67,6 @@ def _discard_inflight_capture(key: tuple[str, str, str | None], task: "asyncio.T
         logger.debug(
             "In-flight external-camera capture for %s ended in an exception", redact_url_credentials(key[0])[:50]
         )
-
-
-def _blocked_camera_host(hostname: str) -> bool:
-    """Return whether a camera URL targets a non-routable metadata address.
-
-    Loopback is deliberately allowed: a local go2rtc restream is a supported
-    external camera source. Link-local and unspecified addresses are not useful
-    camera endpoints and include cloud metadata ranges.
-    """
-    if hostname.lower() in {"metadata.google.internal", "metadata.google"}:
-        return True
-    try:
-        address = ipaddress.ip_address(hostname)
-    except ValueError:
-        return False
-    return address.is_link_local or address.is_unspecified or address.is_multicast
-
-
-def _sanitize_camera_url(url: str, allowed_schemes: tuple[str, ...] = ("http", "https", "rtsp", "rtsps")) -> str | None:
-    """Validate and sanitize camera URL, returning a safe reconstructed URL.
-
-    This validates that the URL is well-formed, uses an allowed scheme,
-    does not target cloud metadata services, and returns a reconstructed
-    URL from validated components.
-
-    Note: This intentionally allows user-provided URLs as that is the
-    purpose of external camera configuration. Local network IPs are
-    allowed since cameras are typically on the same LAN.
-
-    Args:
-        url: URL to validate and sanitize
-        allowed_schemes: Tuple of allowed URL schemes
-
-    Returns:
-        Sanitized URL string if valid, None otherwise
-    """
-    try:
-        parsed = urlparse(url)
-        if not parsed.scheme or not parsed.netloc:
-            return None
-
-        # Validate scheme against allowlist
-        scheme = parsed.scheme.lower()
-        if scheme not in allowed_schemes:
-            return None
-
-        hostname = parsed.hostname or ""
-        if _blocked_camera_host(hostname):
-            logger.warning("Blocked camera URL targeting restricted host: %s", hostname)
-            return None
-
-        # Accessing ``port`` validates malformed values (``:bad``) before the
-        # raw netloc is reused. Reusing it preserves encoded credentials and
-        # IPv6 brackets, both lost when rebuilding from ``hostname``.
-        _ = parsed.port
-        path = parsed.path or ""
-        query = f"?{parsed.query}" if parsed.query else ""
-        return f"{scheme}://{parsed.netloc}{path}{query}"
-    except ValueError:
-        return None
-
-
-@asynccontextmanager
-async def _validated_camera_get(session: aiohttp.ClientSession, url: str):
-    """Open an HTTP camera URL and validate every redirect destination."""
-    current_url = url
-    for _ in range(_MAX_HTTP_REDIRECTS + 1):
-        request = session.get(current_url, allow_redirects=False)
-        response = await request.__aenter__()
-        if response.status not in _REDIRECT_STATUSES:
-            try:
-                yield response
-            finally:
-                await request.__aexit__(None, None, None)
-            return
-
-        location = response.headers.get("Location")
-        await request.__aexit__(None, None, None)
-        if not location:
-            raise ValueError("camera redirect had no location")
-        next_url = _sanitize_camera_url(urljoin(current_url, location), ("http", "https"))
-        if not next_url:
-            raise ValueError("camera redirect target was rejected")
-        current_url = next_url
-    raise ValueError("camera redirect limit exceeded")
 
 
 def _safe_usb_device_path(device: str) -> Path | None:
@@ -456,8 +376,9 @@ async def _capture_mjpeg_frame(url: str, timeout: int) -> bytes | None:
 
     try:
         async with (
+            asyncio.timeout(timeout),
             aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=timeout)) as session,
-            _validated_camera_get(session, safe_url) as response,
+            _validated_camera_get(session, safe_url, timeout=timeout) as response,
         ):
             if response.status != 200:
                 logger.error("MJPEG stream returned status %s", response.status)
@@ -570,7 +491,17 @@ async def _capture_rtsp_frame(url: str, timeout: int) -> bytes | None:
                 stderr=asyncio.subprocess.PIPE,
             )
 
-            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
+            stderr_drain = attempt.stderr = FfmpegStderrDrain(process, name=f"ext-rtsp-capture-{process.pid}").start()
+            output = bytearray()
+            async with asyncio.timeout(timeout):
+                while chunk := await process.stdout.read(8192):
+                    if len(output) + len(chunk) > MAX_SNAPSHOT_BYTES:
+                        logger.warning("RTSP capture exceeded its frame byte limit")
+                        return None
+                    output.extend(chunk)
+                await process.wait()
+            stdout = bytes(output)
+            stderr = stderr_drain.text()
             logger.debug(
                 "ffmpeg returned: code=%s, stdout=%s bytes, stderr=%s bytes",
                 process.returncode,
@@ -582,7 +513,7 @@ async def _capture_rtsp_frame(url: str, timeout: int) -> bytes | None:
                 logger.error("ffmpeg RTSP capture failed: %s", summarize_ffmpeg_stderr(stderr) or NO_FFMPEG_OUTPUT)
                 return None
 
-            if not stdout or len(stdout) < 100:
+            if len(stdout) < 100 or not stdout.startswith(b"\xff\xd8") or not stdout.endswith(b"\xff\xd9"):
                 logger.error("ffmpeg returned empty or too small frame")
                 return None
 
@@ -597,36 +528,8 @@ async def _capture_rtsp_frame(url: str, timeout: int) -> bytes | None:
 
 
 def _transcode_to_jpeg(data: bytes) -> bytes | None:
-    """Decode an arbitrary still image (PNG/WebP/BMP/GIF/...) and re-encode as JPEG.
-
-    Some camera/proxy snapshot endpoints serve stills as PNG or WebP rather than
-    JPEG. A browser opened directly at the URL renders those fine, but our MJPEG
-    ``multipart/x-mixed-replace`` stream hard-labels every part
-    ``Content-Type: image/jpeg`` — so a non-JPEG payload makes the browser reject
-    the frame and drop the whole stream ("connection lost", #1902). Transcoding to
-    JPEG keeps the stream genuinely MJPEG and also keeps the JPEG-only downstream
-    (plate detection, Obico, finish photo) working.
-
-    Returns None if the bytes are not a decodable image (e.g. an HTML error page)
-    or if the imaging libraries are unavailable — callers fall back to the raw
-    bytes so behaviour is never worse than before.
-    """
-    try:
-        import cv2
-        import numpy as np
-    except ImportError:
-        return None
-    try:
-        img = cv2.imdecode(np.frombuffer(data, dtype=np.uint8), cv2.IMREAD_COLOR)
-        if img is None:
-            return None
-        ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 85])
-        if not ok:
-            return None
-        return buf.tobytes()
-    except Exception as e:  # cv2 raises cv2.error (a subclass of Exception) on bad input
-        logger.debug("Snapshot transcode to JPEG failed: %s", e)
-        return None
+    """Compatibility helper; production uses the bounded async worker admission."""
+    return _decode_snapshot(data)
 
 
 async def _capture_snapshot(url: str, timeout: int) -> bytes | None:
@@ -642,51 +545,53 @@ async def _capture_snapshot(url: str, timeout: int) -> bytes | None:
         logger.error("Invalid snapshot URL format: %s...", redact_url_credentials(url)[:50])
         return None
 
+    # Bound whole HTTP/body operations as well as native decode futures. A
+    # timed-out codec retains its separate slot; it cannot admit queued work.
+    if not _SNAPSHOT_HTTP_SLOTS.acquire(blocking=False):
+        logger.warning("Camera snapshot capacity is busy")
+        return None
     try:
-        async with (
-            aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=timeout)) as session,
-            _validated_camera_get(session, safe_url) as response,
-        ):
-            if response.status != 200:
-                logger.error("Snapshot URL returned status %s", response.status)
+        return await _fetch_snapshot(safe_url, timeout)
+    finally:
+        _SNAPSHOT_HTTP_SLOTS.release()
+
+
+async def _fetch_snapshot(safe_url: str, timeout: int) -> bytes | None:
+    """Own one bounded HTTP snapshot operation inside the camera worker."""
+
+    deadline = asyncio.get_running_loop().time() + timeout
+    try:
+        async with asyncio.timeout_at(deadline):
+            async with (
+                aiohttp.ClientSession(
+                    timeout=aiohttp.ClientTimeout(total=timeout),
+                    auto_decompress=False,
+                    headers={"Accept-Encoding": "identity"},
+                ) as session,
+                _validated_camera_get(session, safe_url, timeout=timeout) as response,
+            ):
+                if response.status != 200:
+                    logger.error("Snapshot URL returned status %s", response.status)
+                    return None
+                data = await read_snapshot_body(response)
+            if data is None:
+                logger.warning("Camera snapshot body was rejected")
                 return None
-
-            data = await response.read()
             camera_metrics.record_frame(data, output=False)
-    except (TimeoutError, ValueError):
-        logger.warning("Snapshot capture timed out after %ss", timeout)
+            frame = await decode_snapshot(data, deadline - asyncio.get_running_loop().time())
+            if frame is None:
+                logger.warning("Camera snapshot decode unavailable or rejected")
+                return None
+            return camera_metrics.captured_frame(frame)
+    except TimeoutError:
+        logger.warning("Snapshot capture exceeded its deadline")
         return None
-    except (aiohttp.ClientError, OSError) as e:
-        logger.error("Snapshot capture failed: %s", e)
+    except ValueError:
+        logger.warning("Snapshot camera URL or redirect was rejected")
         return None
-
-    # Fast path: already JPEG (SOI marker), stream it as-is (no decode/re-encode).
-    if data.startswith(b"\xff\xd8"):
-        return camera_metrics.captured_frame(data)
-
-    # Not JPEG. Many snapshot endpoints serve PNG/WebP/BMP — transcode to JPEG so
-    # the browser's MJPEG stream (and JPEG-only downstream) keep working instead of
-    # dropping the connection (#1902). Run off the event loop: cv2 decode/encode is
-    # CPU-bound and this can be polled at up to 15 fps while a camera view is open.
-    transcoded = await asyncio.to_thread(_transcode_to_jpeg, data)
-    if transcoded is not None:
-        logger.debug(
-            "Transcoded non-JPEG snapshot (%d bytes, header %s) to JPEG",
-            len(data),
-            data[:4].hex(),
-        )
-        return camera_metrics.captured_frame(transcoded)
-
-    # Couldn't decode it as an image at all — most likely not an image response
-    # (HTML error page, auth redirect, wrong URL). Return the raw bytes as a last
-    # resort (unchanged behaviour) but log enough to debug.
-    logger.warning(
-        "External camera snapshot is not a decodable image "
-        "(%d bytes, header %s) — verify the camera URL returns an image",
-        len(data),
-        data[:4].hex(),
-    )
-    return data
+    except (aiohttp.ClientError, OSError) as exc:
+        logger.error("Snapshot transport failed (%s)", type(exc).__name__)
+        return None
 
 
 async def test_connection(url: str, camera_type: str) -> dict:
@@ -938,7 +843,14 @@ async def _stream_mjpeg(url: str) -> AsyncGenerator[bytes, None]:
 
                     end_idx = buffer.find(jpeg_end, 2)
                     if end_idx == -1:
+                        if len(buffer) > MAX_SNAPSHOT_BYTES:
+                            logger.warning("MJPEG frame exceeded the camera frame limit")
+                            return
                         break
+
+                    if end_idx + 2 > MAX_SNAPSHOT_BYTES:
+                        logger.warning("MJPEG frame exceeded the camera frame limit")
+                        return
 
                     frame = buffer[: end_idx + 2]
                     buffer = buffer[end_idx + 2 :]
@@ -1098,8 +1010,14 @@ async def _stream_rtsp(
 
                         end_idx = buffer.find(jpeg_end, 2)
                         if end_idx == -1:
+                            if len(buffer) > MAX_SNAPSHOT_BYTES:
+                                logger.warning("RTSP stream exceeded its frame byte limit")
+                                return
                             break
 
+                        if end_idx + 2 > MAX_SNAPSHOT_BYTES:
+                            logger.warning("RTSP stream exceeded its frame byte limit")
+                            return
                         frame = buffer[: end_idx + 2]
                         buffer = buffer[end_idx + 2 :]
                         yield frame

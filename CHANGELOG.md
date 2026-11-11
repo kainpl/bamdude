@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+- External HTTP cameras validate each redirect before requesting it, keep credentials only on the original origin, and refuse HTTPS downgrades. Local cameras and loopback restreams remain supported. Snapshot responses must pass bounded image decoding; supported PNG, WebP and BMP stills become JPEG, while error pages and undecodable responses yield no frame. Oversized partial MJPEG/RTSP frames are stopped without growing the worker buffer indefinitely. See the [camera transport limits](docs/development/camera-transport-policy.md) for compatibility and security boundaries.
+
 - Starting or stopping MQTT recording updates the printer card's recording badge immediately, including other open browser sessions. Live status also carries the recording size, and the initiating dialog refreshes the card when WebSocket is unavailable.
 
 SSO sign-in offers Remember Me even when local login is disabled. Its choice survives the provider callback, all 2FA methods and refresh rotation, while respecting the administrator's session limit. LDAP group resolution supports schema-aware AD, lldap, OpenLDAP and POSIX membership; incomplete directory answers cannot apply a default group or remove existing assignments. StartTLS reads directory metadata after authentication and distinguishes server refusal from TLS failures. New LDAP accounts are provisioned once, while later logins preserve manual group assignments.
