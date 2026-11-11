@@ -354,6 +354,8 @@ class _FakeClient:
     def __init__(self, **kwargs):
         self.kwargs = kwargs
         self.state = type("State", (), {"connected": True, "raw_data": {}})()
+        # The real client starts with no observed layer frame; the layer callback hands this to its receiver.
+        self._layer_frame_observation = None
 
     def carry_print_lifecycle_from(self, _prior):
         pass
@@ -413,7 +415,7 @@ async def test_queued_callbacks_of_a_deleted_life_never_reach_their_receivers(fa
     async def on_complete(pid, data):
         received.append(("complete", dict(data)))
 
-    async def on_layer(pid, layer, previous):
+    async def on_layer(pid, layer, previous, observation=None):
         received.append(("layer", layer))
 
     monkeypatch.setattr(printer_manager, "_on_print_start", on_start)
@@ -900,26 +902,19 @@ async def test_a_failed_deletion_gives_the_printer_back_its_registrations(
 # --------------------------------------------------------------------------- #
 
 
-def _production_layer_callback():
-    """The nested ``on_layer_change`` of ``main``'s lifespan, compiled on its own -- no lifespan, no devices."""
-    import ast
-    import inspect
-    from pathlib import Path
+def _production_layer_callback(monkeypatch):
+    """``main``'s layer callback as the manager receives it -- no lifespan, no devices, no frame banking.
 
+    It was nested in the lifespan and compiled out of the source here; since the live layer total work it is the
+    module-level ``on_printer_layer_change``, so the real function runs with only its frame bank stubbed.
+    """
     from backend.app import main
-
-    source_path = Path(inspect.getfile(main))
-    tree = ast.parse(source_path.read_text(encoding="utf-8"))
-    nodes = [n for n in ast.walk(tree) if isinstance(n, ast.AsyncFunctionDef) and n.name == "on_layer_change"]
-    assert len(nodes) == 1
-    namespace = dict(main.__dict__)
 
     async def no_bank(*_args):
         return None
 
-    namespace["_maybe_bank_inprint_frame"] = no_bank
-    exec(compile(ast.Module(body=[nodes[0]], type_ignores=[]), str(source_path), "exec"), namespace)
-    return namespace["on_layer_change"]
+    monkeypatch.setattr(main, "_maybe_bank_inprint_frame", no_bank)
+    return main.on_printer_layer_change
 
 
 @pytest.mark.asyncio
@@ -927,7 +922,7 @@ def _production_layer_callback():
 async def test_a_layer_callback_overtaken_by_a_deletion_reaches_no_macro(monkeypatch, deleted):
     from backend.app.services import layer_timelapse, macro_trigger, printer_deletion
 
-    callback = _production_layer_callback()
+    callback = _production_layer_callback(monkeypatch)
     entered, proceed = asyncio.Event(), asyncio.Event()
     seen = []
 
