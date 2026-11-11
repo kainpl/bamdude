@@ -965,6 +965,7 @@
   "The photo may have at most {} pixels": "Фото може мати щонайбільше {} пікселів",
   "The photo must be a PNG, JPEG or WebP picture": "Фото має бути зображенням PNG, JPEG або WebP",
   "The plug did not acknowledge the setting — is it powered and in range?": "Розетка не підтвердила налаштування — чи ввімкнено її живлення і чи вона в зоні дії?",
+  "The print on this plate was put back in the queue. Cancel that queue job or restore it in Print state diagnostics, then answer the plate": "Друк на цьому столі знову поставили в чергу. Скасуйте це завдання в черзі або поверніть його в «Діагностиці станів друку», потім дайте відповідь про стіл",
   "The printer did not answer, so its recordings could not be listed. Check that it is on the network and try again.": "Принтер не відповів, тож його записи не вдалося перелічити. Перевірте, що він у мережі, і спробуйте ще раз.",
   "the printer is busy and cannot switch AMS type": "принтер зайнятий і не може змінити тип AMS",
   "The printer is waiting for a plate answer about this print. Answer on the printer card: Repeat print runs it again": "Принтер чекає відповіді про стіл щодо цього друку. Дайте відповідь на картці принтера: «Повторити друк» запустить його знову",

@@ -23,9 +23,11 @@ from backend.app.services.archive_write_scope import (
 )
 from backend.app.services.order_filing import FILING_FORBIDDEN, resolve_link
 from backend.app.services.plate_hold import (
+    PlateOwnerRequeued,
     StalePlateAnswer,
     answer_by_clearing,
     answer_by_repeating,
+    requeued_gate_owner,
     waiting_archive,
     waiting_row,
 )
@@ -286,6 +288,17 @@ async def answer_plate_run(
         if archive is not None and not archive_guarded:
             await guard_archive(archive.id)
             archive = await load_active_archive_for_write(db, archive.id)
+        if (
+            archive is None
+            and printer is not None
+            and printer.awaiting_plate_clear
+            and printer.awaiting_plate_clear_archive_id is not None
+        ):
+            # The gate's own row is back in the queue (a Retry before the doors refused it):
+            # say so instead of "this card is stale", and change nothing (spec plate-gate-owner-requeue C).
+            requeued = await requeued_gate_owner(db, printer_id, printer.awaiting_plate_clear_archive_id)
+            if requeued is not None:
+                raise PlateOwnerRequeued(requeued)
         if expected_archive_id is not None and (archive is None or archive.id != expected_archive_id):
             raise StalePlateAnswer("This completion card is no longer current for this printer")
         if printer is not None and printer.awaiting_plate_clear_archive_id is not None:

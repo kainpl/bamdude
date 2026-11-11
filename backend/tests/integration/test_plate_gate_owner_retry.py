@@ -134,6 +134,36 @@ async def test_the_queue_says_which_row_the_plate_answer_belongs_to(async_client
 
 
 @pytest.mark.asyncio
+async def test_a_gate_whose_row_was_requeued_names_the_row_and_changes_nothing(
+    async_client, printer_factory, db_session
+):
+    """The state an older Retry left behind (spec C, T11): every answer names the blocking row."""
+    pid, aid, row_id = await owned_gate(db_session, printer_factory)
+    row = await db_session.get(PrintQueueItem, row_id)
+    row.status = "pending"  # what Retry did before its door refused the gate's row
+    await db_session.commit()
+
+    with _finished_printer():
+        answers = [
+            await async_client.post(f"/api/v1/printers/{pid}/clear-plate"),
+            await async_client.post(f"/api/v1/printers/{pid}/repeat-print"),
+            await async_client.post(
+                f"/api/v1/printers/{pid}/clear-plate",
+                json={"expected_archive_id": aid, "expected_gate_token": "owned-gate"},
+            ),
+        ]
+
+    for response in answers:
+        assert response.status_code == 409, response.text
+        detail = response.json()["detail"]
+        assert (detail["error"], detail["item_id"]) == ("plate_owner_requeued", row_id)
+        assert "put back in the queue" in detail["message"]
+    db_session.expire_all()
+    assert (await db_session.get(PrintQueueItem, row_id)).status == "pending"
+    assert await gate_of(db_session, pid) == (True, aid)
+
+
+@pytest.mark.asyncio
 async def test_repeat_on_the_card_still_rearms_the_owner_and_releases_the_gate(
     async_client, printer_factory, db_session
 ):

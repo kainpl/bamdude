@@ -46,6 +46,34 @@ class StalePlateAnswer(Exception):
     """A completion card names a run that is no longer this printer's hold."""
 
 
+class PlateOwnerRequeued(StalePlateAnswer):
+    """The row the plate gate waits on was put back in the queue, so no answer can find it.
+
+    A Retry from before spec plate-gate-owner-requeue could do that. The gate stays as it
+    is: the operator cancels that queue row (or restores it in Print state diagnostics) and
+    then answers on the printer card.
+    """
+
+    def __init__(self, item_id: int):
+        super().__init__("The row this plate gate waits on is back in the queue")
+        self.item_id = item_id
+
+
+async def requeued_gate_owner(db: AsyncSession, printer_id: int, archive_id: int) -> int | None:
+    """The pending queue row on this printer that still names the gate's archive, if any."""
+    return await db.scalar(
+        select(PrintQueueItem.id)
+        .join(PrinterQueue, PrintQueueItem.queue_id == PrinterQueue.id)
+        .where(
+            PrinterQueue.printer_id == printer_id,
+            PrintQueueItem.archive_id == archive_id,
+            PrintQueueItem.status == "pending",
+        )
+        .order_by(PrintQueueItem.id)
+        .limit(1)
+    )
+
+
 async def should_hold_for_plate_clear(db: AsyncSession, printer_id: int, *, plate_auto_cleared: bool) -> bool:
     """Whether this printer's finished row waits for an answer.
 

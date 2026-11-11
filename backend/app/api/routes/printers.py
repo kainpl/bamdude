@@ -93,6 +93,7 @@ from backend.app.services.cloud_link.service import cloud_link_service
 from backend.app.services.mqtt_recorder import mqtt_recorder
 from backend.app.services.plate_answers import FilingRefused, InvalidPlateAssessment, answer_plate_run
 from backend.app.services.plate_hold import (
+    PlateOwnerRequeued,
     RepeatNotPossible,
     StalePlateAnswer,
     has_waiting_row as _has_waiting_row,
@@ -3518,6 +3519,19 @@ async def get_waiting_print(
     )
 
 
+def _plate_owner_requeued(e: PlateOwnerRequeued) -> HTTPException:
+    """The gate's own row is back in the queue: name it, so the card can say what to do (spec C)."""
+    return HTTPException(
+        409,
+        detail={
+            "error": "plate_owner_requeued",
+            "message": "The print on this plate was put back in the queue. Cancel that queue job "
+            "or restore it in Print state diagnostics, then answer the plate",
+            "item_id": e.item_id,
+        },
+    )
+
+
 @router.post("/{printer_id}/clear-plate")
 async def clear_plate(
     printer_id: int,
@@ -3588,6 +3602,8 @@ async def clear_plate(
         )
     except InvalidPlateAssessment as e:
         raise HTTPException(422, str(e)) from e
+    except PlateOwnerRequeued as e:
+        raise _plate_owner_requeued(e) from e
     except StalePlateAnswer as e:
         raise HTTPException(409, str(e)) from e
 
@@ -3660,6 +3676,8 @@ async def repeat_print(
         # Said out loud rather than queued and failed later: a failed dispatch
         # errors the whole queue, which is what this feature exists to avoid.
         raise HTTPException(409, str(e)) from e
+    except PlateOwnerRequeued as e:
+        raise _plate_owner_requeued(e) from e
     except StalePlateAnswer as e:
         raise HTTPException(409, str(e)) from e
 

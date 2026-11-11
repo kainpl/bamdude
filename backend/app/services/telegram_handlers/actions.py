@@ -231,7 +231,7 @@ async def cb_clear_plate(callback: CallbackQuery, tg_chat: TelegramChat | None =
     try:
         from backend.app.core.database import async_session
         from backend.app.services.plate_answers import answer_plate_run
-        from backend.app.services.plate_hold import StalePlateAnswer
+        from backend.app.services.plate_hold import PlateOwnerRequeued, StalePlateAnswer
 
         async with async_session() as _db:
             await answer_plate_run(
@@ -242,6 +242,9 @@ async def cb_clear_plate(callback: CallbackQuery, tg_chat: TelegramChat | None =
                 action="clear",
             )
         await callback.answer(f"\u2705 {t(lang, NS, 'printers.clear_plate_ok')}")
+    except PlateOwnerRequeued:
+        await callback.answer(t(lang, NS, "printers.plate_owner_requeued"), show_alert=True)
+        return
     except StalePlateAnswer:
         await callback.answer(t(lang, NS, "printers.plate_action_stale"), show_alert=True)
         return
@@ -278,7 +281,7 @@ async def cb_repeat_print(callback: CallbackQuery, tg_chat: TelegramChat | None 
 
     from backend.app.core.database import async_session
     from backend.app.services.plate_answers import FilingRefused, answer_plate_run
-    from backend.app.services.plate_hold import RepeatNotPossible, StalePlateAnswer
+    from backend.app.services.plate_hold import PlateOwnerRequeued, RepeatNotPossible, StalePlateAnswer
 
     try:
         async with async_session() as _db:
@@ -300,6 +303,9 @@ async def cb_repeat_print(callback: CallbackQuery, tg_chat: TelegramChat | None 
     except RepeatNotPossible as e:
         # Nothing to send again — said plainly rather than queued and failed.
         await callback.answer(str(e), show_alert=True)
+        return
+    except PlateOwnerRequeued:
+        await callback.answer(t(lang, NS, "printers.plate_owner_requeued"), show_alert=True)
         return
 
     except StalePlateAnswer:
