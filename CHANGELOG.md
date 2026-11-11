@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+- PostgreSQL's connection check before pool checkout can be disabled with `DB_POOL_PRE_PING=false` and a restart. It remains enabled by default; disabling it may let the next request fail on a connection the server has closed. SQLite ignores this setting.
+
 - PostgreSQL's default connection pool now allows up to 80 connections per engine instead of 100, leaving room on a stock 100-connection server. Explicit pool settings and SQLite defaults are preserved; multiple workers and other database clients still share the server's connection budget.
 
 - A cancelled or failed job that the printer's plate prompt is waiting on can no longer be retried from the queue; answer on the printer card instead, where Repeat print runs it again. Before, that retry left the prompt unable to find its print: Clear plate and Repeat print were refused and the queue stood still, even after a restart. Where an earlier version left that state behind, Clear plate now names the queue job that blocks it, and Print state diagnostics can return that job to its finished state.

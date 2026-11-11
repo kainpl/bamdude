@@ -11,7 +11,14 @@ from backend.app.core.config import Settings, settings
 
 @pytest.fixture(autouse=True)
 def default_pool_settings(monkeypatch):
-    for field in ("db_pool_size", "db_max_overflow", "db_pool_timeout", "db_pool_recycle", "db_pool_use_lifo"):
+    for field in (
+        "db_pool_size",
+        "db_max_overflow",
+        "db_pool_timeout",
+        "db_pool_recycle",
+        "db_pool_use_lifo",
+        "db_pool_pre_ping",
+    ):
         monkeypatch.setattr(settings, field, None)
     monkeypatch.setattr(database, "_pool_config", {})
 

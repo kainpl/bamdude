@@ -229,6 +229,9 @@ class Settings(BaseSettings):
     db_pool_timeout: int | None = None
     db_pool_recycle: int | None = None
     db_pool_use_lifo: bool | None = None
+    # PG only: None keeps pre-ping enabled; False allows a stale connection's
+    # first use to fail rather than checking it at checkout. SQLite ignores it.
+    db_pool_pre_ping: bool | None = None
 
     # Explicit path to the ffmpeg executable, used for RTSP camera streaming on
     # the X1 / X2 / H2 / P2 series (the A1 / P1 chamber-image protocol needs no

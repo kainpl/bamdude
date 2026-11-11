@@ -130,7 +130,7 @@ def _resolve_pool_kwargs() -> dict:
         kwargs = {
             "pool_size": pool_size,
             "max_overflow": max_overflow,
-            "pool_pre_ping": True,
+            "pool_pre_ping": settings.db_pool_pre_ping if settings.db_pool_pre_ping is not None else True,
             "pool_recycle": settings.db_pool_recycle if settings.db_pool_recycle is not None else 1800,
             "pool_use_lifo": settings.db_pool_use_lifo if settings.db_pool_use_lifo is not None else True,
         }

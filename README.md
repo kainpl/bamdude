@@ -510,6 +510,8 @@ The bundled server comes from our open-source [embedded-postgres](https://github
 
 The PostgreSQL connection pool defaults to 20 persistent connections plus up to 60 overflow connections per engine. `DB_POOL_SIZE` and `DB_MAX_OVERFLOW` override these values. Allow room in the server's `max_connections` for all workers, other clients and PostgreSQL's reserved slots; 80 per engine is not a shared limit across processes. The bundled server keeps its minimum of 120 connections. SQLite pool defaults are unchanged.
 
+PostgreSQL checks idle pooled connections before checkout by default. Set `DB_POOL_PRE_PING=false` and restart BamDude to disable that check; a request may then fail when it first uses a connection the server has closed. This setting does not recover interrupted transactions and is ignored on SQLite.
+
 Every installer asks which one you want: `install.sh --db sqlite|embedded|external`, a **Database** page in the Windows installer (where the bundled server can run as its own `BamDudePostgres` service), and the same question in `docker-install.sh`. Switching from SQLite imports your existing database automatically on the next start.
 
 Full manual: **<https://docs.bamdude.top/features/postgresql/>**
