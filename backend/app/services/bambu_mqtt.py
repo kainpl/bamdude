@@ -2424,6 +2424,10 @@ class BambuMQTTClient:
         self._run_id_unresolved = False
         self._run_boundary_generation = 0
         self._print_lineage = str(uuid4())
+        self._layer_identity_revision = 0
+        self._layer_snapshot_lock = threading.Lock()
+        self._layer_snapshot = None
+        self._layer_frame_observation = None
         self._pending_start_state = None
         self._pending_start_id = None
         self._pending_start_total: int | None = None
@@ -2675,6 +2679,7 @@ class BambuMQTTClient:
         self._run_id_unresolved = prior._run_id_unresolved
         self._run_boundary_generation = prior._run_boundary_generation
         self._print_lineage = prior._print_lineage
+        self._layer_identity_revision = prior._layer_identity_revision
         self._pending_start_state = prior._pending_start_state
         self._pending_start_id = prior._pending_start_id
         self._pending_start_total = prior._pending_start_total
@@ -5839,6 +5844,7 @@ class BambuMQTTClient:
             self._retired_run_id = previous_run_id if observed_start and not current_run_id else None
         elif is_file_change:
             verdict = "file_change_unproven"
+            self._layer_identity_revision += 1
             self._run_id_unresolved = True
         elif not self._run_id_unresolved and current_run_id and self.state.state in ("RUNNING", "PAUSE"):
             self._last_known_run_id = current_run_id
@@ -5850,7 +5856,9 @@ class BambuMQTTClient:
             self._pending_start_state if observed_start else self._previous_gcode_state,
             self._run_boundary_generation,
             self._print_lineage,
+            self._layer_identity_revision,
         )
+        self._layer_frame_observation = observation
         if observed_start:
             self._pending_start_state = self._pending_start_id = None
         # First PAUSE is as much an in-flight run as RUNNING. Fence detectors
@@ -7650,8 +7658,25 @@ class BambuMQTTClient:
         if current_file:
             self._previous_gcode_file = current_file
 
+        # Publish only a completed frame. Physical callbacks above keep their
+        # established ordering and never execute under this lock.
+        from backend.app.services.layer_projection import LayerAddress, LayerSnapshot
+
+        snapshot = LayerSnapshot(
+            LayerAddress(self._print_lineage, self._run_boundary_generation, self._layer_identity_revision),
+            self.state.state,
+            self.state.layer_num,
+            self.state.total_layers,
+            self._run_id_unresolved,
+        )
+        with self._layer_snapshot_lock:
+            self._layer_snapshot = snapshot
         if self.on_state_change:
             self.on_state_change(self.state)
+
+    def get_layer_snapshot(self):
+        with self._layer_snapshot_lock:
+            return self._layer_snapshot
 
     def _probe_developer_mode(self):
         """Probe developer mode by sending an ams_filament_setting for the external slot.

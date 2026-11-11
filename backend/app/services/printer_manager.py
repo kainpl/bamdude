@@ -749,12 +749,12 @@ class PrinterManager:
         self._on_status_change: Callable[[int, PrinterState], None] | None = None
         self._on_ams_change: Callable[[int, list], None] | None = None
         self._on_spool_inserted: Callable[[int, dict], None] | None = None
-        self._on_layer_change: Callable[[int, int, int], None] | None = None
+        self._on_layer_change: Callable[[int, int, int, object], None] | None = None
         # #1349: fires when an AMS on the connected printer finishes a
         # drying cycle. Receives ``(printer_id, ams_id)``.
         self._on_drying_complete: Callable[[int, int], None] | None = None
         self._on_assignment_verified: Callable[[int, int, int, bool, dict], None] | None = None
-        self._on_tray_change: Callable[[int, int, int], None] | None = None
+        self._on_tray_change: Callable[[int, int, int, object], None] | None = None
         # Usage-journal events beyond tray changes (runout / spool_loaded).
         # Receives ``(printer_id, event, kind, global_tray_id, layer_num)``.
         self._on_usage_event: Callable[[int, str, str | None, int | None, int], None] | None = None
@@ -1192,7 +1192,7 @@ class PrinterManager:
     def set_spool_inserted_callback(self, callback: Callable[[int, dict], None]):
         self._on_spool_inserted = callback
 
-    def set_layer_change_callback(self, callback: Callable[[int, int, int], None]):
+    def set_layer_change_callback(self, callback: Callable[[int, int, int, object], None]):
         """Set callback for layer change events.
 
         Receives ``(printer_id, layer_num, previous_layer)``.
@@ -1216,7 +1216,7 @@ class PrinterManager:
         """
         self._on_assignment_verified = callback
 
-    def set_tray_change_callback(self, callback: Callable[[int, int, int], None]):
+    def set_tray_change_callback(self, callback: Callable[[int, int, int, object], None]):
         """Set callback for mid-print tray changes.
 
         Receives ``(printer_id, global_tray_id, layer_num)`` for every entry
@@ -1355,7 +1355,9 @@ class PrinterManager:
         def on_layer_change(layer_num: int, previous_layer: int):
             if self._on_layer_change:
                 self._schedule_for_client(
-                    printer_id, session_life, self._on_layer_change(printer_id, layer_num, previous_layer)
+                    printer_id,
+                    session_life,
+                    self._on_layer_change(printer_id, layer_num, previous_layer, client._layer_frame_observation),
                 )
 
         def on_drying_complete(ams_id: int):
@@ -2385,6 +2387,7 @@ def printer_state_to_dict(
     model: str | None = None,
     drying_targets: dict[int, dict] | None = None,
     repeat_available: bool = False,
+    layer_pair=None,
 ) -> dict:
     """Convert PrinterState to a JSON-serializable dict.
 
@@ -2396,6 +2399,9 @@ def printer_state_to_dict(
             (``{ams_id: {"filament": str, "temp": int}}``) from the
             BambuMQTTClient cache so the badge can display "PETG @ 65°C".
     """
+    from backend.app.services.layer_projection import resolve_layer_pair
+
+    layer_pair = layer_pair or resolve_layer_pair(printer_manager, printer_id, state)
     # Parse AMS data from raw_data
     ams_units = []
     vt_tray = []
@@ -2602,8 +2608,9 @@ def printer_state_to_dict(
         "gcode_file": state.gcode_file,
         "progress": state.progress,
         "remaining_time": state.remaining_time,
-        "layer_num": state.layer_num,
-        "total_layers": state.total_layers,
+        "layer_num": layer_pair.layer_num,
+        "total_layers": layer_pair.total_layers,
+        "total_layers_source": layer_pair.source,
         "temperatures": temperatures,
         # Same shape as the REST HMSErrorResponse — the HMS modal renders its
         # action buttons (and submits them with full_code/job_id) from whichever

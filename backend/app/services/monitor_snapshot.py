@@ -224,7 +224,11 @@ async def build_snapshot(
             tile.remaining_seconds = (
                 state.remaining_time * 60 if active and state.remaining_time and state.remaining_time > 0 else None
             )
-            tile.layer_num, tile.total_layers = state.layer_num, state.total_layers
+            from backend.app.services.layer_projection import resolve_layer_pair
+
+            layers = resolve_layer_pair(printer_manager, printer.id, state)
+            tile.layer_num, tile.total_layers = layers.layer_num, layers.total_layers
+            tile.total_layers_source = layers.source
             tile.temperatures = display_temperatures(state.temperatures, printer.model)
             # Active HMS already excludes muted entries. The frontend's current
             # filterKnownHMSErrors deliberately retains ALL remaining codes.

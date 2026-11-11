@@ -115,3 +115,27 @@ async def test_f17_failed_fresh_plate_parse_clears_old_cache_and_reserved_marker
     assert select_layer_total(row, 1) is None
     assert "plates" not in row.extra_data and "is_multi_plate" not in row.extra_data
     assert row.extra_data[MARKER]["plates"] == {}
+
+
+async def test_f17_rollback_keeps_the_committed_source_proof(db_session, printer_factory, storage, monkeypatch):
+    from copy import deepcopy
+
+    printer = await printer_factory()
+    row, _ = await dispatch(db_session, printer.id, storage)
+    before = deepcopy(row.extra_data[MARKER])
+    replacement = sliced(storage / "rollback.3mf", patched=True, hidden_header=True)
+    original_commit = db_session.commit
+    commits = 0
+
+    async def fail_publication():
+        nonlocal commits
+        commits += 1
+        if commits == 2:
+            raise RuntimeError("injected commit failure")
+        await original_commit()
+
+    monkeypatch.setattr(db_session, "commit", fail_publication)
+    assert not await ArchiveService(db_session).attach_3mf_to_archive(row.id, replacement, "rollback.3mf")
+    await db_session.refresh(row)
+    assert row.extra_data[MARKER] == before
+    assert select_layer_total(row, 1) == 693

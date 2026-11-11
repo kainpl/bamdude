@@ -169,11 +169,14 @@ async def get_metrics(
 
     # Layer progress
     lines.append("")
+    from backend.app.services.layer_projection import resolve_layer_pair
+
+    layer_pairs = {p.id: resolve_layer_pair(printer_manager, p.id, all_statuses.get(p.id)) for p in printers}
     lines.append("# HELP bamdude_print_layer_current Current layer number")
     lines.append("# TYPE bamdude_print_layer_current gauge")
     for printer in printers:
         status = all_statuses.get(printer.id)
-        layer = status.layer_num if status else 0
+        layer = layer_pairs[printer.id].layer_num
         labels = format_labels(
             printer_id=str(printer.id),
             printer_name=printer.name,
@@ -186,7 +189,7 @@ async def get_metrics(
     lines.append("# TYPE bamdude_print_layer_total gauge")
     for printer in printers:
         status = all_statuses.get(printer.id)
-        total = status.total_layers if status else 0
+        total = layer_pairs[printer.id].total_layers
         labels = format_labels(
             printer_id=str(printer.id),
             printer_name=printer.name,

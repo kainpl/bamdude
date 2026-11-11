@@ -2201,14 +2201,76 @@ def _fts_status_key(state: PrinterState) -> tuple:
     )
 
 
-async def on_printer_status_change(printer_id: int, state: PrinterState):
-    """Handle printer status changes - broadcast via WebSocket."""
-    # Before the dedup below: a printer whose interrupted-dispatch recheck waits for a fresh
-    # idle status gets it even when nothing on its card changes (post-rebuild I-R3).
-    from backend.app.services import interrupted_dispatch
+async def on_printer_layer_change(printer_id: int, layer_num: int, previous_layer: int, observation=None):
+    """Capture timelapse frame on layer change + first layer notification."""
+    from backend.app.services.layer_timelapse import on_layer_change as tl_layer_change
 
-    interrupted_dispatch.on_status(printer_id, state)
+    await tl_layer_change(printer_id, layer_num)
+    # After each await: a deletion of this printer record meanwhile ends the old session's work here
+    # -- the id may already name the next printer and its run (spec gh109-o1 r2 R6).
+    if not printer_manager.session_still_lives(printer_id):
+        return
 
+    # #1867 follow-on: bank a recent in-print frame so the FINISH-state
+    # finish-photo path (firmware that never emits stg_cur=22, e.g. A1 Mini)
+    # has a pre-swap image to fall back on instead of a live grab of the
+    # swapped plate. Layer-driven, so it freezes at the final object layer.
+    # Must sit after tl_layer_change (timelapse capture keeps priority) and
+    # before the first-layer block below, which returns early when the
+    # printer isn't RUNNING.
+    await _maybe_bank_inprint_frame(printer_id, layer_num)
+    if not printer_manager.session_still_lives(printer_id):
+        return
+
+    # Layer-triggered macros. Sits before the first-layer block below,
+    # which returns early when the printer isn't RUNNING.
+    from backend.app.services.macro_trigger import fire_layer_macros
+
+    await fire_layer_macros(printer_id, layer_num, previous_layer, async_session, printer_manager)
+    if not printer_manager.session_still_lives(printer_id):
+        return
+
+    # First-layer-complete notification (layer_num >= 2 means layer 1 is done).
+    # Gated on the printer actually PRINTING: some models (e.g. P1S) tick layer_num
+    # during pre-print calibration ~30 min early, which fired a bogus first-layer photo
+    # of an empty plate. Defer until state == RUNNING with no mc_print_sub_stage
+    # (calibration / prep) active, and only mark notified AFTER that check so a
+    # premature tick doesn't burn the one-shot. Widened to <=10 to tolerate the extra
+    # early ticks the gate now skips (#1837).
+    if 2 <= layer_num <= 10 and not _first_layer_notified.get(printer_id, False):
+        client = printer_manager.get_client(printer_id)
+        state = client.state if client else None
+        if not state or state.state != "RUNNING" or getattr(state, "mc_print_sub_stage", 0) not in (None, 0):
+            return
+        _first_layer_notified[printer_id] = True
+        from backend.app.services.layer_projection import capture_first_layer_total, first_layer_total_is_current
+
+        layer_text = capture_first_layer_total(printer_manager, printer_id, observation)
+        try:
+            async with async_session() as db:
+                from backend.app.models.printer import Printer
+
+                result = await db.execute(select(Printer).where(Printer.id == printer_id))
+                printer = result.scalar_one_or_none()
+                if not printer:
+                    return
+                printer_name = printer.name
+                filename = state.subtask_name or state.gcode_file or "Unknown"
+                total_layers = state.total_layers or 0
+
+                image_data = await _capture_snapshot_for_notification(printer_id, printer, logging.getLogger(__name__))
+                if not printer_manager.session_still_lives(printer_id):
+                    return
+                if first_layer_total_is_current(printer_manager, printer_id, layer_text):
+                    total_layers = layer_text[2]
+                await notification_service.on_first_layer_complete(
+                    printer_id, printer_name, filename, total_layers, db, image_data=image_data
+                )
+        except Exception as e:
+            logging.getLogger(__name__).warning("First layer notification failed: %s", e)
+
+
+def _printer_status_effect_key(state: PrinterState) -> str:
     # Only broadcast if something meaningful changed (reduce WebSocket spam)
     # Include rounded temperatures to detect meaningful temp changes (within 1 degree)
     temps = state.temperatures or {}
@@ -2216,22 +2278,6 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
     bed_temp = round(temps.get("bed", 0))
     nozzle_2_temp = round(temps.get("nozzle_2", 0)) if "nozzle_2" in temps else ""
     chamber_temp = round(temps.get("chamber", 0)) if "chamber" in temps else ""
-
-    # Auto-detect dual-nozzle printers from MQTT temperature data
-    if "nozzle_2" in temps and printer_id not in _nozzle_count_updated:
-        _nozzle_count_updated.add(printer_id)
-        # Update nozzle_count in database
-        async with async_session() as db:
-            from backend.app.models.printer import Printer
-
-            result = await db.execute(select(Printer).where(Printer.id == printer_id))
-            printer = result.scalar_one_or_none()
-            if printer and printer.nozzle_count != 2 and printer_manager.session_still_lives(printer_id):
-                printer.nozzle_count = 2
-                await db.commit()
-                logging.getLogger(__name__).info(
-                    f"Auto-detected dual-nozzle printer {printer_id}, updated nozzle_count=2"
-                )
 
     # Include target temps for heating phase detection
     bed_target = round(temps.get("bed_target", 0))
@@ -2284,7 +2330,7 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
         else None
     )
     fts_key = _fts_status_key(state)
-    status_key = (
+    return (
         f"{state.connected}:{state.state}:{state.progress}:{state.layer_num}:{state.total_layers}:"
         f"{nozzle_temp}:{bed_temp}:{nozzle_2_temp}:{chamber_temp}:"
         f"{state.stg_cur}:{bed_target}:{nozzle_target}:"
@@ -2326,6 +2372,34 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
         # fills up — moments nothing else in this key notices.
         f"{state.sdcard_state}:{state.has_timelapse_kit}:{sorted(state.timelapse_storage.items())}"
     )
+
+
+async def on_printer_status_change(printer_id: int, state: PrinterState):
+    """Handle printer status changes - broadcast via WebSocket."""
+    # Before the dedup below: a printer whose interrupted-dispatch recheck waits for a fresh
+    # idle status gets it even when nothing on its card changes (post-rebuild I-R3).
+    from backend.app.services import interrupted_dispatch
+
+    interrupted_dispatch.on_status(printer_id, state)
+
+    temps = state.temperatures or {}
+    # Auto-detect dual-nozzle printers from MQTT temperature data
+    if "nozzle_2" in temps and printer_id not in _nozzle_count_updated:
+        _nozzle_count_updated.add(printer_id)
+        # Update nozzle_count in database
+        async with async_session() as db:
+            from backend.app.models.printer import Printer
+
+            result = await db.execute(select(Printer).where(Printer.id == printer_id))
+            printer = result.scalar_one_or_none()
+            if printer and printer.nozzle_count != 2 and printer_manager.session_still_lives(printer_id):
+                printer.nozzle_count = 2
+                await db.commit()
+                logging.getLogger(__name__).info(
+                    f"Auto-detected dual-nozzle printer {printer_id}, updated nozzle_count=2"
+                )
+
+    status_key = _printer_status_effect_key(state)
 
     # A session of a deleted printer record stops here: what follows -- relay, pause edges, notifications,
     # the card -- addresses the printer by id, and the awaits above may have spanned the deletion (spec
@@ -2415,6 +2489,7 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
             pending.cancel()
 
     if _last_status_broadcast.get(printer_id) == status_key:
+        await _broadcast_printer_status_projection(printer_id, state)
         return  # No change, skip WebSocket broadcast
 
     _last_status_broadcast[printer_id] = status_key
@@ -2644,16 +2719,47 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
 
     if not printer_manager.session_still_lives(printer_id):
         return
-    await ws_manager.send_printer_status(
+    repeat_available = await _repeat_available_for(printer_id)
+    if printer_manager.session_still_lives(printer_id):
+        _projection_repeat_available[printer_id] = repeat_available
+        await _broadcast_printer_status_projection(printer_id, state)
+
+
+_last_projection_broadcast: dict[int, tuple] = {}
+_projection_repeat_available: dict[int, bool] = {}
+
+
+async def _broadcast_printer_status_projection(printer_id: int, state=None) -> None:
+    """Display only: never run MQTT relay, lifecycle edges or notifications."""
+    from backend.app.services.layer_projection import resolve_layer_pair
+
+    if not printer_manager.session_still_lives(printer_id):
+        return
+    if state is None:
+        state, _, _ = printer_manager.peek_status(printer_id)
+    if state is None:
+        return
+    pair = resolve_layer_pair(printer_manager, printer_id, state)
+    key = (_printer_status_effect_key(state), pair)
+    if _last_projection_broadcast.get(printer_id) == key:
+        return
+    payload = printer_state_to_dict(
+        state,
         printer_id,
-        printer_state_to_dict(
-            state,
-            printer_id,
-            printer_manager.get_model(printer_id),
-            printer_manager.get_drying_targets(printer_id),
-            repeat_available=await _repeat_available_for(printer_id),
-        ),
+        printer_manager.get_model(printer_id),
+        printer_manager.get_drying_targets(printer_id),
+        repeat_available=_projection_repeat_available.get(printer_id, False),
+        layer_pair=pair,
     )
+    _last_projection_broadcast[printer_id] = key
+    await ws_manager.send_printer_status(printer_id, payload)
+
+
+def _schedule_layer_projection(printer_id: int) -> None:
+    spawn_background_task(_broadcast_printer_status_projection(printer_id), name=f"layer-projection-{printer_id}")
+
+
+printer_manager._layer_projection_callback = _schedule_layer_projection
 
 
 async def _repeat_available_for(printer_id: int) -> bool:
@@ -4088,7 +4194,7 @@ def _load_objects_from_archive(archive, printer_id: int, logger, *, is_retrigger
 
 
 def _bind_print_file_analysis_context(
-    printer_id: int, archive, *, expected_generation: int | None = None, origin: str = "observed"
+    printer_id: int, archive, *, expected_generation: int | None = None, origin: str = "observed", observation=None
 ) -> None:
     """Bind one manager-owned analysis context to the print archive.
 
@@ -4129,6 +4235,16 @@ def _bind_print_file_analysis_context(
         # evidence a real not-yet-connected printer supplies.
         client_generation=getattr(printer_manager, "current_client_generation", lambda _printer_id: None)(printer_id),
         origin=origin,
+    )
+    from backend.app.services.layer_projection import bind_layer_grant
+
+    bind_layer_grant(
+        printer_manager,
+        printer_id,
+        archive,
+        expected_generation=expected_generation,
+        origin=origin,
+        observation=observation,
     )
     # The usage journal's runout-tail facts of the print the client is on go to this
     # archive (post-rebuild F-R2) — accounting only, it gates nothing.
@@ -4187,28 +4303,9 @@ async def _replay_expired_pending_terminal(printer_id: int, sequence: int) -> No
 
 def _notify_print_file_analysis_source_ready(printer_id: int, archive) -> None:
     """Tell the bound live print that an attached archive file is available."""
-    from backend.app.services.print_run_binding import current_print_run
+    from backend.app.services.layer_projection import notify_current_print_source_ready
 
-    run = current_print_run(printer_manager, printer_id)
-    if (
-        run is not None
-        and run.archive_id == archive.id
-        and (run.archive_identity is not None and run.archive_identity != getattr(archive, "recovery_identity", None))
-    ):
-        return
-    relative_path = getattr(archive, "file_path", None)
-    if not relative_path:
-        return
-    from backend.app.services.print_file_analysis import notify_print_file_analysis_source_ready
-
-    notify_print_file_analysis_source_ready(
-        printer_manager,
-        printer_id,
-        archive.id,
-        app_settings.base_dir / relative_path,
-        getattr(archive, "plate_index", None),
-        expected_identity=getattr(archive, "recovery_identity", None),
-    )
+    notify_current_print_source_ready(printer_manager, printer_id, archive)
 
 
 def _name_after_plate_reject(subtask_name: str, corrected_subtask: str | None, filename: str | None) -> str:
@@ -4481,7 +4578,11 @@ async def on_print_start(printer_id: int, data: dict):
                     ):
                         return
                     _bind_print_file_analysis_context(
-                        printer_id, archive, expected_generation=admission.generation, origin="exact_subtask"
+                        printer_id,
+                        archive,
+                        expected_generation=admission.generation,
+                        origin="exact_subtask",
+                        observation=data.get("_print_observation"),
                     )
                     _load_objects_from_archive(archive, printer_id, logging.getLogger(__name__), is_retrigger=True)
                     admission.phase = "processed"
@@ -4869,7 +4970,11 @@ async def _on_print_start_impl(printer_id: int, data: dict):
 
                 # Our own dispatch, registered by the dispatcher itself: a proven run.
                 _bind_print_file_analysis_context(
-                    printer_id, archive, expected_generation=start_generation, origin="dispatch"
+                    printer_id,
+                    archive,
+                    expected_generation=start_generation,
+                    origin="dispatch",
+                    observation=data.get("_print_observation"),
                 )
 
                 # Track as active print
@@ -5164,7 +5269,13 @@ async def _on_print_start_impl(printer_id: int, data: dict):
             return
         await db.refresh(archive)
         logger.info("Created archive %s for %s at print start (3MF to follow)", archive.id, print_name)
-        _bind_print_file_analysis_context(printer_id, archive, expected_generation=start_generation, origin="external")
+        _bind_print_file_analysis_context(
+            printer_id,
+            archive,
+            expected_generation=start_generation,
+            origin="external",
+            observation=data.get("_print_observation"),
+        )
 
         # Prefer the colours of the built-in-inventory spools loaded on the
         # used slots over the raw MQTT tray colours. Applied again after the
@@ -11393,73 +11504,7 @@ async def _application_lifespan(app: FastAPI):
     printer_manager.set_ams_change_callback(on_ams_change)
     printer_manager.set_spool_inserted_callback(on_stock_spool_inserted)
 
-    # Layer change callback for external camera timelapse
-    async def on_layer_change(printer_id: int, layer_num: int, previous_layer: int):
-        """Capture timelapse frame on layer change + first layer notification."""
-        from backend.app.services.layer_timelapse import on_layer_change as tl_layer_change
-
-        await tl_layer_change(printer_id, layer_num)
-        # After each await: a deletion of this printer record meanwhile ends the old session's work here
-        # -- the id may already name the next printer and its run (spec gh109-o1 r2 R6).
-        if not printer_manager.session_still_lives(printer_id):
-            return
-
-        # #1867 follow-on: bank a recent in-print frame so the FINISH-state
-        # finish-photo path (firmware that never emits stg_cur=22, e.g. A1 Mini)
-        # has a pre-swap image to fall back on instead of a live grab of the
-        # swapped plate. Layer-driven, so it freezes at the final object layer.
-        # Must sit after tl_layer_change (timelapse capture keeps priority) and
-        # before the first-layer block below, which returns early when the
-        # printer isn't RUNNING.
-        await _maybe_bank_inprint_frame(printer_id, layer_num)
-        if not printer_manager.session_still_lives(printer_id):
-            return
-
-        # Layer-triggered macros. Sits before the first-layer block below,
-        # which returns early when the printer isn't RUNNING.
-        from backend.app.services.macro_trigger import fire_layer_macros
-
-        await fire_layer_macros(printer_id, layer_num, previous_layer, async_session, printer_manager)
-        if not printer_manager.session_still_lives(printer_id):
-            return
-
-        # First-layer-complete notification (layer_num >= 2 means layer 1 is done).
-        # Gated on the printer actually PRINTING: some models (e.g. P1S) tick layer_num
-        # during pre-print calibration ~30 min early, which fired a bogus first-layer photo
-        # of an empty plate. Defer until state == RUNNING with no mc_print_sub_stage
-        # (calibration / prep) active, and only mark notified AFTER that check so a
-        # premature tick doesn't burn the one-shot. Widened to <=10 to tolerate the extra
-        # early ticks the gate now skips (#1837).
-        if 2 <= layer_num <= 10 and not _first_layer_notified.get(printer_id, False):
-            client = printer_manager.get_client(printer_id)
-            state = client.state if client else None
-            if not state or state.state != "RUNNING" or getattr(state, "mc_print_sub_stage", 0) not in (None, 0):
-                return
-            _first_layer_notified[printer_id] = True
-            try:
-                async with async_session() as db:
-                    from backend.app.models.printer import Printer
-
-                    result = await db.execute(select(Printer).where(Printer.id == printer_id))
-                    printer = result.scalar_one_or_none()
-                    if not printer:
-                        return
-                    printer_name = printer.name
-                    filename = state.subtask_name or state.gcode_file or "Unknown"
-                    total_layers = state.total_layers or 0
-
-                    image_data = await _capture_snapshot_for_notification(
-                        printer_id, printer, logging.getLogger(__name__)
-                    )
-                    if not printer_manager.session_still_lives(printer_id):
-                        return
-                    await notification_service.on_first_layer_complete(
-                        printer_id, printer_name, filename, total_layers, db, image_data=image_data
-                    )
-            except Exception as e:
-                logging.getLogger(__name__).warning("First layer notification failed: %s", e)
-
-    printer_manager.set_layer_change_callback(on_layer_change)
+    printer_manager.set_layer_change_callback(on_printer_layer_change)
 
     # #1349: smart-plug auto-off after AMS drying completes. The callback
     # fires once per AMS unit on the falling edge of ``dry_time``

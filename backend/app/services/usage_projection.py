@@ -126,11 +126,45 @@ async def compute_usage_projection(db: AsyncSession, printer_id: int, printer_ma
         _record_projection("inactive")
         return _INACTIVE
 
+    from backend.app.services.layer_projection import current_layer_grant, read_layer_snapshot, resolve_layer_pair
+    from backend.app.services.print_run_binding import current_print_run, effect_generation
+
+    def identity(snapshot):
+        run = current_print_run(printer_manager, printer_id)
+        return (
+            (run.archive_id, run.archive_identity, run.effect_generation) if run else None,
+            effect_generation(printer_manager, printer_id),
+            current_layer_grant(printer_manager, printer_id),
+            snapshot.address if snapshot else None,
+            snapshot.unproven if snapshot else False,
+        )
+
+    captured_identity = identity(read_layer_snapshot(printer_manager, printer_id))
+
+    def fresh_pair():
+        live = printer_manager.get_status(printer_id)
+        snapshot = read_layer_snapshot(printer_manager, printer_id)
+        if (
+            identity(snapshot) != captured_identity
+            or captured_identity[-1]
+            or live is None
+            or live.state not in ("RUNNING", "PAUSE")
+        ):
+            return None
+        return resolve_layer_pair(printer_manager, printer_id, live, snapshot=snapshot)
+
     archive_id = await active_archive_id(db, printer_id)
     if archive_id is None:
         _record_projection("inactive")
         return _INACTIVE
     archive = (await db.execute(select(PrintArchive).where(PrintArchive.id == archive_id))).scalar_one_or_none()
+    pair = fresh_pair()
+    if pair is None or (
+        captured_identity[0] is not None
+        and captured_identity[0][:2] != (archive_id, getattr(archive, "recovery_identity", None))
+    ):
+        _record_projection("inactive")
+        return _INACTIVE
     if archive is None or not archive.file_path:
         # No 3MF yet (external print mid-download) — nothing to project from.
         _record_projection("waiting_source")
@@ -138,14 +172,13 @@ async def compute_usage_projection(db: AsyncSession, printer_id: int, printer_ma
             "active": True,
             "archive_id": archive_id,
             "print_name": archive.print_name if archive else None,
-            "layer_num": getattr(state, "layer_num", 0) or 0,
-            "total_layers": getattr(state, "total_layers", 0) or 0,
+            "layer_num": pair.layer_num,
+            "total_layers": pair.total_layers,
+            "total_layers_source": pair.source,
             "slots": [],
         }
 
     file_path = app_settings.base_dir / archive.file_path
-    current_layer = getattr(state, "layer_num", 0) or 0
-    total_layers = getattr(state, "total_layers", 0) or 0
 
     # The worker can spend seconds on a large archive. The read-only archive
     # lookup above is complete, so return this request's DB connection before
@@ -175,6 +208,14 @@ async def compute_usage_projection(db: AsyncSession, printer_id: int, printer_ma
     ):
         _record_projection("inactive")
         return _INACTIVE
+    pair = fresh_pair()
+    if pair is None:
+        _record_projection("inactive")
+        return _INACTIVE
+    current_layer, total_layers = pair.layer_num, pair.total_layers
+    contexts = getattr(printer_manager, "_print_file_analysis_contexts", {})
+    analysis_context = contexts.get(printer_id) if isinstance(contexts, dict) else None
+    analysis_source = analysis_context.source if analysis_context else None
     if analysis is None:
         _record_projection("waiting_analysis")
         return {
@@ -183,6 +224,7 @@ async def compute_usage_projection(db: AsyncSession, printer_id: int, printer_ma
             "print_name": archive.print_name,
             "layer_num": current_layer,
             "total_layers": total_layers,
+            "total_layers_source": pair.source,
             "slots": [],
         }
     filament_usage = analysis.filament_usage
@@ -213,6 +255,20 @@ async def compute_usage_projection(db: AsyncSession, printer_id: int, printer_ma
     if not slot_to_tray:
         raw = getattr(state, "raw_data", None) or {}
         slot_to_tray = _decode_mqtt_mapping(raw.get("mapping"))
+
+    # All database/analysis awaits are behind us. A source-ready or run change
+    # during any one of them invalidates the old analysis, not just its total.
+    pair = fresh_pair()
+    contexts = getattr(printer_manager, "_print_file_analysis_contexts", {})
+    current_context = contexts.get(printer_id) if isinstance(contexts, dict) else None
+    if (
+        pair is None
+        or current_context is not analysis_context
+        or (current_context and current_context.source != analysis_source)
+    ):
+        _record_projection("inactive")
+        return _INACTIVE
+    current_layer, total_layers = pair.layer_num, pair.total_layers
 
     slots = []
     for usage in filament_usage:
@@ -276,5 +332,6 @@ async def compute_usage_projection(db: AsyncSession, printer_id: int, printer_ma
         "print_name": archive.print_name,
         "layer_num": current_layer,
         "total_layers": total_layers,
+        "total_layers_source": pair.source,
         "slots": slots,
     }

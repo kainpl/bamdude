@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+- When a printer omits its layer total, live views and filament estimates can use the selected plate's verified archive metadata after an accepted print start. Late file downloads, including retries, update the display without waiting for another layer or periodically hiding the count. The first-layer notification can use the same verified total; photo timing, runout detection and final accounting retain their existing raw telemetry. Cold reconnect recovery and older archives without source proof may still show an unknown total.
+
 - Preparation messages that still identify the previous print now block later layer totals without an ID until a new print ID arrives or preparation ends. This prevents the old print's layer count from reaching the next print's photos and tracking.
 
 - Live printer status now updates when only the total layer count changes, including when it becomes unknown again.

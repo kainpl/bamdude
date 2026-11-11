@@ -1,7 +1,10 @@
-"""Run-owned archive metadata must not migrate into newly sliced artifacts."""
+"""Run/source-owned archive metadata must not migrate into newly sliced artifacts."""
+
+from backend.app.services.layer_source import MARKER as LAYER_SOURCE_MARKER
 
 RUN_METADATA_KEYS = frozenset(
     {
+        LAYER_SOURCE_MARKER,
         "dispatch_intent",
         "bamdude_terminal_acceptance",
         "bamdude_terminal_effects",

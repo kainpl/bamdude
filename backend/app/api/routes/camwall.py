@@ -73,19 +73,24 @@ async def list_camwall_printers(
             "remaining_time": None,
             "layer_num": None,
             "total_layers": None,
+            "total_layers_source": "unknown",
             # Codes only — enough for the client to run the same
             # filterKnownHMSErrors() it uses on the authenticated wall, so the
             # error chip means the same thing in both modes.
             "hms_errors": [],
         }
         if state is not None:
+            from backend.app.services.layer_projection import resolve_layer_pair
+
+            layers = resolve_layer_pair(printer_manager, printer.id, state)
             entry.update(
                 {
                     "state": state.state,
                     "progress": state.progress,
                     "remaining_time": state.remaining_time,
-                    "layer_num": state.layer_num,
-                    "total_layers": state.total_layers,
+                    "layer_num": layers.layer_num,
+                    "total_layers": layers.total_layers,
+                    "total_layers_source": layers.source,
                     "hms_errors": [
                         {
                             "code": e.code,

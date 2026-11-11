@@ -1583,6 +1583,9 @@ async def _build_printer_status(
             else archive_ids.get(printer_id)
         )
 
+    from backend.app.services.layer_projection import resolve_layer_pair
+
+    layers = resolve_layer_pair(printer_manager, printer_id, state)
     return PrinterStatus(
         id=printer_id,
         name=printer.name,
@@ -1596,8 +1599,9 @@ async def _build_printer_status(
         gcode_file=state.gcode_file,
         progress=state.progress,
         remaining_time=state.remaining_time,
-        layer_num=state.layer_num,
-        total_layers=state.total_layers,
+        layer_num=layers.layer_num,
+        total_layers=layers.total_layers,
+        total_layers_source=layers.source,
         temperatures=temperatures,
         cover_url=cover_url,
         hms_errors=hms_errors,
@@ -1758,11 +1762,15 @@ async def get_overlay_status(
             "remaining_time": None,
             "layer_num": None,
             "total_layers": None,
+            "total_layers_source": "unknown",
             "stg_cur_name": None,
             "temperatures": {},
             "time_format": time_format,
         }
 
+    from backend.app.services.layer_projection import resolve_layer_pair
+
+    layers = resolve_layer_pair(printer_manager, printer_id, state)
     return {
         "id": printer_id,
         "name": printer.name,
@@ -1773,8 +1781,9 @@ async def get_overlay_status(
         "gcode_file": state.gcode_file,
         "progress": state.progress,
         "remaining_time": state.remaining_time,
-        "layer_num": state.layer_num,
-        "total_layers": state.total_layers,
+        "layer_num": layers.layer_num,
+        "total_layers": layers.total_layers,
+        "total_layers_source": layers.source,
         "stg_cur_name": get_derived_status_name(state, printer.model),
         # Nozzle / bed / chamber readings for the overlay's temperature fields.
         # Filtered rather than passed through — see display_temperatures.

@@ -61,6 +61,7 @@ class MonitorPrinter(BaseModel):
     remaining_seconds: int | None = None
     layer_num: int | None = None
     total_layers: int | None = None
+    total_layers_source: Literal["mqtt", "file", "unknown"] = "unknown"
     temperatures: dict[str, float] = Field(default_factory=dict)
     status_received_at: MonitorTime | None = None
     source_stale: bool = False
