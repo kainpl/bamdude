@@ -2245,8 +2245,8 @@ async def on_printer_layer_change(printer_id: int, layer_num: int, previous_laye
         _first_layer_notified[printer_id] = True
         from backend.app.services.layer_projection import capture_first_layer_total, first_layer_total_is_current
 
-        layer_text = capture_first_layer_total(printer_manager, printer_id, observation)
         try:
+            layer_text = capture_first_layer_total(printer_manager, printer_id, observation)
             async with async_session() as db:
                 from backend.app.models.printer import Printer
 
@@ -2722,14 +2722,16 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
     repeat_available = await _repeat_available_for(printer_id)
     if printer_manager.session_still_lives(printer_id):
         _projection_repeat_available[printer_id] = repeat_available
-        await _broadcast_printer_status_projection(printer_id, state)
+        # A display-only publication may have peeked this frame with the old
+        # Repeat value. It must not consume this real status's fresh payload.
+        await _broadcast_printer_status_projection(printer_id, state, deduplicate=False)
 
 
 _last_projection_broadcast: dict[int, tuple] = {}
 _projection_repeat_available: dict[int, bool] = {}
 
 
-async def _broadcast_printer_status_projection(printer_id: int, state=None) -> None:
+async def _broadcast_printer_status_projection(printer_id: int, state=None, *, deduplicate: bool = True) -> None:
     """Display only: never run MQTT relay, lifecycle edges or notifications."""
     from backend.app.services.layer_projection import resolve_layer_pair
 
@@ -2741,7 +2743,7 @@ async def _broadcast_printer_status_projection(printer_id: int, state=None) -> N
         return
     pair = resolve_layer_pair(printer_manager, printer_id, state)
     key = (_printer_status_effect_key(state), pair)
-    if _last_projection_broadcast.get(printer_id) == key:
+    if deduplicate and _last_projection_broadcast.get(printer_id) == key:
         return
     payload = printer_state_to_dict(
         state,

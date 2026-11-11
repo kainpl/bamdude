@@ -66,6 +66,7 @@ def rig(monkeypatch):
     m._clients[3] = c
     monkeypatch.setattr(main, "printer_manager", m)
     monkeypatch.setattr(main, "_last_projection_broadcast", {})
+    monkeypatch.setattr(main, "_projection_repeat_available", {})
     monkeypatch.setattr(main, "_last_status_broadcast", {})
     for name in ("_last_printer_state", "_last_printer_state_generation", "_printer_last_connected"):
         monkeypatch.setattr(main, name, {})
@@ -440,3 +441,54 @@ def test_f21_file_total_does_not_trigger_last_layer_photo_or_enter_terminal_acco
     data = terminal.call_args.args[0]
     assert data["terminal_total_layers"] == 0
     assert rig.c.state.total_layers == 0
+
+
+async def test_ri2_stable_unproven_phase_preserves_raw_usage(rig, monkeypatch):
+    """A stable unproven file still permits the existing raw live estimate."""
+    from backend.app.services import print_usage_journal, usage_projection
+
+    rig.a.file_path = ""
+    rig.a.print_name = "fixture"
+    push(rig.c, layer_num=14, total_layer_num=700)
+    monkeypatch.setattr(print_usage_journal, "active_archive_id", AsyncMock(return_value=rig.a.id))
+    db = AsyncMock()
+    db.execute.return_value = MagicMock(scalar_one_or_none=lambda: rig.a)
+
+    proven = await usage_projection.compute_usage_projection(db, 3, rig.m)
+    assert proven["active"] is True and proven["total_layers"] == 700
+
+    push(rig.c, gcode_file="other.gcode", layer_num=15)  # file_change_unproven, raw total still 700
+    assert rig.c._run_id_unresolved is True
+    assert resolve_layer_pair(rig.m, 3) == LayerPair(15, 700, "mqtt")  # display: raw pair as before
+
+    unproven = await usage_projection.compute_usage_projection(db, 3, rig.m)
+    assert unproven["active"] is True
+    assert (unproven["layer_num"], unproven["total_layers"], unproven["total_layers_source"]) == (15, 700, "mqtt")
+
+
+async def test_ri1_real_status_sends_fresh_repeat_after_display_publication(rig, monkeypatch):
+    """A display-only send must not consume a real status's fresh Repeat value."""
+    send = AsyncMock()
+    monkeypatch.setattr(main.ws_manager, "send_printer_status", send)
+    repeat = AsyncMock(return_value=False)
+    monkeypatch.setattr(main, "_repeat_available_for", repeat)
+
+    await main.on_printer_status_change(3, rig.c.state)
+    assert send.await_count == 1 and send.await_args.args[1]["repeat_available"] is False
+
+    # The MQTT thread applies the next frame; before its status callback runs,
+    # a display publication (grant bind/clear, source-ready) peeks that state.
+    push(rig.c, mc_percent=50)
+    await main._broadcast_printer_status_projection(3)
+    assert send.await_count == 2 and send.await_args.args[1]["repeat_available"] is False  # cached
+
+    # Meanwhile the plate gate armed: the real status computes True ...
+    repeat.return_value = True
+    await main.on_printer_status_change(3, rig.c.state)
+    assert repeat.await_count == 2
+    # The real payload bypasses display-only dedup.
+    assert send.await_count == 3
+    assert send.await_args.args[1]["repeat_available"] is True
+    assert main._projection_repeat_available[3] is True
+    await main._broadcast_printer_status_projection(3)
+    assert send.await_count == 3  # unchanged display-only publications still deduplicate

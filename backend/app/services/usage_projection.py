@@ -144,12 +144,7 @@ async def compute_usage_projection(db: AsyncSession, printer_id: int, printer_ma
     def fresh_pair():
         live = printer_manager.get_status(printer_id)
         snapshot = read_layer_snapshot(printer_manager, printer_id)
-        if (
-            identity(snapshot) != captured_identity
-            or captured_identity[-1]
-            or live is None
-            or live.state not in ("RUNNING", "PAUSE")
-        ):
+        if identity(snapshot) != captured_identity or live is None or live.state not in ("RUNNING", "PAUSE"):
             return None
         return resolve_layer_pair(printer_manager, printer_id, live, snapshot=snapshot)
 

@@ -89,6 +89,21 @@ async def test_f01_f19_f22_all_surfaces_use_the_same_file_pair(live, db_session,
     assert c.state.total_layers == 0
 
 
+@pytest.mark.parametrize("state", ["RUNNING", "PAUSE"])
+async def test_ri2_stable_unproven_file_retains_raw_filament_estimate(live, db_session, state):
+    p, _, m, c, _ = live
+    push(c, gcode_file="unproven.gcode", layer_num=15, total_layer_num=693)
+    push(c, gcode_state=state)
+    assert c._run_id_unresolved is True
+    assert resolve_layer_pair(m, p.id).source == "mqtt"
+
+    usage = await compute_usage_projection(db_session, p.id, m)
+
+    assert usage["active"] is True
+    assert (usage["layer_num"], usage["total_layers"], usage["total_layers_source"]) == (15, 693, "mqtt")
+    assert usage["slots"][0]["consumed_g"] == 150
+
+
 @pytest.mark.parametrize("mutation", ["source", "unproven", "boundary", "effect", "layer_only"])
 async def test_f20_usage_rechecks_after_last_database_await(live, db_session, monkeypatch, mutation):
     from backend.app.services import print_usage_journal
