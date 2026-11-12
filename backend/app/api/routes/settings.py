@@ -1287,10 +1287,16 @@ async def _restore_backup(file: UploadFile, db: AsyncSession):
             await init_db()
             await mcp_runtime.reload(after_restore=True)
             logger.info("Restore complete - restart required")
+            from backend.app.i18n.api_errors import current_language, translate_sentence
+
             return {
                 "success": True,
                 "message": (
-                    "Backup restored successfully. Please restart BamDude for changes to take effect. "
+                    translate_sentence(
+                        "Backup restored successfully. Please restart BamDude for changes to take effect.",
+                        current_language(),
+                    )
+                    + " "
                     + drain_warning(vp_drain)
                 ).strip(),
             }

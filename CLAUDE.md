@@ -98,6 +98,11 @@ uploads. A replacement waits for predecessor proof and the latest configuration.
 Git goes from VP proof to its categories; ZIP retains its other quiesce/fence
 contracts. Both use the existing operation guard; scheduled local busy is a
 retry, not failure. VP drain does not make physical-print writers quiet.
+Exited business errors and completed failed syncs are not pending I/O. Finish
+independent idle teardown before reporting failure; retain an explicit unproven
+owner rather than a failed retirement task that blocks unrelated VPs. Pending
+roots permit retry, completed unproven roots require restart. Delete reserves
+the VP ID through commit and retirement proof, cleaning its uploads before reuse.
 Vault: `40-invariants/inv-vp-retirement-is-restore-owned.md`.
 
 **Git metadata restore cannot claim a different physical print.** Archives match

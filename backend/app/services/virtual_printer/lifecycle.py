@@ -1,6 +1,7 @@
 """VP-local ownership. A caller timeout never cancels accepted local work."""
 
 import asyncio
+import logging
 from contextlib import contextmanager
 
 DRAIN_TIMEOUT = 30.0
@@ -10,16 +11,40 @@ VP_DRAIN_MESSAGE = (
     "Virtual printer work has not stopped. Wait for accepted uploads to finish, "
     "then retry in this process. Restart after restoring, or to abandon this attempt."
 )
+VP_RESTART_MESSAGE = "Virtual printer cleanup could not be confirmed. Restart BamDude before restoring."
 
 
 class VPDrainRefused(RuntimeError):
     def __init__(self, reason="pending"):
-        super().__init__(VP_DRAIN_MESSAGE)
+        from backend.app.i18n.api_errors import current_language, translate_sentence
+
+        super().__init__(
+            translate_sentence(VP_DRAIN_MESSAGE if reason == "pending" else VP_RESTART_MESSAGE, current_language())
+        )
         self.reason = reason
 
 
 class AdmissionClosed(RuntimeError):
     pass
+
+
+class Teardown:
+    """Finish independent cleanup steps before reporting an unproven owner."""
+
+    def __init__(self):
+        self.errors = []
+
+    async def run(self, operation):
+        try:
+            await operation
+            return True
+        except (Exception, asyncio.CancelledError) as exc:
+            self.errors.append(exc)
+            return False
+
+    def finish(self):
+        if self.errors:
+            raise VPDrainRefused("cleanup_failed") from self.errors[0]
 
 
 def restore_required() -> bool:
@@ -93,7 +118,6 @@ async def close_writer(writer):
 class Activities:
     def __init__(self):
         self.closing = False
-        self.failed = False
         self._business = 0
         self._quiet = asyncio.Event()
         self._quiet.set()
@@ -110,8 +134,8 @@ class Activities:
         self._quiet.clear()
         try:
             yield
-        except BaseException:
-            self.failed = True
+        except Exception:
+            logging.getLogger(__name__).exception("VP activity ended with an error")
             raise
         finally:
             self._business -= 1
@@ -120,8 +144,6 @@ class Activities:
 
     async def join(self):
         await self._quiet.wait()
-        if self.failed:
-            raise VPDrainRefused("business_failed")
 
 
 class Connections:

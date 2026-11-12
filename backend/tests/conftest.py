@@ -414,7 +414,7 @@ def _fresh_vp_restore_generation(monkeypatch, data_dir_isolation):
     monkeypatch.setattr(farm_startup_guard, "restart_required", False)
     for attr in ("_sync_task", "_drain_task"):
         monkeypatch.setattr(manager, attr, None)
-    for attr in ("_instances", "_retiring", "_starts"):
+    for attr in ("_instances", "_retiring", "_starts", "_unproven", "_deletions"):
         monkeypatch.setattr(manager, attr, {})
     for attr in ("_camera_tasks", "_drain_instances"):
         monkeypatch.setattr(manager, attr, set())

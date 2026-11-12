@@ -904,10 +904,16 @@ class GitRestoreService:
                         log.error_message = "Some items could not be restored — see the restore result for detail"
                     await db.commit()
 
+                    from backend.app.i18n.api_errors import current_language, translate_sentence
+
                     return {
                         "success": True,
                         "message": (
-                            f"Restored {total_restored} item(s) from {resolved[:7]} " + drain_warning(drain, git=True)
+                            translate_sentence("Restored {} item(s) from {}", current_language()).format(
+                                total_restored, resolved[:7]
+                            )
+                            + " "
+                            + drain_warning(drain, git=True)
                         ).strip(),
                         "log_id": log_id,
                         "ref": resolved,

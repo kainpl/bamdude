@@ -1215,5 +1215,8 @@
   "«{}»: only {} can be assembled": "«{}»: зібрати можна лише {}",
   "«{}»: only {} can be issued": "«{}»: видати можна лише {}",
   "«{}»: only {} can be received": "«{}»: оприбуткувати можна лише {}",
-  "«{}»: only {} can be written off": "«{}»: списати можна лише {}"
+  "«{}»: only {} can be written off": "«{}»: списати можна лише {}",
+  "Backup restored successfully. Please restart BamDude for changes to take effect.": "Резервну копію відновлено. Перезапустіть BamDude, щоб застосувати зміни.",
+  "Restored {} item(s) from {}": "Відновлено {} записів із {}",
+  "Virtual printer cleanup could not be confirmed. Restart BamDude before restoring.": "Не вдалося підтвердити зупинку віртуального принтера. Перезапустіть BamDude перед відновленням."
 }

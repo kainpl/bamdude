@@ -1268,6 +1268,10 @@ class SimpleMQTTServer:
                 )
                 return
 
+            if not isinstance(data, dict):
+                logger.debug("Ignoring MQTT publish with a non-object JSON root")
+                return
+
             # Record sequence_id → this client so a bridge-forwarded response
             # routes back only to the slicer that issued the command (V5).
             self._record_pending_request(data, client_id)

@@ -609,30 +609,17 @@ async def delete_virtual_printer(
 
     vp_name = vp.name
 
-    # Stop instance if running
-    await virtual_printer_manager.remove_instance(vp_id)
-
-    # Delete from DB
-    await db.execute(sql_delete(VirtualPrinter).where(VirtualPrinter.id == vp_id))
-    await db.commit()
+    deletion = virtual_printer_manager.begin_delete(vp_id)
+    try:
+        await virtual_printer_manager.remove_instance(vp_id)
+        await db.execute(sql_delete(VirtualPrinter).where(VirtualPrinter.id == vp_id))
+        await db.commit()
+    except BaseException:
+        virtual_printer_manager.finish_delete(vp_id, deletion, committed=False)
+        raise
+    virtual_printer_manager.finish_delete(vp_id, deletion, committed=True)
 
     logger.info("Deleted virtual printer: %s (id=%d)", vp_name, vp_id)
-
-    # Remove the VP's on-disk upload dir (uploads/<vp_id>) — the DB row is gone
-    # so any leftover cache/temp files there are orphaned and would accumulate
-    # across create/delete churn. Done after the commit so a crash between only
-    # leaves orphan files (harmless, swept by prune scripts), never an orphan DB
-    # row (upstream Bambuddy v0.2.4.5).
-    try:
-        upload_dir = virtual_printer_manager._base_dir / "uploads" / str(vp_id)
-        from backend.app.services.virtual_printer.lifecycle import restore_required
-
-        if not restore_required() and upload_dir.exists() and not virtual_printer_manager.has_owned_instance(vp_id):
-            import shutil
-
-            shutil.rmtree(upload_dir, ignore_errors=True)
-    except Exception as e:
-        logger.error("Failed to remove upload dir for VP %d: %s", vp_id, e)
 
     # Resync remaining services
     try:

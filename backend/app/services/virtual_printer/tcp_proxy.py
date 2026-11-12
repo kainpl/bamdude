@@ -21,7 +21,15 @@ import uuid
 from collections.abc import Callable
 from pathlib import Path
 
-from .lifecycle import TLS_CLOSE_GRACE, TLS_HANDSHAKE_TIMEOUT, Activities, Connections, VPDrainRefused, close_writer
+from .lifecycle import (
+    TLS_CLOSE_GRACE,
+    TLS_HANDSHAKE_TIMEOUT,
+    Activities,
+    Connections,
+    Teardown,
+    VPDrainRefused,
+    close_writer,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -333,7 +341,6 @@ class TLSProxy:
                     self.target_host,
                     self.target_port,
                     ssl=self._client_ssl_context,
-                    ssl_handshake_timeout=TLS_HANDSHAKE_TIMEOUT,
                     ssl_shutdown_timeout=TLS_CLOSE_GRACE,
                 ),
                 timeout=10.0,
@@ -1203,6 +1210,8 @@ class SlicerProxyManager:
             )
         except Exception as exc:
             logger.warning("Proxy camera worker unavailable: %s", type(exc).__name__)
+            if self.activities.closed:
+                raise
 
     def interruptions(self):
         result = {"probe": self.connections.cuts}
@@ -1240,8 +1249,9 @@ class SlicerProxyManager:
     async def _stop_owned(self):
         if self._starting:
             await self._setup_done.wait()
+        cleanup = Teardown()
         if self._camera_task is not None:
-            await self._camera_task
+            await cleanup.run(self._camera_task)
         self.close_admission()
         children = []
         for attr, category in (
@@ -1256,13 +1266,22 @@ class SlicerProxyManager:
                 children.append((child, category))
         for attr, category in (("_aux_proxies", "aux"), ("_bind_proxies", "bind"), ("_ftp_data_proxies", "ftp_data")):
             children.extend((child, category) for child in getattr(self, attr))
-        await asyncio.gather(*(child.stop() for child, _ in children))
+        for child, _ in children:
+            await cleanup.run(child.stop())
         for child, category in children:
             self.cuts[category] = self.cuts.get(category, 0) + child.connections.cuts
-        await self.connections.disconnect()
+        await cleanup.run(self.connections.disconnect())
         self.cuts["probe"] = self.connections.cuts
         for server in self._probe_servers:
-            await server.wait_closed()
+            await cleanup.run(server.wait_closed())
+        await cleanup.run(self._stop_worker_camera())
+        for task in self._tasks:
+            task.cancel()
+        await asyncio.gather(*self._tasks, return_exceptions=True)
+        self._tasks.clear()
+        cleanup.finish()
+
+    async def _stop_worker_camera(self):
         if self._worker_camera_lease:
             from backend.app.services.camera_runtime import WorkerCameraRuntime, get_camera_runtime
 
@@ -1272,10 +1291,6 @@ class SlicerProxyManager:
             await runtime.stop_raw_proxy(self._worker_camera_lease)
             self._worker_camera_lease = None
             self.camera_leases_released += 1
-        for task in self._tasks:
-            task.cancel()
-        await asyncio.gather(*self._tasks, return_exceptions=True)
-        self._tasks.clear()
 
     async def _probe_handler(self, reader, writer, port):
         with self.connections.track(writer):

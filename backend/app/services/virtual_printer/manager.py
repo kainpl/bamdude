@@ -23,7 +23,15 @@ from backend.app.services.virtual_printer.mqtt_server import SimpleMQTTServer
 from backend.app.services.virtual_printer.ssdp_server import SSDPProxy, VirtualPrinterSSDPServer
 from backend.app.services.virtual_printer.tcp_proxy import SlicerProxyManager, TCPProxy
 
-from .lifecycle import DRAIN_TIMEOUT, Activities, AdmissionClosed, VPDrainRefused, restore_required, wait_owned
+from .lifecycle import (
+    DRAIN_TIMEOUT,
+    Activities,
+    AdmissionClosed,
+    Teardown,
+    VPDrainRefused,
+    restore_required,
+    wait_owned,
+)
 
 if TYPE_CHECKING:
     from backend.app.services.printer_manager import PrinterManager
@@ -2068,8 +2076,9 @@ class VirtualPrinterInstance:
 
     async def _stop_owned(self):
         await self.activities.join()
+        cleanup = Teardown()
         if self._camera_task is not None:
-            await self._camera_task
+            await cleanup.run(self._camera_task)
         timers = self._finish_tasks | ({self._finish_release_task} if self._finish_release_task is not None else set())
         for task in timers:
             task.cancel()
@@ -2077,20 +2086,26 @@ class VirtualPrinterInstance:
         self._finish_tasks.clear()
         self._finish_release_task = None
         if self._mqtt_bridge:
-            await self._mqtt_bridge.stop()
-            if self._mqtt:
-                self._mqtt.set_bridge(None)
-            self._mqtt_bridge = None
+            if await cleanup.run(self._mqtt_bridge.stop()):
+                if self._mqtt:
+                    self._mqtt.set_bridge(None)
+                self._mqtt_bridge = None
         for attr in ("_ftp", "_mqtt", "_bind", "_rtsp_proxy", "_proxy", "_ssdp", "_ssdp_proxy"):
             service = getattr(self, attr)
             if service:
-                await service.stop()
+                if not await cleanup.run(service.stop()):
+                    continue
                 if attr == "_proxy":
                     self.proxy_cuts = dict(service.cuts)
                     self.camera_leases_released += service.camera_leases_released
                 elif attr in ("_bind", "_rtsp_proxy"):
                     self.proxy_cuts["bind" if attr == "_bind" else "camera"] = service.connections.cuts
                 setattr(self, attr, None)
+        await cleanup.run(self._stop_worker_camera())
+        await cleanup.run(self._cancel_tasks())
+        cleanup.finish()
+
+    async def _stop_worker_camera(self):
         if self._worker_camera_lease:
             from backend.app.services.camera_runtime import WorkerCameraRuntime, get_camera_runtime
 
@@ -2100,7 +2115,6 @@ class VirtualPrinterInstance:
             await runtime.stop_raw_proxy(self._worker_camera_lease)
             self._worker_camera_lease = None
             self.camera_leases_released += 1
-        await self._cancel_tasks()
 
     async def start_proxy(self) -> None:
         """Start proxy mode services for this instance."""
@@ -2246,6 +2260,8 @@ class VirtualPrinterManager:
         self._starts = {}
         self._camera_tasks = set()
         self._retiring = {}
+        self._unproven = {}
+        self._deletions = {}
         self._drain_task = None
         self._drain_instances = set()
         self.drain_timeout = DRAIN_TIMEOUT
@@ -2305,8 +2321,6 @@ class VirtualPrinterManager:
             if self._admission_closed():
                 return
             self._sync_revision += 1
-            for instance in self._instances.values():
-                instance._config_pending = True
             if self._sync_task is None or self._sync_task.done():
                 self._sync_task = asyncio.create_task(self._sync_runner(), name="vp_sync")
             task = self._sync_task
@@ -2316,13 +2330,15 @@ class VirtualPrinterManager:
             logger.warning("VP configuration saved; runtime stopping, unproven")
 
     async def _sync_runner(self):
-        while not self._admission_closed():
-            revision = self._sync_revision
-            await self._sync_from_db_locked()
-            if revision == self._sync_revision:
-                for instance in self._instances.values():
-                    instance._config_pending = False
-                return
+        try:
+            while not self._admission_closed():
+                revision = self._sync_revision
+                await self._sync_from_db_locked()
+                if revision == self._sync_revision:
+                    return
+        finally:
+            for instance in self._instances.values():
+                instance._config_pending = False
 
     async def _sync_from_db_locked(self) -> None:
         """Serial sync runner body. It NEVER holds _sync_lock across awaits."""
@@ -2412,6 +2428,7 @@ class VirtualPrinterManager:
             )
 
             if changed:
+                instance._config_pending = True
                 logger.info(
                     "VP %s config changed (mode: %s→%s), restarting",
                     instance.name,
@@ -2424,8 +2441,22 @@ class VirtualPrinterManager:
         for vp in enabled_vps:
             if self._admission_closed():
                 return
+            if vp.id in self._unproven:
+                # A failed owner cannot share its ports with a replacement.
+                continue
+            deletion = self._deletions.get(vp.id)
+            if deletion is not None:
+                await deletion["done"].wait()
+                if self._admission_closed():
+                    return
+                if vp.id in self._deletions:
+                    continue
             if vp.id in self._retiring:
-                await self._retiring[vp.id][1]
+                try:
+                    await self._retiring[vp.id][1]
+                except Exception:
+                    logger.exception("VP %s retirement unproven; continuing other VPs", vp.id)
+                    continue
                 if self._admission_closed():
                     return
             if revision != self._sync_revision:
@@ -2517,19 +2548,68 @@ class VirtualPrinterManager:
     async def _retire_owned(self, instance):
         # Instance's bounded observer may expire; retain/join its actual owner.
         try:
-            await (instance.stop_proxy() if instance.is_proxy else instance.stop_server())
-        except VPDrainRefused:
-            if instance._stop_task is None:
-                raise
-            await instance._stop_task
-        start = self._starts.get(instance.id)
-        if start is not None:
-            await start
-            self._starts.pop(instance.id, None)
-        self._retiring.pop(instance.id, None)
+            cleanup = Teardown()
+            try:
+                await (instance.stop_proxy() if instance.is_proxy else instance.stop_server())
+            except VPDrainRefused:
+                if instance._stop_task is None:
+                    raise
+                await cleanup.run(instance._stop_task)
+            start = self._starts.pop(instance.id, None)
+            if start is not None:
+                # A completed startup failure is not pending work either.
+                await asyncio.gather(start, return_exceptions=True)
+            cleanup.finish()
+        except BaseException:
+            self._unproven[instance.id] = instance
+            raise
+        finally:
+            self._retiring.pop(instance.id, None)
+            if instance.id not in self._unproven:
+                self._finish_deleted_uploads(instance.id)
+
+    def begin_delete(self, vp_id):
+        """Reserve this ID through DB deletion and retirement; no filesystem await."""
+        if self._admission_closed():
+            return None
+        record = self._deletions.setdefault(vp_id, {"committed": False, "done": asyncio.Event()})
+        return record
+
+    def finish_delete(self, vp_id, record, *, committed):
+        if record is None or self._deletions.get(vp_id) is not record:
+            return
+        if committed:
+            record["committed"] = True
+            self._finish_deleted_uploads(vp_id)
+        elif not record["committed"]:
+            self._deletions.pop(vp_id, None)
+            record["done"].set()
+
+    def _finish_deleted_uploads(self, vp_id):
+        record = self._deletions.get(vp_id)
+        if not record or not record["committed"] or self.has_owned_instance(vp_id):
+            return
+        if restore_required():
+            record["done"].set()
+            return
+        import shutil
+
+        upload_dir = self._base_dir / "uploads" / str(vp_id)
+        try:
+            if upload_dir.exists():
+                shutil.rmtree(upload_dir)
+        except OSError:
+            # Keep the reservation: a new VP must not inherit this directory.
+            logger.exception("VP %s upload cleanup failed; ID remains reserved until restart", vp_id)
+            record["done"].set()
+            return
+        self._deletions.pop(vp_id, None)
+        record["done"].set()
 
     async def remove_instance(self, vp_id):
         if self._admission_closed():
+            return False
+        if vp_id in self._unproven:
             return False
         async with self._sync_lock:
             if self._admission_closed():
@@ -2543,7 +2623,7 @@ class VirtualPrinterManager:
         return True
 
     def has_owned_instance(self, vp_id):
-        return vp_id in self._instances or vp_id in self._retiring
+        return vp_id in self._instances or vp_id in self._retiring or vp_id in self._unproven
 
     async def stop_all(self):
         try:
@@ -2578,20 +2658,32 @@ class VirtualPrinterManager:
         async with self._sync_lock:
             self._drain_instances.update(self._instances.values())
             self._drain_instances.update(inst for inst, _ in self._retiring.values())
+            self._drain_instances.update(self._unproven.values())
             for vp_id in tuple(self._instances):
                 self._retire_locked(vp_id)
             tasks = [task for _, task in self._retiring.values()]
             sync = self._sync_task
             cameras = tuple(self._camera_tasks)
-        if tasks:
-            await asyncio.gather(*tasks)
+        cleanup = Teardown()
+        for task in tasks:
+            await cleanup.run(task)
         if sync is not None:
-            await sync
+            if not sync.done():
+                # A sync read can fail independently of retirement proof.
+                await asyncio.gather(sync, return_exceptions=True)
+            if not sync.cancelled() and sync.exception() is not None:
+                logger.warning("Completed VP sync failed: %s", sync.exception())
+            self._sync_task = None
         if cameras:
-            await asyncio.gather(*cameras)
+            for task in cameras:
+                await cleanup.run(task)
         # A late startup is gated and joined by its retained retirement owner.
         if self._retiring:
-            await asyncio.gather(*(task for _, task in tuple(self._retiring.values())))
+            for _, task in tuple(self._retiring.values()):
+                await cleanup.run(task)
+        cleanup.finish()
+        if self._unproven:
+            raise VPDrainRefused("cleanup_failed")
         outcome = self.get_drain_outcome()
         logger.info("VP drain proven; interruptions=%s", outcome)
         return outcome
@@ -2618,7 +2710,11 @@ class VirtualPrinterManager:
 
     def get_instance(self, vp_id: int) -> VirtualPrinterInstance | None:
         """Get a running instance by ID."""
-        return self._instances.get(vp_id) or (self._retiring[vp_id][0] if vp_id in self._retiring else None)
+        return (
+            self._instances.get(vp_id)
+            or (self._retiring[vp_id][0] if vp_id in self._retiring else None)
+            or self._unproven.get(vp_id)
+        )
 
     def get_all_status(self) -> list[dict]:
         """Get status for all running instances."""

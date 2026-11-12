@@ -12,7 +12,7 @@ from backend.app.schemas.git_backup import RestoreCategory
 from backend.app.services.farm_startup_guard import farm_startup_guard
 from backend.app.services.git_restore import GitRestoreService
 from backend.app.services.virtual_printer import virtual_printer_manager
-from backend.app.services.virtual_printer.lifecycle import VP_DRAIN_MESSAGE, VPDrainRefused
+from backend.app.services.virtual_printer.lifecycle import VP_DRAIN_MESSAGE, VP_RESTART_MESSAGE, VPDrainRefused
 from backend.tests.integration.test_git_restore_api import _create_config
 
 
@@ -34,11 +34,13 @@ async def config(async_client):
 
 
 @pytest.mark.parametrize("language", ["en", "uk"])
-async def test_http409_is_translated_without_success_shape(async_client, config, language):
+@pytest.mark.parametrize("reason", ["pending", "cleanup_failed"])
+async def test_http409_is_translated_without_success_shape(async_client, config, language, reason):
     set_language_cache(language)
     try:
         with patch(
-            "backend.app.services.git_restore.git_restore_service.run_restore", AsyncMock(side_effect=VPDrainRefused())
+            "backend.app.services.git_restore.git_restore_service.run_restore",
+            AsyncMock(side_effect=VPDrainRefused(reason)),
         ):
             response = await async_client.post(
                 "/api/v1/git-backup/restore",
@@ -50,7 +52,14 @@ async def test_http409_is_translated_without_success_shape(async_client, config,
             )
         assert response.status_code == 409
         detail = response.json()["detail"]
-        assert detail == VP_DRAIN_MESSAGE if language == "en" else "повторіть у цьому процесі" in detail
+        if reason == "pending":
+            assert detail == VP_DRAIN_MESSAGE if language == "en" else "повторіть у цьому процесі" in detail
+        else:
+            assert (
+                detail == VP_RESTART_MESSAGE
+                if language == "en"
+                else "Перезапустіть BamDude перед відновленням" in detail
+            )
         assert "success" not in response.json()
     finally:
         set_language_cache("en")
