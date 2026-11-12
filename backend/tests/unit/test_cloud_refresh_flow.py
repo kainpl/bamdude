@@ -7,6 +7,7 @@ the credential dead; only a failed refresh falls back to the sign-out.
 from unittest.mock import AsyncMock
 
 import pytest
+from fastapi import HTTPException
 from sqlalchemy import select
 
 from backend.app.api.routes.cloud import (
@@ -16,10 +17,11 @@ from backend.app.api.routes.cloud import (
     store_token,
 )
 from backend.app.models.user import User
+from backend.app.services.cloud_credentials import snapshot
 
 
 async def _seed_user(db_session, **extra) -> User:
-    user = User(username="cloudy", role="operator", **extra)
+    user = User(username="cloudy", role="admin", **extra)
     db_session.add(user)
     await db_session.commit()
     await db_session.refresh(user)
@@ -30,22 +32,27 @@ async def _seed_user(db_session, **extra) -> User:
 async def test_store_token_persists_refresh_token_per_user(db_session, async_client):
     user = await _seed_user(db_session)
     await store_token(db_session, "acc-1", "a@b.c", "global", user, refresh_token="ref-1")
-    row = (await db_session.execute(select(User).where(User.id == user.id))).scalar_one()
+    row = (
+        await db_session.execute(select(User).where(User.id == user.id).execution_options(populate_existing=True))
+    ).scalar_one()
     assert (row.cloud_token, row.cloud_refresh_token) == ("acc-1", "ref-1")
     assert await get_stored_refresh_token(db_session, row) == "ref-1"
 
     # A later token-auth sign-in (no refresh token) must CLEAR the stale one —
     # a refresh token from a previous pair cannot renew the new access token.
     await store_token(db_session, "acc-2", "a@b.c", "global", user)
-    row = (await db_session.execute(select(User).where(User.id == user.id))).scalar_one()
+    row = (
+        await db_session.execute(select(User).where(User.id == user.id).execution_options(populate_existing=True))
+    ).scalar_one()
     assert (row.cloud_token, row.cloud_refresh_token) == ("acc-2", None)
 
 
 @pytest.mark.asyncio
 async def test_store_token_persists_refresh_token_globally(db_session, async_client):
     """Auth-disabled mode: the pair lives in the Settings table."""
-    await store_token(db_session, "acc-g", "g@b.c", "global", None, refresh_token="ref-g")
-    assert await get_stored_refresh_token(db_session, None) == "ref-g"
+    with pytest.raises(HTTPException) as exc:
+        await store_token(db_session, "acc-g", "g@b.c", "global", None, refresh_token="ref-g")
+    assert exc.value.status_code == 401
 
 
 @pytest.mark.asyncio
@@ -67,7 +74,9 @@ async def test_refresh_success_persists_pair_and_keeps_connection_alive(db_sessi
     cloud.refresh_access_token.return_value = True
     cloud.access_token = "fresh-acc"
     cloud.refresh_token = "fresh-ref"
-    await _refresh_or_invalidate(cloud, user.id)
+    captured = await snapshot(db_session, user, "bambu")
+    await db_session.commit()
+    await _refresh_or_invalidate(cloud, captured)
 
     user_id = user.id
     db_session.expire_all()  # the write went through its own session
@@ -82,7 +91,9 @@ async def test_refresh_failure_falls_back_to_sign_out(db_session, async_client):
 
     cloud = AsyncMock()
     cloud.refresh_access_token.return_value = False
-    await _refresh_or_invalidate(cloud, user.id)
+    captured = await snapshot(db_session, user, "bambu")
+    await db_session.commit()
+    await _refresh_or_invalidate(cloud, captured)
 
     user_id = user.id
     db_session.expire_all()  # the write went through its own session

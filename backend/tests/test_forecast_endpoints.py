@@ -52,6 +52,7 @@ from backend.app.models.spool import Spool
 from backend.app.models.spool_usage_history import SpoolUsageHistory
 from backend.app.services import forecast_engine
 from backend.app.services.filament_needs import NeedKey, Needs
+from backend.tests.auth_helpers import mint_test_access
 from backend.tests.fixtures.filament_routing_cases import write_routing_3mf
 
 pytestmark = pytest.mark.asyncio
@@ -203,7 +204,7 @@ async def _limited_token(username: str, permissions: list[str]) -> str:
             )
             await db.commit()
 
-    return create_access_token(data={"sub": username})
+    return await mint_test_access(username=username)
 
 
 # ── The 5-SKU sort farm ───────────────────────────────────────────────────────

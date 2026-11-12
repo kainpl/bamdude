@@ -36,7 +36,6 @@ import argparse
 import asyncio
 import logging
 import sys
-from datetime import datetime, timezone
 
 from sqlalchemy import delete, select
 
@@ -110,7 +109,9 @@ def _prompt_for_password() -> str | None:
 
 async def _reset_password(username: str, generate: bool, clear_2fa: bool) -> int:
     """Set a local account's password from the console."""
-    from backend.app.core.auth import get_password_hash, get_user_by_username, revoke_all_refresh_tokens_for_user
+    from backend.app.core.auth import get_user_by_username, hash_password_async
+    from backend.app.core.auth_lifetime import capture_account, guard_accounts, stage_end_sessions, utcnow
+    from backend.app.models.user import User
     from backend.app.schemas.auth import _validate_password_complexity
     from backend.app.services.email_service import generate_secure_password
 
@@ -134,6 +135,10 @@ async def _reset_password(username: str, generate: bool, clear_2fa: bool) -> int
             )
             return 2
 
+        captured = capture_account(user)
+        db.expunge(user)
+        await db.rollback()
+
         if generate:
             password = generate_secure_password()
         else:
@@ -148,12 +153,15 @@ async def _reset_password(username: str, generate: bool, clear_2fa: bool) -> int
             print(str(exc), file=sys.stderr)
             return 2
 
-        user.password_hash = get_password_hash(password)
-        user.password_changed_at = datetime.now(timezone.utc)
+        replacement = await hash_password_async(password)
+        await guard_accounts(db, [captured], require_active=False)
+        user = (await db.execute(select(User).where(User.account_identity == captured.account_identity))).scalar_one()
+        await stage_end_sessions(db, captured, "cli_password_reset")
+        user.password_hash = replacement
+        user.password_changed_at = utcnow()
         # Sign out everything that was signed in on the old password: a reset
         # done because somebody else had the account is pointless if their
         # session keeps working.
-        await revoke_all_refresh_tokens_for_user(db, user.username)
 
         if clear_2fa:
             from backend.app.models.user_otp_code import UserOTPCode

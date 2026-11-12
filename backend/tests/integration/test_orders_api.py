@@ -32,6 +32,7 @@ from backend.app.services.order_filing import order_candidates, resolve_line_id
 from backend.app.services.order_metrics import attribute, load_order_context
 from backend.app.services.plan_engine import queued_yield_by_line
 from backend.app.services.product_composition import recipes_for_product
+from backend.tests.auth_helpers import mint_test_authority
 from backend.tests.fixtures.filament_routing_cases import write_routing_3mf
 from backend.tests.fixtures.order_fulfilment import complete_order
 from backend.tests.unit.services.test_order_metrics import build_parity_fixture
@@ -840,7 +841,7 @@ async def test_cover_image_upload_stream_and_delete(committing_client):
         "filename"
     ]
 
-    token = await create_media_token("test_admin")
+    token = await create_media_token(authority=await mint_test_authority(username="test_admin"))
     img = await committing_client.get(f"/api/v1/projects/{pid}/cover-image", params={"token": token})
     assert img.status_code == 200, img.text
     assert img.headers["content-type"] == "image/png"
@@ -877,7 +878,7 @@ async def test_the_cover_route_revalidates_and_heals_a_dangling_reference(commit
             files={"file": ("cover.png", b"\x89PNG\r\n\x1a\n", "image/png")},
         )
     ).json()["filename"]
-    token = await create_media_token("test_admin")
+    token = await create_media_token(authority=await mint_test_authority(username="test_admin"))
 
     served = await committing_client.get(f"/api/v1/projects/{pid}/cover-image", params={"token": token})
     assert served.status_code == 200

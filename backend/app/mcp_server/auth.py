@@ -54,4 +54,6 @@ async def authenticate(scope) -> DiagnosticAccess:
         printer_ids=None if key.printer_ids is None else frozenset(key.printer_ids),
         logs_allowed=authority.mcp_logs_allowed,
         epoch=epoch,
+        key_identity=key.connector_identity,
+        owner_identity=owner.account_identity,
     )

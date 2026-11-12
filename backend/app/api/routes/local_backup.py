@@ -3,7 +3,7 @@
 import asyncio
 import logging
 
-from fastapi import APIRouter, Path
+from fastapi import APIRouter, Path, Request
 from fastapi.responses import FileResponse, JSONResponse
 
 from backend.app.core.auth import RequireAdmin, RequirePermission
@@ -104,6 +104,7 @@ async def download_backup(
 async def restore_backup(
     filename: str = Path(..., description="Backup filename to restore"),
     _: User | None = RequirePermission(Permission.SETTINGS_RESTORE),
+    request: Request = None,
 ):
     """Restore from a scheduled backup file on the server."""
     import io
@@ -122,7 +123,7 @@ async def restore_backup(
     upload = UploadFile(filename=filename, file=io.BytesIO(content))
 
     async with async_session() as db:
-        return await settings_restore_backup(file=upload, db=db)
+        return await settings_restore_backup(file=upload, db=db, request=request)
 
 
 @router.delete("/backups/{filename}", dependencies=[RequireAdmin()])

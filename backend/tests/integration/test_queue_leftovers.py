@@ -245,10 +245,10 @@ async def test_api_requires_delete_all_to_retire(async_client, db_session, print
     *_, row_id, _ = await held_pair(db_session, printer_factory, archive_factory)
     reader = await _user(db_session, "leftover_reader", ["queue:read", "queue:read_all", "queue:delete_own"])
 
-    listed = await async_client.get("/api/v1/queue/leftovers", headers=_jwt(reader.username))
+    listed = await async_client.get("/api/v1/queue/leftovers", headers=await _jwt(reader.username))
     assert listed.status_code == 200, listed.text
     refused = await async_client.post(
-        "/api/v1/queue/leftovers/retire", json={"item_ids": [row_id]}, headers=_jwt(reader.username)
+        "/api/v1/queue/leftovers/retire", json={"item_ids": [row_id]}, headers=await _jwt(reader.username)
     )
     assert refused.status_code == 403, refused.text
     assert not await gone(db_session, PrintQueueItem, row_id)

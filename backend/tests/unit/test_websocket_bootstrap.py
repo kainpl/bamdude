@@ -7,8 +7,11 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from backend.app.api.routes import websocket as route
+from backend.app.core.auth_lifetime import FrozenAuthority
 from backend.app.core.websocket import ConnectionManager
 from backend.app.services.bambu_mqtt import PrinterState
+
+SYNTHETIC_AUTHORITY = FrozenAuthority("session", "11111111-1111-4111-8111-111111111111", 7, 0, "synthetic-sid")
 
 
 @pytest.mark.parametrize("printer_count", [50, 300])
@@ -16,7 +19,7 @@ def test_fleet_bootstrap_ack_and_ping(caplog, monkeypatch, printer_count):
     manager = ConnectionManager()
     states = {pid: PrinterState() for pid in range(1, printer_count + 1)}
     monkeypatch.setattr(route, "ws_manager", manager)
-    monkeypatch.setattr(route, "authenticate_websocket_token", AsyncMock(return_value=(True, 7)))
+    monkeypatch.setattr(route, "authenticate_websocket_authority", AsyncMock(return_value=(SYNTHETIC_AUTHORITY, 7)))
     monkeypatch.setattr(route.printer_manager, "get_all_statuses", lambda: states)
     monkeypatch.setattr(route.printer_manager, "get_model", lambda pid: "P1S")
     monkeypatch.setattr(route.printer_manager, "get_drying_targets", lambda pid: {})
@@ -50,7 +53,7 @@ def test_fleet_bootstrap_ack_and_ping(caplog, monkeypatch, printer_count):
 def test_bootstrap_ack_rejects_untrusted_timing_values(caplog, monkeypatch, invalid):
     manager = ConnectionManager()
     monkeypatch.setattr(route, "ws_manager", manager)
-    monkeypatch.setattr(route, "authenticate_websocket_token", AsyncMock(return_value=(True, 7)))
+    monkeypatch.setattr(route, "authenticate_websocket_authority", AsyncMock(return_value=(SYNTHETIC_AUTHORITY, 7)))
     monkeypatch.setattr(route.printer_manager, "get_all_statuses", lambda: {})
     monkeypatch.setattr(route.background_dispatch, "get_state", AsyncMock(return_value={}))
     app = FastAPI()
@@ -80,7 +83,7 @@ def test_bootstrap_ack_rejects_untrusted_timing_values(caplog, monkeypatch, inva
 def test_legacy_client_can_disconnect_without_ack(caplog, monkeypatch):
     manager = ConnectionManager()
     monkeypatch.setattr(route, "ws_manager", manager)
-    monkeypatch.setattr(route, "authenticate_websocket_token", AsyncMock(return_value=(True, 7)))
+    monkeypatch.setattr(route, "authenticate_websocket_authority", AsyncMock(return_value=(SYNTHETIC_AUTHORITY, 7)))
     monkeypatch.setattr(route.printer_manager, "get_all_statuses", lambda: {})
     monkeypatch.setattr(route.background_dispatch, "get_state", AsyncMock(return_value={}))
     app = FastAPI()
@@ -96,7 +99,7 @@ def test_invalid_token_never_enters_fanout(monkeypatch):
 
     manager = ConnectionManager()
     monkeypatch.setattr(route, "ws_manager", manager)
-    monkeypatch.setattr(route, "authenticate_websocket_token", AsyncMock(return_value=(False, None)))
+    monkeypatch.setattr(route, "authenticate_websocket_authority", AsyncMock(return_value=None))
     app = FastAPI()
     app.include_router(route.router)
     with TestClient(app) as client, pytest.raises(WebSocketDisconnect) as exc, client.websocket_connect("/ws"):

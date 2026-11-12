@@ -26,6 +26,7 @@ from backend.app.models.queue_source import QueueSource
 from backend.app.models.swap_source_declaration_audit import SwapSourceDeclarationAudit
 from backend.app.models.user import User
 from backend.app.services import queue_sources, swap_compatibility as sc, swap_source_declarations as decl
+from backend.tests.auth_helpers import mint_test_session
 from backend.tests.fixtures.filament_routing_cases import write_routing_3mf
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
@@ -80,7 +81,8 @@ async def a_user(factory, name="operator") -> User:
     async with factory() as db:
         user = User(username=name, email=f"{name}@example.com", password_hash="x", role="admin", is_active=True)
         db.add(user)
-        await db.commit()
+        await db.flush()
+        await mint_test_session(db, user=user)
         return user
 
 
@@ -123,7 +125,7 @@ async def a_library_file(factory, path: Path, *, owner: User | None = None, file
 
 
 def actor_of(user: User) -> decl.Actor:
-    return decl.Actor(kind="user", user_id=user.id, label=user.username)
+    return decl.Actor(kind="user", user_id=user.id, label=user.username, capture=user._auth_capture)
 
 
 ALL = decl.Rights(read_all=True, update_all=True)
@@ -375,6 +377,7 @@ async def test_a_replay_by_someone_who_lost_the_source_reveals_nothing(factory, 
     operation = str(uuid.uuid4())
     await declare("archive", archive_id, seen, user, operation_id=operation)
     stranger = decl.Rights(read_all=False, update_all=False)
+    stranger_user = await a_user(factory, "stranger")
 
     with pytest.raises(HTTPException) as refused:
         await decl.declare(
@@ -384,7 +387,7 @@ async def test_a_replay_by_someone_who_lost_the_source_reveals_nothing(factory, 
             expected_sha256=seen["sha256"],
             expected_revision=seen["revision"],
             operation_id=operation,
-            actor=decl.Actor(kind="user", user_id=999, label="stranger"),
+            actor=actor_of(stranger_user),
             rights=stranger,
         )
 

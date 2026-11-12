@@ -14,7 +14,9 @@ possibly open write transaction and earn a ``database is locked``.
 
 from __future__ import annotations
 
+import asyncio
 import logging
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from sqlalchemy import delete, func, select
@@ -24,7 +26,7 @@ from backend.app.core.websocket import ws_manager
 from backend.app.models.user import User
 from backend.app.models.user_notification import UserNotification
 from backend.app.schemas.inbox import InboxItem
-from backend.app.services.notification_events import event_meta, wants_inbox_event
+from backend.app.services.notification_events import IN_APP_ONLY_EVENTS, event_meta, wants_inbox_event
 
 logger = logging.getLogger(__name__)
 
@@ -100,6 +102,125 @@ async def _unread_counts(db: AsyncSession, user_ids: list[int]) -> dict[int, int
         .group_by(UserNotification.user_id)
     )
     return {int(uid): int(total) for uid, total in (await db.execute(stmt)).all()}
+
+
+@dataclass(frozen=True)
+class StagedInboxItem:
+    user_id: int
+    account_identity: str
+    item: dict
+    unread_count: int
+
+
+@dataclass(frozen=True)
+class StagedInboxBatch:
+    items: tuple[StagedInboxItem, ...] = ()
+
+
+async def stage_admin_event(
+    db: AsyncSession, *, event_type: str, episode_id: str, title: str, message: str, extra_data: dict | None = None
+) -> StagedInboxBatch:
+    """Stage an internal admin notice in the caller's episode transaction.
+
+    Caller locks its durable episode FIRST (SQLite writer / PG FOR UPDATE),
+    then this operation locks accounts in the shared lifetime order. No commit,
+    nested session, provider, or live send. E can reuse this with its own episode.
+    """
+    from backend.app.core.auth_lifetime import AccountCapture, guard_accounts
+
+    if event_type not in IN_APP_ONLY_EVENTS:
+        raise ValueError("Only internal events can be staged")
+    with db.no_autoflush:
+        candidates = (
+            (await db.execute(select(User).where(User.is_active.is_(True)).execution_options(populate_existing=True)))
+            .scalars()
+            .all()
+        )
+    # Lock even currently ineligible accounts: group/subscription mutation must
+    # not race the authoritative eligibility read below.
+    captures = [AccountCapture(u.account_identity, None, u.id) for u in candidates]
+    if captures:
+        with db.no_autoflush:
+            await guard_accounts(db, captures)
+    with db.no_autoflush:
+        users = (
+            (
+                await db.execute(
+                    select(User)
+                    .where(User.id.in_([c.user_id for c in captures]))
+                    .execution_options(populate_existing=True)
+                )
+            )
+            .scalars()
+            .all()
+        )
+    identities = {c.user_id: c.account_identity for c in captures}
+    eligible = [
+        u
+        for u in users
+        if u.account_identity == identities[u.id]
+        and u.is_active
+        and u.is_admin
+        and u.has_permission("notifications:inbox")
+        and wants_inbox_event(u.inbox_events, event_type)
+    ]
+    keys = {u.id: f"{event_type}:{episode_id}:{u.account_identity}" for u in eligible}
+    with db.no_autoflush:
+        existing = (
+            set(
+                (
+                    await db.execute(
+                        select(UserNotification.dedupe_key).where(UserNotification.dedupe_key.in_(list(keys.values())))
+                    )
+                ).scalars()
+            )
+            if keys
+            else set()
+        )
+    now = datetime.utcnow()
+    meta = event_meta(event_type)
+    rows = [
+        UserNotification(
+            user_id=u.id,
+            event_type=event_type,
+            severity=meta.severity,
+            title=title[:255],
+            message=message,
+            extra_data=extra_data,
+            created_at=now,
+            dedupe_key=keys[u.id],
+        )
+        for u in eligible
+        if keys[u.id] not in existing
+    ]
+    db.add_all(rows)
+    await db.flush()
+    counts = await _unread_counts(db, [r.user_id for r in rows]) if rows else {}
+    return StagedInboxBatch(
+        tuple(
+            StagedInboxItem(
+                r.user_id,
+                identities[r.user_id],
+                InboxItem.from_row(r).model_dump(mode="json"),
+                counts.get(r.user_id, 0),
+            )
+            for r in rows
+        )
+    )
+
+
+async def dispatch_staged(batch: StagedInboxBatch, *, seconds: float = 1.0) -> None:
+    """Best-effort postcommit live hints. Scalars only; never opens SQL."""
+    try:
+        async with asyncio.timeout(seconds):
+            for item in batch.items:
+                await ws_manager.broadcast_to_user(
+                    item.user_id,
+                    {"type": "inbox_item", "data": {"item": item.item, "unread_count": item.unread_count}},
+                    expected_account_identity=item.account_identity,
+                )
+    except Exception:
+        logger.warning("Inbox: staged live update failed")
 
 
 async def deliver(

@@ -104,7 +104,7 @@ async def put(client, archive_id, seen, headers, *, value=True):
     ],
 )
 async def test_declaring_needs_both_rights_on_this_very_source(who, row, status, committing_client, desk):
-    answer = await inspect(committing_client, desk[row], _jwt(who))
+    answer = await inspect(committing_client, desk[row], await _jwt(who))
 
     assert answer.status_code == status, answer.text
     if status == 404:
@@ -112,22 +112,22 @@ async def test_declaring_needs_both_rights_on_this_very_source(who, row, status,
 
 
 async def test_the_full_round_trip_over_http(committing_client, db_session, desk):
-    seen = (await inspect(committing_client, desk["mine"], _jwt("sd_own"))).json()
-    done = await put(committing_client, desk["mine"], seen, _jwt("sd_own"))
+    seen = (await inspect(committing_client, desk["mine"], await _jwt("sd_own"))).json()
+    done = await put(committing_client, desk["mine"], seen, await _jwt("sd_own"))
 
     assert done.status_code == 200, done.text
     history = await committing_client.get(
-        f"/api/v1/archives/{desk['mine']}/swap-declaration/history", headers=_jwt("sd_own")
+        f"/api/v1/archives/{desk['mine']}/swap-declaration/history", headers=await _jwt("sd_own")
     )
     assert history.status_code == 200 and [entry["new_value"] for entry in history.json()] == [True]
     hidden = await committing_client.get(
-        f"/api/v1/archives/{desk['theirs']}/swap-declaration/history", headers=_jwt("sd_own")
+        f"/api/v1/archives/{desk['theirs']}/swap-declaration/history", headers=await _jwt("sd_own")
     )
     assert hidden.status_code == 404
 
 
 async def test_a_non_bool_value_is_refused_before_anything_is_read(committing_client, desk):
-    seen = (await inspect(committing_client, desk["mine"], _jwt("sd_own"))).json()
+    seen = (await inspect(committing_client, desk["mine"], await _jwt("sd_own"))).json()
     for value in ("true", 1, 0, None):
         answer = await committing_client.put(
             f"/api/v1/archives/{desk['mine']}/swap-declaration",
@@ -137,7 +137,7 @@ async def test_a_non_bool_value_is_refused_before_anything_is_read(committing_cl
                 "expected_revision": seen["revision"],
                 "operation_id": str(uuid.uuid4()),
             },
-            headers=_jwt("sd_own"),
+            headers=await _jwt("sd_own"),
         )
         assert answer.status_code == 422, (value, answer.text)
 
@@ -152,7 +152,7 @@ async def test_an_api_key_needs_both_scopes(flags, status, committing_client, db
 
 
 async def test_a_media_token_opens_nothing(committing_client, desk):
-    token = (await committing_client.post("/api/v1/auth/media-token", headers=_jwt("sd_own"))).json()["token"]
+    token = (await committing_client.post("/api/v1/auth/media-token", headers=await _jwt("sd_own"))).json()["token"]
 
     committing_client.headers.pop("Authorization", None)  # nothing but the media token
     answer = await committing_client.post(f"/api/v1/archives/{desk['mine']}/swap-declaration/inspect?token={token}")
@@ -161,7 +161,7 @@ async def test_a_media_token_opens_nothing(committing_client, desk):
 
 
 async def test_rights_revoked_while_the_bytes_are_read_commit_nothing(committing_client, db_session, desk, monkeypatch):
-    seen = (await inspect(committing_client, desk["mine"], _jwt("sd_own"))).json()
+    seen = (await inspect(committing_client, desk["mine"], await _jwt("sd_own"))).json()
     real_capture = queue_sources.capture
 
     async def capture_while_the_group_loses_the_right(request):
@@ -172,7 +172,7 @@ async def test_rights_revoked_while_the_bytes_are_read_commit_nothing(committing
         return receipt
 
     monkeypatch.setattr(queue_sources, "capture", capture_while_the_group_loses_the_right)
-    answer = await put(committing_client, desk["mine"], seen, _jwt("sd_own"))
+    answer = await put(committing_client, desk["mine"], seen, await _jwt("sd_own"))
 
     assert answer.status_code == 403, answer.text
     assert (await db_session.execute(select(SwapSourceDeclarationAudit))).scalars().all() == []

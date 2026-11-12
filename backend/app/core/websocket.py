@@ -37,6 +37,7 @@ class ConnectionManager:
         # Per-connection user id (None for API-key callers) — enables per-user
         # broadcasts. BamDude has no anonymous users, so this is almost always set.
         self._user_by_conn: dict[WebSocket, int | None] = {}
+        self._account_by_conn: dict[WebSocket, str | None] = {}
         # In-process subscribers to the same fan-out the browsers get — today
         # only the Cloud Link uplink. See ``add_internal_listener``.
         self._internal_listeners: list[Callable[[dict[str, Any]], None]] = []
@@ -95,12 +96,13 @@ class ConnectionManager:
             except Exception as e:
                 logger.debug("Internal broadcast listener raised (ignored): %s", e)
 
-    async def connect(self, websocket: WebSocket, user_id: int | None = None):
+    async def connect(self, websocket: WebSocket, user_id: int | None = None, *, account_identity: str | None = None):
         """Accept a new WebSocket connection, tagged with the authenticated user
         so per-user broadcasts can target it."""
         await websocket.accept()
         self.active_connections.append(websocket)
         self._user_by_conn[websocket] = user_id
+        self._account_by_conn[websocket] = account_identity
         outbox = _Outbox()
         self._outboxes[websocket] = outbox
         outbox.task = asyncio.create_task(self._writer(websocket, outbox), name="websocket-writer")
@@ -109,6 +111,7 @@ class ConnectionManager:
         if websocket in self.active_connections:
             self.active_connections.remove(websocket)
         self._user_by_conn.pop(websocket, None)
+        self._account_by_conn.pop(websocket, None)
 
     def _enqueue(self, websocket: WebSocket, data: str, size: int) -> None:
         outbox = self._outboxes.get(websocket)
@@ -242,7 +245,9 @@ class ConnectionManager:
                 elapsed,
             )
 
-    async def broadcast_to_user(self, user_id: int | None, message: dict[str, Any]):
+    async def broadcast_to_user(
+        self, user_id: int | None, message: dict[str, Any], *, expected_account_identity: str | None = None
+    ):
         """Send a message only to the given user's connections.
 
         BamDude has no anonymous users (auth always-on), so owner-scoped events —
@@ -257,12 +262,19 @@ class ConnectionManager:
         purpose. The ``user_id is None`` branch below is a genuine global
         broadcast and taps normally, because that is what it is."""
         if user_id is None:
+            if expected_account_identity is not None:
+                return
             await self.broadcast(message)
             return
         data = json.dumps(message)
         size = len(data.encode("utf-8"))
         for connection in list(self.active_connections):
             if self._user_by_conn.get(connection) == user_id:
+                if (
+                    expected_account_identity is not None
+                    and self._account_by_conn.get(connection) != expected_account_identity
+                ):
+                    continue
                 self._enqueue(connection, data, size)
 
     async def send_printer_status(self, printer_id: int, status: dict):

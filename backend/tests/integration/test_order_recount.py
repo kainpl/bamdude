@@ -156,8 +156,8 @@ async def test_permissions_are_checked_for_both_user_and_scoped_key(committing_c
     rights = ["orders:read", "orders:update", "products:read", "stock:read"]
     owner = await _user(db_session, "counter", rights)
     body = {"expected_token": snapshot["token"], "reason": "Counted", "parts": [{"part_id": s["a"].id, "actual": 1}]}
-    assert (await committing_client.get(path(s), headers=_jwt(owner.username))).status_code == 200
-    assert (await committing_client.post(path(s), json=body, headers=_jwt(owner.username))).status_code == 403
+    assert (await committing_client.get(path(s), headers=await _jwt(owner.username))).status_code == 200
+    assert (await committing_client.post(path(s), json=body, headers=await _jwt(owner.username))).status_code == 403
     owner = await _user(db_session, "scoped-counter", rights + ["stock:adjust"])
     raw = await _key(db_session, owner, can_manage_projects=True, printer_ids=[s["printer"].id])
     assert (await committing_client.get(path(s), headers={"X-API-Key": raw})).status_code == 403

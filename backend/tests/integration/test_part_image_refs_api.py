@@ -10,6 +10,7 @@ from sqlalchemy import event
 
 from backend.app.core.auth import create_media_token
 from backend.app.services import part_images
+from backend.tests.auth_helpers import mint_test_authority
 from backend.tests.fixtures.part_images import part, rendered_farm
 from backend.tests.integration.test_workshop_library_rights import _jwt, _key, _user
 from backend.tests.unit.test_part_images_writer import image_bytes
@@ -144,7 +145,7 @@ async def test_a_resolver_that_fails_never_answers_no_pictures(committing_client
 async def test_a_reader_of_any_domain_may_ask(committing_client, db_session, permission):
     farm = await rendered_farm(db_session)
     await _user(db_session, f"pir_{permission.split(':')[0]}", [permission])
-    r = await committing_client.get(_query(farm.body.id), headers=_jwt(f"pir_{permission.split(':')[0]}"))
+    r = await committing_client.get(_query(farm.body.id), headers=await _jwt(f"pir_{permission.split(':')[0]}"))
     assert r.status_code == 200, r.text
     assert r.json()[0]["image"]["status"] == "ready"
 
@@ -152,13 +153,13 @@ async def test_a_reader_of_any_domain_may_ask(committing_client, db_session, per
 async def test_a_reader_of_none_of_them_is_refused(committing_client, db_session):
     farm = await rendered_farm(db_session)
     await _user(db_session, "pir_printers", ["printers:read"])
-    r = await committing_client.get(_query(farm.body.id), headers=_jwt("pir_printers"))
+    r = await committing_client.get(_query(farm.body.id), headers=await _jwt("pir_printers"))
     assert r.status_code == 403
 
 
 async def test_a_media_token_alone_opens_no_json(committing_client, db_session):
     farm = await rendered_farm(db_session)
-    token = await create_media_token("test_admin")
+    token = await create_media_token(authority=await mint_test_authority(username="test_admin"))
     request = committing_client.build_request("GET", _query(farm.body.id) + f"&token={token}")
     request.headers.pop("Authorization", None)
     assert (await committing_client.send(request)).status_code == 401

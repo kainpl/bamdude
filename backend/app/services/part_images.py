@@ -35,6 +35,7 @@ import hashlib
 import inspect
 import io
 import logging
+import os
 import posixpath
 import re
 import shutil
@@ -1200,6 +1201,8 @@ async def import_choices(
     product_id: int,
     pairs: list[tuple[ProductPart, object]],
     file_by_hash: dict[str, int],
+    *,
+    prepared_photos=None,
 ) -> None:
     """The imported parts take their choices (spec §10.3; plan E4, D22). Call it after the links are made.
 
@@ -1227,6 +1230,24 @@ async def import_choices(
                 continue
             if zf.getinfo(member).file_size > attachment_limit():
                 continue
+            if prepared_photos is not None:
+                prepared = prepared_photos.get(member)
+                if prepared is None:
+                    continue
+                name, directory = prepared
+                destination = product_part_images_dir(product_id)
+                destination.mkdir(parents=True, exist_ok=True)
+                for filename in (name, small_photo_name(name)):
+                    target = (
+                        destination / filename
+                    )  # SEC-PATH-OK: generated encoded photo basename, never the ZIP member name
+                    unlink_on_rollback(db, target)
+                    # Already validated/encoded beside the final directory: publication is only rename.
+                    await disk(
+                        os.replace, directory / filename, target
+                    )  # SEC-PATH-OK: same generated prepared basename
+                part.image_source, part.image_photo = "photo", name
+                continue
             try:
                 content = await disk(zf.read, member)
                 name = await _store_photo(db, product_id, content)
@@ -1235,3 +1256,26 @@ async def import_choices(
                 continue
             part.image_source, part.image_photo = "photo", name
     mark_changed(db, [product_id])
+
+
+async def prepare_import_photos(zf, names, raw_parts, stage_id):
+    """Inflate, validate and encode before the importer takes its account/domain writer."""
+    prepared = {}
+    directory = product_part_images_dir(stage_id)
+    for raw in raw_parts:
+        image = raw.get("image") if isinstance(raw, dict) else None
+        if not isinstance(image, dict) or image.get("source") != "photo" or not isinstance(image.get("photo"), str):
+            continue
+        member = posixpath.normpath(f"attachments/{image['photo']}")
+        if member in prepared or not member.startswith(f"attachments/{PHOTO_MEMBER_ROOT}/") or member not in names:
+            continue
+        if zf.getinfo(member).file_size > attachment_limit():
+            continue
+        try:
+            content = await disk(zf.read, member)
+            stem = uuid4().hex
+            ext = await disk(_write_photo, content, directory, stem)
+            prepared[member] = (f"{stem}.{ext}", directory)
+        except (_PhotoRefused, zipfile.BadZipFile, zlib.error, RuntimeError, OSError):
+            continue
+    return prepared

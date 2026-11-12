@@ -14,6 +14,7 @@ from backend.app.models.printer_queue import PrinterQueue
 from backend.app.models.user import User
 from backend.app.services import queue_virtual
 from backend.app.services.print_run_binding import bind_print_run, discard_print_run
+from backend.tests.auth_helpers import bind_test_key, mint_test_access
 
 pytestmark = pytest.mark.integration
 
@@ -23,7 +24,7 @@ async def test_compact_queue_permission_denial_is_not_an_empty_summary(async_cli
     user = User(username="summary-no-read", password_hash="x", role="user", is_active=True)
     db_session.add(user)
     await db_session.commit()
-    headers = {"Authorization": f"Bearer {create_access_token({'sub': user.username})}"}
+    headers = {"Authorization": f"Bearer {await mint_test_access(db_session, username=user.username)}"}
     assert (await async_client.get("/api/v1/queue/summary", headers=headers)).status_code == 403
     assert (await async_client.get("/api/v1/queue/issues?queue_id=1", headers=headers)).status_code == 403
     assert (await async_client.get("/api/v1/auto-queue/summary", headers=headers)).status_code == 403
@@ -71,7 +72,7 @@ async def test_compact_queue_reads_keep_read_own_scope(async_client, db_session,
     db_session.add_all([mine, foreign])
     await db_session.commit()
 
-    headers = {"Authorization": f"Bearer {create_access_token({'sub': user.username})}"}
+    headers = {"Authorization": f"Bearer {await mint_test_access(db_session, username=user.username)}"}
     summary = await async_client.get("/api/v1/queue/summary", headers=headers)
     assert summary.status_code == 200, summary.text
     assert summary.json()["groups"][0]["failed_count"] == 1
@@ -89,15 +90,15 @@ async def test_compact_queue_reads_follow_the_api_key_scope(async_client, db_ses
     db_session.add(PrinterQueue(id=printer.id, printer_id=printer.id))
     db_session.add(PrintQueueItem(queue_id=printer.id, position=1, status="failed"))
     raw, key_hash, key_prefix = generate_api_key()
-    db_session.add(
-        APIKey(
-            name=f"summary-{key_prefix}",
-            key_hash=key_hash,
-            key_prefix=key_prefix,
-            enabled=True,
-            can_read_status=can_read_status,
-        )
+    issued_key = APIKey(
+        name=f"summary-{key_prefix}",
+        key_hash=key_hash,
+        key_prefix=key_prefix,
+        enabled=True,
+        can_read_status=can_read_status,
     )
+    await bind_test_key(db_session, issued_key)
+    db_session.add(issued_key)
     await db_session.commit()
 
     # A bb_ bearer replaces the fixture's default admin JWT for this request.
@@ -135,7 +136,7 @@ async def test_read_own_cannot_see_foreign_or_ownerless_virtual(
         lambda _id: SimpleNamespace(connected=True, state="RUNNING"),
     )
     monkeypatch.setattr(queue_virtual.printer_manager, "get_printer", lambda _id: None)
-    headers = {"Authorization": f"Bearer {create_access_token({'sub': user.username})}"}
+    headers = {"Authorization": f"Bearer {await mint_test_access(db_session, username=user.username)}"}
     try:
         response = await async_client.get("/api/v1/queue/", headers=headers)
         assert response.status_code == 200

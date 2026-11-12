@@ -879,6 +879,8 @@ class ArchiveService:
         calibration_session_id: int | None = None,
         dispatch_intent: dict[str, object] | None = None,
         source_swap_compatible: bool | None = None,
+        authority=None,
+        attribution=None,
     ) -> PrintArchive | None:
         """Archive a 3MF file with metadata.
 
@@ -1206,6 +1208,49 @@ class ArchiveService:
         if resolved_plate_index is not None:
             metadata["plate_id"] = resolved_plate_index
 
+        prepared_parts = {}
+        try:
+            prepared_parts = extract_printable_objects_from_3mf(
+                source_file.read_bytes(), plate_number=resolved_plate_index
+            )
+        except Exception:
+            logger.warning("Archive part metadata could not be prepared")
+
+        # Parsing/copying is over. The final short writer owns the principal
+        # lifetime before any archive row/attribution is published.
+        try:
+            if authority is not None:
+                from backend.app.services.domain_authority import guard
+
+                _, principal = await guard(self.db, authority, permissions=("printers:control",), printer_id=printer_id)
+                created_by_id = principal.user.id if principal is not None else None
+            elif attribution is not None:
+                from fastapi import HTTPException
+
+                from backend.app.core.auth_lifetime import guard_accounts
+                from backend.app.models.user import User
+
+                try:
+                    await guard_accounts(self.db, [attribution], require_active=False)
+                except HTTPException as exc:
+                    if exc.status_code != 401:
+                        raise
+                    created_by_id = None
+                else:
+                    owner = await self.db.scalar(
+                        select(User).where(User.account_identity == attribution.account_identity)
+                    )
+                    created_by_id = owner.id if owner is not None and owner.is_active else None
+        except BaseException:
+            if existing_archive is None:
+                # Only files in the unique directory this call created; never
+                # remove the shared deduplicated source of an older print.
+                for owned_file in archive_dir.iterdir():
+                    if owned_file.is_file() or owned_file.is_symlink():
+                        owned_file.unlink(missing_ok=True)
+                archive_dir.rmdir()
+            raise
+
         # Create archive record
         archive = PrintArchive(
             printer_id=printer_id,
@@ -1259,10 +1304,9 @@ class ArchiveService:
 
         # Seed the per-part plate state (m158). Source bytes, not dispatched:
         # the patcher touches gcode, never slice_info, and the on-disk copy is
-        # the unpatched original anyway. Pass the Path, not the bytes — the
-        # read happens inside seed_archive_parts' own guard so a transient
-        # read error can never raise out of archive creation.
-        await seed_archive_parts(self.db, archive, source_file)
+        # the unpatched original anyway. Preparation already extracted these
+        # objects before the account lifetime guard; do not reparse under it.
+        await seed_archive_parts(self.db, archive, printable_objects=prepared_parts)
 
         await self.db.commit()
         await self.db.refresh(archive)

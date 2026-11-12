@@ -11,6 +11,7 @@ from backend.app.core.database import Base, configure_sqlite_connection, import_
 from backend.app.models.oidc_provider import OIDCProvider, UserOIDCLink
 from backend.app.models.settings import Settings
 from backend.app.models.user import User
+from backend.tests.auth_helpers import mint_test_access
 
 pytestmark = pytest.mark.integration
 
@@ -44,7 +45,7 @@ async def linked_account(db, *, count=1, auth_source="oidc", password=None):
         db.add(UserOIDCLink(user_id=user.id, provider_id=provider.id, provider_user_id=f"subject-{index}"))
         providers.append(provider)
     await db.commit()
-    headers = {"Authorization": f"Bearer {create_access_token({'sub': user.username})}"}
+    headers = {"Authorization": f"Bearer {await mint_test_access(db, username=user.username)}"}
     return user, providers, headers
 
 
@@ -52,19 +53,21 @@ async def test_concurrent_distinct_unlinks_keep_one_login(async_client, db_sessi
     from backend.app.api.routes import mfa
 
     user, providers, headers = await linked_account(db_session, count=2)
-    real_lock = mfa.take_write_lock
+    real_lock = mfa.guard_accounts
     ready = asyncio.Event()
     arrivals = 0
 
-    async def meet_before_account_lock(*args):
+    async def meet_before_account_lock(*args, **kwargs):
         nonlocal arrivals
         arrivals += 1
         if arrivals == 2:
             ready.set()
         await asyncio.wait_for(ready.wait(), 5)
-        await real_lock(*args)
+        return await real_lock(*args, **kwargs)
 
-    monkeypatch.setattr(mfa, "take_write_lock", meet_before_account_lock)
+    # C moved the first writer reservation into the immutable account guard.
+    # Rendezvous before that guard, never while one request already owns it.
+    monkeypatch.setattr(mfa, "guard_accounts", meet_before_account_lock)
     responses = await asyncio.gather(
         *[async_client.delete(f"/api/v1/auth/oidc/links/{provider.id}", headers=headers) for provider in providers]
     )

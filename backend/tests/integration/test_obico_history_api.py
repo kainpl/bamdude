@@ -8,6 +8,7 @@ from sqlalchemy import select
 
 from backend.app.core import database
 from backend.app.models.obico_event import ObicoEvent
+from backend.app.models.user import User
 from backend.app.services.obico_history import ObicoHistory, filename
 from backend.tests.integration.test_workshop_library_rights import _jwt, _key, _user
 from backend.tests.unit.services.test_obico_history import jpeg, save
@@ -35,7 +36,7 @@ async def test_metadata_media_camera_gate_anonymous_and_forged_pair(api_history,
     client, history, printers, ids = api_history
     p = printers[0].id
     operator = await _user(db_session, "metadata", ["printers:read"])
-    headers = _jwt(operator.username)
+    headers = await _jwt(operator.username)
     listed = await client.get("/api/v1/obico/history", headers=headers)
     assert listed.status_code == 200
     assert listed.json()["saved_count"] == 3
@@ -48,7 +49,7 @@ async def test_metadata_media_camera_gate_anonymous_and_forged_pair(api_history,
             await client.get(f"/api/v1/obico/printers/{p}/events/{ids[0]}{suffix}", headers={"Authorization": ""})
         ).status_code == 401
     viewer = await _user(db_session, "viewer", ["printers:read", "camera:view"])
-    headers = _jwt(viewer.username)
+    headers = await _jwt(viewer.username)
     detail = await client.get(f"/api/v1/obico/printers/{p}/events/{ids[0]}", headers=headers)
     assert detail.status_code == 200 and detail.json()["raw_boxes"][0][2] == [320, 180, 100, 80]
     image = await client.get(f"/api/v1/obico/printers/{p}/events/{ids[0]}/image", headers=headers)
@@ -66,7 +67,8 @@ async def test_metadata_media_camera_gate_anonymous_and_forged_pair(api_history,
 async def test_keys_scope_before_paging_and_existing_clear_denylist(api_history, db_session, scope):
     client, history, printers, ids = api_history
     selected = [printers[-1].id] if scope == "last" else scope
-    raw = await _key(db_session, None, can_read_status=True, printer_ids=selected)
+    owner = (await db_session.execute(select(User).where(User.username == "test_admin"))).scalar_one()
+    raw = await _key(db_session, owner, can_read_status=True, printer_ids=selected)
     headers = {"Authorization": f"Bearer {raw}"}
     response = await client.get("/api/v1/obico/history?limit=1", headers=headers)
     assert response.status_code == 200, response.text
@@ -164,7 +166,8 @@ async def test_enriched_status_filters_recent_and_live_printers(api_history, db_
     from backend.app.api.routes import obico
 
     client, history, printers, ids = api_history
-    raw = await _key(db_session, None, can_read_status=True, printer_ids=[printers[-1].id])
+    owner = (await db_session.execute(select(User).where(User.username == "test_admin"))).scalar_one()
+    raw = await _key(db_session, owner, can_read_status=True, printer_ids=[printers[-1].id])
     monkeypatch.setattr(
         obico.obico_detection_service,
         "_history",

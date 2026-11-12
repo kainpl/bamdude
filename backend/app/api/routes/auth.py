@@ -1,24 +1,23 @@
+import asyncio
 import os
 import secrets
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 from typing import Annotated
 
 import jwt
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Request, Response, status
 from fastapi.security import HTTPAuthorizationCredentials
 from jwt.exceptions import PyJWTError as JWTError
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from backend.app.api.routes.settings import get_external_login_url
 from backend.app.core.auth import (
-    ACCESS_TOKEN_EXPIRE_MINUTES,
     ALGORITHM,
     REFRESH_TOKEN_COOKIE_NAME,
     REFRESH_TOKEN_COOKIE_PATH,
-    REFRESH_TOKEN_EXPIRE_DAYS_REMEMBER,
     SECRET_KEY,
     JWTValidationFailure,
     Permission,
@@ -29,29 +28,43 @@ from backend.app.core.auth import (
     apikey_effective_permissions,
     authenticate_user,
     authenticate_user_by_email,
-    create_access_token,
     create_media_token,
-    create_refresh_token,
     create_websocket_token,
     get_auth_db,
     get_current_active_user,
-    get_password_hash,
     get_user_by_email,
     get_user_by_username,
     has_any_admin,
+    hash_client_secret,
+    hash_password_async,
     is_api_key_token,
     refresh_cookie_secure_flag,
     resolve_apikey_owner,
     resolve_jwt_authority,
-    resolve_session_max_hours,
-    revoke_all_refresh_tokens_for_user,
-    revoke_jti,
-    revoke_refresh_family,
     security,
     verify_and_consume_refresh_token,
 )
+from backend.app.core.auth_lifetime import (
+    AccountCapture,
+    FrozenAuthority,
+    VerifiedOutcome,
+    binding,
+    binding_conditions,
+    capture_account,
+    capture_ephemeral,
+    guard_accounts,
+    refused,
+    stage_end_sessions,
+    stage_revoke_session,
+    stage_session,
+    utcnow,
+    validate_captured,
+)
+from backend.app.core.auth_runtime import auth_runtime
 from backend.app.core.oidc_env import env_bool
 from backend.app.core.permissions import DEFAULT_GROUPS
+from backend.app.models.auth_ephemeral import AuthEphemeralToken, TokenType
+from backend.app.models.auth_session import AuthSession
 from backend.app.models.group import Group
 from backend.app.models.settings import Settings
 from backend.app.models.user import User
@@ -104,65 +117,21 @@ def _user_to_response(user: User) -> UserResponse:
     )
 
 
-async def _issue_refresh_cookie(
-    db: AsyncSession,
-    response: Response,
-    request: Request,
-    *,
-    username: str,
-    remember_me: bool,
-    family_id: str | None = None,
-) -> None:
-    """Mint + persist a refresh token and set the cookie on ``response``.
-
-    ``family_id=None`` creates a fresh family (new /login). Pass the existing
-    family when rotating inside /auth/refresh so reuse detection sees the
-    whole lineage.
-
-    Cookie shape (§18.14):
-
-    - ``HttpOnly`` — refresh token invisible to JS; XSS can't exfiltrate.
-    - ``SameSite=Lax`` — sent on same-site navigations + same-site POSTs,
-      blocks cross-origin form submissions which is enough for a
-      non-preflighted POST /auth/refresh.
-    - ``Secure`` — auto-detected by ``refresh_cookie_secure_flag`` (HTTPS
-      vs plain HTTP, with X-Forwarded-Proto awareness) unless
-      ``AUTH_REFRESH_COOKIE_SECURE`` env forces the polarity.
-    - ``Path=/api/v1/auth`` — cookie is only transmitted to auth endpoints,
-      trimming the attack surface against CSRF on unrelated routes.
-    - ``Max-Age`` — set only when ``remember_me=True`` (30 d, clamped to the
-      admin session ceiling #1706). Without it the cookie is a session cookie
-      that dies with the browser process.
-
-    Session ceiling (#1706): the admin-configurable ``session_max_hours`` is
-    resolved once here and threaded into both the DB-side refresh TTL and the
-    cookie Max-Age so the two never drift. This is the single choke point for
-    every login flavour (password, /auth/refresh, 2FA, OIDC) — the short-lived
-    access token is left untouched.
-    """
-    ceiling_hours = await resolve_session_max_hours(db)
-    raw_refresh, resolved_family, expires_at = await create_refresh_token(
-        db,
-        username=username,
-        remember_me=remember_me,
-        family_id=family_id,
-        ceiling_hours=ceiling_hours,
-    )
-    cookie_kwargs: dict = {
+async def _issue_refresh_cookie(db, response, request, *, verified: VerifiedOutcome, remember_me: bool, family_id=None):
+    issued = await stage_session(db, verified, remember_me=remember_me, existing_sid=family_id)
+    kwargs = {
         "key": REFRESH_TOKEN_COOKIE_NAME,
-        "value": raw_refresh,
+        "value": issued.raw_refresh,
         "httponly": True,
         "secure": refresh_cookie_secure_flag(request),
         "samesite": "lax",
         "path": REFRESH_TOKEN_COOKIE_PATH,
     }
     if remember_me:
-        # 30 d in seconds, clamped to the admin session ceiling (#1706).
-        # Browser persists across restarts; matches DB TTL.
-        remember_hours = min(REFRESH_TOKEN_EXPIRE_DAYS_REMEMBER * 24, ceiling_hours)
-        cookie_kwargs["max_age"] = remember_hours * 3600
-    response.set_cookie(**cookie_kwargs)
-    _ = resolved_family, expires_at  # logged by the helpers; not needed here
+        kwargs["max_age"] = issued.refresh_max_age
+    # Caller must commit before this response is returned; cookies never leave on failed commit.
+    response.set_cookie(**kwargs)
+    return issued
 
 
 def _clear_refresh_cookie(response: Response, request: Request) -> None:
@@ -289,75 +258,64 @@ router = APIRouter(prefix="/auth", tags=["authentication"])
 PASSWORD_RESET_TOKEN_TTL = timedelta(hours=1)
 
 
-async def create_password_reset_token(db: AsyncSession, username: str) -> str:
-    """Mint a single-use password-reset token; the DB keeps only its hash.
-
-    The raw value exists in the e-mail and in the link the user clicks, never
-    in a row — same reasoning as the refresh cookie. A leaked database is
-    therefore not a set of working reset links.
-    """
-    from sqlalchemy import delete
-
-    from backend.app.core.auth import hash_client_secret
-    from backend.app.models.auth_ephemeral import AuthEphemeralToken, TokenType
-
-    now = datetime.now(timezone.utc)
-    # Prune expired ones opportunistically, as the pre-auth tokens do.
+async def create_password_reset_token(db, username: str):
+    user = await get_user_by_username(db, username)
+    if user is None:
+        raise refused()
+    capture = capture_account(user)
+    await guard_accounts(db, [capture])
     await db.execute(
         delete(AuthEphemeralToken).where(
+            AuthEphemeralToken.account_identity == capture.account_identity,
             AuthEphemeralToken.token_type == TokenType.PASSWORD_RESET,
-            AuthEphemeralToken.expires_at < now,
         )
     )
-    # Anything still outstanding for this account is superseded: asking again
-    # must not leave the previous link working.
-    await db.execute(
-        delete(AuthEphemeralToken).where(
-            AuthEphemeralToken.token_type == TokenType.PASSWORD_RESET,
-            AuthEphemeralToken.username == username,
-        )
-    )
-    raw = secrets.token_urlsafe(32)
+    raw = secrets.token_urlsafe(48)
     db.add(
         AuthEphemeralToken(
             token=hash_client_secret(raw),
             token_type=TokenType.PASSWORD_RESET,
-            username=username,
-            expires_at=now + PASSWORD_RESET_TOKEN_TTL,
+            username=user.username,
+            expires_at=utcnow() + timedelta(hours=1),
+            **binding(capture),
         )
     )
     await db.commit()
     return raw
 
 
-async def consume_password_reset_token(db: AsyncSession, raw: str) -> str | None:
-    """Atomically validate and spend a reset token. Returns the username or None.
-
-    DELETE...RETURNING, so two requests carrying the same token cannot both
-    succeed — only the first DELETE finds the row. That matters more here than
-    for pre-auth: mail clients pre-fetch links, and a token that survived its
-    own first use would be spendable again by whoever else has the message.
-    """
-    from sqlalchemy import delete
-
-    from backend.app.core.auth import hash_client_secret
-    from backend.app.models.auth_ephemeral import AuthEphemeralToken, TokenType
-
-    now = datetime.now(timezone.utc)
-    result = await db.execute(
-        delete(AuthEphemeralToken)
-        .where(
-            AuthEphemeralToken.token == hash_client_secret(raw),
-            AuthEphemeralToken.token_type == TokenType.PASSWORD_RESET,
-            AuthEphemeralToken.expires_at > now,
+async def consume_password_reset_token(db, raw: str):
+    row = (
+        await db.execute(
+            select(AuthEphemeralToken).where(
+                AuthEphemeralToken.token == hash_client_secret(raw),
+                AuthEphemeralToken.token_type == TokenType.PASSWORD_RESET,
+                AuthEphemeralToken.expires_at > utcnow(),
+            )
         )
-        .returning(AuthEphemeralToken.username)
-    )
-    row = result.one_or_none()
+    ).scalar_one_or_none()
     if row is None:
         return None
-    await db.commit()
-    return row[0]
+    try:
+        capture = capture_ephemeral(row, pending=True)
+        proof = await guard_accounts(db, [capture])
+        principal = await validate_captured(db, capture, proof=proof)
+    except HTTPException as exc:
+        if exc.status_code != 401:
+            raise
+        return None
+    spent = await db.execute(
+        delete(AuthEphemeralToken)
+        .where(
+            AuthEphemeralToken.id == row.id,
+            AuthEphemeralToken.token == hash_client_secret(raw),
+            AuthEphemeralToken.token_type == TokenType.PASSWORD_RESET,
+            AuthEphemeralToken.expires_at > utcnow(),
+            *binding_conditions(capture),
+        )
+        .returning(AuthEphemeralToken.id)
+    )
+    return principal.user.username if spent.scalar_one_or_none() is not None else None
 
 
 def is_password_reset_available(*, smtp_configured: bool, local_login_enabled: bool) -> bool:
@@ -424,6 +382,7 @@ async def setup_auth(request: SetupRequest, db: AsyncSession = Depends(get_auth_
 
     logger = logging.getLogger(__name__)
 
+    replacement_hash = await hash_password_async(request.admin_password)
     try:
         # Block re-runs once an admin exists. This is the sole gate - we don't
         # read any "setup_completed" flag, because the admin-count is the real
@@ -479,7 +438,7 @@ async def setup_auth(request: SetupRequest, db: AsyncSession = Depends(get_auth_
         admin_user = User(
             username=request.admin_username.strip(),
             email=request.admin_email.strip() if request.admin_email else None,
-            password_hash=get_password_hash(request.admin_password),
+            password_hash=replacement_hash,
             role="admin",
             is_active=True,
         )
@@ -507,10 +466,11 @@ async def setup_auth(request: SetupRequest, db: AsyncSession = Depends(get_auth_
         result = await db.execute(select(User).where(User.id == admin_user.id).options(selectinload(User.groups)))
         admin_user = result.scalar_one()
 
-        access_token = create_access_token(
-            data={"sub": admin_user.username},
-            expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES),
+        issued = await stage_session(
+            db, VerifiedOutcome(capture_account(admin_user), "local"), remember_me=False, issue_refresh=False
         )
+        await db.commit()
+        access_token = issued.access_token
 
         logger.info("Initial admin user created during setup: %s", admin_user.username)
 
@@ -583,6 +543,11 @@ async def login(
     # Check if LDAP is enabled
     ldap_user = None
     ldap_settings = await _get_ldap_settings(db)
+    known_ldap_user = await get_user_by_username(db, request.username) if ldap_settings else None
+    known_ldap_capture = capture_account(known_ldap_user) if known_ldap_user is not None else None
+    if known_ldap_user is not None:
+        db.expunge(known_ldap_user)
+    await db.rollback()
     if ldap_settings:
         try:
             from backend.app.services.ldap_service import (
@@ -594,7 +559,11 @@ async def login(
 
             ldap_config = parse_ldap_config(ldap_settings)
             if ldap_config:
-                ldap_user = authenticate_ldap_user(ldap_config, request.username, request.password)
+                ldap_user = await asyncio.shield(
+                    auth_runtime.spawn(
+                        asyncio.to_thread(authenticate_ldap_user, ldap_config, request.username, request.password)
+                    )
+                )
         except LDAPGroupLookupError:
             raise HTTPException(
                 status_code=503, detail="LDAP group lookup incomplete", headers={"Retry-After": "5"}
@@ -614,6 +583,34 @@ async def login(
         if ldap_user:
             newly_provisioned = False
             user = await get_user_by_username(db, ldap_user.username)
+            if user is not None and known_ldap_capture is None:
+                # A directory alias can reveal the canonical existing account
+                # only after the first lookup/bind. Capture that incarnation,
+                # then verify again outside SQL; never bless a generation read
+                # after an already-completed external proof.
+                known_ldap_capture = capture_account(user)
+                db.expunge(user)
+                await db.rollback()
+                try:
+                    repeated = await asyncio.shield(
+                        auth_runtime.spawn(
+                            asyncio.to_thread(authenticate_ldap_user, ldap_config, request.username, request.password)
+                        )
+                    )
+                except LDAPGroupLookupError:
+                    raise HTTPException(503, "LDAP group lookup incomplete", headers={"Retry-After": "5"}) from None
+                except LDAPReferralError:
+                    raise HTTPException(503, "LDAP directory search failed", headers={"Retry-After": "5"}) from None
+                if repeated is None or repeated.username.casefold() != ldap_user.username.casefold():
+                    raise refused()
+                ldap_user = repeated
+                user = await get_user_by_username(db, ldap_user.username)
+                if user is None:
+                    raise refused()
+            if user is not None and known_ldap_capture is not None:
+                if user.account_identity != known_ldap_capture.account_identity:
+                    raise refused()
+                await guard_accounts(db, [known_ldap_capture])
             if user and user.auth_source != "ldap":
                 user = None
                 ldap_user = None
@@ -625,6 +622,12 @@ async def login(
                     newly_provisioned = True
             if user and ldap_user and not newly_provisioned:
                 await _sync_ldap_user(db, user, ldap_user, ldap_config)
+
+    if user is not None and ldap_user is not None:
+        initial = known_ldap_capture or capture_account(user)
+        if user.account_identity != initial.account_identity:
+            raise refused()
+        user._verified_outcome = VerifiedOutcome(initial, "ldap")
 
     # #1589: local username/password gate. LDAP keeps its own switch
     # (ldap_enabled) and is not affected — a delegated directory has its own
@@ -665,6 +668,10 @@ async def login(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
+    verified = getattr(user, "_verified_outcome", None)
+    if verified is None:
+        raise refused()
+
     # Reload user with groups for proper permission calculation
     result = await db.execute(select(User).where(User.id == user.id).options(selectinload(User.groups)))
     user = result.scalar_one()
@@ -692,7 +699,7 @@ async def login(
         from backend.app.api.routes.mfa import create_pre_auth_token
 
         challenge_id = secrets.token_urlsafe(32)
-        pre_auth_token = await create_pre_auth_token(db, user.username, challenge_id=challenge_id)
+        pre_auth_token = await create_pre_auth_token(db, user.username, challenge_id=challenge_id, verified=verified)
         response.set_cookie(
             key="2fa_challenge",
             value=challenge_id,
@@ -715,163 +722,68 @@ async def login(
             two_fa_methods=methods,
         )
 
-    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    access_token = create_access_token(data={"sub": user.username}, expires_delta=access_token_expires)
-
     # Sliding-session refresh cookie — §18.14. Issued alongside every access
     # token from a password login so the frontend can transparently refresh
     # the short-lived JWT without bouncing the operator through /login
     # every hour. Explicit commit — the test harness's get_db override
     # doesn't auto-commit, so flushing alone would roll back on session close.
-    await _issue_refresh_cookie(
+    issued = await _issue_refresh_cookie(
         db,
         response,
         raw_request,
-        username=user.username,
+        verified=verified,
         remember_me=request.remember_me,
     )
     await db.commit()
 
     return LoginResponse(
-        access_token=access_token,
+        access_token=issued.access_token,
         token_type="bearer",
-        user=_user_to_response(user),
+        user=_user_to_response(issued.user),
     )
 
 
 @router.post("/refresh", response_model=LoginResponse)
-async def refresh_access_token(
-    request: Request,
-    response: Response,
-    db: AsyncSession = Depends(get_auth_db),
-):
-    """Sliding-session refresh (§18.14).
-
-    Reads the ``bamdude_refresh`` HttpOnly cookie, validates it, and if OK
-    rotates: the old refresh row is marked ``used_at=now`` and a new refresh
-    is issued inside the same family. The new refresh is set as the cookie
-    on the response; a freshly-minted access token is returned in the JSON
-    body.
-
-    Reuse detection — if the incoming token is already-used, it's a replay
-    (stolen cookie or a race condition in the client that survived through
-    the coalescing guard). The whole family is revoked so every sibling
-    refresh dies at once; caller gets a 401 and the frontend drops to
-    /login. OWASP refresh-token rotation.
-
-    Invalid / expired / missing cookies → 401 without family side effects.
-
-    New refresh rows carry an explicit Remember Me preference, preserved even
-    when the administrator's session ceiling makes both lifetimes equal.
-    Only legacy rows without a flag retain the historical lifespan heuristic.
-    The shared cookie issuer applies the current ceiling on every rotation.
-    """
-    from backend.app.core.auth import REFRESH_TOKEN_EXPIRE_HOURS_SESSION
-
-    raw_refresh = request.cookies.get(REFRESH_TOKEN_COOKIE_NAME)
-    if not raw_refresh:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="No refresh token",
-        )
-
-    # Read preference before the atomic consume. This peek grants no session:
-    # verification/consume below still enforces expiry, reuse and current user.
+async def refresh_access_token(request: Request, response: Response, db: AsyncSession = Depends(get_auth_db)):
     from backend.app.core.auth import _hash_refresh_token
-    from backend.app.models.auth_ephemeral import AuthEphemeralToken, TokenType
 
-    peeked = (
+    raw = request.cookies.get(REFRESH_TOKEN_COOKIE_NAME)
+    if not raw:
+        raise HTTPException(401, "No refresh token")
+    row = (
         await db.execute(
-            select(AuthEphemeralToken)
-            .where(AuthEphemeralToken.token == _hash_refresh_token(raw_refresh))
-            .where(AuthEphemeralToken.token_type == TokenType.REFRESH)
+            select(AuthEphemeralToken).where(
+                AuthEphemeralToken.token == _hash_refresh_token(raw), AuthEphemeralToken.token_type == TokenType.REFRESH
+            )
         )
     ).scalar_one_or_none()
-    was_remember_me = False
-    if peeked is not None:
-        if peeked.remember_me is not None:
-            was_remember_me = peeked.remember_me
-        else:
-            # Legacy rows have no explicit preference; retain their historical
-            # inference. New rows preserve opt-in even under a <=24 h ceiling.
-            session_secs = REFRESH_TOKEN_EXPIRE_HOURS_SESSION * 3600
-            lifespan_secs = (peeked.expires_at - peeked.created_at).total_seconds()
-            was_remember_me = lifespan_secs > session_secs + 3600
-
-    username, family_id, result_status = await verify_and_consume_refresh_token(db, raw_refresh)
-
-    if result_status == "race":
-        # One client racing itself — another tab consumed this token moments
-        # ago. Refuse, but touch NOTHING: the family is intact and the winner
-        # has already set a fresh cookie on its own response.
-        #
-        # Clearing the cookie here would be actively destructive, and that is
-        # not hypothetical: the loser's Set-Cookie would delete the rotated
-        # cookie the winner just installed, so the session would die even with
-        # reuse detection disarmed. The old code cleared unconditionally.
-        import logging
-
-        logging.getLogger(__name__).info(
-            "Refresh raced by a sibling request for %s — declining without touching the family", username
-        )
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Refresh already rotated by a concurrent request",
-        )
-
-    if result_status == "reuse":
-        # Belt-and-braces: even though verify_and_consume_refresh_token
-        # already revoked the family, clear the cookie so the client stops
-        # resending a dead token on every subsequent call.
-        _clear_refresh_cookie(response, request)
+    if row is None:
+        raise refused()
+    try:
+        captured = capture_ephemeral(row)
+    except HTTPException:
+        raise refused() from None
+    username, family, result = await verify_and_consume_refresh_token(db, raw)
+    if result == "race":
+        # No response cookie, no family/session revocation, even under two-tab races.
+        raise HTTPException(401, "Refresh already rotated by a concurrent request")
+    if result == "reuse":
         await db.commit()
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Refresh token replay detected; session revoked",
-        )
-    if result_status == "invalid" or not username:
-        _clear_refresh_cookie(response, request)
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or expired refresh token",
-        )
-
-    # Load the user to mint a fresh access token — and so the response body
-    # can carry a current snapshot of the user's permissions (UI may refresh
-    # stale permission caches on sliding-refresh, not just on login).
-    user_row = (
-        await db.execute(select(User).where(User.username == username).options(selectinload(User.groups)))
-    ).scalar_one_or_none()
-    if user_row is None or not user_row.is_active:
-        _clear_refresh_cookie(response, request)
-        if family_id:
-            await revoke_refresh_family(db, family_id)
-        await db.commit()
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="User account unavailable",
-        )
-
-    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    new_access = create_access_token(data={"sub": user_row.username}, expires_delta=access_token_expires)
-
-    # Rotate within the same family so reuse detection sees the lineage.
-    await _issue_refresh_cookie(
+        raise HTTPException(401, "Refresh token replay detected; session revoked")
+    if result != "ok":
+        raise refused()
+    principal = await validate_captured(db, captured)
+    session = await db.get(AuthSession, captured.sid)
+    issued = await _issue_refresh_cookie(
         db,
         response,
         request,
-        username=user_row.username,
-        remember_me=was_remember_me,
-        family_id=family_id,
+        verified=VerifiedOutcome(capture_account(principal.user), session.auth_source),
+        remember_me=session.remember_me,
+        family_id=family,
     )
-
     await db.commit()
-
-    return LoginResponse(
-        access_token=new_access,
-        token_type="bearer",
-        user=_user_to_response(user_row),
-    )
+    return LoginResponse(access_token=issued.access_token, token_type="bearer", user=_user_to_response(issued.user))
 
 
 @router.get("/me", response_model=UserResponse)
@@ -933,66 +845,50 @@ async def logout(
     authorization: str | None = Header(default=None, alias="Authorization"),
     db: AsyncSession = Depends(get_auth_db),
 ):
-    """Logout — revoke the caller's JWT ``jti`` + refresh-token family (§18.4 + §18.14).
+    from backend.app.core.auth import _hash_refresh_token
 
-    Accepts the bearer token via the standard ``Authorization`` header. Validates
-    the signature without enforcing ``exp`` (expired tokens still get their jti
-    blacklisted) so a user who logs out after their token expired can't have
-    anyone replay that token within our revocation window.
-
-    Since §18.14 the logout also clears the sliding-session refresh cookie and
-    revokes every sibling token in the same family so a stolen cookie can't
-    outlive the click-to-logout moment. Other devices logged in under
-    different ``family_id``s stay alive — logout is single-session by design.
-    """
+    capture = None
     if authorization and authorization.startswith("Bearer "):
-        token = authorization[len("Bearer ") :]
         try:
-            payload = jwt.decode(
-                token,
-                SECRET_KEY,
-                algorithms=[ALGORITHM],
-                options={"verify_exp": False},
-            )
-            jti = payload.get("jti")
-            exp = payload.get("exp")
-            if jti:
-                # Revoke until the token's original expiry so the blacklist doesn't
-                # grow forever. After exp the JWT is dead regardless of the row.
-                expires_at = (
-                    datetime.fromtimestamp(exp, tz=timezone.utc)
-                    if exp
-                    else datetime.now(timezone.utc) + timedelta(hours=24)
-                )
-                await revoke_jti(jti, expires_at, username=payload.get("sub"))
+            payload = jwt.decode(authorization[7:], SECRET_KEY, algorithms=[ALGORITHM], options={"verify_exp": False})
+            if (
+                isinstance(payload.get("uid"), str)
+                and isinstance(payload.get("gen"), int)
+                and isinstance(payload.get("sid"), str)
+            ):
+                capture = FrozenAuthority("session", payload["uid"], 0, payload["gen"], payload["sid"])
         except JWTError:
-            # Malformed / signature-invalid token — nothing to revoke.
             pass
-
-    # Revoke the current refresh family + clear the cookie. Only touches the
-    # family whose token the browser is holding; leaves other devices alone.
-    raw_refresh = request.cookies.get(REFRESH_TOKEN_COOKIE_NAME)
-    if raw_refresh:
-        from backend.app.core.auth import _hash_refresh_token
-        from backend.app.models.auth_ephemeral import AuthEphemeralToken, TokenType
-
+    if capture is None:
+        raw = request.cookies.get(REFRESH_TOKEN_COOKIE_NAME)
         row = (
-            await db.execute(
-                select(AuthEphemeralToken)
-                .where(AuthEphemeralToken.token == _hash_refresh_token(raw_refresh))
-                .where(AuthEphemeralToken.token_type == TokenType.REFRESH)
-            )
-        ).scalar_one_or_none()
-        if row is not None and row.family_id:
-            await revoke_refresh_family(db, row.family_id)
-        await db.commit()
+            (
+                await db.execute(
+                    select(AuthEphemeralToken).where(
+                        AuthEphemeralToken.token == _hash_refresh_token(raw),
+                        AuthEphemeralToken.token_type == TokenType.REFRESH,
+                    )
+                )
+            ).scalar_one_or_none()
+            if raw
+            else None
+        )
+        if row is not None:
+            capture = capture_ephemeral(row)
+    if capture is not None:
+        try:
+            await stage_revoke_session(db, capture)
+            await db.commit()
+        except HTTPException as exc:
+            if exc.status_code != 401:
+                raise
+            await db.rollback()
     _clear_refresh_cookie(response, request)
-
     return {"message": "Logged out successfully"}
 
 
 @router.post("/ws-token")
-async def create_ws_token(user: User | None = RequirePermission(Permission.WEBSOCKET_CONNECT)):
+async def create_ws_token(request: Request, user: User | None = RequirePermission(Permission.WEBSOCKET_CONNECT)):
     """Mint a short-lived token for the ``/api/v1/ws`` WebSocket connection.
 
     The HTTP auth middleware never sees the WebSocket upgrade (it only runs on
@@ -1004,7 +900,9 @@ async def create_ws_token(user: User | None = RequirePermission(Permission.WEBSO
     The minting user is recorded on the token so the connection can be tagged for
     per-user broadcasts; ``user`` is None for API-key callers (global-only).
     """
-    return {"token": await create_websocket_token(user.username if user else None)}
+    from backend.app.core.auth import capture_request_authority
+
+    return {"token": await create_websocket_token(authority=await capture_request_authority(request))}
 
 
 @router.post("/media-token")
@@ -1020,7 +918,7 @@ async def mint_media_token(current_user: User = Depends(get_current_active_user)
     JWT only. An API key has no user to record, and needs no token — the media
     routes read ``X-API-Key`` / ``Bearer bd_…`` directly, under its scopes.
     """
-    return {"token": await create_media_token(current_user.username)}
+    return {"token": await create_media_token(authority=current_user._auth_capture)}
 
 
 # Advanced Authentication Endpoints
@@ -1344,9 +1242,14 @@ async def forgot_password(
                 reset_url,
                 int(PASSWORD_RESET_TOKEN_TTL.total_seconds() // 3600),
             )
-            send_email(smtp_settings, user.email, subject, text_body, html_body)
-
-            logger.info("Password reset link sent to user %s", user.username)
+            recipient, username = user.email, user.username
+            await db.rollback()
+            await asyncio.shield(
+                auth_runtime.spawn(
+                    asyncio.to_thread(send_email, smtp_settings, recipient, subject, text_body, html_body)
+                )
+            )
+            logger.info("Password reset link sent to user %s", username)
         except Exception as e:
             logger.error("Failed to send password reset email: %s", e)
             # Don't reveal error to user for security
@@ -1388,6 +1291,8 @@ async def forgot_password_confirm(
     )
     await record_failed_attempt(db, client_ip, event_type=EventType.PASSWORD_RESET_IP)
 
+    await db.rollback()
+    replacement_hash = await hash_password_async(request.new_password)
     username = await consume_password_reset_token(db, request.token)
     if username is None:
         raise HTTPException(
@@ -1404,12 +1309,9 @@ async def forgot_password_confirm(
             detail="This password reset link is invalid or has expired.",
         )
 
-    user.password_hash = get_password_hash(request.new_password)
-    user.password_changed_at = datetime.now(timezone.utc)  # §18.4: invalidate existing JWTs
-    # §18.14: whoever was signed in on the old password is signed out. If the
-    # reset happened because somebody else had the account, leaving their
-    # session alive would defeat the point of the reset.
-    await revoke_all_refresh_tokens_for_user(db, user.username)
+    await stage_end_sessions(db, capture_account(user), "forgotten_password_reset")
+    user.password_hash = replacement_hash
+    user.password_changed_at = utcnow()
     await db.commit()
 
     logger.info("Password reset completed for user %s", user.username)
@@ -1477,11 +1379,21 @@ async def reset_user_password(
     try:
         # Generate new password
         new_password = generate_secure_password()
-        user.password_hash = get_password_hash(new_password)
-        user.password_changed_at = datetime.now(timezone.utc)  # §18.4: invalidate existing JWTs
+        target_capture = capture_account(user)
+        await db.rollback()
+        replacement_hash = await hash_password_async(new_password)
+        proof = await guard_accounts(db, [current_user._auth_capture, target_capture], require_active=False)
+        actor = await validate_captured(db, current_user._auth_capture, proof=proof)
+        if not actor.user.is_admin:
+            raise HTTPException(403, "Only admins can reset user passwords")
+        user = (
+            await db.execute(select(User).where(User.account_identity == target_capture.account_identity))
+        ).scalar_one()
+        await stage_end_sessions(db, target_capture, "admin_password_reset")
+        user.password_hash = replacement_hash
+        user.password_changed_at = utcnow()  # The durable epoch, not this display timestamp, revokes credentials.
         # §18.14: kill all the user's sliding-session refresh tokens too (same
         # reasoning as the forgot-password branch above).
-        await revoke_all_refresh_tokens_for_user(db, user.username)
         await db.commit()
 
         login_url = await get_external_login_url(db)
@@ -1490,13 +1402,18 @@ async def reset_user_password(
         subject, text_body, html_body = await create_password_reset_email_from_template(
             db, user.username, new_password, login_url
         )
-        send_email(smtp_settings, user.email, subject, text_body, html_body)
-
-        logger.info(f"Password reset by admin {admin_user.username} for user {user.username}")
-        return ResetPasswordResponse(message=f"Password reset email sent to {user.email}")
+        recipient, username, actor_name = user.email, user.username, admin_user.username
+        await db.rollback()
+        await asyncio.shield(
+            auth_runtime.spawn(asyncio.to_thread(send_email, smtp_settings, recipient, subject, text_body, html_body))
+        )
+        logger.info("Password reset by admin %s for user %s", actor_name, username)
+        return ResetPasswordResponse(message=f"Password reset email sent to {recipient}")
+    except HTTPException:
+        raise
     except Exception as e:
         await db.rollback()
-        logger.error("Failed to reset password for user %s: %s", user.username, e)
+        logger.error("Failed to reset password (%s)", type(e).__name__)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to reset password",
@@ -1546,6 +1463,7 @@ async def _provision_ldap_user(db: AsyncSession, ldap_user, ldap_config) -> User
         role="user",
         auth_source="ldap",
         is_active=True,
+        groups=[],
     )
 
     # Map LDAP groups to BamDude groups, falling back to the configured default group
@@ -1563,8 +1481,7 @@ async def _provision_ldap_user(db: AsyncSession, ldap_user, ldap_config) -> User
         new_user.groups = list(groups_result.scalars().all())
 
     db.add(new_user)
-    await db.commit()
-    await db.refresh(new_user)
+    await db.flush()
     logger.info("Auto-provisioned LDAP user: %s (groups: %s)", new_user.username, mapped_group_names)
     return new_user
 
@@ -1682,7 +1599,7 @@ async def test_ldap(
     if not config:
         return {"success": False, "message": "LDAP server URL is not configured"}
 
-    success, message = test_ldap_connection(config)
+    success, message = await asyncio.shield(auth_runtime.spawn(asyncio.to_thread(test_ldap_connection, config)))
     if success:
         logger.info("LDAP connection test successful")
     else:
@@ -1730,7 +1647,7 @@ async def get_ldap_status(db: AsyncSession = Depends(get_auth_db)):
 @router.get("/ldap/search", response_model=list[LDAPSearchResultResponse], dependencies=[RequireAdmin()])
 async def search_ldap_directory(
     q: str,
-    _: User | None = RequirePermission(Permission.USERS_CREATE),
+    current_user: User | None = RequirePermission(Permission.USERS_CREATE),
     db: AsyncSession = Depends(get_auth_db),
 ):
     """Search the LDAP directory for users matching ``q``.
@@ -1772,8 +1689,12 @@ async def search_ldap_directory(
             detail="LDAP server URL is not configured",
         )
 
+    captured_actor = current_user._auth_capture
+    await db.rollback()
     try:
-        results = search_ldap_users(config, query, limit=25)
+        results = await asyncio.shield(
+            auth_runtime.spawn(asyncio.to_thread(search_ldap_users, config, query, limit=25))
+        )
     except LDAPOperationError as exc:
         logger.warning("LDAP directory search failed (%s)", exc.code)
         raise HTTPException(
@@ -1784,6 +1705,12 @@ async def search_ldap_directory(
         logger.warning("LDAP directory search unavailable")
         raise HTTPException(503, "LDAP directory search failed") from None
 
+    proof = await guard_accounts(db, [captured_actor])
+    actor = await validate_captured(
+        db, captured_actor, required_permissions=(Permission.USERS_CREATE.value,), proof=proof
+    )
+    if not actor.user.is_admin:
+        raise HTTPException(403, "Administrator required")
     if not results:
         return []
 
@@ -1811,7 +1738,7 @@ async def search_ldap_directory(
 )
 async def provision_ldap_user(
     payload: LDAPProvisionRequest,
-    _: User | None = RequirePermission(Permission.USERS_CREATE),
+    current_user: User | None = RequirePermission(Permission.USERS_CREATE),
     db: AsyncSession = Depends(get_auth_db),
 ):
     """Provision a BamDude user from an existing LDAP directory entry.
@@ -1856,8 +1783,10 @@ async def provision_ldap_user(
     # missing entries surface as 404 to distinguish "directory
     # unreachable" from "username doesn't exist in the directory" in the
     # UI.
+    captured_actor = current_user._auth_capture
+    await db.rollback()
     try:
-        ldap_user = lookup_ldap_user(config, username)
+        ldap_user = await asyncio.shield(auth_runtime.spawn(asyncio.to_thread(lookup_ldap_user, config, username)))
     except LDAPOperationError as exc:
         logger.warning("LDAP lookup failed during provision (%s)", exc.code)
         raise HTTPException(
@@ -1874,6 +1803,12 @@ async def provision_ldap_user(
             detail=f"User '{username}' not found in LDAP directory",
         )
 
+    proof = await guard_accounts(db, [captured_actor])
+    actor = await validate_captured(
+        db, captured_actor, required_permissions=(Permission.USERS_CREATE.value,), proof=proof
+    )
+    if not actor.user.is_admin:
+        raise HTTPException(403, "Administrator required")
     # Reject duplicates — the canonical username from LDAP is what gets
     # stored, so the conflict check uses that rather than the request
     # payload.
@@ -1894,8 +1829,11 @@ async def provision_ldap_user(
     # Reload with groups eagerly loaded so ``_user_to_response`` can
     # serialise them without lazy-load warnings (matches ``create_user`` /
     # ``list_users`` pattern).
-    result = await db.execute(select(User).where(User.id == new_user.id).options(selectinload(User.groups)))
+    result = await db.execute(
+        select(User).where(User.account_identity == new_user.account_identity).options(selectinload(User.groups))
+    )
     new_user = result.scalar_one()
+    await db.commit()
     logger.info("Manually provisioned LDAP user %s (id=%d)", new_user.username, new_user.id)
     return _user_to_response(new_user)
 
@@ -1926,6 +1864,10 @@ def _long_lived_token_to_response(record, *, plaintext: str | None = None) -> di
         # Plaintext is the ONLY field the user ever sees in full — copied once
         # to a clipboard / kiosk config and then forgotten.
         "token": plaintext,
+        "contract_version": record.contract_version,
+        "retired_at": record.retired_at.isoformat() if record.retired_at else None,
+        "retired_reason": record.retired_reason,
+        "reissue_required": bool(record.retired_at or record.retired_reason),
     }
 
 
@@ -1992,6 +1934,7 @@ async def create_long_lived_camera_token(
             name=name,
             expires_in_days=expires_in_days,
             scope=scope,
+            authority=current_user._auth_capture,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
@@ -2022,10 +1965,9 @@ async def list_long_lived_tokens(
     if current_user is None:
         raise HTTPException(status_code=403, detail="User session required")
 
-    # Reload with groups so is_admin reflects group membership reliably.
-    user_with_groups = (
-        await db.execute(select(User).where(User.id == current_user.id).options(selectinload(User.groups)))
-    ).scalar_one()
+    proof = await guard_accounts(db, [current_user._auth_capture])
+    principal = await validate_captured(db, current_user._auth_capture, proof=proof)
+    current_user = user_with_groups = principal.user
 
     if user_id is None or user_id == current_user.id:
         records = await list_user_tokens(db, current_user.id)
@@ -2054,9 +1996,9 @@ async def list_all_long_lived_tokens(
     if current_user is None:
         raise HTTPException(status_code=403, detail="User session required")
 
-    user_with_groups = (
-        await db.execute(select(User).where(User.id == current_user.id).options(selectinload(User.groups)))
-    ).scalar_one()
+    proof = await guard_accounts(db, [current_user._auth_capture])
+    principal = await validate_captured(db, current_user._auth_capture, proof=proof)
+    current_user = user_with_groups = principal.user
     if not user_with_groups.is_admin:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -2084,6 +2026,18 @@ async def revoke_long_lived_token(
     if record is None:
         raise HTTPException(status_code=404, detail="Token not found")
 
+    captured_token_identity = record.token_identity
+    captures = [current_user._auth_capture]
+    if record.owner_identity:
+        owner = await db.scalar(select(User).where(User.account_identity == record.owner_identity))
+        if owner is not None:
+            captures.append(AccountCapture(owner.account_identity, None, owner.id))
+    proof = await guard_accounts(db, captures, require_active=False)
+    principal = await validate_captured(db, current_user._auth_capture, proof=proof)
+    current_user = principal.user
+    record = await db.get(LongLivedToken, token_id, populate_existing=True)
+    if record is None or record.token_identity != captured_token_identity:
+        raise HTTPException(404, "Token not found")
     if not _can_manage_long_lived_token(current_user, record.scope, "delete"):
         raise HTTPException(status_code=403, detail="monitor_token_permission_denied")
 

@@ -9,6 +9,7 @@ import httpx
 import pytest
 from sqlalchemy import event, update
 
+from backend.app.core.auth import generate_api_key
 from backend.app.mcp_server.contracts import DiagnosticAccess
 from backend.app.models.api_key import APIKey
 from backend.app.models.group import Group
@@ -19,6 +20,7 @@ from backend.app.models.user import User
 from backend.app.services.farm_diagnostics.access import REQUIREMENTS, DiagnosticError
 from backend.app.services.farm_diagnostics.contracts import EnergyInput
 from backend.app.services.queue_sources import current_epoch
+from backend.tests.auth_helpers import bind_test_key
 from backend.tests.integration.test_mcp_base_transport import key, live_app, runtime  # noqa: F401
 from backend.tests.integration.test_mcp_farm_diagnostics import data, error, rpc
 
@@ -40,6 +42,8 @@ def actor(pid=None):
         None if pid is None else frozenset({pid}),
         False,
         current_epoch(),
+        key_identity="00000000-0000-0000-0000-000000000001",
+        owner_identity="00000000-0000-0000-0000-000000000002",
     )
 
 
@@ -422,8 +426,22 @@ async def test_energy_permission_gates_apply_to_direct_call(
         owner = User(username="energy reader", role="user", is_active=True, groups=[group])
         db_session.add_all([group, owner])
         await db_session.flush()
-        await db_session.execute(update(APIKey).where(APIKey.id == created["id"]).values(user_id=owner.id))
+        # A key's owner incarnation is immutable: issue a fresh key for this owner.
+        raw, hashed, prefix = generate_api_key()
+        owned_key = APIKey(
+            name="energy owner",
+            key_hash=hashed,
+            key_prefix=prefix,
+            can_access_mcp=True,
+            can_read_status=True,
+            can_queue=False,
+            can_control_printer=False,
+            printer_ids=[p.id],
+        )
+        await bind_test_key(db_session, owned_key, owner)
+        db_session.add(owned_key)
         await db_session.commit()
+        created = {"id": owned_key.id, "key": raw}
         if removed == "printers:read":
             # The existing MCP entrance already requires this right, so it
             # refuses before SDK dispatch rather than returning a tool error.

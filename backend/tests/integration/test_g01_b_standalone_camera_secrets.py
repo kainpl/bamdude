@@ -9,6 +9,7 @@ from backend.app.core.auth import create_access_token
 from backend.app.models.camera import Camera
 from backend.app.models.group import Group
 from backend.app.models.user import User
+from backend.tests.auth_helpers import mint_test_access
 
 URL = "rtsp://user:BA4_PASSWORD@192.0.2.71/live?token=BA4_STREAM"
 SNAP = "http://user:BA4_SNAPSHOT@192.0.2.72/frame?token=BA4_QUERY"
@@ -34,7 +35,7 @@ async def test_read_never_returns_sources(role, async_client, db_session):
         user = User(username="standalone_" + role, role="user", is_active=True, groups=[group])
         db_session.add(user)
         await db_session.commit()
-        headers = {"Authorization": "Bearer " + create_access_token({"sub": user.username})}
+        headers = {"Authorization": "Bearer " + await mint_test_access(db_session, username=user.username)}
     response = await async_client.get("/api/v1/cameras/", headers=headers)
     assert response.status_code == 200 and "BA4_" not in response.text
     row = response.json()[0]
@@ -59,7 +60,7 @@ async def test_saved_draft_authority_no_transaction_and_no_persistence(async_cli
     user = User(username="standalone_viewer", role="user", is_active=True, groups=[group])
     db_session.add(user)
     await db_session.commit()
-    headers = {"Authorization": "Bearer " + create_access_token({"sub": user.username})}
+    headers = {"Authorization": "Bearer " + await mint_test_access(db_session, username=user.username)}
     response = await async_client.post(f"/api/v1/cameras/{camera_id}/test", headers=headers)
     assert response.status_code == 403 and not calls
     response = await async_client.post(

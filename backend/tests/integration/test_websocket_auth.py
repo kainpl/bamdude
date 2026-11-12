@@ -17,6 +17,8 @@ import asyncio
 import pytest
 from httpx import AsyncClient
 
+from backend.tests.auth_helpers import mint_test_authority
+
 
 @pytest.mark.asyncio
 @pytest.mark.integration
@@ -42,7 +44,7 @@ async def test_websocket_token_roundtrip_and_rejection(async_client: AsyncClient
     exactly what the ``/ws`` gate checks before ``ws_manager.connect``."""
     from backend.app.core.auth import create_websocket_token, verify_websocket_token
 
-    token = await create_websocket_token()
+    token = await create_websocket_token(authority=await mint_test_authority())
     assert await verify_websocket_token(token) is True
     assert await verify_websocket_token("not-a-real-token") is False
     assert await verify_websocket_token("") is False
@@ -59,7 +61,7 @@ async def test_websocket_token_is_scoped_to_its_own_type(async_client: AsyncClie
         verify_websocket_token,
     )
 
-    camera_token = await create_camera_stream_token()
+    camera_token = await create_camera_stream_token(authority=await mint_test_authority())
     assert await verify_websocket_token(camera_token) is False
     assert await verify_camera_stream_token(camera_token) is True
 
@@ -101,7 +103,7 @@ async def test_broadcast_to_user_targets_only_the_owner():
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_ws_token_resolves_to_minting_user(async_client: AsyncClient):
+async def test_ws_token_resolves_to_minting_user(async_client: AsyncClient, db_session):
     """The /ws-token endpoint records the authenticated user on the token so the
     connection can be tagged for per-user broadcasts; a token minted without a
     user (API-key caller) resolves to None (→ global fallback)."""
@@ -111,12 +113,14 @@ async def test_ws_token_resolves_to_minting_user(async_client: AsyncClient):
     uid = await resolve_websocket_token_user(resp.json()["token"])
     assert isinstance(uid, int) and uid > 0
 
-    assert await resolve_websocket_token_user(await create_websocket_token()) is None  # userless
+    # Legacy userless rows are rejected; no implicit anonymous/global owner.
+    legacy = await _legacy_ws(db_session)
+    assert await resolve_websocket_token_user(legacy) is None
     assert await resolve_websocket_token_user("not-a-real-token") is None
 
 
 @pytest.mark.asyncio
-async def test_upgrade_authenticates_and_resolves_owner_in_one_query(async_client, db_session):
+async def test_upgrade_resolves_owner_and_rechecks_token_after_authority_read(async_client, db_session):
     from sqlalchemy import event
 
     from backend.app.core.auth import authenticate_websocket_token, create_camera_stream_token, create_websocket_token
@@ -125,7 +129,7 @@ async def test_upgrade_authenticates_and_resolves_owner_in_one_query(async_clien
     calls = []
 
     def counted(*args):
-        calls.append(1)
+        calls.append(args[2])
 
     engine = db_session.bind.sync_engine
     event.listen(engine, "before_cursor_execute", counted)
@@ -134,8 +138,35 @@ async def test_upgrade_authenticates_and_resolves_owner_in_one_query(async_clien
     finally:
         event.remove(engine, "before_cursor_execute", counted)
     assert valid and isinstance(uid, int)
-    assert len(calls) == 1
-    assert await authenticate_websocket_token(await create_websocket_token()) == (True, None)
-    assert await authenticate_websocket_token(await create_websocket_token("deleted-owner")) == (False, None)
-    assert await authenticate_websocket_token(await create_camera_stream_token()) == (False, None)
+    # The final reread closes token expiry/revocation during the account/session
+    # validation awaits; upgrade still uses one combined authority resolver.
+    assert sum("FROM auth_ephemeral_tokens" in statement for statement in calls) == 2
+    legacy = await _legacy_ws(db_session)
+    assert await authenticate_websocket_token(legacy) == (False, None)
+    assert await authenticate_websocket_token(
+        await create_camera_stream_token(authority=await mint_test_authority())
+    ) == (False, None)
     assert await authenticate_websocket_token("") == (False, None)
+    from sqlalchemy import delete
+
+    from backend.app.models.user import User
+
+    await db_session.execute(delete(User).where(User.username == "test_admin"))
+    await db_session.commit()
+    assert await authenticate_websocket_token(token) == (False, None)
+
+
+async def _legacy_ws(db):
+    import secrets
+    from datetime import datetime, timedelta
+
+    from backend.app.models.auth_ephemeral import AuthEphemeralToken, TokenType
+
+    token = secrets.token_urlsafe(24)
+    db.add(
+        AuthEphemeralToken(
+            token=token, token_type=TokenType.WEBSOCKET, expires_at=datetime.utcnow() + timedelta(hours=1)
+        )
+    )
+    await db.commit()
+    return token

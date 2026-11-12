@@ -8,16 +8,35 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from sqlalchemy import select
 
+from backend.app.models.user import User
 from backend.app.models.user_filament import UserFilamentFamily, UserFilamentPreset
-from backend.app.services import filament_preset_sync as sync
+from backend.app.services import cloud_credentials, filament_preset_sync as sync
 
 FIXTURES = Path(__file__).resolve().parents[2] / "fixtures" / "cloud"
 BAMBU = json.loads((FIXTURES / "bambu_slicer_settings.json").read_text(encoding="utf-8"))
 ORCA = json.loads((FIXTURES / "orca_sync_pull.json").read_text(encoding="utf-8"))
 
 
+OWNER = None
+CAPTURES = {}
+
+
+@pytest.fixture(autouse=True)
+async def cloud_owner(db_session):
+    global OWNER, CAPTURES
+    cloud_credentials.open_admission()
+    OWNER = User(username="preset-owner", role="admin", is_active=True)
+    db_session.add(OWNER)
+    await db_session.commit()
+    CAPTURES = {
+        provider: await cloud_credentials.snapshot(db_session, OWNER, provider) for provider in ("bambu", "orca")
+    }
+    await db_session.commit()
+
+
 def _bambu_cloud_mock():
     cloud = AsyncMock()
+    cloud.credential_snapshot = CAPTURES["bambu"]
     cloud.is_authenticated = True
     cloud.get_slicer_settings = AsyncMock(return_value=BAMBU)
     cloud.close = AsyncMock()
@@ -27,7 +46,7 @@ def _bambu_cloud_mock():
 @pytest.mark.asyncio
 async def test_bambu_sync_mirrors_private_rows_preresolved(db_session):
     with patch.object(sync, "_build_bambu_cloud", AsyncMock(return_value=_bambu_cloud_mock())):
-        outcome = await sync.sync_bambu_presets_for_user(db_session, None)
+        outcome = await sync.sync_bambu_presets_for_user(db_session, OWNER)
     assert outcome.ok and outcome.upserted == 3
     rows = (await db_session.execute(select(UserFilamentPreset))).scalars().all()
     by_cloud = {r.cloud_id: r for r in rows}
@@ -42,13 +61,13 @@ async def test_bambu_sync_mirrors_private_rows_preresolved(db_session):
 @pytest.mark.asyncio
 async def test_bambu_sync_deletes_vanished_rows_but_keeps_families(db_session):
     with patch.object(sync, "_build_bambu_cloud", AsyncMock(return_value=_bambu_cloud_mock())):
-        await sync.sync_bambu_presets_for_user(db_session, None)
+        await sync.sync_bambu_presets_for_user(db_session, OWNER)
     shrunk = json.loads(json.dumps(BAMBU))
     shrunk["filament"]["private"] = shrunk["filament"]["private"][:1]  # customs vanish
     cloud = _bambu_cloud_mock()
     cloud.get_slicer_settings = AsyncMock(return_value=shrunk)
     with patch.object(sync, "_build_bambu_cloud", AsyncMock(return_value=cloud)):
-        outcome = await sync.sync_bambu_presets_for_user(db_session, None)
+        outcome = await sync.sync_bambu_presets_for_user(db_session, OWNER)
     assert outcome.deleted == 2
     remaining = (await db_session.execute(select(UserFilamentPreset))).scalars().all()
     assert [r.cloud_id for r in remaining] == ["PFUS_CHILD_OF_GENERIC"]
@@ -59,10 +78,11 @@ async def test_bambu_sync_deletes_vanished_rows_but_keeps_families(db_session):
 @pytest.mark.asyncio
 async def test_orca_sync_resolves_root_child_and_skips_non_filament(db_session):
     svc = AsyncMock()
+    svc.credential_snapshot = CAPTURES["orca"]
     svc.list_profiles = AsyncMock(return_value=ORCA)
     svc.close = AsyncMock()
     with patch.object(sync, "build_authenticated_service", AsyncMock(return_value=svc)):
-        outcome = await sync.sync_orca_presets_for_user(db_session, None)
+        outcome = await sync.sync_orca_presets_for_user(db_session, OWNER)
     assert outcome.ok and outcome.upserted == 2  # print profile skipped
     rows = (await db_session.execute(select(UserFilamentPreset))).scalars().all()
     by_name = {r.name: r for r in rows}
@@ -76,8 +96,8 @@ async def test_orca_sync_resolves_root_child_and_skips_non_filament(db_session):
 @pytest.mark.asyncio
 async def test_sync_is_idempotent(db_session):
     with patch.object(sync, "_build_bambu_cloud", AsyncMock(return_value=_bambu_cloud_mock())):
-        await sync.sync_bambu_presets_for_user(db_session, None)
-        outcome = await sync.sync_bambu_presets_for_user(db_session, None)
+        await sync.sync_bambu_presets_for_user(db_session, OWNER)
+        outcome = await sync.sync_bambu_presets_for_user(db_session, OWNER)
     assert outcome.deleted == 0
     rows = (await db_session.execute(select(UserFilamentPreset))).scalars().all()
     assert len(rows) == 3
@@ -131,6 +151,7 @@ async def test_sync_folds_pushed_presets_instead_of_duplicating(db_session, monk
                 name="Mine @P1S",
                 family_filament_id="Paaaaaaa",
                 pushed_cloud_id="PFUS_MINE",
+                bambu_pushed_owner_identity=OWNER.account_identity,
             ),
             UserFilamentPreset(  # pushed, deleted from BS since
                 owner_user_id=None,
@@ -140,6 +161,7 @@ async def test_sync_folds_pushed_presets_instead_of_duplicating(db_session, monk
                 name="Gone @P1S",
                 family_filament_id="Pbbbbbbb",
                 pushed_cloud_id="PFUS_GONE",
+                bambu_pushed_owner_identity=OWNER.account_identity,
                 push_dirty=True,
             ),
         ]
@@ -160,12 +182,13 @@ async def test_sync_folds_pushed_presets_instead_of_duplicating(db_session, monk
         }
     }
     cloud = AsyncMock()
+    cloud.credential_snapshot = CAPTURES["bambu"]
     cloud.is_authenticated = True
     cloud.get_slicer_settings = AsyncMock(return_value=listing)
     cloud.close = AsyncMock()
     monkeypatch.setattr(sync, "_build_bambu_cloud", AsyncMock(return_value=cloud))
 
-    outcome = await sync.sync_bambu_presets_for_user(db_session, None)
+    outcome = await sync.sync_bambu_presets_for_user(db_session, OWNER)
     assert outcome.ok
 
     rows = (await db_session.execute(select(UserFilamentPreset))).scalars().all()
@@ -192,6 +215,7 @@ async def test_orca_sync_folds_pushed_profiles_instead_of_duplicating(db_session
                 name="Mine @P1S",
                 family_filament_id="Paaaaaaa",
                 orca_pushed_profile_id="uuid-mine",
+                orca_pushed_owner_identity=OWNER.account_identity,
                 orca_pushed_updated_time=100,
             ),
             UserFilamentPreset(
@@ -202,6 +226,7 @@ async def test_orca_sync_folds_pushed_profiles_instead_of_duplicating(db_session
                 name="Gone @P1S",
                 family_filament_id="Pbbbbbbb",
                 orca_pushed_profile_id="uuid-gone",
+                orca_pushed_owner_identity=OWNER.account_identity,
                 orca_push_dirty=True,
             ),
             UserFilamentPreset(
@@ -212,6 +237,7 @@ async def test_orca_sync_folds_pushed_profiles_instead_of_duplicating(db_session
                 name="Filtered @P1S",
                 family_filament_id="Pccccccc",
                 orca_pushed_profile_id="uuid-filtered",
+                orca_pushed_owner_identity=OWNER.account_identity,
                 orca_pushed_updated_time=200,
             ),
         ]
@@ -230,11 +256,12 @@ async def test_orca_sync_folds_pushed_profiles_instead_of_duplicating(db_session
         {"id": "uuid-filtered", "name": "Filtered @P1S", "content": {"type": "machine"}, "updated_time": 200},
     ]
     svc = AsyncMock()
+    svc.credential_snapshot = CAPTURES["orca"]
     svc.list_profiles = AsyncMock(return_value=profiles)
     svc.close = AsyncMock()
     monkeypatch.setattr(sync, "build_authenticated_service", AsyncMock(return_value=svc))
 
-    outcome = await sync.sync_orca_presets_for_user(db_session, None)
+    outcome = await sync.sync_orca_presets_for_user(db_session, OWNER)
     assert outcome.ok
 
     rows = (await db_session.execute(select(UserFilamentPreset))).scalars().all()
@@ -283,7 +310,7 @@ async def test_bambu_numeric_update_time_is_stored_as_text(db_session):
     cloud = _bambu_cloud_mock()
     cloud.get_slicer_settings = AsyncMock(return_value=_with_numeric_update_time(BAMBU))
     with patch.object(sync, "_build_bambu_cloud", AsyncMock(return_value=cloud)):
-        outcome = await sync.sync_bambu_presets_for_user(db_session, None)
+        outcome = await sync.sync_bambu_presets_for_user(db_session, OWNER)
     assert outcome.ok and outcome.upserted == 3
     rows = (await db_session.execute(select(UserFilamentPreset))).scalars().all()
     assert rows and all(isinstance(r.updated_time, str) for r in rows)

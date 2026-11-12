@@ -4,6 +4,7 @@ import pytest
 
 from backend.app.models.color_catalog import ColorCatalogEntry
 from backend.app.models.user_filament import UserFilamentFamily
+from backend.tests.auth_helpers import mint_test_access
 
 pytestmark = pytest.mark.integration
 PATH = "/api/v1/inventory/colors/family"
@@ -92,7 +93,7 @@ async def test_family_palette_uses_inventory_read_permission(async_client, db_se
     )
     db_session.add(user)
     await db_session.commit()
-    token = create_access_token(data={"sub": user.username})
+    token = await mint_test_access(db_session, username=user.username)
     response = await async_client.get(
         PATH, params={"filament_family_id": "GFG02"}, headers={"Authorization": f"Bearer {token}"}
     )

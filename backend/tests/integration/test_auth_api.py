@@ -10,6 +10,8 @@ file already carries admin credentials unless the test overrides them.
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+from backend.tests.auth_helpers import bind_test_key, mint_test_access
+
 
 class TestAuthStatusAPI:
     """Integration tests for /api/v1/auth/status endpoint."""
@@ -198,21 +200,15 @@ class TestAuthMeAPI:
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_me_with_api_key_bearer(self, async_client: AsyncClient, db_session):
-        """A legacy ownerless key gets an anonymous identity — but not admin.
-
-        ⚠️ This used to assert the opposite: ``role="admin"`` and
-        ``is_admin=True``. That was the defect. A key cannot reach an
-        administrative route at all, whoever owns it, so a client building its
-        UI from this response rendered actions that 403 on use. The ``id=0`` /
-        ``api-key:`` identity survives because a key with no ``user_id`` has no
-        identity to report — the claim to be an administrator does not.
-        """
+        """A current owned key reports its owner, with only key-effective authority."""
         from backend.app.core.auth import generate_api_key
         from backend.app.models.api_key import APIKey
 
         # Create an API key directly in the database
         full_key, key_hash, key_prefix = generate_api_key()
-        api_key = APIKey(name="test-kiosk", key_hash=key_hash, key_prefix=key_prefix, enabled=True)
+        api_key = await bind_test_key(
+            db_session, APIKey(name="test-kiosk", key_hash=key_hash, key_prefix=key_prefix, enabled=True)
+        )
         db_session.add(api_key)
         await db_session.commit()
 
@@ -224,8 +220,8 @@ class TestAuthMeAPI:
 
         assert response.status_code == 200
         result = response.json()
-        assert result["id"] == 0
-        assert result["username"].startswith("api-key:")
+        assert result["id"] > 0
+        assert result["username"] == "test_admin"
         assert result["role"] == "user"
         assert result["is_admin"] is False
         assert result["is_active"] is True
@@ -242,10 +238,13 @@ class TestAuthMeAPI:
         from backend.app.models.api_key import APIKey
 
         full_key, key_hash, key_prefix = generate_api_key()
-        api_key = APIKey(name="test-kiosk-header", key_hash=key_hash, key_prefix=key_prefix, enabled=True)
+        api_key = await bind_test_key(
+            db_session, APIKey(name="test-kiosk-header", key_hash=key_hash, key_prefix=key_prefix, enabled=True)
+        )
         db_session.add(api_key)
         await db_session.commit()
 
+        async_client.headers.pop("Authorization", None)
         response = await async_client.get(
             "/api/v1/auth/me",
             headers={"X-API-Key": full_key},
@@ -253,8 +252,8 @@ class TestAuthMeAPI:
 
         assert response.status_code == 200
         result = response.json()
-        assert result["id"] == 0
-        assert result["username"].startswith("api-key:")
+        assert result["id"] > 0
+        assert result["username"] == "test_admin"
         assert result["is_admin"] is False
 
     @pytest.mark.asyncio
@@ -277,7 +276,7 @@ class TestUsersAPI:
         """Return a JWT for the pre-seeded admin."""
         from backend.app.core.auth import create_access_token
 
-        return create_access_token(data={"sub": "test_admin"})
+        return await mint_test_access(username="test_admin")
 
     @pytest.mark.asyncio
     @pytest.mark.integration
@@ -412,7 +411,7 @@ class TestGroupsAPI:
         """Return a JWT for the pre-seeded admin."""
         from backend.app.core.auth import create_access_token
 
-        return create_access_token(data={"sub": "test_admin"})
+        return await mint_test_access(username="test_admin")
 
     @pytest.mark.asyncio
     @pytest.mark.integration
@@ -547,7 +546,7 @@ class TestUserGroupsAPI:
         """Return a JWT for the pre-seeded admin."""
         from backend.app.core.auth import create_access_token
 
-        return create_access_token(data={"sub": "test_admin"})
+        return await mint_test_access(username="test_admin")
 
     @pytest.mark.asyncio
     @pytest.mark.integration
@@ -623,7 +622,7 @@ class TestChangePasswordAPI:
             "/api/v1/users/",
             json={"username": "pwchangeuser", "password": "OldPassword123!"},
         )
-        return create_access_token(data={"sub": "pwchangeuser"})
+        return await mint_test_access(username="pwchangeuser")
 
     @pytest.mark.asyncio
     @pytest.mark.integration

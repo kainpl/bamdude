@@ -48,7 +48,7 @@ async def queue_scope_lock(db: AsyncSession, queue_id: int):
 
 
 @asynccontextmanager
-async def queue_claim_scope(db: AsyncSession, queue_id: int):
+async def queue_claim_scope(db: AsyncSession, queue_id: int, *, process_held: bool = False):
     """Serialize a short final printer-lane admission.
 
     SQLite's in-process lock closes the coroutine window. A fresh SQLite
@@ -57,7 +57,9 @@ async def queue_claim_scope(db: AsyncSession, queue_id: int):
     remains transaction-scoped through the caller's commit; callers must keep
     the critical section short and do no external I/O in it.
     """
-    async with _queue_claim_locks[queue_id]:
+    from contextlib import nullcontext
+
+    async with nullcontext() if process_held else _queue_claim_locks[queue_id]:
         dialect = db.get_bind().dialect.name
         if dialect == "postgresql":
             await _lane_db_guard(db, queue_id)
@@ -82,7 +84,17 @@ async def _lane_db_guard(db: AsyncSession, queue_id: int) -> None:
 
 
 @asynccontextmanager
-async def claim_lanes(db: AsyncSession, queue_ids, *, archive_id: int | None = None, archive_ids=()):
+async def queue_process_lanes(queue_ids):
+    from contextlib import AsyncExitStack
+
+    async with AsyncExitStack() as guards:
+        for queue_id in sorted(set(queue_ids)):
+            await guards.enter_async_context(_queue_claim_locks[queue_id])
+        yield
+
+
+@asynccontextmanager
+async def claim_lanes(db: AsyncSession, queue_ids, *, archive_id: int | None = None, archive_ids=(), before_db=None):
     """The one shared order for a writer that needs printer lanes AND archives (spec r4 §4, T9.7 R4).
 
     In-process locks, ALL of them before SQLite's writer: the archives ascending, then the lanes ascending. Then
@@ -107,6 +119,8 @@ async def claim_lanes(db: AsyncSession, queue_ids, *, archive_id: int | None = N
             await stack.enter_async_context(archive_process_lock(each))
         for queue_id in lanes:
             await stack.enter_async_context(_queue_claim_locks[queue_id])
+        if before_db is not None:
+            await before_db(db)
         dialect = db.get_bind().dialect.name
         if dialect == "sqlite" and not db.in_transaction():
             await db.execute(text("BEGIN IMMEDIATE"))
@@ -432,6 +446,7 @@ async def clone_item(
     *,
     created_by_id: int | None | str = "source",
     keep_order: bool = True,
+    authority=None,
 ) -> PrintQueueItem | None:
     """Insert a duplicate after *item_id*.
 
@@ -454,11 +469,25 @@ async def clone_item(
     await require_repeatable(db, src, whole_batch=True)
     pin = (src.recovery_identity, src.queue_id, src.queue_source_id, src.batch_id)
     new_batch_id = src.batch_id if keep_batch else None
-    async with reusing_sources(db, [src.queue_source_id], queue_ids=[src.queue_id]):
+    from backend.app.services.publication_authority import queue_item_access
+
+    async with reusing_sources(
+        db,
+        [src.queue_source_id],
+        queue_ids=[src.queue_id],
+        authority=authority,
+        printer_id=src.queue_id,
+        source_access=queue_item_access([src]),
+    ):
         src = await db.get(PrintQueueItem, item_id, populate_existing=True, with_for_update=True)
         if src is None or (src.recovery_identity, src.queue_id, src.queue_source_id, src.batch_id) != pin:
             raise SourceUnreadable("clone source changed")
         await require_repeatable(db, src, whole_batch=True)
+        if created_by_id != "source" and authority is not None:
+            from backend.app.services.publication_authority import current_creator
+
+            creator = await current_creator(db, authority)
+            created_by_id = creator.id if creator is not None else None
         # New copy appended to end of its queue.
         max_pos = (
             await db.execute(
@@ -478,7 +507,12 @@ async def clone_item(
 
 
 async def clone_batch(
-    db: AsyncSession, batch_id: str, *, created_by_id: int | None | str = "source", keep_order: bool = True
+    db: AsyncSession,
+    batch_id: str,
+    *,
+    created_by_id: int | None | str = "source",
+    keep_order: bool = True,
+    authority=None,
 ) -> list[PrintQueueItem]:
     """Create a fresh batch (new batch_id) duplicating every pending item
     in the source batch.  Copies appended to end of queue, preserve
@@ -504,14 +538,33 @@ async def clone_batch(
     siblings = await get_batch_pending_items(db, batch_id)
     if not siblings:
         return []
+    pins = tuple((row.id, row.recovery_identity, row.queue_source_id, row.queue_id) for row in siblings)
 
     new_batch_id = str(uuid.uuid4())
     queue_id = siblings[0].queue_id
     clones: list[PrintQueueItem] = []
-    async with reusing_sources(db, [src.queue_source_id for src in siblings], queue_ids=[queue_id]):
+    from backend.app.services.publication_authority import queue_item_access
+
+    async with reusing_sources(
+        db,
+        [src.queue_source_id for src in siblings],
+        queue_ids=[queue_id],
+        authority=authority,
+        printer_id=queue_id,
+        source_access=queue_item_access(siblings),
+    ):
         siblings = await get_batch_pending_items(db, batch_id)
+        if tuple((row.id, row.recovery_identity, row.queue_source_id, row.queue_id) for row in siblings) != pins:
+            from backend.app.services.queue_sources import SourceUnreadable
+
+            raise SourceUnreadable("clone batch changed")
         for member in siblings:
             await require_repeatable(db, member, whole_batch=True)
+        if created_by_id != "source" and authority is not None:
+            from backend.app.services.publication_authority import current_creator
+
+            creator = await current_creator(db, authority)
+            created_by_id = creator.id if creator is not None else None
         max_pos = (
             await db.execute(
                 select(func.max(PrintQueueItem.position))

@@ -11,6 +11,7 @@ from backend.app.models.group import Group
 from backend.app.models.smart_plug import SmartPlug
 from backend.app.models.user import User
 from backend.app.services.git_backup import git_backup_service
+from backend.tests.auth_helpers import mint_test_access
 
 pytestmark = pytest.mark.asyncio
 
@@ -318,7 +319,7 @@ async def control_only(client, db):
     )
     db.add(user)
     await db.commit()
-    client.headers["Authorization"] = "Bearer " + create_access_token({"sub": user.username})
+    client.headers["Authorization"] = "Bearer " + await mint_test_access(db, username=user.username)
 
 
 async def test_tasmota_read_keep_rebind_and_saved_test_authority(async_client, db_session, monkeypatch):
@@ -688,7 +689,7 @@ async def test_ia1_opaque_environment_ha_url_requires_real_admin_with_new_token(
     )
     db_session.add(user)
     await db_session.commit()
-    async_client.headers["Authorization"] = "Bearer " + create_access_token({"sub": user.username})
+    async_client.headers["Authorization"] = "Bearer " + await mint_test_access(db_session, username=user.username)
     network = AsyncMock(side_effect=AssertionError("non-admin reached private environment destination"))
     monkeypatch.setattr(homeassistant_service, "test_connection", network)
     response = await async_client.post(

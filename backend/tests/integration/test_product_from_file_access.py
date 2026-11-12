@@ -24,6 +24,7 @@ from backend.app.models.group import Group
 from backend.app.models.library import LibraryFile
 from backend.app.models.product import Product
 from backend.app.models.user import User
+from backend.tests.auth_helpers import bind_test_key, mint_test_access
 
 pytestmark = pytest.mark.integration
 
@@ -49,18 +50,19 @@ async def _user(db, username: str, permissions: list[str]) -> User:
 
 async def _key(db, owner: User | None, *, projects: bool = True, library: bool = True) -> str:
     raw, key_hash, key_prefix = generate_api_key()
-    db.add(
-        APIKey(
-            name=f"k-{key_prefix}",
-            key_hash=key_hash,
-            key_prefix=key_prefix,
-            enabled=True,
-            user_id=owner.id if owner else None,
-            # The scope column behind `library:read_*` for a key.
-            can_read_status=library,
-            can_manage_projects=projects,
-        )
+    issued_key = APIKey(
+        name=f"k-{key_prefix}",
+        key_hash=key_hash,
+        key_prefix=key_prefix,
+        enabled=True,
+        user_id=owner.id if owner else None,
+        # The scope column behind `library:read_*` for a key.
+        can_read_status=library,
+        can_manage_projects=projects,
     )
+    if owner is not None:
+        await bind_test_key(db, issued_key, owner)
+    db.add(issued_key)
     await db.commit()
     return raw
 
@@ -95,7 +97,7 @@ async def library(db_session):
     await db_session.commit()
     return {
         "files": files,
-        "jwt": {name: create_access_token(data={"sub": name}) for name in ("ff_all", "ff_own", "ff_none")},
+        "jwt": {name: await mint_test_access(db_session, username=name) for name in ("ff_all", "ff_own", "ff_none")},
         "key_with_library": await _key(db_session, reader_all),
         "key_without_library": await _key(db_session, owner_without),
         # The owner reads the whole library; the key's own scope does not let it.

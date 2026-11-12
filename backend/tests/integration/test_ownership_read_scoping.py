@@ -16,16 +16,17 @@ import pytest
 from httpx import AsyncClient
 
 from backend.app.core.auth import create_access_token
+from backend.tests.auth_helpers import mint_test_access
 
 _PW = "Aa1!" + secrets.token_urlsafe(12)  # pragma: allowlist secret
 
 
-def _admin_headers() -> dict:
-    return {"Authorization": f"Bearer {create_access_token(data={'sub': 'test_admin'})}"}
+async def _admin_headers() -> dict:
+    return {"Authorization": f"Bearer {await mint_test_access(username='test_admin')}"}
 
 
 async def _make_user(async_client: AsyncClient, *, username: str, permissions: list[str]) -> tuple[str, int]:
-    headers = _admin_headers()
+    headers = await _admin_headers()
     grp = await async_client.post(
         "/api/v1/groups/", headers=headers, json={"name": f"rs_{username}", "permissions": permissions}
     )
@@ -101,7 +102,7 @@ async def test_read_all_lists_every_archive(async_client: AsyncClient, printer_f
 async def test_default_groups_have_farm_wide_reads(async_client: AsyncClient):
     """Operators + Viewers get read_all (shared-farm policy); Operators get
     orca_cloud:auth. Proves DEFAULT_GROUPS seed + the m091 backfill."""
-    resp = await async_client.get("/api/v1/groups/", headers=_admin_headers())
+    resp = await async_client.get("/api/v1/groups/", headers=await _admin_headers())
     assert resp.status_code == 200, resp.text
     by_name = {g["name"]: set(g["permissions"]) for g in resp.json()}
     for grp in ("Operators", "Viewers"):

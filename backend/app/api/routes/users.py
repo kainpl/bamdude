@@ -1,3 +1,5 @@
+import asyncio
+
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -9,13 +11,22 @@ from backend.app.core.auth import (
     RequireAnyPermission,
     RequirePermission,
     get_current_user_optional,
-    get_password_hash,
-    verify_password,
+    hash_password_async,
+    verify_password_async,
 )
+from backend.app.core.auth_lifetime import (
+    capture_account,
+    guard_accounts,
+    stage_end_sessions,
+    utcnow,
+    validate_captured,
+)
+from backend.app.core.auth_runtime import auth_runtime
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.models.api_key import APIKey
 from backend.app.models.archive import PrintArchive
+from backend.app.models.auth_session import AuthSession
 from backend.app.models.auto_queue import AutoQueueItem
 from backend.app.models.group import Group
 from backend.app.models.library import LibraryFile
@@ -143,10 +154,18 @@ async def create_user(
             )
         password = user_data.password
 
+    await db.rollback()
+    hashed_password = await hash_password_async(password)
+    proof = await guard_accounts(db, [_admin._auth_capture])
+    actor = await validate_captured(
+        db, _admin._auth_capture, required_permissions=(Permission.USERS_CREATE.value,), proof=proof
+    )
+    if not actor.user.is_admin:
+        raise HTTPException(403, "Administrator required")
     new_user = User(
         username=user_data.username,
         email=user_data.email,
-        password_hash=get_password_hash(password),
+        password_hash=hashed_password,
         role=user_data.role,
         is_active=True,
     )
@@ -166,6 +185,7 @@ async def create_user(
     await db.commit()
     await db.refresh(new_user)
 
+    reply = _user_to_response(new_user)
     # Send welcome email if advanced auth enabled
     if advanced_auth_enabled and new_user.email:
         try:
@@ -175,15 +195,21 @@ async def create_user(
                 subject, text_body, html_body = await create_welcome_email_from_template(
                     db, new_user.username, password, login_url
                 )
-                send_email(smtp_settings, new_user.email, subject, text_body, html_body)
-                logger.info(f"Welcome email sent to {new_user.email}")
+                recipient = new_user.email
+                await db.rollback()
+                await asyncio.shield(
+                    auth_runtime.spawn(
+                        asyncio.to_thread(send_email, smtp_settings, recipient, subject, text_body, html_body)
+                    )
+                )
+                logger.info("Welcome email sent to %s", recipient)
             else:
                 logger.warning(f"SMTP not configured, could not send welcome email to {new_user.email}")
         except Exception as e:
             logger.error(f"Failed to send welcome email: {e}")
             # Don't fail user creation if email fails
 
-    return _user_to_response(new_user)
+    return reply
 
 
 @router.get("/slim", response_model=list[UserSlim])
@@ -241,6 +267,7 @@ async def update_user(
     db: AsyncSession = Depends(get_db),
 ):
     """Update a user. Admin-only (privilege-escalation hardening)."""
+    replacement_hash = await hash_password_async(user_data.password) if user_data.password is not None else None
     result = await db.execute(select(User).where(User.id == user_id).options(selectinload(User.groups)))
     user = result.scalar_one_or_none()
     if not user:
@@ -248,6 +275,22 @@ async def update_user(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="User not found",
         )
+
+    target_capture = capture_account(user)
+    proof = await guard_accounts(db, [_admin._auth_capture, target_capture], require_active=False)
+    actor = await validate_captured(
+        db, _admin._auth_capture, required_permissions=(Permission.USERS_UPDATE.value,), proof=proof
+    )
+    if not actor.user.is_admin:
+        raise HTTPException(403, "Administrator required")
+    user = (
+        await db.execute(
+            select(User)
+            .where(User.account_identity == target_capture.account_identity)
+            .options(selectinload(User.groups))
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one()
 
     # Prevent deactivating the last admin
     if user_data.is_active is False and user.is_admin:
@@ -280,6 +323,13 @@ async def update_user(
                 detail="Cannot change role of the last admin user",
             )
 
+    if (
+        user_data.password is not None
+        or (user_data.username is not None and user_data.username != user.username)
+        or (user_data.is_active is False and user.is_active)
+    ):
+        await stage_end_sessions(db, target_capture, "account_changed")
+
     if user_data.username is not None:
         # Check if new username already exists (case-insensitive) — any match means it exists,
         # so this reads the first row rather than raising on two case variants (see create_user).
@@ -310,7 +360,8 @@ async def update_user(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Cannot set password for LDAP users",
             )
-        user.password_hash = get_password_hash(user_data.password)
+        user.password_hash = replacement_hash
+        user.password_changed_at = utcnow()
 
     if user_data.role is not None:
         if user_data.role not in ["admin", "user"]:
@@ -398,6 +449,15 @@ async def delete_user(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="User not found",
         )
+
+    target_capture = capture_account(user)
+    proof = await guard_accounts(db, [_admin._auth_capture, target_capture], require_active=False)
+    actor = await validate_captured(
+        db, _admin._auth_capture, required_permissions=(Permission.USERS_DELETE.value,), proof=proof
+    )
+    if not actor.user.is_admin:
+        raise HTTPException(403, "Administrator required")
+    await stage_end_sessions(db, target_capture, "account_deleted")
 
     # Prevent deleting the last admin
     if user.is_admin:
@@ -516,6 +576,7 @@ async def delete_user(
     await db.execute(delete(UserOIDCLink).where(UserOIDCLink.user_id == user_id))
     await db.execute(delete(UserTOTP).where(UserTOTP.user_id == user_id))
     await db.execute(delete(UserOTPCode).where(UserOTPCode.user_id == user_id))
+    await db.execute(delete(Settings).where(Settings.key == f"user_{user_id}_email_2fa_enabled"))
     await db.execute(delete(LongLivedToken).where(LongLivedToken.user_id == user_id))
     # The in-app inbox is one-to-many per user; SQLite never fires the CASCADE.
     await db.execute(delete(UserNotification).where(UserNotification.user_id == user_id))
@@ -535,6 +596,7 @@ async def delete_user(
     await finished_stock.detach_user(db, user_id)
     await stock_issues.detach_user(db, user_id)
 
+    await db.execute(delete(AuthSession).where(AuthSession.account_identity == target_capture.account_identity))
     await db.delete(user)
     await db.commit()
 
@@ -545,52 +607,23 @@ async def change_own_password(
     current_user: User | None = Depends(get_current_user_optional),
     db: AsyncSession = Depends(get_db),
 ):
-    """Change the current user's password. Requires current password verification."""
-    if not current_user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Authentication required to change password",
-        )
-
-    # Block password change for LDAP users
-    if getattr(current_user, "auth_source", "local") == "ldap":
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Cannot change password for LDAP users - passwords are managed by the LDAP server",
-        )
-
-    # Verify current password
-    if not current_user.password_hash:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Account has no local password set",
-        )
-    if not verify_password(password_data.current_password, current_user.password_hash):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Current password is incorrect",
-        )
-
-    # Fetch user from this session to ensure changes are persisted
-    result = await db.execute(select(User).where(User.id == current_user.id))
-    user = result.scalar_one_or_none()
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found",
-        )
-
-    # Update password. password_changed_at invalidates all JWTs issued before
-    # this moment (§18.4 I2 — freshness check in get_current_user). §18.14
-    # extension: sliding-session refresh tokens are also revoked so other
-    # devices can't keep refreshing access tokens against a rotated password.
-    from datetime import datetime, timezone
-
-    from backend.app.core.auth import revoke_all_refresh_tokens_for_user
-
-    user.password_hash = get_password_hash(password_data.new_password)
-    user.password_changed_at = datetime.now(timezone.utc)
-    await revoke_all_refresh_tokens_for_user(db, user.username)
+    if current_user is None:
+        raise HTTPException(401, "Authentication required to change password")
+    if current_user.auth_source == "ldap":
+        raise HTTPException(400, "Cannot change password for LDAP users - passwords are managed by the LDAP server")
+    expected_hash = current_user.password_hash
+    if not expected_hash:
+        raise HTTPException(400, "Account has no local password set")
+    if not await verify_password_async(password_data.current_password, expected_hash):
+        raise HTTPException(400, "Current password is incorrect")
+    replacement = await hash_password_async(password_data.new_password)
+    captured = current_user._auth_capture
+    proof = await guard_accounts(db, [captured])
+    principal = await validate_captured(db, captured, proof=proof)
+    if principal.user.password_hash != expected_hash:
+        raise HTTPException(400, "Current password is incorrect")
+    await stage_end_sessions(db, capture_account(principal.user), "password_changed")
+    principal.user.password_hash = replacement
+    principal.user.password_changed_at = utcnow()
     await db.commit()
-
     return {"message": "Password changed successfully"}

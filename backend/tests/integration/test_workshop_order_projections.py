@@ -62,7 +62,9 @@ async def test_a_reader_of_the_order_sees_its_prints_as_minimal_rows(async_clien
     await _user(db_session, "proj_reader", ["orders:read"])
     await _user(db_session, "proj_archivist", ["orders:read", "archives:read_all"])
 
-    [row] = (await async_client.get(f"/api/v1/projects/{desk['order']}/archives", headers=_jwt("proj_reader"))).json()
+    [row] = (
+        await async_client.get(f"/api/v1/projects/{desk['order']}/archives", headers=await _jwt("proj_reader"))
+    ).json()
     assert row["id"] == desk["archive"]
     assert row["restricted"] is True
     assert row["print_name"] == "Shade"
@@ -71,7 +73,7 @@ async def test_a_reader_of_the_order_sees_its_prints_as_minimal_rows(async_clien
     assert "file_path" not in row
 
     [full] = (
-        await async_client.get(f"/api/v1/projects/{desk['order']}/archives", headers=_jwt("proj_archivist"))
+        await async_client.get(f"/api/v1/projects/{desk['order']}/archives", headers=await _jwt("proj_archivist"))
     ).json()
     assert full["notes"] == "supplier's private remark"
     assert not full.get("restricted")
@@ -82,17 +84,17 @@ async def test_a_reader_of_the_order_sees_its_queue_rows_without_the_queues_deta
     await _user(db_session, "proj_q_reader", ["orders:read"])
     await _user(db_session, "proj_q_full", ["orders:read", "queue:read_all", "library:read_all"])
 
-    [plain] = (await async_client.get(f"/api/v1/projects/{desk['order']}/queue", headers=_jwt("proj_q_reader"))).json()[
-        "pending"
-    ]
+    [plain] = (
+        await async_client.get(f"/api/v1/projects/{desk['order']}/queue", headers=await _jwt("proj_q_reader"))
+    ).json()["pending"]
     assert plain["id"] == desk["row"]
     assert plain["library_file_name"] is None
     assert plain["created_by_username"] is None
     assert plain["ams_mapping"] is None
 
-    [full] = (await async_client.get(f"/api/v1/projects/{desk['order']}/queue", headers=_jwt("proj_q_full"))).json()[
-        "pending"
-    ]
+    [full] = (
+        await async_client.get(f"/api/v1/projects/{desk['order']}/queue", headers=await _jwt("proj_q_full"))
+    ).json()["pending"]
     assert full["library_file_name"] == "secret-design.gcode.3mf"
     assert full["created_by_username"] == "proj_owner"
     assert full["ams_mapping"] == [2, -1]
@@ -107,10 +109,12 @@ async def test_the_timeline_names_a_library_file_only_to_whom_the_library_shows_
         return [e for e in events if (e.get("metadata") or {}).get("queue_item_id") == desk["row"]]
 
     [hidden] = queued(
-        (await async_client.get(f"/api/v1/projects/{desk['order']}/timeline", headers=_jwt("proj_t_reader"))).json()
+        (
+            await async_client.get(f"/api/v1/projects/{desk['order']}/timeline", headers=await _jwt("proj_t_reader"))
+        ).json()
     )
     assert "secret-design" not in (hidden.get("description") or "")
     [shown] = queued(
-        (await async_client.get(f"/api/v1/projects/{desk['order']}/timeline", headers=_jwt("proj_t_lib"))).json()
+        (await async_client.get(f"/api/v1/projects/{desk['order']}/timeline", headers=await _jwt("proj_t_lib"))).json()
     )
     assert "secret-design" in shown["description"]

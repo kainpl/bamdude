@@ -18,6 +18,7 @@ from backend.app.models.library import LibraryFile
 from backend.app.models.user import User
 from backend.app.services import library_preview_jobs as jobs_module
 from backend.app.services.library_preview_jobs import QUEUE_LIMIT
+from backend.tests.auth_helpers import bind_test_key, mint_test_access
 
 pytestmark = pytest.mark.integration
 URL = "/api/v1/library/thumbnail-jobs"
@@ -86,8 +87,8 @@ async def _user(db, name, permissions):
     return user
 
 
-def _as(user):
-    return {"Authorization": f"Bearer {create_access_token(data={'sub': user.username})}"}
+async def _as(user):
+    return {"Authorization": f"Bearer {await mint_test_access(username=user.username)}"}
 
 
 async def _settled(client, epoch, receipt_id, headers=None, rounds=200):
@@ -200,9 +201,9 @@ async def test_another_actors_receipt_needs_read_all_and_update_all_and_never_na
     step = await _file(db_session, 1)
     receipt_id = (await async_client.post(URL, json={"file_ids": [step.id]})).json()["results"][0]["receipt_id"]
     params = {"epoch": jobs.epoch, "ids": [receipt_id]}
-    hidden = (await async_client.get(URL, params=params, headers=_as(reader))).json()
+    hidden = (await async_client.get(URL, params=params, headers=await _as(reader))).json()
     assert hidden["receipts"] == [] and hidden["missing"] == [receipt_id]  # the same as unknown
-    seen = (await async_client.get(URL, params=params, headers=_as(both))).json()["receipts"][0]
+    seen = (await async_client.get(URL, params=params, headers=await _as(both))).json()["receipts"][0]
     assert set(seen) == {"file_id", "receipt_id", "state", "error_code"}
     jobs.perform.hold.set()
 
@@ -213,11 +214,66 @@ async def test_your_own_receipt_is_hidden_once_you_cannot_read_the_file(async_cl
     owner = await _user(db_session, "owner", [Permission.LIBRARY_READ_ALL])
     step = await _file(db_session, 1, owner=owner)
     asker = await _user(db_session, "asker", [Permission.LIBRARY_UPDATE_ALL, Permission.LIBRARY_READ_OWN])
-    receipt_id = (await async_client.post(URL, json={"file_ids": [step.id]}, headers=_as(asker))).json()["results"][0][
-        "receipt_id"
-    ]
-    body = (await async_client.get(URL, params={"epoch": jobs.epoch, "ids": [receipt_id]}, headers=_as(asker))).json()
+    receipt_id = (await async_client.post(URL, json={"file_ids": [step.id]}, headers=await _as(asker))).json()[
+        "results"
+    ][0]["receipt_id"]
+    body = (
+        await async_client.get(URL, params={"epoch": jobs.epoch, "ids": [receipt_id]}, headers=await _as(asker))
+    ).json()
     assert body["missing"] == [receipt_id]  # its own receipt, but not its file to read
+    jobs.perform.hold.set()
+
+
+@pytest.mark.asyncio
+async def test_same_account_in_another_valid_session_can_read_and_cancel_its_receipt(async_client, db_session, jobs):
+    owner = await _user(db_session, "receipt-owner", [Permission.LIBRARY_UPDATE_ALL, Permission.LIBRARY_READ_OWN])
+    jobs.perform.hold.clear()
+    step = await _file(db_session, 1, owner=owner)
+    first_headers, second_headers = await _as(owner), await _as(owner)
+    assert first_headers != second_headers
+    response = await async_client.post(URL, json={"file_ids": [step.id]}, headers=first_headers)
+    assert response.status_code == 202, response.text
+    receipt_id = response.json()["results"][0]["receipt_id"]
+    original_capture = jobs._receipts[receipt_id].authority.capture
+
+    result = await async_client.get(URL, params={"epoch": jobs.epoch, "ids": [receipt_id]}, headers=second_headers)
+    assert [item["receipt_id"] for item in result.json()["receipts"]] == [receipt_id]
+    canceled = await async_client.delete(f"{URL}/{receipt_id}", params={"epoch": jobs.epoch}, headers=second_headers)
+    assert canceled.status_code == 200, canceled.text
+    assert canceled.json()["state"] == "canceled"
+    # Reading from a second session never replaces the grant carried to the final writer.
+    assert jobs._receipts[receipt_id].authority.capture is original_capture
+    jobs.perform.hold.set()
+
+
+@pytest.mark.asyncio
+async def test_recreated_numeric_account_cannot_take_the_old_receipt(async_client, db_session, jobs):
+    from sqlalchemy import delete
+
+    owner = await _user(db_session, "old-receipt-owner", [Permission.LIBRARY_UPDATE_ALL, Permission.LIBRARY_READ_OWN])
+    jobs.perform.hold.clear()
+    step = await _file(db_session, 1, owner=owner)
+    response = await async_client.post(URL, json={"file_ids": [step.id]}, headers=await _as(owner))
+    assert response.status_code == 202, response.text
+    await jobs.perform.entered.wait()  # precheck DB work has ended before replacing the fixture account
+    receipt_id = response.json()["results"][0]["receipt_id"]
+    old_id, old_identity, groups = owner.id, owner.account_identity, list(owner.groups)
+    owner.groups.clear()
+    await db_session.flush()
+    await db_session.execute(delete(User).where(User.id == old_id))
+    await db_session.commit()
+    replacement = User(id=old_id, username="new-receipt-owner", role="user", groups=groups)
+    db_session.add(replacement)
+    await db_session.commit()
+    assert replacement.account_identity != old_identity
+    step.created_by_id = replacement.id
+    await db_session.commit()
+    # The reused numeric source owner allows READ_OWN; only immutable actor identity can deny the receipt.
+    headers = await _as(replacement)
+    result = await async_client.get(URL, params={"epoch": jobs.epoch, "ids": [receipt_id]}, headers=headers)
+    assert result.json()["receipts"] == [] and result.json()["missing"] == [receipt_id]
+    canceled = await async_client.delete(f"{URL}/{receipt_id}", params={"epoch": jobs.epoch}, headers=headers)
+    assert canceled.status_code == 404
     jobs.perform.hold.set()
 
 
@@ -231,16 +287,16 @@ async def test_delete_detaches_only_this_receipt_and_a_foreign_one_needs_both_ri
     jobs.perform.hold.clear()
     step = await _file(db_session, 1)
     mine = (await async_client.post(URL, json={"file_ids": [step.id]})).json()["results"][0]["receipt_id"]
-    theirs = (await async_client.post(URL, json={"file_ids": [step.id]}, headers=_as(other))).json()["results"][0][
-        "receipt_id"
-    ]
+    theirs = (await async_client.post(URL, json={"file_ids": [step.id]}, headers=await _as(other))).json()["results"][
+        0
+    ]["receipt_id"]
     assert theirs != mine
-    refused = await async_client.delete(f"{URL}/{theirs}", params={"epoch": jobs.epoch}, headers=_as(updater))
+    refused = await async_client.delete(f"{URL}/{theirs}", params={"epoch": jobs.epoch}, headers=await _as(updater))
     assert refused.status_code == 404  # not yours, and no read_all: the same as unknown
     canceled = await async_client.delete(f"{URL}/{mine}", params={"epoch": jobs.epoch})
     assert canceled.status_code == 200 and canceled.json()["state"] == "canceled"
     jobs.perform.hold.set()
-    assert (await _settled(async_client, jobs.epoch, theirs, headers=_as(other)))["state"] == "succeeded"
+    assert (await _settled(async_client, jobs.epoch, theirs, headers=await _as(other)))["state"] == "succeeded"
     assert jobs.perform.calls == [step.id]  # one CAD for both actors
 
 
@@ -261,13 +317,15 @@ async def test_delete_after_the_hand_off_is_too_late_and_the_terminal_follows(as
 
 @pytest.mark.asyncio
 async def test_an_api_keys_receipt_is_the_keys_and_shows_no_actor(async_client, db_session, jobs):
-    admin = (await db_session.execute(User.__table__.select().where(User.username == "test_admin"))).first()
+    from sqlalchemy import select
+
+    admin = (await db_session.execute(select(User).where(User.username == "test_admin"))).scalar_one()
     raw, key_hash, key_prefix = generate_api_key()
-    db_session.add(
-        APIKey(
-            name="k", key_hash=key_hash, key_prefix=key_prefix, enabled=True, user_id=admin.id, can_manage_library=True
-        )
+    key = APIKey(
+        name="k", key_hash=key_hash, key_prefix=key_prefix, enabled=True, user_id=admin.id, can_manage_library=True
     )
+    await bind_test_key(db_session, key, admin)
+    db_session.add(key)
     await db_session.commit()
     step = await _file(db_session, 1)
     key_headers = {"X-API-Key": raw, "Authorization": ""}
@@ -303,9 +361,11 @@ async def test_the_legacy_route_answers_an_explicit_step_id_and_never_selects_st
 async def test_the_button_and_its_cancel_ask_update_all(async_client, db_session, jobs):
     uploader = await _user(db_session, "uploader", [Permission.LIBRARY_UPLOAD, Permission.LIBRARY_READ_ALL])
     step = await _file(db_session, 1)
-    assert (await async_client.post(URL, json={"file_ids": [step.id]}, headers=_as(uploader))).status_code == 403
+    assert (await async_client.post(URL, json={"file_ids": [step.id]}, headers=await _as(uploader))).status_code == 403
     jobs.perform.hold.clear()
     receipt_id = (await async_client.post(URL, json={"file_ids": [step.id]})).json()["results"][0]["receipt_id"]
-    refused = await async_client.delete(f"{URL}/{receipt_id}", params={"epoch": jobs.epoch}, headers=_as(uploader))
+    refused = await async_client.delete(
+        f"{URL}/{receipt_id}", params={"epoch": jobs.epoch}, headers=await _as(uploader)
+    )
     assert refused.status_code == 403
     jobs.perform.hold.set()

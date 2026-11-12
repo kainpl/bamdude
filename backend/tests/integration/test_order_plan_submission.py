@@ -105,7 +105,7 @@ async def test_foreign_admin_can_cancel_only_unpublished_work_without_taking_ove
     await registered(committing_client, path, state)
     original = (await db_session.get(OrderPlanSubmission, "test-op", populate_existing=True)).actor
     reviewer = await _user(db_session, "plan-reviewer", ADMIN_CANCEL_RIGHTS)  # deliberately no queue:create
-    headers = _jwt(reviewer.username)
+    headers = await _jwt(reviewer.username)
     read = await committing_client.get(path + "/submissions/test-op", headers=headers)
     assert read.status_code == 200, read.text
     assert read.json()["can_execute"] is False and read.json()["can_cancel"] is True
@@ -120,7 +120,7 @@ async def test_foreign_admin_can_cancel_only_unpublished_work_without_taking_ove
     assert result.json()["status"] == "cancelled"
     operation = await db_session.get(OrderPlanSubmission, "test-op", populate_existing=True)
     assert operation.actor == original
-    assert operation.request["cancellation"]["actor"] == f"user:{reviewer.id}"
+    assert operation.request["cancellation"]["actor"] == f"user:{reviewer.account_identity}"
     events = list(
         await db_session.scalars(select(ProjectEvent).where(ProjectEvent.kind == "plan_submission_cancelled"))
     )
@@ -142,7 +142,9 @@ async def test_admin_cancellation_requires_current_rights_and_source_visibility(
     rights += ["queue:read_own"]
     reviewer = await _user(db_session, "restricted-reviewer", rights)
     result = await committing_client.post(
-        path + "/submissions/test-op/cancel-unpublished", headers=_jwt(reviewer.username), json={"reason": "reviewed"}
+        path + "/submissions/test-op/cancel-unpublished",
+        headers=await _jwt(reviewer.username),
+        json={"reason": "reviewed"},
     )
     assert result.status_code == 403, result.text
     assert (await db_session.get(OrderPlanSubmission, "test-op", populate_existing=True)).status == "pending"
@@ -341,7 +343,7 @@ async def test_partial_commit_then_continue_advances_epoch_only_once(
         reviewer = await _user(db_session, "partial-reviewer", ADMIN_CANCEL_RIGHTS)
         response = await committing_client.post(
             path + "/submissions/partial/cancel-unpublished",
-            headers=_jwt(reviewer.username),
+            headers=await _jwt(reviewer.username),
             json={"reason": "Keep only committed work"},
         )
         assert response.status_code == 200, response.text
@@ -408,7 +410,7 @@ async def test_permission_revoked_during_capture_publishes_nothing(committing_cl
 
     monkeypatch.setattr(auto_queue_add, "capture_staged", revoked)
     result = await committing_client.post(path + "/submissions/test-op/execute")
-    assert result.status_code == 403, result.text
+    assert result.status_code == 401, result.text
     assert await db_session.scalar(select(func.count()).select_from(AutoQueueItem)) == 0
     assert await db_session.scalar(select(func.count()).select_from(OrderPlanReceipt)) == 0
     assert (await db_session.get(OrderWorkingPlan, int(path.split("/")[4]), populate_existing=True)).entries[0][

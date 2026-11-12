@@ -10,6 +10,8 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from httpx import AsyncClient
 
+from backend.tests.auth_helpers import mint_test_access
+
 
 class TestPerUserCloudCredentials:
     """Tests that cloud credentials are stored per-user when auth is enabled."""
@@ -149,7 +151,7 @@ class TestCloudEndpointPermissions:
             )
             await db.commit()
 
-        return create_access_token(data={"sub": "settingsuser"})
+        return await mint_test_access(username="settingsuser")
 
     @pytest.fixture
     async def cloud_only_setup(self, async_client: AsyncClient):
@@ -180,7 +182,7 @@ class TestCloudEndpointPermissions:
             )
             await db.commit()
 
-        return create_access_token(data={"sub": "cloudonly"})
+        return await mint_test_access(username="cloudonly")
 
     @pytest.mark.asyncio
     @pytest.mark.integration
@@ -251,6 +253,15 @@ class TestCloudEndpointPermissions:
 class TestCloudTokenStorage:
     """Unit-level tests for the token storage functions."""
 
+    @pytest.fixture
+    async def cloud_group(self, db_session):
+        from backend.app.models.group import Group
+
+        group = Group(name="storage-cloud", permissions=["cloud:auth"])
+        db_session.add(group)
+        await db_session.commit()
+        return group
+
     @pytest.mark.asyncio
     async def test_get_stored_token_returns_none_when_no_user_no_global(self, db_session):
         """get_stored_token with user=None and no global token returns (None, None, 'global')."""
@@ -263,24 +274,24 @@ class TestCloudTokenStorage:
         assert region == "global"
 
     @pytest.mark.asyncio
-    async def test_store_and_get_global_token(self, db_session):
-        """store_token with user=None stores in global Settings table (incl. region)."""
+    async def test_store_without_owner_never_falls_back_to_global(self, db_session):
+        from fastapi import HTTPException
+
         from backend.app.api.routes.cloud import get_stored_token, store_token
 
-        await store_token(db_session, "test-token-123", "test@example.com", "china", user=None)
-        token, email, region = await get_stored_token(db_session, user=None)
-        assert token == "test-token-123"
-        assert email == "test@example.com"
-        assert region == "china"
+        with pytest.raises(HTTPException) as refusal:
+            await store_token(db_session, "test-token-123", "test@example.com", "china", user=None)
+        assert refusal.value.status_code == 401
+        assert (await get_stored_token(db_session, user=None))[0] is None
 
     @pytest.mark.asyncio
-    async def test_store_and_get_per_user_token(self, db_session):
+    async def test_store_and_get_per_user_token(self, db_session, cloud_group):
         """store_token with user stores on the user record (incl. cloud_region)."""
         from backend.app.api.routes.cloud import get_stored_token, store_token
         from backend.app.core.auth import get_password_hash
         from backend.app.models.user import User
 
-        user = User(username="tokentest", password_hash=get_password_hash("pass"), role="user")
+        user = User(username="tokentest", password_hash=get_password_hash("pass"), role="user", groups=[cloud_group])
         db_session.add(user)
         await db_session.commit()
         await db_session.refresh(user)
@@ -290,20 +301,24 @@ class TestCloudTokenStorage:
         # Re-fetch user to verify persistence
         from sqlalchemy import select
 
-        result = await db_session.execute(select(User).where(User.id == user.id))
+        result = await db_session.execute(
+            select(User).where(User.id == user.id).execution_options(populate_existing=True)
+        )
         refreshed = result.scalar_one()
         assert refreshed.cloud_token == "user-token-abc"
         assert refreshed.cloud_email == "user@example.com"
         assert refreshed.cloud_region == "global"
 
     @pytest.mark.asyncio
-    async def test_per_user_token_does_not_affect_global(self, db_session):
+    async def test_per_user_token_does_not_affect_global(self, db_session, cloud_group):
         """Storing per-user token should not affect global Settings."""
         from backend.app.api.routes.cloud import get_stored_token, store_token
         from backend.app.core.auth import get_password_hash
         from backend.app.models.user import User
 
-        user = User(username="isolationtest", password_hash=get_password_hash("pass"), role="user")
+        user = User(
+            username="isolationtest", password_hash=get_password_hash("pass"), role="user", groups=[cloud_group]
+        )
         db_session.add(user)
         await db_session.commit()
         await db_session.refresh(user)
@@ -317,13 +332,13 @@ class TestCloudTokenStorage:
         assert global_email is None
 
     @pytest.mark.asyncio
-    async def test_clear_per_user_token(self, db_session):
+    async def test_clear_per_user_token(self, db_session, cloud_group):
         """clear_token with user clears only that user's credentials (token+email+region)."""
         from backend.app.api.routes.cloud import clear_token, get_stored_token, store_token
         from backend.app.core.auth import get_password_hash
         from backend.app.models.user import User
 
-        user = User(username="cleartest", password_hash=get_password_hash("pass"), role="user")
+        user = User(username="cleartest", password_hash=get_password_hash("pass"), role="user", groups=[cloud_group])
         db_session.add(user)
         await db_session.commit()
         await db_session.refresh(user)
@@ -333,33 +348,37 @@ class TestCloudTokenStorage:
 
         from sqlalchemy import select
 
-        result = await db_session.execute(select(User).where(User.id == user.id))
+        result = await db_session.execute(
+            select(User).where(User.id == user.id).execution_options(populate_existing=True)
+        )
         refreshed = result.scalar_one()
         assert refreshed.cloud_token is None
         assert refreshed.cloud_email is None
         assert refreshed.cloud_region is None
 
     @pytest.mark.asyncio
-    async def test_clear_global_token(self, db_session):
-        """clear_token with user=None clears from global Settings."""
-        from backend.app.api.routes.cloud import clear_token, get_stored_token, store_token
+    async def test_clear_without_owner_cannot_mutate_retained_global_credential(self, db_session):
+        from fastapi import HTTPException
 
-        await store_token(db_session, "global-token", "global@test.com", "global", user=None)
-        await clear_token(db_session, user=None)
+        from backend.app.api.routes.cloud import clear_token, get_stored_token
+        from backend.app.models.settings import Settings
 
-        token, email, _region = await get_stored_token(db_session, user=None)
-        assert token is None
-        assert email is None
+        db_session.add(Settings(key="bambu_cloud_token", value="retained-global-token"))
+        await db_session.commit()
+        with pytest.raises(HTTPException) as refusal:
+            await clear_token(db_session, user=None)
+        assert refusal.value.status_code == 401
+        assert (await get_stored_token(db_session, user=None))[0] == "retained-global-token"
 
     @pytest.mark.asyncio
-    async def test_two_users_independent_tokens(self, db_session):
+    async def test_two_users_independent_tokens(self, db_session, cloud_group):
         """Two users should have completely independent cloud tokens (and regions)."""
         from backend.app.api.routes.cloud import get_stored_token, store_token
         from backend.app.core.auth import get_password_hash
         from backend.app.models.user import User
 
-        user_a = User(username="user_a", password_hash=get_password_hash("pass"), role="user")
-        user_b = User(username="user_b", password_hash=get_password_hash("pass"), role="user")
+        user_a = User(username="user_a", password_hash=get_password_hash("pass"), role="user", groups=[cloud_group])
+        user_b = User(username="user_b", password_hash=get_password_hash("pass"), role="user", groups=[cloud_group])
         db_session.add_all([user_a, user_b])
         await db_session.commit()
         await db_session.refresh(user_a)
@@ -371,8 +390,12 @@ class TestCloudTokenStorage:
         # Verify each user reads their own token (re-fetch from DB)
         from sqlalchemy import select
 
-        result_a = await db_session.execute(select(User).where(User.id == user_a.id))
-        result_b = await db_session.execute(select(User).where(User.id == user_b.id))
+        result_a = await db_session.execute(
+            select(User).where(User.id == user_a.id).execution_options(populate_existing=True)
+        )
+        result_b = await db_session.execute(
+            select(User).where(User.id == user_b.id).execution_options(populate_existing=True)
+        )
         fresh_a = result_a.scalar_one()
         fresh_b = result_b.scalar_one()
 

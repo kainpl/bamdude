@@ -8,6 +8,8 @@ from unittest.mock import AsyncMock, MagicMock, patch as _orig_patch
 import pytest
 from httpx import AsyncClient
 
+from backend.tests.auth_helpers import bind_test_key, mint_test_access
+
 
 class _PrinterManagerPatch:
     """Context manager wrapping patch that auto-adds AsyncMock for ensure_fresh methods."""
@@ -1591,7 +1593,7 @@ class TestPrinterAccessCodeVisibility:
         the pre-seeded admin + default groups."""
         from backend.app.core.auth import create_access_token
 
-        admin_token = create_access_token(data={"sub": "test_admin"})
+        admin_token = await mint_test_access(username="test_admin")
 
         groups = (
             await async_client.get(
@@ -1714,14 +1716,14 @@ class TestPrinterAccessCodeVisibility:
 
         raw_key, key_hash, key_prefix = generate_api_key()
         async with async_session() as db:
-            db.add(
-                APIKey(
-                    name="read-only-key",
-                    key_hash=key_hash,
-                    key_prefix=key_prefix,
-                    can_read_status=True,
-                )
+            issued_key = APIKey(
+                name="read-only-key",
+                key_hash=key_hash,
+                key_prefix=key_prefix,
+                can_read_status=True,
             )
+            await bind_test_key(db, issued_key)
+            db.add(issued_key)
             await db.commit()
 
         # Drop the fixture's admin JWT so the request authenticates ONLY via the key.
@@ -1730,7 +1732,9 @@ class TestPrinterAccessCodeVisibility:
             listing = await async_client.get("/api/v1/printers/", headers={"X-API-Key": raw_key})
             detail = await async_client.get(f"/api/v1/printers/{printer.id}", headers={"X-API-Key": raw_key})
         finally:
-            async_client.headers["Authorization"] = f"Bearer {create_access_token(data={'sub': 'test_admin'})}"
+            async_client.headers["Authorization"] = (
+                f"Bearer {await mint_test_access(db_session, username='test_admin')}"
+            )
 
         assert listing.status_code == 200
         row = next(p for p in listing.json() if p["id"] == printer.id)

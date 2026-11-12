@@ -142,6 +142,7 @@ async def claim_printer_for_direct_print(
     staged: StagedSource | None = None,
     commit: bool = True,
     lane_held: bool = False,
+    authority=None,
 ) -> PrintQueueItem | None:
     """Take the printer's queue claim for a print being dispatched right now.
 
@@ -213,8 +214,14 @@ async def claim_printer_for_direct_print(
         from contextlib import nullcontext
 
         from backend.app.services.printer_queues import ensure_printer_queue
+        from backend.app.services.publication_authority import current_creator
 
-        async with nullcontext() if lane_held else queue_claim_scope(session, printer_id):
+        creator = await current_creator(session, authority) if authority is not None else None
+        creator_id = creator.id if creator is not None else None if authority is not None else created_by_id
+
+        async with (
+            nullcontext() if lane_held else queue_claim_scope(session, printer_id, process_held=staged is not None)
+        ):
             from backend.app.services.order_resources import require_allowed
 
             if origin == "direct":
@@ -266,7 +273,7 @@ async def claim_printer_for_direct_print(
                 status="printing",
                 origin=origin,
                 started_at=datetime.now(timezone.utc),
-                created_by_id=created_by_id,
+                created_by_id=creator_id,
                 queue_source_id=None if source is None else source.id,
                 source_snapshot=None if source is None else queue_sources.snapshot_for(staged.receipt, source),
                 **_item_columns(
@@ -296,7 +303,17 @@ async def claim_printer_for_direct_print(
     async def attach(session: AsyncSession, source: QueueSource) -> None:
         claimed.append((await build(session, source)).id)
 
-    await publish_staged(staged, attach)
+    from backend.app.services.publication_authority import original_source_access
+
+    await publish_staged(
+        staged,
+        attach,
+        authority=authority,
+        printer_id=printer_id,
+        process_lanes=[printer_id],
+        permissions=("printers:control",),
+        source_access=original_source_access(authority, archive_id=archive_id, library_file_id=library_file_id),
+    )
     # Re-read in the CALLER's session: the claim was written by the publication's
     # transaction, and ``background_dispatch`` reads the row's own answers off it.
     return await db.get(PrintQueueItem, claimed[0])
@@ -339,6 +356,7 @@ async def enqueue_batch_copies(
     manual_mapping: bool = False,
     requirements_cache=None,
     consumption: PlanConsumption | LegacyPlanPublication | None = None,
+    authority=None,
 ) -> tuple[list[PrintQueueItem], str | None]:
     """Append ``count`` identical pending items to the given printer's queue.
 
@@ -349,6 +367,9 @@ async def enqueue_batch_copies(
     the print-now route validates the file before it queues anything, so filing
     the order line below would otherwise SELECT it a second time.
     """
+    from backend.app.services.publication_authority import actor_for_writer
+
+    authority = actor_for_writer(authority=authority, consumption=consumption)
     if count <= 0:
         return [], None
 
@@ -430,6 +451,10 @@ async def enqueue_batch_copies(
         created_ids: list[int] = []
 
         async def attach(session: AsyncSession, source: QueueSource) -> None:
+            from backend.app.services.publication_authority import current_creator
+
+            creator = await current_creator(session, authority) if authority is not None else None
+            creator_id = creator.id if creator is not None else None if authority is not None else created_by_id
             async with queue_scope_lock(session, queue_id):
                 ticket = None
                 if consumption is not None:
@@ -519,7 +544,7 @@ async def enqueue_batch_copies(
                             position=max_pos + 1 + i,
                             status="pending",
                             batch_id=batch_id,
-                            created_by_id=created_by_id,
+                            created_by_id=creator_id,
                             project_id=project_id,
                             project_line_id=line_id,
                         )
@@ -531,7 +556,15 @@ async def enqueue_batch_copies(
                     await order_plan_submission.consume(session, ticket, created_ids, "printer")
                 await update_queue_counters(session, queue_id)
 
-        await publish_staged(staged, attach)
+        from backend.app.services.publication_authority import original_source_access
+
+        await publish_staged(
+            staged,
+            attach,
+            authority=authority,
+            printer_id=printer_id,
+            source_access=original_source_access(authority, archive_id=archive_id, library_file_id=library_file_id),
+        )
     except BaseException:
         await discard_staged(staged)
         raise

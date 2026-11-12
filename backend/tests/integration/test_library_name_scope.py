@@ -24,6 +24,7 @@ from backend.app.models.product import Product
 from backend.app.models.product_category import ProductCategory, category_key
 from backend.app.models.user import User
 from backend.app.services.product_sync import sync_product_for_file
+from backend.tests.auth_helpers import bind_test_key, mint_test_access
 
 pytestmark = pytest.mark.integration
 
@@ -46,16 +47,17 @@ async def _user(db, username: str, permissions: list[str]) -> User:
 
 async def _key(db, owner: User | None) -> str:
     raw, key_hash, key_prefix = generate_api_key()
-    db.add(
-        APIKey(
-            name=f"k-{key_prefix}",
-            key_hash=key_hash,
-            key_prefix=key_prefix,
-            enabled=True,
-            user_id=owner.id if owner else None,
-            can_read_status=True,
-        )
+    issued_key = APIKey(
+        name=f"k-{key_prefix}",
+        key_hash=key_hash,
+        key_prefix=key_prefix,
+        enabled=True,
+        user_id=owner.id if owner else None,
+        can_read_status=True,
     )
+    if owner is not None:
+        await bind_test_key(db, issued_key, owner)
+    db.add(issued_key)
     await db.commit()
     return raw
 
@@ -101,7 +103,8 @@ async def shelf(db_session):
         "ids": ids,
         "category": shelves.id,
         "tokens": {
-            name: create_access_token(data={"sub": name}) for name in ("test_admin", "lv_all", "lv_own", "lv_none")
+            name: await mint_test_access(db_session, username=name)
+            for name in ("test_admin", "lv_all", "lv_own", "lv_none")
         },
         "key_with_library": await _key(db_session, reader_all),
         "key_without_library": await _key(db_session, owner_without),
@@ -130,7 +133,6 @@ def _jwt(shelf, name):
         ("key_with_library", {"own", "foreign", "ownerless"}),
         ("x_key_with_library", {"own", "foreign", "ownerless"}),
         ("key_without_library", set()),
-        ("legacy_key", {"own", "foreign", "ownerless"}),
     ],
 )
 async def test_a_file_name_is_searched_only_where_the_library_shows_it(async_client, shelf, caller, visible):
@@ -147,6 +149,17 @@ async def test_a_file_name_is_searched_only_where_the_library_shows_it(async_cli
     assert body["meta"]["total"] == len(visible)
     counted = sum(c["count"] for c in body["categories"]) + body["uncategorized"]
     assert counted == len(visible)
+
+
+@pytest.mark.asyncio
+async def test_a_legacy_ownerless_key_cannot_search_file_names(async_client, shelf):
+    # C strict reissue: ownerless legacy credentials cannot become a current owner.
+    response = await async_client.get(
+        "/api/v1/products",
+        params={"page": 1, "q": "zebra"},
+        headers={"Authorization": f"Bearer {shelf['legacy_key']}"},
+    )
+    assert response.status_code == 401, response.text
 
 
 @pytest.mark.parametrize(

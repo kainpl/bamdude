@@ -32,13 +32,13 @@ async def queued(committing_client, db_session, order_line, printer_with_queue, 
     auto = await committing_client.post(
         "/api/v1/auto-queue/",
         json={"library_file_id": linked_file.id, "project_line_id": line.id},
-        headers=_jwt("fin_planner"),
+        headers=await _jwt("fin_planner"),
     )
     assert auto.status_code in (200, 201), auto.text
     printer_row = await committing_client.post(
         "/api/v1/queue/",
         json={"queue_id": printer_with_queue.queue_id, "library_file_id": linked_file.id, "project_line_id": line.id},
-        headers=_jwt("fin_planner"),
+        headers=await _jwt("fin_planner"),
     )
     assert printer_row.status_code == 200, printer_row.text
     return {

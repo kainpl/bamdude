@@ -37,9 +37,10 @@ import logging
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from sqlalchemy import select, update
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.api.routes.cloud import resolve_api_key_cloud_owner
 from backend.app.core.auth import RequirePermission
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
@@ -200,6 +201,7 @@ class _OrcaCredentials:
     columns that the old PKCE flow used for its verifier/state)."""
 
     __slots__ = (
+        "captured",
         "token",
         "refresh_token",
         "expires_at",
@@ -212,6 +214,7 @@ class _OrcaCredentials:
     )
 
     def __init__(self) -> None:
+        self.captured = None
         self.token: str | None = None
         self.refresh_token: str | None = None
         self.expires_at: datetime | None = None
@@ -235,7 +238,12 @@ async def _load_credentials(db: AsyncSession, user: User | None) -> _OrcaCredent
     offset — ``naive_dt.astimezone(UTC)`` would assume local time, which on
     a UTC+2 host turns a 1-minute-old pending state into a 2h1m one and
     fires the 10-minute TTL guard immediately."""
+    from backend.app.services.cloud_credentials import snapshot
+
+    captured = await snapshot(db, user, "orca")
+    user = await db.get(User, captured.user_id, populate_existing=True)
     creds = _OrcaCredentials()
+    creds.captured = captured
     if user is not None:
         creds.token = user.orca_cloud_token
         creds.refresh_token = user.orca_cloud_refresh_token
@@ -262,59 +270,38 @@ async def _load_credentials(db: AsyncSession, user: User | None) -> _OrcaCredent
     return creds
 
 
+async def _write_credentials(db, user, values, *, captured=None, replace_binding=False):
+    from backend.app.services.cloud_credentials import snapshot, write
+
+    captured = captured or await snapshot(db, user, "orca")
+    return await write(db, captured, values, replace_binding=replace_binding)
+
+
 async def _persist_pending_device(
-    db: AsyncSession,
-    user: User | None,
-    device_code: str,
-    interval: int,
-    when: datetime,
+    db: AsyncSession, user: User | None, device_code: str, interval: int, when: datetime, *, captured=None
 ) -> None:
-    """Store the transient device-code state used by ``/device/start`` ->
-    ``/device/poll``. The device_code is a secret kept server-side."""
-    if user is not None:
-        await db.execute(
-            update(User)
-            .where(User.id == user.id)
-            .values(
-                orca_cloud_pending_verifier=device_code,
-                orca_cloud_pending_state=str(interval),
-                orca_cloud_pending_at=when,
-            )
-        )
-        await db.commit()
-        return
-    await _upsert_settings(
+    await _write_credentials(
         db,
+        user,
         {
-            _SETTINGS_KEYS["pending_device_code"]: device_code,
-            _SETTINGS_KEYS["pending_interval"]: str(interval),
-            _SETTINGS_KEYS["pending_at"]: _iso(when),
+            "orca_cloud_pending_verifier": device_code,
+            "orca_cloud_pending_state": str(interval),
+            "orca_cloud_pending_at": when,
         },
+        captured=captured,
     )
 
 
-async def _clear_pending_device(db: AsyncSession, user: User | None) -> None:
-    """Wipe just the pending device-code state (on terminal poll outcomes),
-    leaving any existing tokens untouched."""
-    if user is not None:
-        await db.execute(
-            update(User)
-            .where(User.id == user.id)
-            .values(
-                orca_cloud_pending_verifier=None,
-                orca_cloud_pending_state=None,
-                orca_cloud_pending_at=None,
-            )
-        )
-        await db.commit()
-        return
-    await _upsert_settings(
+async def _clear_pending_device(db: AsyncSession, user: User | None, *, captured=None) -> None:
+    await _write_credentials(
         db,
+        user,
         {
-            _SETTINGS_KEYS["pending_device_code"]: None,
-            _SETTINGS_KEYS["pending_interval"]: None,
-            _SETTINGS_KEYS["pending_at"]: None,
+            "orca_cloud_pending_verifier": None,
+            "orca_cloud_pending_state": None,
+            "orca_cloud_pending_at": None,
         },
+        captured=captured,
     )
 
 
@@ -327,41 +314,25 @@ async def _persist_tokens(
     email: str | None,
     user_id: str | None,
     scope: str | None = None,
+    *,
+    captured=None,
 ) -> None:
-    """Atomically write the new access/refresh pair to whichever backing store
-    the deployment uses. Also clears the pending device-code state on the same
-    write, since by this point the pairing is complete."""
-    if user is not None:
-        await db.execute(
-            update(User)
-            .where(User.id == user.id)
-            .values(
-                orca_cloud_token=access_token,
-                orca_cloud_refresh_token=refresh_token,
-                orca_cloud_expires_at=expires_at,
-                orca_cloud_email=email,
-                orca_cloud_user_id=user_id,
-                orca_cloud_scope=scope,
-                orca_cloud_pending_verifier=None,
-                orca_cloud_pending_state=None,
-                orca_cloud_pending_at=None,
-            )
-        )
-        await db.commit()
-        return
-    await _upsert_settings(
+    await _write_credentials(
         db,
+        user,
         {
-            _SETTINGS_KEYS["token"]: access_token,
-            _SETTINGS_KEYS["refresh_token"]: refresh_token,
-            _SETTINGS_KEYS["expires_at"]: _iso(expires_at),
-            _SETTINGS_KEYS["email"]: email,
-            _SETTINGS_KEYS["user_id"]: user_id,
-            _SETTINGS_KEYS["scope"]: scope,
-            _SETTINGS_KEYS["pending_device_code"]: None,
-            _SETTINGS_KEYS["pending_interval"]: None,
-            _SETTINGS_KEYS["pending_at"]: None,
+            "orca_cloud_token": access_token,
+            "orca_cloud_refresh_token": refresh_token,
+            "orca_cloud_expires_at": expires_at,
+            "orca_cloud_email": email,
+            "orca_cloud_user_id": user_id,
+            "orca_cloud_scope": scope,
+            "orca_cloud_pending_verifier": None,
+            "orca_cloud_pending_state": None,
+            "orca_cloud_pending_at": None,
         },
+        captured=captured,
+        replace_binding=True,
     )
 
 
@@ -372,54 +343,37 @@ async def _persist_rotated_tokens(
     refresh_token: str | None,
     expires_at: datetime | None,
     scope: str | None = None,
-) -> None:
-    """Persist tokens after a refresh — does NOT touch email/user_id and does
-    NOT touch the pending state (refresh happens long after pairing). The
-    scope is refreshed when the token response named one (it always does)."""
-    if user is not None:
-        values = {
-            "orca_cloud_token": access_token,
-            "orca_cloud_refresh_token": refresh_token,
-            "orca_cloud_expires_at": expires_at,
-        }
-        if scope:
-            values["orca_cloud_scope"] = scope
-        await db.execute(update(User).where(User.id == user.id).values(**values))
-        await db.commit()
-        return
+    *,
+    captured=None,
+):
     values = {
-        _SETTINGS_KEYS["token"]: access_token,
-        _SETTINGS_KEYS["refresh_token"]: refresh_token,
-        _SETTINGS_KEYS["expires_at"]: _iso(expires_at),
+        "orca_cloud_token": access_token,
+        "orca_cloud_refresh_token": refresh_token,
+        "orca_cloud_expires_at": expires_at,
     }
     if scope:
-        values[_SETTINGS_KEYS["scope"]] = scope
-    await _upsert_settings(db, values)
+        values["orca_cloud_scope"] = scope
+    return await _write_credentials(db, user, values, captured=captured)
 
 
-async def _clear_credentials(db: AsyncSession, user: User | None) -> None:
-    """Wipe everything Orca-related (tokens, identity, pending state)."""
-    if user is not None:
-        await db.execute(
-            update(User)
-            .where(User.id == user.id)
-            .values(
-                orca_cloud_token=None,
-                orca_cloud_refresh_token=None,
-                orca_cloud_expires_at=None,
-                orca_cloud_email=None,
-                orca_cloud_user_id=None,
-                orca_cloud_pending_verifier=None,
-                orca_cloud_pending_state=None,
-                orca_cloud_pending_at=None,
-            )
-        )
-        await db.commit()
-        return
-    result = await db.execute(select(Settings).where(Settings.key.in_(list(_SETTINGS_KEYS.values()))))
-    for setting in result.scalars().all():
-        await db.delete(setting)
-    await db.commit()
+async def _clear_credentials(db: AsyncSession, user: User | None, *, captured=None) -> None:
+    await _write_credentials(
+        db,
+        user,
+        {
+            "orca_cloud_token": None,
+            "orca_cloud_refresh_token": None,
+            "orca_cloud_expires_at": None,
+            "orca_cloud_email": None,
+            "orca_cloud_user_id": None,
+            "orca_cloud_scope": None,
+            "orca_cloud_pending_verifier": None,
+            "orca_cloud_pending_state": None,
+            "orca_cloud_pending_at": None,
+        },
+        captured=captured,
+        replace_binding=True,
+    )
 
 
 async def _upsert_settings(db: AsyncSession, values: dict[str, str | None]) -> None:
@@ -462,6 +416,7 @@ async def _build_authenticated_service(
     if not creds.token:
         raise HTTPException(status_code=401, detail="Orca Cloud is not connected — sign in first.")
 
+    await db.commit()
     svc = OrcaCloudService()
     # The service owns an httpx client from here on, and on success the caller
     # closes it — on failure nobody is ever handed it, so every raise below
@@ -481,15 +436,21 @@ async def _build_authenticated_service(
             except OrcaCloudAuthError as e:
                 # Refresh token was revoked or rotated out from under us. Clear
                 # the stale credentials so the UI flips to disconnected.
-                await _clear_credentials(db, user)
+                await _clear_credentials(db, user, captured=creds.captured)
                 raise HTTPException(status_code=401, detail=f"Orca Cloud session refresh failed: {e}") from e
             except OrcaCloudError as e:
                 raise HTTPException(status_code=502, detail=f"Orca Cloud unreachable: {e}") from e
             # Persist new pair BEFORE returning. A crash between here and the
             # downstream API call would still leave the user with valid stored
             # tokens for the next request.
-            await _persist_rotated_tokens(
-                db, user, svc.access_token, svc.refresh_token, svc.token_expiry, svc.granted_scope
+            creds.captured = await _persist_rotated_tokens(
+                db,
+                user,
+                svc.access_token,
+                svc.refresh_token,
+                svc.token_expiry,
+                svc.granted_scope,
+                captured=creds.captured,
             )
     except BaseException:
         try:
@@ -497,6 +458,7 @@ async def _build_authenticated_service(
         except Exception as close_error:  # noqa: BLE001 — never replace the error the caller needs
             logger.debug("Closing the Orca Cloud client after a failed build failed: %s", close_error)
         raise
+    svc.credential_snapshot = creds.captured
     return svc
 
 
@@ -510,11 +472,16 @@ async def device_start(
     request: Request,
     db: AsyncSession = Depends(get_db),
     current_user: User | None = RequirePermission(Permission.ORCA_CLOUD_AUTH),
+    api_key_cloud_owner: User | None = Depends(resolve_api_key_cloud_owner),
 ):
     """Begin device pairing. Requests a device code from Orca, stores it
     server-side (the device_code is a secret and never leaves the backend),
     and returns the user_code + verification URIs + poll interval for the
     frontend to display and poll against."""
+    current_user = current_user or api_key_cloud_owner
+    from backend.app.services.cloud_credentials import snapshot
+
+    captured = await snapshot(db, current_user, "orca")
     svc = OrcaCloudService()
     # instance_url/label are display-only anti-phishing context on the approval
     # card. Prefer the operator-configured public URL; base_url may be off
@@ -522,6 +489,7 @@ async def device_start(
     from backend.app.api.routes.settings import get_setting
 
     instance_url = (await get_setting(db, "external_url") or "").strip() or str(request.base_url).rstrip("/") or None
+    await db.commit()
     try:
         data = await svc.request_device_code(instance_url=instance_url, instance_label="BamDude")
     except OrcaCloudAuthError as e:
@@ -537,7 +505,9 @@ async def device_start(
 
     interval = int(data.get("interval") or 5)
     expires_in = int(data.get("expires_in") or DEVICE_CODE_TTL.total_seconds())
-    await _persist_pending_device(db, current_user, device_code, interval, datetime.now(timezone.utc))
+    await _persist_pending_device(
+        db, current_user, device_code, interval, datetime.now(timezone.utc), captured=captured
+    )
 
     return OrcaDeviceStartResponse(
         user_code=user_code,
@@ -552,10 +522,12 @@ async def device_start(
 async def device_poll(
     db: AsyncSession = Depends(get_db),
     current_user: User | None = RequirePermission(Permission.ORCA_CLOUD_AUTH),
+    api_key_cloud_owner: User | None = Depends(resolve_api_key_cloud_owner),
 ):
     """Poll the token endpoint once for the in-flight pairing. Returns an
     in-progress status while the user approves; on approval persists the token
     pair (clearing the pending state) and reports connected."""
+    current_user = current_user or api_key_cloud_owner
     creds = await _load_credentials(db, current_user)
     if not creds.pending_device_code or not creds.pending_at:
         raise HTTPException(
@@ -567,9 +539,10 @@ async def device_poll(
     # normalization. Subtracting two aware UTC datetimes gives a real delta.
     age = datetime.now(timezone.utc) - creds.pending_at
     if age > DEVICE_CODE_TTL:
-        await _clear_pending_device(db, current_user)
+        await _clear_pending_device(db, current_user, captured=creds.captured)
         return OrcaDevicePollResponse(status=DevicePoll.EXPIRED, connected=False)
 
+    await db.commit()
     svc = OrcaCloudService()
     try:
         status, token_data = await svc.poll_token(creds.pending_device_code)
@@ -582,7 +555,7 @@ async def device_poll(
     if status in DevicePoll.TERMINAL:
         # access_denied / expired_token — the attempt is dead; clear it so the
         # user starts fresh next time.
-        await _clear_pending_device(db, current_user)
+        await _clear_pending_device(db, current_user, captured=creds.captured)
         return OrcaDevicePollResponse(status=status, connected=False)
 
     # COMPLETE — tokens issued and applied to svc. Introspect for the user_id
@@ -598,7 +571,15 @@ async def device_poll(
         logger.warning("Orca Cloud introspection failed after successful pairing: %s", e)
 
     await _persist_tokens(
-        db, current_user, svc.access_token, svc.refresh_token, svc.token_expiry, None, user_id, svc.granted_scope
+        db,
+        current_user,
+        svc.access_token,
+        svc.refresh_token,
+        svc.token_expiry,
+        None,
+        user_id,
+        svc.granted_scope,
+        captured=creds.captured,
     )
     from backend.app.services.filament_preset_sync import request_sync_soon
 
@@ -610,9 +591,11 @@ async def device_poll(
 async def get_status(
     db: AsyncSession = Depends(get_db),
     current_user: User | None = RequirePermission(Permission.ORCA_CLOUD_AUTH),
+    api_key_cloud_owner: User | None = Depends(resolve_api_key_cloud_owner),
 ):
     """Return whether the caller has an Orca Cloud session stored, plus
     identifier details for display. Does NOT make a live API call."""
+    current_user = current_user or api_key_cloud_owner
     creds = await _load_credentials(db, current_user)
     return OrcaAuthStatusResponse(
         connected=bool(creds.token),
@@ -626,10 +609,12 @@ async def get_status(
 async def logout(
     db: AsyncSession = Depends(get_db),
     current_user: User | None = RequirePermission(Permission.ORCA_CLOUD_AUTH),
+    api_key_cloud_owner: User | None = Depends(resolve_api_key_cloud_owner),
 ):
     """Clear stored Orca Cloud credentials. Does not call Orca's disconnect
     endpoint (the user can revoke server-side from Orca Cloud's own settings;
     BamDude will no longer have the token to use either way)."""
+    current_user = current_user or api_key_cloud_owner
     await _clear_credentials(db, current_user)
     return {"success": True}
 
@@ -638,12 +623,14 @@ async def logout(
 async def list_profiles(
     db: AsyncSession = Depends(get_db),
     current_user: User | None = RequirePermission(Permission.ORCA_CLOUD_AUTH),
+    api_key_cloud_owner: User | None = Depends(resolve_api_key_cloud_owner),
 ):
     """Return profile metadata grouped by type (``filament`` / ``printer``
     / ``process``), matching the ``SlicerSettingsResponse`` shape the
     Bambu Cloud tab consumes. This lets the frontend render Orca profiles
     with the same visual components — same cards, same filter bar, same
     grouping — without separate UI code paths."""
+    current_user = current_user or api_key_cloud_owner
     svc = await _build_authenticated_service(db, current_user)
     try:
         raw_profiles = await svc.list_profiles()
@@ -678,12 +665,14 @@ async def get_profile(
     profile_id: str,
     db: AsyncSession = Depends(get_db),
     current_user: User | None = RequirePermission(Permission.ORCA_CLOUD_AUTH),
+    api_key_cloud_owner: User | None = Depends(resolve_api_key_cloud_owner),
 ):
     """Fetch a single profile's full content, shaped like
     ``SlicerSettingDetail`` so the Bambu Cloud detail modal can render it
     unchanged. The inner ``setting`` field is the raw slicer-format JSON
     Orca stores — same shape Bambu Cloud uses since OrcaSlicer is a
     BambuStudio fork."""
+    current_user = current_user or api_key_cloud_owner
     svc = await _build_authenticated_service(db, current_user)
     try:
         profile = await svc.get_profile(profile_id)

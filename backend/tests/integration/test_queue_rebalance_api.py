@@ -21,6 +21,7 @@ from backend.app.models.queue_source import FORMAT_3MF, STATE_READY, QueueSource
 from backend.app.models.user import User
 from backend.app.services import queue_rebalance, queue_sources
 from backend.app.services.farm_forecast import model_key
+from backend.tests.auth_helpers import mint_test_access
 from backend.tests.integration.test_auto_queue_scheduler import (
     _idle_status,
     _make_printer_with_queue,
@@ -43,7 +44,7 @@ async def _as_viewer(client, db):
     viewer.groups.append(group)
     db.add(viewer)
     await db.commit()
-    client.headers["Authorization"] = f"Bearer {create_access_token(data={'sub': 'viewer'})}"
+    client.headers["Authorization"] = f"Bearer {await mint_test_access(db, username='viewer')}"
 
 
 @pytest.mark.asyncio

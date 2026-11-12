@@ -27,6 +27,7 @@ from backend.app.core.auth import create_access_token
 from backend.app.core.permissions import ALL_PERMISSIONS
 from backend.app.models.group import Group
 from backend.app.models.user import User
+from backend.tests.auth_helpers import mint_test_access
 
 # Random per-run credential — tests exercise the admin gate, not password
 # handling. The ``Aa1!`` prefix satisfies the complexity validator (upper +
@@ -34,8 +35,8 @@ from backend.app.models.user import User
 _PW = "Aa1!" + secrets.token_urlsafe(12)  # pragma: allowlist secret
 
 
-def _admin_headers() -> dict:
-    return {"Authorization": f"Bearer {create_access_token(data={'sub': 'test_admin'})}"}
+async def _admin_headers() -> dict:
+    return {"Authorization": f"Bearer {await mint_test_access(username='test_admin')}"}
 
 
 async def _make_operator(async_client: AsyncClient, *, username: str, permissions: list[str]) -> tuple[str, int]:
@@ -44,7 +45,7 @@ async def _make_operator(async_client: AsyncClient, *, username: str, permission
     Returns ``(operator_token, user_id)``. The operator is NOT admin and NOT in
     Administrators — they hold ONLY the listed permission strings.
     """
-    headers = _admin_headers()
+    headers = await _admin_headers()
     grp = await async_client.post(
         "/api/v1/groups/",
         headers=headers,
@@ -96,7 +97,7 @@ async def test_users_update_holder_cannot_target_other_user(async_client: AsyncC
     token, _ = await _make_operator(async_client, username="op_update2", permissions=["users:update"])
     target = await async_client.post(
         "/api/v1/users/",
-        headers=_admin_headers(),
+        headers=await _admin_headers(),
         json={"username": "target", "password": _PW, "role": "user"},
     )
     assert target.status_code == 201, target.text
@@ -135,7 +136,7 @@ async def test_groups_update_holder_cannot_rewrite_permissions(async_client: Asy
     token, _ = await _make_operator(async_client, username="op_grpupd", permissions=["groups:update"])
     create = await async_client.post(
         "/api/v1/groups/",
-        headers=_admin_headers(),
+        headers=await _admin_headers(),
         json={"name": "innocent", "permissions": ["printers:read"]},
     )
     assert create.status_code == 201, create.text
@@ -190,7 +191,7 @@ async def test_admin_cannot_strip_administrators_group_permissions(async_client:
     admin_gid = await _admin_group_id(db_session)
     resp = await async_client.patch(
         f"/api/v1/groups/{admin_gid}",
-        headers=_admin_headers(),
+        headers=await _admin_headers(),
         json={"permissions": []},
     )
     assert resp.status_code == 400, resp.text
@@ -205,14 +206,14 @@ async def test_admin_cannot_strip_administrators_group_permissions(async_client:
 async def test_admin_can_still_perform_user_role_change(async_client: AsyncClient, db_session):
     target = await async_client.post(
         "/api/v1/users/",
-        headers=_admin_headers(),
+        headers=await _admin_headers(),
         json={"username": "promoteme", "password": _PW, "role": "user"},
     )
     assert target.status_code == 201, target.text
     tid = target.json()["id"]
     resp = await async_client.patch(
         f"/api/v1/users/{tid}",
-        headers=_admin_headers(),
+        headers=await _admin_headers(),
         json={"role": "admin"},
     )
     assert resp.status_code == 200, resp.text
@@ -228,7 +229,7 @@ async def test_admin_can_still_perform_user_role_change(async_client: AsyncClien
 async def test_administrators_group_member_passes_admin_gate(async_client: AsyncClient, db_session):
     """A user made admin by Administrators-group membership (role still 'user')
     must pass the admin gate — the gate checks ``is_admin``, not the bare role."""
-    headers = _admin_headers()
+    headers = await _admin_headers()
     admin_gid = await _admin_group_id(db_session)
     user_resp = await async_client.post(
         "/api/v1/users/",
@@ -293,7 +294,7 @@ async def test_duplicate_username_is_refused_on_an_install_holding_case_variants
 
     resp = await async_client.post(
         "/api/v1/users/",
-        headers=_admin_headers(),
+        headers=await _admin_headers(),
         json={"username": "ірина", "password": _PW, "role": "user"},
     )
 

@@ -280,7 +280,7 @@ async def add_to_auto_queue(
         archive=await db.get(PrintArchive, data.archive_id) if data.archive_id else None,
         library_file=await db.get(LibraryFile, data.library_file_id) if data.library_file_id else None,
     )
-    items = await add_items_to_auto_queue(db, data, current_user)
+    items = await add_items_to_auto_queue(db, data, current_user, authority=await creds.capture())
 
     # Re-load first item with eager relationships for the response
     first = await db.execute(

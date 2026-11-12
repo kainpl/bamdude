@@ -263,6 +263,10 @@ async def test_engine(monkeypatch):
         "async_session",
         async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False),
     )
+    # Current raw credential resolution/audit owns short sessions independently
+    # of the caller; pure service tests need the same real test database too.
+    monkeypatch.setattr("backend.app.core.auth.async_session", database_module.async_session)
+    monkeypatch.setattr("backend.app.services.long_lived_tokens.async_session", database_module.async_session)
 
     yield engine
 
@@ -432,6 +436,20 @@ def _lock_order_is_strict():
 
 
 @pytest.fixture(autouse=True)
+def _current_credential_admission_bootstrap():
+    """ASGI-less tests start admitted; a restore hold belongs to its own test.
+
+    Reopen only the public admission switches, as lifespan would. Never clear
+    owned work/transactions or manufacture a successful restore-drain proof.
+    """
+    from backend.app.core.auth_runtime import auth_runtime
+    from backend.app.services.cloud_credentials import open_admission
+
+    auth_runtime.open_admission()
+    open_admission()
+
+
+@pytest.fixture(autouse=True)
 async def _cancel_leaked_asyncio_tasks():
     """Cancel asyncio tasks that leaked past the test body.
 
@@ -522,6 +540,7 @@ async def _build_client(test_engine, *, commit: bool) -> AsyncGenerator[AsyncCli
     with (
         patch("backend.app.core.database.async_session", test_async_session),
         patch("backend.app.core.auth.async_session", test_async_session),
+        patch("backend.app.services.long_lived_tokens.async_session", test_async_session),
         patch("backend.app.main.async_session", test_async_session),
         patch("backend.app.main.init_printer_connections", mock_init_printer_connections),
     ):
@@ -536,11 +555,14 @@ async def _build_client(test_engine, *, commit: bool) -> AsyncGenerator[AsyncCli
         # `client.headers['Authorization']` or build their own AsyncClient.
         from sqlalchemy import select
 
-        from backend.app.core.auth import create_access_token, get_password_hash
+        from backend.app.core.auth import get_password_hash
+        from backend.app.core.auth_lifetime import VerifiedOutcome, capture_account, stage_session
+        from backend.app.core.auth_runtime import auth_runtime
         from backend.app.main import invalidate_setup_gate_cache
         from backend.app.models.group import Group
         from backend.app.models.user import User
 
+        auth_runtime.open_admission()
         async with test_async_session() as setup_db:
             admin = User(
                 username="test_admin",
@@ -554,10 +576,14 @@ async def _build_client(test_engine, *, commit: bool) -> AsyncGenerator[AsyncCli
             if admin_group is not None:
                 admin.groups.append(admin_group)
             setup_db.add(admin)
+            await setup_db.flush()
+            issued = await stage_session(
+                setup_db, VerifiedOutcome(capture_account(admin), "local"), remember_me=False, issue_refresh=False
+            )
             await setup_db.commit()
+            admin_token = issued.access_token
 
         invalidate_setup_gate_cache()
-        admin_token = create_access_token(data={"sub": "test_admin"})
 
         async with AsyncClient(
             transport=ASGITransport(app=app),

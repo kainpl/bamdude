@@ -17,6 +17,7 @@ from starlette.requests import Request
 from backend.app.core.auth import generate_api_key
 from backend.app.models.api_key import APIKey
 from backend.app.services import swap_job_refresh as jobs, swap_source_declarations as decl
+from backend.tests.auth_helpers import bind_test_key
 from backend.tests.integration.test_swap_declaration_service import (  # noqa: F401 -- fixtures
     ALL,
     a_3mf,
@@ -44,13 +45,17 @@ async def a_key(factory, owner, **flags) -> str:
     raw, key_hash, key_prefix = generate_api_key()
     async with factory() as db:
         db.add(
-            APIKey(
-                name=f"k-{key_prefix}",
-                key_hash=key_hash,
-                key_prefix=key_prefix,
-                enabled=True,
-                user_id=owner.id,
-                **flags,
+            await bind_test_key(
+                db,
+                APIKey(
+                    name=f"k-{key_prefix}",
+                    key_hash=key_hash,
+                    key_prefix=key_prefix,
+                    enabled=True,
+                    user_id=owner.id,
+                    **flags,
+                ),
+                owner=owner,
             )
         )
         await db.commit()
@@ -136,4 +141,5 @@ async def test_a_key_disabled_while_the_bytes_were_read_commits_nothing(factory,
             actor=actor,
             rights=ALL,
         )
-    assert refused.value.status_code == 403
+    # C distinguishes an invalidated credential from a current key's missing grant.
+    assert refused.value.status_code == 401

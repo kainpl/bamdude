@@ -2656,6 +2656,16 @@ async def import_printer_files_to_library(
     from backend.app.api.routes.library_thumbnail_jobs import request_authority
 
     ingest_authority = await request_authority(http_request, current_user)
+    source_printer_identity = printer.connector_identity
+
+    async def check_source(session, principal):
+        current_identity = await session.scalar(select(Printer.connector_identity).where(Printer.id == printer_id))
+        if current_identity != source_printer_identity:
+            raise HTTPException(409, {"code": "source_changed"})
+        from backend.app.services.domain_authority import fresh
+
+        await fresh(session, ingest_authority, permissions=(Permission.PRINTERS_FILES.value,), printer_id=printer_id)
+
     imported: list[dict] = []
     skipped: list[dict] = []
 
@@ -2664,6 +2674,7 @@ async def import_printer_files_to_library(
     resolved = _resolve_storage(request.get("storage"), printer.model, printer_manager.get_status(printer_id))
     transport = transport_for(printer, resolved)
 
+    await db.commit()
     for path in paths:
         if not isinstance(path, str) or not path:
             skipped.append({"path": path, "reason": "invalid_path"})
@@ -2699,6 +2710,7 @@ async def import_printer_files_to_library(
                 created_by_id=current_user.id if current_user else None,
                 source_type=detected_source_type,
                 authority=ingest_authority,
+                publication_check=check_source,
             )
             # ⚠️ ``result.file`` may be a row this import did not create — the
             # SD card can hold a file the library already has.

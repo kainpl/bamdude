@@ -45,6 +45,12 @@ async def _make_user(db, username="alice", password="OldPassw0rd", **kwargs):
 
 
 class TestTheToken:
+    @pytest.fixture(autouse=True)
+    async def existing_accounts(self, db_session):
+        # Reset links now capture a real account incarnation, never a name alone.
+        await _make_user(db_session, username="alice")
+        await _make_user(db_session, username="bob")
+
     async def test_a_fresh_token_names_its_account(self, db_session):
         raw = await create_password_reset_token(db_session, "alice")
         assert await consume_password_reset_token(db_session, raw) == "alice"
@@ -189,8 +195,10 @@ class TestConfirming:
         assert verify_password("OldPassw0rd", user.password_hash)
 
     async def test_a_deactivated_account_is_not_reopened_by_a_link(self, db_session, async_client):
-        user = await _make_user(db_session, username="frank", is_active=False)
+        user = await _make_user(db_session, username="frank")
         raw = await create_password_reset_token(db_session, user.username)
+        user.is_active = False
+        await db_session.commit()
 
         response = await async_client.post(
             "/api/v1/auth/forgot-password/confirm",

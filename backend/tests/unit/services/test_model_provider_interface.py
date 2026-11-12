@@ -107,16 +107,26 @@ class _WholeModelProvider(ModelProvider):
         return f"https://example.com/models/{ref.external_id}"
 
 
+async def _owner(db):
+    from backend.app.models.user import User
+    from backend.app.services import cloud_credentials
+
+    cloud_credentials.open_admission()
+    user = User(username="provider-owner", role="admin", cloud_token="tok")
+    db.add(user)
+    await db.commit()
+    return user
+
+
 class TestBuildService:
     """build_service must reproduce exactly what the old route helper did:
     read the caller's stored Bambu Cloud token and wire the rejected-token
     callback so a 401 invalidates the shared credential app-wide."""
 
     @pytest.mark.asyncio
-    async def test_seeds_token_and_auth_failure_callback(self):
-        db = AsyncMock()
-        user = AsyncMock()
-        user.id = 7
+    async def test_seeds_token_and_auth_failure_callback(self, db_session):
+        db = db_session
+        user = await _owner(db)
 
         with (
             patch(
@@ -133,34 +143,19 @@ class TestBuildService:
             assert svc._auth_token == "tok-abc"
             assert svc._user is user
             await svc._on_auth_failure()
-            mark_invalid.assert_awaited_once_with(7)
+            mark_invalid.assert_awaited_once_with(svc.credential_snapshot)
+            assert svc.credential_snapshot.account_identity == user.account_identity
             await svc.close()
 
     @pytest.mark.asyncio
-    async def test_anonymous_user_still_gets_auth_callback(self):
-        """No user ≠ nothing to invalidate. An API key without an owner reads
-        the global Settings token (``get_stored_token(db, None)``), so a
-        rejection must still be recorded — ``user_id=None`` writes the global
-        flag. The callback stays wired; only a *stray* non-expiry 401 keeps it
-        a no-op."""
+    async def test_anonymous_user_never_spends_global_credentials(self):
         db = AsyncMock()
-        with (
-            patch(
-                "backend.app.services.model_providers.makerworld.provider.get_stored_token",
-                AsyncMock(return_value=(None, None, "global")),
-            ),
-            patch(
-                "backend.app.services.model_providers.makerworld.provider.mark_cloud_token_invalid",
-                AsyncMock(),
-            ) as mark_invalid,
-        ):
+        with patch("backend.app.services.model_providers.makerworld.provider.get_stored_token", AsyncMock()) as stored:
             svc = await makerworld_provider.build_service(db=db, user=None)
-
-            assert svc._auth_token is None
-            assert svc._on_auth_failure is not None
-            # Firing it records the *global* flag (user_id=None), not a per-user row.
-            await svc._on_auth_failure()
-            mark_invalid.assert_awaited_once_with(None)
+        assert svc._auth_token is None
+        assert svc._on_auth_failure is None
+        assert svc.credential_snapshot is None
+        stored.assert_not_awaited()
         await svc.close()
 
     @pytest.mark.asyncio
@@ -196,12 +191,11 @@ class TestBuildService:
         await svc.close()
 
     @pytest.mark.asyncio
-    async def test_api_key_owner_is_the_fallback_identity(self):
+    async def test_api_key_owner_is_the_fallback_identity(self, db_session):
         """API-keyed callers carry identity on the key (#1777) — build_service
         must use the key's owner when ``user`` is None."""
-        db = AsyncMock()
-        owner = AsyncMock()
-        owner.id = 11
+        db = db_session
+        owner = await _owner(db)
 
         with (
             patch(
@@ -217,5 +211,6 @@ class TestBuildService:
             assert svc._auth_token == "owner-tok"
             assert svc._user is owner
             await svc._on_auth_failure()
-            mark_invalid.assert_awaited_once_with(11)
+            mark_invalid.assert_awaited_once_with(svc.credential_snapshot)
+            assert svc.credential_snapshot.account_identity == owner.account_identity
             await svc.close()

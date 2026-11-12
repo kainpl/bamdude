@@ -25,6 +25,7 @@ from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.settings import Settings
 from backend.app.services import queue_sources
 from backend.app.services.connector_runtime import connector_runtime
+from backend.tests.auth_helpers import bind_test_key
 from backend.tests.fixtures.filament_routing_cases import write_routing_3mf
 from backend.tests.integration.test_filament_routing_dispatch import setup_source
 
@@ -54,14 +55,17 @@ def _clean_state(tmp_path, monkeypatch):
 @pytest.fixture
 async def key(db_session):
     raw, key_hash, prefix = generate_api_key()
-    row = APIKey(
-        name="orca",
-        key_hash=key_hash,
-        key_prefix=prefix,
-        enabled=True,
-        can_queue=True,
-        can_read_status=True,
-        can_manage_library=True,
+    row = await bind_test_key(
+        db_session,
+        APIKey(
+            name="orca",
+            key_hash=key_hash,
+            key_prefix=prefix,
+            enabled=True,
+            can_queue=True,
+            can_read_status=True,
+            can_manage_library=True,
+        ),
     )
     db_session.add(row)
     await db_session.commit()
@@ -112,8 +116,12 @@ async def test_upload_passes_the_key_actor_and_owner_to_shared_ingest(
     owner = User(username="connector-upload-owner", password_hash="unused", role="admin", is_active=True)
     db_session.add(owner)
     await db_session.flush()
-    row = (await db_session.execute(select(APIKey))).scalars().one()
-    row.user_id = owner.id
+    raw, hashed, prefix = generate_api_key()
+    row = await bind_test_key(
+        db_session, APIKey(name="owned-upload", key_hash=hashed, key_prefix=prefix, can_manage_library=True), owner
+    )
+    db_session.add(row)
+    key = raw
     await db_session.commit()
     real = library.store_library_upload
     actors = []
@@ -204,7 +212,11 @@ async def test_a_row_the_key_cannot_see_is_a_minimal_conflict(async_client, db_s
 
 async def test_a_key_without_library_rights_cannot_upload(async_client, db_session, model):
     raw, key_hash, prefix = generate_api_key()
-    db_session.add(APIKey(name="ro", key_hash=key_hash, key_prefix=prefix, enabled=True, can_manage_library=False))
+    db_session.add(
+        await bind_test_key(
+            db_session, APIKey(name="ro", key_hash=key_hash, key_prefix=prefix, enabled=True, can_manage_library=False)
+        )
+    )
     await db_session.commit()
 
     response = await _upload(async_client, raw, model)

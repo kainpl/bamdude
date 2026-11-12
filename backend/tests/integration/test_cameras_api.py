@@ -13,6 +13,7 @@ import pytest_asyncio
 from httpx import AsyncClient
 
 from backend.app.services.camera_metrics import CameraCaptureResult
+from backend.tests.auth_helpers import mint_test_authority
 
 MJPEG = {"name": "Shelf", "camera_type": "mjpeg", "url": "http://192.0.2.50/stream"}
 
@@ -43,7 +44,7 @@ async def stream_token(async_client: AsyncClient):
     """The same short-lived token an <img> tag carries."""
     from backend.app.core.auth import create_camera_stream_token
 
-    return await create_camera_stream_token()
+    return await create_camera_stream_token(authority=await mint_test_authority())
 
 
 class TestCameraCrud:
@@ -261,7 +262,14 @@ class TestKioskFeed:
         assert (await async_client.post("/api/v1/cameras/", json=off)).status_code == 201
 
         user = (await db_session.execute(__import__("sqlalchemy").select(User))).scalars().first()
-        created = await create_token(db_session, user_id=user.id, name="TV", expires_in_days=7, scope="camwall")
+        created = await create_token(
+            db_session,
+            user_id=user.id,
+            name="TV",
+            expires_in_days=7,
+            scope="camwall",
+            authority=await mint_test_authority(db_session, username=user.username),
+        )
 
         response = await async_client.get("/api/v1/camwall/cameras", params={"token": created.plaintext})
         assert response.status_code == 200
@@ -277,7 +285,13 @@ class TestKioskFeed:
         from backend.app.services.long_lived_tokens import create_token
 
         user = (await db_session.execute(__import__("sqlalchemy").select(User))).scalars().first()
-        wrong = await create_token(db_session, user_id=user.id, name="Frigate", expires_in_days=7)
+        wrong = await create_token(
+            db_session,
+            user_id=user.id,
+            name="Frigate",
+            expires_in_days=7,
+            authority=await mint_test_authority(db_session, username=user.username),
+        )
 
         response = await async_client.get("/api/v1/camwall/cameras", params={"token": wrong.plaintext})
         assert response.status_code == 401

@@ -66,6 +66,10 @@ class ConnectorRuntime:
     def admitting(self) -> bool:
         return self._started and not self._restore_hold and not self._fenced
 
+    @property
+    def restore_fenced(self) -> bool:
+        return self._fenced
+
     def ensure_admitting(self) -> None:
         if not self.admitting:
             raise ConnectorRefusal(503, "storage_restoring", RESTORING, retryable=True)
@@ -189,17 +193,20 @@ class ConnectorRuntime:
         self._fenced = False
 
     async def finish_restore(self) -> bool:
-        """After the restored database is in place: a new storage epoch in it, then the fence goes."""
+        """Commit auth invalidation and connector epoch together before removing the fence."""
         try:
             from backend.app.core import database
+            from backend.app.core.auth_lifetime import stage_restore_invalidation
 
             async with database.async_session() as db:
-                await submissions.rotate_storage_epoch(db)
+                await stage_restore_invalidation(db)
+                await submissions.stage_storage_epoch(db)
+                await db.commit()
             fence_path().unlink(missing_ok=True)
         except Exception:  # noqa: BLE001 -- the fence stays; the next start finishes the rotation
-            logger.exception("Slicer connector: the storage epoch could not be rotated after restore")
+            logger.warning("Authentication and connector restore finalization failed; admission remains fenced")
             return False
-        logger.info("Slicer connector: storage epoch rotated after restore")
+        logger.info("Authentication and connector restore finalization committed")
         return True
 
     async def startup(self) -> None:

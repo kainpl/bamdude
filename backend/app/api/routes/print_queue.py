@@ -678,7 +678,7 @@ async def add_to_queue(
     # Every gate, the advisory lock, the position and the build live in
     # ``services/queue_add`` so the file manager's bulk add cannot become a
     # second definition of what a queue item is.
-    items, queue = await add_items_to_printer_queue(db, data, current_user)
+    items, queue = await add_items_to_printer_queue(db, data, current_user, authority=await creds.capture())
     # Captured before the re-query below, which fetches one row by id: the
     # service's own list is the only place every created row is named.
     created_item_ids = [i.id for i in items]
@@ -729,7 +729,7 @@ async def add_next_block_to_queue(
         raise HTTPException(403, "Missing permission: queue:reorder")
     if any(item.project_id is not None or item.project_line_id is not None for item in data.items):
         await ensure_may_file_future(creds)
-    items, _queue = await add_next_block_to_printer_queue(db, data.items, current_user)
+    items, _queue = await add_next_block_to_printer_queue(db, data.items, current_user, authority=await creds.capture())
     result = await db.execute(
         select(PrintQueueItem)
         .options(
@@ -1722,7 +1722,11 @@ async def clone_item_endpoint(
         raise HTTPException(404, "Queue item not found")
     rows = await get_batch_pending_items(db, src.batch_id) if scope == "batch" and src.batch_id else [src]
     await _ensure_may_clone(db, creds, current_user, rows or [src], keep_order)
-    as_new = {"created_by_id": current_user.id if current_user else None, "keep_order": keep_order}
+    as_new = {
+        "created_by_id": current_user.id if current_user else None,
+        "keep_order": keep_order,
+        "authority": await creds.capture(),
+    }
 
     try:
         if scope == "batch":
@@ -2278,7 +2282,11 @@ async def clone_batch_endpoint(
         raise HTTPException(404, "No pending items in batch")
     queue_id = pending[0].queue_id
     await _ensure_may_clone(db, creds, current_user, pending[:1] if scope == "one" else pending, keep_order)
-    as_new = {"created_by_id": current_user.id if current_user else None, "keep_order": keep_order}
+    as_new = {
+        "created_by_id": current_user.id if current_user else None,
+        "keep_order": keep_order,
+        "authority": await creds.capture(),
+    }
 
     try:
         if scope == "one":

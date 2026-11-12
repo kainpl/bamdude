@@ -22,6 +22,7 @@ from backend.app.models.user import User
 from backend.app.services import camera_fanout, camera_key_access
 from backend.app.services.connector_runtime import connector_runtime
 from backend.app.services.connector_submissions import STORAGE_EPOCH_KEY, server_identity
+from backend.tests.auth_helpers import bind_test_key
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
 JPEG = b"\xff\xd8oq2-frame\xff\xd9"
@@ -49,7 +50,11 @@ async def principal(db):
     db.add(owner)
     await db.flush()
     raw, hashed, prefix = generate_api_key()
-    key = APIKey(name="camera", key_hash=hashed, key_prefix=prefix, user_id=owner.id, can_read_status=True)
+    key = await bind_test_key(
+        db,
+        APIKey(name="camera", key_hash=hashed, key_prefix=prefix, user_id=owner.id, can_read_status=True),
+        owner=owner,
+    )
     db.add(key)
     await db.commit()
     return raw, key, owner, group

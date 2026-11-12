@@ -65,6 +65,7 @@ from httpx import AsyncClient
 from backend.app.models.settings import Settings
 from backend.app.models.spool import Spool
 from backend.app.services import inventory_service
+from backend.tests.auth_helpers import mint_test_access
 
 pytestmark = pytest.mark.asyncio
 
@@ -133,7 +134,7 @@ async def _limited_token(username: str, permissions: list[str]) -> str:
             )
             await db.commit()
 
-    return create_access_token(data={"sub": username})
+    return await mint_test_access(username=username)
 
 
 # ── The discriminating farm ──────────────────────────────────────────────────

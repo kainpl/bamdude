@@ -14,6 +14,7 @@ import pytest
 from httpx import AsyncClient
 
 from backend.app.core.auth import create_access_token
+from backend.tests.auth_helpers import mint_test_access
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
 
@@ -55,7 +56,7 @@ async def _read_own_user(async_client: AsyncClient, username: str) -> tuple[dict
 
     Returns ``(auth headers, user id)``.
     """
-    admin = {"Authorization": f"Bearer {create_access_token(data={'sub': 'test_admin'})}"}
+    admin = {"Authorization": f"Bearer {await mint_test_access(username='test_admin')}"}
     grp = await async_client.post(
         "/api/v1/groups/", headers=admin, json={"name": f"gm_{username}", "permissions": ["library:read_own"]}
     )

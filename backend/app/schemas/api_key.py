@@ -79,6 +79,9 @@ class APIKeyResponse(BaseModel):
     last_used: datetime | None
     created_at: datetime
     expires_at: datetime | None
+    contract_version: int = 0
+    retired_at: datetime | None = None
+    retired_reason: str | None = None
 
     class Config:
         from_attributes = True

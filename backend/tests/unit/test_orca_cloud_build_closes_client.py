@@ -56,7 +56,7 @@ class _Service:
 
 
 def _creds(refresh_token="r1"):
-    return SimpleNamespace(token="t1", refresh_token=refresh_token, expires_at=None, scope=None)
+    return SimpleNamespace(token="t1", refresh_token=refresh_token, expires_at=None, scope=None, captured=object())
 
 
 async def _build(service: _Service, creds, *, persist_error=None):
@@ -67,7 +67,7 @@ async def _build(service: _Service, creds, *, persist_error=None):
         patch.object(orca_routes, "_clear_credentials", AsyncMock()),
         patch.object(orca_routes, "_persist_rotated_tokens", persist),
     ):
-        return await orca_routes._build_authenticated_service(None, None)
+        return await orca_routes._build_authenticated_service(SimpleNamespace(commit=AsyncMock()), None)
 
 
 @pytest.mark.asyncio

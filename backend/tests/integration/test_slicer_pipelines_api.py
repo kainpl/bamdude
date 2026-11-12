@@ -3,6 +3,8 @@
 import pytest
 from httpx import AsyncClient
 
+from backend.tests.auth_helpers import mint_test_access
+
 
 def _preset_ref(source: str, id_: str) -> dict:
     return {"source": source, "id": id_}
@@ -163,7 +165,7 @@ class TestSlicerPipelinesPermissions:
         """A user in the Viewers group — holds pipelines:read only."""
         from backend.app.core.auth import create_access_token
 
-        admin_token = create_access_token(data={"sub": "test_admin"})
+        admin_token = await mint_test_access(username="test_admin")
         groups = (await async_client.get("/api/v1/groups/", headers={"Authorization": f"Bearer {admin_token}"})).json()
         viewers_group = next(g for g in groups if g["name"] == "Viewers")
         await async_client.post(

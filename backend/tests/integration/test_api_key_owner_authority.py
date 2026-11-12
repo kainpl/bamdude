@@ -13,9 +13,8 @@ would leave their credentials working at full scope authority.
 
 ⚠️ Two cases look alike and must not be conflated:
 
-- ``user_id IS NULL`` — a **legacy** key predating per-user ownership. Nothing
-  to narrow against; the scope flags stand alone, exactly as before.
-- ``user_id`` set but the row is gone or deactivated — 403, not "no owner".
+- ``user_id IS NULL`` — a legacy key requiring reissue, never implicit admin ownership.
+- ``user_id`` set but the row is gone or deactivated — invalid credential, never "no owner".
 """
 
 from __future__ import annotations
@@ -33,6 +32,7 @@ from backend.app.core.permissions import Permission
 from backend.app.models.api_key import APIKey
 from backend.app.models.group import Group
 from backend.app.models.user import User
+from backend.tests.auth_helpers import bind_test_key
 
 pytestmark = pytest.mark.integration
 
@@ -66,6 +66,8 @@ async def _key(db_session, *, owner: User | None = None, **flags) -> tuple[str, 
         user_id=owner.id if owner else None,
         **flags,
     )
+    if owner is not None:
+        await bind_test_key(db_session, api_key, owner)
     db_session.add(api_key)
     await db_session.commit()
     await db_session.refresh(api_key)
@@ -113,36 +115,37 @@ class TestTheKeyCannotExceedItsOwner:
 
 class TestADeadOwnerKillsTheKey:
     @pytest.mark.asyncio
-    async def test_a_deactivated_owner_is_403_not_no_owner(self, db_session):
+    async def test_a_deactivated_owner_is_invalid_not_no_owner(self, db_session):
         """⚠️ Returning None here would FAIL OPEN — the key would fall back to
         the legacy branch and keep its full scope authority."""
-        owner = await _user(db_session, "gone", [Permission.PRINTERS_READ.value], is_active=False)
+        owner = await _user(db_session, "gone", [Permission.PRINTERS_READ.value])
         _, api_key = await _key(db_session, owner=owner, can_read_status=True)
+        owner.is_active = False
+        await db_session.commit()
 
         with pytest.raises(Exception) as caught:
             await resolve_apikey_owner(db_session, api_key)
-        assert caught.value.status_code == 403
+        assert caught.value.status_code == 401
 
     @pytest.mark.asyncio
-    async def test_an_owner_row_that_no_longer_exists_is_403(self, db_session):
-        _, api_key = await _key(db_session, can_read_status=True)
+    async def test_an_owner_row_that_no_longer_exists_is_invalid(self, db_session):
+        owner = await _user(db_session, "orphan", [Permission.PRINTERS_READ.value])
+        _, api_key = await _key(db_session, owner=owner, can_read_status=True)
         api_key.user_id = 999_999
         await db_session.commit()
 
         with pytest.raises(Exception) as caught:
             await resolve_apikey_owner(db_session, api_key)
-        assert caught.value.status_code == 403
+        assert caught.value.status_code == 401
 
 
-class TestTheLegacyKeyIsNotBroken:
+class TestLegacyKeyRequiresReissue:
     @pytest.mark.asyncio
-    async def test_no_user_id_means_the_scope_flags_stand_alone(self, db_session):
-        """A key minted before per-user ownership has nobody to be narrowed
-        against, and must keep working exactly as it did."""
+    async def test_ownerless_legacy_key_never_gains_an_implicit_owner(self, db_session):
         _, api_key = await _key(db_session, can_control_printer=True)
-
-        assert await resolve_apikey_owner(db_session, api_key) is None
-        _check_apikey_permissions(api_key, [Permission.PRINTERS_CONTROL.value], owner=None)
+        with pytest.raises(Exception) as caught:
+            await resolve_apikey_owner(db_session, api_key)
+        assert caught.value.status_code == 401
 
 
 class TestWhatAuthMeReports:
@@ -190,12 +193,15 @@ class TestWhatAuthMeReports:
 
     @pytest.mark.asyncio
     async def test_a_deactivated_owner_makes_the_endpoint_refuse(self, async_client: AsyncClient, db_session):
-        owner = await _user(db_session, "retired", [Permission.PRINTERS_READ.value], is_active=False)
+        owner = await _user(db_session, "retired", [Permission.PRINTERS_READ.value])
         raw, _ = await _key(db_session, owner=owner, can_read_status=True)
+        owner.is_active = False
+        await db_session.commit()
+        async_client.headers.pop("Authorization", None)
 
         response = await async_client.get("/api/v1/auth/me", headers={"X-API-Key": raw})
 
-        assert response.status_code == 403, response.text
+        assert response.status_code == 401, response.text
 
 
 class TestTheWebhookDoorIsNotAWayAround:

@@ -65,6 +65,30 @@ async def read_access(db: AsyncSession, *, user_id: int | None = None, authority
     from backend.app.core.permissions import Permission
     from backend.app.models.user import User
 
+    if authority is not None and getattr(authority, "kind", None) != "telegram_chat":
+        from backend.app.services.domain_authority import fresh
+
+        principal = await fresh(db, authority)
+        if principal is None:
+            return LibraryReadAccess("none")
+        if principal.api_key is not None:
+            from backend.app.core.auth import authorize_api_key
+
+            try:
+                await authorize_api_key(db, principal.api_key, [Permission.LIBRARY_READ_ALL])
+            except HTTPException:
+                return LibraryReadAccess("none")
+            return LibraryReadAccess("all", principal.user.id)
+        user = principal.user
+        scope = (
+            "all"
+            if user.has_permission(Permission.LIBRARY_READ_ALL.value)
+            else "own"
+            if user.has_permission(Permission.LIBRARY_READ_OWN.value)
+            else "none"
+        )
+        return LibraryReadAccess(scope, user.id)
+
     if authority is not None and authority.kind == "api_key":
         from backend.app.core.auth import authorize_api_key
         from backend.app.models.api_key import APIKey
@@ -164,7 +188,7 @@ def _file_present(row: LibraryFile) -> bool:
 
 
 async def find_reusable_row(
-    db: AsyncSession, *, content_hash: str, access: LibraryReadAccess
+    db: AsyncSession, *, content_hash: str, access: LibraryReadAccess, presence=None
 ) -> tuple[LibraryFile, bool] | None:
     """The row a new arrival with this content should become, plus whether its
     bytes are on disk. ``None`` when the arrival must become a row of its own.
@@ -186,11 +210,36 @@ async def find_reusable_row(
         # Refuse the canonical hidden row before probing/repairing its bytes.
         # Skipping it would create a duplicate or let another caller adopt it.
         access.ensure(candidate)
-        present = _file_present(candidate)
+        if presence is None:
+            present = _file_present(candidate)
+        else:
+            key = (candidate.id, candidate.file_path, candidate.file_hash)
+            if key not in presence:
+                from fastapi import HTTPException
+
+                raise HTTPException(409, {"code": "source_changed"})
+            present = presence[key]
         if present or not candidate.is_external:
             return candidate, present
 
     return None
+
+
+async def prepare_reuse(db, *, content_hash: str, access: LibraryReadAccess):
+    """Probe bytes outside the final account guard, while refusing hidden rows before any probe."""
+    import asyncio
+    from types import SimpleNamespace
+
+    rows = await _rows_with_hash(db, content_hash)
+    probes = []
+    for row in rows:
+        access.ensure(row)
+        probes.append((row.id, row.file_path, row.file_hash))
+    await db.commit()
+    result = {}
+    for key in probes:
+        result[key] = await asyncio.to_thread(_file_present, SimpleNamespace(file_path=key[1]))
+    return result
 
 
 def external_hash_is_stale(row: LibraryFile, *, size: int, mtime: float | None) -> bool:

@@ -5,7 +5,7 @@ import uuid
 
 from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 
-from backend.app.core.auth import authenticate_websocket_token
+from backend.app.core.auth import authenticate_websocket_authority
 from backend.app.core.websocket import ws_manager
 from backend.app.services.background_dispatch import background_dispatch
 from backend.app.services.printer_manager import printer_manager, printer_state_to_dict
@@ -44,8 +44,8 @@ async def websocket_endpoint(websocket: WebSocket, token: str | None = Query(def
     bootstrap_id = uuid.uuid4().hex[:12]
     # Authenticate BEFORE ws_manager.connect() so an unauth caller never enters
     # the broadcast set.
-    authenticated, user_id = await authenticate_websocket_token(token or "")
-    if not authenticated:
+    authenticated = await authenticate_websocket_authority(token or "")
+    if authenticated is None:
         logger.info("WebSocket connect refused: missing/invalid token")
         await websocket.close(code=_WS_CLOSE_UNAUTHORIZED)
         return
@@ -53,7 +53,8 @@ async def websocket_endpoint(websocket: WebSocket, token: str | None = Query(def
     logger.info("WebSocket client connecting...")
     # Tag the connection with the minting user (None for API-key callers) so the
     # manager can target per-user broadcasts. Auth already passed above.
-    await ws_manager.connect(websocket, user_id)
+    authority, user_id = authenticated
+    await ws_manager.connect(websocket, user_id, account_identity=authority.account_identity)
     logger.info("WebSocket client connected")
     accepted_at = time.monotonic()
 

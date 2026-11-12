@@ -41,6 +41,7 @@ class SliceJob:
     # (no per-row identity); those jobs are visible only to READ_ALL pollers —
     # see slice_jobs.py::get_slice_job.
     owner_id: int | None = None
+    authority: object | None = None
     status: SliceJobStatus = "pending"
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     started_at: datetime | None = None
@@ -72,6 +73,7 @@ class SliceDispatchService:
         self._next_id: int = 1
         self._lock = asyncio.Lock()
         self._tasks: dict[int, asyncio.Task] = {}
+        self.open = True
 
     async def enqueue(
         self,
@@ -80,6 +82,7 @@ class SliceDispatchService:
         source_id: int,
         source_name: str,
         owner_id: int | None = None,
+        authority=None,
         run: Callable[[int], Awaitable[dict[str, Any]]],
     ) -> SliceJob:
         """Register a new slice job and start it on the event loop.
@@ -90,12 +93,17 @@ class SliceDispatchService:
         will receive once status flips to ``completed``.
         """
         async with self._lock:
+            if not self.open:
+                from fastapi import HTTPException
+
+                raise HTTPException(503, "Slicing is unavailable during restore")
             job = SliceJob(
                 id=self._next_id,
                 kind=kind,
                 source_id=source_id,
                 source_name=source_name,
                 owner_id=owner_id,
+                authority=authority,
             )
             self._next_id += 1
             self._jobs[job.id] = job
@@ -167,6 +175,7 @@ class SliceDispatchService:
         Tasks cancelled before their coroutine ever started won't run their
         ``finally`` block, so we explicitly clear the registry afterward.
         """
+        self.open = False
         tasks = list(self._tasks.values())
         for task in tasks:
             task.cancel()
@@ -176,6 +185,19 @@ class SliceDispatchService:
             except (asyncio.CancelledError, Exception):
                 pass
         self._tasks.clear()
+
+    def close_admission(self) -> None:
+        self.open = False
+
+    async def quiesce_for_restore(self, seconds: float = 30.0) -> bool:
+        self.close_admission()
+        tasks = set(self._tasks.values())
+        for task in tasks:
+            task.cancel()
+        if not tasks:
+            return True
+        _, pending = await asyncio.wait(tasks, timeout=seconds)
+        return not pending
 
 
 class _SliceJobError(Exception):

@@ -50,7 +50,7 @@ def _collect_deleted_models(db_mock: AsyncMock) -> list[type]:
 
 
 @pytest.mark.asyncio
-async def test_delete_user_clears_oidc_mfa_otp_token_rows():
+async def test_delete_user_clears_oidc_mfa_otp_token_rows(monkeypatch):
     """The four user-FK tables get an explicit DELETE issued by the route.
 
     Pinned because SQLite's ``foreign_keys=OFF`` means the model-level
@@ -65,6 +65,8 @@ async def test_delete_user_clears_oidc_mfa_otp_token_rows():
     user.is_active = True
     user.is_admin = False
     user.groups = []
+    user.account_identity = "22222222-2222-4222-8222-222222222222"
+    user.session_generation = 0
 
     db = AsyncMock()
     # First db.execute → the SELECT for the user
@@ -87,8 +89,17 @@ async def test_delete_user_clears_oidc_mfa_otp_token_rows():
     admin = MagicMock()
     admin.id = 1
     admin.username = "admin"
+    from backend.app.core.auth_lifetime import FrozenAuthority
 
-    await delete_user(user_id=42, delete_items=False, current_user=admin, db=db)
+    admin._auth_capture = FrozenAuthority("session", "11111111-1111-4111-8111-111111111111", 1, 0, "synthetic-sid")
+    admin.is_admin = True
+    # This structural test only records orphan DELETE statements. Real guard,
+    # generation and concurrent revocation behavior has separate SQL tests.
+    monkeypatch.setattr("backend.app.api.routes.users.guard_accounts", AsyncMock(return_value=object()))
+    monkeypatch.setattr("backend.app.api.routes.users.validate_captured", AsyncMock(return_value=MagicMock(user=admin)))
+    monkeypatch.setattr("backend.app.api.routes.users.stage_end_sessions", AsyncMock())
+
+    await delete_user(user_id=42, delete_items=False, _admin=admin, current_user=admin, db=db)
 
     issued_deletes = _collect_deleted_models(db)
     # APIKey (existing) + UserOIDCLink + UserTOTP + UserOTPCode +

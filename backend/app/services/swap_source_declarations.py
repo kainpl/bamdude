@@ -68,6 +68,7 @@ class Actor:
     label: str
     #: The API key's row id, for the rights read afresh before the commit -- on the write's own session.
     key_id: int | None = None
+    capture: object | None = None
 
 
 @dataclass(frozen=True)
@@ -110,8 +111,11 @@ def _gate(kind: str, row, actor: Actor, rights: Rights, *, update: bool = True) 
 
 async def actor_for(request, db, user) -> Actor:
     """The actor of a request whose gates passed: the signed-in user, or the API key and its owner."""
+    from backend.app.core.auth import capture_request_authority
+
+    capture = await capture_request_authority(request)
     if user is not None:
-        return Actor(kind="user", user_id=user.id, label=user.username)
+        return Actor(kind="user", user_id=user.id, label=user.username, capture=capture)
     from backend.app.core.auth import acting_user, is_api_key_token
 
     credential = request.headers.get("X-API-Key")
@@ -133,6 +137,7 @@ async def actor_for(request, db, user) -> Actor:
         user_id=owner.id if owner is not None else None,
         label=f"API key ({owner.username})" if owner is not None else "API key",
         key_id=key_id,
+        capture=capture,
     )
 
 
@@ -142,17 +147,13 @@ async def fresh_api_key(db, actor: Actor):
     Never ``resolve_api_key_authority``: that validates in sessions of its own and writes the key's ``last_used``,
     and on SQLite that write waits for the very writer this transaction holds (T9 final review, C1).
     """
-    from datetime import datetime, timezone
+    from backend.app.core.auth_lifetime import validate_captured
 
-    from backend.app.models.api_key import APIKey
-
-    key = await db.get(APIKey, actor.key_id, populate_existing=True) if actor.key_id else None
-    if key is None or not key.enabled:
+    if actor.capture is None or actor.capture.kind != "key":
         raise HTTPException(403, RIGHTS_GONE)
-    if key.expires_at is not None:
-        expires = key.expires_at if key.expires_at.tzinfo else key.expires_at.replace(tzinfo=timezone.utc)
-        if expires < datetime.now(timezone.utc):
-            raise HTTPException(403, RIGHTS_GONE)
+    key = (await validate_captured(db, actor.capture)).api_key
+    if key is None or key.id != actor.key_id:
+        raise HTTPException(403, RIGHTS_GONE)
     return key
 
 
@@ -160,6 +161,11 @@ async def _fresh_rights(db, kind: str, actor: Actor) -> Rights:
     """The actor's rights read again, inside the write transaction: a right revoked while the bytes were being
     read commits nothing (§4). No per-request cache is consulted."""
     read_all, read_own, update_all, update_own = _PERMISSIONS[kind]
+    from backend.app.core.auth_lifetime import validate_captured
+
+    if actor.capture is None:
+        raise HTTPException(403, RIGHTS_GONE)
+    principal = await validate_captured(db, actor.capture)
     if actor.kind == "api_key":
         from backend.app.core.auth import authorize_api_key
 
@@ -167,18 +173,7 @@ async def _fresh_rights(db, kind: str, actor: Actor) -> Rights:
         await authorize_api_key(db, await fresh_api_key(db, actor), [read_all, update_all])
         return Rights(read_all=True, update_all=True)
 
-    from sqlalchemy.orm import selectinload
-
-    from backend.app.models.user import User
-
-    user = (
-        await db.execute(
-            select(User)
-            .options(selectinload(User.groups))
-            .where(User.id == actor.user_id)
-            .execution_options(populate_existing=True)
-        )
-    ).scalar_one_or_none()
+    user = principal.user
     if user is None or not user.is_active:
         raise HTTPException(403, RIGHTS_GONE)
     may_read_all, may_update_all = user.has_permission(read_all), user.has_permission(update_all)
@@ -289,6 +284,16 @@ def _request_digest(kind: str, source_id: int, value: bool, expected_sha256: str
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
 
 
+def _bound_digest(digest, actor):
+    from backend.app.core.auth_lifetime import FrozenAuthority
+
+    if not isinstance(actor.capture, FrozenAuthority):
+        raise HTTPException(401, "Immutable authority is required")
+    return hashlib.sha256(
+        json.dumps([digest, actor.capture.account_identity, actor.capture.key_identity], separators=(",", ":")).encode()
+    ).hexdigest()
+
+
 def _audit_line(**fields):
     """The audit row of one operation -- its own function, so a refused write is a refused commit."""
     from backend.app.models.swap_source_declaration_audit import SwapSourceDeclarationAudit
@@ -375,7 +380,7 @@ async def declare(
     if type(value) is not bool:
         raise HTTPException(422, "A declaration is true or false.")
     started = time.monotonic()
-    digest = _request_digest(kind, source_id, value, expected_sha256, expected_revision)
+    digest = _bound_digest(_request_digest(kind, source_id, value, expected_sha256, expected_revision), actor)
     try:
         async with async_session() as db:
             row = await db.get(_model(kind), source_id)
@@ -447,8 +452,17 @@ async def _write(
     from backend.app.services.archive_write_scope import archive_write_scope
 
     async with async_session() as db:
-        scope = archive_write_scope(db, source_id) if kind == "archive" else nullcontext()
+        from backend.app.core.auth_lifetime import guard_accounts
+
+        async def prepare():
+            if actor.capture is None:
+                raise HTTPException(401, "Immutable authority is required")
+            await guard_accounts(db, [actor.capture])
+
+        scope = archive_write_scope(db, source_id, first=prepare) if kind == "archive" else nullcontext()
         async with scope:
+            if kind != "archive":
+                await prepare()
             row = await _locked_row(db, kind, source_id)
             _gate(kind, row, actor, await _fresh_rights(db, kind, actor))
             # The same request may have overtaken this one after both passed the preflight: read the operation

@@ -35,9 +35,9 @@ class McpRuntime:
         self._requests: set[asyncio.Task] = set()
         self._auth_tasks: set[asyncio.Task] = set()
         self._db_tasks: set[asyncio.Task] = set()
-        self._key_calls: dict[int, int] = {}
-        self._rate: OrderedDict[int, deque] = OrderedDict()
-        self._connected: OrderedDict[int, datetime] = OrderedDict()
+        self._key_calls: dict[str, int] = {}
+        self._rate: OrderedDict[str, deque] = OrderedDict()
+        self._connected: OrderedDict[str, datetime] = OrderedDict()
         self._admitted = 0
         self._domain_calls = 0
         self._held = False
@@ -167,13 +167,13 @@ class McpRuntime:
         self._connected.clear()
         self._rate.clear()
 
-    def observed_connection(self, key_id: int):
-        value = self._connected.get(key_id)
+    def observed_connection(self, key_identity: str):
+        value = self._connected.get(key_identity)
         return value.isoformat() if value else None
 
-    def _observed(self, key_id):
-        self._connected[key_id] = datetime.now(timezone.utc)
-        self._connected.move_to_end(key_id)
+    def _observed(self, key_identity):
+        self._connected[key_identity] = datetime.now(timezone.utc)
+        self._connected.move_to_end(key_identity)
         while len(self._connected) > 4096:
             self._connected.popitem(last=False)
 
@@ -251,7 +251,9 @@ class McpRuntime:
             access = await asyncio.shield(auth_task)
             scope["bamdude_diagnostic_access"] = access
             scope["bamdude_mcp_runtime"] = self
-            self._observed(access.key_id)
+            if not access.key_identity or not access.owner_identity:
+                raise HTTPException(401)
+            self._observed(access.key_identity)
             body = bytearray()
             while True:
                 message = await receive()
@@ -276,7 +278,7 @@ class McpRuntime:
                 pass  # SDK owns malformed JSON/protocol responses
             if domain:
                 now = time.monotonic()
-                calls = self._rate.get(access.key_id)
+                calls = self._rate.get(access.key_identity)
                 if calls is None:
                     # Evict only expired windows. Churning keys must not erase
                     # another key's live quota or allocate unbounded state.
@@ -287,20 +289,20 @@ class McpRuntime:
                         self._rate.popitem(last=False)
                     if len(self._rate) >= 4096:
                         raise HTTPException(503, "busy")
-                    calls = self._rate[access.key_id] = deque()
-                self._rate.move_to_end(access.key_id)
+                    calls = self._rate[access.key_identity] = deque()
+                self._rate.move_to_end(access.key_identity)
                 while calls and calls[0] <= now - 60:
                     calls.popleft()
                 if len(calls) >= CALLS_PER_MINUTE_PER_KEY:
                     raise HTTPException(429, "rate_limited")
                 if (
                     self._domain_calls >= CONCURRENT_CALLS_PER_PROCESS
-                    or self._key_calls.get(access.key_id, 0) >= CONCURRENT_CALLS_PER_KEY
+                    or self._key_calls.get(access.key_identity, 0) >= CONCURRENT_CALLS_PER_KEY
                 ):
                     raise HTTPException(503, "busy")
                 calls.append(now)
                 self._domain_calls += 1
-                self._key_calls[access.key_id] = self._key_calls.get(access.key_id, 0) + 1
+                self._key_calls[access.key_identity] = self._key_calls.get(access.key_identity, 0) + 1
                 counted = True
 
             delivered = False
@@ -350,9 +352,9 @@ class McpRuntime:
         finally:
             if counted:
                 self._domain_calls -= 1
-                self._key_calls[access.key_id] -= 1
-                if self._key_calls[access.key_id] == 0:
-                    del self._key_calls[access.key_id]
+                self._key_calls[access.key_identity] -= 1
+                if self._key_calls[access.key_identity] == 0:
+                    del self._key_calls[access.key_identity]
             logger.info(
                 "MCP read request=%s key=%s tool=%s status=%s duration=%.3f bytes=%s",
                 request_id,

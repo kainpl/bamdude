@@ -69,6 +69,7 @@ async def add_items_to_auto_queue(
     order_print_options: dict | None = None,
     consumption: PlanConsumption | LegacyPlanPublication | None = None,
     publication_receipt: PublicationReceipt | None = None,
+    authority=None,
 ) -> list[AutoQueueItem]:
     """Validate, build and persist the auto-queue rows ``data`` asks for.
 
@@ -78,6 +79,11 @@ async def add_items_to_auto_queue(
     ``publication_receipt`` (``services/queue_publication.py``) is claimed in the publication's transaction before
     any row and recorded with the rows' ids; it never travels with an order plan's ``consumption``.
     """
+    from backend.app.services.publication_authority import actor_for_writer
+
+    authority = actor_for_writer(
+        current_user, authority=authority, receipt=publication_receipt, consumption=consumption
+    )
     if consumption is not None and publication_receipt is not None:
         raise ValueError("An order plan's consumption and a publication receipt are never one publication")
     if order_print_options:
@@ -157,6 +163,7 @@ async def add_items_to_auto_queue(
             order_print_options,
             **({"consumption": consumption} if consumption is not None else {}),
             publication_receipt=publication_receipt,
+            authority=authority,
         )
     except BaseException:
         await discard_staged(staged)
@@ -186,6 +193,7 @@ async def _publish_items(
     consumption: PlanConsumption | LegacyPlanPublication | None = None,
     *,
     publication_receipt: PublicationReceipt | None = None,
+    authority=None,
 ) -> list[int]:
     """Publish the captured bytes and write every row in ONE transaction (§5 step 6).
 
@@ -205,6 +213,9 @@ async def _publish_items(
     created_ids: list[int] = []
 
     async def attach(session: AsyncSession, source: QueueSource) -> None:
+        from backend.app.services.publication_authority import current_creator
+
+        creator = await current_creator(session, authority, current_user)
         if publication_receipt is not None:
             # Before any row: a refusal here rolls the whole publication back. No printer lane -- the distributor
             # has not chosen one.
@@ -221,7 +232,7 @@ async def _publish_items(
             source=source,
             resolved=resolved,
             project_id=effective_project_id,
-            current_user=current_user,
+            current_user=creator,
             library_file=library_file,
             order_print_options=order_print_options,
             batch_id=batch_id,
@@ -234,7 +245,16 @@ async def _publish_items(
             # The exact ids, in the transaction that commits them: a receipt and its jobs, or neither.
             await publication_receipt.record(session, queue_item_ids=[], auto_item_ids=list(created_ids))
 
-    await publish_staged(staged, attach)
+    from backend.app.services.publication_authority import original_source_access
+
+    await publish_staged(
+        staged,
+        attach,
+        authority=authority,
+        source_access=original_source_access(
+            authority, archive_id=data.archive_id, library_file_id=data.library_file_id
+        ),
+    )
     return created_ids
 
 

@@ -11,10 +11,26 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from backend.app.models.local_preset import LocalPreset
+from backend.app.models.user import User
 from backend.app.models.user_filament import UserFilamentFamily, UserFilamentPreset
+from backend.app.services import cloud_credentials
 from backend.app.services.filament_authoring import AuthoringError
 from backend.app.services.filament_push import PUSH_CAPABLE, push_blobs, push_family, resolve_push_conflict
 from backend.app.services.orca_cloud import OrcaCloudConflict
+
+OWNER = None
+CAPTURE = None
+
+
+@pytest.fixture(autouse=True)
+async def cloud_owner(db_session):
+    global OWNER, CAPTURE
+    cloud_credentials.open_admission()
+    OWNER = User(username="push-owner", role="admin", is_active=True)
+    db_session.add(OWNER)
+    await db_session.commit()
+    CAPTURE = await cloud_credentials.snapshot(db_session, OWNER, "orca")
+    await db_session.commit()
 
 
 def _seed_root(db_session, *, fid="Pabc1234", name="Poly PETG B @Bambu Lab P1S 0.4 nozzle"):
@@ -42,6 +58,8 @@ async def _mirror_for(db_session, preset, fid, **cols):
     await db_session.flush()
     row = UserFilamentPreset(
         owner_user_id=None,
+        bambu_pushed_owner_identity=OWNER.account_identity,
+        orca_pushed_owner_identity=OWNER.account_identity,
         ecosystem="orca",
         source="local",
         local_preset_id=preset.id,
@@ -56,6 +74,7 @@ async def _mirror_for(db_session, preset, fid, **cols):
 
 def _orca_mock(profiles=None):
     svc = AsyncMock()
+    svc.credential_snapshot = CAPTURE
     svc.is_authenticated = True
     svc.list_profiles.return_value = profiles or []
     svc.push_profile.return_value = {"id": "whatever", "updated_time": 1800000100}

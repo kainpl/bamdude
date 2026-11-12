@@ -361,5 +361,8 @@ class FarmReadyMiddleware:
             await send(message)
             if message["type"] == "lifespan.startup.complete":
                 farm_startup_guard.mark_ready()
+                from backend.app.core.auth_runtime import auth_runtime
+
+                auth_runtime.open_admission()
 
         return await self.app(scope, receive, ready_send)

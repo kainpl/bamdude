@@ -366,7 +366,9 @@ async def test_missing_stock_or_product_read_right_does_not_leak_a_proposal(comm
         name = f"fit_restricted_{index}"
         await _user(db_session, name, rights)
         response = await committing_client.post(
-            f"/api/v1/projects/{shop['order']}/lines/{shop['line']}/plate-fit", json={"around": 10}, headers=_jwt(name)
+            f"/api/v1/projects/{shop['order']}/lines/{shop['line']}/plate-fit",
+            json={"around": 10},
+            headers=await _jwt(name),
         )
         assert response.status_code == 403, response.text
 
@@ -631,7 +633,7 @@ async def test_stock_move_permission_is_checked_before_quantity_or_free_stock_ch
     response = await committing_client.post(
         f"/api/v1/projects/{shop['order']}/lines/{shop['line']}/plate-fit",
         json={"around": 10, "plate_ids": [shop["plate"].id]},
-        headers=_jwt(name),
+        headers=await _jwt(name),
     )
     assert response.status_code == 200, response.text
     data = response.json()
@@ -648,7 +650,7 @@ async def test_stock_move_permission_is_checked_before_quantity_or_free_stock_ch
                 "acknowledge_large_change": False,
             },
         },
-        headers=_jwt(name),
+        headers=await _jwt(name),
     )
     assert refused.status_code == 403, refused.text
     assert (await committing_client.get(f"/api/v1/projects/{shop['order']}")).json()["lines"][0]["quantity"] == 10

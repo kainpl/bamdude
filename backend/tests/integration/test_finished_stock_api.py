@@ -12,6 +12,7 @@ from backend.app.models.product import Product, ProductOrigin, ProductPart
 from backend.app.models.product_variant import ProductVariantGroup, ProductVariantOption
 from backend.app.models.user import User
 from backend.app.services import part_stock
+from backend.tests.auth_helpers import bind_test_key, mint_test_access
 
 pytestmark = pytest.mark.integration
 
@@ -262,7 +263,7 @@ async def test_params_and_the_sidebar_badge(committing_client, farm):
 
 @pytest.mark.asyncio
 async def test_reading_is_not_moving(async_client: AsyncClient, farm):
-    admin = {"Authorization": f"Bearer {create_access_token(data={'sub': 'test_admin'})}"}
+    admin = {"Authorization": f"Bearer {await mint_test_access(username='test_admin')}"}
     grp = await async_client.post(
         "/api/v1/groups/",
         headers=admin,
@@ -307,16 +308,16 @@ async def test_an_api_key_records_its_owner_as_the_performer(committing_client, 
     «the system» (review Important 5)."""
     admin = (await db_session.execute(select(User).where(User.username == "test_admin"))).scalar_one()
     full_key, key_hash, key_prefix = generate_api_key()
-    db_session.add(
-        APIKey(
-            name="stock-bridge",
-            key_hash=key_hash,
-            key_prefix=key_prefix,
-            user_id=admin.id,
-            can_manage_projects=True,
-            can_read_status=True,
-        )
+    issued_key = APIKey(
+        name="stock-bridge",
+        key_hash=key_hash,
+        key_prefix=key_prefix,
+        user_id=admin.id,
+        can_manage_projects=True,
+        can_read_status=True,
     )
+    await bind_test_key(db_session, issued_key)
+    db_session.add(issued_key)
     await db_session.commit()
     jwt = committing_client.headers.pop("Authorization")
     try:

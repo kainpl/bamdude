@@ -10,6 +10,7 @@ import httpx
 import pytest
 from sqlalchemy import event, select, update
 
+from backend.app.core.auth import generate_api_key
 from backend.app.models.api_key import APIKey
 from backend.app.models.group import Group
 from backend.app.models.library import LibraryFile
@@ -19,6 +20,7 @@ from backend.app.models.smart_plug import SmartPlug
 from backend.app.models.user import User
 from backend.app.services.bambu_mqtt import PrinterState
 from backend.app.services.printer_manager import printer_manager
+from backend.tests.auth_helpers import bind_test_key
 from backend.tests.integration.test_mcp_base_transport import key, live_app, runtime  # noqa: F401
 
 
@@ -259,13 +261,24 @@ async def test_owner_all_permissions_are_required_and_refreshed_on_every_call(
 ):  # noqa: F811
     printer = await printer_factory()
     await queued(db_session, printer, name="SECRET queue filename")
-    created = await key(async_client)
     group = Group(name="diagnostic status reader", permissions=["printers:read", "queue:read_own", "archives:read_own"])
     owner = User(username="diagnostic reader", role="user", is_active=True, groups=[group])
     db_session.add_all([group, owner])
     await db_session.flush()
-    await db_session.execute(update(APIKey).where(APIKey.id == created["id"]).values(user_id=owner.id))
+    raw, hashed, prefix = generate_api_key()
+    owned_key = APIKey(
+        name="diagnostic owner",
+        key_hash=hashed,
+        key_prefix=prefix,
+        can_access_mcp=True,
+        can_read_status=True,
+        can_queue=False,
+        can_control_printer=False,
+    )
+    await bind_test_key(db_session, owned_key, owner)
+    db_session.add(owned_key)
     await db_session.commit()
+    created = {"id": owned_key.id, "key": raw}
     async with live_app() as url, httpx.AsyncClient() as http:
         inspected = data(await rpc(http, url, created["key"], "bamdude_inspect_printer", {"printer_id": printer.id}))
         assert inspected["data"]["queue_availability"] == "unavailable_for_actor"
@@ -275,7 +288,7 @@ async def test_owner_all_permissions_are_required_and_refreshed_on_every_call(
         owner.is_active = False
         await db_session.commit()
         response = await http.post(url + "/mcp", headers={"X-API-Key": created["key"]}, json={})
-        assert response.status_code == 403
+        assert response.status_code == 401  # Deactivated owner makes the credential dead, not merely under-scoped.
 
 
 @pytest.mark.parametrize("modern", [False, True])
@@ -328,7 +341,17 @@ async def test_page_is_bounded_before_hydration_and_query_count_does_not_grow(
     from backend.app.services.farm_diagnostics.overview import overview
     from backend.app.services.queue_sources import current_epoch
 
-    access = DiagnosticAccess(created["id"], 1, frozenset(), True, None, False, current_epoch())
+    access = DiagnosticAccess(
+        created["id"],
+        1,
+        frozenset(),
+        True,
+        None,
+        False,
+        current_epoch(),
+        key_identity="00000000-0000-0000-0000-000000000001",
+        owner_identity="00000000-0000-0000-0000-000000000002",
+    )
     event.listen(test_engine.sync_engine, "before_cursor_execute", observed)
     try:
         await overview(db_session, access, PageInput(limit=2), "small")

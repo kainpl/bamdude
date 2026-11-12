@@ -31,7 +31,7 @@ AGGREGATE_FLAGS = {
 
 
 def test_the_catalog_has_exactly_the_agreed_events():
-    assert len(EVENT_CATALOG) == 43
+    assert len(EVENT_CATALOG) == 44
     for key, meta in EVENT_CATALOG.items():
         assert meta.severity in SEVERITIES, key
         assert meta.group in GROUPS, key

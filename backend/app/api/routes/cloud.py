@@ -18,7 +18,6 @@ from sqlalchemy.orm import selectinload
 from backend.app.core.auth import RequirePermission, _api_key_authority_or_none, is_api_key_token, security
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
-from backend.app.models.settings import Settings
 from backend.app.models.user import User
 from backend.app.schemas.cloud import (
     CloudAuthStatus,
@@ -63,61 +62,35 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/cloud", tags=["cloud"])
 
 
-async def _persist_refreshed_tokens(user_id: int | None, access_token: str, refresh_token: str | None) -> None:
-    """Store the renewed pair and clear the rejected-token flag.
-
-    Same own-session shape as :func:`mark_cloud_token_invalid`, and for the
-    same reason — this fires from the middle of a failing request, and the
-    renewed credential is real regardless of how that request ends.
-    """
-    from sqlalchemy import update
-
+async def _persist_refreshed_tokens(captured, access_token: str, refresh_token: str | None) -> None:
     from backend.app.core.database import async_session
+    from backend.app.services.cloud_credentials import write
 
     try:
         async with async_session() as db:
-            if user_id is not None:
-                await db.execute(
-                    update(User)
-                    .where(User.id == user_id)
-                    .values(
-                        cloud_token=access_token,
-                        cloud_refresh_token=refresh_token,
-                        cloud_token_invalid_at=None,
-                    )
-                )
-            else:
-                for key, value in [(CLOUD_TOKEN_KEY, access_token), (CLOUD_REFRESH_TOKEN_KEY, refresh_token or "")]:
-                    result = await db.execute(select(Settings).where(Settings.key == key))
-                    row = result.scalar_one_or_none()
-                    if row:
-                        row.value = value
-                    else:
-                        db.add(Settings(key=key, value=value))
-                result = await db.execute(select(Settings).where(Settings.key == CLOUD_TOKEN_INVALID_KEY))
-                stale = result.scalar_one_or_none()
-                if stale:
-                    await db.delete(stale)
-            await db.commit()
-        logger.info("Bambu Cloud token refreshed and stored (user_id=%s)", user_id)
-    except Exception:
-        logger.exception("Could not persist the refreshed Bambu Cloud token")
+            await write(
+                db,
+                captured,
+                {
+                    "cloud_token": access_token,
+                    "cloud_refresh_token": refresh_token,
+                    "cloud_token_invalid_at": None,
+                },
+            )
+    except HTTPException as exc:
+        if exc.status_code not in (401, 403, 409, 503):
+            raise
+        # A rotated/logout/restored credential cannot be resurrected by an older refresh.
 
 
-async def _refresh_or_invalidate(cloud, user_id: int | None) -> None:
-    """On the genuine expiry 401: try the refresh first, sign out only if it fails.
-
-    Spec A §3 hardening. The in-flight request still sees its 401 (one blip);
-    every later build — including the 5-minute preset-sync tick — picks up the
-    renewed pair, so the connection self-heals without a re-login.
-    """
+async def _refresh_or_invalidate(cloud, captured) -> None:
     try:
         if await cloud.refresh_access_token():
-            await _persist_refreshed_tokens(user_id, cloud.access_token, cloud.refresh_token)
+            await _persist_refreshed_tokens(captured, cloud.access_token, cloud.refresh_token)
             return
     except Exception:
-        logger.exception("Bambu Cloud token refresh attempt crashed — falling back to sign-out")
-    await mark_cloud_token_invalid(user_id)
+        logger.warning("Bambu Cloud credential refresh did not complete")
+    await mark_cloud_token_invalid(captured)
 
 
 async def store_token(
@@ -127,125 +100,66 @@ async def store_token(
     region: str,
     user: User | None = None,
     refresh_token: str | None = None,
+    *,
+    captured=None,
 ) -> None:
-    """Store cloud token, email, region — and the refresh token (spec A §3).
-
-    When a user is provided, stores on the user record; otherwise (ownerless
-    API-key fallback) in the global Settings table.
-
-    Always clears the rejected-token flag and the cached validation verdict:
-    this is a *fresh* credential, and leaving either behind would report the new
-    sign-in as expired (upstream #2562). The refresh token is written even when
-    None — a stale refresh token from a previous pair cannot renew a new access
-    token, so a token-auth sign-in deliberately clears it.
-    """
+    """Replace the pair only in the account/provider incarnation that began the login."""
     from backend.app.services.bambu_cloud import invalidate_validation_cache
+    from backend.app.services.cloud_credentials import snapshot, write
 
-    region = _normalise_region(region)
+    captured = captured or await snapshot(db, user, "bambu")
     invalidate_validation_cache(token)
-    if user is not None:
-        # User object is from the auth dependency's session (detached),
-        # so use a direct UPDATE via the route's db session.
-        from sqlalchemy import update
-
-        await db.execute(
-            update(User)
-            .where(User.id == user.id)
-            .values(
-                cloud_token=token,
-                cloud_refresh_token=refresh_token,
-                cloud_email=email,
-                cloud_region=region,
-                cloud_token_invalid_at=None,
-            )
-        )
-        await db.commit()
-        return
-
-    # Fallback: global storage (auth disabled)
-    for key, value in [
-        (CLOUD_TOKEN_KEY, token),
-        (CLOUD_REFRESH_TOKEN_KEY, refresh_token or ""),
-        (CLOUD_EMAIL_KEY, email),
-        (CLOUD_REGION_KEY, region),
-    ]:
-        result = await db.execute(select(Settings).where(Settings.key == key))
-        setting = result.scalar_one_or_none()
-        if setting:
-            setting.value = value
-        else:
-            db.add(Settings(key=key, value=value))
-    await db.commit()
+    await write(
+        db,
+        captured,
+        {
+            "cloud_token": token,
+            "cloud_refresh_token": refresh_token,
+            "cloud_email": email,
+            "cloud_region": _normalise_region(region),
+            "cloud_token_invalid_at": None,
+        },
+        replace_binding=True,
+    )
 
 
-async def clear_token(db: AsyncSession, user: User | None = None) -> None:
-    """Clear stored cloud token, email, and region.
-
-    When a user is provided, clears that user's credentials; otherwise
-    (ownerless API-key fallback) the global Settings rows.
-
-    The rejected-token flag goes with the token: once there is no credential,
-    "the credential is dead" is not a state worth remembering, and leaving it
-    behind would make the next login look expired the moment it is stored.
-    """
+async def clear_token(db: AsyncSession, user: User | None = None, *, captured=None) -> None:
     from backend.app.services.bambu_cloud import invalidate_validation_cache
+    from backend.app.services.cloud_credentials import snapshot, write
 
-    token, _email, _region = await get_stored_token(db, user)
+    captured = captured or await snapshot(db, user, "bambu")
+    token, _, _ = await get_stored_token(db, user)
     if token:
         invalidate_validation_cache(token)
-
-    if user is not None:
-        from sqlalchemy import update
-
-        await db.execute(
-            update(User)
-            .where(User.id == user.id)
-            .values(
-                cloud_token=None,
-                cloud_refresh_token=None,
-                cloud_email=None,
-                cloud_region=None,
-                cloud_token_invalid_at=None,
-            )
-        )
-        await db.commit()
-        return
-
-    # Fallback: ownerless API-key path (global storage)
-    result = await db.execute(
-        select(Settings).where(
-            Settings.key.in_(
-                [CLOUD_TOKEN_KEY, CLOUD_REFRESH_TOKEN_KEY, CLOUD_EMAIL_KEY, CLOUD_REGION_KEY, CLOUD_TOKEN_INVALID_KEY]
-            )
-        )
+    await write(
+        db,
+        captured,
+        {
+            "cloud_token": None,
+            "cloud_refresh_token": None,
+            "cloud_email": None,
+            "cloud_region": None,
+            "cloud_token_invalid_at": None,
+        },
+        replace_binding=True,
     )
-    for setting in result.scalars().all():
-        await db.delete(setting)
-    await db.commit()
 
 
 async def build_authenticated_cloud(db: AsyncSession, user: User | None) -> BambuCloudService | None:
-    """Build a per-request cloud service seeded with the caller's stored token + region.
+    from backend.app.services.cloud_credentials import snapshot
 
-    Returns ``None`` when no token is stored, so callers can 401 without
-    constructing (and then closing) a useless client. Caller is responsible
-    for ``await cloud.close()``.
-    """
-    token, _email, region = await get_stored_token(db, user)
+    captured = await snapshot(db, user, "bambu")
+    # Read the credential from this generation, not the auth dependency's detached ORM snapshot.
+    owner = await db.get(User, captured.user_id, populate_existing=True)
+    token, _, region = await get_stored_token(db, owner)
     if not token:
         return None
-    # Wire the rejected-token handling here so every route that builds a client
-    # this way agrees on what an expiry 401 means — rather than each feature
-    # discovering it separately and reporting Bambu's own opaque "Please
-    # login." at the user (upstream #2562). Since m152 the first move is a
-    # refresh attempt; only its failure marks the sign-in dead.
-    user_id = user.id if user is not None else None
-    refresh = await get_stored_refresh_token(db, user)
-    # The lambda late-binds ``cloud`` from this scope — by the time a 401 fires
-    # it refers to the constructed service, tokens and all.
-    cloud = BambuCloudService(region=region, on_auth_failure=lambda: _refresh_or_invalidate(cloud, user_id))
+    refresh = await get_stored_refresh_token(db, owner)
+    await db.commit()  # No database checkout or account guard across cloud I/O.
+    cloud = BambuCloudService(region=region, on_auth_failure=lambda: _refresh_or_invalidate(cloud, captured))
     cloud.set_token(token)
     cloud.set_refresh_token(refresh)
+    cloud.credential_snapshot = captured
     return cloud
 
 
@@ -300,13 +214,19 @@ async def resolve_api_key_cloud_owner(
         .where(User.id == authority.key.user_id, User.is_active.is_(True))
         .options(selectinload(User.groups))
     )
-    return result.scalar_one_or_none()
+    owner = result.scalar_one_or_none()
+    if owner is not None:
+        from backend.app.core.auth_lifetime import capture_key
+
+        owner._cloud_authority = capture_key(authority.key)
+    return owner
 
 
 @router.get("/status", response_model=CloudAuthStatus)
 async def get_auth_status(
     db: AsyncSession = Depends(get_db),
     current_user: User | None = RequirePermission(Permission.CLOUD_AUTH),
+    api_key_cloud_owner: User | None = Depends(resolve_api_key_cloud_owner),
 ):
     """Get current cloud authentication status.
 
@@ -325,14 +245,19 @@ async def get_auth_status(
     ``region`` is exposed so the frontend can show "Connected (China)" after a
     reload without relying on local state.
     """
+    current_user = current_user or api_key_cloud_owner
+    from backend.app.services.cloud_credentials import snapshot
+
+    captured = await snapshot(db, current_user, "bambu")
+    current_user = await db.get(User, captured.user_id, populate_existing=True)
     token, email, region = await get_stored_token(db, current_user)
     if not token:
         return CloudAuthStatus(is_authenticated=False, email=None, region=None, sign_in_expired=False)
 
     known_invalid = await is_cloud_token_invalid(db, current_user)
 
-    user_id = current_user.id if current_user is not None else None
-    cloud = BambuCloudService(region=region, on_auth_failure=lambda: mark_cloud_token_invalid(user_id))
+    await db.commit()
+    cloud = BambuCloudService(region=region, on_auth_failure=lambda: mark_cloud_token_invalid(captured))
     cloud.set_token(token)
     try:
         if known_invalid:
@@ -365,6 +290,7 @@ async def login(
     request: CloudLoginRequest,
     db: AsyncSession = Depends(get_db),
     current_user: User | None = RequirePermission(Permission.CLOUD_AUTH),
+    api_key_cloud_owner: User | None = Depends(resolve_api_key_cloud_owner),
 ):
     """
     Initiate login to Bambu Cloud.
@@ -376,6 +302,11 @@ async def login(
     After receiving/generating the code, call /cloud/verify to complete the login.
     For TOTP, include the tfa_key from this response in the verify request.
     """
+    current_user = current_user or api_key_cloud_owner
+    from backend.app.services.cloud_credentials import snapshot
+
+    captured = await snapshot(db, current_user, "bambu")
+    await db.commit()
     cloud = BambuCloudService(region=request.region)
 
     try:
@@ -383,7 +314,15 @@ async def login(
 
         if result.get("success") and cloud.access_token:
             # Direct login succeeded (rare)
-            await store_token(db, cloud.access_token, request.email, request.region, current_user, cloud.refresh_token)
+            await store_token(
+                db,
+                cloud.access_token,
+                request.email,
+                request.region,
+                current_user,
+                cloud.refresh_token,
+                captured=captured,
+            )
             from backend.app.services.filament_preset_sync import request_sync_soon
 
             request_sync_soon()  # freshly connected cloud mirrors within seconds (spec A trigger)
@@ -409,6 +348,7 @@ async def verify_code(
     request: CloudVerifyRequest,
     db: AsyncSession = Depends(get_db),
     current_user: User | None = RequirePermission(Permission.CLOUD_AUTH),
+    api_key_cloud_owner: User | None = Depends(resolve_api_key_cloud_owner),
 ):
     """
     Complete login with verification code (email or TOTP).
@@ -424,6 +364,11 @@ async def verify_code(
     ``request.region`` must match the region used in /cloud/login so that
     the TOTP call hits the correct TFA endpoint (bambulab.com vs bambulab.cn).
     """
+    current_user = current_user or api_key_cloud_owner
+    from backend.app.services.cloud_credentials import snapshot
+
+    captured = await snapshot(db, current_user, "bambu")
+    await db.commit()
     cloud = BambuCloudService(region=request.region)
 
     try:
@@ -434,7 +379,15 @@ async def verify_code(
             result = await cloud.verify_code(request.email, request.code)
 
         if result.get("success") and cloud.access_token:
-            await store_token(db, cloud.access_token, request.email, request.region, current_user, cloud.refresh_token)
+            await store_token(
+                db,
+                cloud.access_token,
+                request.email,
+                request.region,
+                current_user,
+                cloud.refresh_token,
+                captured=captured,
+            )
             from backend.app.services.filament_preset_sync import request_sync_soon
 
             request_sync_soon()  # freshly connected cloud mirrors within seconds (spec A trigger)
@@ -458,6 +411,7 @@ async def set_token(
     request: CloudTokenRequest,
     db: AsyncSession = Depends(get_db),
     current_user: User | None = RequirePermission(Permission.CLOUD_AUTH),
+    api_key_cloud_owner: User | None = Depends(resolve_api_key_cloud_owner),
 ):
     """
     Set access token directly.
@@ -466,13 +420,18 @@ async def set_token(
     selected ``region`` is persisted alongside the token so every subsequent
     request hits the right Bambu API endpoint, including after a restart.
     """
+    current_user = current_user or api_key_cloud_owner
+    from backend.app.services.cloud_credentials import snapshot
+
+    captured = await snapshot(db, current_user, "bambu")
+    await db.commit()
     cloud = BambuCloudService(region=request.region)
     cloud.set_token(request.access_token)
 
     try:
         # Verify token works by trying to get profile
         await cloud.get_user_profile()
-        await store_token(db, request.access_token, "token-auth", request.region, current_user)
+        await store_token(db, request.access_token, "token-auth", request.region, current_user, captured=captured)
         from backend.app.services.filament_preset_sync import request_sync_soon
 
         request_sync_soon()  # freshly connected cloud mirrors within seconds (spec A trigger)
@@ -487,8 +446,10 @@ async def set_token(
 async def logout(
     db: AsyncSession = Depends(get_db),
     current_user: User | None = RequirePermission(Permission.CLOUD_AUTH),
+    api_key_cloud_owner: User | None = Depends(resolve_api_key_cloud_owner),
 ):
     """Log out of Bambu Cloud."""
+    current_user = current_user or api_key_cloud_owner
     await clear_token(db, current_user)
     return {"success": True}
 
@@ -498,12 +459,14 @@ async def get_slicer_settings(
     version: str = _SLICER_API_VERSION,
     db: AsyncSession = Depends(get_db),
     current_user: User | None = RequirePermission(Permission.CLOUD_AUTH),
+    api_key_cloud_owner: User | None = Depends(resolve_api_key_cloud_owner),
 ):
     """
     Get all slicer settings (filament, printer, process presets).
 
     Requires authentication.
     """
+    current_user = current_user or api_key_cloud_owner
     cloud = await build_authenticated_cloud(db, current_user)
     if cloud is None or not cloud.is_authenticated:
         if cloud is not None:
@@ -558,7 +521,7 @@ async def get_slicer_settings(
 
         return result
     except BambuCloudAuthError:
-        await clear_token(db, current_user)
+        await clear_token(db, current_user, captured=cloud.credential_snapshot)
         raise HTTPException(status_code=401, detail="Authentication expired")
     except BambuCloudError as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -571,12 +534,14 @@ async def get_setting_detail(
     setting_id: str,
     db: AsyncSession = Depends(get_db),
     current_user: User | None = RequirePermission(Permission.CLOUD_AUTH),
+    api_key_cloud_owner: User | None = Depends(resolve_api_key_cloud_owner),
 ):
     """
     Get detailed information for a specific setting/preset.
 
     Returns the full preset configuration.
     """
+    current_user = current_user or api_key_cloud_owner
     cloud = await build_authenticated_cloud(db, current_user)
     if cloud is None or not cloud.is_authenticated:
         if cloud is not None:
@@ -587,7 +552,7 @@ async def get_setting_detail(
         data = await cloud.get_setting_detail(setting_id)
         return data
     except BambuCloudAuthError:
-        await clear_token(db, current_user)
+        await clear_token(db, current_user, captured=cloud.credential_snapshot)
         raise HTTPException(status_code=401, detail="Authentication expired")
     except BambuCloudError as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -600,6 +565,7 @@ async def get_filament_presets(
     version: str = _SLICER_API_VERSION,
     db: AsyncSession = Depends(get_db),
     current_user: User | None = RequirePermission(Permission.INVENTORY_READ),
+    api_key_cloud_owner: User | None = Depends(resolve_api_key_cloud_owner),
 ):
     """
     Get just filament presets (convenience endpoint).
@@ -607,6 +573,7 @@ async def get_filament_presets(
     Returns all filament presets with custom presets first.
     Uses the same cache as get_slicer_settings.
     """
+    current_user = current_user or api_key_cloud_owner
     settings = await get_slicer_settings(version=version, db=db, current_user=current_user)
     return settings.filament
 
@@ -692,6 +659,7 @@ async def get_filament_info(
     include_content: bool = Query(False),
     db: AsyncSession = Depends(get_db),
     current_user: User | None = RequirePermission(Permission.INVENTORY_READ),
+    api_key_cloud_owner: User | None = Depends(resolve_api_key_cloud_owner),
 ):
     """
     Get filament preset info (name and K value) for multiple setting IDs.
@@ -703,6 +671,7 @@ async def get_filament_info(
     the identity catalog deliberately does not carry. Tooltip/card callers
     never hit the cloud.
     """
+    current_user = current_user or api_key_cloud_owner
     import time
 
     logger.info("get_filament_info called with %s IDs: %s", len(setting_ids), setting_ids)
@@ -714,6 +683,10 @@ async def get_filament_info(
         _filament_cache = {}
         _filament_cache_time = time.time()
 
+    from backend.app.services.cloud_credentials import current, snapshot
+
+    captured = await snapshot(db, current_user, "bambu") if current_user is not None else None
+    namespace = captured.namespace if captured is not None else ("public",)
     result = {}
     unresolved_ids: list[str] = []
 
@@ -726,7 +699,11 @@ async def get_filament_info(
             continue
         resolved = await resolve_tray(db, setting_id)
         if not resolved.family:
-            resolved = await resolve_raw(db, setting_id)
+            resolved = (
+                await resolve_raw(db, setting_id, owner_user_id=current_user.id)
+                if current_user is not None
+                else resolved
+            )
         if resolved.family and resolved.display_name:
             entry: dict = {"name": resolved.display_name, "k": None}
             if resolved.nozzle_temp_min is not None:
@@ -740,7 +717,9 @@ async def get_filament_info(
     for setting_id in setting_ids:
         if not setting_id or setting_id in resolver_named:
             continue
-        if setting_id in _filament_cache:
+        if (namespace, setting_id) in _filament_cache:
+            result[setting_id] = _filament_cache[namespace, setting_id]
+        elif setting_id in _filament_cache:
             result[setting_id] = _filament_cache[setting_id]
         else:
             unresolved_ids.append(setting_id)
@@ -752,7 +731,7 @@ async def get_filament_info(
 
     # Phase 2: Try cloud for uncached IDs
     if unresolved_ids:
-        cloud = await build_authenticated_cloud(db, current_user)
+        cloud = await build_authenticated_cloud(db, current_user) if current_user is not None else None
         # Release the request's DB transaction before the sequential Bambu Cloud
         # round-trips below (#2572). build_authenticated_cloud has read the
         # stored token — the only DB access this phase needs — and nothing until
@@ -889,7 +868,10 @@ async def get_filament_info(
                             info["hot_plate_temp"] = bed_temp
                         if max_vol_speed is not None:
                             info["filament_max_volumetric_speed"] = max_vol_speed
-                        _filament_cache[setting_id] = info
+                        if not await current(db, captured):
+                            raise HTTPException(409, {"code": "cloud_credentials_changed"})
+                        await db.commit()
+                        _filament_cache[namespace, setting_id] = info
                         result[setting_id] = info
 
                         if not name:
@@ -925,6 +907,8 @@ async def get_filament_info(
     if unresolved_ids:
         result = await _enrich_from_local_presets(unresolved_ids, result, db)
 
+    if captured is not None and not await current(db, captured):
+        raise HTTPException(409, {"code": "cloud_credentials_changed"})
     return result
 
 
@@ -932,12 +916,14 @@ async def get_filament_info(
 async def get_devices(
     db: AsyncSession = Depends(get_db),
     current_user: User | None = RequirePermission(Permission.PRINTERS_READ),
+    api_key_cloud_owner: User | None = Depends(resolve_api_key_cloud_owner),
 ):
     """
     Get list of bound printer devices.
 
     Returns printers registered to the user's Bambu account.
     """
+    current_user = current_user or api_key_cloud_owner
     cloud = await build_authenticated_cloud(db, current_user)
     if cloud is None or not cloud.is_authenticated:
         if cloud is not None:
@@ -959,7 +945,7 @@ async def get_devices(
             for d in devices
         ]
     except BambuCloudAuthError:
-        await clear_token(db, current_user)
+        await clear_token(db, current_user, captured=cloud.credential_snapshot)
         raise HTTPException(status_code=401, detail="Authentication expired")
     except BambuCloudError as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -971,6 +957,7 @@ async def get_devices(
 async def get_firmware_updates(
     db: AsyncSession = Depends(get_db),
     current_user: User | None = RequirePermission(Permission.FIRMWARE_READ),
+    api_key_cloud_owner: User | None = Depends(resolve_api_key_cloud_owner),
 ):
     """
     Check for firmware updates for all bound devices.
@@ -983,6 +970,7 @@ async def get_firmware_updates(
 
     Requires cloud authentication.
     """
+    current_user = current_user or api_key_cloud_owner
     cloud = await build_authenticated_cloud(db, current_user)
     if cloud is None or not cloud.is_authenticated:
         if cloud is not None:
@@ -1036,7 +1024,7 @@ async def get_firmware_updates(
         return FirmwareUpdatesResponse(updates=updates, updates_available=updates_available)
 
     except BambuCloudAuthError:
-        await clear_token(db, current_user)
+        await clear_token(db, current_user, captured=cloud.credential_snapshot)
         raise HTTPException(status_code=401, detail="Authentication expired")
     except BambuCloudError as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -1049,6 +1037,7 @@ async def create_setting(
     request: SlicerSettingCreate,
     db: AsyncSession = Depends(get_db),
     current_user: User | None = RequirePermission(Permission.CLOUD_AUTH),
+    api_key_cloud_owner: User | None = Depends(resolve_api_key_cloud_owner),
 ):
     """
     Create a new slicer preset/setting.
@@ -1058,6 +1047,7 @@ async def create_setting(
 
     Type should be: 'filament', 'print', or 'printer'
     """
+    current_user = current_user or api_key_cloud_owner
     cloud = await build_authenticated_cloud(db, current_user)
     if cloud is None or not cloud.is_authenticated:
         if cloud is not None:
@@ -1074,7 +1064,7 @@ async def create_setting(
         )
         return data
     except BambuCloudAuthError:
-        await clear_token(db, current_user)
+        await clear_token(db, current_user, captured=cloud.credential_snapshot)
         raise HTTPException(status_code=401, detail="Authentication expired")
     except BambuCloudError as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -1088,12 +1078,14 @@ async def update_setting(
     request: SlicerSettingUpdate,
     db: AsyncSession = Depends(get_db),
     current_user: User | None = RequirePermission(Permission.CLOUD_AUTH),
+    api_key_cloud_owner: User | None = Depends(resolve_api_key_cloud_owner),
 ):
     """
     Update an existing slicer preset/setting.
 
     Updates the preset's name and/or settings on Bambu Cloud.
     """
+    current_user = current_user or api_key_cloud_owner
     cloud = await build_authenticated_cloud(db, current_user)
     if cloud is None or not cloud.is_authenticated:
         if cloud is not None:
@@ -1108,7 +1100,7 @@ async def update_setting(
         )
         return data
     except BambuCloudAuthError:
-        await clear_token(db, current_user)
+        await clear_token(db, current_user, captured=cloud.credential_snapshot)
         raise HTTPException(status_code=401, detail="Authentication expired")
     except BambuCloudError as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -1121,12 +1113,14 @@ async def delete_setting(
     setting_id: str,
     db: AsyncSession = Depends(get_db),
     current_user: User | None = RequirePermission(Permission.CLOUD_AUTH),
+    api_key_cloud_owner: User | None = Depends(resolve_api_key_cloud_owner),
 ):
     """
     Delete a slicer preset/setting.
 
     Removes the preset from Bambu Cloud. This cannot be undone.
     """
+    current_user = current_user or api_key_cloud_owner
     cloud = await build_authenticated_cloud(db, current_user)
     if cloud is None or not cloud.is_authenticated:
         if cloud is not None:
@@ -1140,7 +1134,7 @@ async def delete_setting(
             message=result.get("message", "Setting deleted"),
         )
     except BambuCloudAuthError:
-        await clear_token(db, current_user)
+        await clear_token(db, current_user, captured=cloud.credential_snapshot)
         raise HTTPException(status_code=401, detail="Authentication expired")
     except BambuCloudError as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -1199,7 +1193,7 @@ async def get_builtin_filaments(
 
 
 # Cache for filament_id → name mapping (resolved from cloud preset details)
-_filament_id_name_cache: dict[str, str] = {}
+_filament_id_name_cache: dict[tuple, tuple[float, dict[str, str]]] = {}
 _filament_id_name_cache_time: float = 0
 
 
@@ -1207,6 +1201,7 @@ _filament_id_name_cache_time: float = 0
 async def get_filament_id_map(
     db: AsyncSession = Depends(get_db),
     current_user: User | None = RequirePermission(Permission.INVENTORY_READ),
+    api_key_cloud_owner: User | None = Depends(resolve_api_key_cloud_owner),
 ):
     """
     Get filament_id → name mapping for user cloud presets.
@@ -1216,18 +1211,26 @@ async def get_filament_id_map(
     fetches details for all custom presets and returns the mapping.
     Cached for 5 minutes.
     """
+    current_user = current_user or api_key_cloud_owner
     import time
 
-    global _filament_id_name_cache, _filament_id_name_cache_time
+    from backend.app.services.cloud_credentials import current, snapshot
 
-    if _filament_id_name_cache and time.time() - _filament_id_name_cache_time < FILAMENT_CACHE_TTL:
-        return _filament_id_name_cache
+    if current_user is None:
+        return {}
+    captured = await snapshot(db, current_user, "bambu")
+    namespace = captured.namespace
+    cached = _filament_id_name_cache.get(namespace)
+    if cached and time.time() - cached[0] < FILAMENT_CACHE_TTL:
+        if not await current(db, captured):
+            raise HTTPException(409, {"code": "cloud_credentials_changed"})
+        return dict(cached[1])
 
     cloud = await build_authenticated_cloud(db, current_user)
     if cloud is None or not cloud.is_authenticated:
         if cloud is not None:
             await cloud.close()
-        return _filament_id_name_cache or {}
+        return {}
 
     try:
         data = await cloud.get_slicer_settings()
@@ -1255,11 +1258,17 @@ async def get_filament_id_map(
             except Exception:
                 pass
 
-        _filament_id_name_cache = result
-        _filament_id_name_cache_time = time.time()
+        if not await current(db, captured):
+            raise HTTPException(409, {"code": "cloud_credentials_changed"})
+        # Bound account/generation namespaces; expiration is not authorization.
+        if len(_filament_id_name_cache) >= 256:
+            _filament_id_name_cache.pop(next(iter(_filament_id_name_cache)))
+        _filament_id_name_cache[namespace] = (time.time(), dict(result))
         return result
+    except HTTPException:
+        raise
     except Exception:
-        return _filament_id_name_cache or {}
+        return {}
     finally:
         await cloud.close()
 

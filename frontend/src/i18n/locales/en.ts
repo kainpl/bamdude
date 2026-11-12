@@ -1,4 +1,18 @@
 export default {
+  credentialRollout: {
+      "title": "Integration credentials need reissuing",
+      "counts": "Retired at this upgrade: {{owned}} owned API keys, {{ownerless}} ownerless API keys and {{tokens}} camera/monitor tokens.",
+      "notificationPending": "Administrator inbox notice: pending.",
+      "notificationCompleted": "Administrator inbox notice: completed. Subscription opt-outs are respected.",
+      "checklist": "Create new credentials in Settings → API Keys. Replace secrets in HA, webhooks/scripts, bridge, MCP/AI host settings and OrcaBamDude; reconnect API-key cameras. Regenerate saved camera streams, camera wall, overlay, monitor, TV, OBS, kiosk and launcher links using new camera/monitor tokens. Sign in again in each browser and regenerate its derived links.",
+      "safety": "Browser sign-in alone does not reconnect integrations. Choose the minimum scopes, test one allowed operation and do not blindly retry a print. Old credentials cannot be restored or re-enabled.",
+      "needsReissue": "Needs reissue",
+      "ownerless": "This legacy key has no owner. Create a new key while signed in as its intended owner.",
+      "legacy": "This legacy credential was retired. Create a new credential; the old secret cannot be reused.",
+      "createNewKey": "Create a new key",
+      "newTokenHint": "Use the create form above to issue a new token, then replace saved links. The old token cannot be restored.",
+      "loadFailed": "Could not load the credential rollout status."
+  },
   queueTransfer: {
   anyLocation: 'Any location',
   values: {"on": "On", "off": "Off", "auto": "Automatic", "inherit": "Default", "internal": "Internal", "external": "External"},
@@ -11459,7 +11473,8 @@ export default {
         ams: 'AMS',
         queue: 'Queue',
         inventory: 'Inventory',
-        sensors: 'Sensors'
+        sensors: 'Sensors',
+        system: "System"
       },
       inbox: {
         empty: 'Nothing here yet.',
@@ -11533,7 +11548,8 @@ export default {
         sensor_speaking_again: 'Sensor reporting again'
         ,ha_sensor_alert: 'Printer HA sensor alert',
         location_ha_sensor_alert: 'Storage HA sensor alert',
-        plug_meter_stalled: 'Plug energy counter stalled'
+        plug_meter_stalled: 'Plug energy counter stalled',
+        credentials_reissue_required: "Integration credentials need reissuing"
       }
     },
     // User email notification preferences

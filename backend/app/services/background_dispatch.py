@@ -902,6 +902,8 @@ class PrintDispatchJob:
     options: dict[str, Any] = field(default_factory=dict)
     requested_by_user_id: int | None = None
     requested_by_username: str | None = None
+    authority: object | None = None
+    attribution: object | None = None
     project_id: int | None = None
     # The order line this print is for, carried from the request that started it
     # all the way to the archive row the runner writes.
@@ -1355,6 +1357,7 @@ class BackgroundDispatchService:
         requested_by_username: str | None,
         project_id: int | None = None,
         project_line_id: int | None = None,
+        authority=None,
     ) -> dict[str, Any]:
         return await self._dispatch(
             kind="reprint_archive",
@@ -1367,6 +1370,7 @@ class BackgroundDispatchService:
             requested_by_username=requested_by_username,
             project_id=project_id,
             project_line_id=project_line_id,
+            authority=authority,
         )
 
     async def get_state(self) -> dict[str, Any]:
@@ -1422,6 +1426,22 @@ class BackgroundDispatchService:
         shows it while the FTP upload and print-start happen. Returns the
         job's ``outcome`` dict once ``_run_*`` signals completion.
         """
+        # This is attribution of an already admitted queue job, not a new
+        # browser grant. Capture the current relational owner before work; a
+        # later delete/recreate must not give the new account its history.
+        attribution = None
+        if requested_by_user_id is not None:
+            from backend.app.core.auth_lifetime import capture_account
+            from backend.app.models.print_queue import PrintQueueItem
+            from backend.app.models.user import User
+
+            async with async_session() as owner_db:
+                item = await owner_db.get(PrintQueueItem, queue_item_id)
+                owner = await owner_db.get(User, requested_by_user_id)
+                if item is not None and item.created_by_id == requested_by_user_id and owner is not None:
+                    attribution = capture_account(owner, independent=True)
+                else:
+                    requested_by_user_id = None
         async with self._lock:
             job = PrintDispatchJob(
                 id=self._next_job_id,
@@ -1437,6 +1457,7 @@ class BackgroundDispatchService:
                 project_line_id=project_line_id,
                 queue_item_id=queue_item_id,
                 awaited_by_scheduler=True,
+                attribution=attribution,
             )
             self._next_job_id += 1
             self._active_jobs[job.id] = ActiveDispatchState(job=job, message=f"Queue dispatch to {printer_name}...")
@@ -1514,6 +1535,7 @@ class BackgroundDispatchService:
         project_id: int | None = None,
         project_line_id: int | None = None,
         cleanup_library_after_dispatch: bool = False,
+        authority=None,
     ) -> dict[str, Any]:
         return await self._dispatch(
             kind="print_library_file",
@@ -1527,6 +1549,7 @@ class BackgroundDispatchService:
             project_id=project_id,
             project_line_id=project_line_id,
             cleanup_library_after_dispatch=cleanup_library_after_dispatch,
+            authority=authority,
         )
 
     def cancel_dispatch_for_queue_item(self, queue_item_id: int) -> bool:
@@ -1644,6 +1667,7 @@ class BackgroundDispatchService:
         project_id: int | None = None,
         project_line_id: int | None = None,
         cleanup_library_after_dispatch: bool = False,
+        authority=None,
     ) -> dict[str, Any]:
         # ⚠️ The source is copied into queue-sources BEFORE the printer is
         # claimed, and outside ``_lock`` (spec §5 steps 1-3). A copy can take
@@ -1698,6 +1722,7 @@ class BackgroundDispatchService:
                 project_line_id=project_line_id,
                 cleanup_library_after_dispatch=cleanup_library_after_dispatch,
                 staged=staged,
+                authority=authority,
             )
         except BaseException:
             await discard_staged(staged)
@@ -1763,6 +1788,7 @@ class BackgroundDispatchService:
         project_line_id: int | None,
         cleanup_library_after_dispatch: bool,
         staged,
+        authority=None,
     ) -> dict[str, Any]:
         """Re-check availability, take the claim, queue the job — the fast half.
 
@@ -1812,6 +1838,7 @@ class BackgroundDispatchService:
                         project_id=project_id,
                         project_line_id=project_line_id,
                         staged=staged,
+                        authority=authority,
                     )
                 except PrinterOccupancyConflict as exc:
                     raise DispatchEnqueueRejected(
@@ -1852,6 +1879,7 @@ class BackgroundDispatchService:
                 cleanup_library_after_dispatch=cleanup_library_after_dispatch,
                 queue_item_id=claim_item_id,
                 claim_started_at=claim_item.started_at if claim_item is not None else None,
+                authority=authority,
                 # ⚠️ ``awaited_by_scheduler`` stays False: the dispatcher owns
                 # this item, and is therefore the one that must release it.
             )
@@ -2692,6 +2720,8 @@ class BackgroundDispatchService:
                     # its copy under the name the folder around it already uses.
                     stored_filename=archive_filename if job.source is not None else None,
                     created_by_id=job.requested_by_user_id,
+                    authority=job.authority,
+                    attribution=job.attribution,
                     plate_index=job.options.get("plate_id"),
                     print_data={"status": "printing"},
                     dispatch_intent=_dispatch_intent(job, remote_filename, submission_id),
@@ -3643,6 +3673,8 @@ class BackgroundDispatchService:
                     # to upstream #276a1db3 all library-print archives landed with
                     # created_by_id=NULL regardless of who clicked Print.
                     created_by_id=job.requested_by_user_id,
+                    authority=job.authority,
+                    attribution=job.attribution,
                     # Born in "printing" so the UI doesn't flash a transient
                     # "archived" label during the FTP/MQTT window (#876 follow-up).
                     # Error paths below flip it to "failed" before the txn commits.

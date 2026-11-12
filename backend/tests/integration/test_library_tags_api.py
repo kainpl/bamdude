@@ -22,17 +22,18 @@ import pytest
 from httpx import AsyncClient
 
 from backend.app.core.auth import create_access_token
+from backend.tests.auth_helpers import mint_test_access
 
 _PW = "Aa1!" + secrets.token_urlsafe(12)  # pragma: allowlist secret
 
 
-def _admin_headers() -> dict:
-    return {"Authorization": f"Bearer {create_access_token(data={'sub': 'test_admin'})}"}
+async def _admin_headers() -> dict:
+    return {"Authorization": f"Bearer {await mint_test_access(username='test_admin')}"}
 
 
 async def _make_user(async_client: AsyncClient, *, username: str, permissions: list[str]) -> tuple[str, int]:
     """Create a scoped user + group, return (token, user_id)."""
-    headers = _admin_headers()
+    headers = await _admin_headers()
     grp = await async_client.post(
         "/api/v1/groups/", headers=headers, json={"name": f"lt_{username}", "permissions": permissions}
     )

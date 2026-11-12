@@ -116,108 +116,62 @@ class TestLocalSource:
 
 
 class TestCloudSource:
+    async def _owner(self, db):
+        from backend.app.models.user import User
+        from backend.app.services import cloud_credentials
+
+        cloud_credentials.open_admission()
+        user = User(username="resolver-owner", role="admin", cloud_token="tok")
+        db.add(user)
+        await db.commit()
+        captured = await cloud_credentials.snapshot(db, user, "bambu")
+        await db.commit()
+        return user, captured
+
     @pytest.mark.asyncio
-    @pytest.mark.integration
     async def test_returns_settings_json_under_setting_envelope(self, db_session):
-        """``get_setting_detail`` returns ``{setting: {...preset...}}``.
-        The resolver unwraps the envelope before returning the JSON string."""
-        with (
-            patch(
-                "backend.app.services.preset_resolver.get_stored_token",
-                AsyncMock(return_value=("tok", "u@e.com", "global")),
-            ),
-            patch("backend.app.services.preset_resolver.BambuCloudService") as mock_svc_cls,
-        ):
-            mock_svc = SimpleNamespace(
-                set_token=lambda _t: None,
-                get_setting_detail=AsyncMock(return_value={"setting": {"name": "Cloud PLA", "filament_type": ["PLA"]}}),
-                close=AsyncMock(),
-            )
-            mock_svc_cls.return_value = mock_svc
-
+        user, captured = await self._owner(db_session)
+        svc = SimpleNamespace(
+            credential_snapshot=captured,
+            close=AsyncMock(),
+            get_setting_detail=AsyncMock(return_value={"setting": {"name": "Cloud PLA", "filament_type": ["PLA"]}}),
+        )
+        snapshots = []
+        with patch("backend.app.api.routes.cloud.build_authenticated_cloud", AsyncMock(return_value=svc)):
             out = await resolve_preset_ref(
-                db_session,
-                None,
-                PresetRef(source="cloud", id="abc-123"),
-                "filament",
+                db_session, user, PresetRef(source="cloud", id="abc-123"), "filament", credential_snapshots=snapshots
             )
-            parsed = json.loads(out)
-            assert parsed["name"] == "Cloud PLA"
+        assert json.loads(out)["name"] == "Cloud PLA"
+        assert snapshots == [captured]
+        svc.close.assert_awaited_once()
 
     @pytest.mark.asyncio
-    @pytest.mark.integration
     async def test_no_stored_token_returns_400(self, db_session):
-        with (
-            patch(
-                "backend.app.services.preset_resolver.get_stored_token",
-                AsyncMock(return_value=(None, None, "global")),
-            ),
-            pytest.raises(HTTPException) as exc_info,
-        ):
-            await resolve_preset_ref(
-                db_session,
-                None,
-                PresetRef(source="cloud", id="abc"),
-                "filament",
-            )
+        user, _ = await self._owner(db_session)
+        user.cloud_token = None
+        await db_session.commit()
+        with pytest.raises(HTTPException) as exc_info:
+            await resolve_preset_ref(db_session, user, PresetRef(source="cloud", id="abc"), "filament")
         assert exc_info.value.status_code == 400
         assert "Bambu Cloud" in exc_info.value.detail
 
     @pytest.mark.asyncio
-    @pytest.mark.integration
-    async def test_cloud_auth_error_becomes_401(self, db_session):
-        from backend.app.services.bambu_cloud import BambuCloudAuthError
+    @pytest.mark.parametrize(("error", "status"), [("auth", 401), ("network", 502)])
+    async def test_cloud_error_adapter(self, db_session, error, status):
+        from backend.app.services.bambu_cloud import BambuCloudAuthError, BambuCloudError
 
+        user, captured = await self._owner(db_session)
+        failure = BambuCloudAuthError("expired") if error == "auth" else BambuCloudError("dns")
+        svc = SimpleNamespace(
+            credential_snapshot=captured, close=AsyncMock(), get_setting_detail=AsyncMock(side_effect=failure)
+        )
         with (
-            patch(
-                "backend.app.services.preset_resolver.get_stored_token",
-                AsyncMock(return_value=("tok", "u@e.com", "global")),
-            ),
-            patch("backend.app.services.preset_resolver.BambuCloudService") as mock_svc_cls,
+            patch("backend.app.api.routes.cloud.build_authenticated_cloud", AsyncMock(return_value=svc)),
+            pytest.raises(HTTPException) as exc_info,
         ):
-            mock_svc = SimpleNamespace(
-                set_token=lambda _t: None,
-                get_setting_detail=AsyncMock(side_effect=BambuCloudAuthError("expired")),
-                close=AsyncMock(),
-            )
-            mock_svc_cls.return_value = mock_svc
-
-            with pytest.raises(HTTPException) as exc_info:
-                await resolve_preset_ref(
-                    db_session,
-                    None,
-                    PresetRef(source="cloud", id="x"),
-                    "filament",
-                )
-            assert exc_info.value.status_code == 401
-
-    @pytest.mark.asyncio
-    @pytest.mark.integration
-    async def test_cloud_network_error_becomes_502(self, db_session):
-        from backend.app.services.bambu_cloud import BambuCloudError
-
-        with (
-            patch(
-                "backend.app.services.preset_resolver.get_stored_token",
-                AsyncMock(return_value=("tok", "u@e.com", "global")),
-            ),
-            patch("backend.app.services.preset_resolver.BambuCloudService") as mock_svc_cls,
-        ):
-            mock_svc = SimpleNamespace(
-                set_token=lambda _t: None,
-                get_setting_detail=AsyncMock(side_effect=BambuCloudError("dns")),
-                close=AsyncMock(),
-            )
-            mock_svc_cls.return_value = mock_svc
-
-            with pytest.raises(HTTPException) as exc_info:
-                await resolve_preset_ref(
-                    db_session,
-                    None,
-                    PresetRef(source="cloud", id="x"),
-                    "filament",
-                )
-            assert exc_info.value.status_code == 502
+            await resolve_preset_ref(db_session, user, PresetRef(source="cloud", id="abc"), "filament")
+        assert exc_info.value.status_code == status
+        svc.close.assert_awaited_once()
 
 
 # --- orca_cloud tier -------------------------------------------------------

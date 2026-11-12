@@ -250,7 +250,36 @@ class TestTheRouteWiring:
         assert patch < substitute
 
     def test_they_are_written_after_every_slot_is_resolved(self):
-        source = self._source()
-        resolved = source.index('filament_jsons.append(await resolve_preset_ref(db, user, ref, "filament"))')
-        patch = source.index("_patch_filament_colours(filament_jsons, request.filament_colours")
-        assert resolved < patch
+        import ast
+        import inspect
+        import textwrap
+
+        from backend.app.api.routes import library
+
+        function = ast.parse(textwrap.dedent(inspect.getsource(library._run_slicer_with_fallback))).body[0]
+        loop = next(
+            node
+            for node in function.body
+            if isinstance(node, ast.For) and ast.unparse(node.iter) == "request.filament_presets"
+        )
+        append = next(
+            node.value
+            for node in loop.body
+            if isinstance(node, ast.Expr)
+            and isinstance(node.value, ast.Call)
+            and ast.unparse(node.value.func) == "filament_jsons.append"
+        )
+        resolved = append.args[0]
+        assert isinstance(resolved, ast.Await)
+        assert ast.unparse(resolved.value.func) == "resolve_preset_ref"
+        assert [ast.unparse(arg) for arg in resolved.value.args] == ["db", "user", "ref", "'filament'"]
+        assert any(keyword.arg == "credential_snapshots" for keyword in resolved.value.keywords)
+        patch = next(
+            node
+            for node in function.body
+            if isinstance(node, ast.Assign)
+            and isinstance(node.value, ast.Call)
+            and ast.unparse(node.value.func) == "_patch_filament_colours"
+        )
+        # The patch is a later top-level statement, after the whole slot loop.
+        assert loop.end_lineno < patch.lineno

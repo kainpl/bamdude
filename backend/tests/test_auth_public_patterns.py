@@ -42,6 +42,7 @@ from fastapi.routing import APIRoute
 from httpx import ASGITransport, AsyncClient
 
 from backend.app.main import PUBLIC_API_PATTERNS, app
+from backend.tests.auth_helpers import mint_test_authority
 
 # How a whitelisted route proves the caller may have what it serves. Skipping
 # the middleware's blanket JWT gate is all a pattern does; this column says what
@@ -410,9 +411,13 @@ async def test_the_printer_cover_lives_on_its_own_segment_and_takes_a_media_toke
     url = f"/api/v1/printers/{printer.id}/camera-cover"
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as anonymous:
         assert (await anonymous.get(url)).status_code == 401, "no token is still no entry"
-        camera = await anonymous.get(url, params={"token": await create_camera_stream_token()})
+        camera = await anonymous.get(
+            url, params={"token": await create_camera_stream_token(authority=await mint_test_authority())}
+        )
         assert camera.status_code == 401, "the camera token is for the camera"
-        served = await anonymous.get(url, params={"token": await create_media_token("test_admin")})
+        served = await anonymous.get(
+            url, params={"token": await create_media_token(authority=await mint_test_authority(username="test_admin"))}
+        )
 
     assert served.status_code == 200, served.text
     assert served.content == b"\x89PNG-cover"
@@ -464,7 +469,7 @@ async def test_a_retention_cleaned_cover_serves_the_png_and_refuses_the_top_view
     monkeypatch.setitem(printer_routes._cover_cache, printer.id, {})
 
     url = f"/api/v1/printers/{printer.id}/camera-cover"
-    token = await create_media_token("test_admin")
+    token = await create_media_token(authority=await mint_test_authority(username="test_admin"))
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as anonymous:
         top = await anonymous.get(url, params={"token": token, "view": "top"})
         angled = await anonymous.get(url, params={"token": token})

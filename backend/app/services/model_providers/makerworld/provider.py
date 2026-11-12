@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 import httpx
 
 from backend.app.core.permissions import Permission
+from backend.app.models.user import User
 from backend.app.services.model_providers.base import (
     ModelProvider,
     ProviderAuthConfig,
@@ -32,8 +33,6 @@ from backend.app.services.model_providers.makerworld.service import MakerWorldSe
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
-
-    from backend.app.models.user import User
 
 
 class MakerWorldProvider(ModelProvider):
@@ -73,24 +72,33 @@ class MakerWorldProvider(ModelProvider):
         (see ``resolve_api_key_cloud_owner``); MakerWorld uses it as the
         fallback identity when ``user`` is None. Like the cloud integration, a
         rejected token is recorded so the whole app agrees the sign-in is dead
-        rather than each feature failing on its own — including an API key
-        without an owner, where ``user_id=None`` records the *global* flag
-        the status endpoints read back.
+        rather than each feature failing on its own. A caller without a selected
+        cloud owner gets only the provider's anonymous public metadata policy.
         """
         identity = user if user is not None else api_key_owner
-        token, _email, _region = await get_stored_token(db, identity)
-        user_id = identity.id if identity is not None else None
-        return MakerWorldService(
+        from backend.app.services.cloud_credentials import snapshot
+
+        captured = await snapshot(db, identity, "bambu") if identity is not None else None
+        if captured is not None:
+            identity = await db.get(User, captured.user_id, populate_existing=True)
+            token, _email, _region = await get_stored_token(db, identity)
+        else:
+            # Public provider metadata may be read anonymously; absent cloud access never spends global tokens.
+            token = None
+        await db.commit()
+        service = MakerWorldService(
             client=client,
             auth_token=token,
             user=identity,
-            on_auth_failure=lambda: mark_cloud_token_invalid(user_id),
+            on_auth_failure=(lambda: mark_cloud_token_invalid(captured)) if captured is not None else None,
             # The SSRF allowlists are the provider's declared seams — the
             # service must not hardcode its own copies (symmetric pair,
             # ``fetch_thumbnail`` / ``download``).
             thumbnail_hosts=self.thumbnail_hosts(),
             download_hosts=self.download_hosts(),
         )
+        service.credential_snapshot = captured
+        return service
 
     def parse_url(self, url: str) -> ProviderResourceRef:
         return mw_url.parse_url(url)

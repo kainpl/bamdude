@@ -1,8 +1,8 @@
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, func
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, validates
 
 from backend.app.core.database import Base
 
@@ -13,6 +13,10 @@ class APIKey(Base):
     __tablename__ = "api_keys"
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    owner_identity: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    contract_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    retired_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    retired_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
     # Immutable, opaque, new on every creation (OrcaBamDude spec r2 §8.1, m216). The numeric id is reused on
     # SQLite after a delete; a connector's receipts are namespaced by this, never by the id. Not a credential.
     connector_identity: Mapped[str] = mapped_column(
@@ -105,3 +109,7 @@ class APIKey(Base):
     last_used: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # Optional expiry
+
+    @validates("created_at", "last_used", "expires_at", "retired_at")
+    def _utc_datetime(self, _name, value):
+        return value.astimezone(timezone.utc).replace(tzinfo=None) if value is not None and value.tzinfo else value

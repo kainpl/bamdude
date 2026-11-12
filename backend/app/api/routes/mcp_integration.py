@@ -66,7 +66,7 @@ async def connection(
     key = (await db.execute(select(APIKey).where(APIKey.id == key_id))).scalar_one_or_none()
     if key is None:
         raise HTTPException(404, "API key not found")
-    return {"observed_at": mcp_runtime.observed_connection(key_id)}
+    return {"observed_at": mcp_runtime.observed_connection(key.connector_identity)}
 
 
 @router.get("/skill.zip")

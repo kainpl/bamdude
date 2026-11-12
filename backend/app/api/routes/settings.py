@@ -1100,13 +1100,22 @@ async def restore_backup(
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.SETTINGS_RESTORE),
+    request: Request = None,
 ):
     """Validate and stage all files, then replace files and the portable database."""
     from backend.app.services.backup_files import BackupBusyError, exclusive_operation
 
+    # HTTP always supplies Request. Trusted internal/test callers retain the
+    # existing helper contract, without pretending to possess a browser grant.
+    authority = None
+    if request is not None:
+        from backend.app.core.auth import capture_request_authority
+
+        authority = await capture_request_authority(request)
+
     try:
         async with exclusive_operation():
-            return await _restore_backup(file, db)
+            return await _restore_backup(file, db, authority=authority)
     except BackupBusyError as exc:
         raise HTTPException(409, "A backup or restore is already running") from exc
 
@@ -1139,7 +1148,7 @@ async def _quiesce_library_previews() -> None:
 PREVIEW_QUIESCE_UNPROVEN = "Library previews could not prove they stopped. Restart BamDude, then restore."
 
 
-async def _restore_backup(file: UploadFile, db: AsyncSession):
+async def _restore_backup(file: UploadFile, db: AsyncSession, *, authority=None):
     import asyncio
     import tempfile
 
@@ -1197,16 +1206,35 @@ async def _restore_backup(file: UploadFile, db: AsyncSession):
             try:
                 # Quiesce file owners before staging Zigbee and moving old files.
                 # Shutdown failure is fatal; a delay cannot prove a writer stopped.
+                from backend.app.core.auth_runtime import auth_runtime
+                from backend.app.services import library_scan
                 from backend.app.services.background_dispatch import background_dispatch
+                from backend.app.services.cloud_credentials import close_admission as close_cloud_admission
+                from backend.app.services.credential_rollout import credential_rollout
                 from backend.app.services.notification_service import notification_service
                 from backend.app.services.print_scheduler import scheduler as print_scheduler
+                from backend.app.services.slice_dispatch import slice_dispatch
                 from backend.app.services.smart_plug_manager import smart_plug_manager
                 from backend.app.services.virtual_printer import virtual_printer_manager
                 from backend.app.services.zigbee.coordinator import zigbee_coordinator
                 from backend.app.services.zigbee.poller import zigbee_poller
                 from backend.app.services.zigbee.supervisor import zigbee_supervisor
 
+                # Close all C admission before yielding to any shutdown/drain.
+                # A failed drain refuses replacement and stays held until restart.
+                auth_runtime.close_admission()
+                close_cloud_admission()
+                slice_dispatch.close_admission()
+                library_scan.close_admission()
                 farm_startup_guard.hold("restore")
+                if not await slice_dispatch.quiesce_for_restore():
+                    raise HTTPException(409, "Slicing work has not stopped; restart before restoring")
+                if not await library_scan.quiesce_for_restore():
+                    raise HTTPException(409, "Library scan work has not stopped; restart before restoring")
+                if not await credential_rollout.quiesce_for_restore(10):
+                    raise HTTPException(409, "Credential rollout work has not stopped; restart before restoring")
+                if not await auth_runtime.quiesce_for_restore():
+                    raise HTTPException(409, "Authentication work has not stopped; restart before restoring")
                 from backend.app.services.farm_startup_guard import notify_change
 
                 await notify_change()
@@ -1255,6 +1283,14 @@ async def _restore_backup(file: UploadFile, db: AsyncSession):
                 # started before the swap are invalidated only after all file
                 # staging has succeeded.
                 async with queue_sources.storage_mutation():
+                    if authority is not None:
+                        from backend.app.core.auth_lifetime import validate_restore_actor
+
+                        # All previous auth work has drained. This short read
+                        # is owned by restore while ordinary admission remains
+                        # closed; release its guard before filesystem I/O.
+                        await validate_restore_actor(db, authority)
+                        await db.rollback()
                     await _file_work(files.prepare)
                     queue_sources.invalidate_receipts()
                     # Durable, outside the storage being replaced: until the restored database has a new
@@ -1297,7 +1333,8 @@ async def _restore_backup(file: UploadFile, db: AsyncSession):
             await init_db()
             # The restored database's epoch is new before anything reopens; a failure keeps the fence for the
             # next start. The connector itself stays closed until that restart.
-            await connector_runtime.finish_restore()
+            if not await connector_runtime.finish_restore():
+                raise HTTPException(503, "Restore finalization is pending; restart BamDude before resuming work")
             await mcp_runtime.reload(after_restore=True)
             logger.info("Restore complete - restart required")
             return {

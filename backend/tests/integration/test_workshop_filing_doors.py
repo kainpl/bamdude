@@ -123,7 +123,7 @@ class TestTheArchiveEditorsBinding:
     ):
         await _user(db_session, "fd_own_filer", ["archives:update_all", "orders:file_prints"])
         r = await committing_client.patch(
-            f"/api/v1/archives/{desk['theirs']}", json={"project_id": desk["a"]}, headers=_jwt("fd_own_filer")
+            f"/api/v1/archives/{desk['theirs']}", json={"project_id": desk["a"]}, headers=await _jwt("fd_own_filer")
         )
         assert r.status_code == 200, r.text
         assert (await _order_of(db_session, desk["theirs"]))[0] == desk["a"]
@@ -182,12 +182,12 @@ class TestTheTrash:
         await _user(db_session, "fd_deleter", ["archives:delete_all"])
         await _user(db_session, "fd_deleter_filer", ["archives:delete_all", "orders:file_prints"])
         url = f"/api/v1/archives/{desk['theirs']}"
-        assert (await committing_client.delete(url, headers=_jwt("fd_deleter"))).status_code == 403
-        assert (await committing_client.delete(url, headers=_jwt("fd_deleter_filer"))).status_code == 200
+        assert (await committing_client.delete(url, headers=await _jwt("fd_deleter"))).status_code == 403
+        assert (await committing_client.delete(url, headers=await _jwt("fd_deleter_filer"))).status_code == 200
         assert "print_trashed" in await _kinds(db_session, desk["a"])
         restore = f"/api/v1/archives/trash/{desk['theirs']}/restore"
-        assert (await committing_client.post(restore, headers=_jwt("fd_deleter"))).status_code == 403
-        restored = await committing_client.post(restore, headers=_jwt("fd_deleter_filer"))
+        assert (await committing_client.post(restore, headers=await _jwt("fd_deleter"))).status_code == 403
+        restored = await committing_client.post(restore, headers=await _jwt("fd_deleter_filer"))
         assert restored.status_code == 200, restored.text
         assert "print_restored" in await _kinds(db_session, desk["a"])
 
@@ -205,13 +205,17 @@ class TestTheTrash:
         owner = await _user(db_session, f"fd_own_deleter_{expected}", rights)
         own = await _archive(db_session, owner=owner)
         assert (await _add(committing_client, desk["a"], [own.id])).status_code == 200
-        r = await committing_client.delete(f"/api/v1/archives/{own.id}", headers=_jwt(f"fd_own_deleter_{expected}"))
+        r = await committing_client.delete(
+            f"/api/v1/archives/{own.id}", headers=await _jwt(f"fd_own_deleter_{expected}")
+        )
         assert r.status_code == expected, r.text
 
     @pytest.mark.asyncio
     async def test_an_unfiled_print_is_trashed_as_before(self, committing_client, db_session, desk):
         await _user(db_session, "fd_plain_deleter", ["archives:delete_all"])
-        r = await committing_client.delete(f"/api/v1/archives/{desk['ownerless']}", headers=_jwt("fd_plain_deleter"))
+        r = await committing_client.delete(
+            f"/api/v1/archives/{desk['ownerless']}", headers=await _jwt("fd_plain_deleter")
+        )
         assert r.status_code == 200, r.text
 
     @pytest.mark.asyncio
@@ -230,9 +234,11 @@ class TestCountingAnOldPrintIntoStock:
         await _user(db_session, "fd_blind_counter", ["stock:adjust"])
         own = await _archive(db_session, owner=counter)
         url = "/api/v1/archives/{}/count-into-stock"
-        assert (await committing_client.post(url.format(own.id), headers=_jwt("fd_counter"))).status_code == 200
-        assert (await committing_client.post(url.format(desk["theirs"]), headers=_jwt("fd_counter"))).status_code == 404
-        blind = await committing_client.post(url.format(desk["theirs"]), headers=_jwt("fd_blind_counter"))
+        assert (await committing_client.post(url.format(own.id), headers=await _jwt("fd_counter"))).status_code == 200
+        assert (
+            await committing_client.post(url.format(desk["theirs"]), headers=await _jwt("fd_counter"))
+        ).status_code == 404
+        blind = await committing_client.post(url.format(desk["theirs"]), headers=await _jwt("fd_blind_counter"))
         assert blind.status_code == 404
 
 
@@ -270,15 +276,15 @@ class TestTheQueueDoors:
         await _user(db_session, "ff_queuer_clerk", ["queue:create", "library:read_all", "orders:file_prints"])
         body = {"queue_id": printer_with_queue.queue_id, "library_file_id": linked_file.id}
         refused = await committing_client.post(
-            "/api/v1/queue/", json={**body, "project_id": project.id}, headers=_jwt("ff_queuer")
+            "/api/v1/queue/", json={**body, "project_id": project.id}, headers=await _jwt("ff_queuer")
         )
         assert refused.status_code == 403, refused.text
         assert refused.json()["detail"]["error"] == FORBIDDEN
         assert await _queued_under(db_session, project.id) == 0
-        plain = await committing_client.post("/api/v1/queue/", json=body, headers=_jwt("ff_queuer"))
+        plain = await committing_client.post("/api/v1/queue/", json=body, headers=await _jwt("ff_queuer"))
         assert plain.status_code == 200, plain.text
         filed = await committing_client.post(
-            "/api/v1/queue/", json={**body, "project_id": project.id}, headers=_jwt("ff_queuer_clerk")
+            "/api/v1/queue/", json={**body, "project_id": project.id}, headers=await _jwt("ff_queuer_clerk")
         )
         assert filed.status_code == 200, filed.text
         assert await _queued_under(db_session, project.id) == 1
@@ -308,7 +314,9 @@ class TestTheQueueDoors:
             "enqueue_position": "next",
             "project_id": project.id,
         }
-        r = await committing_client.post("/api/v1/queue/next-block", json={"items": [item]}, headers=_jwt("ff_next"))
+        r = await committing_client.post(
+            "/api/v1/queue/next-block", json={"items": [item]}, headers=await _jwt("ff_next")
+        )
         assert r.status_code == 403, r.text
         assert await _queued_under(db_session, project.id) == 0
 
@@ -322,10 +330,10 @@ class TestTheAutoQueueDoor:
         await _user(db_session, "ff_auto", ["queue:create", "library:read_all"])
         await _user(db_session, "ff_auto_desk", ["queue:create", "library:read_all", "orders:update"])
         body = {"library_file_id": linked_file.id, "project_id": project.id}
-        refused = await committing_client.post("/api/v1/auto-queue/", json=body, headers=_jwt("ff_auto"))
+        refused = await committing_client.post("/api/v1/auto-queue/", json=body, headers=await _jwt("ff_auto"))
         assert refused.status_code == 403, refused.text
         assert refused.json()["detail"]["error"] == FORBIDDEN
-        filed = await committing_client.post("/api/v1/auto-queue/", json=body, headers=_jwt("ff_auto_desk"))
+        filed = await committing_client.post("/api/v1/auto-queue/", json=body, headers=await _jwt("ff_auto_desk"))
         assert filed.status_code in (200, 201), filed.text
         assert await _auto_queued_under(db_session, project.id) == 1
 
@@ -342,7 +350,7 @@ class TestTheAutoQueueDoor:
     async def test_the_source_must_be_visible_as_in_the_printer_queue(self, committing_client, db_session, linked_file):
         await _user(db_session, "ff_auto_own", ["queue:create", "library:read_own"])
         r = await committing_client.post(
-            "/api/v1/auto-queue/", json={"library_file_id": linked_file.id}, headers=_jwt("ff_auto_own")
+            "/api/v1/auto-queue/", json={"library_file_id": linked_file.id}, headers=await _jwt("ff_auto_own")
         )
         assert r.status_code == 404, r.text
 
@@ -366,14 +374,16 @@ class TestTheLibraryPrintDoor:
                 new=AsyncMock(return_value={"status": "dispatched", "dispatch_job_id": 1, "dispatch_position": 1}),
             ) as dispatch,
         ):
-            refused = await committing_client.post(url, json={"project_id": project.id}, headers=_jwt("ff_printer"))
+            refused = await committing_client.post(
+                url, json={"project_id": project.id}, headers=await _jwt("ff_printer")
+            )
             assert refused.status_code == 403, refused.text
             assert refused.json()["detail"]["error"] == FORBIDDEN
-            blind = await committing_client.post(url, json={}, headers=_jwt("ff_printer_blind"))
+            blind = await committing_client.post(url, json={}, headers=await _jwt("ff_printer_blind"))
             assert blind.status_code == 404, blind.text
             assert dispatch.await_count == 0
             filed = await committing_client.post(
-                url, json={"project_line_id": line.id}, headers=_jwt("ff_printer_desk")
+                url, json={"project_line_id": line.id}, headers=await _jwt("ff_printer_desk")
             )
             assert filed.status_code == 200, filed.text
             assert dispatch.await_args.kwargs["project_id"] == project.id
@@ -392,9 +402,9 @@ class TestTheOrderPlanDoors:
         await _user(db_session, "ff_planner_clerk", ["queue:create", "orders:file_prints"])
         body = {"items": [{"plate_id": 1, "count": 1, "line_id": line.id}], "target": {"kind": "auto"}}
         url = f"/api/v1/projects/{project.id}/plan/enqueue"
-        assert (await committing_client.post(url, json=body, headers=_jwt("ff_planner"))).status_code == 403
+        assert (await committing_client.post(url, json=body, headers=await _jwt("ff_planner"))).status_code == 403
         await _close(db_session, project.id, "completed")
-        r = await committing_client.post(url, json=body, headers=_jwt("ff_planner_clerk"))
+        r = await committing_client.post(url, json=body, headers=await _jwt("ff_planner_clerk"))
         assert r.status_code == 409, r.text
         assert r.json()["detail"]["error"] == "order_closed"
 
@@ -404,8 +414,8 @@ class TestTheOrderPlanDoors:
         await _user(db_session, "ff_balancer", ["queue:update_all"])
         await _user(db_session, "ff_balancer_clerk", ["queue:update_all", "orders:file_prints"])
         url = f"/api/v1/projects/{project.id}/lines/{line.id}/rebalance"
-        assert (await committing_client.post(url, headers=_jwt("ff_balancer"))).status_code == 403
-        r = await committing_client.post(url, headers=_jwt("ff_balancer_clerk"))
+        assert (await committing_client.post(url, headers=await _jwt("ff_balancer"))).status_code == 403
+        r = await committing_client.post(url, headers=await _jwt("ff_balancer_clerk"))
         assert r.status_code == 200, r.text
 
     @pytest.mark.asyncio
@@ -413,10 +423,14 @@ class TestTheOrderPlanDoors:
         await _user(db_session, "ff_router", ["queue:update_all"])
         await _user(db_session, "ff_router_desk", ["queue:update_all", "orders:update"])
         body = {"item_ids": [999999]}
-        refused = await committing_client.post("/api/v1/auto-queue/rebalance", json=body, headers=_jwt("ff_router"))
+        refused = await committing_client.post(
+            "/api/v1/auto-queue/rebalance", json=body, headers=await _jwt("ff_router")
+        )
         assert refused.status_code == 403, refused.text
         assert refused.json()["detail"]["error"] == FORBIDDEN
-        r = await committing_client.post("/api/v1/auto-queue/rebalance", json=body, headers=_jwt("ff_router_desk"))
+        r = await committing_client.post(
+            "/api/v1/auto-queue/rebalance", json=body, headers=await _jwt("ff_router_desk")
+        )
         assert r.status_code == 200, r.text
 
 
@@ -449,8 +463,8 @@ class TestRefilingQueueRows:
         await _user(db_session, "ff_refiler_queue", ["orders:update", "queue:update_all"])
         url = f"/api/v1/projects/{rows['order']}/add-queue"
         body = {"queue_item_ids": [rows["pending"]]}
-        assert (await committing_client.post(url, json=body, headers=_jwt("ff_refiler"))).status_code == 403
-        r = await committing_client.post(url, json=body, headers=_jwt("ff_refiler_queue"))
+        assert (await committing_client.post(url, json=body, headers=await _jwt("ff_refiler"))).status_code == 403
+        r = await committing_client.post(url, json=body, headers=await _jwt("ff_refiler_queue"))
         assert r.status_code == 200, r.text
         assert "queue_items_filed" in await _kinds(db_session, rows["order"])
         assert "queue_items_unfiled" in await _kinds(db_session, rows["old"])
@@ -511,11 +525,11 @@ class TestTheReprintDoor:
         await _user(db_session, "ff_reprinter", ["archives:reprint_all"])
         await _user(db_session, "ff_reprinter_desk", ["archives:reprint_all", "orders:update"])
         url = f"/api/v1/archives/{filed_print['archive']}/reprint?printer_id={printer_with_queue.id}"
-        refused = await committing_client.post(url, json={}, headers=_jwt("ff_reprinter"))
+        refused = await committing_client.post(url, json={}, headers=await _jwt("ff_reprinter"))
         assert refused.status_code == 403, refused.text
         assert refused.json()["detail"]["error"] == FORBIDDEN
         assert dispatch.await_count == 0
-        filed = await committing_client.post(url, json={}, headers=_jwt("ff_reprinter_desk"))
+        filed = await committing_client.post(url, json={}, headers=await _jwt("ff_reprinter_desk"))
         assert filed.status_code == 200, filed.text
         assert dispatch.await_args.kwargs["project_id"] == filed_print["order"]
         assert dispatch.await_args.kwargs["project_line_id"] == filed_print["line"]
@@ -526,7 +540,7 @@ class TestTheReprintDoor:
     ):
         await _user(db_session, "ff_reprinter_plain", ["archives:reprint_all"])
         url = f"/api/v1/archives/{filed_print['archive']}/reprint?printer_id={printer_with_queue.id}"
-        r = await committing_client.post(url, json={"keep_order": False}, headers=_jwt("ff_reprinter_plain"))
+        r = await committing_client.post(url, json={"keep_order": False}, headers=await _jwt("ff_reprinter_plain"))
         assert r.status_code == 200, r.text
         assert dispatch.await_args.kwargs["project_id"] is None
         assert dispatch.await_args.kwargs["project_line_id"] is None
@@ -584,7 +598,7 @@ class TestTheCloneDoors:
         return {"id": row.id, "order": project.id, "line": line.id}
 
     async def _clone(self, client, item_id: int, who: str | None, **params):
-        headers = _jwt(who) if who else None
+        headers = await _jwt(who) if who else None
         return await client.post(f"/api/v1/queue/{item_id}/clone", params=params, headers=headers)
 
     @pytest.mark.asyncio

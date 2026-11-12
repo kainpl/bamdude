@@ -16,6 +16,7 @@ from backend.app.models.user import User
 from backend.app.services.bambu_mqtt import HMSError, PrinterState
 from backend.app.services.monitor_snapshot import MonitorAccess, build_snapshot
 from backend.app.services.printer_manager import printer_manager
+from backend.tests.auth_helpers import mint_test_access
 from backend.tests.integration.test_api_key_owner_authority import _key, _user
 from backend.tests.integration.test_long_lived_tokens_api import _create_user, _login
 from backend.tests.unit.services.test_product_composition import counting_statements
@@ -248,7 +249,7 @@ async def test_reader_without_queue_permission_gets_no_job_or_queue_details(
     printer = await printer_factory()
     await _queued(db_session, printer)
     reader = await _user(db_session, "monitor_printers_only", ["printers:read"])
-    jwt = create_access_token(data={"sub": reader.username})
+    jwt = await mint_test_access(db_session, username=reader.username)
     headers = {"Authorization": f"Bearer {jwt}"}
     response = await async_client.get("/api/v1/monitor/snapshot", headers=headers)
     assert response.status_code == 200, response.text
@@ -279,7 +280,7 @@ async def test_monitor_creator_can_manage_own_token_without_camera_permission(as
         "monitor_custom",
         ["printers:read", "queue:read", "api_keys:create", "api_keys:read", "api_keys:delete"],
     )
-    headers = {"Authorization": f"Bearer {create_access_token(data={'sub': reader.username})}"}
+    headers = {"Authorization": f"Bearer {await mint_test_access(db_session, username=reader.username)}"}
     response = await async_client.post(
         "/api/v1/auth/tokens", headers=headers, json={"scope": "monitor", "name": "TV", "expires_in_days": 90}
     )

@@ -195,6 +195,12 @@ async def capture_for_dispatch(request: CaptureRequest, *, deadline: float) -> S
 async def publish_staged(
     staged: StagedSource,
     attach: Callable[[AsyncSession, QueueSource], Awaitable[None]],
+    *,
+    authority=None,
+    permissions=("queue:create",),
+    printer_id=None,
+    process_lanes=(),
+    source_access=None,
 ) -> QueueSource:
     """Publish the staged bytes and write the caller's rows — §5 steps 5-7.
 
@@ -204,7 +210,14 @@ async def publish_staged(
     nothing and escape the taxonomy as a bare ``OSError``. One failed add.
     """
     try:
-        return await queue_sources.publish(staged.receipt, attach)
+        from backend.app.services.publication_authority import publication_checks
+
+        prepare, reread = publication_checks(
+            authority, permissions=permissions, printer_id=printer_id, source_access=source_access
+        )
+        return await queue_sources.publish(
+            staged.receipt, attach, before_publish=prepare, before_attach=reread, process_lanes=process_lanes
+        )
     except QueueSourceError as exc:
         raise refusal(exc) from exc
 
@@ -263,7 +276,15 @@ async def staged_requirements(
 
 @asynccontextmanager
 async def reusing_sources(
-    db: AsyncSession, source_ids: Iterable[int | None], *, queue_ids=(), storage_held: bool = False
+    db: AsyncSession,
+    source_ids: Iterable[int | None],
+    *,
+    queue_ids=(),
+    storage_held: bool = False,
+    authority=None,
+    permissions=("queue:create",),
+    printer_id=None,
+    source_access=None,
 ) -> AsyncIterator[dict[int, QueueSource]]:
     """Hold the storage guard while EXISTING bytes gain an owner (§9, Task 3's C1).
 
@@ -294,29 +315,39 @@ async def reusing_sources(
     """
     from contextlib import AsyncExitStack
 
+    from backend.app.services.publication_authority import publication_checks
     from backend.app.services.queue_ops import claim_lanes
+
+    prepare, reread = publication_checks(
+        authority, permissions=permissions, printer_id=printer_id, source_access=source_access
+    )
 
     ids = sorted({int(source_id) for source_id in source_ids if source_id})
     lanes = sorted(set(queue_ids))
     if storage_held and (lanes or not queue_sources._guard().locked()):
         raise RuntimeError("storage_held needs the caller's own storage guard and no lanes")
-    if lanes:
+    if lanes or authority is not None:
         # End the preflight snapshot before process locks and SQLite's writer.
         await db.commit()
     if not ids and not lanes:
+        await prepare(db)
+        await reread(db)
         yield {}
         return
     async with AsyncExitStack() as guards:
         if not storage_held:
             await guards.enter_async_context(queue_sources.storage_mutation())
         if lanes:
-            await guards.enter_async_context(claim_lanes(db, lanes))
+            await guards.enter_async_context(claim_lanes(db, lanes, before_db=prepare))
+        else:
+            await prepare(db)
         blobs = {}
         for source_id in ids:
             blob = await db.get(QueueSource, source_id, populate_existing=True)
             if blob is None or blob.state != STATE_READY:
                 raise queue_sources.SourceUnreadable(f"queue source {source_id} is unavailable")
             blobs[source_id] = blob
+        await reread(db)
         yield blobs
 
 

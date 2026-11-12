@@ -617,6 +617,38 @@ def _stored_file_path(abs_path: Path, is_external: bool) -> str:
     return str(abs_path) if is_external else to_relative_path(abs_path)
 
 
+async def _guard_ingest(db, authority, folder):
+    from backend.app.services.domain_authority import guard
+
+    _, principal = await guard(db, authority, permissions=(Permission.LIBRARY_UPLOAD.value,))
+    if folder is not None:
+        expected = (folder.id, folder.is_external, folder.external_path)
+        current = await db.scalar(
+            select(LibraryFolder)
+            .where(LibraryFolder.id == folder.id)
+            .options(selectinload(LibraryFolder.products))
+            .execution_options(populate_existing=True)
+        )
+        if current is None or (current.id, current.is_external, current.external_path) != expected:
+            raise HTTPException(409, {"code": "destination_changed"})
+        if current.is_external and current.external_readonly:
+            raise HTTPException(403, "Cannot upload to a read-only external folder")
+        folder = current
+    return folder, principal
+
+
+async def _discard_ingest_stage(file_path, thumbnail_path=None):
+    def discard():
+        if file_path is not None:
+            file_path.unlink(missing_ok=True)
+        if thumbnail_path:
+            thumbnail = to_absolute_path(thumbnail_path)
+            if thumbnail is not None:
+                thumbnail.unlink(missing_ok=True)
+
+    await preview_disk(discard)
+
+
 async def save_3mf_bytes_to_library(
     db: AsyncSession,
     *,
@@ -630,6 +662,8 @@ async def save_3mf_bytes_to_library(
     commit: bool = True,
     declared_swap: bool | None = None,
     authority=None,
+    credential_snapshots=(),
+    publication_check=None,
 ) -> IngestResult:
     """Persist raw 3MF / gcode bytes as a ``LibraryFile`` row.
 
@@ -663,39 +697,68 @@ async def save_3mf_bytes_to_library(
     for the comparison is removed.
     """
 
-    access = await read_access(db, user_id=created_by_id, authority=authority)
-    # Source-URL dedupe: MakerWorld re-imports of the same plate must not
-    # download + repack on every click. The route may also have done this
-    # check itself; doing it here too keeps the helper safe to call from
-    # paths that don't pre-check.
-    if source_url:
-        existing_by_url = (
-            await db.execute(
-                LibraryFile.active().where(LibraryFile.source_url == source_url).order_by(LibraryFile.id).limit(1)
-            )
-        ).scalar_one_or_none()
-        if existing_by_url is not None:
-            access.ensure(existing_by_url)
-            return IngestResult(file=existing_by_url, outcome="deduped", superseded_name=filename)
-
     file_type = detect_file_type(filename)
 
     file_path, is_external_upload = _resolve_upload_destination(folder, filename)
-    with open(file_path, "wb") as f:
-        f.write(content)
+    await db.commit()
+    from backend.app.services.library_file_runtime import upload_writes
+
+    await upload_writes.run(_write_upload, file_path, content)
 
     from backend.app.services.library_file_runtime import get_library_file_runtime
 
     file_hash = (await get_library_file_runtime().hash(file_path, root=file_path.parent))["digest"]
+
+    try:
+        prepared = await _prepare_library_source(file_path, filename)
+        metadata: dict = prepared.metadata
+        thumbnail_path = await _publish_prepared_thumbnail(prepared)
+
+    except BaseException:
+        await db.rollback()
+        await _discard_ingest_stage(file_path)
+        raise
+
+    from backend.app.services.library_ingest import prepare_reuse
+
+    try:
+        presence = await prepare_reuse(
+            db, content_hash=file_hash, access=await read_access(db, user_id=created_by_id, authority=authority)
+        )
+        folder, principal = await _guard_ingest(db, authority, folder)
+        if principal is not None:
+            created_by_id = principal.user.id
+        from backend.app.services.cloud_credentials import guard_snapshot
+
+        for credential in credential_snapshots:
+            await guard_snapshot(db, credential)
+        if publication_check is not None:
+            await publication_check(db, principal)
+        access = await read_access(db, user_id=created_by_id, authority=authority)
+        if source_url:
+            existing_by_url = await db.scalar(
+                LibraryFile.active().where(LibraryFile.source_url == source_url).order_by(LibraryFile.id).limit(1)
+            )
+            if existing_by_url is not None:
+                access.ensure(existing_by_url)
+                if commit:
+                    await db.commit()
+                await _discard_ingest_stage(file_path, thumbnail_path)
+                return IngestResult(file=existing_by_url, outcome="deduped", superseded_name=filename)
+    except BaseException:
+        await db.rollback()
+        await _discard_ingest_stage(file_path, thumbnail_path)
+        raise
 
     # The content decision, before any row is built. ``find_reusable_row`` is the
     # one place that answers it; this function used to answer it itself, as a
     # boolean the caller was invited to render as a badge while a second row was
     # created anyway.
     try:
-        reusable = await find_reusable_row(db, content_hash=file_hash, access=access)
-    except HTTPException:
-        file_path.unlink(missing_ok=True)
+        reusable = await find_reusable_row(db, content_hash=file_hash, access=access, presence=presence)
+    except BaseException:
+        await db.rollback()
+        await _discard_ingest_stage(file_path, thumbnail_path)
         raise
     if reusable is not None:
         existing, present = reusable
@@ -711,7 +774,9 @@ async def save_3mf_bytes_to_library(
         if present:
             # ⚠️ Our bytes are redundant and already written — delete them, or a
             # deduplication feature becomes an orphan-file generator.
-            file_path.unlink(missing_ok=True)
+            if commit:
+                await db.commit()
+            await _discard_ingest_stage(file_path, thumbnail_path)
             return IngestResult(file=existing, outcome="deduped", superseded_name=filename)
         # The row is missing only its BYTES, and we are holding them. Re-pointing
         # keeps its name, folder, notes, tags, products and print history; the
@@ -722,11 +787,8 @@ async def save_3mf_bytes_to_library(
         if commit:
             await db.commit()
             await db.refresh(existing)
+        await _discard_ingest_stage(None, thumbnail_path)
         return IngestResult(file=existing, outcome="restored", superseded_name=filename)
-
-    prepared = await _prepare_library_source(file_path, filename)
-    metadata: dict = prepared.metadata
-    thumbnail_path = await _publish_prepared_thumbnail(prepared)
 
     if extra_metadata:
         metadata = {**metadata, **extra_metadata}
@@ -1803,6 +1865,7 @@ async def create_external_folder(
 async def scan_external_folder(
     folder_id: int,
     db: AsyncSession = Depends(get_db),
+    creds: RequestCredentials = Depends(request_credentials),
     user: User | None = Depends(require_permission(Permission.LIBRARY_UPLOAD)),
 ):
     """Start a scan of an external folder and return straight away.
@@ -1836,7 +1899,7 @@ async def scan_external_folder(
             detail=f"a scan of this folder is already running (job {existing})",
         )
 
-    job_id = await start_scan(folder_id, user.id if user else None)
+    job_id = await start_scan(folder_id, user.id if user else None, authority=await creds.capture())
     return JSONResponse(status_code=202, content={"job_id": job_id, "status": "queued"})
 
 
@@ -2621,6 +2684,8 @@ async def _run_slicer_with_fallback(
     request,  # SliceRequest — typed loosely so the import doesn't shadow upload's local
     current_user_id: int | None = None,
     job_id: int | None = None,
+    ingest_authority=None,
+    credential_snapshots=None,
 ):
     """Validate presets, dispatch to the right sidecar, run the slicer with
     the auto-fallback for 3MF inputs whose ``--load-settings`` path crashes
@@ -2649,8 +2714,14 @@ async def _run_slicer_with_fallback(
     from backend.app.services.slicer_routing import resolve_sidecar_url, slicer_label
 
     user: User | None = None
-    if current_user_id is not None:
-        user = await db.get(User, current_user_id)
+    if ingest_authority is not None:
+        from backend.app.services.domain_authority import fresh
+
+        principal = await fresh(db, ingest_authority, permissions=(Permission.LIBRARY_UPLOAD.value,))
+        if principal is not None and current_user_id == principal.user.id:
+            user = principal.user
+    elif current_user_id is not None:
+        raise HTTPException(401, "Immutable slice authority is required")
 
     presets: dict[str, str] = {}
     filament_jsons: list[str] = []
@@ -2660,13 +2731,15 @@ async def _run_slicer_with_fallback(
     }
     for slot, ref in refs.items():
         assert ref is not None, "schema validator guarantees PresetRef is set"
-        presets[slot] = await resolve_preset_ref(db, user, ref, slot)
+        presets[slot] = await resolve_preset_ref(db, user, ref, slot, credential_snapshots=credential_snapshots)
     # Multi-color: resolve each filament slot in plate order. The schema
     # validator backfills ``filament_presets`` from the legacy singular
     # field for older single-color callers, so this list is non-empty.
     for ref in request.filament_presets:
         assert ref is not None, "schema validator guarantees filament list is non-None"
-        filament_jsons.append(await resolve_preset_ref(db, user, ref, "filament"))
+        filament_jsons.append(
+            await resolve_preset_ref(db, user, ref, "filament", credential_snapshots=credential_snapshots)
+        )
 
     # Give every slot its colour before anything else touches the list, so the
     # unused-slot substitution below propagates a complete profile rather than
@@ -3047,6 +3120,7 @@ async def slice_and_persist(
     current_user_id: int | None,
     job_id: int | None = None,
     ingest_authority=None,
+    source_proof=None,
 ):
     """Slice a model and save the result as a new ``LibraryFile`` in
     ``folder_id`` (same folder as the source by convention).
@@ -3059,6 +3133,7 @@ async def slice_and_persist(
 
     library_request = request.model_copy(update={"export_3mf": True})
 
+    credential_snapshots = []
     result, used_embedded_settings = await _run_slicer_with_fallback(
         db,
         model_bytes=model_bytes,
@@ -3066,6 +3141,8 @@ async def slice_and_persist(
         request=library_request,
         current_user_id=current_user_id,
         job_id=job_id,
+        ingest_authority=ingest_authority,
+        credential_snapshots=credential_snapshots,
     )
 
     # The sidecar CLI doesn't render preview thumbnails when fed a bare
@@ -3082,7 +3159,9 @@ async def slice_and_persist(
             await db.execute(LibraryFile.active().where(LibraryFile.id == source_lib_file_id))
         ).scalar_one_or_none()
         if src_row is not None:
-            preview_source = PreviewSource.capture(src_row)
+            preview_source = PreviewSource.capture(
+                src_row, authority=ingest_authority, permission=Permission.LIBRARY_UPLOAD.value
+            )
     # Slicer job updates have their own commits; this is the source-read owner
     # boundary. Never hold its connection through the local preview service.
     await db.commit()
@@ -3149,14 +3228,35 @@ async def slice_and_persist(
     # the one place that decides; an existing row is returned as-is, keeping its
     # name, folder and print history.
     sliced_hash = prepared.digest
+    from backend.app.services.cloud_credentials import guard_snapshot
+    from backend.app.services.domain_authority import guard
+    from backend.app.services.library_ingest import prepare_reuse
+
     try:
+        presence = await prepare_reuse(
+            db, content_hash=sliced_hash, access=await read_access(db, authority=ingest_authority)
+        )
+        _, principal = await guard(db, ingest_authority, permissions=(Permission.LIBRARY_UPLOAD.value,))
+        if principal is not None:
+            current_user_id = principal.user.id
+        for credential in credential_snapshots:
+            await guard_snapshot(db, credential)
+        if source_proof is not None:
+            row = await db.scalar(
+                LibraryFile.active().where(LibraryFile.id == source_proof[0]).execution_options(populate_existing=True)
+            )
+            if row is None or (row.id, row.file_path, row.file_hash, row.created_at) != source_proof:
+                raise HTTPException(409, {"code": "source_changed"})
+            (await read_access(db, authority=ingest_authority)).ensure(row)
         reusable = await find_reusable_row(
             db,
             content_hash=sliced_hash,
+            presence=presence,
             access=await read_access(db, user_id=current_user_id, authority=ingest_authority),
         )
-    except HTTPException:
+    except BaseException:
         out_path.unlink(missing_ok=True)
+        await db.rollback()
         raise
     if reusable is not None:
         existing, present = reusable
@@ -3164,6 +3264,7 @@ async def slice_and_persist(
             # ⚠️ The sliced bytes are already written — remove them, or a
             # deduplication feature becomes an orphan-file generator.
             out_path.unlink(missing_ok=True)
+            await db.commit()
             return SliceResponse(
                 library_file_id=existing.id,
                 name=existing.filename,
@@ -3236,6 +3337,8 @@ async def slice_and_persist_as_archive(
     source_archive,  # PrintArchive — hint kept loose to avoid cyclic import
     current_user_id: int | None,
     job_id: int | None = None,
+    ingest_authority=None,
+    source_proof=None,
 ):
     """Slice a model and save the result as a new ``PrintArchive`` row,
     inheriting printer / makerworld metadata from the source archive —
@@ -3270,6 +3373,7 @@ async def slice_and_persist_as_archive(
 
     archive_request = request.model_copy(update={"export_3mf": True})
 
+    credential_snapshots = []
     result, used_embedded_settings = await _run_slicer_with_fallback(
         db,
         model_bytes=model_bytes,
@@ -3277,6 +3381,8 @@ async def slice_and_persist_as_archive(
         request=archive_request,
         job_id=job_id,
         current_user_id=current_user_id,
+        ingest_authority=ingest_authority,
+        credential_snapshots=credential_snapshots,
     )
 
     await db.commit()
@@ -3389,8 +3495,52 @@ async def slice_and_persist_as_archive(
 
     # ⚠️ Never the source's order (WS-13 E13 ARC-09): this row is a sliced file, not a
     # print — under an order it would add its time and grams to the order's figures.
+    from backend.app.services.cloud_credentials import guard_snapshot
+    from backend.app.services.domain_authority import guard
+
+    try:
+        await db.commit()
+        _, principal = await guard(db, ingest_authority, permissions=(Permission.LIBRARY_UPLOAD.value,))
+        if principal is not None:
+            current_user_id = principal.user.id
+        for credential in credential_snapshots:
+            await guard_snapshot(db, credential)
+        if source_proof is not None:
+            current_source = await db.scalar(
+                PrintArchive.active()
+                .where(PrintArchive.id == source_proof[0])
+                .execution_options(populate_existing=True)
+            )
+            if (
+                current_source is None
+                or (
+                    current_source.id,
+                    current_source.recovery_identity,
+                    current_source.file_path,
+                    current_source.source_3mf_path,
+                )
+                != source_proof
+            ):
+                raise HTTPException(409, {"code": "source_changed"})
+            if principal is not None:
+                permissions = principal.user.get_permissions()
+                from backend.app.core.auth import authorize_api_key
+
+                if principal.api_key is not None:
+                    await authorize_api_key(db, principal.api_key, [Permission.ARCHIVES_READ_ALL])
+                elif (
+                    Permission.ARCHIVES_READ_ALL.value not in permissions
+                    and current_source.created_by_id != principal.user.id
+                ):
+                    raise HTTPException(404, "Archive not found")
+    except BaseException:
+        out_path.unlink(missing_ok=True)
+        await db.rollback()
+        raise
+
     new_archive = PrintArchive(
         printer_id=new_printer_id,
+        created_by_id=current_user_id,
         filename=out_filename,
         file_path=str(out_path.relative_to(app_settings.base_dir)),
         file_size=len(result.content),
@@ -3513,9 +3663,11 @@ async def slice_library_file(
 
     # Capture inputs the bg task needs — the request DB session is closed
     # before the background task runs.
-    model_bytes = src_path.read_bytes()
+    await db.commit()
+    model_bytes = await preview_disk(src_path.read_bytes)
     folder_id = lib_file.folder_id
     source_lib_file_id = lib_file.id
+    source_proof = (lib_file.id, lib_file.file_path, lib_file.file_hash, lib_file.created_at)
     # JWT user wins; fall back to the API key's owner so a cloud-scoped key
     # spends *that* user's token (#1182). The id is what the bg task needs —
     # it re-loads the User in its own session to look up cloud creds.
@@ -3549,16 +3701,19 @@ async def slice_library_file(
                     current_user_id=user_id,
                     job_id=job_id,
                     ingest_authority=ingest_authority,
+                    source_proof=source_proof,
                 )
             except HTTPException as exc:
                 raise http_exception_to_job_error(exc) from exc
         return response.model_dump()
 
+    await db.commit()
     job = await slice_dispatch.enqueue(
         kind="library_file",
         source_id=lib_file.id,
         source_name=lib_file.filename,
-        owner_id=user_id,
+        owner_id=actor.id if actor else None,
+        authority=ingest_authority.capture,
         run=_run,
     )
     return {
@@ -3603,6 +3758,7 @@ async def store_library_upload(
     generate_stl_thumbnails: bool = True,
     created_by_id: int | None = None,
     authority=None,
+    preview_pause_budget=None,
 ) -> IngestResult:
     """Put an uploaded file in the library. Returns an :class:`IngestResult`.
 
@@ -3642,6 +3798,7 @@ async def store_library_upload(
     # Validation sniffs magic bytes, so it runs on the bytes in hand; the file
     # reaches disk only after the checks pass (#1401).
     validate_print_file_upload(filename, content)
+    await db.commit()
     # Off the event loop: written here, a large file held every request, socket push and MQTT callback for seconds
     # (a 505 MiB upload froze the server for ~2 s, OrcaBamDude P7 risk audit 2026-11-08).
     from backend.app.services.library_file_runtime import UploadWritesClosed, upload_writes
@@ -3655,6 +3812,30 @@ async def store_library_upload(
 
     file_hash = (await get_library_file_runtime().hash(file_path, root=file_path.parent))["digest"]
 
+    try:
+        prepared = await _prepare_library_source(file_path, filename)
+        metadata = prepared.metadata
+        thumbnail_path = await _publish_prepared_thumbnail(prepared)
+
+    except BaseException:
+        await db.rollback()
+        await _discard_ingest_stage(file_path)
+        raise
+
+    from backend.app.services.library_ingest import prepare_reuse
+
+    try:
+        presence = await prepare_reuse(
+            db, content_hash=file_hash, access=await read_access(db, user_id=created_by_id, authority=authority)
+        )
+        target_folder, principal = await _guard_ingest(db, authority, target_folder)
+        if principal is not None:
+            created_by_id = principal.user.id
+    except BaseException:
+        await db.rollback()
+        await _discard_ingest_stage(file_path, thumbnail_path)
+        raise
+
     # The content decision, before any row is built. Only active rows count — a
     # trashed sibling was deleted by the user and must not pin a fresh upload to
     # it. ``find_reusable_row`` is the one place that answers this; this function
@@ -3663,17 +3844,20 @@ async def store_library_upload(
         reusable = await find_reusable_row(
             db,
             content_hash=file_hash,
+            presence=presence,
             access=await read_access(db, user_id=created_by_id, authority=authority),
         )
-    except HTTPException:
-        file_path.unlink(missing_ok=True)
+    except BaseException:
+        await db.rollback()
+        await _discard_ingest_stage(file_path, thumbnail_path)
         raise
     if reusable is not None:
         existing, present = reusable
         if present:
             # ⚠️ Our bytes are redundant and already on disk — delete them, or a
             # deduplication feature becomes an orphan-file generator.
-            file_path.unlink(missing_ok=True)
+            await db.commit()
+            await _discard_ingest_stage(file_path, thumbnail_path)
             return IngestResult(file=existing, outcome="deduped", superseded_name=filename)
         # The row is missing only its BYTES, and we are holding them. Re-pointing
         # keeps its name, folder, notes, tags, products and print history; the
@@ -3683,11 +3867,8 @@ async def store_library_upload(
         existing.fs_modified_at = None
         await db.commit()
         await db.refresh(existing)
+        await _discard_ingest_stage(None, thumbnail_path)
         return IngestResult(file=existing, outcome="restored", superseded_name=filename)
-
-    prepared = await _prepare_library_source(file_path, filename)
-    metadata = prepared.metadata
-    thumbnail_path = await _publish_prepared_thumbnail(prepared)
 
     # A new external file declares a baked swap sequence by its basename: ".swap."
     # (older / custom tooling) or ".swaps." (what swaplist.app emits on export).
@@ -3721,9 +3902,12 @@ async def store_library_upload(
     if ext in (".stl", ".obj") and generate_stl_thumbnails and len(content) >= MIN_USABLE_STL_BYTES:
         # Ingest is durable, including product/folder inheritance. No checked-out
         # connection during admission, file transfer or rendering.
-        source = PreviewSource.capture(library_file)
+        source = PreviewSource.capture(library_file, authority=authority, permission=Permission.LIBRARY_UPLOAD.value)
         try:
-            await generate_library_preview(db, source)
+            if preview_pause_budget is None:
+                await generate_library_preview(db, source)
+            else:
+                await generate_library_preview(db, source, pause_budget=preview_pause_budget)
         except asyncio.CancelledError:
             # The mesh was committed before preview. Cancellation cannot undo
             # it; let open clients learn about the durable row best-effort.
@@ -3910,7 +4094,11 @@ async def extract_zip_file(
     logger.info(
         f"ZIP extraction: create_folder_from_zip={create_folder_from_zip}, folder_id={folder_id}, filename={file.filename}"
     )
+    from backend.app.services.domain_authority import guard
+
+    await db.commit()
     if create_folder_from_zip and file.filename:
+        await guard(db, authority, permissions=(Permission.LIBRARY_UPLOAD.value,))
         # Remove .zip extension to get folder name
         zip_folder_name = file.filename[:-4] if file.filename.lower().endswith(".zip") else file.filename
         # Check if folder already exists
@@ -3934,6 +4122,7 @@ async def extract_zip_file(
             folders_created += 1
             logger.info("Created new folder '%s' with id=%s", zip_folder_name, zip_folder_id)
 
+    await db.commit()
     try:
         with zipfile.ZipFile(tmp_path, "r") as zf:
             # Filter out directories and hidden/system files
@@ -3951,6 +4140,8 @@ async def extract_zip_file(
                 pending_folders = {}
                 new_folder_count = 0
                 try:
+                    file_content = await asyncio.to_thread(zf.read, zip_path)
+                    await guard(db, authority, permissions=(Permission.LIBRARY_UPLOAD.value,))
                     # Determine target folder (use zip_folder_id as base if create_folder_from_zip was used)
                     target_folder_id = zip_folder_id
 
@@ -3996,118 +4187,37 @@ async def extract_zip_file(
 
                             target_folder_id = current_parent
 
-                    # Extract file
-                    filename = os.path.basename(zip_path)
-                    ext = os.path.splitext(filename)[1].lower()
-                    file_type = detect_file_type(filename)
-
-                    # Generate unique filename for storage
-                    unique_filename = f"{uuid.uuid4().hex}{ext}"
-                    file_path = (
-                        get_library_files_dir() / unique_filename
-                    )  # SEC-PATH-OK: unique_filename is a server uuid4().hex + extension
-
-                    # Extract and save file
-                    file_content = zf.read(zip_path)
-                    with open(file_path, "wb") as f:
-                        f.write(file_content)
-
-                    from backend.app.services.library_file_runtime import get_library_file_runtime
-
-                    file_hash = (await get_library_file_runtime().hash(file_path, root=file_path.parent))["digest"]
-
-                    # A ZIP of models routinely carries a plate the library
-                    # already holds. ``find_reusable_row`` is the one place that
-                    # decides; skipping here also spares the metadata and
-                    # thumbnail work below for a file we are not going to add.
-                    reusable = await find_reusable_row(
-                        db,
-                        content_hash=file_hash,
-                        access=await read_access(db, user_id=upload_user_id, authority=authority),
-                    )
-                    if reusable is not None and reusable[1]:
-                        # ⚠️ Delete the bytes we just extracted — otherwise every
-                        # re-import of the same ZIP leaves another orphan behind.
-                        file_path.unlink(missing_ok=True)
-                        skipped_duplicates += 1
-                        await db.commit()
-                        folder_cache.update(pending_folders)
-                        folders_created += new_folder_count
-                        continue
-
-                    prepared = await _prepare_library_source(file_path, filename)
-                    metadata = prepared.metadata
-                    thumbnail_path = await _publish_prepared_thumbnail(prepared)
-
-                    # Create database entry (store relative paths for portability)
-                    library_file = LibraryFile(
-                        folder_id=target_folder_id,
-                        filename=filename,
-                        file_path=to_relative_path(file_path),
-                        file_type=file_type,
-                        skip_objects_supported=skip_objects_supported_from_metadata(metadata if metadata else None),
-                        file_size=len(file_content),
-                        file_hash=file_hash,
-                        thumbnail_path=thumbnail_path,
-                        file_metadata=_without_print_name(metadata) if metadata else None,
-                        created_by_id=upload_user_id,
-                    )
-                    # The member is the new external file: its own basename
-                    # declares, not the ZIP's name or a directory inside it.
-                    swap_compatibility.declare_ingest(
-                        library_file, swap_compatibility.classify_external_name(filename), origin="classifier"
-                    )
-                    db.add(library_file)
-                    await db.flush()
-                    await sync_system_tags(db, library_file)
-                    # Inherit target folder's products → matching plate
-                    # rows so a 3MF unzipped into a product-tagged folder
-                    # lands in the product's recipe automatically. Re-fetch
-                    # the folder with .products eager-loaded for *this*
-                    # iteration's target_folder_id (may differ from the
-                    # outer one when ``preserve_structure`` created a
-                    # subfolder; subfolders inherit their parent's
-                    # products only when explicitly assigned, so this is
-                    # a no-op for sub-folders that have no products of
-                    # their own).
-                    if target_folder_id is not None:
-                        per_file_folder = (
-                            await db.execute(
-                                select(LibraryFolder)
-                                .where(LibraryFolder.id == target_folder_id)
-                                .options(selectinload(LibraryFolder.products))
-                            )
-                        ).scalar_one_or_none()
-                        if per_file_folder is not None:
-                            await inherit_folder_products(db, library_file, per_file_folder)
                     await db.commit()
                     folder_cache.update(pending_folders)
                     folders_created += new_folder_count
-                    if (
-                        ext in (".stl", ".obj")
-                        and generate_stl_thumbnails
-                        and len(file_content) >= MIN_USABLE_STL_BYTES
-                    ):
-                        try:
-                            await generate_library_preview(
-                                db, PreviewSource.capture(library_file), pause_budget=picture_pause
-                            )
-                        except Exception:
-                            logger.warning("Preview skipped for extracted file %s", library_file.id, exc_info=True)
-
-                    extracted_files.append(
-                        ZipExtractResult(
-                            filename=filename,
-                            file_id=library_file.id,
-                            folder_id=target_folder_id,
+                    per_file_folder = None
+                    if target_folder_id is not None:
+                        per_file_folder = await db.scalar(
+                            select(LibraryFolder)
+                            .where(LibraryFolder.id == target_folder_id)
+                            .options(selectinload(LibraryFolder.products))
                         )
+                    filename = os.path.basename(zip_path)
+                    file_type = detect_file_type(filename)
+                    result = await store_library_upload(
+                        db,
+                        filename=filename,
+                        content=file_content,
+                        target_folder=per_file_folder,
+                        generate_stl_thumbnails=generate_stl_thumbnails and not is_cad_preview(file_type),
+                        created_by_id=upload_user_id,
+                        authority=authority,
+                        preview_pause_budget=picture_pause,
                     )
-                    if is_cad_preview(file_type) and generate_stl_thumbnails:
-                        step_results.append((extracted_files[-1], library_file))  # asked after every STL/OBJ
-
-                    # Commit after each file to release database lock
-                    # This prevents long-running transactions from blocking other requests
-                    await db.commit()
+                    library_file = result.file
+                    if result.outcome == "deduped":
+                        skipped_duplicates += 1
+                        continue
+                    extracted_files.append(
+                        ZipExtractResult(filename=filename, file_id=library_file.id, folder_id=library_file.folder_id)
+                    )
+                    if is_cad_preview(file_type) and generate_stl_thumbnails and result.outcome == "created":
+                        step_results.append((extracted_files[-1], library_file))
 
                 except Exception as e:
                     hidden_source = (
@@ -4157,6 +4267,7 @@ async def extract_zip_file(
 async def batch_generate_stl_thumbnails(
     request: BatchThumbnailRequest,
     db: AsyncSession = Depends(get_db),
+    creds: RequestCredentials = Depends(request_credentials),
     _: User | None = Depends(require_permission(Permission.LIBRARY_UPDATE_ALL)),
 ):
     """Generate thumbnails for STL files in batch.
@@ -4169,6 +4280,7 @@ async def batch_generate_stl_thumbnails(
     - All STL files in a folder (folder_id)
     - All STL files missing thumbnails (all_missing=True)
     """
+    authority = await creds.capture()
     results: list[BatchThumbnailResult] = []
     query = LibraryFile.active().where(LibraryFile.file_type.in_(LEGACY_PREVIEW_TYPES))
     if request.file_ids:
@@ -4187,7 +4299,7 @@ async def batch_generate_stl_thumbnails(
 
     rows = (await db.execute(query)).scalars().all()
     cad_files = [(row.id, row.filename) for row in rows if is_cad_preview(row.file_type)]
-    sources = [PreviewSource.capture(row) for row in rows if not is_cad_preview(row.file_type)]
+    sources = [PreviewSource.capture(row, authority=authority) for row in rows if not is_cad_preview(row.file_type)]
     # This route owns only an auth/selection read transaction.
     await db.commit()
     picture_pause = PreviewPauseBudget()  # one bound for the whole batch on a backup's pause
@@ -5297,6 +5409,7 @@ async def print_library_file(
 
         items, batch_id = await enqueue_batch_copies(
             db,
+            authority=await creds.capture(),
             printer_id=printer_id,
             count=qty,
             library_file_id=file_id,
@@ -5340,6 +5453,7 @@ async def print_library_file(
 
     try:
         dispatch_result = await background_dispatch.dispatch_print_library_file(
+            authority=await creds.capture(),
             file_id=file_id,
             filename=dispatch_source_name,
             printer_id=printer_id,
@@ -5847,6 +5961,7 @@ async def download_file(
 async def create_library_slicer_token(
     file_id: int,
     db: AsyncSession = Depends(get_db),
+    creds: RequestCredentials = Depends(request_credentials),
     auth_result: tuple[User | None, bool] = Depends(
         require_ownership_permission(
             Permission.LIBRARY_READ_ALL,
@@ -5865,7 +5980,7 @@ async def create_library_slicer_token(
     result = await db.execute(select(LibraryFile).where(LibraryFile.id == file_id))
     _ensure_library_file_visible(result.scalar_one_or_none(), user, can_read_all)
 
-    token = await create_slicer_download_token("library", file_id)
+    token = await create_slicer_download_token("library", file_id, authority=await creds.capture())
     return {"token": token}
 
 
@@ -5884,15 +5999,13 @@ async def download_library_file_for_slicer(
     that may fetch the URL more than once (upstream #3029).
     Filename is at the end of the URL so slicers can detect the file format.
     """
-    from backend.app.core.auth import verify_slicer_download_token
+    from backend.app.services.domain_authority import slicer_principal
 
-    if not await verify_slicer_download_token(token, "library", file_id, single_use=False):
-        raise HTTPException(status_code=403, detail="Invalid or expired download token")
-
-    result = await db.execute(select(LibraryFile).where(LibraryFile.id == file_id))
-    file = result.scalar_one_or_none()
-    if not file:
-        raise HTTPException(status_code=404, detail="File not found")
+    principal = await slicer_principal(token, "library", file_id)
+    file = await db.scalar(LibraryFile.active().where(LibraryFile.id == file_id))
+    access = await read_access(db, authority=principal.capture)
+    if file is None or not access.allows(file):
+        raise HTTPException(404, "File not found")
 
     abs_path = to_absolute_path(file.file_path)
     if not abs_path or not abs_path.exists():

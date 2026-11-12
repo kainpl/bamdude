@@ -5,6 +5,7 @@ import pytest
 
 from backend.app.models.user_filament import UserFilamentFamily
 from backend.app.services.printer_manager import printer_manager
+from backend.tests.auth_helpers import mint_test_access
 from backend.tests.fixtures.filament_routing_cases import write_routing_3mf
 from backend.tests.integration.test_filament_routing_dispatch import setup_source
 from backend.tests.integration.test_printer_runtime_stall import runtime  # noqa: F401
@@ -235,7 +236,7 @@ async def test_printer_preview_obeys_queue_source_ownership(
             "source_queue_item_id": item.id,
             "targets": [{"printer_id": printer.id, "plate_id": 15}],
         },
-        headers={"Authorization": f"Bearer {create_access_token(data={'sub': user.username})}"},
+        headers={"Authorization": f"Bearer {await mint_test_access(db_session, username=user.username)}"},
     )
     assert response.status_code == (200 if owns else 404), response.text
 
@@ -373,7 +374,7 @@ async def test_preview_respects_source_ownership_and_printer_read_permission(
     await db_session.flush()
     source.created_by_id = user.id if owns_source else None
     await db_session.commit()
-    token = create_access_token(data={"sub": user.username})
+    token = await mint_test_access(db_session, username=user.username)
     response = await committing_client.post(
         "/api/v1/auto-queue/printer-routing-preview" if specific else "/api/v1/auto-queue/routing-preview",
         json={

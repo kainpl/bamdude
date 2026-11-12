@@ -318,7 +318,17 @@ async def cb_library_print_now(callback: CallbackQuery, state: FSMContext, tg_ch
         return
 
     try:
+        from backend.app.core.database import async_session
         from backend.app.services.background_dispatch import background_dispatch
+        from backend.app.services.domain_authority import capture_chat_writer, fresh
+
+        async with async_session() as db:
+            authority = await capture_chat_writer(db, tg_chat)
+            principal = await fresh(
+                db, authority, permissions=("printers:control", "library:read"), printer_id=printer_id
+            )
+            owner_id = principal.user.id if principal is not None else None
+            owner_name = principal.user.username if principal is not None else None
 
         await background_dispatch.dispatch_print_library_file(
             file_id=file_id,
@@ -326,8 +336,9 @@ async def cb_library_print_now(callback: CallbackQuery, state: FSMContext, tg_ch
             printer_id=printer_id,
             printer_name=printer_name or f"#{printer_id}",
             options={},
-            requested_by_user_id=None,
-            requested_by_username=None,
+            requested_by_user_id=owner_id,
+            requested_by_username=owner_name,
+            authority=authority,
         )
 
         await callback.answer(f"\u2705 {t(lang, NS, 'library.print_dispatched')}")
@@ -382,6 +393,12 @@ async def cb_library_add_queue(callback: CallbackQuery, state: FSMContext, tg_ch
         # closed for the copy \u2014 it can take minutes over a share \u2014 and the row is
         # written inside the publication's own transaction, with the blob's.
         async with async_session() as db:
+            from backend.app.models.printer import Printer
+            from backend.app.services.domain_authority import capture_chat_writer
+
+            authority = await capture_chat_writer(db, tg_chat)
+            target = await db.get(Printer, printer_id)
+            printer_identity = target.connector_identity if target is not None else None
             # \u26a0\ufe0f ``file_id`` is a LIBRARY id and is resolved as one, with no
             # fall-through to any other table: archive ids and library ids are
             # independent sequences, so a stale id very often names a real,
@@ -408,19 +425,36 @@ async def cb_library_add_queue(callback: CallbackQuery, state: FSMContext, tg_ch
             await _check_captured_model(db, printer_id, requirements.model if requirements else None)
 
         async def attach(session, source) -> None:
-            session.add(
-                PrintQueueItem(
-                    queue_source_id=source.id,
-                    source_snapshot=queue_sources.snapshot_for(staged.receipt, source),
-                    queue_id=queue_id,
-                    library_file_id=file_id,
-                    status="pending",
-                    position=await next_queue_position(session, queue_id),
-                    created_by_id=tg_chat.user_id if tg_chat else None,
-                )
-            )
+            from backend.app.services.domain_authority import fresh
+            from backend.app.services.queue_ops import queue_scope_lock
 
-        await publish_staged(staged, attach)
+            async with queue_scope_lock(session, queue_id):
+                principal = await fresh(
+                    session, authority, permissions=("queue:create", "library:read"), printer_id=printer_id
+                )
+                session.add(
+                    PrintQueueItem(
+                        queue_source_id=source.id,
+                        source_snapshot=queue_sources.snapshot_for(staged.receipt, source),
+                        queue_id=queue_id,
+                        library_file_id=file_id,
+                        status="pending",
+                        position=await next_queue_position(session, queue_id),
+                        created_by_id=principal.user.id if principal is not None else None,
+                    )
+                )
+
+        from backend.app.services.domain_authority import chat_source_access
+
+        await publish_staged(
+            staged,
+            attach,
+            authority=authority,
+            permissions=("queue:create", "library:read"),
+            printer_id=printer_id,
+            process_lanes=(queue_id,),
+            source_access=chat_source_access(file_id, printer_id, printer_identity, queue_id),
+        )
         await callback.answer(f"\u2705 {t(lang, NS, 'library.queued')}")
     except Exception as exc:
         # Whatever went wrong, the bytes nobody is going to print are given back

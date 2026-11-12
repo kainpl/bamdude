@@ -73,6 +73,7 @@ class LegacyPlanPublication:
     """A compatibility caller may publish only while no shared draft exists."""
 
     plan_id: int
+    capture: object | None = None
 
 
 @dataclass
@@ -175,6 +176,7 @@ async def admin_cancellation_access(db, operation, access):
 
 
 async def register(db, plan_id, request, access):
+    await authority.guard(db, access)
     plan = await working.lock(db, plan_id)
     if plan is None:
         raise working.refusal()
@@ -272,6 +274,18 @@ async def claim(db, context: PlanConsumption | LegacyPlanPublication, sha256: st
     if isinstance(context, LegacyPlanPublication):
         from backend.app.core.database import take_write_lock
         from backend.app.models.order_working_plan import OrderWorkingPlan
+
+        if context.capture is not None:
+            from backend.app.core.auth import authorize_api_key
+            from backend.app.core.auth_lifetime import validate_captured
+
+            principal = await validate_captured(db, context.capture, required_permissions=("queue:create",))
+            if principal.api_key is not None:
+                await authorize_api_key(
+                    db, principal.api_key, ["orders:update", "orders:file_prints"], require_any=True
+                )
+            elif not any(principal.user.has_permission(p) for p in ("orders:update", "orders:file_prints")):
+                raise authority.denied()
 
         # The new draft's FK takes KEY SHARE here. An exclusive order lock
         # serializes the absence check with first-save, after source capture
@@ -391,6 +405,7 @@ async def consume(db, ticket: ConsumptionTicket, queue_ids, kind):
 
 
 async def cancel(db, plan_id, operation_id, access, *, administrative=False, reason=None):
+    await authority.guard(db, access)
     plan = await working.lock(db, plan_id)
     user, _, printers = await authority.fresh(db, access, receipts=True)
     operation = await _operation(db, plan_id, operation_id, lock=True)
@@ -462,6 +477,8 @@ async def execute(db, plan_id, operation_id, access, publish):
     from backend.app.models.user import User
 
     actor = User(id=user.id, username=user.username) if user else None
+    if actor is not None:
+        actor._auth_capture = access.actor.capture
     await db.rollback()
     for part in parts:
         entry = part["entry"]

@@ -130,7 +130,15 @@ async def test_timeline_ties_upper_bound_and_inventory_masking(
         )
     await db_session.commit()
     access = DiagnosticAccess(
-        1, 1, frozenset({"printers:read", "archives:read_all"}), False, None, False, current_epoch()
+        1,
+        1,
+        frozenset({"printers:read", "archives:read_all"}),
+        False,
+        None,
+        False,
+        current_epoch(),
+        key_identity="00000000-0000-0000-0000-000000000001",
+        owner_identity="00000000-0000-0000-0000-000000000002",
     )
     blocked = Mock(side_effect=AssertionError("journal writer"))
     monkeypatch.setattr(print_usage_journal, "record_runout", blocked)
@@ -212,7 +220,17 @@ async def test_timeline_queue_audit_usage_and_unknown_feed_are_archive_owned(
         ]
     )
     await db_session.commit()
-    access = DiagnosticAccess(1, 1, frozenset(), True, None, False, current_epoch())
+    access = DiagnosticAccess(
+        1,
+        1,
+        frozenset(),
+        True,
+        None,
+        False,
+        current_epoch(),
+        key_identity="00000000-0000-0000-0000-000000000001",
+        owner_identity="00000000-0000-0000-0000-000000000002",
+    )
     result = await timeline(db_session, access, TimelineInput(archive_id=archive.id), "audit")
     entries = result.data["events"]
     assert [e["source_id"] for e in entries if e["source"].startswith("queue.")] == [str(own_item.id)]
@@ -233,7 +251,15 @@ async def test_timeline_query_count_is_constant_and_ancestry_is_bounded(
     at = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(minutes=1)
     archive = await archive_factory(p.id, created_at=at)
     access = DiagnosticAccess(
-        1, 1, frozenset({"printers:read", "archives:read_all"}), False, None, False, current_epoch()
+        1,
+        1,
+        frozenset({"printers:read", "archives:read_all"}),
+        False,
+        None,
+        False,
+        current_epoch(),
+        key_identity="00000000-0000-0000-0000-000000000001",
+        owner_identity="00000000-0000-0000-0000-000000000002",
     )
     statements = []
 
@@ -293,7 +319,15 @@ async def test_timeline_queue_and_recovery_require_read_all(db_session, printer_
     )
     await db_session.commit()
     access = DiagnosticAccess(
-        1, 1, frozenset({"printers:read", "archives:read_all"}), False, None, False, current_epoch()
+        1,
+        1,
+        frozenset({"printers:read", "archives:read_all"}),
+        False,
+        None,
+        False,
+        current_epoch(),
+        key_identity="00000000-0000-0000-0000-000000000001",
+        owner_identity="00000000-0000-0000-0000-000000000002",
     )
     args = TimelineInput(archive_id=archive.id)
     limited = await timeline(db_session, access, args, "limited")

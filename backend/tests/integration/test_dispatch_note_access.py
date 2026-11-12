@@ -48,7 +48,7 @@ def _mine(rows: list[dict], note_id: int) -> dict:
 @pytest.mark.asyncio
 async def test_a_stock_reader_lists_minimal_rows_and_cannot_open_the_document(committing_client, db_session, note):
     await _user(db_session, "dn_reader", ["stock:read"])
-    headers = _jwt("dn_reader")
+    headers = await _jwt("dn_reader")
     row = _mine((await committing_client.get("/api/v1/stock-issues/", headers=headers)).json()["items"], note["id"])
     assert row["restricted"] is True
     assert row["recipient_phone"] is None and row["delivery_details"] is None and row["recipient_name"] is None
@@ -61,7 +61,7 @@ async def test_a_stock_reader_lists_minimal_rows_and_cannot_open_the_document(co
 @pytest.mark.asyncio
 async def test_the_shipping_right_opens_the_whole_document(committing_client, db_session, note):
     await _user(db_session, "dn_shipper", ["stock:read", "stock:move"])
-    headers = _jwt("dn_shipper")
+    headers = await _jwt("dn_shipper")
     row = _mine((await committing_client.get("/api/v1/stock-issues/", headers=headers)).json()["items"], note["id"])
     assert row["recipient_phone"] == PHONE
     assert not row["restricted"]
@@ -77,7 +77,7 @@ async def test_the_shipping_right_opens_the_whole_document(committing_client, db
 @pytest.mark.asyncio
 async def test_a_customers_reader_sees_that_customers_notes_and_no_others(committing_client, db_session, note):
     await _user(db_session, "dn_contacts", ["customers:read"])
-    headers = _jwt("dn_contacts")
+    headers = await _jwt("dn_contacts")
     assert (await committing_client.get("/api/v1/stock-issues/", headers=headers)).status_code == 403
     rows = await committing_client.get(
         "/api/v1/stock-issues/", params={"customer_id": note["customer"]}, headers=headers
@@ -90,13 +90,13 @@ async def test_a_customers_reader_sees_that_customers_notes_and_no_others(commit
 @pytest.mark.asyncio
 async def test_a_reader_without_any_of_the_three_contexts_is_refused(committing_client, db_session, note):
     await _user(db_session, "dn_stranger", ["inventory:read"])
-    assert (await committing_client.get("/api/v1/stock-issues/", headers=_jwt("dn_stranger"))).status_code == 403
+    assert (await committing_client.get("/api/v1/stock-issues/", headers=await _jwt("dn_stranger"))).status_code == 403
 
 
 @pytest.mark.asyncio
 async def test_a_minimal_reader_cannot_find_a_note_by_its_recipient(committing_client, db_session, note):
     await _user(db_session, "dn_searcher", ["stock:read"])
-    found = await committing_client.get("/api/v1/stock-issues/", params={"q": "Ira"}, headers=_jwt("dn_searcher"))
+    found = await committing_client.get("/api/v1/stock-issues/", params={"q": "Ira"}, headers=await _jwt("dn_searcher"))
     assert [r for r in found.json()["items"] if r["id"] == note["id"]] == []
 
 

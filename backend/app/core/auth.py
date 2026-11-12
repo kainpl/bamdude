@@ -5,6 +5,7 @@ import logging
 import os
 import secrets
 import weakref
+from collections import OrderedDict
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -28,10 +29,27 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from backend.app.core.api_key_scope import enforce_printer_scope, printer_refusal
+from backend.app.core.auth_lifetime import (
+    FrozenAuthority,
+    VerifiedOutcome,
+    binding,
+    binding_conditions,
+    capture_account,
+    capture_ephemeral,
+    capture_key,
+    guard_accounts,
+    refused,
+    stage_session,
+    utc_naive,
+    utcnow,
+    validate_captured,
+)
+from backend.app.core.auth_runtime import auth_runtime
 from backend.app.core.database import async_session, get_db
 from backend.app.core.permissions import Permission
 from backend.app.models.api_key import APIKey
 from backend.app.models.auth_ephemeral import AuthEphemeralToken, TokenType
+from backend.app.models.auth_session import AuthSession
 from backend.app.models.group import Group, user_groups
 from backend.app.models.settings import Settings
 from backend.app.models.user import User
@@ -61,7 +79,8 @@ async def _auth_database_errors():
 
 async def get_auth_db(db: Annotated[AsyncSession, Depends(get_db)]) -> AsyncIterator[AsyncSession]:
     """Keep the existing request DB owner while mapping auth-route outages."""
-    async with _auth_database_errors():
+    async with _auth_database_errors(), auth_runtime.operation():
+        auth_runtime.track_transaction(db)
         yield db
 
 
@@ -251,73 +270,25 @@ security = HTTPBearer(auto_error=False)
 SLICER_TOKEN_EXPIRE_MINUTES = 5
 
 
-async def create_slicer_download_token(resource_type: str, resource_id: int) -> str:
-    """Create a short-lived download token for slicer protocol handlers."""
-    now = datetime.now(timezone.utc)
-    expires_at = now + timedelta(minutes=SLICER_TOKEN_EXPIRE_MINUTES)
-    token = secrets.token_urlsafe(24)
-    resource_key = f"{resource_type}:{resource_id}"
-    async with async_session() as db:
-        # Prune expired tokens opportunistically.
-        await db.execute(
-            delete(AuthEphemeralToken).where(
-                AuthEphemeralToken.token_type == TokenType.SLICER_DOWNLOAD,
-                AuthEphemeralToken.expires_at < now,
-            )
-        )
-        db.add(
-            AuthEphemeralToken(
-                token=token,
-                token_type=TokenType.SLICER_DOWNLOAD,
-                nonce=resource_key,
-                expires_at=expires_at,
-            )
-        )
-        await db.commit()
-    return token
-
-
-async def verify_slicer_download_token(
-    token: str,
-    resource_type: str,
-    resource_id: int,
-    *,
-    single_use: bool = True,
-) -> bool:
-    """Verify a slicer download token, spending it unless ``single_use`` is False.
-
-    True only for a token that is unexpired and bound to THIS resource.
-
-    ``single_use=True`` (the default) redeems with DELETE…RETURNING, one-shot
-    even under concurrent requests — for anything whose download is itself
-    consumed. ``single_use=False`` checks with a SELECT and leaves the token
-    for the rest of its TTL: for URLs handed to an external slicer over a
-    protocol handler, a process we do not control. Bambu Studio's downloader
-    retries a failed attempt, transfers get resumed, an on-access scanner
-    fetches — and one-shot redemption made the first fetch win and handed the
-    slicer a 403 (upstream #3029). Binding and expiry are the same either way.
-
-    M-NEW-1 fix: ``nonce`` (resource key) is in the WHERE clause so the token
-    only redeems for the correct resource — earlier versions consumed the row
-    even on resource-mismatch, permanently invalidating it.
-    """
-    expected_key = f"{resource_type}:{resource_id}"
-    now = datetime.now(timezone.utc)
-    bound = (
-        AuthEphemeralToken.token == token,
-        AuthEphemeralToken.token_type == TokenType.SLICER_DOWNLOAD,
-        AuthEphemeralToken.nonce == expected_key,
-        AuthEphemeralToken.expires_at > now,
+async def create_slicer_download_token(resource_type: str, resource_id: int, *, authority: FrozenAuthority):
+    return await _mint_ephemeral(
+        authority,
+        TokenType.SLICER_DOWNLOAD,
+        timedelta(minutes=SLICER_TOKEN_EXPIRE_MINUTES),
+        nonce=f"{resource_type}:{resource_id}",
     )
-    async with _auth_database_errors(), async_session() as db:
-        if not single_use:
-            result = await db.execute(select(AuthEphemeralToken.id).where(*bound))
-            return result.scalar_one_or_none() is not None
-        result = await db.execute(delete(AuthEphemeralToken).where(*bound).returning(AuthEphemeralToken.id))
-        if result.one_or_none() is None:
-            return False
-        await db.commit()
+
+
+async def verify_slicer_download_token(token, resource_type, resource_id, *, single_use=True):
+    try:
+        await resolve_ephemeral_authority(
+            token, TokenType.SLICER_DOWNLOAD, resource_key=f"{resource_type}:{resource_id}", consume=single_use
+        )
         return True
+    except HTTPException as exc:
+        if exc.status_code == 401:
+            return False
+        raise
 
 
 # --- Camera stream tokens ---
@@ -329,58 +300,28 @@ async def verify_slicer_download_token(
 CAMERA_STREAM_TOKEN_EXPIRE_MINUTES = 60
 
 
-async def create_camera_stream_token() -> str:
-    """Create a reusable camera-stream token (valid for CAMERA_STREAM_TOKEN_EXPIRE_MINUTES)."""
-    now = datetime.now(timezone.utc)
-    expires_at = now + timedelta(minutes=CAMERA_STREAM_TOKEN_EXPIRE_MINUTES)
-    token = secrets.token_urlsafe(24)
-    async with async_session() as db:
-        # Prune expired tokens opportunistically.
-        await db.execute(
-            delete(AuthEphemeralToken).where(
-                AuthEphemeralToken.token_type == TokenType.CAMERA_STREAM,
-                AuthEphemeralToken.expires_at < now,
-            )
+async def create_camera_stream_token(*, authority: FrozenAuthority):
+    return await _mint_ephemeral(
+        authority,
+        TokenType.CAMERA_STREAM,
+        timedelta(minutes=CAMERA_STREAM_TOKEN_EXPIRE_MINUTES),
+        required_permissions=(Permission.CAMERA_VIEW.value,),
+    )
+
+
+async def verify_camera_stream_token(token, *, printer_id=None):
+    try:
+        await resolve_ephemeral_authority(
+            token, TokenType.CAMERA_STREAM, required_permissions=(Permission.CAMERA_VIEW.value,), printer_id=printer_id
         )
-        db.add(
-            AuthEphemeralToken(
-                token=token,
-                token_type=TokenType.CAMERA_STREAM,
-                expires_at=expires_at,
-            )
-        )
-        await db.commit()
-    return token
+        return True
+    except HTTPException as exc:
+        if exc.status_code != 401:
+            raise
+    from backend.app.services.long_lived_tokens import STREAM_SCOPES, verify_token
 
-
-async def verify_camera_stream_token(token: str) -> bool:
-    """Verify a camera stream token is valid (reusable — does not consume it).
-
-    Tries the ephemeral 60-minute token first (the common, browser-bound case)
-    and falls through to long-lived tokens (#1108) for HA / kiosk integrations
-    that paste a token once and expect it to keep working for days.
-    """
-    now = datetime.now(timezone.utc)
     async with _auth_database_errors(), async_session() as db:
-        result = await db.execute(
-            select(AuthEphemeralToken).where(
-                AuthEphemeralToken.token == token,
-                AuthEphemeralToken.token_type == TokenType.CAMERA_STREAM,
-                AuthEphemeralToken.expires_at > now,
-            )
-        )
-        if result.scalar_one_or_none() is not None:
-            return True
-
-        # Long-lived path. Imported lazily so the auth module stays importable
-        # at startup before the long_lived_tokens model is registered.
-        from backend.app.services.long_lived_tokens import STREAM_SCOPES, verify_token as verify_long_lived
-
-        # An overlay token has to be able to pull the video its own view shows,
-        # so the stream gate honours every scope in STREAM_SCOPES (upstream
-        # #2613). It is still an explicit list — never "any scope".
-        record = await verify_long_lived(db, token, scope=STREAM_SCOPES)
-        return record is not None
+        return await verify_token(db, token, scope=STREAM_SCOPES) is not None
 
 
 # --- Media tokens (audit D9 a2, upstream 816f073a) ---
@@ -403,63 +344,23 @@ MEDIA_TOKEN_EXPIRE_MINUTES = 60
 _MEDIA_TOKEN_REQUIRED = "Valid media token required. Obtain one from POST /api/v1/auth/media-token"
 
 
-async def create_media_token(username: str) -> str:
-    """Create a reusable media token for *username* (valid for MEDIA_TOKEN_EXPIRE_MINUTES).
-
-    Not consumed: one token serves every picture on a page.
-    """
-    now = datetime.now(timezone.utc)
-    token = secrets.token_urlsafe(24)
-    async with async_session() as db:
-        # Prune expired tokens opportunistically (same shape as camera/websocket).
-        await db.execute(
-            delete(AuthEphemeralToken).where(
-                AuthEphemeralToken.token_type == TokenType.MEDIA,
-                AuthEphemeralToken.expires_at < now,
-            )
-        )
-        db.add(
-            AuthEphemeralToken(
-                token=token,
-                token_type=TokenType.MEDIA,
-                username=username,
-                expires_at=now + timedelta(minutes=MEDIA_TOKEN_EXPIRE_MINUTES),
-            )
-        )
-        await db.commit()
-    return token
+async def create_media_token(*, authority: FrozenAuthority):
+    if authority.kind != "session":
+        raise refused()
+    return await _mint_ephemeral(authority, TokenType.MEDIA, timedelta(minutes=MEDIA_TOKEN_EXPIRE_MINUTES))
 
 
-async def _media_token_authority(token: str) -> JWTAuthority:
-    """The authority of the user a media token was minted for, or 401.
-
-    Fail-closed on every miss: an unknown or expired token, a user no longer in
-    the table or deactivated, and a token minted before the user's last
-    password change — the same freshness rule a JWT obeys, so changing a
-    password ends every media token with the sessions.
-    """
-    refused = HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=_MEDIA_TOKEN_REQUIRED)
-    now = datetime.now(timezone.utc)
-    async with _auth_database_errors(), async_session() as db:
-        row = (
-            await db.execute(
-                select(AuthEphemeralToken.username, AuthEphemeralToken.created_at).where(
-                    AuthEphemeralToken.token == token,
-                    AuthEphemeralToken.token_type == TokenType.MEDIA,
-                    AuthEphemeralToken.expires_at > now,
-                )
-            )
-        ).one_or_none()
-        if row is None or not row.username:
-            raise refused
-        user = await get_user_by_username(db, row.username)
-        if user is None or not user.is_active:
-            raise refused
-        minted = row.created_at if row.created_at.tzinfo else row.created_at.replace(tzinfo=timezone.utc)
-        if not _is_token_fresh(int(minted.timestamp()), user):
-            raise refused
-        # Captured while the groups are loaded, exactly as a JWT's authority is.
-        return JWTAuthority(user, frozenset(user.get_permissions()), user.is_admin)
+async def _media_token_authority(token):
+    principal = await resolve_ephemeral_authority(token, TokenType.MEDIA)
+    if principal.capture.kind != "session":
+        raise refused()
+    return JWTAuthority(
+        principal.user,
+        frozenset(principal.user.get_permissions()),
+        principal.user.is_admin,
+        principal.capture,
+        principal.auth_source,
+    )
 
 
 # --- WebSocket connection tokens ---
@@ -474,97 +375,27 @@ async def _media_token_authority(token: str) -> JWTAuthority:
 WEBSOCKET_TOKEN_EXPIRE_MINUTES = 60
 
 
-async def create_websocket_token(username: str | None = None) -> str:
-    """Create a reusable WebSocket connection token (60-minute window).
-
-    ``username`` records which user the token was minted for so the connection
-    can be tagged for per-user broadcasts (BamDude has no anonymous users). It is
-    None only for API-key callers, whose connections fall back to global broadcast.
-    """
-    now = datetime.now(timezone.utc)
-    expires_at = now + timedelta(minutes=WEBSOCKET_TOKEN_EXPIRE_MINUTES)
-    token = secrets.token_urlsafe(24)
-    async with async_session() as db:
-        # Prune expired tokens opportunistically.
-        await db.execute(
-            delete(AuthEphemeralToken).where(
-                AuthEphemeralToken.token_type == TokenType.WEBSOCKET,
-                AuthEphemeralToken.expires_at < now,
-            )
-        )
-        db.add(
-            AuthEphemeralToken(
-                token=token,
-                token_type=TokenType.WEBSOCKET,
-                username=username,
-                expires_at=expires_at,
-            )
-        )
-        await db.commit()
-    return token
+async def create_websocket_token(*, authority: FrozenAuthority):
+    return await _mint_ephemeral(
+        authority,
+        TokenType.WEBSOCKET,
+        timedelta(minutes=WEBSOCKET_TOKEN_EXPIRE_MINUTES),
+        required_permissions=(Permission.WEBSOCKET_CONNECT.value,),
+    )
 
 
-async def verify_websocket_token(token: str) -> bool:
-    """Verify a WebSocket connection token is valid (reusable — not consumed)."""
-    if not token:
-        return False
-    now = datetime.now(timezone.utc)
-    async with async_session() as db:
-        result = await db.execute(
-            select(AuthEphemeralToken).where(
-                AuthEphemeralToken.token == token,
-                AuthEphemeralToken.token_type == TokenType.WEBSOCKET,
-                AuthEphemeralToken.expires_at > now,
-            )
-        )
-        return result.scalar_one_or_none() is not None
+async def verify_websocket_token(token):
+    return await authenticate_websocket_authority(token) is not None
 
 
-async def authenticate_websocket_token(token: str) -> tuple[bool, int | None]:
-    """Validate and resolve the owner in one round trip at WS upgrade.
-
-    A valid API-key token has no username; keep that distinct from an invalid
-    token (and from a token whose named owner no longer exists).
-    """
-    if not token:
-        return False, None
-    async with async_session() as db:
-        row = (
-            await db.execute(
-                select(AuthEphemeralToken.username, User.id)
-                .outerjoin(User, User.username == AuthEphemeralToken.username)
-                .where(
-                    AuthEphemeralToken.token == token,
-                    AuthEphemeralToken.token_type == TokenType.WEBSOCKET,
-                    AuthEphemeralToken.expires_at > datetime.now(timezone.utc),
-                )
-            )
-        ).one_or_none()
-    if row is None or (row[0] is not None and row[1] is None):
-        return False, None
-    return True, row[1]
+async def authenticate_websocket_token(token):
+    resolved = await authenticate_websocket_authority(token)
+    return (True, resolved[1]) if resolved is not None else (False, None)
 
 
-async def resolve_websocket_token_user(token: str) -> int | None:
-    """Return the user id a valid WS token was minted for, for per-user broadcast
-    tagging. None if the token is invalid/expired or was minted without a user
-    (API-key caller) — the caller must still gate on ``verify_websocket_token``."""
-    if not token:
-        return None
-    now = datetime.now(timezone.utc)
-    async with async_session() as db:
-        username = (
-            await db.execute(
-                select(AuthEphemeralToken.username).where(
-                    AuthEphemeralToken.token == token,
-                    AuthEphemeralToken.token_type == TokenType.WEBSOCKET,
-                    AuthEphemeralToken.expires_at > now,
-                )
-            )
-        ).scalar_one_or_none()
-        if not username:
-            return None
-        return (await db.execute(select(User.id).where(User.username == username))).scalar_one_or_none()
+async def resolve_websocket_token_user(token):
+    resolved = await authenticate_websocket_authority(token)
+    return resolved[1] if resolved is not None else None
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
@@ -642,47 +473,15 @@ def refresh_token_ttl(remember_me: bool, ceiling_hours: int = SESSION_MAX_HOURS_
     return min(base, timedelta(hours=ceiling_hours))
 
 
-async def create_refresh_token(
-    db,
-    *,
-    username: str,
-    remember_me: bool,
-    family_id: str | None = None,
-    ceiling_hours: int | None = None,
-) -> tuple[str, str, datetime]:
-    """Mint a refresh token and persist its hash.
-
-    Returns ``(raw_token, family_id, expires_at)``. Caller is responsible
-    for committing the session and setting the cookie on the response.
-
-    ``family_id`` links every rotation descended from one /login. Pass the
-    existing id when rotating (so reuse detection can see the lineage);
-    leave it None for fresh logins so a new family is created.
-
-    ``ceiling_hours`` is the admin-configured session ceiling (#1706); when
-    None it is resolved from settings here so every call path is clamped even
-    if the caller forgets to thread it.
-    """
-    from backend.app.models.auth_ephemeral import AuthEphemeralToken
-
-    if ceiling_hours is None:
-        ceiling_hours = await resolve_session_max_hours(db)
-    raw_token = secrets.token_urlsafe(48)
-    token_hash = _hash_refresh_token(raw_token)
-    if family_id is None:
-        family_id = secrets.token_hex(16)
-    expires_at = datetime.now(timezone.utc) + refresh_token_ttl(remember_me, ceiling_hours)
-
-    row = AuthEphemeralToken.new_refresh(
-        token_hash=token_hash,
-        username=username,
-        family_id=family_id,
-        expires_at=expires_at,
+async def create_refresh_token(db, *, authority: FrozenAuthority, remember_me: bool, ceiling_hours=None):
+    principal = await validate_captured(db, authority)
+    issued = await stage_session(
+        db,
+        VerifiedOutcome(capture_account(principal.user), principal.auth_source),
         remember_me=remember_me,
+        existing_sid=authority.sid,
     )
-    db.add(row)
-    await db.flush()
-    return raw_token, family_id, expires_at
+    return issued.raw_refresh, issued.sid, issued.expires_at
 
 
 def _within_reuse_grace(used_at: datetime, now: datetime) -> bool:
@@ -699,114 +498,64 @@ def _within_reuse_grace(used_at: datetime, now: datetime) -> bool:
     return (now - used_at).total_seconds() <= REFRESH_REUSE_GRACE_SECONDS
 
 
-async def verify_and_consume_refresh_token(
-    db,
-    raw_token: str,
-) -> tuple[str | None, str | None, str]:
-    """Validate + mark-used in one atomic step.
-
-    Returns ``(username, family_id, status)`` where ``status`` is:
-
-    - ``"ok"`` — token valid + rotated. ``username`` + ``family_id`` populated;
-      caller issues a new access + a new refresh inside the same family.
-    - ``"race"`` — consumed moments ago, inside ``REFRESH_REUSE_GRACE_SECONDS``.
-      Almost certainly one client racing itself. **No side effect**: the family
-      survives and the caller returns a plain 401 so the loser can pick up the
-      token the winner just stored.
-    - ``"reuse"`` — consumed longer ago than the grace window. Treated as a
-      replay: whole family revoked; ``username`` + ``family_id`` populated so
-      the caller can log + return a descriptive 401.
-    - ``"invalid"`` — token not found or expired. ``username`` / ``family_id``
-      are None. Returned as 401 by the caller without a side effect.
-
-    The ``ok`` case flips ``used_at`` via an UPDATE … WHERE used_at IS NULL so
-    two concurrent /auth/refresh hits on the same token can't both get ``ok``.
-
-    **Why the grace window exists.** This function used to call every loser a
-    replay, and said so in as many words: "that second request IS a replay,
-    even if it's the same legit client racing itself". Technically true, and it
-    logged real users out constantly, because the frontend races itself *on a
-    schedule*: the proactive refresh timer is computed from the token's own
-    ``exp``, so every open tab holding the same token reaches the same absolute
-    deadline within milliseconds. Two tabs meant a revoked session roughly once
-    an hour, and the user experienced it as "the token randomly expires".
-
-    The window is the honest way to split the two cases. Inside it we cannot
-    distinguish a self-race from a thief replaying seconds after the victim —
-    so we choose the error to make. Outside it, nothing changes: a leaked token
-    surfacing later still collapses the family, which is the case worth
-    protecting against, and the one an attacker actually gets.
-
-    Note the loser is still refused. The grace does not hand out a session; it
-    only declines to punish the whole family for a collision the client caused.
-    """
-    from sqlalchemy import select, update
-
-    from backend.app.models.auth_ephemeral import AuthEphemeralToken, TokenType
+async def verify_and_consume_refresh_token(db, raw_token: str):
+    from sqlalchemy import update
 
     token_hash = _hash_refresh_token(raw_token)
     row = (
         await db.execute(
-            select(AuthEphemeralToken)
-            .where(AuthEphemeralToken.token == token_hash)
-            .where(AuthEphemeralToken.token_type == TokenType.REFRESH)
+            select(AuthEphemeralToken).where(
+                AuthEphemeralToken.token == token_hash, AuthEphemeralToken.token_type == TokenType.REFRESH
+            )
         )
     ).scalar_one_or_none()
-
     if row is None:
         return None, None, "invalid"
-
-    # Expiry check first — expired rows are just stale, not hostile.
-    now = datetime.now(timezone.utc)
-    expires_at = row.expires_at
-    if expires_at.tzinfo is None:
-        expires_at = expires_at.replace(tzinfo=timezone.utc)
-    if expires_at < now:
+    try:
+        capture = capture_ephemeral(row)
+        proof = await guard_accounts(db, [capture])
+        await validate_captured(db, capture, proof=proof)
+    except HTTPException as exc:
+        if exc.status_code != 401:
+            raise
         return None, None, "invalid"
-
-    # Reuse detection: if used_at already set, this is either a client racing
-    # itself (moments ago) or a replay (any later). See the docstring.
+    # Refresh rows are locked after their account/session lifetime guard.
+    row = (
+        await db.execute(
+            select(AuthEphemeralToken)
+            .where(AuthEphemeralToken.token == token_hash, AuthEphemeralToken.token_type == TokenType.REFRESH)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one_or_none()
+    now = utcnow()
+    if row is None or row.family_id != capture.sid or utc_naive(row.expires_at) <= now:
+        return None, None, "invalid"
     if row.used_at is not None:
-        if _within_reuse_grace(row.used_at, now):
+        if _within_reuse_grace(row.used_at, now.replace(tzinfo=timezone.utc)):
             return row.username, row.family_id, "race"
-        if row.family_id:
-            await revoke_refresh_family(db, row.family_id)
+        await revoke_refresh_family(db, row.family_id)
         return row.username, row.family_id, "reuse"
-
-    # Race-proof consume: only one concurrent request flips used_at from
-    # NULL → now. The loser will re-select the row and hit the reuse path.
     result = await db.execute(
         update(AuthEphemeralToken)
-        .where(AuthEphemeralToken.id == row.id)
-        .where(AuthEphemeralToken.used_at.is_(None))
+        .where(AuthEphemeralToken.id == row.id, AuthEphemeralToken.used_at.is_(None))
         .values(used_at=now)
     )
-    if result.rowcount == 0:
-        # Lost the race by microseconds — the other request consumed it between
-        # our SELECT and our UPDATE. By definition inside the grace window, so
-        # never a replay: this branch is only reachable when the winner is still
-        # in flight.
-        return row.username, row.family_id, "race"
-
-    return row.username, row.family_id, "ok"
+    return row.username, row.family_id, "ok" if result.rowcount else "race"
 
 
-async def revoke_refresh_family(db, family_id: str) -> None:
-    """Delete every refresh-token row for a family_id.
+async def revoke_refresh_family(db, family_id: str):
+    session = await db.get(AuthSession, family_id)
+    if session is not None:
+        from backend.app.core.auth_lifetime import stage_revoke_session
 
-    Called on: (1) detected reuse — all siblings of the replayed token die;
-    (2) explicit logout — the current family is cleaned up; (3) chaining
-    from ``revoke_all_refresh_tokens_for_user`` below.
-    """
-    from sqlalchemy import delete
-
-    from backend.app.models.auth_ephemeral import AuthEphemeralToken, TokenType
-
-    await db.execute(
-        delete(AuthEphemeralToken)
-        .where(AuthEphemeralToken.token_type == TokenType.REFRESH)
-        .where(AuthEphemeralToken.family_id == family_id)
-    )
+        await stage_revoke_session(
+            db,
+            FrozenAuthority("session", session.account_identity, session.user_id, session.generation, session.sid),
+            "refresh_revoked",
+        )
+    else:
+        await db.execute(delete(AuthEphemeralToken).where(AuthEphemeralToken.family_id == family_id))
 
 
 def refresh_cookie_secure_flag(request) -> bool:
@@ -843,23 +592,13 @@ def refresh_cookie_secure_flag(request) -> bool:
     return scheme == "https"
 
 
-async def revoke_all_refresh_tokens_for_user(db, username: str) -> None:
-    """Hard-revoke every active refresh token for a user.
+async def revoke_all_refresh_tokens_for_user(db, username: str):
+    # Compatibility mutation adapter only. Never used to authenticate a token.
+    from backend.app.core.auth_lifetime import stage_end_sessions
 
-    Called on password change + admin-initiated session kill. All the user's
-    devices are forced through /auth/refresh once, which 401s, which drops
-    them to /login. Access tokens issued before this call still die naturally
-    via the ``iat`` freshness check against ``password_changed_at``.
-    """
-    from sqlalchemy import delete
-
-    from backend.app.models.auth_ephemeral import AuthEphemeralToken, TokenType
-
-    await db.execute(
-        delete(AuthEphemeralToken)
-        .where(AuthEphemeralToken.token_type == TokenType.REFRESH)
-        .where(AuthEphemeralToken.username == username)
-    )
+    user = await get_user_by_username(db, username)
+    if user is not None:
+        await stage_end_sessions(db, capture_account(user), "credential_changed")
 
 
 def _is_token_fresh(iat: int | float | None, user: User) -> bool:
@@ -949,13 +688,8 @@ def _pick_folded_match(rows: list[User], typed: str, field: str) -> User | None:
     them beats ``scalar_one_or_none()``'s ``MultipleResultsFound``, which is a
     500 on login for both accounts.
 
-    One consequence is not fixable here: a token minted for the exact row keeps
-    resolving through the fold for its whole TTL after that row is deleted or
-    renamed — the lookup then lands on the remaining variant, a different
-    account with the same folded name. This is pre-existing on any natively
-    folding PostgreSQL (the fold was never byte-exact there), and the WARNING is
-    the mitigation: the collision is meant to be resolved by a rename, not lived
-    with.
+    This lookup selects a login candidate only. Issued credentials bind the
+    immutable account identity and generation, never the folded username.
     """
     if not rows:
         return None
@@ -1015,37 +749,29 @@ async def get_user_by_email(db: AsyncSession, email: str) -> User | None:
     return _pick_folded_match(list(result.scalars().all()), email, "email")
 
 
-async def authenticate_user(db: AsyncSession, username: str, password: str) -> User | None:
-    """Authenticate a user by username and password.
-
-    Username lookup is case-insensitive. Password is case-sensitive.
-    """
+async def authenticate_user(db, username: str, password: str):
     user = await get_user_by_username(db, username)
-    if not user:
+    if user is None or not user.is_active or user.auth_source in {"ldap", "oidc"} or not user.password_hash:
         return None
-    if getattr(user, "auth_source", "local") in ("ldap", "oidc"):
-        return None  # LDAP/OIDC users must authenticate via their provider, not local password
-    if not user.password_hash or not verify_password(password, user.password_hash):
+    captured, hashed = capture_account(user), user.password_hash
+    db.expunge(user)
+    await db.rollback()
+    if not await verify_password_async(password, hashed):
         return None
-    if not user.is_active:
-        return None
+    user._verified_outcome = VerifiedOutcome(captured, "local")
     return user
 
 
-async def authenticate_user_by_email(db: AsyncSession, email: str, password: str) -> User | None:
-    """Authenticate a user by email and password.
-
-    Email lookup is case-insensitive. Password is case-sensitive.
-    """
+async def authenticate_user_by_email(db, email: str, password: str):
     user = await get_user_by_email(db, email)
-    if not user:
+    if user is None or not user.is_active or user.auth_source in {"ldap", "oidc"} or not user.password_hash:
         return None
-    if getattr(user, "auth_source", "local") in ("ldap", "oidc"):
-        return None  # LDAP/OIDC users must authenticate via their provider
-    if not user.password_hash or not verify_password(password, user.password_hash):
+    captured, hashed = capture_account(user), user.password_hash
+    db.expunge(user)
+    await db.rollback()
+    if not await verify_password_async(password, hashed):
         return None
-    if not user.is_active:
-        return None
+    user._verified_outcome = VerifiedOutcome(captured, "local")
     return user
 
 
@@ -1102,6 +828,7 @@ class APIKeyAuthority:
     energy_cost_allowed: bool
     mcp_allowed: bool = False
     mcp_logs_allowed: bool = False
+    capture: FrozenAuthority | None = None
 
 
 def _match_api_key(credential: str, candidates: list[tuple[int, str]]) -> tuple[int, str] | None:
@@ -1133,48 +860,62 @@ async def _scan_api_key(credential: str, candidates: list[tuple[int, str]]) -> t
 
 
 async def _validate_api_key_authority(credential: str) -> APIKeyAuthority:
-    # The hash thread gets only immutable scalar data and never holds a DB
-    # checkout. A second short transaction rechecks the winner's authority.
     async with async_session() as db:
-        rows = await db.execute(select(APIKey.id, APIKey.key_hash).where(APIKey.enabled.is_(True)))
-        candidates = [(key_id, key_hash) for key_id, key_hash in rows.all()]
-
-    winner = await _scan_api_key(credential, candidates)
+        auth_runtime.track_transaction(db)
+        rows = (
+            await db.execute(
+                select(
+                    APIKey.id, APIKey.key_hash, APIKey.connector_identity, APIKey.owner_identity, APIKey.user_id
+                ).where(
+                    APIKey.enabled.is_(True),
+                    APIKey.contract_version == 1,
+                    APIKey.retired_at.is_(None),
+                    APIKey.retired_reason.is_(None),
+                )
+            )
+        ).all()
+    winner = await _scan_api_key(credential, [(r.id, r.key_hash) for r in rows])
     if winner is None:
         raise APIKeyValidationFailure("invalid")
     key_id, key_hash = winner
+    original = next(r for r in rows if r.id == key_id and r.key_hash == key_hash)
+    capture = FrozenAuthority(
+        "key", original.owner_identity or "", original.user_id or 0, key_identity=original.connector_identity
+    )
+    # Audit owns a separate transaction. Its failure/rollback must never leave
+    # a previously read grant as the answer; re-read every authority field last.
+    await _read_key_authority(capture, key_hash)
+    await _audit_key_use(capture, key_hash)
+    return await _read_key_authority(capture, key_hash)
+
+
+async def _read_key_authority(capture, key_hash):
     async with async_session() as db:
-        row = await db.execute(
-            select(APIKey).where(APIKey.id == key_id, APIKey.key_hash == key_hash, APIKey.enabled.is_(True))
-        )
-        api_key = row.scalar_one_or_none()
-        if api_key is None:
+        auth_runtime.track_transaction(db)
+        try:
+            principal = await validate_captured(db, capture)
+        except HTTPException as exc:
+            if exc.status_code != 401:
+                raise
+            raise APIKeyValidationFailure("invalid") from exc
+        key, owner = principal.api_key, principal.user
+        if key.key_hash != key_hash:
             raise APIKeyValidationFailure("invalid")
-        if api_key.expires_at:
-            expires = api_key.expires_at
-            if expires.tzinfo is None:
-                expires = expires.replace(tzinfo=timezone.utc)
-            if expires < datetime.now(timezone.utc):
-                raise APIKeyValidationFailure("expired")
-        owner = None
-        if api_key.user_id is not None:
-            row = await db.execute(select(User).where(User.id == api_key.user_id).options(selectinload(User.groups)))
-            owner = row.scalar_one_or_none()
-        api_key.last_used = datetime.now(timezone.utc)
-        await db.commit()
-        return APIKeyAuthority(
-            key=api_key,
+        authority = APIKeyAuthority(
+            key=key,
             owner=owner,
-            owner_required=api_key.user_id is not None,
+            owner_required=True,
             scope_flags=frozenset(
-                scope for scope in set(_APIKEY_SCOPE_BY_PERMISSION.values()) if getattr(api_key, scope, False)
+                scope for scope in set(_APIKEY_SCOPE_BY_PERMISSION.values()) if getattr(key, scope, False)
             ),
-            owner_permissions=frozenset(owner.get_permissions()) if owner is not None else frozenset(),
-            owner_is_admin=owner.is_admin if owner is not None else False,
-            energy_cost_allowed=bool(api_key.can_update_energy_cost),
-            mcp_allowed=bool(api_key.can_access_mcp),
-            mcp_logs_allowed=bool(api_key.can_read_mcp_logs),
+            owner_permissions=frozenset(owner.get_permissions()),
+            owner_is_admin=owner.is_admin,
+            energy_cost_allowed=bool(key.can_update_energy_cost),
+            mcp_allowed=bool(key.can_access_mcp),
+            mcp_logs_allowed=bool(key.can_read_mcp_logs),
+            capture=principal.capture,
         )
+    return authority
 
 
 async def resolve_api_key_authority(request: Request | None, credential: str) -> APIKeyAuthority:
@@ -1184,7 +925,7 @@ async def resolve_api_key_authority(request: Request | None, credential: str) ->
         request.state._api_key_authority_tasks = cache
     task = None if cache is None else cache.get(credential)
     if task is None:
-        task = asyncio.create_task(_validate_api_key_authority(credential))
+        task = auth_runtime.spawn(_validate_api_key_authority(credential))
         _api_key_tasks.add(task)
 
         def done(completed: asyncio.Task) -> None:
@@ -1237,6 +978,8 @@ class JWTAuthority:
     user: User
     permissions: frozenset[str]
     is_admin: bool
+    capture: FrozenAuthority | None = None
+    auth_source: str | None = None
 
     def has_all(self, *permissions: str) -> bool:
         return self.is_admin or all(permission in self.permissions for permission in permissions)
@@ -1252,24 +995,36 @@ async def _validate_jwt_authority(token: str) -> JWTAuthority:
         raise JWTValidationFailure("expired") from exc
     except JWTError as exc:
         raise JWTValidationFailure("invalid") from exc
-    username = payload.get("sub")
-    if not isinstance(username, str) or not username:
+    uid, generation, sid = payload.get("uid"), payload.get("gen"), payload.get("sid")
+    if (
+        not isinstance(uid, str)
+        or not uid
+        or not isinstance(generation, int)
+        or isinstance(generation, bool)
+        or not isinstance(sid, str)
+        or not sid
+    ):
         raise JWTValidationFailure("invalid")
-
+    capture = FrozenAuthority("session", uid, 0, generation, sid)
     async with async_session() as db:
-        jti = payload.get("jti")
-        if jti and await is_jti_revoked(jti, db):
+        auth_runtime.track_transaction(db)
+        if payload.get("jti") and await is_jti_revoked(payload["jti"], db):
             raise JWTValidationFailure("revoked")
-        user = await get_user_by_username(db, username)
-        if user is None:
-            raise JWTValidationFailure("missing_user")
-        if not user.is_active:
-            raise JWTValidationFailure("inactive")
-        if not _is_token_fresh(payload.get("iat"), user):
-            raise JWTValidationFailure("stale")
-        # Capture authority while groups are loaded and the read session is
-        # still open. The compatibility User is detached when the session exits.
-        return JWTAuthority(user, frozenset(user.get_permissions()), user.is_admin)
+        try:
+            principal = await validate_captured(db, capture)
+        except HTTPException as exc:
+            if exc.status_code != 401:
+                raise
+            raise JWTValidationFailure("revoked") from exc
+        principal.user._auth_capture = principal.capture
+        principal.user._auth_source = principal.auth_source
+        return JWTAuthority(
+            principal.user,
+            frozenset(principal.user.get_permissions()),
+            principal.user.is_admin,
+            principal.capture,
+            principal.auth_source,
+        )
 
 
 async def resolve_jwt_authority(request: Request | None, token: str) -> JWTAuthority:
@@ -1287,7 +1042,7 @@ async def resolve_jwt_authority(request: Request | None, token: str) -> JWTAutho
         request.state._jwt_authority_tasks = cache
     task = cache.get(token)
     if task is None:
-        task = asyncio.create_task(_validate_jwt_authority(token))
+        task = auth_runtime.spawn(_validate_jwt_authority(token))
         cache[token] = task
     try:
         return await asyncio.shield(task)
@@ -1770,34 +1525,9 @@ async def acting_user(request: Request, db: AsyncSession, current_user: User | N
     return await resolve_apikey_owner(db, authority.key)
 
 
-async def resolve_apikey_owner(db: AsyncSession, api_key: APIKey) -> User | None:
-    """Load the owner of ``api_key`` for an authorization decision.
-
-    Distinct from the "who is this, if anyone" question — here two cases that
-    both look like "no user" must not be conflated:
-
-    - ``user_id IS NULL`` — a key predating per-user ownership. There is no
-      owner to narrow against, so the scope flags stand alone. Returns None.
-    - ``user_id`` set but the row is missing or deactivated — the key's
-      authority came from a user who no longer has any. ⚠️ Raises 403 rather
-      than returning None, because returning None here would **fail open**:
-      deactivating a user would leave their keys working at full scope
-      authority.
-
-    Groups are eager-loaded because ``has_permission`` walks them, and a lazy
-    load inside the permission check would raise MissingGreenlet.
-    """
-    if api_key.user_id is None:
-        return None
+async def resolve_apikey_owner(db: AsyncSession, api_key: APIKey) -> User:
     async with _auth_database_errors():
-        result = await db.execute(select(User).where(User.id == api_key.user_id).options(selectinload(User.groups)))
-    owner = result.scalar_one_or_none()
-    if owner is None or not owner.is_active:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="API key owner is deactivated or no longer exists",
-        )
-    return owner
+        return (await validate_captured(db, capture_key(api_key))).user
 
 
 async def authorize_api_key(
@@ -2342,8 +2072,11 @@ def require_camera_stream_token():
     thumbnail should need, and it names nobody, so no ownership can be checked.
     """
 
-    async def checker(token: str | None = None) -> None:
-        if not token or not await verify_camera_stream_token(token):
+    async def checker(token: str | None = None, request: Request = None) -> None:
+        printer_id = request.path_params.get("printer_id") if request is not None else None
+        if printer_id is not None:
+            printer_id = int(printer_id)
+        if not token or not await verify_camera_stream_token(token, printer_id=printer_id):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail=(
@@ -2365,6 +2098,7 @@ class CameraKeyIdentity:
     identity: str
     key_hash: str
     owner_id: int | None
+    capture: FrozenAuthority | None = None
 
 
 @dataclass(frozen=True)
@@ -2406,9 +2140,11 @@ def require_camera_token_or_headers():
             if credential:
                 # The permission gate completed this request's cached validation; no second hash/audit write.
                 key = (await resolve_api_key_authority(request, credential)).key
-                identity = CameraKeyIdentity(key.id, key.connector_identity, key.key_hash, key.user_id)
+                identity = CameraKeyIdentity(
+                    key.id, key.connector_identity, key.key_hash, key.user_id, capture_key(key)
+                )
             return CameraAccess(via="headers", api_key=credential is not None, key_identity=identity)
-        await token_checker(token=token)
+        await token_checker(token=token, request=request)
         return CameraAccess(via="token")
 
     return checker
@@ -2660,6 +2396,9 @@ class RequestCredentials:
     credentials: HTTPAuthorizationCredentials | None
     x_api_key: str | None
 
+    async def capture(self) -> FrozenAuthority:
+        return await capture_request_authority(self.request, self.credentials, self.x_api_key)
+
     async def check(self, gate: Callable[..., Awaitable[Any]]) -> Any:
         return await gate(request=self.request, credentials=self.credentials, x_api_key=self.x_api_key)
 
@@ -2683,3 +2422,175 @@ async def request_credentials(
 ) -> RequestCredentials:
     """Dependency: the request's credentials as a :class:`RequestCredentials`."""
     return RequestCredentials(request, credentials, x_api_key)
+
+
+_key_audit_times: OrderedDict[str, float] = OrderedDict()
+
+
+def reserve_audit_attempt(cache, identity, now, *, limit=10000):
+    """Bounded monotonic LRU for audit attempts only, never credential grants."""
+    due = now >= cache.get(identity, float("-inf"))
+    cache[identity] = now + 60 if due else cache[identity]
+    cache.move_to_end(identity)
+    while len(cache) > limit:
+        cache.popitem(last=False)
+    return due
+
+
+async def _audit_key_use(capture, key_hash):
+    from sqlalchemy import update
+
+    loop = asyncio.get_running_loop()
+    identity = capture.key_identity
+    if not reserve_audit_attempt(_key_audit_times, identity, loop.time()):
+        return
+    try:
+        async with async_session() as db:
+            auth_runtime.track_transaction(db)
+            await db.execute(
+                update(APIKey)
+                .where(
+                    APIKey.connector_identity == identity,
+                    APIKey.owner_identity == capture.account_identity,
+                    APIKey.key_hash == key_hash,
+                    APIKey.enabled.is_(True),
+                    APIKey.contract_version == 1,
+                    APIKey.retired_at.is_(None),
+                    APIKey.retired_reason.is_(None),
+                )
+                .values(last_used=utcnow())
+            )
+            await db.commit()
+    except AUTH_DATABASE_FAILURES:
+        logger.warning("API key usage audit unavailable")
+
+
+async def capture_request_authority(request, credentials=None, x_api_key=None):
+    explicit_key = x_api_key if x_api_key is not None else request.headers.get("x-api-key")
+    header = request.headers.get("authorization", "")
+    scheme, _, value = header.partition(" ")
+    bearer = (
+        credentials.credentials if credentials is not None else value.strip() if scheme.lower() == "bearer" else None
+    )
+    if "x-api-key" in request.headers or x_api_key is not None or is_api_key_token(bearer):
+        credential = explicit_key if "x-api-key" in request.headers or x_api_key is not None else bearer
+        try:
+            return (await resolve_api_key_authority(request, credential or "")).capture
+        except APIKeyValidationFailure as exc:
+            if exc.reason == "overloaded":
+                raise HTTPException(503, "API key validation is busy") from exc
+            raise refused() from exc
+    if not bearer:
+        raise refused()
+    try:
+        return (await resolve_jwt_authority(request, bearer)).capture
+    except JWTValidationFailure as exc:
+        raise refused() from exc
+
+
+async def _mint_ephemeral(authority, token_type, ttl, *, nonce=None, required_permissions=()):
+    async with _auth_database_errors(), async_session() as db:
+        proof = await guard_accounts(db, [authority])
+        principal = await validate_captured(db, authority, required_permissions=required_permissions, proof=proof)
+        token = secrets.token_urlsafe(24)
+        now = utcnow()
+        db.add(
+            AuthEphemeralToken(
+                token=token,
+                token_type=token_type,
+                username=principal.user.username,
+                nonce=nonce,
+                created_at=now,
+                expires_at=now + ttl,
+                **binding(principal.capture),
+            )
+        )
+        await db.commit()
+        return token
+
+
+async def resolve_ephemeral_authority(
+    token, token_type, *, resource_key=None, consume=False, required_permissions=(), printer_id=None
+):
+    async with _auth_database_errors(), async_session() as db:
+        auth_runtime.track_transaction(db)
+        row = (
+            await db.execute(
+                select(AuthEphemeralToken).where(
+                    AuthEphemeralToken.token == token,
+                    AuthEphemeralToken.token_type == token_type,
+                    AuthEphemeralToken.expires_at > utcnow(),
+                )
+            )
+        ).scalar_one_or_none()
+        if row is None or (resource_key is not None and row.nonce != resource_key):
+            raise refused()
+        capture = capture_ephemeral(row)
+        row_id = row.id
+        proof = await guard_accounts(db, [capture]) if consume else None
+        principal = await validate_captured(
+            db, capture, required_permissions=required_permissions, printer_id=printer_id, proof=proof
+        )
+        # An initial SELECT is only a candidate. Guard/authority reads can
+        # suspend past expiry, deletion or numeric-PK reuse by another token.
+        criteria = [
+            AuthEphemeralToken.id == row_id,
+            AuthEphemeralToken.token == token,
+            AuthEphemeralToken.token_type == token_type,
+            AuthEphemeralToken.expires_at > utcnow(),
+            *binding_conditions(capture),
+        ]
+        if resource_key is not None:
+            criteria.append(AuthEphemeralToken.nonce == resource_key)
+        if consume:
+            result = await db.execute(delete(AuthEphemeralToken).where(*criteria).returning(AuthEphemeralToken.id))
+            if result.scalar_one_or_none() is None:
+                raise refused()
+            await db.commit()
+        elif await db.scalar(select(AuthEphemeralToken.id).where(*criteria)) is None:
+            raise refused()
+        principal.user._auth_capture = principal.capture
+        principal.user._auth_source = principal.auth_source
+        return principal
+
+
+async def authenticate_websocket_authority(token):
+    try:
+        principal = await resolve_ephemeral_authority(
+            token, TokenType.WEBSOCKET, required_permissions=(Permission.WEBSOCKET_CONNECT.value,)
+        )
+        return principal.capture, principal.user.id
+    except HTTPException as exc:
+        if exc.status_code == 401:
+            return None
+        raise
+
+
+async def verify_password_async(password: str, hashed: str) -> bool:
+    # Same bounded, owned off-loop hashing policy as raw integration keys.
+    try:
+        result = await asyncio.shield(auth_runtime.spawn(_scan_api_key(password, [(0, hashed)])))
+    except APIKeyValidationFailure as exc:
+        raise HTTPException(503, "Credential verification is busy") from exc
+    return result is not None
+
+
+async def hash_password_async(password: str) -> str:
+    async def run():
+        admission, workers = _key_gates()
+        if admission.locked():
+            raise HTTPException(503, "Credential hashing is busy")
+        await admission.acquire()
+        try:
+            try:
+                await asyncio.wait_for(workers.acquire(), 2)
+            except TimeoutError as exc:
+                raise HTTPException(503, "Credential hashing is busy") from exc
+            try:
+                return await asyncio.to_thread(get_password_hash, password)
+            finally:
+                workers.release()
+        finally:
+            admission.release()
+
+    return await asyncio.shield(auth_runtime.spawn(run()))

@@ -20,7 +20,7 @@ pytestmark = pytest.mark.integration
 async def test_with_active_orders_is_the_orders_read(committing_client: AsyncClient, db_session):
     await _user(db_session, "rm_contacts", ["customers:read"])
     refused = await committing_client.get(
-        "/api/v1/customers/", params={"page": 1, "with_active": True}, headers=_jwt("rm_contacts")
+        "/api/v1/customers/", params={"page": 1, "with_active": True}, headers=await _jwt("rm_contacts")
     )
     assert refused.status_code == 403
     assert refused.json()["detail"]["error"] == "workshop_read_required"
@@ -36,7 +36,7 @@ async def test_a_part_route_tells_no_shelf_balance_without_the_stocks_read(
     renamed = await committing_client.patch(
         f"/api/v1/products/{shelf['product']}/parts/{shelf['part']}",
         json={"name": "shade v2"},
-        headers=_jwt("rm_author"),
+        headers=await _jwt("rm_author"),
     )
     assert renamed.status_code == 200, renamed.text
     assert renamed.json()["stock_balance"] is None
@@ -53,9 +53,11 @@ async def test_a_missing_note_and_a_note_out_of_reach_answer_alike(committing_cl
     await _user(db_session, "rm_stock", ["stock:read"])
     missing = 987654
     assert (
-        await committing_client.get(f"/api/v1/stock-issues/{missing}", headers=_jwt("rm_orders"))
+        await committing_client.get(f"/api/v1/stock-issues/{missing}", headers=await _jwt("rm_orders"))
     ).status_code == 403
-    assert (await committing_client.get(f"/api/v1/stock-issues/{missing}", headers=_jwt("rm_stock"))).status_code == 404
+    assert (
+        await committing_client.get(f"/api/v1/stock-issues/{missing}", headers=await _jwt("rm_stock"))
+    ).status_code == 404
 
 
 @pytest.mark.asyncio

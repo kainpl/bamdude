@@ -22,13 +22,16 @@ from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from backend.app.core import auth, database
+from backend.app.core.auth_lifetime import capture_key
 from backend.app.models.api_key import APIKey
 from backend.app.models.auto_queue import AutoQueueItem
 from backend.app.models.connector_submission import ConnectorSubmissionEntry
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.printer import Printer
+from backend.app.models.user import User
 from backend.app.schemas.connector import SubmissionCreate
 from backend.app.services import connector_submissions as cs, queue_sources
+from backend.tests.auth_helpers import bind_test_key
 from backend.tests.integration.test_filament_routing_dispatch import setup_source
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
@@ -53,10 +56,19 @@ async def farm(db_session, tmp_path, printer_factory, monkeypatch, sessions):
     source, printer, queue, _mqtt = await setup_source(db_session, tmp_path, printer_factory, monkeypatch)
     sha = hashlib.sha256(Path(source.file_path).read_bytes()).hexdigest()
     _raw, key_hash, prefix = auth.generate_api_key()
-    key = APIKey(name="orca", key_hash=key_hash, key_prefix=prefix, enabled=True, can_queue=True, can_read_status=True)
+    owner = User(username="connector-owner", password_hash="unused", role="admin", is_active=True)
+    db_session.add(owner)
+    await db_session.flush()
+    key = await bind_test_key(
+        db_session,
+        APIKey(name="orca", key_hash=key_hash, key_prefix=prefix, enabled=True, can_queue=True, can_read_status=True),
+        owner,
+    )
     db_session.add(key)
     await db_session.commit()
-    actor = cs.ConnectorActor(key_id=key.id, key_identity=key.connector_identity, owner_id=None)
+    actor = cs.ConnectorActor(
+        key_id=key.id, key_identity=key.connector_identity, owner_id=owner.id, capture=capture_key(key)
+    )
     async with sessions() as db:
         server_id, epoch = await cs.server_identity(db)
     return {

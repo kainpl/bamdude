@@ -236,7 +236,7 @@ async def test_local_mfa_keeps_existing_client_preference(checked, async_client,
 
 
 @pytest.mark.parametrize("legacy_hours,checked", [(8, False), (48, True)])
-async def test_legacy_refresh_rows_keep_lifespan_inference(legacy_hours, checked, async_client, db_session):
+async def test_legacy_refresh_rows_are_retired_by_identity_contract(legacy_hours, checked, async_client, db_session):
     from backend.app.core.auth import _hash_refresh_token
 
     now = datetime.now(timezone.utc)
@@ -252,4 +252,6 @@ async def test_legacy_refresh_rows_keep_lifespan_inference(legacy_hours, checked
     rotated = await async_client.post(
         "/api/v1/auth/refresh", headers={"Authorization": "", "Cookie": f"{REFRESH_TOKEN_COOKIE_NAME}=f-legacy-refresh"}
     )
-    assert_cookie(rotated, checked)
+    # C deliberately rejects pre-contract refresh rows, including F-era rows.
+    assert rotated.status_code == 401
+    assert "set-cookie" not in rotated.headers

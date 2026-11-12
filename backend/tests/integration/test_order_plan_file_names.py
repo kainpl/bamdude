@@ -16,6 +16,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 import pytest
+from sqlalchemy import select
 
 from backend.app.api.routes import projects as projects_routes
 from backend.app.core.auth import create_access_token, generate_api_key
@@ -25,6 +26,7 @@ from backend.app.models.group import Group
 from backend.app.models.library import LibraryFile
 from backend.app.models.product import Product, ProductPart, ProductPlate
 from backend.app.models.user import User
+from backend.tests.auth_helpers import bind_test_key, mint_test_access
 from backend.tests.fixtures.filament_routing_cases import write_routing_3mf
 from backend.tests.unit.services.test_product_composition import counting_statements
 
@@ -67,16 +69,16 @@ async def _user(db, username: str, permissions: list[str]) -> User:
 
 async def _key(db, owner: User) -> str:
     raw, key_hash, key_prefix = generate_api_key()
-    db.add(
-        APIKey(
-            name=f"k-{key_prefix}",
-            key_hash=key_hash,
-            key_prefix=key_prefix,
-            enabled=True,
-            user_id=owner.id,
-            can_read_status=True,
-        )
+    issued_key = APIKey(
+        name=f"k-{key_prefix}",
+        key_hash=key_hash,
+        key_prefix=key_prefix,
+        enabled=True,
+        user_id=owner.id,
+        can_read_status=True,
     )
+    await bind_test_key(db, issued_key)
+    db.add(issued_key)
     await db.commit()
     return raw
 
@@ -113,6 +115,9 @@ async def _plate_file(db, tmp_path, *, name: str, model: str, seconds: int, owne
 
 @pytest.fixture
 async def people(db_session):
+    # Two service-only cases omit the HTTP client that normally seeds this account.
+    if await db_session.scalar(select(User.id).where(User.username == "test_admin")) is None:
+        await _user(db_session, "test_admin", [_READ, _ALL])
     reader_all = await _user(db_session, "pn_all", [_READ, _ALL])
     reader_own = await _user(db_session, "pn_own", [_READ, _OWN])
     await _user(db_session, "pn_none", [_READ])
@@ -121,7 +126,7 @@ async def people(db_session):
         "owners": {"own": reader_own, "foreign": reader_all, "ownerless": None},
         "headers": {
             **{
-                name: {"Authorization": f"Bearer {create_access_token(data={'sub': name})}"}
+                name: {"Authorization": f"Bearer {await mint_test_access(db_session, username=name)}"}
                 for name in ("test_admin", "pn_all", "pn_own", "pn_none")
             },
             "key_with_library": {"Authorization": f"Bearer {await _key(db_session, reader_all)}"},

@@ -19,6 +19,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { parseUTCDate } from '../../utils/date';
 import { monitorUrl } from '../../features/monitor/location';
 import { Select } from '../Select';
+import { RetiredCredentialNotice } from './CredentialRolloutNotice';
 
 const DEFAULT_LIFETIME_DAYS = 90;
 const MAX_LIFETIME_DAYS = 365;
@@ -291,9 +292,12 @@ function TokenRow({ token, showOwner, ownerLabel, onRevoke }: TokenRowProps) {
   const { t } = useTranslation();
   const { hasPermission } = useAuth();
   const expired = isExpired(token.expires_at);
+  const retired = Boolean(token.retired_reason || token.retired_at);
   return (
     <tr className="border-b border-bambu-dark-tertiary last:border-b-0">
-      <td className="py-3 px-3 text-white">{token.name}{token.scope === 'monitor' && <span className="block text-xs text-bambu-gray">{t('monitor.tokenScope')}</span>}</td>
+      <td className="py-3 px-3 text-white">{token.name}{token.scope === 'monitor' && <span className="block text-xs text-bambu-gray">{t('monitor.tokenScope')}</span>}
+        {retired && <><RetiredCredentialNotice reason={token.retired_reason ?? ''} /><p className="mt-1 text-xs text-bambu-gray">{t('credentialRollout.newTokenHint')}</p></>}
+      </td>
       {showOwner && <td className="py-3 px-3 text-bambu-gray">{ownerLabel}</td>}
       <td className="py-3 px-3 text-bambu-gray font-mono text-xs">{token.lookup_prefix}…</td>
       <td className="py-3 px-3 text-bambu-gray">{formatDate(token.created_at)}</td>
@@ -310,7 +314,7 @@ function TokenRow({ token, showOwner, ownerLabel, onRevoke }: TokenRowProps) {
         <button
           type="button"
           onClick={() => onRevoke(token.id)}
-          disabled={!hasPermission(token.scope === 'monitor' ? 'api_keys:delete' : 'camera:view')}
+          disabled={retired || !hasPermission(token.scope === 'monitor' ? 'api_keys:delete' : 'camera:view')}
           className="inline-flex items-center gap-1 px-2 py-1 text-sm text-red-700 dark:text-red-400 hover:text-red-900 dark:hover:text-red-300"
           title={t('cameraTokens.list.revoke')}
         >

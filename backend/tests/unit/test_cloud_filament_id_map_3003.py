@@ -18,6 +18,8 @@ from __future__ import annotations
 import pytest
 
 from backend.app.api.routes import cloud as cloud_routes
+from backend.app.models.user import User
+from backend.app.services import cloud_credentials
 
 
 class _FakeCloud:
@@ -37,12 +39,26 @@ class _FakeCloud:
         self.closed = True
 
 
+OWNER = None
+
+
+@pytest.fixture(autouse=True)
+async def cloud_owner(db_session):
+    global OWNER
+    cloud_credentials.open_admission()
+    OWNER = User(username="filament-map-owner", role="admin", is_active=True)
+    db_session.add(OWNER)
+    await db_session.commit()
+
+
 @pytest.fixture
 def fake_cloud(monkeypatch):
     def install(details: dict[str, dict]) -> _FakeCloud:
         fake = _FakeCloud(details)
 
         async def _build(db, user):
+            fake.credential_snapshot = await cloud_credentials.snapshot(db, user, "bambu")
+            await db.commit()
             return fake
 
         monkeypatch.setattr(cloud_routes, "build_authenticated_cloud", _build)
@@ -54,7 +70,7 @@ def fake_cloud(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_an_id_inside_setting_is_found(fake_cloud):
+async def test_an_id_inside_setting_is_found(fake_cloud, db_session):
     fake = fake_cloud(
         {
             "PFUS9ddc938fe3ab8f": {
@@ -63,13 +79,13 @@ async def test_an_id_inside_setting_is_found(fake_cloud):
             }
         }
     )
-    result = await cloud_routes.get_filament_id_map(db=None, current_user=None)
+    result = await cloud_routes.get_filament_id_map(db=db_session, current_user=OWNER)
     assert result == {"P4d64437": "Devil Design PLA Basic"}
     assert fake.closed
 
 
 @pytest.mark.asyncio
-async def test_the_envelope_still_wins(fake_cloud):
+async def test_the_envelope_still_wins(fake_cloud, db_session):
     fake_cloud(
         {
             "PFUSaaaa": {
@@ -79,14 +95,14 @@ async def test_the_envelope_still_wins(fake_cloud):
             }
         }
     )
-    result = await cloud_routes.get_filament_id_map(db=None, current_user=None)
+    result = await cloud_routes.get_filament_id_map(db=db_session, current_user=OWNER)
     assert result == {"P1234567": "Sunlu PETG"}
 
 
 @pytest.mark.asyncio
-async def test_a_preset_with_no_id_anywhere_is_left_out(fake_cloud):
+async def test_a_preset_with_no_id_anywhere_is_left_out(fake_cloud, db_session):
     fake_cloud({"PFUSbbbb": {"name": "Orphan @Bambu Lab A1 0.4 nozzle", "setting": "not a dict"}})
-    result = await cloud_routes.get_filament_id_map(db=None, current_user=None)
+    result = await cloud_routes.get_filament_id_map(db=db_session, current_user=OWNER)
     assert result == {}
 
 

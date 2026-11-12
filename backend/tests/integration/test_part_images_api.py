@@ -4,6 +4,7 @@ import pytest
 
 from backend.app.core.auth import create_media_token
 from backend.app.services import part_images
+from backend.tests.auth_helpers import mint_test_authority
 from backend.tests.fixtures.part_images import rendered_farm
 from backend.tests.unit.test_part_images_writer import image_bytes
 
@@ -41,7 +42,7 @@ async def test_the_picture_is_served_with_a_media_token(committing_client, db_se
     farm = await rendered_farm(db_session, write_files=True)
     product = (await committing_client.get(f"/api/v1/products/{farm.product.id}")).json()
     v = next(p for p in product["parts"] if p["name"] == "Body")["image"]["v"]
-    token = await create_media_token("test_admin")
+    token = await create_media_token(authority=await mint_test_authority(username="test_admin"))
     r = await _bare_get(committing_client, f"/api/v1/product-parts/{farm.body.id}/image?v={v}&size=lg&token={token}")
     assert r.status_code == 200 and r.headers["content-type"] == "image/png"
     assert r.headers["cache-control"] == "private, max-age=31536000, immutable"

@@ -21,6 +21,8 @@ from __future__ import annotations
 import pytest
 from httpx import AsyncClient
 
+from backend.tests.auth_helpers import mint_test_access
+
 pytestmark = pytest.mark.integration
 
 
@@ -112,7 +114,7 @@ class TestAPIKeyOwnership:
             # Restore JWT so subsequent tests in the same session don't fail.
             from backend.app.core.auth import create_access_token
 
-            async_client.headers["Authorization"] = f"Bearer {create_access_token(data={'sub': 'test_admin'})}"
+            async_client.headers["Authorization"] = f"Bearer {await mint_test_access(username='test_admin')}"
         assert response.status_code == 403, response.text
         assert "administrative" in response.json()["detail"].lower()
 

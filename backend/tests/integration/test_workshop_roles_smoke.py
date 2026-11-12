@@ -43,7 +43,7 @@ async def _writes(client: AsyncClient, headers: dict) -> dict[str, int]:
 @pytest.mark.asyncio
 async def test_a_migrated_reader_reads_all_four_domains_and_writes_nothing(async_client: AsyncClient, db_session):
     await _user(db_session, "smoke_viewer", list(DEFAULT_GROUPS["Viewers"]["permissions"]))
-    headers = _jwt("smoke_viewer")
+    headers = await _jwt("smoke_viewer")
     for url in READS:
         assert (await async_client.get(url, headers=headers)).status_code == 200, url
     assert set((await _writes(async_client, headers)).values()) == {403}
@@ -52,7 +52,7 @@ async def test_a_migrated_reader_reads_all_four_domains_and_writes_nothing(async
 @pytest.mark.asyncio
 async def test_a_migrated_operator_reads_and_writes_all_four_domains(async_client: AsyncClient, db_session):
     await _user(db_session, "smoke_operator", list(DEFAULT_GROUPS["Operators"]["permissions"]))
-    headers = _jwt("smoke_operator")
+    headers = await _jwt("smoke_operator")
     for url in READS:
         assert (await async_client.get(url, headers=headers)).status_code == 200, url
     writes = await _writes(async_client, headers)
@@ -62,7 +62,7 @@ async def test_a_migrated_operator_reads_and_writes_all_four_domains(async_clien
 @pytest.mark.asyncio
 async def test_a_custom_group_carried_over_keeps_creating_without_editing(async_client: AsyncClient, db_session):
     await _user(db_session, "smoke_clerk", _map_custom(["projects:read", "projects:create"]))
-    headers = _jwt("smoke_clerk")
+    headers = await _jwt("smoke_clerk")
     created = await async_client.post("/api/v1/customers/", json={"name": "Clerk customer"}, headers=headers)
     assert created.status_code in (200, 201), created.text
     patched = await async_client.patch(

@@ -51,7 +51,7 @@ async def is_cloud_token_invalid(db: AsyncSession, user: User | None = None) -> 
     return bool(row and row.value)
 
 
-async def mark_cloud_token_invalid(user_id: int | None) -> None:
+async def mark_cloud_token_invalid(captured) -> None:
     """Record that Bambu rejected the stored token.
 
     Opens its own session on purpose. This runs from
@@ -65,25 +65,28 @@ async def mark_cloud_token_invalid(user_id: int | None) -> None:
     """
     from datetime import datetime, timezone
 
-    from sqlalchemy import update
-
     from backend.app.core.database import async_session
+    from backend.app.services.cloud_credentials import CredentialSnapshot, write
+
+    if not isinstance(captured, CredentialSnapshot):
+        # A numeric account address cannot safely identify an earlier network request.
+        return
 
     now = datetime.now(timezone.utc)
     try:
         async with async_session() as db:
-            if user_id is not None:
-                await db.execute(update(User).where(User.id == user_id).values(cloud_token_invalid_at=now))
-            else:
-                result = await db.execute(select(Settings).where(Settings.key == CLOUD_TOKEN_INVALID_KEY))
-                row = result.scalar_one_or_none()
-                if row:
-                    row.value = now.isoformat()
-                else:
-                    db.add(Settings(key=CLOUD_TOKEN_INVALID_KEY, value=now.isoformat()))
-            await db.commit()
-        logger.warning("Bambu Cloud rejected the stored token (user_id=%s) - marking the sign-in as expired", user_id)
-    except Exception:
+            values = (
+                {"cloud_token_invalid_at": now}
+                if captured.user_id is not None
+                else {CLOUD_TOKEN_INVALID_KEY: now.isoformat()}
+            )
+            await write(db, captured, values)
+        logger.warning("Bambu Cloud rejected the stored credential")
+    except Exception as exc:
+        from fastapi import HTTPException
+
+        if isinstance(exc, HTTPException) and exc.status_code in (401, 403, 409, 503):
+            return  # Logout/rotation/restore won; this old failure says nothing about the replacement.
         logger.exception("Could not record the Bambu Cloud token as invalid")
 
 

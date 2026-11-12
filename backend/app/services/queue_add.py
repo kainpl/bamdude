@@ -92,6 +92,7 @@ async def add_items_to_printer_queue(
     current_user: User | None,
     *,
     publication_receipt: PublicationReceipt | None = None,
+    authority=None,
 ) -> tuple[list[PrintQueueItem], PrinterQueue]:
     """Validate, build and persist ``data.quantity`` queue items.
 
@@ -102,6 +103,9 @@ async def add_items_to_printer_queue(
     ``publication_receipt`` (``services/queue_publication.py``) is claimed under the queue's scope lock before any row and
     recorded with the rows' ids in the publication's own transaction; without it nothing changes.
     """
+    from backend.app.services.publication_authority import actor_for_writer
+
+    authority = actor_for_writer(current_user, authority=authority, receipt=publication_receipt)
     if data.enqueue_position == "next" and (data.manual_start or data.scheduled_time is not None):
         raise HTTPException(
             422,
@@ -114,7 +118,7 @@ async def add_items_to_printer_queue(
     if data.source_queue_item_id:
         if publication_receipt is not None:
             raise ValueError("A publication receipt is not supported for a copy of an existing queue job")
-        return await _add_items_from_queue_source(db, data, current_user)
+        return await _add_items_from_queue_source(db, data, current_user, authority=authority)
 
     # Validate queue exists
     result = await db.execute(
@@ -240,6 +244,7 @@ async def add_items_to_printer_queue(
             archive,
             library_file,
             publication_receipt=publication_receipt,
+            authority=authority,
         )
     except BaseException:
         await discard_staged(staged)
@@ -264,6 +269,8 @@ async def _add_items_from_queue_source(
     db: AsyncSession,
     data: PrintQueueItemCreate,
     current_user: User | None,
+    *,
+    authority=None,
 ) -> tuple[list[PrintQueueItem], PrinterQueue]:
     """Append rows backed by an existing job's managed source.
 
@@ -381,8 +388,19 @@ async def _add_items_from_queue_source(
     # Re-read state under the storage guard and commit the new owner while the
     # guard is held.  Do not put ZIP reads here: this section must stay short.
     try:
-        async with reusing_sources(db, [descriptor.queue_source_id]) as sources:
+        from backend.app.services.publication_authority import queue_item_access
+
+        async with reusing_sources(
+            db,
+            [descriptor.queue_source_id],
+            authority=authority,
+            printer_id=queue.printer_id,
+            source_access=queue_item_access([source_item]),
+        ) as sources:
             source = sources[descriptor.queue_source_id]
+            from backend.app.services.publication_authority import current_creator
+
+            creator = await current_creator(db, authority, current_user)
             async with queue_scope_lock(db, data.queue_id):
                 project_line_id = data.project_line_id
                 if project_line_id is None and effective_project_id is not None:
@@ -442,7 +460,7 @@ async def _add_items_from_queue_source(
                         position=0,
                         status="pending",
                         batch_id=batch_id,
-                        created_by_id=current_user.id if current_user else None,
+                        created_by_id=creator.id if creator else None,
                     )
                     for _ in range(data.quantity)
                 ]
@@ -487,6 +505,7 @@ async def _publish_items(
     library_file,
     *,
     publication_receipt: PublicationReceipt | None = None,
+    authority=None,
 ) -> list[int]:
     """Publish the captured bytes and write the rows in ONE transaction (§5 step 6).
 
@@ -534,6 +553,9 @@ async def _publish_items(
     created_ids: list[int] = []
 
     async def attach(session: AsyncSession, source: QueueSource) -> None:
+        from backend.app.services.publication_authority import current_creator
+
+        creator = await current_creator(session, authority, current_user)
         async with queue_scope_lock(session, data.queue_id):
             if publication_receipt is not None:
                 # Under the queue's scope lock, before any row: a refusal here rolls the whole publication back.
@@ -601,7 +623,7 @@ async def _publish_items(
                         position=0,
                         status="pending",
                         batch_id=batch_id,
-                        created_by_id=current_user.id if current_user else None,
+                        created_by_id=creator.id if creator else None,
                     )
                 )
             await place_pending_block(
@@ -623,7 +645,17 @@ async def _publish_items(
                 # The exact ids, in the transaction that commits them: a receipt and its jobs, or neither.
                 await publication_receipt.record(session, queue_item_ids=list(created_ids), auto_item_ids=[])
 
-    await publish_staged(staged, attach)
+    from backend.app.services.publication_authority import original_source_access
+
+    await publish_staged(
+        staged,
+        attach,
+        authority=authority,
+        printer_id=printer_id,
+        source_access=original_source_access(
+            authority, archive_id=data.archive_id, library_file_id=data.library_file_id
+        ),
+    )
     return created_ids
 
 
@@ -734,6 +766,8 @@ async def add_next_block_to_printer_queue(
     db: AsyncSession,
     data_items: list[PrintQueueItemCreate],
     current_user: User | None,
+    *,
+    authority=None,
 ) -> tuple[list[PrintQueueItem], PrinterQueue]:
     """Capture one source and put its requested plates before pending work atomically.
 
@@ -741,6 +775,9 @@ async def add_next_block_to_printer_queue(
     before the queue lock; the final insert, reindex and counter update share a
     transaction so no concurrent append or scheduler claim can split the block.
     """
+    from backend.app.services.publication_authority import actor_for_writer
+
+    authority = actor_for_writer(current_user, authority=authority)
     if not data_items:
         raise HTTPException(422, "At least one queue item is required")
     first = data_items[0]
@@ -769,7 +806,7 @@ async def add_next_block_to_printer_queue(
         raise HTTPException(404, "Printer not found")
 
     if first.source_queue_item_id:
-        return await _add_next_block_from_queue_source(db, queue, data_items, current_user)
+        return await _add_next_block_from_queue_source(db, queue, data_items, current_user, authority=authority)
 
     archive = None
     library_file = None
@@ -838,6 +875,9 @@ async def add_next_block_to_printer_queue(
         created_ids: list[int] = []
 
         async def attach(session: AsyncSession, source: QueueSource) -> None:
+            from backend.app.services.publication_authority import current_creator
+
+            creator = await current_creator(session, authority, current_user)
             async with queue_scope_lock(session, first.queue_id):
                 rows: list[PrintQueueItem] = []
                 for data, requirements, effective_project_id, swap_columns in resolved:
@@ -859,7 +899,7 @@ async def add_next_block_to_printer_queue(
                             swap_columns=swap_columns,
                             effective_project_id=effective_project_id,
                             project_line_id=project_line_id,
-                            current_user=current_user,
+                            current_user=creator,
                             archive_id=data.archive_id,
                             library_file_id=data.library_file_id,
                         )
@@ -872,7 +912,17 @@ async def add_next_block_to_printer_queue(
 
                 await update_queue_counters(session, first.queue_id)
 
-        await publish_staged(staged, attach)
+        from backend.app.services.publication_authority import original_source_access
+
+        await publish_staged(
+            staged,
+            attach,
+            authority=authority,
+            printer_id=queue.printer_id,
+            source_access=original_source_access(
+                authority, archive_id=first.archive_id, library_file_id=first.library_file_id
+            ),
+        )
     except BaseException:
         await discard_staged(staged)
         raise
@@ -896,6 +946,8 @@ async def _add_next_block_from_queue_source(
     queue: PrinterQueue,
     data_items: list[PrintQueueItemCreate],
     current_user: User | None,
+    *,
+    authority=None,
 ) -> tuple[list[PrintQueueItem], PrinterQueue]:
     """The same atomic placement for a saved queue-source copy."""
     first = data_items[0]
@@ -969,8 +1021,19 @@ async def _add_next_block_from_queue_source(
     ]
     created_ids: list[int] = []
     try:
-        async with reusing_sources(db, [descriptor.queue_source_id]) as sources:
+        from backend.app.services.publication_authority import queue_item_access
+
+        async with reusing_sources(
+            db,
+            [descriptor.queue_source_id],
+            authority=authority,
+            printer_id=queue.printer_id,
+            source_access=queue_item_access([source_item]),
+        ) as sources:
             source = sources[descriptor.queue_source_id]
+            from backend.app.services.publication_authority import current_creator
+
+            creator = await current_creator(db, authority, current_user)
             async with queue_scope_lock(db, first.queue_id):
                 rows: list[PrintQueueItem] = []
                 for (data, requirements, effective_project_id), swap_columns in zip(
@@ -994,7 +1057,7 @@ async def _add_next_block_from_queue_source(
                             swap_columns=swap_columns,
                             effective_project_id=effective_project_id,
                             project_line_id=project_line_id,
-                            current_user=current_user,
+                            current_user=creator,
                             archive_id=source_item.archive_id,
                             library_file_id=source_item.library_file_id,
                         )

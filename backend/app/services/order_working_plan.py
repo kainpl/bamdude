@@ -330,6 +330,7 @@ async def comparison(
 
 
 async def write(db, project_id, request, access):
+    await access_policy.guard(db, access)
     # Validate existence before an FK insert. All authority/inputs are read again
     # after the draft guard, on this connection.
     await draft.inputs(db, project_id)
@@ -362,6 +363,7 @@ async def write(db, project_id, request, access):
 
 
 async def act(db, project_id, request, access, *, discard=False):
+    await access_policy.guard(db, access)
     row = await lock(db, project_id)
     check(row, request.expected_revision)
     if row.saved_revision != request.expected_saved_revision or row.epoch != request.expected_epoch:
@@ -398,6 +400,8 @@ async def act(db, project_id, request, access, *, discard=False):
 
 
 async def replan(db, project_id, request, access):
+    if request.apply:
+        await access_policy.guard(db, access)
     from backend.app.services.order_metrics import attribute
     from backend.app.services.plan_engine import (
         _current_fleet_capacity,

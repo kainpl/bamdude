@@ -1081,6 +1081,7 @@ async def import_zip(
             resolved = True
 
         file_ids: list[int] = []
+        source_proofs = {}
         hash_by_file: dict[int, str] = {}
         for entry in manifest.get("files") or []:
             if not isinstance(entry, dict):
@@ -1128,7 +1129,11 @@ async def import_zip(
                 row = reusable[0]
             else:
                 if not resolved:
+                    from backend.app.services.domain_authority import guard
+
+                    await guard(db, authority, permissions=("library:upload",))
                     destination = await _import_destination(db, None, product_name)
+                    await db.commit()
                     resolved = True
                 try:
                     row = (
@@ -1152,145 +1157,184 @@ async def import_zip(
                     continue
             file_ids.append(row.id)
             hash_by_file[row.id] = digest
+            source_proofs[row.id] = (row.file_path, row.file_hash, row.created_at)
 
-        # ---- the product ----
-        product = Product(
-            name=product_name,
-            description=_text(card.get("description")),
-            notes=_text(card.get("notes")),
-            designer=_text(card.get("designer"), 255),
-            license=_text(card.get("license"), 255),
-            source_url=_text(card.get("source_url"), 2048),
-            design_id=_text(card.get("design_id"), 64),
-        )
-        db.add(product)
-        await db.flush()
+        from types import SimpleNamespace
 
-        # ---- variant groups, before the parts that bind to them ----
-        option_by_pair = await _import_variant_groups(db, product.id, manifest.get("variant_groups") or [])
+        from backend.app.core.config import settings
+        from backend.app.services.domain_authority import guard
 
-        # ---- parts, BEFORE the sync ----
-        # ``seed_parts_for_product`` creates a part for every object key no
-        # existing part covers. Planting the manifest's parts first is what makes
-        # the sync a no-op for them, so the operator's own quantities, aliases
-        # and purchased rows survive instead of a fresh set of auto guesses.
-        seen: set[str] = set()
-        pairs: list[tuple[ProductPart, object]] = []  # each part with its manifest image entry
-        for position, raw in enumerate(manifest.get("parts") or []):
-            if not isinstance(raw, dict):
-                continue
-            name = _text(raw.get("name"), 512)
-            if not name:
-                continue
-            kind = "purchased" if raw.get("kind") == "purchased" else "printed"
-            key = _text(raw.get("name_key"), 512) or (
-                purchased_name_key(name) if kind == "purchased" else name_key(canonicalize(name))
+        await db.commit()
+        product_root = Path(settings.products_dir)
+        product_root.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix=".ingest-", dir=product_root) as stage_directory:
+            stage_id = Path(stage_directory).name
+            written = _ImportedAttachments()
+            await _import_attachments(zf, names, SimpleNamespace(id=stage_id), manifest, notes, written)
+            staged_attachments = product_attachments_dir(stage_id)
+            prepared_photos = await part_images.prepare_import_photos(zf, names, manifest.get("parts") or [], stage_id)
+            await guard(db, authority, permissions=("products:create", "library:upload"))
+            access = await read_access(db, authority=authority)
+            for file_id, proof in source_proofs.items():
+                current = await db.scalar(
+                    LibraryFile.active().where(LibraryFile.id == file_id).execution_options(populate_existing=True)
+                )
+                if current is None or (current.file_path, current.file_hash, current.created_at) != proof:
+                    raise HTTPException(409, {"code": "source_changed"})
+                access.ensure(current)
+            # ---- the product ----
+            product = Product(
+                name=product_name,
+                description=_text(card.get("description")),
+                notes=_text(card.get("notes")),
+                designer=_text(card.get("designer"), 255),
+                license=_text(card.get("license"), 255),
+                source_url=_text(card.get("source_url"), 2048),
+                design_id=_text(card.get("design_id"), 64),
             )
-            if key in seen:
-                # ``uq_product_parts_key`` would raise at flush time, far from here.
-                notes.append(_note("import_part_duplicate_key", name=name, key=key))
-                continue
-            seen.add(key)
-            aliases = [a for a in (raw.get("aliases") or []) if isinstance(a, str) and a] if kind == "printed" else None
-            # ⚠️ Floors at 0, not at 1. ``qty_per_unit = 0`` is a value; raising it to 1 here
-            # would invent a requirement the operator deliberately removed, on a round trip
-            # whose whole job is to change nothing.
-            qty = max(0, _whole(raw.get("qty_per_unit"), 1))
-            ignored = imported_mark(raw, kind, qty)
-            from math import isfinite
-
-            extra = raw.get("extra_percent", 0)
-            if (
-                isinstance(extra, bool)
-                or not isinstance(extra, (int, float))
-                or not isfinite(extra)
-                or not 0 <= extra <= 1000
-            ):
-                raise HTTPException(status_code=400, detail="Invalid additional-part percentage")
-            if kind != "printed" and extra:
-                raise HTTPException(status_code=400, detail="Additional parts must be printed parts")
-            new = ProductPart(
-                product_id=product.id,
-                kind=kind,
-                name=name,
-                name_key=key,
-                qty_per_unit=qty,
-                extra_percent=extra,
-                ignored=ignored,
-                aliases=aliases,
-                auto=bool(raw.get("auto", False)),
-                unit_price=_price(raw.get("unit_price")),
-                sourcing_url=_text(raw.get("sourcing_url"), 512),
-                remarks=_text(raw.get("remarks")),
-                sort_order=_whole(raw.get("sort_order"), position),
-                variant_option_id=_variant_of(raw.get("variant"), option_by_pair),
-            )
-            db.add(new)
-            pairs.append((new, raw.get("image")))
-        await db.flush()
-
-        # ---- the links, through the one door that owns them ----
-        for library_file_id in file_ids:
-            await sync_product_for_file(
-                db,
-                library_file_id=library_file_id,
-                product_ids=sorted(await _products_of_file(db, library_file_id) | {product.id}),
-            )
-
-        # ---- attachments and the cover ----
-        # ⚠️ The guard opens BEFORE the writing starts, not after it. ``zf.read``
-        # raises on an encrypted member and on a bad CRC, so a failure INSIDE the
-        # copy would otherwise leave every file it had already written orphaned —
-        # nothing references them, and nothing sweeps them.
-        directory = product_attachments_dir(product.id)
-        written = _ImportedAttachments()
-        try:
-            await _import_attachments(zf, names, product, manifest, notes, written)
-            product.attachments = written.rows
-            if written.cover:
-                product.cover_image_filename = written.cover
+            db.add(product)
             await db.flush()
 
-            # The links exist now: a pin is checked against the plates the new product really links (D22).
-            await part_images.import_choices(
-                db, zf, names, product.id, pairs, {digest: file_id for file_id, digest in hash_by_file.items()}
-            )
+            # ---- variant groups, before the parts that bind to them ----
+            option_by_pair = await _import_variant_groups(db, product.id, manifest.get("variant_groups") or [])
 
-            # ---- what the manifest promised and the files no longer carry ----
-            carried = set(hash_by_file.values())
-            have = {
-                (hash_by_file.get(library_file_id), plate_index)
-                for library_file_id, plate_index in (
-                    await db.execute(
-                        select(ProductPlate.library_file_id, ProductPlate.plate_index).where(
-                            ProductPlate.product_id == product.id
-                        )
-                    )
-                ).all()
-            }
-            for raw in manifest.get("plates") or []:
-                if not isinstance(raw, dict) or raw.get("file_hash") not in carried:
-                    continue  # its file never made it in, and that was already reported
-                filename = _text(raw.get("filename")) or "?"
-                try:
-                    plate_index = int(raw.get("plate_index"))
-                except (TypeError, ValueError):
-                    # An unreadable index cannot be checked against anything, so
-                    # it is reported as missing rather than silently dropped.
-                    notes.append(
-                        _note("import_plate_missing", filename=filename, plate_index=str(raw.get("plate_index")))
-                    )
+            # ---- parts, BEFORE the sync ----
+            # ``seed_parts_for_product`` creates a part for every object key no
+            # existing part covers. Planting the manifest's parts first is what makes
+            # the sync a no-op for them, so the operator's own quantities, aliases
+            # and purchased rows survive instead of a fresh set of auto guesses.
+            seen: set[str] = set()
+            pairs: list[tuple[ProductPart, object]] = []  # each part with its manifest image entry
+            for position, raw in enumerate(manifest.get("parts") or []):
+                if not isinstance(raw, dict):
                     continue
-                if (raw.get("file_hash"), plate_index) not in have:
-                    notes.append(_note("import_plate_missing", filename=filename, plate_index=plate_index))
-        except BaseException:
-            # The files are on disk and the column that would have named them is
-            # about to be rolled back. Undo the writes — every one this run made,
-            # whether or not it got as far as building a row for it — then let
-            # the failure through unchanged.
-            for stored in written.files_written():
-                _unlink_quietly(directory / stored)  # SEC-PATH-OK: a name this module generated, uuid + a checked ext
-            raise
+                name = _text(raw.get("name"), 512)
+                if not name:
+                    continue
+                kind = "purchased" if raw.get("kind") == "purchased" else "printed"
+                key = _text(raw.get("name_key"), 512) or (
+                    purchased_name_key(name) if kind == "purchased" else name_key(canonicalize(name))
+                )
+                if key in seen:
+                    # ``uq_product_parts_key`` would raise at flush time, far from here.
+                    notes.append(_note("import_part_duplicate_key", name=name, key=key))
+                    continue
+                seen.add(key)
+                aliases = (
+                    [a for a in (raw.get("aliases") or []) if isinstance(a, str) and a] if kind == "printed" else None
+                )
+                # ⚠️ Floors at 0, not at 1. ``qty_per_unit = 0`` is a value; raising it to 1 here
+                # would invent a requirement the operator deliberately removed, on a round trip
+                # whose whole job is to change nothing.
+                qty = max(0, _whole(raw.get("qty_per_unit"), 1))
+                ignored = imported_mark(raw, kind, qty)
+                from math import isfinite
+
+                extra = raw.get("extra_percent", 0)
+                if (
+                    isinstance(extra, bool)
+                    or not isinstance(extra, (int, float))
+                    or not isfinite(extra)
+                    or not 0 <= extra <= 1000
+                ):
+                    raise HTTPException(status_code=400, detail="Invalid additional-part percentage")
+                if kind != "printed" and extra:
+                    raise HTTPException(status_code=400, detail="Additional parts must be printed parts")
+                new = ProductPart(
+                    product_id=product.id,
+                    kind=kind,
+                    name=name,
+                    name_key=key,
+                    qty_per_unit=qty,
+                    extra_percent=extra,
+                    ignored=ignored,
+                    aliases=aliases,
+                    auto=bool(raw.get("auto", False)),
+                    unit_price=_price(raw.get("unit_price")),
+                    sourcing_url=_text(raw.get("sourcing_url"), 512),
+                    remarks=_text(raw.get("remarks")),
+                    sort_order=_whole(raw.get("sort_order"), position),
+                    variant_option_id=_variant_of(raw.get("variant"), option_by_pair),
+                )
+                db.add(new)
+                pairs.append((new, raw.get("image")))
+            await db.flush()
+
+            # ---- the links, through the one door that owns them ----
+            for library_file_id in file_ids:
+                await sync_product_for_file(
+                    db,
+                    library_file_id=library_file_id,
+                    product_ids=sorted(await _products_of_file(db, library_file_id) | {product.id}),
+                )
+
+            # ---- attachments and the cover ----
+            # ⚠️ The guard opens BEFORE the writing starts, not after it. ``zf.read``
+            # raises on an encrypted member and on a bad CRC, so a failure INSIDE the
+            # copy would otherwise leave every file it had already written orphaned —
+            # nothing references them, and nothing sweeps them.
+            directory = product_attachments_dir(product.id)
+            try:
+                directory.mkdir(parents=True, exist_ok=True)
+                for filename in written.files_written():
+                    target = directory / filename
+                    part_images.unlink_on_rollback(db, target)
+                    await part_images.disk(os.replace, staged_attachments / filename, target)
+                product.attachments = written.rows
+                if written.cover:
+                    product.cover_image_filename = written.cover
+                await db.flush()
+
+                # The links exist now: a pin is checked against the plates the new product really links (D22).
+                await part_images.import_choices(
+                    db,
+                    zf,
+                    names,
+                    product.id,
+                    pairs,
+                    {digest: file_id for file_id, digest in hash_by_file.items()},
+                    prepared_photos=prepared_photos,
+                )
+
+                # ---- what the manifest promised and the files no longer carry ----
+                carried = set(hash_by_file.values())
+                have = {
+                    (hash_by_file.get(library_file_id), plate_index)
+                    for library_file_id, plate_index in (
+                        await db.execute(
+                            select(ProductPlate.library_file_id, ProductPlate.plate_index).where(
+                                ProductPlate.product_id == product.id
+                            )
+                        )
+                    ).all()
+                }
+                for raw in manifest.get("plates") or []:
+                    if not isinstance(raw, dict) or raw.get("file_hash") not in carried:
+                        continue  # its file never made it in, and that was already reported
+                    filename = _text(raw.get("filename")) or "?"
+                    try:
+                        plate_index = int(raw.get("plate_index"))
+                    except (TypeError, ValueError):
+                        # An unreadable index cannot be checked against anything, so
+                        # it is reported as missing rather than silently dropped.
+                        notes.append(
+                            _note("import_plate_missing", filename=filename, plate_index=str(raw.get("plate_index")))
+                        )
+                        continue
+                    if (raw.get("file_hash"), plate_index) not in have:
+                        notes.append(_note("import_plate_missing", filename=filename, plate_index=plate_index))
+            except BaseException:
+                # The files are on disk and the column that would have named them is
+                # about to be rolled back. Undo the writes — every one this run made,
+                # whether or not it got as far as building a row for it — then let
+                # the failure through unchanged.
+                for stored in written.files_written():
+                    _unlink_quietly(
+                        directory / stored
+                    )  # SEC-PATH-OK: a name this module generated, uuid + a checked ext
+                raise
+
+            await db.commit()
 
     return product, notes
 

@@ -58,17 +58,19 @@ async def test_a_stocktake_asks_adjust_and_a_receipt_asks_move(committing_client
     take = {"kind": "stocktake", "item_id": shelf["item"], "counted": 3, "note": "found two"}
     receipt = {"kind": "receipt", "item_id": shelf["item"], "qty": 1}
 
-    assert (await committing_client.post("/api/v1/stock/moves", json=take, headers=_jwt("st_mover"))).status_code == 403
     assert (
-        await committing_client.post("/api/v1/stock/moves", json=receipt, headers=_jwt("st_counter"))
+        await committing_client.post("/api/v1/stock/moves", json=take, headers=await _jwt("st_mover"))
+    ).status_code == 403
+    assert (
+        await committing_client.post("/api/v1/stock/moves", json=receipt, headers=await _jwt("st_counter"))
     ).status_code == 403
     item = (await committing_client.get(f"/api/v1/stock/items/{shelf['item']}")).json()
     assert item["on_hand"] == 1  # neither refusal moved a unit
     assert (
-        await committing_client.post("/api/v1/stock/moves", json=take, headers=_jwt("st_counter"))
+        await committing_client.post("/api/v1/stock/moves", json=take, headers=await _jwt("st_counter"))
     ).status_code == 200
     assert (
-        await committing_client.post("/api/v1/stock/moves", json=receipt, headers=_jwt("st_mover"))
+        await committing_client.post("/api/v1/stock/moves", json=receipt, headers=await _jwt("st_mover"))
     ).status_code == 200
 
 
@@ -78,7 +80,7 @@ async def test_an_order_line_takes_from_the_shelf_only_with_the_move_right(commi
     await _user(db_session, "st_desk_move", ["orders:read", "orders:update", "products:read", "stock:move"])
     url = f"/api/v1/projects/{shelf['order']}/lines/batch"
     asking = {"lines": [{"kind": "product", "product_id": shelf["product"], "quantity": 1}]}  # stock defaults to auto
-    refused = await committing_client.post(url, json=asking, headers=_jwt("st_desk"))
+    refused = await committing_client.post(url, json=asking, headers=await _jwt("st_desk"))
     assert refused.status_code == 403
     assert refused.json()["detail"]["error"] == "stock_move_required"
     assert await _kits(committing_client, shelf["product"]) == 2
@@ -93,8 +95,8 @@ async def test_an_order_line_takes_from_the_shelf_only_with_the_move_right(commi
             }
         ]
     }
-    assert (await committing_client.post(url, json=none, headers=_jwt("st_desk"))).status_code == 200
-    assert (await committing_client.post(url, json=asking, headers=_jwt("st_desk_move"))).status_code == 200
+    assert (await committing_client.post(url, json=none, headers=await _jwt("st_desk"))).status_code == 200
+    assert (await committing_client.post(url, json=asking, headers=await _jwt("st_desk_move"))).status_code == 200
 
 
 @pytest.mark.asyncio
@@ -111,19 +113,19 @@ async def test_a_product_line_needs_the_catalogs_read(committing_client, db_sess
             }
         ]
     }
-    assert (await committing_client.post(url, json=body, headers=_jwt("st_blind"))).status_code == 403
+    assert (await committing_client.post(url, json=body, headers=await _jwt("st_blind"))).status_code == 403
 
 
 @pytest.mark.asyncio
 async def test_raising_a_lines_kits_asks_move_and_lowering_them_does_not(committing_client, db_session, shelf):
     await _user(db_session, "st_editor", ["orders:read", "orders:update"])
     url = f"/api/v1/projects/{shelf['order']}/lines/{shelf['line']}"
-    raised = await committing_client.patch(url, json={"from_stock_units": 1}, headers=_jwt("st_editor"))
+    raised = await committing_client.patch(url, json={"from_stock_units": 1}, headers=await _jwt("st_editor"))
     assert raised.status_code == 403
     assert await _kits(committing_client, shelf["product"]) == 2
 
     assert (await committing_client.patch(url, json={"from_stock_units": 1})).status_code == 200  # the admin takes one
-    lowered = await committing_client.patch(url, json={"from_stock_units": 0}, headers=_jwt("st_editor"))
+    lowered = await committing_client.patch(url, json={"from_stock_units": 0}, headers=await _jwt("st_editor"))
     assert lowered.status_code == 200, lowered.text
     assert await _kits(committing_client, shelf["product"]) == 2
 
@@ -151,13 +153,15 @@ async def test_a_plate_line_takes_from_the_shelf_only_with_the_move_right(commit
     url = f"/api/v1/projects/{shelf['order']}/lines/batch"
     plate = {"kind": "plate", "library_file_id": plated.id, "plate_index": 1, "copies": 1}
 
-    refused = await committing_client.post(url, json={"lines": [plate]}, headers=_jwt("st_plate"))
+    refused = await committing_client.post(url, json={"lines": [plate]}, headers=await _jwt("st_plate"))
     assert refused.status_code == 403
     assert refused.json()["detail"]["error"] == "stock_move_required"
     none = {**plate, "stock": {"from_finished": 0, "from_kits": 0}}
-    assert (await committing_client.post(url, json={"lines": [none]}, headers=_jwt("st_plate"))).status_code == 200
     assert (
-        await committing_client.post(url, json={"lines": [plate]}, headers=_jwt("st_plate_move"))
+        await committing_client.post(url, json={"lines": [none]}, headers=await _jwt("st_plate"))
+    ).status_code == 200
+    assert (
+        await committing_client.post(url, json={"lines": [plate]}, headers=await _jwt("st_plate_move"))
     ).status_code == 200
 
 
@@ -168,11 +172,11 @@ async def test_issuing_asks_move_and_a_write_off_asks_adjust_too(committing_clie
     url = f"/api/v1/projects/{shelf['order']}/fulfilment"
     assert (
         await committing_client.post(
-            url, json={"lines": [{"line_id": shelf["line"], "issue": 1}]}, headers=_jwt("st_issuer")
+            url, json={"lines": [{"line_id": shelf["line"], "issue": 1}]}, headers=await _jwt("st_issuer")
         )
     ).status_code == 403
     write_off = {"lines": [{"line_id": shelf["line"], "write_off": 1}], "write_off_note": "cracked"}
-    assert (await committing_client.post(url, json=write_off, headers=_jwt("st_shipper"))).status_code == 403
+    assert (await committing_client.post(url, json=write_off, headers=await _jwt("st_shipper"))).status_code == 403
 
 
 @pytest.mark.asyncio
@@ -196,8 +200,8 @@ async def test_completing_an_order_whose_goods_are_out_asks_no_stock_right(commi
     url = f"/api/v1/projects/{order}/fulfilment"
 
     moving = {"lines": [{"line_id": created.json()["lines"][0]["id"], "receive": 1}], "complete": True}
-    assert (await committing_client.post(url, json=moving, headers=_jwt("st_closer"))).status_code == 403
-    done = await committing_client.post(url, json={"lines": [], "complete": True}, headers=_jwt("st_closer"))
+    assert (await committing_client.post(url, json=moving, headers=await _jwt("st_closer"))).status_code == 403
+    done = await committing_client.post(url, json={"lines": [], "complete": True}, headers=await _jwt("st_closer"))
     assert done.status_code == 200, done.text
     assert (await committing_client.get(f"/api/v1/projects/{order}")).json()["status"] == "completed"
 
@@ -205,7 +209,7 @@ async def test_completing_an_order_whose_goods_are_out_asks_no_stock_right(commi
 @pytest.mark.asyncio
 async def test_taking_stock_and_banking_a_surplus_ask_move(committing_client, db_session, shelf):
     await _user(db_session, "st_bank", ["orders:read", "orders:update", "stock:read"])
-    headers = _jwt("st_bank")
+    headers = await _jwt("st_bank")
     assert (
         await committing_client.post(f"/api/v1/projects/{shelf['order']}/take-stock", json={}, headers=headers)
     ).status_code == 403
@@ -218,7 +222,7 @@ async def test_taking_stock_and_banking_a_surplus_ask_move(committing_client, db
 async def test_the_shelfs_offers_need_the_stocks_read(committing_client, db_session, shelf):
     await _user(db_session, "st_offers", ["orders:read"])
     assert (
-        await committing_client.get(f"/api/v1/projects/{shelf['order']}/stock-offers", headers=_jwt("st_offers"))
+        await committing_client.get(f"/api/v1/projects/{shelf['order']}/stock-offers", headers=await _jwt("st_offers"))
     ).status_code == 403
 
 
@@ -226,7 +230,7 @@ async def test_the_shelfs_offers_need_the_stocks_read(committing_client, db_sess
 async def test_a_configuration_preview_is_a_read_and_saving_it_is_an_edit(committing_client, db_session, shelf):
     await _user(db_session, "st_preview", ["orders:read"])
     url = f"/api/v1/projects/{shelf['order']}/lines/{shelf['line']}/configuration"
-    headers = _jwt("st_preview")
+    headers = await _jwt("st_preview")
     preview = await committing_client.put(url, json={"dry_run": True}, headers=headers)
     assert preview.status_code == 200, preview.text
     assert (await committing_client.put(url, json={"dry_run": False}, headers=headers)).status_code == 403
@@ -237,7 +241,7 @@ async def test_copying_an_order_reads_it(committing_client, db_session, shelf):
     await _user(db_session, "st_copy_blind", ["orders:create"])
     assert (
         await committing_client.post(
-            f"/api/v1/projects/{shelf['order']}/duplicate", json={}, headers=_jwt("st_copy_blind")
+            f"/api/v1/projects/{shelf['order']}/duplicate", json={}, headers=await _jwt("st_copy_blind")
         )
     ).status_code == 403
 
@@ -247,11 +251,11 @@ async def test_a_suggestion_for_an_order_line_reads_the_order(committing_client,
     await _user(db_session, "st_suggest", ["stock:read"])
     body = {"items": [{"product_id": shelf["product"], "quantity": 1, "line_id": shelf["line"]}]}
     assert (
-        await committing_client.post("/api/v1/stock/suggest", json=body, headers=_jwt("st_suggest"))
+        await committing_client.post("/api/v1/stock/suggest", json=body, headers=await _jwt("st_suggest"))
     ).status_code == 403
     body["items"][0].pop("line_id")
     assert (
-        await committing_client.post("/api/v1/stock/suggest", json=body, headers=_jwt("st_suggest"))
+        await committing_client.post("/api/v1/stock/suggest", json=body, headers=await _jwt("st_suggest"))
     ).status_code == 200
 
 
@@ -261,15 +265,15 @@ async def test_the_stock_catalog_lets_a_storekeeper_pick_a_product_without_the_c
 ):
     await _user(db_session, "st_keeper", ["stock:read", "stock:move"])
     await _user(db_session, "st_nobody", ["inventory:read"])
-    rows = await committing_client.get("/api/v1/stock/catalog", params={"q": "Rights"}, headers=_jwt("st_keeper"))
+    rows = await committing_client.get("/api/v1/stock/catalog", params={"q": "Rights"}, headers=await _jwt("st_keeper"))
     assert rows.status_code == 200, rows.text
     [row] = [r for r in rows.json() if r["id"] == shelf["product"]]
     assert row["name"] == "Rights lamp"
     assert row["origin"] == "catalog"
     assert row["variant_groups"] == []
     assert "parts" not in row and "kits_available" not in row
-    assert (await committing_client.get("/api/v1/products/", headers=_jwt("st_keeper"))).status_code == 403
-    assert (await committing_client.get("/api/v1/stock/catalog", headers=_jwt("st_nobody"))).status_code == 403
+    assert (await committing_client.get("/api/v1/products/", headers=await _jwt("st_keeper"))).status_code == 403
+    assert (await committing_client.get("/api/v1/stock/catalog", headers=await _jwt("st_nobody"))).status_code == 403
 
 
 @pytest.mark.asyncio
@@ -285,10 +289,10 @@ async def test_a_dialog_opened_for_one_product_reads_it_from_the_stock_catalog_w
     db_session.add(one_off)
     await db_session.commit()
     await _user(db_session, "st_keeper_one", ["stock:read", "stock:move"])
-    listed = await committing_client.get("/api/v1/stock/catalog", headers=_jwt("st_keeper_one"))
+    listed = await committing_client.get("/api/v1/stock/catalog", headers=await _jwt("st_keeper_one"))
     assert one_off.id not in [r["id"] for r in listed.json()]
     named = await committing_client.get(
-        "/api/v1/stock/catalog", params={"product_id": one_off.id}, headers=_jwt("st_keeper_one")
+        "/api/v1/stock/catalog", params={"product_id": one_off.id}, headers=await _jwt("st_keeper_one")
     )
     assert named.status_code == 200, named.text
     [row] = named.json()

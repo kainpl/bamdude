@@ -20,6 +20,7 @@ from mcp.client.streamable_http import streamable_http_client
 from backend.app.mcp_server.config import McpConfig
 from backend.app.mcp_server.packages import SKILL_ROOT
 from backend.app.mcp_server.runtime import McpMiddleware, McpRuntime, mcp_runtime
+from backend.tests.auth_helpers import key_identity_for_test
 
 
 @asynccontextmanager
@@ -100,7 +101,7 @@ async def test_sdk_base_over_real_socket(async_client, runtime, mode):
             assert resource.contents[0].text == guide.structured_content["data"]["guide"]
             prompt = await client.get_prompt("bamdude_diagnose")
             assert "base module alone" in prompt.messages[0].content.text
-        assert runtime.observed_connection(created["id"])
+        assert runtime.observed_connection(await key_identity_for_test(created["id"]))
 
 
 @pytest.mark.parametrize("limit", ["key", "process", "minute"])
@@ -128,7 +129,12 @@ async def test_advertised_limits_match_runtime_admission(async_client, runtime, 
     # Exercise the production admission path without hashing a key sixty times.
     async def authenticated(scope):
         key_id = int(dict(scope["headers"]).get(b"x-test-key", b"1"))
-        return SimpleNamespace(key_id=key_id, epoch=current_epoch())
+        return SimpleNamespace(
+            key_id=key_id,
+            epoch=current_epoch(),
+            key_identity=f"00000000-0000-0000-0000-{key_id:012d}",
+            owner_identity="00000000-0000-0000-0000-000000000002",
+        )
 
     monkeypatch.setattr(module, "authenticate", authenticated)
     admitted = asyncio.Queue()
@@ -167,7 +173,9 @@ async def test_advertised_limits_match_runtime_admission(async_client, runtime, 
             assert refusal.status_code == 429 and refusal.json()["code"] == "rate_limited"
             # Expiring the rolling window makes room; this is not a lifetime quota.
             expired = module.time.monotonic() - 61
-            local._rate[1] = type(local._rate[1])([expired] * limits["calls_per_minute_per_key"])
+            local._rate["00000000-0000-0000-0000-000000000001"] = type(
+                local._rate["00000000-0000-0000-0000-000000000001"]
+            )([expired] * limits["calls_per_minute_per_key"])
             assert (await call()).status_code == 200
         else:
             count = limits[f"concurrent_calls_per_{limit}"]
@@ -224,12 +232,12 @@ async def test_rest_does_not_mark_mcp_connection_and_restart_clears_marker(async
     created = await key(async_client)
     response = await async_client.get("/api/v1/settings/", headers={"X-API-Key": created["key"]})
     assert response.status_code == 200
-    assert runtime.observed_connection(created["id"]) is None
+    assert runtime.observed_connection(await key_identity_for_test(created["id"])) is None
     async with live_app() as url, httpx.AsyncClient() as http:
         await http.post(url + "/mcp", headers={"X-API-Key": created["key"]}, json={})
-    assert runtime.observed_connection(created["id"])
+    assert runtime.observed_connection(await key_identity_for_test(created["id"]))
     await runtime.shutdown()
-    assert runtime.observed_connection(created["id"]) is None
+    assert runtime.observed_connection(await key_identity_for_test(created["id"])) is None
     assert await runtime.configure(McpConfig(enabled=True))
 
 

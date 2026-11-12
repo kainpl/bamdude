@@ -38,9 +38,7 @@ from backend.app.schemas.slicer import PresetRef
 from backend.app.services.bambu_cloud import (
     BambuCloudAuthError,
     BambuCloudError,
-    BambuCloudService,
 )
-from backend.app.services.bambu_cloud_credentials import get_stored_token
 from backend.app.services.orca_cloud import OrcaCloudAuthError, OrcaCloudError
 
 logger = logging.getLogger(__name__)
@@ -74,6 +72,8 @@ async def resolve_preset_ref(
     user: User | None,
     ref: PresetRef,
     slot: str,
+    *,
+    credential_snapshots=None,
 ) -> str:
     """Return the JSON-string content for ``ref`` so the sidecar can ingest it.
 
@@ -87,9 +87,9 @@ async def resolve_preset_ref(
     if ref.source == "local":
         return await _resolve_local(db, ref, slot)
     if ref.source == "orca_cloud":
-        return await _resolve_orca_cloud(db, user, ref, slot)
+        return await _resolve_orca_cloud(db, user, ref, slot, credential_snapshots=credential_snapshots)
     if ref.source == "cloud":
-        return await _resolve_cloud(db, user, ref, slot)
+        return await _resolve_cloud(db, user, ref, slot, credential_snapshots=credential_snapshots)
     if ref.source == "standard":
         return _resolve_standard(ref, slot)
     raise HTTPException(
@@ -115,7 +115,9 @@ async def _resolve_local(db: AsyncSession, ref: PresetRef, slot: str) -> str:
     return preset.setting
 
 
-async def _resolve_cloud(db: AsyncSession, user: User | None, ref: PresetRef, slot: str) -> str:
+async def _resolve_cloud(
+    db: AsyncSession, user: User | None, ref: PresetRef, slot: str, *, credential_snapshots=None
+) -> str:
     """Fetch a single cloud preset detail. Permission gate matches the rest
     of the cloud surface (``CLOUD_AUTH``) so a user with ``LIBRARY_UPLOAD``
     but no ``CLOUD_AUTH`` can't slice using cloud presets even if their
@@ -126,18 +128,13 @@ async def _resolve_cloud(db: AsyncSession, user: User | None, ref: PresetRef, sl
             detail=f"Cloud presets require the cloud:auth permission ({slot})",
         )
 
-    token, _email, region = await get_stored_token(db, user)
-    if not token:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"Cloud preset selected for {slot}, but no Bambu Cloud session is "
-                "stored. Sign in to Bambu Cloud and retry."
-            ),
-        )
+    from backend.app.api.routes.cloud import build_authenticated_cloud
 
-    cloud = BambuCloudService(region=region)
-    cloud.set_token(token)
+    cloud = await build_authenticated_cloud(db, user)
+    if cloud is None:
+        raise HTTPException(400, "No Bambu Cloud credential is connected")
+    if credential_snapshots is not None:
+        credential_snapshots.append(cloud.credential_snapshot)
     try:
         detail = await cloud.get_setting_detail(ref.id)
     except BambuCloudAuthError:
@@ -187,7 +184,9 @@ async def _resolve_cloud(db: AsyncSession, user: User | None, ref: PresetRef, sl
     return json.dumps(payload)
 
 
-async def _resolve_orca_cloud(db: AsyncSession, user: User | None, ref: PresetRef, slot: str) -> str:
+async def _resolve_orca_cloud(
+    db: AsyncSession, user: User | None, ref: PresetRef, slot: str, *, credential_snapshots=None
+) -> str:
     """Fetch a single profile from Orca Cloud and return its content JSON.
 
     The route-layer service builder handles JIT token refresh and stale-credential
@@ -210,6 +209,8 @@ async def _resolve_orca_cloud(db: AsyncSession, user: User | None, ref: PresetRe
         # connected, 401 session refresh failed, 502 unreachable).
         raise
 
+    if credential_snapshots is not None:
+        credential_snapshots.append(svc.credential_snapshot)
     try:
         profile = await svc.get_profile(ref.id)
     except OrcaCloudAuthError as e:

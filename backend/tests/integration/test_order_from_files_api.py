@@ -9,6 +9,7 @@ from backend.app.models.library import LibraryFile
 from backend.app.models.product import Product, ProductOrigin, ProductPart, ProductPlate, product_files
 from backend.app.models.project import Project
 from backend.app.models.project_line import ProjectLine
+from backend.tests.auth_helpers import mint_test_access
 
 pytestmark = pytest.mark.integration
 
@@ -121,7 +122,7 @@ async def test_preview_honours_the_library_ownership_read_split(async_client: As
     holding only ``library:read_own`` must not enumerate another user's file
     through this batch endpoint. 404 (not 403), so an id can't be probed;
     ``read_all`` (the admin client) sees it."""
-    admin = {"Authorization": f"Bearer {create_access_token(data={'sub': 'test_admin'})}"}
+    admin = {"Authorization": f"Bearer {await mint_test_access(db_session, username='test_admin')}"}
     grp = await async_client.post(
         "/api/v1/groups/",
         headers=admin,
@@ -405,7 +406,7 @@ async def test_preview_lists_the_catalogue_products_standard_kit(committing_clie
 async def _read_own_caller(async_client: AsyncClient, name: str) -> tuple[dict, int]:
     """A caller who may create and edit orders but sees only its OWN library files,
     and the id of another user of the same group (whose files it must not reach)."""
-    admin = {"Authorization": f"Bearer {create_access_token(data={'sub': 'test_admin'})}"}
+    admin = {"Authorization": f"Bearer {await mint_test_access(username='test_admin')}"}
     grp = await async_client.post(
         "/api/v1/groups/",
         headers=admin,

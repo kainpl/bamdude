@@ -14,6 +14,7 @@ an overlay token *may* pull the video its own view shows.
 
 import pytest
 
+from backend.app.models.group import Group
 from backend.app.models.user import User
 from backend.app.services.long_lived_tokens import (
     ALLOWED_SCOPES,
@@ -21,6 +22,7 @@ from backend.app.services.long_lived_tokens import (
     create_token,
     verify_token,
 )
+from backend.tests.auth_helpers import mint_test_session
 
 
 @pytest.fixture
@@ -31,9 +33,11 @@ async def alice(db_session) -> User:
         password_hash="x",
         is_active=True,
     )
+    user.groups.append(Group(name="overlay-camera-readers", permissions=["camera:view"]))
     db_session.add(user)
     await db_session.commit()
     await db_session.refresh(user)
+    user._auth_capture = (await mint_test_session(db_session, user=user)).capture
     return user
 
 
@@ -53,27 +57,41 @@ class TestScopeIsolation:
     async def test_camera_stream_token_cannot_reach_the_overlay_feed(self, db_session, alice):
         """The load-bearing one: a video token must not read the print filename."""
         created = await create_token(
-            db_session, user_id=alice.id, name="ha-card", expires_in_days=7, scope="camera_stream"
+            db_session,
+            user_id=alice.id,
+            authority=alice._auth_capture,
+            name="ha-card",
+            expires_in_days=7,
+            scope="camera_stream",
         )
         assert await verify_token(db_session, created.plaintext, scope="overlay") is None
 
     @pytest.mark.asyncio
     async def test_overlay_token_is_not_accepted_as_a_camera_stream_only_token(self, db_session, alice):
         """Scopes don't imply each other in either direction."""
-        created = await create_token(db_session, user_id=alice.id, name="obs", expires_in_days=7, scope="overlay")
+        created = await create_token(
+            db_session, user_id=alice.id, authority=alice._auth_capture, name="obs", expires_in_days=7, scope="overlay"
+        )
         assert await verify_token(db_session, created.plaintext, scope="camera_stream") is None
 
     @pytest.mark.asyncio
     async def test_overlay_token_passes_the_stream_gate(self, db_session, alice):
         """The one deliberate overlap: the overlay has to fetch its own video."""
-        created = await create_token(db_session, user_id=alice.id, name="obs", expires_in_days=7, scope="overlay")
+        created = await create_token(
+            db_session, user_id=alice.id, authority=alice._auth_capture, name="obs", expires_in_days=7, scope="overlay"
+        )
         assert await verify_token(db_session, created.plaintext, scope=STREAM_SCOPES) is not None
 
     @pytest.mark.asyncio
     async def test_camera_stream_token_still_passes_the_stream_gate(self, db_session, alice):
         """Widening the gate to a collection must not break the original scope."""
         created = await create_token(
-            db_session, user_id=alice.id, name="frigate", expires_in_days=7, scope="camera_stream"
+            db_session,
+            user_id=alice.id,
+            authority=alice._auth_capture,
+            name="frigate",
+            expires_in_days=7,
+            scope="camera_stream",
         )
         assert await verify_token(db_session, created.plaintext, scope=STREAM_SCOPES) is not None
 
@@ -84,14 +102,26 @@ class TestScopeIsolation:
         Folding overlay into camwall would silently widen every wall token
         already pinned to a lobby screen.
         """
-        created = await create_token(db_session, user_id=alice.id, name="lobby-tv", expires_in_days=7, scope="camwall")
+        created = await create_token(
+            db_session,
+            user_id=alice.id,
+            authority=alice._auth_capture,
+            name="lobby-tv",
+            expires_in_days=7,
+            scope="camwall",
+        )
         assert await verify_token(db_session, created.plaintext, scope="overlay") is None
 
     @pytest.mark.asyncio
     async def test_camera_stream_token_cannot_enumerate_the_fleet(self, db_session, alice):
         """A token minted to hand out video must not gain the printer list."""
         created = await create_token(
-            db_session, user_id=alice.id, name="ha-card", expires_in_days=7, scope="camera_stream"
+            db_session,
+            user_id=alice.id,
+            authority=alice._auth_capture,
+            name="ha-card",
+            expires_in_days=7,
+            scope="camera_stream",
         )
         assert await verify_token(db_session, created.plaintext, scope="camwall") is None
 
@@ -99,6 +129,11 @@ class TestScopeIsolation:
     async def test_each_token_matches_its_own_scope(self, db_session, alice):
         for scope in ("camera_stream", "camwall", "overlay"):
             created = await create_token(
-                db_session, user_id=alice.id, name=f"t-{scope}", expires_in_days=7, scope=scope
+                db_session,
+                user_id=alice.id,
+                authority=alice._auth_capture,
+                name=f"t-{scope}",
+                expires_in_days=7,
+                scope=scope,
             )
             assert await verify_token(db_session, created.plaintext, scope=scope) is not None

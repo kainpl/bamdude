@@ -19,6 +19,7 @@ from backend.app.models.library import LibraryFile, LibraryFolder
 from backend.app.models.product import Product, ProductPart
 from backend.app.models.user import User
 from backend.app.services.product_sync import sync_product_for_file
+from backend.tests.auth_helpers import mint_test_access
 
 pytestmark = pytest.mark.integration
 
@@ -116,12 +117,12 @@ async def hanger(db_session):
     return {"product": product.id, "files": files, "parts": parts, "folder": folder.id}
 
 
-def _as(name: str) -> dict:
-    return {"Authorization": f"Bearer {create_access_token(data={'sub': name})}"}
+async def _as(name: str) -> dict:
+    return {"Authorization": f"Bearer {await mint_test_access(username=name)}"}
 
 
 async def _sources(client, hanger, who="test_admin") -> dict[int, dict]:
-    r = await client.get(f"/api/v1/products/{hanger['product']}/sources", headers=_as(who))
+    r = await client.get(f"/api/v1/products/{hanger['product']}/sources", headers=await _as(who))
     assert r.status_code == 200, r.text
     return {row["part_id"]: row for row in r.json()["parts"]}
 
@@ -185,7 +186,7 @@ async def test_the_files_tab_lists_every_linked_file_and_names_what_the_library_
 ):
     """PS7: every linked file outside the trash — the STL without plates too — with its
     plates; a hidden one is listed without its name."""
-    r = await async_client.get(f"/api/v1/products/{hanger['product']}/files", headers=_as(who))
+    r = await async_client.get(f"/api/v1/products/{hanger['product']}/files", headers=await _as(who))
     assert r.status_code == 200, r.text
     body = r.json()
     files = hanger["files"]
@@ -205,7 +206,7 @@ async def test_the_files_tab_lists_every_linked_file_and_names_what_the_library_
 @pytest.mark.asyncio
 async def test_the_plates_list_hides_a_files_name_and_keeps_the_plate(async_client, hanger):
     """K5: ``filename`` is ``null`` + ``hidden`` for a file the library would not show."""
-    r = await async_client.get(f"/api/v1/products/{hanger['product']}/plates", headers=_as("ps_own"))
+    r = await async_client.get(f"/api/v1/products/{hanger['product']}/plates", headers=await _as("ps_own"))
     assert r.status_code == 200, r.text
     by_file = {p["library_file_id"]: p for p in r.json()}
     assert (by_file[hanger["files"]["p1s"]]["filename"], by_file[hanger["files"]["p1s"]]["hidden"]) == (None, True)
@@ -217,7 +218,7 @@ async def test_the_plates_list_hides_a_files_name_and_keeps_the_plate(async_clie
 
 
 async def _parts(client, who="test_admin", **params):
-    r = await client.get("/api/v1/products/parts", params={"page": 1, **params}, headers=_as(who))
+    r = await client.get("/api/v1/products/parts", params={"page": 1, **params}, headers=await _as(who))
     assert r.status_code == 200, r.text
     return r.json()
 

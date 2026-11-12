@@ -16,6 +16,8 @@ class DiagnosticAccess:
     printer_ids: frozenset[int] | None
     logs_allowed: bool
     epoch: int
+    key_identity: str | None = None
+    owner_identity: str | None = None
 
     def permits(self, *permissions: str) -> bool:
         return self.is_admin or all(value in self.permissions for value in permissions)

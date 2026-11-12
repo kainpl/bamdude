@@ -100,11 +100,21 @@ async def connector_actor(
     try:
         authority = await resolve_api_key_authority(request, x_api_key)
     except APIKeyValidationFailure as exc:
+        if exc.reason == "overloaded":
+            raise HTTPException(
+                503,
+                {"error": "temporarily_unavailable", "message": "Authentication temporarily unavailable"},
+                headers={"Retry-After": "5"},
+            ) from exc
         raise HTTPException(401, {"error": "invalid_key", "message": submissions.INVALID_KEY}) from exc
     key = authority.key
     if not key.connector_identity:
         raise HTTPException(401, {"error": "invalid_key", "message": submissions.INVALID_KEY})
-    return ConnectorActor(key_id=key.id, key_identity=key.connector_identity, owner_id=key.user_id)
+    from backend.app.core.auth_lifetime import capture_key
+
+    return ConnectorActor(
+        key_id=key.id, key_identity=key.connector_identity, owner_id=key.user_id, capture=capture_key(key)
+    )
 
 
 async def _enabled(db: AsyncSession) -> bool:
@@ -388,7 +398,7 @@ async def _ingest(request: Request, actor: ConnectorActor, filename: str, cap: i
                     content=content,
                     target_folder=None,
                     created_by_id=key.user_id,
-                    authority=Authority.api_key(key.id),
+                    authority=Authority.api_key(key.id, capture=actor.capture),
                 )
             except HTTPException as exc:
                 text = exc.detail if isinstance(exc.detail, str) else UPLOAD_FAILED

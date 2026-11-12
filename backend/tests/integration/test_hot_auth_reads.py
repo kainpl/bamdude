@@ -10,6 +10,7 @@ from sqlalchemy import select
 from starlette.requests import Request
 
 from backend.app.core.auth import ALGORITHM, SECRET_KEY, create_access_token
+from backend.tests.auth_helpers import bind_test_key, mint_test_access
 
 
 @pytest.mark.asyncio
@@ -17,7 +18,7 @@ from backend.app.core.auth import ALGORITHM, SECRET_KEY, create_access_token
 async def test_permission_route_rejects_revoked_jwt(async_client):
     from backend.app.core.auth import revoke_jti
 
-    token = create_access_token({"sub": "test_admin"})
+    token = await mint_test_access(username="test_admin")
     payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
     await revoke_jti(payload["jti"], datetime.now(timezone.utc) + timedelta(hours=1), "test_admin")
 
@@ -43,16 +44,17 @@ async def test_middleware_and_permission_reuse_full_jwt_resolution_per_request(a
     from backend.app.core import auth
 
     lookups = 0
-    original = auth.get_user_by_username
+    original = auth.validate_captured
 
-    async def counted_lookup(db, username):
+    async def counted_lookup(db, capture, **kwargs):
         nonlocal lookups
         lookups += 1
-        return await original(db, username)
+        return await original(db, capture, **kwargs)
 
-    monkeypatch.setattr(auth, "get_user_by_username", counted_lookup)
-    token = create_access_token({"sub": "test_admin"})
+    monkeypatch.setattr(auth, "validate_captured", counted_lookup)
+    token = await mint_test_access(username="test_admin")
     headers = {"Authorization": f"Bearer {token}"}
+    lookups = 0
 
     assert (await async_client.get("/api/v1/queue/", headers=headers)).status_code == 200
     assert lookups == 1
@@ -67,7 +69,12 @@ async def test_api_key_hash_and_last_used_are_request_local(async_client, db_ses
     from backend.app.models.api_key import APIKey
 
     raw, key_hash, key_prefix = auth.generate_api_key()
-    key = APIKey(name="hot-read", key_hash=key_hash, key_prefix=key_prefix, enabled=True)
+    key = await bind_test_key(
+        db_session,
+        await bind_test_key(
+            db_session, APIKey(name="hot-read", key_hash=key_hash, key_prefix=key_prefix, enabled=True)
+        ),
+    )
     db_session.add(key)
     await db_session.commit()
     scans = 0
@@ -84,7 +91,10 @@ async def test_api_key_hash_and_last_used_are_request_local(async_client, db_ses
     second = await auth.resolve_api_key_authority(request, raw)
     assert first is second
     assert scans == 1
-    assert first.key.last_used is not None
+    # Audit writes through its own short session; the frozen compatibility
+    # object is not reloaded as a side effect. Verify the durable audit itself.
+    await db_session.refresh(key)
+    assert key.last_used is not None
 
     await auth.resolve_api_key_authority(Request({"type": "http", "headers": []}), raw)
     assert scans == 2
@@ -92,19 +102,22 @@ async def test_api_key_hash_and_last_used_are_request_local(async_client, db_ses
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_new_request_rechecks_password_floor_and_active_user(async_client, db_session):
+async def test_new_request_rechecks_session_generation_and_active_user(async_client, db_session):
     from backend.app.models.user import User
 
-    token = create_access_token({"sub": "test_admin"})
+    token = await mint_test_access(db_session, username="test_admin")
     headers = {"Authorization": f"Bearer {token}"}
     assert (await async_client.get("/api/v1/queue/", headers=headers)).status_code == 200
 
     user = (await db_session.execute(select(User).where(User.username == "test_admin"))).scalar_one()
-    user.password_changed_at = datetime.now(timezone.utc) + timedelta(seconds=5)
+    from backend.app.core.auth_lifetime import capture_account, stage_end_sessions
+
+    await stage_end_sessions(db_session, capture_account(user), "test_credential_change")
     await db_session.commit()
     assert (await async_client.get("/api/v1/queue/", headers=headers)).status_code == 401
 
-    user.password_changed_at = None
+    token = await mint_test_access(db_session, user=user)
+    headers = {"Authorization": f"Bearer {token}"}
     user.is_active = False
     await db_session.commit()
     assert (await async_client.get("/api/v1/queue/", headers=headers)).status_code == 401
@@ -121,7 +134,7 @@ async def test_new_request_rechecks_group_permissions(async_client, db_session):
     user.groups.append(group)
     db_session.add(user)
     await db_session.commit()
-    headers = {"Authorization": f"Bearer {create_access_token({'sub': user.username})}"}
+    headers = {"Authorization": f"Bearer {await mint_test_access(db_session, username=user.username)}"}
 
     assert (await async_client.get("/api/v1/queue/?status=pending", headers=headers)).status_code == 200
     group.permissions = []
@@ -136,7 +149,12 @@ async def test_api_key_changed_during_hash_is_not_accepted(async_client, db_sess
     from backend.app.models.api_key import APIKey
 
     raw, key_hash, key_prefix = auth.generate_api_key()
-    key = APIKey(name="change-during-hash", key_hash=key_hash, key_prefix=key_prefix, enabled=True)
+    key = await bind_test_key(
+        db_session,
+        await bind_test_key(
+            db_session, APIKey(name="change-during-hash", key_hash=key_hash, key_prefix=key_prefix, enabled=True)
+        ),
+    )
     db_session.add(key)
     await db_session.commit()
     original = auth._scan_api_key
@@ -167,13 +185,21 @@ async def test_api_key_authority_change_during_hash_fails_closed(async_client, d
     db_session.add(owner)
     await db_session.flush()
     raw, key_hash, key_prefix = auth.generate_api_key()
-    key = APIKey(
-        name=f"hot-key-{change}",
-        key_hash=key_hash,
-        key_prefix=key_prefix,
-        user_id=owner.id,
-        enabled=True,
-        can_read_status=True,
+    key = await bind_test_key(
+        db_session,
+        await bind_test_key(
+            db_session,
+            APIKey(
+                name=f"hot-key-{change}",
+                key_hash=key_hash,
+                key_prefix=key_prefix,
+                user_id=owner.id,
+                enabled=True,
+                can_read_status=True,
+            ),
+            owner=owner,
+        ),
+        owner=owner,
     )
     db_session.add(key)
     await db_session.commit()
@@ -190,7 +216,7 @@ async def test_api_key_authority_change_during_hash_fails_closed(async_client, d
 
     monkeypatch.setattr(auth, "_scan_api_key", change_after_hash)
     response = await async_client.get("/api/v1/queue/?status=pending", headers={"Authorization": f"Bearer {raw}"})
-    assert response.status_code == (401 if change == "disable_key" else 403), response.text
+    assert response.status_code == 401, response.text
 
 
 @pytest.mark.asyncio
@@ -199,7 +225,7 @@ async def test_dual_header_invalid_key_falls_back_but_valid_denied_key_does_not(
     from backend.app.core import auth
     from backend.app.models.api_key import APIKey
 
-    token = create_access_token({"sub": "test_admin"})
+    token = await mint_test_access(db_session, username="test_admin")
     invalid = await async_client.get(
         "/api/v1/queue/", headers={"X-API-Key": "bb_invalid", "Authorization": f"Bearer {token}"}
     )
@@ -207,12 +233,18 @@ async def test_dual_header_invalid_key_falls_back_but_valid_denied_key_does_not(
 
     raw, key_hash, key_prefix = auth.generate_api_key()
     db_session.add(
-        APIKey(
-            name="no-status",
-            key_hash=key_hash,
-            key_prefix=key_prefix,
-            enabled=True,
-            can_read_status=False,
+        await bind_test_key(
+            db_session,
+            await bind_test_key(
+                db_session,
+                APIKey(
+                    name="no-status",
+                    key_hash=key_hash,
+                    key_prefix=key_prefix,
+                    enabled=True,
+                    can_read_status=False,
+                ),
+            ),
         )
     )
     await db_session.commit()
@@ -227,7 +259,14 @@ async def test_cancelled_request_keeps_hash_slot_until_thread_finishes(async_cli
     from backend.app.models.api_key import APIKey
 
     raw, key_hash, key_prefix = auth.generate_api_key()
-    db_session.add(APIKey(name="slow", key_hash=key_hash, key_prefix=key_prefix, enabled=True))
+    db_session.add(
+        await bind_test_key(
+            db_session,
+            await bind_test_key(
+                db_session, APIKey(name="slow", key_hash=key_hash, key_prefix=key_prefix, enabled=True)
+            ),
+        )
+    )
     await db_session.commit()
     entered = threading.Event()
     release = threading.Event()
@@ -263,7 +302,14 @@ async def test_api_key_hash_saturation_is_transient_503(async_client, db_session
     from backend.app.models.api_key import APIKey
 
     raw, key_hash, key_prefix = auth.generate_api_key()
-    db_session.add(APIKey(name="overloaded", key_hash=key_hash, key_prefix=key_prefix, enabled=True))
+    db_session.add(
+        await bind_test_key(
+            db_session,
+            await bind_test_key(
+                db_session, APIKey(name="overloaded", key_hash=key_hash, key_prefix=key_prefix, enabled=True)
+            ),
+        )
+    )
     await db_session.commit()
     monkeypatch.setattr(auth, "_key_gates", lambda: (asyncio.BoundedSemaphore(0), asyncio.BoundedSemaphore(0)))
     response = await async_client.get("/api/v1/queue/", headers={"X-API-Key": raw})
@@ -278,7 +324,14 @@ async def test_ten_simultaneous_api_key_reads_fit_bounded_admission(async_client
     from backend.app.models.api_key import APIKey
 
     raw, key_hash, key_prefix = auth.generate_api_key()
-    db_session.add(APIKey(name="operator-burst", key_hash=key_hash, key_prefix=key_prefix, enabled=True))
+    db_session.add(
+        await bind_test_key(
+            db_session,
+            await bind_test_key(
+                db_session, APIKey(name="operator-burst", key_hash=key_hash, key_prefix=key_prefix, enabled=True)
+            ),
+        )
+    )
     await db_session.commit()
 
     responses = await asyncio.gather(
@@ -298,12 +351,18 @@ async def test_api_key_permission_uses_immutable_request_snapshot(async_client, 
 
     raw, key_hash, key_prefix = auth.generate_api_key()
     db_session.add(
-        APIKey(
-            name="snapshot",
-            key_hash=key_hash,
-            key_prefix=key_prefix,
-            enabled=True,
-            can_read_status=False,
+        await bind_test_key(
+            db_session,
+            await bind_test_key(
+                db_session,
+                APIKey(
+                    name="snapshot",
+                    key_hash=key_hash,
+                    key_prefix=key_prefix,
+                    enabled=True,
+                    can_read_status=False,
+                ),
+            ),
         )
     )
     await db_session.commit()

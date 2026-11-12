@@ -8,6 +8,8 @@ from pathlib import Path
 import pytest
 from httpx import AsyncClient
 
+from backend.tests.auth_helpers import mint_test_access
+
 
 class TestLibraryFoldersAPI:
     """Integration tests for library folders endpoints."""
@@ -1828,9 +1830,9 @@ class TestLibraryPermissions:
         await db_session.commit()
 
         # Create tokens
-        admin_token = create_access_token(data={"sub": admin_user.username})
-        operator_token = create_access_token(data={"sub": operator_user.username})
-        viewer_token = create_access_token(data={"sub": viewer_user.username})
+        admin_token = await mint_test_access(db_session, username=admin_user.username)
+        operator_token = await mint_test_access(db_session, username=operator_user.username)
+        viewer_token = await mint_test_access(db_session, username=viewer_user.username)
 
         return {
             "admin_user": admin_user,

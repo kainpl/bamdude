@@ -42,13 +42,15 @@ async def test_an_order_shows_its_contacts_phone_only_to_a_reader_of_customers(
     await _user(db_session, "mask_orders", ["orders:read"])
     await _user(db_session, "mask_orders_cust", ["orders:read", "customers:read"])
 
-    plain = (await committing_client.get(f"/api/v1/projects/{desk['order']}", headers=_jwt("mask_orders"))).json()
+    plain = (await committing_client.get(f"/api/v1/projects/{desk['order']}", headers=await _jwt("mask_orders"))).json()
     assert plain["contact"]["name"] == "Ann"
     assert plain["contact"]["role"] == "buyer"
     assert plain["contact"]["phone"] is None
     assert plain["contact"]["email"] is None
 
-    full = (await committing_client.get(f"/api/v1/projects/{desk['order']}", headers=_jwt("mask_orders_cust"))).json()
+    full = (
+        await committing_client.get(f"/api/v1/projects/{desk['order']}", headers=await _jwt("mask_orders_cust"))
+    ).json()
     assert full["contact"]["phone"] == "+380501112233"
     assert full["contact"]["email"] == "a@x.ua"
 
@@ -59,14 +61,14 @@ async def test_the_sidebar_counts_only_what_the_reader_may_see(committing_client
     await _user(db_session, "mask_catalog", ["products:read"])
     await _user(db_session, "mask_nothing", ["inventory:read"])
 
-    badges = await committing_client.get("/api/v1/projects/nav-badges", headers=_jwt("mask_catalog"))
+    badges = await committing_client.get("/api/v1/projects/nav-badges", headers=await _jwt("mask_catalog"))
     assert badges.status_code == 200, badges.text
     body = badges.json()
     assert body["active_orders"] is None
     assert body["stock_below_min"] is None
     assert isinstance(body["draft_products"], int)
 
-    refused = await committing_client.get("/api/v1/projects/nav-badges", headers=_jwt("mask_nothing"))
+    refused = await committing_client.get("/api/v1/projects/nav-badges", headers=await _jwt("mask_nothing"))
     assert refused.status_code == 403
 
 
@@ -78,17 +80,21 @@ async def test_a_product_hides_stock_and_order_figures_from_a_catalog_reader(
     await _user(db_session, "mask_cat_only", ["products:read"])
     await _user(db_session, "mask_cat_all", ["products:read", "stock:read", "orders:read"])
 
-    plain = (await committing_client.get(f"/api/v1/products/{desk['product']}", headers=_jwt("mask_cat_only"))).json()
+    plain = (
+        await committing_client.get(f"/api/v1/products/{desk['product']}", headers=await _jwt("mask_cat_only"))
+    ).json()
     for field in ("kits_available", "finished_available", "finished_positions", "finished_below_min"):
         assert plain[field] is None, field
     for field in ("lines_count", "active_orders_count", "orders_count", "units_printed_total"):
         assert plain[field] is None, field
 
-    full = (await committing_client.get(f"/api/v1/products/{desk['product']}", headers=_jwt("mask_cat_all"))).json()
+    full = (
+        await committing_client.get(f"/api/v1/products/{desk['product']}", headers=await _jwt("mask_cat_all"))
+    ).json()
     assert isinstance(full["kits_available"], int)
     assert isinstance(full["orders_count"], int)
 
-    rows = (await committing_client.get("/api/v1/products/", headers=_jwt("mask_cat_only"))).json()
+    rows = (await committing_client.get("/api/v1/products/", headers=await _jwt("mask_cat_only"))).json()
     assert rows and all(row["kits_available"] is None and row["active_orders_count"] is None for row in rows)
 
 
@@ -96,7 +102,7 @@ async def test_a_product_hides_stock_and_order_figures_from_a_catalog_reader(
 async def test_a_filter_or_sort_on_a_hidden_field_is_refused(committing_client: AsyncClient, db_session):
     await _desk(committing_client)
     await _user(db_session, "mask_cat_filter", ["products:read"])
-    headers = _jwt("mask_cat_filter")
+    headers = await _jwt("mask_cat_filter")
 
     by_stock = await committing_client.get(
         "/api/v1/products/", params={"page": 1, "stock": "finished"}, headers=headers
@@ -121,16 +127,16 @@ async def test_a_customer_hides_its_orders_money_from_a_reader_of_customers_only
     await _user(db_session, "mask_cust_orders", ["customers:read", "orders:read"])
 
     plain = (
-        await committing_client.get(f"/api/v1/customers/{desk['customer']}", headers=_jwt("mask_cust_only"))
+        await committing_client.get(f"/api/v1/customers/{desk['customer']}", headers=await _jwt("mask_cust_only"))
     ).json()
     assert plain["figures"] is None
     assert plain["contacts"][0]["phone"] == "+380501112233"
-    tiles = (await committing_client.get("/api/v1/customers/summary", headers=_jwt("mask_cust_only"))).json()
+    tiles = (await committing_client.get("/api/v1/customers/summary", headers=await _jwt("mask_cust_only"))).json()
     assert tiles["active_orders"] is None
     assert tiles["total_price"] is None
 
     full = (
-        await committing_client.get(f"/api/v1/customers/{desk['customer']}", headers=_jwt("mask_cust_orders"))
+        await committing_client.get(f"/api/v1/customers/{desk['customer']}", headers=await _jwt("mask_cust_orders"))
     ).json()
     assert full["figures"] is not None
 
@@ -144,11 +150,13 @@ async def test_the_issue_dialogs_recipient_follows_the_shipping_or_contacts_righ
     await _user(db_session, "mask_ful_ship", ["orders:read", "stock:move"])
 
     plain = (
-        await committing_client.get(f"/api/v1/projects/{desk['order']}/fulfilment", headers=_jwt("mask_ful_plain"))
+        await committing_client.get(
+            f"/api/v1/projects/{desk['order']}/fulfilment", headers=await _jwt("mask_ful_plain")
+        )
     ).json()
     assert plain["recipient"] is None
     shipped = (
-        await committing_client.get(f"/api/v1/projects/{desk['order']}/fulfilment", headers=_jwt("mask_ful_ship"))
+        await committing_client.get(f"/api/v1/projects/{desk['order']}/fulfilment", headers=await _jwt("mask_ful_ship"))
     ).json()
     assert shipped["recipient"]["phone"] == "+380501112233"
 
@@ -178,12 +186,14 @@ async def test_a_products_stock_names_the_order_a_movement_served_only_to_a_read
         return [m for m in body["movements"] if m.get("project_line_id") is not None]
 
     [plain] = served(
-        (await committing_client.get(f"/api/v1/products/{product}/stock", headers=_jwt("mask_shelf"))).json()
+        (await committing_client.get(f"/api/v1/products/{product}/stock", headers=await _jwt("mask_shelf"))).json()
     )
     assert plain["order_name"] is None
     assert plain["order_id"] is None
     [full] = served(
-        (await committing_client.get(f"/api/v1/products/{product}/stock", headers=_jwt("mask_shelf_orders"))).json()
+        (
+            await committing_client.get(f"/api/v1/products/{product}/stock", headers=await _jwt("mask_shelf_orders"))
+        ).json()
     )
     assert full["order_name"] == "Shelf order"
 

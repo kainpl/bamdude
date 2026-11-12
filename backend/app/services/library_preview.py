@@ -126,10 +126,15 @@ class Source:
     file_hash: str | None
     thumbnail_path: str | None
     fs_modified_at: datetime | None
+    authority: object | None = None
+    permission: str = "library:update_all"
 
     @classmethod
-    def capture(cls, row: LibraryFile):
-        return cls(**{name: getattr(row, name) for name in cls.__dataclass_fields__})
+    def capture(cls, row: LibraryFile, *, authority=None, permission="library:update_all"):
+        fields = {
+            name: getattr(row, name) for name in cls.__dataclass_fields__ if name not in ("authority", "permission")
+        }
+        return cls(**fields, authority=authority, permission=permission)
 
 
 def _publish(source: Path, target: Path):
@@ -163,30 +168,38 @@ async def attach_result(db: AsyncSession, source: Source, png: Path, *, authoriz
         outcome = "unavailable"
         try:
             async with factory() as session:
-                # The row is locked before the rights are read (SQLite: the write lock, as pysqlite would only
-                # open the transaction at the UPDATE; PostgreSQL: FOR UPDATE), so the recheck and the CAS write
-                # are one transaction in fact, not only in name.
-                await take_write_lock(session, LibraryFile.__table__, source.id)
-                await session.execute(select(LibraryFile.id).where(LibraryFile.id == source.id).with_for_update())
+                if source.authority is not None:
+                    from backend.app.services.domain_authority import guard
+
+                    await guard(session, source.authority, permissions=(source.permission,))
+                # Receipt callbacks reserve their account guards before any domain row.
                 if authorize is not None and not await authorize(session):
                     outcome = "authority_missing"
                 else:
-                    result = await session.execute(
-                        update(LibraryFile)
-                        .where(
-                            LibraryFile.id == source.id,
-                            LibraryFile.deleted_at.is_(None),
-                            LibraryFile.file_type == source.file_type,
-                            LibraryFile.file_path == source.file_path,
-                            LibraryFile.file_hash == source.file_hash,
-                            LibraryFile.fs_modified_at == source.fs_modified_at,
-                            LibraryFile.thumbnail_path == source.thumbnail_path,
+                    # The row is locked before the rights are read (SQLite: the write lock, as pysqlite would only
+                    # open the transaction at the UPDATE; PostgreSQL: FOR UPDATE), so the recheck and the CAS write
+                    # are one transaction in fact, not only in name.
+                    await take_write_lock(session, LibraryFile.__table__, source.id)
+                    await session.execute(select(LibraryFile.id).where(LibraryFile.id == source.id).with_for_update())
+                    if authorize is not None and not await authorize(session):
+                        outcome = "authority_missing"
+                    else:
+                        result = await session.execute(
+                            update(LibraryFile)
+                            .where(
+                                LibraryFile.id == source.id,
+                                LibraryFile.deleted_at.is_(None),
+                                LibraryFile.file_type == source.file_type,
+                                LibraryFile.file_path == source.file_path,
+                                LibraryFile.file_hash == source.file_hash,
+                                LibraryFile.fs_modified_at == source.fs_modified_at,
+                                LibraryFile.thumbnail_path == source.thumbnail_path,
+                            )
+                            .values(thumbnail_path=relative)
+                            .execution_options(synchronize_session=False)
                         )
-                        .values(thumbnail_path=relative)
-                        .execution_options(synchronize_session=False)
-                    )
-                    await session.commit()
-                    outcome = "attached" if result.rowcount == 1 else "superseded"
+                        await session.commit()
+                        outcome = "attached" if result.rowcount == 1 else "superseded"
         except Exception:
             logger.warning("Preview attachment uncertain for library file %s", source.id)
         # Includes trash: a concurrently trashed row is still a durable owner.

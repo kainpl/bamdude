@@ -2,6 +2,7 @@
 
 import pytest
 
+from backend.tests.auth_helpers import mint_test_access
 from backend.tests.unit.services.test_auto_stock_spool import GROUP, spool
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
@@ -66,7 +67,7 @@ async def test_printer_editor_without_inventory_write_cannot_change_policy(async
 
     p = await printer_factory()
     await _user(db_session, "printer_editor", [Permission.PRINTERS_UPDATE.value, Permission.PRINTERS_READ.value])
-    headers = {"Authorization": "Bearer " + create_access_token({"sub": "printer_editor"})}
+    headers = {"Authorization": "Bearer " + await mint_test_access(db_session, username="printer_editor")}
     response = await async_client.patch(
         f"/api/v1/printers/{p.id}",
         headers=headers,

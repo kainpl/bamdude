@@ -23,6 +23,7 @@ from backend.app.services.model_providers import makerworld_provider
 from backend.app.services.model_providers.base import ProviderResourceRef
 from backend.app.services.model_providers.makerworld.errors import MakerWorldUnavailableError
 from backend.app.services.model_providers.makerworld.service import MakerWorldService
+from backend.tests.auth_helpers import mint_test_access
 
 
 def _sample_3mf() -> bytes:
@@ -872,7 +873,7 @@ class TestRedownloadEndpoint:
 
         # Seed a library file with old bytes on disk + a stale meta row.
         old_bytes = b"OLD-3MF-BYTES"
-        new_bytes = b"NEW-FRESH-3MF-BYTES-PUSHED-BY-CREATOR"
+        new_bytes = _sample_3mf()
         on_disk = tmp_path / "library" / "files" / "old.3mf"
         on_disk.parent.mkdir(parents=True, exist_ok=True)
         on_disk.write_bytes(old_bytes)
@@ -926,11 +927,12 @@ class TestRedownloadEndpoint:
         assert body["was_existing"] is True
         assert body["profile_id"] == 444
 
-        # File on disk replaced with fresh bytes.
-        assert on_disk.read_bytes() == new_bytes
-
         # DB row updated: size + hash differ from old; row id unchanged.
         await db_session.refresh(lf)
+        # Publish prepared bytes by pointer, then remove only the unreferenced old managed file.
+        assert lf.file_path != "library/files/old.3mf"
+        assert (tmp_path / lf.file_path).read_bytes() == new_bytes
+        assert not on_disk.exists()
         assert lf.file_size == len(new_bytes)
         assert lf.file_hash != old_hash
 
@@ -1059,10 +1061,10 @@ class TestApiKeyCloudOwner:
         return resp.json()
 
     @staticmethod
-    def _restore_admin_jwt(async_client) -> None:
+    async def _restore_admin_jwt(async_client) -> None:
         from backend.app.core.auth import create_access_token
 
-        async_client.headers["Authorization"] = f"Bearer {create_access_token(data={'sub': 'test_admin'})}"
+        async_client.headers["Authorization"] = f"Bearer {await mint_test_access(username='test_admin')}"
 
     async def _fake_token(self, _db, user):
         # Owner present → token available; None (scope-only key) → no token.
@@ -1081,7 +1083,7 @@ class TestApiKeyCloudOwner:
             ):
                 resp = await async_client.get("/api/v1/makerworld/status", headers={"X-API-Key": raw})
         finally:
-            self._restore_admin_jwt(async_client)
+            await self._restore_admin_jwt(async_client)
 
         assert resp.status_code == 200, resp.text
         assert resp.json() == {"has_cloud_token": True, "can_download": True, "sign_in_expired": False}
@@ -1102,7 +1104,7 @@ class TestApiKeyCloudOwner:
             ):
                 resp = await async_client.get("/api/v1/makerworld/status", headers={"X-API-Key": raw})
         finally:
-            self._restore_admin_jwt(async_client)
+            await self._restore_admin_jwt(async_client)
 
         assert resp.status_code == 200, resp.text
         assert resp.json() == {"has_cloud_token": False, "can_download": False, "sign_in_expired": False}
@@ -1129,7 +1131,7 @@ class TestApiKeyCloudOwner:
                     json={"model_id": 1400373, "profile_id": 298919107},
                 )
         finally:
-            self._restore_admin_jwt(async_client)
+            await self._restore_admin_jwt(async_client)
 
         assert resp.status_code == 200, resp.text
 
@@ -1141,10 +1143,8 @@ class TestApiKeyCloudOwner:
         assert row.created_by_id == owner_id
 
     @pytest.mark.asyncio
-    async def test_import_non_cloud_key_leaves_created_by_null(self, async_client, db_session):
-        """A scope-only key (``can_access_cloud=False``) doesn't resolve an
-        owner, so the imported row's ``created_by_id`` stays NULL — mirrors the
-        fail-closed status test above at the write path."""
+    async def test_import_non_cloud_key_attributes_owner_without_cloud_credentials(self, async_client, db_session):
+        """Cloud access and the current importing account are independent."""
         body = await self._create_key(async_client, can_access_cloud=False)
         raw = body["key"]
 
@@ -1163,7 +1163,7 @@ class TestApiKeyCloudOwner:
                     json={"model_id": 1400373, "profile_id": 298919107},
                 )
         finally:
-            self._restore_admin_jwt(async_client)
+            await self._restore_admin_jwt(async_client)
 
         assert resp.status_code == 200, resp.text
 
@@ -1172,4 +1172,8 @@ class TestApiKeyCloudOwner:
         row = (
             await db_session.execute(select(LibraryFile).where(LibraryFile.id == resp.json()["library_file_id"]))
         ).scalar_one()
-        assert row.created_by_id is None
+        from backend.app.models.user import User
+
+        owner = (await db_session.execute(select(User).where(User.username == "test_admin"))).scalar_one()
+        assert row.created_by_id == owner.id
+        assert svc.credential_snapshot is None

@@ -3,9 +3,11 @@ from backend.app.models.ams_label import AmsLabel
 from backend.app.models.ams_setting_audit import AmsSettingAudit
 from backend.app.models.api_key import APIKey
 from backend.app.models.archive import PrintArchive
+from backend.app.models.auth_session import AuthSession
 from backend.app.models.calibration_audit import CalibrationAudit
 from backend.app.models.calibration_session import CalibrationSession
 from backend.app.models.color_catalog import ColorCatalogEntry
+from backend.app.models.credential_rollout import CredentialRolloutEpisode
 from backend.app.models.customer import Customer
 from backend.app.models.filament_calibration import FilamentCalibration
 from backend.app.models.git_backup import GitBackupConfig, GitBackupLog
@@ -44,6 +46,8 @@ from backend.app.models.user import User
 from backend.app.models.user_email_pref import UserEmailPreference
 
 __all__ = [
+    "AuthSession",
+    "CredentialRolloutEpisode",
     "ObicoEvent",
     "OrderWorkingPlan",
     "OrderPlanSubmission",

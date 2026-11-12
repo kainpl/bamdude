@@ -22,7 +22,17 @@ READ = frozenset({"printers:read", "archives:read_all", "stats:read"})
 
 
 def actor(scope=None):
-    return DiagnosticAccess(1, 1, READ, False, scope, False, current_epoch())
+    return DiagnosticAccess(
+        1,
+        1,
+        READ,
+        False,
+        scope,
+        False,
+        current_epoch(),
+        key_identity="00000000-0000-0000-0000-000000000001",
+        owner_identity="00000000-0000-0000-0000-000000000002",
+    )
 
 
 def args(**kw):

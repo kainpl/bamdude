@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.models.library import LibraryFile, LibraryFolder
 from backend.app.models.library_scan import LibraryScanJob
+from backend.app.services.domain_authority import guard
 from backend.app.services.product_sync import inherit_folder_products, purge_file_product_links, resync_file_products
 
 logger = logging.getLogger(__name__)
@@ -188,6 +189,8 @@ async def write_batch(
     batch: list[_Prepared],
     folder_ids: dict[str, int],
     counters: dict[str, int],
+    *,
+    authority=None,
 ) -> tuple[list[tuple[int, str]], int]:
     """Persist one batch and return created rows and skipped duplicates.
 
@@ -244,6 +247,7 @@ async def write_batch(
     # lock -- so a declaration and this batch never interleave between a read and its write.
     batch = sorted(batch, key=lambda item: (item.intent != "refresh", item.known_id or 0))
     async with async_session() as db:
+        await guard(db, authority, permissions=("library:upload",))
         first_refresh = next((item.known_id for item in batch if item.intent == "refresh"), None)
         if first_refresh is not None:
             await take_write_lock(db, LibraryFile.__table__, first_refresh)
@@ -378,6 +382,8 @@ async def ensure_folders(
     directories: list[str],
     folder_ids: dict[str, int],
     counters: dict[str, int],
+    *,
+    authority=None,
 ) -> None:
     """Create the subfolder rows the walk turned up.
 
@@ -385,6 +391,7 @@ async def ensure_folders(
     folder id, and discovering that mid-batch is what tied the old scan's
     folder writes to its file writes.
     """
+    await guard(db, authority, permissions=("library:upload",))
     for dirpath in directories:
         rel = str(Path(dirpath).relative_to(root)).replace("\\", "/")
         if rel == ".":
@@ -433,6 +440,7 @@ async def remove_vanished(
     counters: dict[str, int],
     *,
     root: Path | None = None,
+    authority=None,
 ) -> bool:
     """Drop rows whose file is gone. Returns whether deletion was refused.
 
@@ -474,6 +482,7 @@ async def remove_vanished(
     for start in range(0, len(doomed), BATCH_SIZE):
         chunk = doomed[start : start + BATCH_SIZE]
         async with async_session() as db:
+            await guard(db, authority, permissions=("library:upload",))
             rows = (
                 (await db.execute(select(LibraryFile).where(LibraryFile.id.in_([i for i, _ in chunk])))).scalars().all()
             )
@@ -513,6 +522,7 @@ async def remove_vanished(
     else:
         folder_presence = {}
     async with async_session() as db:
+        await guard(db, authority, permissions=("library:upload",))
         subs = (
             (
                 await db.execute(
@@ -561,11 +571,13 @@ async def remove_vanished(
 _running: dict[int, asyncio.Task] = {}
 
 
-async def _set_job(job_id: int, **values) -> None:
+async def _set_job(job_id: int, *, authority=None, **values) -> None:
     """Write a few columns of the job and let go of the session immediately."""
     from backend.app.core.database import async_session
 
     async with async_session() as db:
+        if authority is not None:
+            await guard(db, authority, permissions=("library:upload",))
         await db.execute(update(LibraryScanJob).where(LibraryScanJob.id == job_id).values(**values))
         await db.commit()
 
@@ -594,7 +606,7 @@ async def _fail_job(job_id: int, folder_id: int | None, error: str) -> None:
     await _announce_finish({"job_id": job_id, "folder_id": folder_id, "status": "failed", "error": error[:500]})
 
 
-async def run_scan(job_id: int) -> None:
+async def run_scan(job_id: int, authority=None) -> None:
     """Walk the folder, write what changed, and keep the database free meanwhile."""
     from backend.app.core.database import async_session
     from backend.app.core.websocket import ws_manager
@@ -627,7 +639,7 @@ async def run_scan(job_id: int) -> None:
             show_hidden = bool(folder.external_show_hidden)
             folder_id = folder.id
 
-        await _set_job(job_id, status="running", started_at=_now())
+        await _set_job(job_id, authority=authority, status="running", started_at=_now())
 
         from backend.app.services.library_file_runtime import get_library_file_runtime
 
@@ -694,7 +706,7 @@ async def run_scan(job_id: int) -> None:
         async def flush(force: bool = False) -> None:
             nonlocal batch, last_progress, skipped_duplicates
             if batch and (force or len(batch) >= BATCH_SIZE):
-                created, skipped_in_batch = await write_batch(batch, folder_ids, counters)
+                created, skipped_in_batch = await write_batch(batch, folder_ids, counters, authority=authority)
                 skipped_duplicates += skipped_in_batch
                 batch = []
                 for file_id, filename in created:
@@ -717,7 +729,7 @@ async def run_scan(job_id: int) -> None:
             directories = [entry["directory"] for entry in entries if entry["is_dir"]]
             if directories:
                 async with async_session() as db:
-                    await ensure_folders(db, root, folder, directories, folder_ids, counters)
+                    await ensure_folders(db, root, folder, directories, folder_ids, counters, authority=authority)
                     await db.commit()
             for entry in entries:
                 if entry["is_dir"]:
@@ -753,14 +765,20 @@ async def run_scan(job_id: int) -> None:
 
         await flush(force=True)
 
-        skipped = await remove_vanished(found_paths, known, folder_ids, counters, root=root)
+        skipped = await remove_vanished(found_paths, known, folder_ids, counters, root=root, authority=authority)
         if skipped_duplicates:
             logger.info("scan skipped %d file(s) the library already holds", skipped_duplicates)
         if warnings:
             logger.warning("scan finished with %d unreadable file(s); last good metadata kept", warnings)
 
         await _set_job(
-            job_id, status="finished", finished_at=_now(), files_total=total, skipped_deletions=skipped, **counters
+            job_id,
+            authority=authority,
+            status="finished",
+            finished_at=_now(),
+            files_total=total,
+            skipped_deletions=skipped,
+            **counters,
         )
         await _announce_finish(
             {
@@ -792,18 +810,25 @@ async def run_scan(job_id: int) -> None:
         _running.pop(job_id, None)
 
 
-async def start_scan(folder_id: int, user_id: int | None) -> int:
+async def start_scan(folder_id: int, user_id: int | None, *, authority=None) -> int:
     """Create the job row and set the worker going. Returns the job id."""
     from backend.app.core.database import async_session
 
+    if not _admitting:
+        from fastapi import HTTPException
+
+        raise HTTPException(503, "Folder scans are unavailable during restore")
     async with async_session() as db:
+        _, principal = await guard(db, authority, permissions=("library:upload",))
+        if principal is not None:
+            user_id = principal.user.id
         job = LibraryScanJob(folder_id=folder_id, status="queued", created_by=user_id)
         db.add(job)
         await db.commit()
         await db.refresh(job)
         job_id = job.id
 
-    _running[job_id] = asyncio.create_task(run_scan(job_id))
+    _running[job_id] = asyncio.create_task(run_scan(job_id, authority))
     return job_id
 
 
@@ -859,3 +884,22 @@ def cancel_running_scans() -> None:
     for task in list(_running.values()):
         task.cancel()
     _running.clear()
+
+
+_admitting = True
+
+
+def close_admission() -> None:
+    global _admitting
+    _admitting = False
+
+
+async def quiesce_for_restore(seconds: float = 30.0) -> bool:
+    close_admission()
+    tasks = set(_running.values())
+    for task in tasks:
+        task.cancel()
+    if not tasks:
+        return True
+    _, pending = await asyncio.wait(tasks, timeout=seconds)
+    return not pending

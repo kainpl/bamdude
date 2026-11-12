@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, func
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Integer, String, func
+from sqlalchemy.orm import Mapped, mapped_column, validates
 
 from backend.app.core.database import Base
 
@@ -23,6 +23,10 @@ class UserOTPCode(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    account_identity: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    generation: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    sid: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    challenge_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     # pbkdf2_sha256 hash of the 6-digit code
     code_hash: Mapped[str] = mapped_column(String(255))
     # Number of failed verification attempts for this code
@@ -53,3 +57,7 @@ class UserOTPCode(Base):
 
     def __repr__(self) -> str:
         return f"<UserOTPCode user_id={self.user_id} used={self.used}>"
+
+    @validates("created_at", "expires_at")
+    def _utc_datetime(self, _name, value):
+        return value.astimezone(timezone.utc).replace(tzinfo=None) if value is not None and value.tzinfo else value

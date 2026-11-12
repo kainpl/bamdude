@@ -3,8 +3,6 @@
 from dataclasses import dataclass
 
 from fastapi import HTTPException
-from sqlalchemy import select
-from sqlalchemy.orm import selectinload
 
 from backend.app.core.api_key_scope import key_printer_scope, narrowed_scope
 from backend.app.core.auth import authorize_api_key, library_name_scope
@@ -22,7 +20,10 @@ class PlanAccess:
 
     @property
     def identity(self):
-        return f"key:{self.actor.key_id}" if self.actor.kind == "api_key" else f"user:{self.actor.user_id}"
+        capture = self.actor.capture
+        if capture is None:
+            raise denied()
+        return f"key:{capture.key_identity}" if capture.kind == "key" else f"user:{capture.account_identity}"
 
 
 def denied():
@@ -39,6 +40,11 @@ async def capture(request, db, user):
 
 async def fresh(db, access: PlanAccess, *, edit=True, execute=False, receipts=False, delete=False, admin_cancel=False):
     actor = access.actor
+    from backend.app.core.auth_lifetime import validate_captured
+
+    if actor.capture is None:
+        raise denied()
+    principal = await validate_captured(db, actor.capture, required_permissions=("orders:read",))
     if actor.kind == "api_key":
         key = await fresh_api_key(db, actor)
         if key.key_hash != access.key_hash or key.user_id != actor.user_id:
@@ -64,12 +70,7 @@ async def fresh(db, access: PlanAccess, *, edit=True, execute=False, receipts=Fa
         printers = narrowed_scope(access.printers, key)
         user = await db.get(User, actor.user_id) if actor.user_id else None
     else:
-        user = await db.scalar(
-            select(User)
-            .options(selectinload(User.groups))
-            .where(User.id == actor.user_id)
-            .execution_options(populate_existing=True)
-        )
+        user = principal.user
         if user is None or not user.is_active or not user.has_permission("orders:read"):
             raise denied()
         if edit and not (user.has_permission("orders:update") or user.has_permission("orders:file_prints")):
@@ -98,6 +99,14 @@ async def fresh(db, access: PlanAccess, *, edit=True, execute=False, receipts=Fa
     elif access.scope == "own":
         scope = "own"
     return user, scope, printers
+
+
+async def guard(db, access):
+    from backend.app.core.auth_lifetime import guard_accounts
+
+    if access.actor.capture is None:
+        raise denied()
+    return await guard_accounts(db, [access.actor.capture])
 
 
 def visible(file, user, scope):

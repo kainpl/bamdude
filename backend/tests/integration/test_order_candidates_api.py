@@ -27,6 +27,7 @@ from backend.app.models.product import Product, ProductPart, ProductPlate
 from backend.app.models.product_variant import ProductVariantGroup, ProductVariantOption
 from backend.app.models.project import Project
 from backend.app.models.project_line import ProjectLine
+from backend.tests.auth_helpers import mint_test_access
 from backend.tests.fixtures.filament_routing_cases import write_routing_3mf
 
 pytestmark = pytest.mark.integration
@@ -396,7 +397,7 @@ async def test_a_read_own_caller_only_sees_their_own_files_candidates(async_clie
     the same shape ``/card`` gives, so an id cannot be enumerated through this
     door either. ``orders:read`` is required beside it because the answer
     names orders and how much of them is left."""
-    admin = {"Authorization": f"Bearer {create_access_token(data={'sub': 'test_admin'})}"}
+    admin = {"Authorization": f"Bearer {await mint_test_access(db_session, username='test_admin')}"}
     grp = await async_client.post(
         "/api/v1/groups/",
         headers=admin,

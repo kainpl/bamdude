@@ -21,15 +21,21 @@ tokens — a leaked permanent token would be irrevocable footgun-by-design).
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import secrets
-from collections.abc import Collection
+from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select
+from fastapi import HTTPException
+from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.core.auth import get_password_hash, verify_password
+from backend.app.core.auth import _scan_api_key, hash_password_async, reserve_audit_attempt
+from backend.app.core.auth_lifetime import capture_long_lived, guard_accounts, utcnow, validate_captured
+from backend.app.core.auth_runtime import auth_runtime
+from backend.app.core.database import async_session
 from backend.app.models.long_lived_token import LongLivedToken
 
 # Issue #1108 hard cap. Bump here if policy changes — UI default is shorter
@@ -129,6 +135,7 @@ async def create_token(
     name: str,
     expires_in_days: int,
     scope: str = "camera_stream",
+    authority,
 ) -> CreatedToken:
     """Mint a new long-lived token. Caller is responsible for permission checks.
 
@@ -149,14 +156,23 @@ async def create_token(
         raise ValueError("name must be 100 chars or fewer")
 
     plaintext, lookup_prefix, hash_input = _generate_token_parts()
-    now = datetime.now(timezone.utc)
+    secret_hash = await hash_password_async(hash_input)
+    proof = await guard_accounts(db, [authority])
+    principal = await validate_captured(db, authority, proof=proof)
+    if principal.user.id != user_id or authority.kind != "session":
+        raise HTTPException(403, "A signed-in owner is required")
+    required = "api_keys:create" if scope == "monitor" else "camera:view"
+    if not principal.user.has_permission(required):
+        raise HTTPException(403, "Required permission is no longer granted")
     record = LongLivedToken(
-        user_id=user_id,
+        user_id=principal.user.id,
+        owner_identity=principal.user.account_identity,
+        contract_version=1,
         name=name,
         lookup_prefix=lookup_prefix,
-        secret_hash=get_password_hash(hash_input),
+        secret_hash=secret_hash,
         scope=scope,
-        expires_at=now + timedelta(days=expires_in_days),
+        expires_at=utcnow() + timedelta(days=expires_in_days),
     )
     db.add(record)
     await db.commit()
@@ -164,47 +180,10 @@ async def create_token(
     return CreatedToken(record=record, plaintext=plaintext)
 
 
-async def verify_token(
-    db: AsyncSession, token: str, *, scope: str | Collection[str] = "camera_stream"
-) -> LongLivedToken | None:
-    """Validate a token. Returns the matching record on success, None otherwise.
-
-    The pbkdf2 verify is the slow step (intentional — pbkdf2 by design),
-    so we pre-filter by the indexed ``lookup_prefix`` to ensure the verify
-    runs against at most one or two candidate rows.
-    """
-    parsed = _parse_token(token)
-    if parsed is None:
-        return None
-    lookup_prefix, full_token = parsed
-
-    # ``scope`` accepts a single scope or a collection of acceptable ones — the
-    # stream endpoints pass ``STREAM_SCOPES`` because more than one scope may
-    # legitimately pull video. A token is still only ever accepted on the
-    # strength of a scope it actually holds.
-    scopes = (scope,) if isinstance(scope, str) else tuple(scope)
-
-    now = datetime.now(timezone.utc)
-    result = await db.execute(
-        select(LongLivedToken).where(
-            LongLivedToken.lookup_prefix == lookup_prefix,
-            LongLivedToken.scope.in_(scopes),
-            LongLivedToken.revoked_at.is_(None),
-        )
-    )
-    candidates = result.scalars().all()
-    for record in candidates:
-        if _is_expired(record, now):
-            continue
-        if not verify_password(full_token, record.secret_hash):
-            continue
-        # Record use, but rate-limit DB writes to keep MJPEG-keepalive cheap.
-        last = record.last_used_at
-        if last is None or _coerce_utc(last) + _LAST_USED_DEBOUNCE <= now:
-            record.last_used_at = now
-            await db.commit()
-        return record
-    return None
+async def verify_token(db, token, *, scope="camera_stream"):
+    # Raw-secret verification owns short sessions; never commits a handler's DB.
+    task = auth_runtime.spawn(_resolve_token(token, scope))
+    return await asyncio.shield(task)
 
 
 def _coerce_utc(dt: datetime) -> datetime:
@@ -212,33 +191,155 @@ def _coerce_utc(dt: datetime) -> datetime:
 
 
 async def list_user_tokens(db: AsyncSession, user_id: int) -> list[LongLivedToken]:
-    """All non-revoked tokens for a user, newest first. Includes expired ones
-    (the UI shows them so the user can clean them up).
+    """Current tokens plus visibly retired upgrade records, newest first.
+
+    Ordinary revoked tokens stay hidden; expired tokens remain manageable.
     """
     result = await db.execute(
         select(LongLivedToken)
-        .where(LongLivedToken.user_id == user_id, LongLivedToken.revoked_at.is_(None))
+        .where(
+            LongLivedToken.user_id == user_id,
+            or_(
+                LongLivedToken.revoked_at.is_(None),
+                LongLivedToken.retired_at.is_not(None),
+                LongLivedToken.retired_reason.is_not(None),
+            ),
+        )
         .order_by(LongLivedToken.created_at.desc())
     )
     return list(result.scalars().all())
 
 
 async def list_all_tokens(db: AsyncSession) -> list[LongLivedToken]:
-    """Admin view of every non-revoked token in the system, newest first."""
+    """Admin view of current tokens and visibly retired upgrade records."""
     result = await db.execute(
-        select(LongLivedToken).where(LongLivedToken.revoked_at.is_(None)).order_by(LongLivedToken.created_at.desc())
+        select(LongLivedToken)
+        .where(
+            or_(
+                LongLivedToken.revoked_at.is_(None),
+                LongLivedToken.retired_at.is_not(None),
+                LongLivedToken.retired_reason.is_not(None),
+            )
+        )
+        .order_by(LongLivedToken.created_at.desc())
     )
     return list(result.scalars().all())
 
 
-async def revoke_token(db: AsyncSession, token_id: int) -> bool:
-    """Mark a token revoked. Returns True if a row was updated, False if the
-    id didn't exist or was already revoked.
-    """
-    result = await db.execute(select(LongLivedToken).where(LongLivedToken.id == token_id))
-    record = result.scalar_one_or_none()
+async def revoke_token(db, token_id: int):
+    record = await db.get(LongLivedToken, token_id)
+    if record is None:
+        return False
+    if record.owner_identity:
+        capture = capture_long_lived(record)
+        await guard_accounts(db, [capture], require_active=False)
+        record = (
+            await db.execute(
+                select(LongLivedToken)
+                .where(LongLivedToken.id == token_id)
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+        ).scalar_one_or_none()
     if record is None or record.revoked_at is not None:
         return False
-    record.revoked_at = datetime.now(timezone.utc)
+    record.revoked_at = utcnow()
     await db.commit()
     return True
+
+
+_audit_after: OrderedDict[str, float] = OrderedDict()
+
+
+async def _resolve_token(token, scope):
+    from backend.app.core.auth import AUTH_DATABASE_FAILURES, APIKeyValidationFailure
+
+    parsed = _parse_token(token)
+    if parsed is None:
+        return None
+    prefix, full = parsed
+    scopes = (scope,) if isinstance(scope, str) else tuple(scope)
+    try:
+        async with async_session() as db:
+            auth_runtime.track_transaction(db)
+            rows = (
+                await db.execute(
+                    select(
+                        LongLivedToken.id,
+                        LongLivedToken.secret_hash,
+                        LongLivedToken.token_identity,
+                        LongLivedToken.owner_identity,
+                        LongLivedToken.user_id,
+                    ).where(
+                        LongLivedToken.lookup_prefix == prefix,
+                        LongLivedToken.scope.in_(scopes),
+                        LongLivedToken.contract_version == 1,
+                        LongLivedToken.revoked_at.is_(None),
+                        LongLivedToken.retired_at.is_(None),
+                        LongLivedToken.retired_reason.is_(None),
+                    )
+                )
+            ).all()
+        winner = await _scan_api_key(full, [(r.id, r.secret_hash) for r in rows])
+        if winner is None:
+            return None
+        original = next(r for r in rows if r.id == winner[0] and r.secret_hash == winner[1])
+        from backend.app.core.auth_lifetime import FrozenAuthority
+
+        captured = FrozenAuthority(
+            "long_lived", original.owner_identity or "", original.user_id, token_identity=original.token_identity
+        )
+        if await _read_token_authority(captured, winner[1], scopes) is None:
+            return None
+        await _audit_use(captured)
+        return await _read_token_authority(captured, winner[1], scopes)
+    except APIKeyValidationFailure as exc:
+        raise HTTPException(503, "Credential verification is busy") from exc
+    except AUTH_DATABASE_FAILURES as exc:
+        raise HTTPException(503, "Authentication temporarily unavailable", headers={"Retry-After": "5"}) from exc
+
+
+async def _read_token_authority(captured, winning_hash, scopes):
+    async with async_session() as db:
+        auth_runtime.track_transaction(db)
+        try:
+            principal = await validate_captured(db, captured)
+        except HTTPException as exc:
+            if exc.status_code != 401:
+                raise
+            return None
+        record = principal.long_lived_token
+        if record.secret_hash != winning_hash or record.scope not in scopes:
+            return None
+        needed = ("printers:read", "queue:read") if record.scope == "monitor" else ("camera:view",)
+        if not all(principal.user.has_permission(p) for p in needed):
+            return None
+        record._auth_capture = principal.capture
+    return record
+
+
+async def _audit_use(captured):
+    from backend.app.core.auth import AUTH_DATABASE_FAILURES
+
+    loop = asyncio.get_running_loop()
+    identity = captured.token_identity
+    if not reserve_audit_attempt(_audit_after, identity, loop.time()):
+        return
+    try:
+        async with async_session() as db:
+            auth_runtime.track_transaction(db)
+            await db.execute(
+                update(LongLivedToken)
+                .where(
+                    LongLivedToken.token_identity == identity,
+                    LongLivedToken.owner_identity == captured.account_identity,
+                    LongLivedToken.contract_version == 1,
+                    LongLivedToken.revoked_at.is_(None),
+                    LongLivedToken.retired_at.is_(None),
+                    LongLivedToken.retired_reason.is_(None),
+                )
+                .values(last_used_at=utcnow())
+            )
+            await db.commit()
+    except AUTH_DATABASE_FAILURES:
+        logging.getLogger(__name__).warning("Long-lived token usage audit unavailable")

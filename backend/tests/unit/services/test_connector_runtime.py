@@ -136,7 +136,7 @@ async def test_a_fence_whose_rotation_fails_keeps_admission_closed(runtime, sess
     async def broken(db):
         raise OSError("database unavailable")
 
-    monkeypatch.setattr(submissions, "rotate_storage_epoch", broken)
+    monkeypatch.setattr(submissions, "stage_storage_epoch", broken)
     restarted = ConnectorRuntime()
     await restarted.startup()
 

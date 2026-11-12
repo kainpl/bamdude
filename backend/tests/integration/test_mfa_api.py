@@ -245,6 +245,9 @@ class TestEmailOTPEnable:
         """Confirm step activates email OTP when setup_token + code are valid."""
         from sqlalchemy import select as sa_select
 
+        from backend.app.core.auth import _validate_jwt_authority
+        from backend.app.core.auth_lifetime import binding
+
         token = await _setup_and_login(async_client, "confirmenable", "confirmenable1")
 
         # Give user an email address directly (SMTP not available in tests)
@@ -259,6 +262,7 @@ class TestEmailOTPEnable:
             AuthEphemeralToken(
                 token=setup_token,
                 token_type="email_otp_setup",
+                **binding((await _validate_jwt_authority(token)).capture),
                 username="confirmenable",
                 nonce=_pwd_context.hash(code),
                 expires_at=datetime.now(timezone.utc) + timedelta(minutes=10),

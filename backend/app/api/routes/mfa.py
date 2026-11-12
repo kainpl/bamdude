@@ -2,7 +2,7 @@
 
 Security model
 --------------
-* Pre-auth tokens  : secrets.token_urlsafe(32) stored in-memory with a 5-minute TTL.
+* Pre-auth tokens  : secrets.token_urlsafe(32) stored with immutable account identity/generation in the DB for five minutes.
   They are single-use and do NOT grant access to any protected resource.
 * TOTP codes       : verified with pyotp (30-second window, ±1 step tolerance).
 * Email OTP codes  : 6-digit numeric, hashed with pbkdf2_sha256, 10-minute TTL,
@@ -16,6 +16,7 @@ Security model
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import io
@@ -42,16 +43,31 @@ from sqlalchemy.orm import selectinload, undefer
 from backend.app.api.routes._oidc_helpers import assert_safe_public_https_url
 from backend.app.api.routes.settings import get_setting, set_setting
 from backend.app.core.auth import (
-    ACCESS_TOKEN_EXPIRE_MINUTES,
+    AUTH_DATABASE_FAILURES,
     RequireAdmin,
     RequirePermission,
-    create_access_token,
     get_auth_db,
     get_current_active_user,
     get_user_by_email,
     get_user_by_username,
-    verify_password,
+    hash_password_async,
+    verify_password_async,
 )
+from backend.app.core.auth_lifetime import (
+    FrozenAuthority,
+    VerifiedOutcome,
+    binding,
+    binding_conditions,
+    capture_account,
+    capture_ephemeral,
+    guard_accounts,
+    refused,
+    stage_end_sessions,
+    utc_naive,
+    utcnow,
+    validate_captured,
+)
+from backend.app.core.auth_runtime import auth_runtime
 from backend.app.core.credential_config import canonical_url, lock_credential_config, merge_secret_fields
 from backend.app.core.database import take_write_lock
 from backend.app.core.oidc_env import env_bool
@@ -138,7 +154,7 @@ def _user_to_response(user: User) -> UserResponse:
         role=user.role,
         is_active=user.is_active,
         is_admin=user.is_admin,
-        auth_source=getattr(user, "auth_source", "local") or "local",
+        auth_source=getattr(user, "_auth_source", None) or getattr(user, "auth_source", "local") or "local",
         groups=[GroupBrief(id=g.id, name=g.name) for g in user.groups],
         permissions=sorted(user.get_permissions()),
         created_at=user.created_at.isoformat(),
@@ -172,101 +188,86 @@ def _generate_backup_codes() -> tuple[list[str], list[str]]:
     return plain, hashed
 
 
+async def _generate_backup_codes_async() -> tuple[list[str], list[str]]:
+    alphabet = string.ascii_uppercase + string.digits
+    plain = ["".join(secrets.choice(alphabet) for _ in range(8)) for _ in range(10)]
+    # Each real hash uses the same bounded owner as password/key work. Caller
+    # cancellation never frees a slot before that hash actually finishes.
+    hashed = [await hash_password_async(code) for code in plain]
+    return plain, hashed
+
+
 # ---------------------------------------------------------------------------
 # DB-backed pre-auth token helpers
 # ---------------------------------------------------------------------------
-async def create_pre_auth_token(
-    db: AsyncSession, username: str, challenge_id: str | None = None, *, remember_me: bool | None = None
-) -> str:
-    """Create a single-use pre-auth token stored in the DB.
-
-    Pass ``challenge_id`` (from the HttpOnly 2fa_challenge cookie) to bind the
-    token to the originating browser session.  The same value must be present as
-    a cookie on every subsequent call that consumes this token.
-    """
-    now = datetime.now(timezone.utc)
-    # Prune expired tokens opportunistically (keep table small)
-    await db.execute(
-        delete(AuthEphemeralToken).where(
-            AuthEphemeralToken.token_type == TokenType.PRE_AUTH,
-            AuthEphemeralToken.expires_at < now,
-        )
+async def create_pre_auth_token(db, username, challenge_id=None, *, remember_me=None, verified: VerifiedOutcome):
+    capture = FrozenAuthority(
+        "pending", verified.account.account_identity, verified.account.user_id, verified.account.generation
     )
+    proof = await guard_accounts(db, [capture])
+    principal = await validate_captured(db, capture, proof=proof)
+    if verified.auth_source not in {"local", "ldap", "oidc"}:
+        raise refused()
     token = secrets.token_urlsafe(32)
     db.add(
         AuthEphemeralToken(
             token=token,
             token_type=TokenType.PRE_AUTH,
-            username=username,
+            username=principal.user.username,
             challenge_id=challenge_id,
             remember_me=remember_me,
-            expires_at=now + PRE_AUTH_TOKEN_TTL,
+            auth_source=verified.auth_source,
+            expires_at=utcnow() + PRE_AUTH_TOKEN_TTL,
+            **binding(capture),
         )
     )
     await db.commit()
     return token
 
 
-async def consume_pre_auth_token(db: AsyncSession, token: str, challenge_id: str | None = None) -> str | None:
-    """Atomically validate and consume a pre-auth token. Returns username or None.
-
-    Uses DELETE...RETURNING so two concurrent requests with the same token cannot
-    both succeed — only the first DELETE finds the row.
-
-    M5: When challenge_id is provided, also enforces the cookie-binding constraint
-    so a stolen token cannot be replayed from a different browser session.
-    """
-    now = datetime.now(timezone.utc)
+async def consume_pre_auth_token(db, token, challenge_id=None):
+    row = await _peek_pre_auth_record(db, token, challenge_id)
+    if row is None:
+        return None
+    capture = capture_ephemeral(row, pending=True)
+    proof = await guard_accounts(db, [capture])
+    principal = await validate_captured(db, capture, proof=proof)
     result = await db.execute(
         delete(AuthEphemeralToken)
         .where(
+            AuthEphemeralToken.id == row.id,
             AuthEphemeralToken.token == token,
             AuthEphemeralToken.token_type == TokenType.PRE_AUTH,
-            AuthEphemeralToken.expires_at > now,
+            AuthEphemeralToken.expires_at > utcnow(),
+            *binding_conditions(capture),
         )
-        .returning(AuthEphemeralToken.username, AuthEphemeralToken.challenge_id)
-        # A validated ORM row can still be live while consuming it. Let the DB
-        # match expiry; Python evaluation mixes SQLite naive and aware dates.
-        .execution_options(synchronize_session="fetch")
+        .returning(AuthEphemeralToken.id)
     )
-    row = result.one_or_none()
-    if row is None:
-        return None
-    username, stored_challenge_id = row
-    # Enforce client binding: if the token was issued with a challenge_id,
-    # the caller must supply the matching value.
-    if stored_challenge_id is not None and stored_challenge_id != challenge_id:
-        await db.rollback()
-        return None
-    await db.commit()
-    return username
+    return principal.user.username if result.scalar_one_or_none() is not None else None
 
 
-async def _peek_pre_auth_record(
-    db: AsyncSession, token: str, challenge_id: str | None = None
-) -> AuthEphemeralToken | None:
-    """Validate a pre-auth token WITHOUT consuming it.
-
-    When the stored token has a ``challenge_id`` (client-binding cookie), the
-    caller must supply the matching value.  A mismatch is treated as an invalid
-    token — no information leakage about whether the token itself exists.
-    """
-    now = datetime.now(timezone.utc)
-    result = await db.execute(
-        select(AuthEphemeralToken).where(
-            AuthEphemeralToken.token == token,
-            AuthEphemeralToken.token_type == TokenType.PRE_AUTH,
-            AuthEphemeralToken.expires_at > now,
+async def _peek_pre_auth_record(db, token, challenge_id=None):
+    row = (
+        await db.execute(
+            select(AuthEphemeralToken).where(
+                AuthEphemeralToken.token == token,
+                AuthEphemeralToken.token_type == TokenType.PRE_AUTH,
+                AuthEphemeralToken.expires_at > utcnow(),
+            )
         )
-    )
-    eph = result.scalar_one_or_none()
-    if eph is None:
+    ).scalar_one_or_none()
+    if row is None or (row.challenge_id is not None and row.challenge_id != challenge_id):
         return None
-    # Enforce client binding: if the token was issued with a challenge_id the
-    # cookie must match.  Treat a mismatch as if the token doesn't exist.
-    if eph.challenge_id is not None and eph.challenge_id != challenge_id:
+    try:
+        principal = await validate_captured(db, capture_ephemeral(row, pending=True))
+    except HTTPException as exc:
+        if exc.status_code != 401:
+            raise
         return None
-    return eph
+    if row.auth_source not in {"local", "ldap", "oidc"}:
+        return None
+    row._principal = principal
+    return row
 
 
 async def peek_pre_auth_token(db: AsyncSession, token: str, challenge_id: str | None = None) -> str | None:
@@ -299,7 +300,7 @@ async def check_rate_limit(
     and the limit can be slightly exceeded only under precise concurrent timing.
     """
     username_key = username.lower()
-    now = datetime.now(timezone.utc)
+    now = utcnow()
     cutoff = now - LOCKOUT_WINDOW
     result = await db.execute(
         select(AuthRateLimitEvent).where(
@@ -343,7 +344,7 @@ async def check_email_otp_send_rate(db: AsyncSession, username: str) -> None:
     without actually triggering a send.
     """
     username_key = username.lower()
-    now = datetime.now(timezone.utc)
+    now = utcnow()
     cutoff = now - EMAIL_OTP_SEND_WINDOW
     result = await db.execute(
         select(AuthRateLimitEvent).where(
@@ -384,14 +385,14 @@ def _assert_totp_not_replayed(totp_obj: pyotp.TOTP, totp_record: UserTOTP, code:
     # Determine which time-step the accepted code belongs to.
     now = datetime.now(timezone.utc)
     accepted_counter: int | None = None
-    for offset in (0, -1):  # current window first, then previous
+    for offset in (0, -1, 1):
         candidate_time = now.timestamp() + offset * totp_obj.interval
         candidate_counter = totp_obj.timecode(datetime.fromtimestamp(candidate_time, tz=timezone.utc))
-        if totp_obj.at(candidate_counter) == code:
+        if totp_obj.generate_otp(candidate_counter) == code:
             accepted_counter = candidate_counter
             break
     if accepted_counter is None:
-        accepted_counter = totp_obj.timecode(now)  # fallback (should not happen after verify())
+        raise HTTPException(400, "Invalid verification code")
 
     totp_record.accept_counter(accepted_counter)
 
@@ -633,6 +634,8 @@ async def get_2fa_status(
     db: AsyncSession = Depends(get_auth_db),
 ) -> TwoFAStatusResponse:
     """Return the current 2FA configuration for the authenticated user."""
+    proof = await guard_accounts(db, [current_user._auth_capture])
+    current_user = (await validate_captured(db, current_user._auth_capture, proof=proof)).user
     result = await db.execute(select(UserTOTP).where(UserTOTP.user_id == current_user.id))
     totp_record = result.scalar_one_or_none()
 
@@ -652,66 +655,50 @@ async def setup_totp(
     body: TOTPSetupRequest | None = Body(default=None),
     current_user: User = Depends(get_current_active_user),
     db: AsyncSession = Depends(get_auth_db),
-) -> TOTPSetupResponse:
-    """Initiate TOTP setup: generates a new secret and QR code.
-
-    Creates (or replaces) a pending UserTOTP record with is_enabled=False.
-    The caller must confirm with POST /auth/2fa/totp/enable.
-
-    M-R7-A: If an *active* TOTP is already configured, the caller must supply
-    the current TOTP code in the request body to confirm intent before the
-    secret is overwritten (prevents silently locking out the real user).
-    """
-    # BamDude is always-on auth — no auth_enabled gate here. (Upstream
-    # gated on is_auth_enabled since opt-in auth could be off; we removed
-    # that mode entirely, so the endpoint is always available to an
-    # authenticated caller.)
-
-    # Upsert a pending TOTP record (is_enabled=False)
+):
+    await check_rate_limit(db, current_user.username)
     existing = (await db.execute(select(UserTOTP).where(UserTOTP.user_id == current_user.id))).scalar_one_or_none()
-
-    # M-R7-A: Guard against silent TOTP replacement when one is already active.
-    if existing and existing.is_enabled:
-        await check_rate_limit(db, current_user.username, event_type=EventType.TWO_FA_ATTEMPT)
-        supplied_code = (body.code if body else None) or ""
-        # Narrow the RuntimeError catch to ONLY the property access — that is
-        # the single line that raises on key-loss / wrong key. Keeping it
-        # tight prevents a future RuntimeError from record_failed_attempt /
-        # clear_failed_attempts / _assert_totp_not_replayed from being
-        # misreported as "TOTP secret unavailable".
+    expected = existing._secret_enc if existing else None
+    was_enabled = bool(existing and existing.is_enabled)
+    old_secret = None
+    if was_enabled:
         try:
-            secret_plain = existing.secret
+            old_secret = existing.secret
         except RuntimeError:
-            logger.exception("TOTP decryption failed for user_id=%s", current_user.id)
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="TOTP secret unavailable",
-            )
-        if not pyotp.TOTP(secret_plain).verify(supplied_code, valid_window=1):
-            await record_failed_attempt(db, current_user.username, event_type=EventType.TWO_FA_ATTEMPT)
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Current TOTP code required to replace an active authenticator",
-            )
-        await clear_failed_attempts(db, current_user.username, event_type=EventType.TWO_FA_ATTEMPT)
-        _assert_totp_not_replayed(pyotp.TOTP(secret_plain), existing, supplied_code)
-        await db.flush()  # L-3: persist last_totp_counter immediately to block replay
-
+            raise HTTPException(500, "TOTP secret unavailable") from None
+        if not body or not pyotp.TOTP(old_secret).verify(body.code or "", valid_window=1):
+            await record_failed_attempt(db, current_user.username)
+            raise HTTPException(400, "Current TOTP code required to replace an active authenticator")
+    await db.rollback()
     secret = pyotp.random_base32()
-    totp = pyotp.TOTP(secret)
-    provisioning_uri = totp.provisioning_uri(name=current_user.username, issuer_name="BamDude")
-    qr_b64 = _generate_totp_qr_b64(provisioning_uri)
-
-    if existing:
-        existing.secret = secret
-        existing.is_enabled = False
-        existing.backup_code_hashes = []
+    uri = pyotp.TOTP(secret).provisioning_uri(name=current_user.username, issuer_name="BamDude")
+    qr = _generate_totp_qr_b64(uri)
+    proof = await guard_accounts(db, [current_user._auth_capture])
+    principal = await validate_captured(db, current_user._auth_capture, proof=proof)
+    existing = (
+        await db.execute(
+            select(UserTOTP)
+            .where(UserTOTP.user_id == principal.user.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one_or_none()
+    if (existing._secret_enc if existing else None) != expected or bool(
+        existing and existing.is_enabled
+    ) != was_enabled:
+        raise HTTPException(409, "Authenticator configuration changed")
+    if was_enabled:
+        _assert_totp_not_replayed(pyotp.TOTP(old_secret), existing, body.code)
+    if existing is None:
+        existing = UserTOTP(user_id=principal.user.id, secret=secret, is_enabled=False)
+        db.add(existing)
     else:
-        db.add(UserTOTP(user_id=current_user.id, secret=secret, is_enabled=False))
-
+        existing.secret, existing.is_enabled, existing.backup_code_hashes = secret, False, []
+    existing.pending_account_identity = principal.capture.account_identity
+    existing.pending_generation = principal.capture.generation
+    existing.pending_sid = principal.capture.sid
     await db.commit()
-
-    return TOTPSetupResponse(secret=secret, qr_code_b64=qr_b64, issuer="BamDude")
+    return TOTPSetupResponse(secret=secret, qr_code_b64=qr, issuer="BamDude")
 
 
 @router.post("/2fa/totp/enable", response_model=TOTPEnableResponse)
@@ -719,41 +706,45 @@ async def enable_totp(
     body: TOTPEnableRequest,
     current_user: User = Depends(get_current_active_user),
     db: AsyncSession = Depends(get_auth_db),
-) -> TOTPEnableResponse:
-    """Confirm TOTP setup by verifying a code from the authenticator app.
-
-    On success, enables TOTP and returns 10 single-use backup codes (shown once).
-    L-R7-A: Rate-limited to prevent brute-forcing the 6-digit confirmation code.
-    """
-    # L-R7-A: Rate-limit the enable step to prevent brute-forcing the 6-digit code.
-    await check_rate_limit(db, current_user.username, event_type=EventType.TWO_FA_ATTEMPT)
-
-    result = await db.execute(select(UserTOTP).where(UserTOTP.user_id == current_user.id))
-    totp_record = result.scalar_one_or_none()
-
-    if not totp_record:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="TOTP setup not initiated. Call /auth/2fa/totp/setup first."
-        )
-
+):
+    await check_rate_limit(db, current_user.username)
+    row = (await db.execute(select(UserTOTP).where(UserTOTP.user_id == current_user.id))).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(400, "TOTP setup not initiated. Call /auth/2fa/totp/setup first.")
     try:
-        totp_verify = pyotp.TOTP(totp_record.secret).verify(body.code, valid_window=1)
+        expected = row._secret_enc
+        valid = pyotp.TOTP(row.secret).verify(body.code, valid_window=1)
     except RuntimeError:
-        logger.exception("TOTP decryption failed for user_id=%s", totp_record.user_id)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="TOTP secret unavailable")
-    if not totp_verify:
-        await record_failed_attempt(db, current_user.username, event_type=EventType.TWO_FA_ATTEMPT)
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid TOTP code")
-
-    await clear_failed_attempts(db, current_user.username, event_type=EventType.TWO_FA_ATTEMPT)
-    plain_codes, hashed_codes = _generate_backup_codes()
-    totp_record.is_enabled = True
-    totp_record.backup_code_hashes = hashed_codes
+        raise HTTPException(500, "TOTP secret unavailable") from None
+    if not valid:
+        await record_failed_attempt(db, current_user.username)
+        raise HTTPException(400, "Invalid TOTP code")
+    await db.rollback()
+    plain, hashed = await _generate_backup_codes_async()
+    proof = await guard_accounts(db, [current_user._auth_capture])
+    principal = await validate_captured(db, current_user._auth_capture, proof=proof)
+    row = (
+        await db.execute(
+            select(UserTOTP)
+            .where(UserTOTP.user_id == principal.user.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one_or_none()
+    if (
+        row is None
+        or row.is_enabled
+        or row._secret_enc != expected
+        or row.pending_account_identity != principal.capture.account_identity
+        or row.pending_generation != principal.capture.generation
+        or row.pending_sid != principal.capture.sid
+    ):
+        raise HTTPException(400, "TOTP setup not initiated. Call /auth/2fa/totp/setup first.")
+    row.is_enabled, row.backup_code_hashes = True, hashed
+    row.pending_account_identity = row.pending_generation = row.pending_sid = None
     await db.commit()
-
     return TOTPEnableResponse(
-        message="TOTP enabled successfully. Store your backup codes in a safe place.",
-        backup_codes=plain_codes,
+        message="TOTP enabled successfully. Store your backup codes in a safe place.", backup_codes=plain
     )
 
 
@@ -762,56 +753,9 @@ async def disable_totp(
     body: TOTPDisableRequest,
     current_user: User = Depends(get_current_active_user),
     db: AsyncSession = Depends(get_auth_db),
-) -> dict:
-    """Disable TOTP by verifying a valid TOTP code or a backup code.
-
-    I10: Rate-limited to prevent backup-code brute-forcing from a hijacked session.
-    """
-    await check_rate_limit(db, current_user.username)
-
-    result = await db.execute(select(UserTOTP).where(UserTOTP.user_id == current_user.id))
-    totp_record = result.scalar_one_or_none()
-
-    if not totp_record or not totp_record.is_enabled:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="TOTP is not enabled")
-
-    # Accept either a valid TOTP code or a valid backup code. When the secret
-    # cannot be decrypted (encryption key lost), fall through to the backup-
-    # code path so the user can still disable 2FA with their printed codes.
-    totp_obj: pyotp.TOTP | None = None
-    code_valid = False
-    decryption_failed = False
-    try:
-        totp_obj = pyotp.TOTP(totp_record.secret)
-        code_valid = totp_obj.verify(body.code, valid_window=1)
-    except RuntimeError:
-        # Track that the failure was server-side so we don't penalise the
-        # user with a fail-counter increment for a problem they can't fix.
-        decryption_failed = True
-        logger.exception(
-            "TOTP decryption failed for user_id=%s — falling through to backup-code check",
-            totp_record.user_id,
-        )
-
-    if code_valid and totp_obj is not None:
-        _assert_totp_not_replayed(totp_obj, totp_record, body.code)
-        await db.flush()  # L-3: persist last_totp_counter immediately to block replay
-    else:
-        # Check backup codes — always iterate all entries (L-R9-A: no early break
-        # to avoid timing oracle based on code position in the list).
-        for hashed in totp_record.backup_code_hashes:
-            if pwd_context.verify(body.code, hashed):
-                code_valid = True
-
-    if not code_valid:
-        # Skip the fail-counter debit when the cause was a server-side
-        # decryption failure (key loss / rotation). Locking the user out of
-        # the recovery path for an admin's mistake is not the right move.
-        if not decryption_failed:
-            await record_failed_attempt(db, current_user.username)
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid code")
-
-    await db.execute(delete(UserTOTP).where(UserTOTP.user_id == current_user.id))
+):
+    row = await _verified_factor_for_mutation(db, current_user, body.code)
+    await db.delete(row)
     await db.commit()
     return {"message": "TOTP disabled"}
 
@@ -821,140 +765,70 @@ async def regenerate_backup_codes(
     body: TOTPDisableRequest,
     current_user: User = Depends(get_current_active_user),
     db: AsyncSession = Depends(get_auth_db),
-) -> BackupCodesResponse:
-    """Generate 10 new backup codes. Requires a valid TOTP code OR a backup code.
-
-    M10: Accepts backup codes for consistency with disable_totp — users who have
-    lost their authenticator app but still have backup codes can regenerate.
-    Rate-limited to prevent brute-forcing from a hijacked session.
-    """
-    await check_rate_limit(db, current_user.username)
-
-    result = await db.execute(select(UserTOTP).where(UserTOTP.user_id == current_user.id))
-    totp_record = result.scalar_one_or_none()
-
-    if not totp_record or not totp_record.is_enabled:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="TOTP is not enabled")
-
-    # Same recovery contract as disable_totp: when the TOTP secret cannot be
-    # decrypted, fall through to the backup-code branch so the user can
-    # rotate their codes with a printed backup code.
-    totp_obj: pyotp.TOTP | None = None
-    code_valid = False
-    decryption_failed = False
-    try:
-        totp_obj = pyotp.TOTP(totp_record.secret)
-        code_valid = totp_obj.verify(body.code, valid_window=1)
-    except RuntimeError:
-        decryption_failed = True
-        logger.exception(
-            "TOTP decryption failed for user_id=%s — falling through to backup-code check",
-            totp_record.user_id,
-        )
-
-    if code_valid and totp_obj is not None:
-        _assert_totp_not_replayed(totp_obj, totp_record, body.code)
-        await db.flush()  # L-3: persist last_totp_counter immediately to block replay
-    else:
-        # Accept a backup code as an alternative (M10)
-        matched_index: int | None = None
-        for idx, hashed in enumerate(totp_record.backup_code_hashes):
-            if pwd_context.verify(body.code, hashed) and matched_index is None:
-                matched_index = idx
-        if matched_index is None:
-            # Skip fail-counter debit when the cause was a server-side
-            # decryption failure (key loss / rotation).
-            if not decryption_failed:
-                await record_failed_attempt(db, current_user.username)
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid TOTP or backup code")
-        # Remove the used backup code
-        totp_record.backup_code_hashes = [c for i, c in enumerate(totp_record.backup_code_hashes) if i != matched_index]
-
-    plain_codes, hashed_codes = _generate_backup_codes()
-    totp_record.backup_code_hashes = hashed_codes
+):
+    # Hash generation precedes the factor guard; verification rereads the factor.
+    plain, hashed = await _generate_backup_codes_async()
+    row = await _verified_factor_for_mutation(db, current_user, body.code)
+    row.backup_code_hashes = hashed
     await db.commit()
-
     return BackupCodesResponse(
-        backup_codes=plain_codes,
-        message="Backup codes regenerated. Store them safely — they will not be shown again.",
+        backup_codes=plain, message="Backup codes regenerated. Store them safely — they will not be shown again."
     )
 
 
 @router.post("/2fa/email/enable")
 async def enable_email_otp(
-    current_user: User = Depends(get_current_active_user),
-    db: AsyncSession = Depends(get_auth_db),
-) -> dict:
-    """Step 1 of email OTP enable: send a verification code to the user's email.
-
-    C5: Proof of possession — the user must prove they control the registered email
-    address before email 2FA is activated.  Returns a ``setup_token`` that must be
-    passed to POST /auth/2fa/email/enable/confirm together with the received code.
-    H-3: Rate-limited to prevent email flooding via repeated calls to this endpoint.
-    """
+    current_user: User = Depends(get_current_active_user), db: AsyncSession = Depends(get_auth_db)
+):
     await check_email_otp_send_rate(db, current_user.username)
-    if not current_user.email:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="You must have an email address configured to enable email OTP 2FA",
-        )
-
-    smtp_settings = await get_smtp_settings(db)
-    if not smtp_settings:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Email service is not configured")
-
-    # Generate and store the setup token (reuse AuthEphemeralToken with type "email_otp_setup")
-    now = datetime.now(timezone.utc)
-    # Prune any existing pending setup tokens for this user
+    email = current_user.email
+    if not email:
+        raise HTTPException(400, "You must have an email address configured to enable email OTP 2FA")
+    smtp = await get_smtp_settings(db)
+    if not smtp:
+        raise HTTPException(500, "Email service is not configured")
+    await db.rollback()
+    code = str(secrets.randbelow(1_000_000)).zfill(6)
+    hashed = await hash_password_async(code)
+    proof = await guard_accounts(db, [current_user._auth_capture])
+    principal = await validate_captured(db, current_user._auth_capture, proof=proof)
+    if principal.user.email != email:
+        raise refused()
     await db.execute(
         delete(AuthEphemeralToken).where(
+            AuthEphemeralToken.account_identity == principal.capture.account_identity,
             AuthEphemeralToken.token_type == TokenType.EMAIL_OTP_SETUP,
-            AuthEphemeralToken.username == current_user.username,
         )
     )
-
-    code = str(secrets.randbelow(1_000_000)).zfill(6)
-    code_hash = pwd_context.hash(code)
-    setup_token = secrets.token_urlsafe(32)
-
+    token = secrets.token_urlsafe(32)
     db.add(
         AuthEphemeralToken(
-            token=setup_token,
+            token=token,
             token_type=TokenType.EMAIL_OTP_SETUP,
-            username=current_user.username,
-            # Reuse the nonce field to store the code hash
-            nonce=code_hash,
-            expires_at=now + timedelta(minutes=10),
+            username=principal.user.username,
+            nonce=hashed,
+            expires_at=utcnow() + timedelta(minutes=10),
+            **binding(principal.capture),
         )
     )
     await db.commit()
-
     try:
-        send_email(
-            smtp_settings=smtp_settings,
-            to_email=current_user.email,
-            subject="Verify your BamDude email address for 2FA",
-            body_text=(
-                f"Your BamDude email 2FA setup code is: {code}\n\n"
-                "Enter this code to confirm email-based two-factor authentication.\n"
-                "The code expires in 10 minutes."
-            ),
-            body_html=(
-                "<p>To enable <strong>email-based two-factor authentication</strong> on your BamDude account, "
-                "enter the code below:</p>"
-                f"<h2 style='letter-spacing:4px'>{code}</h2>"
-                "<p>The code expires in <strong>10 minutes</strong>. "
-                "If you did not request this, you can safely ignore this email.</p>"
-            ),
+        await asyncio.shield(
+            auth_runtime.spawn(
+                asyncio.to_thread(
+                    send_email,
+                    smtp_settings=smtp,
+                    to_email=email,
+                    subject="Verify your BamDude email address for 2FA",
+                    body_text=f"Your email 2FA setup code is: {code}",
+                    body_html=f"<p>Email 2FA setup code:</p><h2>{code}</h2>",
+                )
+            )
         )
-        await record_email_otp_send(db, current_user.username)
-    except Exception as exc:
-        logger.error("Failed to send email OTP setup code to user_id=%d: %s", current_user.id, exc)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to send verification email"
-        )
-
-    return {"message": "Verification code sent to your email address", "setup_token": setup_token}
+    except Exception:
+        raise HTTPException(500, "Failed to send verification email") from None
+    await record_email_otp_send(db, current_user.username)
+    return {"message": "Verification code sent to your email address", "setup_token": token}
 
 
 @router.post("/2fa/email/enable/confirm")
@@ -962,54 +836,49 @@ async def confirm_enable_email_otp(
     body: EmailOTPEnableConfirmRequest,
     current_user: User = Depends(get_current_active_user),
     db: AsyncSession = Depends(get_auth_db),
-) -> dict:
-    """Step 2 of email OTP enable: verify the code and activate email 2FA.
-
-    H-2 fix: Uses peek-then-consume so a wrong code does NOT burn the setup token.
-    The token is only deleted after successful code verification, allowing retries
-    up to the rate limit (5 attempts / 15 min).
-    M4: Rate-limited to prevent brute-forcing the 6-digit setup code.
-    """
-    await check_rate_limit(db, current_user.username, event_type=EventType.TWO_FA_ATTEMPT)
-    now = datetime.now(timezone.utc)
-
-    # --- Peek: validate token without consuming ---
-    peek_result = await db.execute(
-        select(AuthEphemeralToken).where(
-            AuthEphemeralToken.token == body.setup_token,
-            AuthEphemeralToken.token_type == TokenType.EMAIL_OTP_SETUP,
-            AuthEphemeralToken.username == current_user.username,
-            AuthEphemeralToken.expires_at > now,
+):
+    await check_rate_limit(db, current_user.username)
+    row = (
+        await db.execute(
+            select(AuthEphemeralToken).where(
+                AuthEphemeralToken.token == body.setup_token,
+                AuthEphemeralToken.token_type == TokenType.EMAIL_OTP_SETUP,
+                AuthEphemeralToken.expires_at > utcnow(),
+            )
         )
-    )
-    eph = peek_result.scalar_one_or_none()
-    if eph is None:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid or expired setup token")
-
-    code_hash = eph.nonce  # code hash stored in the nonce field
-
-    # --- Verify code before consuming the token ---
-    if not pwd_context.verify(body.code, code_hash):
-        await record_failed_attempt(db, current_user.username, event_type=EventType.TWO_FA_ATTEMPT)
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid verification code")
-
-    # --- Atomically consume the token now that the code is correct ---
-    # DELETE...RETURNING prevents a concurrent request from using the same token.
-    del_result = await db.execute(
+    ).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(400, "Invalid or expired setup token")
+    captured, hashed, row_id = capture_ephemeral(row), row.nonce, row.id
+    if captured != FrozenAuthority(
+        "session",
+        current_user._auth_capture.account_identity,
+        0,
+        current_user._auth_capture.generation,
+        current_user._auth_capture.sid,
+    ):
+        raise HTTPException(400, "Invalid or expired setup token")
+    await db.rollback()
+    if not await verify_password_async(body.code, hashed):
+        await record_failed_attempt(db, current_user.username)
+        raise HTTPException(400, "Invalid verification code")
+    proof = await guard_accounts(db, [captured])
+    principal = await validate_captured(db, captured, proof=proof)
+    spent = await db.execute(
         delete(AuthEphemeralToken)
         .where(
+            AuthEphemeralToken.id == row_id,
             AuthEphemeralToken.token == body.setup_token,
             AuthEphemeralToken.token_type == TokenType.EMAIL_OTP_SETUP,
-            AuthEphemeralToken.username == current_user.username,
+            *binding_conditions(captured),
+            AuthEphemeralToken.nonce == hashed,
+            AuthEphemeralToken.expires_at > utcnow(),
         )
         .returning(AuthEphemeralToken.id)
     )
-    if del_result.one_or_none() is None:
-        # Concurrent request consumed it between peek and delete — treat as invalid.
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid or expired setup token")
-
-    await clear_failed_attempts(db, current_user.username, event_type=EventType.TWO_FA_ATTEMPT)
-    await _set_email_2fa_enabled(db, current_user.id, True)
+    if spent.scalar_one_or_none() is None:
+        raise HTTPException(400, "Invalid or expired setup token")
+    await _set_email_2fa_enabled(db, principal.user.id, True)
     await db.commit()
     return {"message": "Email OTP 2FA enabled"}
 
@@ -1019,261 +888,208 @@ async def disable_email_otp(
     body: EmailOTPDisableRequest,
     current_user: User = Depends(get_current_active_user),
     db: AsyncSession = Depends(get_auth_db),
-) -> dict:
-    """Disable email-based OTP 2FA for the current user.
-
-    C6: Re-authentication required — the caller must supply their account password
-    to prevent a hijacked session from silently removing a second factor.
-    LDAP/OIDC-only users (no local password) are exempt from this check.
-    H-2: Rate-limited to prevent brute-forcing the password via this endpoint.
-    """
-    await check_rate_limit(db, current_user.username)
-    if current_user.password_hash:
-        if not verify_password(body.password, current_user.password_hash):
-            await record_failed_attempt(db, current_user.username)
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid password")
-    await _set_email_2fa_enabled(db, current_user.id, False)
+):
+    expected = current_user.password_hash
+    if expected and (not body.password or not await verify_password_async(body.password, expected)):
+        raise HTTPException(401, "Invalid password")
+    proof = await guard_accounts(db, [current_user._auth_capture])
+    principal = await validate_captured(db, current_user._auth_capture, proof=proof)
+    if principal.user.password_hash != expected or (not expected and principal.auth_source not in {"ldap", "oidc"}):
+        raise HTTPException(401, "Invalid password")
+    await _set_email_2fa_enabled(db, principal.user.id, False)
+    await db.execute(delete(UserOTPCode).where(UserOTPCode.account_identity == principal.capture.account_identity))
     await db.commit()
     return {"message": "Email OTP 2FA disabled"}
 
 
 @router.post("/2fa/email/send")
-async def send_email_otp(
-    request: Request,
-    body: EmailOTPSendRequest,
-    db: AsyncSession = Depends(get_auth_db),
-) -> dict:
-    """Send a 6-digit OTP code to the user's email address.
-
-    Requires a valid pre_auth_token obtained during the login flow.
-    """
-    # Peek (validate without consuming) first so a rate-limit rejection does not
-    # permanently burn the caller's pre-auth token.
-    challenge_id = request.cookies.get("2fa_challenge")
-    pre_auth = await _peek_pre_auth_record(db, body.pre_auth_token, challenge_id=challenge_id)
-    if pre_auth is None or not pre_auth.username:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired pre-auth token")
-    username, bound_remember_me = pre_auth.username, pre_auth.remember_me
-
-    # Enforce rate limit BEFORE consuming the token to prevent OTP email flooding.
+async def send_email_otp(request: Request, body: EmailOTPSendRequest, db: AsyncSession = Depends(get_auth_db)):
+    challenge = request.cookies.get("2fa_challenge")
+    row = await _peek_pre_auth_record(db, body.pre_auth_token, challenge)
+    if row is None:
+        raise HTTPException(401, "Invalid or expired pre-auth token")
+    capture, username, source, preference = (
+        capture_ephemeral(row, pending=True),
+        row.username,
+        row.auth_source,
+        row.remember_me,
+    )
+    user = row._principal.user
+    email = user.email
+    if not email:
+        raise HTTPException(400, "User has no email address configured")
     await check_email_otp_send_rate(db, username)
-
-    user = await get_user_by_username(db, username)
-    if not user or not user.is_active:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found or inactive")
-
-    if not user.email:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="User has no email address configured")
-
-    smtp_settings = await get_smtp_settings(db)
-    if not smtp_settings:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Email service is not configured")
-
-    # Invalidate all existing unused OTP codes for this user (staged, not yet committed)
+    smtp = await get_smtp_settings(db)
+    if not smtp:
+        raise HTTPException(500, "Email service is not configured")
+    await db.rollback()
+    code = str(secrets.randbelow(1_000_000)).zfill(6)
+    hashed = await hash_password_async(code)
+    try:
+        await asyncio.shield(
+            auth_runtime.spawn(
+                asyncio.to_thread(
+                    send_email,
+                    smtp_settings=smtp,
+                    to_email=email,
+                    subject="Your BamDude verification code",
+                    body_text=f"Your BamDude login code is: {code}\nThis code expires in 10 minutes.",
+                    body_html=f"<p>Your BamDude login verification code:</p><h2>{code}</h2><p>Expires in 10 minutes.</p>",
+                )
+            )
+        )
+    except Exception:
+        raise HTTPException(500, "Failed to send OTP email") from None
+    proof = await guard_accounts(db, [capture])
+    principal = await validate_captured(db, capture, proof=proof)
+    if principal.user.email != email or not await consume_pre_auth_token(db, body.pre_auth_token, challenge):
+        raise refused()
     await db.execute(
-        UserOTPCode.__table__.update()  # type: ignore[attr-defined]
-        .where(UserOTPCode.user_id == user.id)
-        .where(UserOTPCode.used.is_(False))
+        UserOTPCode.__table__.update()
+        .where(UserOTPCode.user_id == principal.user.id, UserOTPCode.used.is_(False))
         .values(used=True)
     )
-
-    # Generate a 6-digit code and stage the record (not committed yet)
-    code = str(secrets.randbelow(1_000_000)).zfill(6)
-    code_hash = pwd_context.hash(code)
-    expires_at = datetime.now(timezone.utc) + timedelta(minutes=UserOTPCode.OTP_TTL_MINUTES)
-
-    otp_record = UserOTPCode(
-        user_id=user.id,
-        code_hash=code_hash,
-        attempts=0,
-        used=False,
-        expires_at=expires_at,
-    )
-    db.add(otp_record)
-
-    # M2: Send the email BEFORE consuming the pre-auth token.
-    # If the send fails we raise an exception here; the session is uncommitted so
-    # the OTP record is discarded and the original token remains valid for retry.
-    try:
-        send_email(
-            smtp_settings=smtp_settings,
-            to_email=user.email,
-            subject="Your BamDude verification code",
-            body_text=f"Your BamDude login code is: {code}\n\nThis code expires in {UserOTPCode.OTP_TTL_MINUTES} minutes and can only be used once.",
-            body_html=(
-                f"<p>Your <strong>BamDude</strong> login verification code is:</p>"
-                f"<h2 style='letter-spacing:4px'>{code}</h2>"
-                f"<p>This code expires in <strong>{UserOTPCode.OTP_TTL_MINUTES} minutes</strong> and can only be used once.</p>"
-                f"<p>If you did not request this code, you can safely ignore this email.</p>"
-            ),
+    db.add(
+        UserOTPCode(
+            user_id=principal.user.id,
+            account_identity=capture.account_identity,
+            generation=capture.generation,
+            sid=capture.sid,
+            challenge_id=challenge,
+            code_hash=hashed,
+            attempts=0,
+            used=False,
+            expires_at=utcnow() + timedelta(minutes=UserOTPCode.OTP_TTL_MINUTES),
         )
-        await record_email_otp_send(db, username)
-    except Exception as exc:
-        logger.error("Failed to send OTP email to user_id=%d: %s", user.id, exc)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to send OTP email")
-
-    # Email sent — now atomically consume the old token (this also commits the
-    # staged OTP record) and issue a fresh token for the verify step.
-    consumed = await consume_pre_auth_token(db, body.pre_auth_token, challenge_id=challenge_id)
-    if not consumed:
-        # Raced with another request or token just expired — treat as invalid.
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired pre-auth token")
-
-    # Re-issue a fresh pre-auth token bound to the same cookie so the binding
-    # carries forward through the email → verify step.
-    fresh_token = await create_pre_auth_token(db, username, challenge_id=challenge_id, remember_me=bound_remember_me)
-
-    # Return the fresh pre-auth token so the frontend can proceed to verify
-    return {"message": "Code sent to your email address", "pre_auth_token": fresh_token}
+    )
+    db.add(AuthRateLimitEvent(username=username, event_type=EventType.EMAIL_SEND, occurred_at=utcnow()))
+    fresh = await create_pre_auth_token(
+        db,
+        username,
+        challenge_id=challenge,
+        remember_me=preference,
+        verified=VerifiedOutcome(capture_account(principal.user), source),
+    )
+    return {"message": "Code sent to your email address", "pre_auth_token": fresh}
 
 
 @router.post("/2fa/verify", response_model=TwoFAVerifyResponse)
 async def verify_2fa(
-    request: Request,
-    response: Response,
-    body: TwoFAVerifyRequest,
-    db: AsyncSession = Depends(get_auth_db),
+    request: Request, response: Response, body: TwoFAVerifyRequest, db: AsyncSession = Depends(get_auth_db)
 ) -> TwoFAVerifyResponse:
-    """Verify a 2FA code and exchange the pre_auth_token for a full JWT.
-
-    Accepted methods: ``totp``, ``email``, ``backup``.
-
-    The pre_auth_token is NOT consumed on failed verification attempts so the
-    user can retry without restarting the login flow.  It is only consumed once
-    verification succeeds, preventing token replay after success.
-    """
-    # Peek without consuming — bad codes must not burn the session token.
-    # Pass the HttpOnly challenge cookie so the binding check is enforced.
-    challenge_id = request.cookies.get("2fa_challenge")
-    pre_auth = await _peek_pre_auth_record(db, body.pre_auth_token, challenge_id=challenge_id)
-    if pre_auth is None or not pre_auth.username:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired pre-auth token")
-    username, bound_remember_me = pre_auth.username, pre_auth.remember_me
-
+    challenge = request.cookies.get("2fa_challenge")
+    pending = await _peek_pre_auth_record(db, body.pre_auth_token, challenge)
+    if pending is None:
+        raise HTTPException(401, "Invalid or expired pre-auth token")
+    capture = capture_ephemeral(pending, pending=True)
+    username, source, preference = pending.username, pending.auth_source, pending.remember_me
+    user_id = pending._principal.user.id
     await check_rate_limit(db, username)
-
-    user = await get_user_by_username(db, username)
-    if not user or not user.is_active:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found or inactive")
-
-    method = body.method
-
-    if method == "totp":
-        result = await db.execute(select(UserTOTP).where(UserTOTP.user_id == user.id))
-        totp_record = result.scalar_one_or_none()
-        if not totp_record or not totp_record.is_enabled:
-            await record_failed_attempt(db, username)
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="TOTP is not enabled for this user")
-        try:
-            totp_obj = pyotp.TOTP(totp_record.secret)
-            verified = totp_obj.verify(body.code, valid_window=1)
-        except RuntimeError:
-            logger.exception("TOTP decryption failed for user_id=%s during 2FA verify", totp_record.user_id)
-            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="TOTP secret unavailable")
-        if not verified:
-            await record_failed_attempt(db, username)
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid TOTP code")
-        _assert_totp_not_replayed(totp_obj, totp_record, body.code)
-        await db.flush()  # L-3: persist last_totp_counter immediately to block replay
-
-    elif method == "email":
-        now = datetime.now(timezone.utc)
-        result = await db.execute(
-            select(UserOTPCode)
-            .where(UserOTPCode.user_id == user.id)
-            .where(UserOTPCode.used.is_(False))
-            .where(UserOTPCode.expires_at > now)
-            .order_by(UserOTPCode.created_at.desc())
+    factor = (await db.execute(select(UserTOTP).where(UserTOTP.user_id == user_id))).scalar_one_or_none()
+    code_row = None
+    matched = None
+    factor_hashes = factor.backup_code_hashes if factor and factor.is_enabled else []
+    secret = factor.secret if factor and factor.is_enabled else None
+    if body.method == "email":
+        code_row = (
+            await db.execute(
+                select(UserOTPCode)
+                .where(
+                    UserOTPCode.user_id == user_id,
+                    UserOTPCode.account_identity == capture.account_identity,
+                    UserOTPCode.generation == capture.generation,
+                    UserOTPCode.challenge_id == challenge,
+                    UserOTPCode.used.is_(False),
+                    UserOTPCode.expires_at > utcnow(),
+                )
+                .order_by(UserOTPCode.created_at.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        code_id, hashed = (code_row.id, code_row.code_hash) if code_row else (None, None)
+    else:
+        code_id = hashed = None
+    await db.rollback()  # slow PBKDF work never owns a checkout/lifetime lock
+    if body.method == "totp":
+        valid = bool(secret and pyotp.TOTP(secret).verify(body.code, valid_window=1))
+    elif body.method == "email":
+        valid = bool(hashed and await verify_password_async(body.code, hashed))
+    else:
+        valid = False
+        for index, value in enumerate(factor_hashes):
+            if await verify_password_async(body.code, value) and matched is None:
+                matched = index
+                valid = True
+    proof = await guard_accounts(db, [capture])
+    principal = await validate_captured(db, capture, proof=proof)
+    current = await _peek_pre_auth_record(db, body.pre_auth_token, challenge)
+    if current is None:
+        raise HTTPException(401, "Invalid or expired pre-auth token")
+    if body.method == "email":
+        code_row = await db.get(UserOTPCode, code_id, populate_existing=True) if code_id else None
+        if (
+            code_row is None
+            or code_row.used
+            or code_row.code_hash != hashed
+            or code_row.attempts >= UserOTPCode.MAX_ATTEMPTS
+            or code_row.account_identity != capture.account_identity
+            or code_row.generation != capture.generation
+            or code_row.challenge_id != challenge
+            or utc_naive(code_row.expires_at) <= utcnow()
+        ):
+            valid = False
+        if code_row is not None and not valid:
+            code_row.attempts += 1
+            if code_row.attempts >= UserOTPCode.MAX_ATTEMPTS:
+                code_row.used = True
+            await db.commit()
+    else:
+        factor = (
+            await db.execute(
+                select(UserTOTP)
+                .where(UserTOTP.user_id == principal.user.id)
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+        ).scalar_one_or_none()
+        if factor is None or not factor.is_enabled:
+            valid = False
+        elif body.method == "totp":
+            valid = valid and factor.secret == secret
+        else:
+            valid = valid and factor.backup_code_hashes == factor_hashes
+    if not valid:
+        await record_failed_attempt(db, username)
+        raise HTTPException(401, "Invalid verification code")
+    if not await consume_pre_auth_token(db, body.pre_auth_token, challenge):
+        raise HTTPException(401, "Invalid or expired pre-auth token")
+    if body.method == "email":
+        code_row.used = True
+    elif body.method == "totp":
+        _assert_totp_not_replayed(pyotp.TOTP(secret), factor, body.code)
+    else:
+        factor.backup_code_hashes = [value for index, value in enumerate(factor_hashes) if index != matched]
+    # The helper used by failed attempts commits. Successful cleanup belongs
+    # to this same factor/pre-auth/session publication transaction instead.
+    await db.execute(
+        delete(AuthRateLimitEvent).where(
+            AuthRateLimitEvent.username == username,
+            AuthRateLimitEvent.event_type == EventType.TWO_FA_ATTEMPT,
         )
-        otp_record = result.scalar_one_or_none()
-        if not otp_record:
-            await record_failed_attempt(db, username)
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED, detail="No valid OTP code found. Request a new one."
-            )
-
-        if otp_record.attempts >= UserOTPCode.MAX_ATTEMPTS:
-            otp_record.consume()
-            await db.commit()
-            await record_failed_attempt(db, username)
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED, detail="OTP code has been invalidated after too many attempts"
-            )
-
-        if not pwd_context.verify(body.code, otp_record.code_hash):
-            otp_record.attempts += 1
-            await db.commit()
-            await record_failed_attempt(db, username)
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid OTP code")
-
-        otp_record.consume()
-        await db.commit()
-
-    else:  # method == "backup"
-        result = await db.execute(select(UserTOTP).where(UserTOTP.user_id == user.id))
-        totp_record = result.scalar_one_or_none()
-        if not totp_record or not totp_record.is_enabled:
-            await record_failed_attempt(db, username)
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="TOTP is not enabled for this user")
-
-        # Always iterate all codes — no early break (L-R9-A: constant iteration
-        # count prevents timing oracle based on used-code position in the list).
-        matched_index: int | None = None
-        for idx, hashed in enumerate(totp_record.backup_code_hashes):
-            if pwd_context.verify(body.code, hashed) and matched_index is None:
-                matched_index = idx
-
-        if matched_index is None:
-            await record_failed_attempt(db, username)
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid backup code")
-
-        # M1: Consume the pre-auth token FIRST (atomic single-use enforcement).
-        # Only if that succeeds do we remove the backup code — this prevents a race
-        # where two concurrent requests both pass code verification but only one
-        # should be granted a session.
-        consumed_username = await consume_pre_auth_token(db, body.pre_auth_token, challenge_id=challenge_id)
-        if not consumed_username:
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired pre-auth token")
-
-        # Remove the used backup code now that the token is atomically consumed.
-        updated_codes = [c for i, c in enumerate(totp_record.backup_code_hashes) if i != matched_index]
-        totp_record.backup_code_hashes = updated_codes
-        await db.commit()
-    if method != "backup":
-        # Backup consumed above before removing its code. Every other factor
-        # must also win the atomic single-use gate before minting a session.
-        consumed_username = await consume_pre_auth_token(db, body.pre_auth_token, challenge_id=challenge_id)
-        if not consumed_username:
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired pre-auth token")
-    await clear_failed_attempts(db, username)
-
-    access_token = create_access_token(
-        data={"sub": user.username},
-        expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES),
     )
-
-    # Reload with groups for permission calculation
-    result = await db.execute(select(User).where(User.id == user.id).options(selectinload(User.groups)))
-    user = result.scalar_one()
-
-    # §18.14: sliding-session refresh cookie issued on the same conditions as
-    # password-only login — 2FA-gated logins shouldn't be forced through the
-    # /login flow every hour any more than plain-password logins.
     from backend.app.api.routes.auth import _issue_refresh_cookie
 
-    await _issue_refresh_cookie(
+    issued = await _issue_refresh_cookie(
         db,
         response,
         request,
-        username=user.username,
-        remember_me=bound_remember_me if bound_remember_me is not None else body.remember_me,
+        verified=VerifiedOutcome(capture_account(principal.user), source),
+        remember_me=preference if preference is not None else body.remember_me,
     )
     await db.commit()
-
+    response.delete_cookie("2fa_challenge", path="/api/v1/auth/2fa")
     return TwoFAVerifyResponse(
-        access_token=access_token,
-        token_type="bearer",
-        user=_user_to_response(user),
+        access_token=issued.access_token, token_type="bearer", user=_user_to_response(issued.user)
     )
 
 
@@ -1283,48 +1099,31 @@ async def admin_disable_2fa(
     body: AdminDisable2FARequest = Body(default_factory=AdminDisable2FARequest),
     current_user: User | None = RequirePermission(Permission.USERS_UPDATE),
     db: AsyncSession = Depends(get_auth_db),
-) -> dict:
-    """Admin endpoint: disable all 2FA for a given user.
-
-    Nit 3: Requires the admin's own password as a re-auth step (matching how
-    disable_email_otp protects a user's own 2FA removal). OIDC/LDAP-only admins
-    (no local password_hash) are exempt.
-    """
-    # A missing target must not leave orphan OTP/settings mutations behind.
-    target_user = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
-    if target_user is None:
-        raise HTTPException(status_code=404, detail="User not found")
-
-    # Keep the current re-auth contract; C adds server-bound session provenance.
-    if current_user and current_user.password_hash:
-        if not body.admin_password or not verify_password(body.admin_password, current_user.password_hash):
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Admin password required")
-
-    # Delete TOTP record
+):
+    target = await db.get(User, user_id)
+    if target is None:
+        raise HTTPException(404, "User not found")
+    target_capture = capture_account(target)
+    actor = current_user._auth_capture
+    expected_hash = current_user.password_hash
+    await db.rollback()
+    if expected_hash and (
+        not body.admin_password or not await verify_password_async(body.admin_password, expected_hash)
+    ):
+        raise HTTPException(401, "Admin password required")
+    proof = await guard_accounts(db, [actor, target_capture], require_active=False)
+    admin = await validate_captured(db, actor, required_permissions=(Permission.USERS_UPDATE.value,), proof=proof)
+    if not admin.user.is_admin:
+        raise HTTPException(403, "Administrator required")
+    if admin.user.password_hash != expected_hash:
+        raise HTTPException(401, "Admin password required")
+    if not expected_hash and admin.auth_source not in {"ldap", "oidc"}:
+        raise HTTPException(401, "Admin password required")
     await db.execute(delete(UserTOTP).where(UserTOTP.user_id == user_id))
-
-    # Disable email 2FA setting
     await _set_email_2fa_enabled(db, user_id, False)
-
-    # Invalidate all OTP codes
-    await db.execute(
-        UserOTPCode.__table__.update()  # type: ignore[attr-defined]
-        .where(UserOTPCode.user_id == user_id)
-        .values(used=True)
-    )
-
-    # I2: Invalidate existing JWTs for the target user by bumping password_changed_at.
-    # Without this, a stolen token remains valid after 2FA removal. §18.14 extension:
-    # sliding-session refresh tokens are revoked too so a stolen cookie can't keep
-    # refreshing access tokens after an admin nuked 2FA.
-    from backend.app.core.auth import revoke_all_refresh_tokens_for_user
-
-    target_user.password_changed_at = datetime.now(timezone.utc)
-    await revoke_all_refresh_tokens_for_user(db, target_user.username)
-
+    await db.execute(delete(UserOTPCode).where(UserOTPCode.user_id == user_id))
+    await stage_end_sessions(db, target_capture, "admin_mfa_reset")
     await db.commit()
-    actor = current_user.username if current_user else "anonymous"
-    logger.info("Admin %s disabled all 2FA for user_id=%d", actor, user_id)
     return {"message": "2FA disabled for user"}
 
 
@@ -1754,6 +1553,8 @@ async def oidc_authorize(
     if not provider:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Provider not found or not enabled")
 
+    db.expunge(provider)
+    await db.rollback()
     # Fetch discovery document
     discovery_url = f"{provider.issuer_url.rstrip('/')}/.well-known/openid-configuration"
     try:
@@ -1781,7 +1582,7 @@ async def oidc_authorize(
     external_url = await _get_base_external_url(db)
     redirect_uri = f"{external_url}/api/v1/auth/oidc/callback"
 
-    now = datetime.now(timezone.utc)
+    now = utcnow()
     # Prune expired OIDC states from the DB
     await db.execute(
         delete(AuthEphemeralToken).where(
@@ -1800,6 +1601,7 @@ async def oidc_authorize(
         AuthEphemeralToken(
             token=state,
             token_type=TokenType.OIDC_STATE,
+            contract_version=1,
             provider_id=provider_id,
             nonce=nonce,
             code_verifier=code_verifier,
@@ -1847,12 +1649,13 @@ async def oidc_callback(
         # Atomically validate and consume OIDC state from DB (I6: single-use enforcement).
         # DELETE...RETURNING ensures concurrent callbacks with the same state token
         # cannot both succeed — only the first DELETE finds the row.
-        now = datetime.now(timezone.utc)
+        now = utcnow()
         state_del = await db.execute(
             delete(AuthEphemeralToken)
             .where(
                 AuthEphemeralToken.token == state,
                 AuthEphemeralToken.token_type == TokenType.OIDC_STATE,
+                AuthEphemeralToken.contract_version == 1,
                 AuthEphemeralToken.expires_at > now,  # reject expired tokens atomically
             )
             .returning(
@@ -1880,6 +1683,8 @@ async def oidc_callback(
         redirect_uri = f"{external_url}/api/v1/auth/oidc/callback"
 
         # ── Step 1: Fetch discovery document ────────────────────────────────
+        db.expunge(provider)
+        await db.rollback()
         discovery_url = f"{provider.issuer_url.rstrip('/')}/.well-known/openid-configuration"
         try:
             async with httpx.AsyncClient(timeout=10) as client:
@@ -2016,22 +1821,32 @@ async def oidc_callback(
 
         # ── Step 4: Resolve / create user ────────────────────────────────────
         try:
-            # 1. Look up existing OIDC link
-            link_result = await db.execute(
-                select(UserOIDCLink)
-                .where(UserOIDCLink.provider_id == provider_id)
-                .where(UserOIDCLink.provider_user_id == provider_sub)
-            )
-            link = link_result.scalar_one_or_none()
-
-            user: User | None = None
-
-            if link:
-                # Existing link → load the linked user
-                user_result = await db.execute(
-                    select(User).where(User.id == link.user_id).options(selectinload(User.groups))
+            # Resolve link + immutable account in one statement. A second lookup
+            # by recycled user_id would let deletion/recreation transplant an IdP.
+            linked = (
+                await db.execute(
+                    select(UserOIDCLink, User)
+                    .join(User, User.id == UserOIDCLink.user_id)
+                    .where(UserOIDCLink.provider_id == provider_id, UserOIDCLink.provider_user_id == provider_sub)
+                    .options(selectinload(User.groups))
                 )
-                user = user_result.scalar_one_or_none()
+            ).one_or_none()
+            link, user = linked if linked is not None else (None, None)
+            if link:
+                resolved = capture_account(user)
+                await guard_accounts(db, [resolved])
+                current_link = (
+                    await db.execute(
+                        select(UserOIDCLink.id).where(
+                            UserOIDCLink.id == link.id,
+                            UserOIDCLink.user_id == resolved.user_id,
+                            UserOIDCLink.provider_id == provider_id,
+                            UserOIDCLink.provider_user_id == provider_sub,
+                        )
+                    )
+                ).scalar_one_or_none()
+                if current_link is None:
+                    raise refused()
             else:
                 # 2. No OIDC link yet — check for an existing user with the same email.
                 # Use case-insensitive matching (func.lower) so that "User@Example.com"
@@ -2043,6 +1858,7 @@ async def oidc_callback(
                     email_user = await get_user_by_email(db, provider_email)
 
                 if email_user and provider.auto_link_existing_accounts:
+                    await guard_accounts(db, [capture_account(email_user)])
                     # M-4: Only auto-link when the provider has auto_link_existing_accounts
                     # enabled.  Operators can disable this to require explicit account linking,
                     # preventing an attacker-controlled IdP from hijacking local accounts.
@@ -2070,7 +1886,7 @@ async def oidc_callback(
                             provider_email=provider_email,
                         )
                     )
-                    await db.commit()
+                    await db.flush()
                     user = email_user
                     logger.info(
                         "Auto-linked existing user '%s' to OIDC provider %d via email match",
@@ -2147,12 +1963,8 @@ async def oidc_callback(
                             provider_email=user_email_for_storage,
                         )
                     )
-                    await db.commit()
-
-                    user_result = await db.execute(
-                        select(User).where(User.id == new_user.id).options(selectinload(User.groups))
-                    )
-                    user = user_result.scalar_one()
+                    await db.flush()
+                    user = new_user
                     logger.info("Auto-created user '%s' via OIDC provider %d", username, provider_id)
                 else:
                     return RedirectResponse(url=f"{frontend_error_url}no_linked_account", status_code=302)
@@ -2162,18 +1974,21 @@ async def oidc_callback(
 
             # Issue an OIDC exchange token (short-lived, single-use) stored in DB.
             # I7: Opportunistically prune expired exchange tokens to keep the table small.
-            now2 = datetime.now(timezone.utc)
+            now2 = utcnow()
             await db.execute(
                 delete(AuthEphemeralToken).where(
                     AuthEphemeralToken.token_type == TokenType.OIDC_EXCHANGE,
                     AuthEphemeralToken.expires_at < now2,
                 )
             )
+            await guard_accounts(db, [capture_account(user)])
             exchange_token = secrets.token_urlsafe(32)
             db.add(
                 AuthEphemeralToken(
                     token=exchange_token,
                     token_type=TokenType.OIDC_EXCHANGE,
+                    auth_source="oidc",
+                    **binding(capture_account(user)),
                     username=user.username,
                     remember_me=remember_me,
                     expires_at=now2 + OIDC_EXCHANGE_TTL,
@@ -2185,6 +2000,10 @@ async def oidc_callback(
             # token is never sent to the server in the Referer header or server logs.
             return RedirectResponse(url=f"{external_url}/login#oidc_token={exchange_token}", status_code=302)
 
+        except HTTPException:
+            raise
+        except AUTH_DATABASE_FAILURES as exc:
+            raise HTTPException(503, "Authentication temporarily unavailable") from exc
         except Exception as exc:
             logger.error("OIDC user resolution failed for provider %d: %s", provider_id, exc, exc_info=True)
             try:
@@ -2193,6 +2012,10 @@ async def oidc_callback(
                 logger.error("DB rollback failed after OIDC user-resolution error: %s", rb_exc, exc_info=True)
             return RedirectResponse(url=f"{frontend_error_url}user_resolution_failed", status_code=302)
 
+    except HTTPException:
+        raise
+    except AUTH_DATABASE_FAILURES as exc:
+        raise HTTPException(503, "Authentication temporarily unavailable") from exc
     except Exception as exc:
         # L-1: Log the exception class name internally but never expose it in the
         # redirect URL — leaking exception names aids attacker reconnaissance.
@@ -2205,104 +2028,69 @@ async def oidc_callback(
 
 @router.post("/oidc/exchange", response_model=LoginResponse)
 async def oidc_exchange(
-    body: OIDCExchangeRequest,
-    raw_request: Request,
-    response: Response,
-    db: AsyncSession = Depends(get_auth_db),
+    body: OIDCExchangeRequest, raw_request: Request, response: Response, db: AsyncSession = Depends(get_auth_db)
 ) -> LoginResponse:
-    """Exchange an OIDC exchange token (from the callback redirect) for a full JWT.
-
-    C4: If the resolved user has 2FA enabled the exchange returns a pre_auth_token
-    (requires_2fa=True) instead of a full JWT.  The frontend must then complete the
-    2FA step exactly as it would after a password-based login.
-    """
-    now = datetime.now(timezone.utc)
-    # Atomically consume the exchange token (DELETE...RETURNING prevents replay).
-    consume_result = await db.execute(
+    row = (
+        await db.execute(
+            select(AuthEphemeralToken).where(
+                AuthEphemeralToken.token == body.oidc_token,
+                AuthEphemeralToken.token_type == TokenType.OIDC_EXCHANGE,
+                AuthEphemeralToken.expires_at > utcnow(),
+            )
+        )
+    ).scalar_one_or_none()
+    if row is None or row.auth_source != "oidc":
+        raise HTTPException(401, "Invalid or expired OIDC exchange token")
+    captured = capture_ephemeral(row, pending=True)
+    preference = row.remember_me is True
+    proof = await guard_accounts(db, [captured])
+    principal = await validate_captured(db, captured, proof=proof)
+    spent = await db.execute(
         delete(AuthEphemeralToken)
         .where(
+            AuthEphemeralToken.id == row.id,
             AuthEphemeralToken.token == body.oidc_token,
             AuthEphemeralToken.token_type == TokenType.OIDC_EXCHANGE,
-            AuthEphemeralToken.expires_at > now,  # reject expired tokens atomically
+            AuthEphemeralToken.auth_source == "oidc",
+            AuthEphemeralToken.expires_at > utcnow(),
+            *binding_conditions(captured),
         )
-        .returning(AuthEphemeralToken.username, AuthEphemeralToken.remember_me)
+        .returning(AuthEphemeralToken.id)
     )
-    row = consume_result.one_or_none()
-    if row is None:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired OIDC exchange token")
-
-    username, stored_remember_me = row
-    remember_me = stored_remember_me is True
-    await db.commit()
-
-    user = await get_user_by_username(db, username)
-    if not user or not user.is_active:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found or inactive")
-
-    # Reload with groups
-    result = await db.execute(select(User).where(User.id == user.id).options(selectinload(User.groups)))
-    user = result.scalar_one()
-
-    # C4: Check whether the user has any 2FA method enabled.
-    totp_result = await db.execute(select(UserTOTP).where(UserTOTP.user_id == user.id))
-    totp_record = totp_result.scalar_one_or_none()
-    totp_enabled = totp_record is not None and totp_record.is_enabled
-    email_2fa_enabled = await _get_email_2fa_enabled(db, user.id)
-
-    if totp_enabled or email_2fa_enabled:
-        # User has 2FA — issue a pre_auth_token bound to this browser session via
-        # an HttpOnly cookie (H-A: mirrors the cookie-binding done in auth.py:login).
-        two_fa_methods: list[str] = []
-        if totp_enabled:
-            two_fa_methods.append("totp")
-        if email_2fa_enabled:
-            two_fa_methods.append("email")
-        if totp_enabled:
-            two_fa_methods.append("backup")
-        challenge_id = secrets.token_urlsafe(32)
-        pre_auth_token = await create_pre_auth_token(
-            db, user.username, challenge_id=challenge_id, remember_me=remember_me
+    if spent.scalar_one_or_none() is None:
+        raise refused()
+    user = principal.user
+    factor = (await db.execute(select(UserTOTP).where(UserTOTP.user_id == user.id))).scalar_one_or_none()
+    totp_enabled = bool(factor and factor.is_enabled)
+    email_enabled = await _get_email_2fa_enabled(db, user.id)
+    verified = VerifiedOutcome(capture_account(user), "oidc")
+    if totp_enabled or email_enabled:
+        challenge = secrets.token_urlsafe(32)
+        pending = await create_pre_auth_token(
+            db, user.username, challenge_id=challenge, remember_me=preference, verified=verified
         )
         response.set_cookie(
             key="2fa_challenge",
-            value=challenge_id,
+            value=challenge,
             httponly=True,
             secure=raw_request.url.scheme == "https",
             samesite="lax",
             max_age=300,
             path="/api/v1/auth/2fa",
         )
-        return LoginResponse(
-            requires_2fa=True,
-            pre_auth_token=pre_auth_token,
-            two_fa_methods=two_fa_methods,
-            user=_user_to_response(user),
+        methods = (
+            (["totp"] if totp_enabled else [])
+            + (["email"] if email_enabled else [])
+            + (["backup"] if totp_enabled else [])
         )
-
-    access_token = create_access_token(
-        data={"sub": user.username},
-        expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES),
-    )
-
-    # Use only the preference bound to the consumed one-time exchange token;
-    # callback query parameters and the current browser UI cannot override it.
+        return LoginResponse(
+            requires_2fa=True, pre_auth_token=pending, two_fa_methods=methods, user=_user_to_response(user)
+        )
     from backend.app.api.routes.auth import _issue_refresh_cookie
 
-    await _issue_refresh_cookie(
-        db,
-        response,
-        raw_request,
-        username=user.username,
-        remember_me=remember_me,
-    )
+    issued = await _issue_refresh_cookie(db, response, raw_request, verified=verified, remember_me=preference)
     await db.commit()
-
-    return LoginResponse(
-        access_token=access_token,
-        token_type="bearer",
-        user=_user_to_response(user),
-        requires_2fa=False,
-    )
+    return LoginResponse(access_token=issued.access_token, token_type="bearer", user=_user_to_response(issued.user))
 
 
 @router.get("/oidc/links", response_model=list[OIDCLinkResponse])
@@ -2311,6 +2099,8 @@ async def list_oidc_links(
     db: AsyncSession = Depends(get_auth_db),
 ) -> list[OIDCLinkResponse]:
     """List all OIDC provider links for the current user."""
+    proof = await guard_accounts(db, [current_user._auth_capture])
+    current_user = (await validate_captured(db, current_user._auth_capture, proof=proof)).user
     result = await db.execute(
         select(UserOIDCLink).where(UserOIDCLink.user_id == current_user.id).options(selectinload(UserOIDCLink.provider))
     )
@@ -2342,6 +2132,8 @@ async def remove_oidc_link(
     """Remove the OIDC link between the current user and a provider."""
     # Serialize simultaneous removals on the account, not on individual links:
     # two different final links must not both pass an unlocked count.
+    proof = await guard_accounts(db, [current_user._auth_capture])
+    await validate_captured(db, current_user._auth_capture, proof=proof)
     await take_write_lock(db, User.__table__, current_user.id)
     user = (await db.execute(select(User).where(User.id == current_user.id).with_for_update())).scalar_one_or_none()
     if user is None or not user.is_active:
@@ -2394,3 +2186,41 @@ async def _get_base_external_url(db: AsyncSession) -> str:
     if external_url:
         return external_url.rstrip("/")
     return os.environ.get("APP_URL", "http://localhost:5173").rstrip("/")
+
+
+async def _verified_factor_for_mutation(db, user, code):
+    await check_rate_limit(db, user.username)
+    row = (await db.execute(select(UserTOTP).where(UserTOTP.user_id == user.id))).scalar_one_or_none()
+    if row is None or not row.is_enabled:
+        raise HTTPException(400, "TOTP is not enabled")
+    expected, hashes = row._secret_enc, row.backup_code_hashes
+    failed_decryption = False
+    try:
+        secret = row.secret
+        valid_totp = pyotp.TOTP(secret).verify(code, valid_window=1)
+    except RuntimeError:
+        secret, valid_totp, failed_decryption = None, False, True
+    await db.rollback()
+    valid_backup = False
+    if not valid_totp:
+        for hashed in hashes:
+            valid_backup = await verify_password_async(code, hashed) or valid_backup
+    if not valid_totp and not valid_backup:
+        if not failed_decryption:
+            await record_failed_attempt(db, user.username)
+        raise HTTPException(400, "Invalid code")
+    proof = await guard_accounts(db, [user._auth_capture])
+    principal = await validate_captured(db, user._auth_capture, proof=proof)
+    row = (
+        await db.execute(
+            select(UserTOTP)
+            .where(UserTOTP.user_id == principal.user.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one_or_none()
+    if row is None or not row.is_enabled or row._secret_enc != expected or row.backup_code_hashes != hashes:
+        raise HTTPException(409, "Authenticator configuration changed")
+    if valid_totp:
+        _assert_totp_not_replayed(pyotp.TOTP(secret), row, code)
+    return row

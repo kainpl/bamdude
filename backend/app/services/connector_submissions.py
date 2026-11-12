@@ -95,6 +95,7 @@ class ConnectorActor:
     key_id: int
     key_identity: str
     owner_id: int | None
+    capture: object | None = None
 
 
 class ConnectorRefusal(Exception):
@@ -142,12 +143,18 @@ async def read_server_identity(db: AsyncSession) -> tuple[str | None, str | None
     return rows.get(SERVER_ID_KEY) or None, rows.get(STORAGE_EPOCH_KEY) or None
 
 
-async def rotate_storage_epoch(db: AsyncSession) -> str:
-    """A new storage epoch, committed: every operation of the old one stops answering (spec r2 §8.4)."""
+async def stage_storage_epoch(db: AsyncSession) -> str:
+    """Stage a new namespace in the caller's restore transaction, without committing it."""
     epoch = str(uuid.uuid4())
     result = await db.execute(update(Settings).where(Settings.key == STORAGE_EPOCH_KEY).values(value=epoch))
     if result.rowcount == 0:
         db.add(Settings(key=STORAGE_EPOCH_KEY, value=epoch))
+    return epoch
+
+
+async def rotate_storage_epoch(db: AsyncSession) -> str:
+    """A new storage epoch, committed: every operation of the old one stops answering (spec r2 §8.4)."""
+    epoch = await stage_storage_epoch(db)
     await db.commit()
     return epoch
 
@@ -186,19 +193,33 @@ async def fresh_key(db: AsyncSession, actor: ConnectorActor, permissions) -> API
     The integer id is reused on SQLite, so the immutable identity must match too: a new key that took the id is
     not the actor, and a key without an identity is nobody.
     """
-    from backend.app.core.auth import authorize_api_key
+    from backend.app.core.auth import AUTH_DATABASE_FAILURES
+    from backend.app.core.auth_lifetime import FrozenAuthority, validate_captured
 
-    key = await db.get(APIKey, actor.key_id, populate_existing=True)
-    if key is None or not key.enabled or not key.connector_identity or key.connector_identity != actor.key_identity:
+    if (
+        not isinstance(actor.capture, FrozenAuthority)
+        or actor.capture.kind != "key"
+        or actor.capture.key_identity != actor.key_identity
+        or actor.capture.user_id != actor.owner_id
+    ):
         raise ConnectorRefusal(401, "invalid_key", INVALID_KEY)
-    if key.expires_at is not None:
-        expires = key.expires_at if key.expires_at.tzinfo else key.expires_at.replace(tzinfo=timezone.utc)
-        if expires < datetime.now(timezone.utc):
-            raise ConnectorRefusal(401, "invalid_key", INVALID_KEY)
     try:
-        await authorize_api_key(db, key, list(permissions))
+        principal = await validate_captured(db, actor.capture, required_permissions=permissions)
     except HTTPException as exc:
-        raise ConnectorRefusal(403, "permission_denied", PERMISSION_DENIED) from exc
+        if exc.status_code == 401:
+            raise ConnectorRefusal(401, "invalid_key", INVALID_KEY) from exc
+        if exc.status_code == 503:
+            raise ConnectorRefusal(
+                503, "authentication_unavailable", "Authentication temporarily unavailable", retryable=True
+            ) from exc
+        raise ConnectorRefusal(exc.status_code, "permission_denied", PERMISSION_DENIED) from exc
+    except AUTH_DATABASE_FAILURES as exc:
+        raise ConnectorRefusal(
+            503, "authentication_unavailable", "Authentication temporarily unavailable", retryable=True
+        ) from exc
+    key = principal.api_key
+    if key is None or key.id != actor.key_id:
+        raise ConnectorRefusal(401, "invalid_key", INVALID_KEY)
     return key
 
 

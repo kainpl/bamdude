@@ -40,9 +40,11 @@ def _members(body: bytes) -> list[str]:
 async def test_an_export_carries_only_the_files_the_reader_may_see(committing_client, db_session, linked):
     await _user(db_session, "pr_blind", ["products:read"])
     await _user(db_session, "pr_seeing", ["products:read", "library:read_all"])
-    blind = await committing_client.get(f"/api/v1/products/{linked['product']}/export", headers=_jwt("pr_blind"))
+    blind = await committing_client.get(f"/api/v1/products/{linked['product']}/export", headers=await _jwt("pr_blind"))
     assert blind.status_code == 200, blind.text
-    seeing = await committing_client.get(f"/api/v1/products/{linked['product']}/export", headers=_jwt("pr_seeing"))
+    seeing = await committing_client.get(
+        f"/api/v1/products/{linked['product']}/export", headers=await _jwt("pr_seeing")
+    )
     assert len(_members(seeing.content)) > len(_members(blind.content))
     assert not [m for m in _members(blind.content) if m.endswith(".3mf")]
 
@@ -55,12 +57,12 @@ async def test_linking_a_file_from_the_product_asks_the_librarys_right(committin
     )
     url = f"/api/v1/products/{linked['product']}/files"
     both = {"library_file_ids": [linked["direct"], linked["spare"]]}
-    assert (await committing_client.put(url, json=both, headers=_jwt("pr_editor"))).status_code == 403
+    assert (await committing_client.put(url, json=both, headers=await _jwt("pr_editor"))).status_code == 403
     unchanged = (await committing_client.get(f"/api/v1/products/{linked['product']}")).json()["library_file_ids"]
     assert unchanged == [linked["direct"]]
-    assert (await committing_client.put(url, json=both, headers=_jwt("pr_librarian"))).status_code == 200
+    assert (await committing_client.put(url, json=both, headers=await _jwt("pr_librarian"))).status_code == 200
     unlink = f"/api/v1/products/{linked['product']}/files/{linked['spare']}"
-    assert (await committing_client.delete(unlink, headers=_jwt("pr_editor"))).status_code == 403
+    assert (await committing_client.delete(unlink, headers=await _jwt("pr_editor"))).status_code == 403
 
 
 @pytest.mark.asyncio
@@ -77,22 +79,22 @@ async def test_linking_a_folder_from_the_product_asks_the_librarys_folder_right(
     await _user(db_session, "pr_folder_keeper", ["products:read", "products:update", "library:update_all"])
     url = f"/api/v1/products/{linked['product']}/folders"
     body = {"library_folder_ids": [linked["folder"]]}
-    assert (await committing_client.put(url, json=body, headers=_jwt("pr_folder_editor"))).status_code == 403
-    assert (await committing_client.put(url, json=body, headers=_jwt("pr_folder_keeper"))).status_code == 200
+    assert (await committing_client.put(url, json=body, headers=await _jwt("pr_folder_editor"))).status_code == 403
+    assert (await committing_client.put(url, json=body, headers=await _jwt("pr_folder_keeper"))).status_code == 200
 
 
 @pytest.mark.asyncio
 async def test_rereading_a_card_reads_the_file(committing_client, db_session, linked):
     await _user(db_session, "pr_reread_blind", ["products:read", "products:update"])
     url = f"/api/v1/products/{linked['product']}/card/reread?file_id={linked['direct']}"
-    assert (await committing_client.post(url, headers=_jwt("pr_reread_blind"))).status_code == 404
+    assert (await committing_client.post(url, headers=await _jwt("pr_reread_blind"))).status_code == 404
 
 
 @pytest.mark.asyncio
 async def test_a_copy_without_the_librarys_right_leaves_the_links_behind(committing_client, db_session, linked):
     await _user(db_session, "pr_copier", ["products:read", "products:create"])
     copy = await committing_client.post(
-        f"/api/v1/products/{linked['product']}/duplicate", json={}, headers=_jwt("pr_copier")
+        f"/api/v1/products/{linked['product']}/duplicate", json={}, headers=await _jwt("pr_copier")
     )
     assert copy.status_code in (200, 201), copy.text
     assert copy.json()["library_file_ids"] == []
@@ -122,7 +124,7 @@ async def test_deleting_a_part_with_stock_asks_adjust_and_one_without_does_not(c
     stocked = await _part_with_stock(committing_client, product, 2)
     await _user(db_session, "pr_part_editor", ["products:read", "products:update"])
     refused = await committing_client.delete(
-        f"/api/v1/products/{product}/parts/{stocked}", headers=_jwt("pr_part_editor")
+        f"/api/v1/products/{product}/parts/{stocked}", headers=await _jwt("pr_part_editor")
     )
     assert refused.status_code == 403
     assert refused.json()["detail"] == {
@@ -134,7 +136,9 @@ async def test_deleting_a_part_with_stock_asks_adjust_and_one_without_does_not(c
     assert {b["part_id"]: b["balance"] for b in stock["balances"]}[stocked] == 2
     empty = await _part_with_stock(committing_client, product, 0, name="bare knob")
     assert (
-        await committing_client.delete(f"/api/v1/products/{product}/parts/{empty}", headers=_jwt("pr_part_editor"))
+        await committing_client.delete(
+            f"/api/v1/products/{product}/parts/{empty}", headers=await _jwt("pr_part_editor")
+        )
     ).status_code == 200
 
 
@@ -144,11 +148,11 @@ async def test_deleting_a_product_with_stock_asks_adjust(committing_client, db_s
     await _part_with_stock(committing_client, product, 3)
     await _user(db_session, "pr_deleter", ["products:read", "products:delete"])
     await _user(db_session, "pr_deleter_adjust", ["products:read", "products:delete", "stock:adjust"])
-    refused = await committing_client.delete(f"/api/v1/products/{product}", headers=_jwt("pr_deleter"))
+    refused = await committing_client.delete(f"/api/v1/products/{product}", headers=await _jwt("pr_deleter"))
     assert refused.status_code == 403
     assert refused.json()["detail"]["right"] == "stock:adjust"
     assert (
-        await committing_client.delete(f"/api/v1/products/{product}", headers=_jwt("pr_deleter_adjust"))
+        await committing_client.delete(f"/api/v1/products/{product}", headers=await _jwt("pr_deleter_adjust"))
     ).status_code == 200
 
 
@@ -157,8 +161,8 @@ async def test_a_products_cover_is_a_label_in_stock_rows_too(committing_client, 
     await _user(db_session, "pr_cover_keeper", ["stock:read"])
     await _user(db_session, "pr_cover_nobody", ["inventory:read"])
     url = f"/api/v1/products/{linked['product']}/cover-image"
-    assert (await committing_client.get(url, headers=_jwt("pr_cover_keeper"))).status_code != 403
-    assert (await committing_client.get(url, headers=_jwt("pr_cover_nobody"))).status_code == 403
+    assert (await committing_client.get(url, headers=await _jwt("pr_cover_keeper"))).status_code != 403
+    assert (await committing_client.get(url, headers=await _jwt("pr_cover_nobody"))).status_code == 403
 
 
 @pytest.mark.asyncio
@@ -182,7 +186,9 @@ async def test_merging_away_a_part_an_order_acquired_asks_the_orders_right(commi
     assert acquired.status_code == 200, acquired.text
     await _user(db_session, "pr_merger", ["products:read", "products:update"])
     refused = await committing_client.post(
-        f"/api/v1/products/{product}/parts/{target}/merge", json={"source_part_id": source}, headers=_jwt("pr_merger")
+        f"/api/v1/products/{product}/parts/{target}/merge",
+        json={"source_part_id": source},
+        headers=await _jwt("pr_merger"),
     )
     assert refused.status_code == 403
     assert refused.json()["detail"]["right"] == "orders:update"

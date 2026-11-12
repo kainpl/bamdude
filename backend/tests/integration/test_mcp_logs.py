@@ -151,7 +151,17 @@ async def test_file_phase_does_not_block_restore_and_old_result_is_not_published
         return [], None, 0, 0
 
     monkeypatch.setattr(logs, "read_tail", slow_file)
-    access = DiagnosticAccess(1, 1, frozenset(), True, None, True, current_epoch())
+    access = DiagnosticAccess(
+        1,
+        1,
+        frozenset(),
+        True,
+        None,
+        True,
+        current_epoch(),
+        key_identity="00000000-0000-0000-0000-000000000001",
+        owner_identity="00000000-0000-0000-0000-000000000002",
+    )
     task = asyncio.create_task(logs.read_logs(access, inputs(), "barrier", runtime))
     try:
         assert await asyncio.to_thread(entered.wait, 5)
@@ -161,7 +171,17 @@ async def test_file_phase_does_not_block_restore_and_old_result_is_not_published
         monkeypatch.setattr(logs, "current_epoch", lambda: access.epoch + 1)
         # A different runtime still shares the old process-owned file slot.
         new = McpRuntime()
-        current = DiagnosticAccess(1, 1, frozenset(), True, None, True, access.epoch + 1)
+        current = DiagnosticAccess(
+            1,
+            1,
+            frozenset(),
+            True,
+            None,
+            True,
+            access.epoch + 1,
+            key_identity="00000000-0000-0000-0000-000000000001",
+            owner_identity="00000000-0000-0000-0000-000000000002",
+        )
         with pytest.raises(Exception, match="busy"):
             await logs.read_logs(current, inputs(), "new", new)
         release.set()

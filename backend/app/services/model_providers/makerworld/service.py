@@ -112,6 +112,7 @@ class MakerWorldService(ProviderService):
         # same Bambu Cloud bearer as everything else, so a rejection here means
         # the credential is dead app-wide — see ``build_authenticated_cloud``.
         self._on_auth_failure = on_auth_failure
+        self.credential_snapshot = None  # The provider builder binds a selected cloud credential explicitly.
         self._auth_failure_reported = False
         # SSRF allowlists for the thumbnail proxy and the 3MF download guard.
         # Default to MakerWorld's CDN hosts; ``MakerWorldProvider.build_service``

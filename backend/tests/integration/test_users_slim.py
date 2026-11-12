@@ -25,6 +25,7 @@ from backend.app.core.permissions import Permission
 from backend.app.models.api_key import APIKey
 from backend.app.models.group import Group
 from backend.app.models.user import User
+from backend.tests.auth_helpers import bind_test_key, mint_test_access
 
 pytestmark = pytest.mark.integration
 
@@ -43,16 +44,16 @@ async def _user(db_session, username: str, permissions: list[str]) -> User:
 
 async def _key(db_session, *, owner: User | None = None, **flags) -> str:
     raw, key_hash, key_prefix = generate_api_key()
-    db_session.add(
-        APIKey(
-            name=f"k-{key_prefix}",
-            key_hash=key_hash,
-            key_prefix=key_prefix,
-            enabled=True,
-            user_id=owner.id if owner else None,
-            **flags,
-        )
+    key = APIKey(
+        name=f"k-{key_prefix}",
+        key_hash=key_hash,
+        key_prefix=key_prefix,
+        enabled=True,
+        user_id=owner.id if owner else None,
+        **flags,
     )
+    await bind_test_key(db_session, key, owner)
+    db_session.add(key)
     await db_session.commit()
     return raw
 
@@ -131,7 +132,7 @@ class TestWhoMayRead:
         from backend.app.core.auth import create_access_token
 
         await _user(db_session, "olderadmin", [Permission.USERS_READ.value])
-        token = create_access_token(data={"sub": "olderadmin"})
+        token = await mint_test_access(db_session, username="olderadmin")
 
         response = await async_client.get("/api/v1/users/slim", headers={"Authorization": f"Bearer {token}"})
 

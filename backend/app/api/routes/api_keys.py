@@ -1,10 +1,12 @@
 import logging
+import secrets
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.core.auth import RequirePermission, generate_api_key
+from backend.app.core.auth import RequirePermission, hash_password_async
+from backend.app.core.auth_lifetime import AccountCapture, guard_accounts, validate_captured
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.models.api_key import APIKey
@@ -77,14 +79,23 @@ async def create_api_key(
 
     Stamps ``user_id`` from the authenticated user so cloud-aware endpoints
     can look up the owner's per-user Bambu Cloud token. API-key-authenticated
-    callers create ownerless keys (current_user is None for that path).
+    callers cannot mint another key; every new key has an authenticated owner.
     """
-    owner_user_id = current_user.id if current_user is not None else None
+    if current_user is None or not getattr(current_user, "_auth_capture", None):
+        raise HTTPException(403, "A signed-in owning user is required")
+    captured = current_user._auth_capture
+    owner_user_id = current_user.id
     _reject_cloud_without_owner(data.can_access_cloud, owner_user_id)
     _validate_mcp_scopes(data.can_access_mcp, data.can_read_mcp_logs, owner_user_id)
 
     # Generate the key
-    full_key, key_hash, key_prefix = generate_api_key()
+    full_key = "bd_" + secrets.token_urlsafe(32)
+    key_hash = await hash_password_async(full_key)
+    key_prefix = full_key[:8] + "..."
+    proof = await guard_accounts(db, [captured])
+    principal = await validate_captured(
+        db, captured, required_permissions=(Permission.API_KEYS_CREATE.value,), proof=proof
+    )
     await _lock_printer_scope(db, data.printer_ids)
 
     api_key = APIKey(
@@ -92,6 +103,8 @@ async def create_api_key(
         key_hash=key_hash,
         key_prefix=key_prefix,
         user_id=owner_user_id,
+        owner_identity=principal.user.account_identity,
+        contract_version=1,
         can_queue=data.can_queue,
         can_control_printer=data.can_control_printer,
         can_read_status=data.can_read_status,
@@ -124,6 +137,9 @@ async def create_api_key(
         key_prefix=api_key.key_prefix,
         user_id=api_key.user_id,
         key=full_key,  # Only returned on creation
+        contract_version=api_key.contract_version,
+        retired_at=api_key.retired_at,
+        retired_reason=api_key.retired_reason,
         can_queue=api_key.can_queue,
         can_control_printer=api_key.can_control_printer,
         can_read_status=api_key.can_read_status,
@@ -166,7 +182,7 @@ async def update_api_key(
     key_id: int,
     data: APIKeyUpdate,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.API_KEYS_UPDATE),
+    current_user: User | None = RequirePermission(Permission.API_KEYS_UPDATE),
 ):
     """Update an API key."""
     result = await db.execute(select(APIKey).where(APIKey.id == key_id))
@@ -174,6 +190,32 @@ async def update_api_key(
 
     if not api_key:
         raise HTTPException(status_code=404, detail="API key not found")
+
+    captures = [current_user._auth_capture]
+    # Retired/orphan metadata remains manageable; no operation can restore its
+    # secret. Live credentials additionally hold their owner's lifetime guard.
+    if api_key.owner_identity and not (api_key.retired_at or api_key.retired_reason):
+        owner = await db.scalar(select(User).where(User.account_identity == api_key.owner_identity))
+        if owner is not None:
+            captures.append(AccountCapture(api_key.owner_identity, None, api_key.user_id or 0))
+    proof = await guard_accounts(db, captures, require_active=False)
+    await validate_captured(
+        db, current_user._auth_capture, required_permissions=(Permission.API_KEYS_UPDATE.value,), proof=proof
+    )
+    identity = api_key.connector_identity
+    api_key = (
+        await db.execute(
+            select(APIKey)
+            .where(APIKey.id == key_id, APIKey.connector_identity == identity)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one_or_none()
+    if api_key is None:
+        raise HTTPException(404, "API key not found")
+    if api_key.retired_at is not None or api_key.retired_reason is not None:
+        if data.enabled is True or data.expires_at is not None:
+            raise HTTPException(400, "Retired credentials require a new key")
 
     # Update fields if provided
     if "printer_ids" in data.model_fields_set:
@@ -230,7 +272,7 @@ async def update_api_key(
 async def delete_api_key(
     key_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.API_KEYS_DELETE),
+    current_user: User | None = RequirePermission(Permission.API_KEYS_DELETE),
 ):
     """Delete (revoke) an API key."""
     result = await db.execute(select(APIKey).where(APIKey.id == key_id))
@@ -239,6 +281,27 @@ async def delete_api_key(
     if not api_key:
         raise HTTPException(status_code=404, detail="API key not found")
 
+    captures = [current_user._auth_capture]
+    # Retired/orphan metadata remains manageable; no operation can restore its
+    # secret. Live credentials additionally hold their owner's lifetime guard.
+    if api_key.owner_identity and not (api_key.retired_at or api_key.retired_reason):
+        owner = await db.scalar(select(User).where(User.account_identity == api_key.owner_identity))
+        if owner is not None:
+            captures.append(AccountCapture(api_key.owner_identity, None, api_key.user_id or 0))
+    proof = await guard_accounts(db, captures, require_active=False)
+    await validate_captured(
+        db, current_user._auth_capture, required_permissions=(Permission.API_KEYS_DELETE.value,), proof=proof
+    )
+    api_key = (
+        await db.execute(
+            select(APIKey)
+            .where(APIKey.connector_identity == api_key.connector_identity)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one_or_none()
+    if api_key is None:
+        raise HTTPException(404, "API key not found")
     await db.delete(api_key)
     await db.commit()
 

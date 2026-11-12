@@ -1880,6 +1880,7 @@ async def download_archive_with_filename(
 async def create_archive_slicer_token(
     archive_id: int,
     db: AsyncSession = Depends(get_db),
+    creds: RequestCredentials = Depends(request_credentials),
     auth_result: tuple[User | None, bool] = Depends(
         require_ownership_permission(
             Permission.ARCHIVES_READ_ALL,
@@ -1898,7 +1899,7 @@ async def create_archive_slicer_token(
     service = ArchiveService(db)
     _ensure_archive_visible(await service.get_archive(archive_id), user, can_read_all)
 
-    token = await create_slicer_download_token("archive", archive_id)
+    token = await create_slicer_download_token("archive", archive_id, authority=await creds.capture())
     return {"token": token}
 
 
@@ -1917,15 +1918,20 @@ async def download_archive_for_slicer(
     that may fetch the URL more than once (upstream #3029).
     Filename is at the end of the URL so slicers can detect the file format.
     """
-    from backend.app.core.auth import verify_slicer_download_token
+    from backend.app.core.auth import authorize_api_key
+    from backend.app.services.domain_authority import slicer_principal
 
-    if not await verify_slicer_download_token(token, "archive", archive_id, single_use=False):
-        raise HTTPException(403, "Invalid or expired download token")
-
-    service = ArchiveService(db)
-    archive = await service.get_archive(archive_id)
-    if not archive:
-        raise HTTPException(404, "Archive not found")
+    principal = await slicer_principal(token, "archive", archive_id)
+    if principal.api_key is not None:
+        await authorize_api_key(db, principal.api_key, [Permission.ARCHIVES_READ_ALL])
+        can_read_all = True
+    else:
+        can_read_all = principal.user.has_permission(Permission.ARCHIVES_READ_ALL.value)
+        if not can_read_all and not principal.user.has_permission(Permission.ARCHIVES_READ_OWN.value):
+            raise HTTPException(403, "Archive read permission is required")
+    archive = _ensure_archive_visible(
+        await db.scalar(PrintArchive.active().where(PrintArchive.id == archive_id)), principal.user, can_read_all
+    )
 
     file_path = settings.base_dir / archive.file_path
     if not file_path.is_file():
@@ -3072,6 +3078,10 @@ async def save_archive_to_library(
         if folder is None:
             raise HTTPException(404, "Folder not found")
 
+    authority = await request_authority(request, user)
+    source_identity = archive.recovery_identity
+    source_path = archive.file_path
+    await db.commit()
     content = await asyncio.to_thread(file_path.read_bytes)
     fact, expected = swap_compatibility.archive_source(archive)
     fact = swap_compatibility.confirm(
@@ -3082,6 +3092,23 @@ async def save_archive_to_library(
             status_code=409,
             detail={"error": swap_compatibility.UNKNOWN_SOURCE_REASON, "message": SAVE_SWAP_SOURCE_UNKNOWN},
         )
+
+    async def check_source(session, principal):
+        current = await session.scalar(
+            PrintArchive.active().where(PrintArchive.id == archive_id).execution_options(populate_existing=True)
+        )
+        if current is None or current.recovery_identity != source_identity or current.file_path != source_path:
+            raise HTTPException(409, {"code": "source_changed"})
+        if principal is not None:
+            if principal.api_key is not None:
+                from backend.app.core.auth import authorize_api_key
+
+                await authorize_api_key(session, principal.api_key, [Permission.ARCHIVES_READ_ALL])
+            elif (
+                not principal.user.has_permission(Permission.ARCHIVES_READ_ALL.value)
+                and current.created_by_id != principal.user.id
+            ):
+                raise HTTPException(404, "Archive not found")
 
     result = await save_3mf_bytes_to_library(
         db,
@@ -3094,7 +3121,8 @@ async def save_archive_to_library(
         # necessarily is.
         source_type="archive",
         declared_swap=fact.value,
-        authority=await request_authority(request, user),
+        authority=authority,
+        publication_check=check_source,
     )
     # ⚠️ ``result.file`` may be a row this call did not create — the bytes were
     # already in the library, so that row is what the response points at.
@@ -3639,6 +3667,7 @@ async def reprint_archive(
 
         items, batch_id = await enqueue_batch_copies(
             db,
+            authority=await creds.capture(),
             printer_id=printer_id,
             count=qty,
             archive_id=archive_id,
@@ -3686,6 +3715,7 @@ async def reprint_archive(
 
     try:
         dispatch_result = await background_dispatch.dispatch_reprint_archive(
+            authority=await creds.capture(),
             archive_id=archive_id,
             archive_name=dispatch_source_name,
             printer_id=printer_id,
@@ -4004,6 +4034,7 @@ async def download_source_3mf_for_slicer(
 async def create_source_slicer_token(
     archive_id: int,
     db: AsyncSession = Depends(get_db),
+    creds: RequestCredentials = Depends(request_credentials),
     auth_result: tuple[User | None, bool] = Depends(
         require_ownership_permission(
             Permission.ARCHIVES_READ_ALL,
@@ -4020,7 +4051,7 @@ async def create_source_slicer_token(
     if not archive.source_3mf_path:
         raise HTTPException(404, "No source 3MF attached to this archive")
 
-    token = await create_slicer_download_token("source", archive_id)
+    token = await create_slicer_download_token("source", archive_id, authority=await creds.capture())
     return {"token": token}
 
 
@@ -4039,15 +4070,20 @@ async def download_source_3mf_for_slicer_with_token(
     session only through its own ``/source-dl/`` pattern in
     ``main.PUBLIC_API_PATTERNS``.
     """
-    from backend.app.core.auth import verify_slicer_download_token
+    from backend.app.core.auth import authorize_api_key
+    from backend.app.services.domain_authority import slicer_principal
 
-    if not await verify_slicer_download_token(token, "source", archive_id, single_use=False):
-        raise HTTPException(403, "Invalid or expired download token")
-
-    result = await db.execute(select(PrintArchive).where(PrintArchive.id == archive_id))
-    archive = result.scalar_one_or_none()
-    if not archive:
-        raise HTTPException(404, "Archive not found")
+    principal = await slicer_principal(token, "source", archive_id)
+    if principal.api_key is not None:
+        await authorize_api_key(db, principal.api_key, [Permission.ARCHIVES_READ_ALL])
+        can_read_all = True
+    else:
+        can_read_all = principal.user.has_permission(Permission.ARCHIVES_READ_ALL.value)
+        if not can_read_all and not principal.user.has_permission(Permission.ARCHIVES_READ_OWN.value):
+            raise HTTPException(403, "Archive read permission is required")
+    archive = _ensure_archive_visible(
+        await db.scalar(PrintArchive.active().where(PrintArchive.id == archive_id)), principal.user, can_read_all
+    )
 
     if not archive.source_3mf_path:
         raise HTTPException(404, "No source 3MF attached to this archive")
@@ -4230,6 +4266,7 @@ async def slice_archive(
     archive_id: int,
     request_body: dict,
     db: AsyncSession = Depends(get_db),
+    creds: RequestCredentials = Depends(request_credentials),
     current_user: User | None = RequirePermission(Permission.LIBRARY_UPLOAD),
 ):
     """Enqueue a slice job for an archive's source. Returns 202 + job_id;
@@ -4255,6 +4292,7 @@ async def slice_archive(
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
+    ingest_authority = await creds.capture()
     archive = await db.get(PrintArchive, archive_id)
     # Per-row ownership gate (IDOR fix): LIBRARY_UPLOAD alone let a READ_OWN
     # caller slice another user's archive by raw id even though GET on that id
@@ -4297,6 +4335,7 @@ async def slice_archive(
 
     model_bytes = src_path.read_bytes()
     archive_id_local = archive.id
+    source_proof = (archive.id, archive.recovery_identity, archive.file_path, archive.source_3mf_path)
     user_id = current_user.id if current_user else None
 
     async def _run(job_id: int):
@@ -4315,17 +4354,21 @@ async def slice_archive(
                     request=request,
                     source_archive=src_archive,
                     current_user_id=user_id,
+                    ingest_authority=ingest_authority,
+                    source_proof=source_proof,
                     job_id=job_id,
                 )
             except HTTPException as exc:
                 raise http_exception_to_job_error(exc) from exc
         return response.model_dump()
 
+    await db.commit()
     job = await slice_dispatch.enqueue(
         kind="archive",
         source_id=archive.id,
         source_name=archive.print_name or archive.filename or f"archive {archive.id}",
         owner_id=user_id,
+        authority=ingest_authority,
         run=_run,
     )
     return {

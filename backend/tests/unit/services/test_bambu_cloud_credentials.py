@@ -27,6 +27,7 @@ from backend.app.services.bambu_cloud_credentials import (
     is_cloud_token_invalid,
     mark_cloud_token_invalid,
 )
+from backend.app.services.cloud_credentials import snapshot
 
 pytestmark = pytest.mark.asyncio
 
@@ -124,29 +125,18 @@ async def test_mark_sets_the_per_user_flag(db_session):
     """user_id set → the rejection lands on that user's column."""
     user = await _make_user(db_session)
 
-    await mark_cloud_token_invalid(user.id)
+    await mark_cloud_token_invalid(await snapshot(db_session, user, "bambu"))
     await db_session.refresh(user)
 
     assert user.cloud_token_invalid_at is not None
 
 
-async def test_mark_none_writes_the_global_settings_flag(db_session):
-    """user_id=None (an ownerless API key) → the global ``Settings`` row.
-    A second call updates the existing row rather than adding another."""
+async def test_mark_without_captured_owner_cannot_write_global_settings(db_session):
     await mark_cloud_token_invalid(None)
-
-    result = await db_session.execute(select(Settings).where(Settings.key == CLOUD_TOKEN_INVALID_KEY))
-    rows = result.scalars().all()
-    assert len(rows) == 1
-    # Stored value parses as ISO — the status endpoints compare it as a date.
-    datetime.fromisoformat(rows[0].value)
-
-    first_value = rows[0].value
-    await mark_cloud_token_invalid(None)
-    result = await db_session.execute(select(Settings).where(Settings.key == CLOUD_TOKEN_INVALID_KEY))
-    rows = result.scalars().all()
-    assert len(rows) == 1
-    assert rows[0].value >= first_value
+    await mark_cloud_token_invalid(1)
+    assert (
+        await db_session.execute(select(Settings).where(Settings.key == CLOUD_TOKEN_INVALID_KEY))
+    ).scalars().all() == []
 
 
 async def test_mark_is_best_effort(monkeypatch):

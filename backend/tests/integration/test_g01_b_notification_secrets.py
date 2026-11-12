@@ -14,6 +14,7 @@ from backend.app.models.notification import NotificationLog, NotificationProvide
 from backend.app.models.user import User
 from backend.app.services import telegram_bot
 from backend.app.services.notification_credentials import SECRET_FIELDS, provider_projection
+from backend.tests.auth_helpers import mint_test_access
 
 CASES = {
     "callmebot": {"phone": "+15551234567", "apikey": "CANARY_CALLME"},
@@ -64,7 +65,7 @@ async def test_all_types_read_safe_and_runtime_config_retained(
         user = User(username="g01_" + role, role="user", is_active=True, groups=[group])
         db_session.add_all([group, user])
         await db_session.commit()
-        async_client.headers["Authorization"] = "Bearer " + create_access_token({"sub": user.username})
+        async_client.headers["Authorization"] = "Bearer " + await mint_test_access(db_session, username=user.username)
     for door in ("/api/v1/notifications/", f"/api/v1/notifications/{provider.id}"):
         response = await async_client.get(door)
         assert response.status_code == 200, response.text

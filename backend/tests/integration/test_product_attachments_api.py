@@ -13,6 +13,7 @@ import pytest
 from fastapi import HTTPException
 
 from backend.app.services.product_files import product_attachments_dir
+from backend.tests.auth_helpers import mint_test_authority
 
 pytestmark = pytest.mark.integration
 
@@ -36,7 +37,7 @@ async def _media_token() -> str:
     """What a product picture's ``<img>`` carries since audit D9 a2 — the signed-in admin's."""
     from backend.app.core.auth import create_media_token
 
-    return await create_media_token("test_admin")
+    return await create_media_token(authority=await mint_test_authority(username="test_admin"))
 
 
 @pytest.mark.asyncio

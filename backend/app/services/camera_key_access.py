@@ -9,14 +9,13 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
-from datetime import datetime, timezone
 
 from sqlalchemy import select
 
 from backend.app.core import database
-from backend.app.core.auth import CameraKeyIdentity, authorize_api_key
+from backend.app.core.auth import CameraKeyIdentity
+from backend.app.core.auth_lifetime import validate_captured
 from backend.app.core.permissions import Permission
-from backend.app.models.api_key import APIKey
 from backend.app.models.printer import Printer
 from backend.app.services.connector_runtime import connector_runtime
 from backend.app.services.connector_submissions import read_server_identity
@@ -36,7 +35,7 @@ class CameraKeyStreamGuard:
 
     async def _allowed(self) -> bool:
         identity = self.identity
-        if identity is None:
+        if identity is None or identity.capture is None:
             return False
         try:
             incarnations = (*self.namespace, self.printer_identity, identity.identity)
@@ -45,7 +44,10 @@ class CameraKeyStreamGuard:
         except (ValueError, TypeError, AttributeError):
             return False
         async with database.async_session() as db:
-            key = await db.scalar(select(APIKey).where(APIKey.id == identity.key_id))
+            principal = await validate_captured(
+                db, identity.capture, required_permissions=(Permission.CAMERA_VIEW.value,), printer_id=self.printer_id
+            )
+            key = principal.api_key
             if (
                 key is None
                 or not key.enabled
@@ -54,13 +56,6 @@ class CameraKeyStreamGuard:
                 or key.user_id != identity.owner_id
             ):
                 return False
-            if key.expires_at:
-                expires = (
-                    key.expires_at.replace(tzinfo=timezone.utc) if key.expires_at.tzinfo is None else key.expires_at
-                )
-                if expires <= datetime.now(timezone.utc):
-                    return False
-            await authorize_api_key(db, key, [Permission.CAMERA_VIEW.value])
             if key.printer_ids is not None and self.printer_id not in key.printer_ids:
                 return False
             printer_identity = await db.scalar(select(Printer.connector_identity).where(Printer.id == self.printer_id))

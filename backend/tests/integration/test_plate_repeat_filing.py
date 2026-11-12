@@ -101,7 +101,7 @@ async def _repeat(client, held, who: str | None = None, **extra):
         return await client.post(
             f"/api/v1/printers/{held['printer']}/repeat-print",
             json=_body(held, **extra),
-            headers=_jwt(who) if who else None,
+            headers=await _jwt(who) if who else None,
         )
 
 

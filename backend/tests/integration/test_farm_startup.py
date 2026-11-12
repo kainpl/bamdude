@@ -10,6 +10,7 @@ from backend.app.core.auth import create_access_token
 from backend.app.models.user import User
 from backend.app.services import farm_startup_guard as module
 from backend.app.services.farm_startup_guard import FarmStartupGuard, FarmStartupRefused
+from backend.tests.auth_helpers import mint_test_access
 from backend.tests.integration.swap_terminal_support import (
     CHANGE_TABLE,
     an_execution,
@@ -109,7 +110,7 @@ async def test_read_only_observer_sees_hold_but_cannot_release(async_client, db_
     user = User(username="farm_observer", password_hash="unused", role="user", is_active=True)
     db_session.add(user)
     await db_session.commit()
-    token = create_access_token(data={"sub": user.username})
+    token = await mint_test_access(db_session, username=user.username)
     headers = {"Authorization": f"Bearer {token}"}
     response = await async_client.get("/api/v1/system/farm-startup", headers=headers)
     assert response.status_code == 200

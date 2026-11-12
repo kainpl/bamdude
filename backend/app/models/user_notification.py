@@ -8,7 +8,7 @@ recolouring the catalog never repaints history.
 
 from datetime import datetime
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import JSON, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from backend.app.core.database import Base
@@ -19,6 +19,7 @@ class UserNotification(Base):
     __table_args__ = (
         Index("ix_user_notifications_user_read", "user_id", "read_at"),
         Index("ix_user_notifications_user_created", "user_id", "created_at"),
+        UniqueConstraint("dedupe_key", name="uq_user_notifications_dedupe_key"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -32,3 +33,4 @@ class UserNotification(Base):
     extra_data: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
     read_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    dedupe_key: Mapped[str | None] = mapped_column(String(160), nullable=True)

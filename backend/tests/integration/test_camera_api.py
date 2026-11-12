@@ -9,6 +9,7 @@ import pytest
 from httpx import AsyncClient
 
 from backend.app.services.camera_metrics import CameraCaptureResult
+from backend.tests.auth_helpers import mint_test_authority
 
 
 @pytest.fixture(autouse=True)
@@ -25,7 +26,7 @@ async def _inject_camera_stream_token(async_client: AsyncClient):
     """
     from backend.app.core.auth import create_camera_stream_token
 
-    token = await create_camera_stream_token()
+    token = await create_camera_stream_token(authority=await mint_test_authority())
     original_get = async_client.get
 
     async def get_with_token(url, **kwargs):

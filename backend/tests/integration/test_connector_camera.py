@@ -21,6 +21,7 @@ from backend.app.models.group import Group
 from backend.app.models.user import User
 from backend.app.services.camera_metrics import CameraCaptureResult
 from backend.app.services.connector_runtime import connector_runtime
+from backend.tests.auth_helpers import bind_test_key, mint_test_authority
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
 
@@ -47,13 +48,16 @@ async def _key(db_session, *, owner=None, **flags) -> str:
     raw, key_hash, prefix = generate_api_key()
     values = {"can_read_status": True, **flags}
     db_session.add(
-        APIKey(
-            name=f"cam-{prefix}",
-            key_hash=key_hash,
-            key_prefix=prefix,
-            enabled=True,
-            user_id=owner.id if owner else None,
-            **values,
+        await bind_test_key(
+            db_session,
+            APIKey(
+                name=f"cam-{prefix}",
+                key_hash=key_hash,
+                key_prefix=prefix,
+                enabled=True,
+                user_id=owner.id if owner else None,
+                **values,
+            ),
         )
     )
     await db_session.commit()
@@ -95,7 +99,7 @@ async def test_a_key_restricted_to_one_printer_never_opens_another(async_client,
 
 async def test_an_invalid_header_does_not_fall_back_on_a_valid_token(async_client, printer_factory, capture):
     printer = await printer_factory()
-    token = await create_camera_stream_token()
+    token = await create_camera_stream_token(authority=await mint_test_authority())
 
     async with _headerless(async_client) as client:
         response = await client.get(
@@ -116,7 +120,7 @@ async def test_malformed_or_empty_header_never_selects_the_query_token_door(
     async_client, printer_factory, capture, headers
 ):
     printer = await printer_factory()
-    token = await create_camera_stream_token()
+    token = await create_camera_stream_token(authority=await mint_test_authority())
     async with _headerless(async_client) as client:
         response = await client.get(
             f"/api/v1/printers/{printer.id}/camera/snapshot", params={"token": token}, headers=headers
@@ -179,7 +183,7 @@ async def test_a_printer_that_took_the_id_is_not_served(async_client, db_session
 
 async def test_the_token_door_is_unchanged(async_client, printer_factory, capture):
     printer = await printer_factory()
-    token = await create_camera_stream_token()
+    token = await create_camera_stream_token(authority=await mint_test_authority())
 
     async with _headerless(async_client) as client:
         with_token = await client.get(f"/api/v1/printers/{printer.id}/camera/snapshot", params={"token": token})

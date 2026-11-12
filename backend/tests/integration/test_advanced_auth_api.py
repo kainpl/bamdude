@@ -10,6 +10,8 @@ from unittest.mock import patch
 import pytest
 from httpx import AsyncClient
 
+from backend.tests.auth_helpers import mint_test_access
+
 # Shared SMTP settings data used across test classes
 SMTP_DATA = {
     "smtp_host": "smtp.test.com",
@@ -32,7 +34,7 @@ async def _setup_admin(async_client: AsyncClient, username: str = "admin", passw
     """
     from backend.app.core.auth import create_access_token
 
-    return create_access_token(data={"sub": "test_admin"})
+    return await mint_test_access(username="test_admin")
 
 
 async def _setup_smtp_and_advanced_auth(async_client: AsyncClient, token: str):

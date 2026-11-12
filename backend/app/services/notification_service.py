@@ -11,6 +11,7 @@ from datetime import datetime, timedelta, timezone
 from email.mime.image import MIMEImage
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
@@ -33,6 +34,70 @@ from backend.app.services.notification_credentials import (
 from backend.app.services.notification_events import SENSOR_ALERT_FIELDS
 
 logger = logging.getLogger(__name__)
+
+_internal_templates_ready = False
+
+
+def begin_internal_template_reconcile() -> None:
+    global _internal_templates_ready
+    _internal_templates_ready = False
+
+
+def complete_internal_template_reconcile() -> None:
+    global _internal_templates_ready
+    _internal_templates_ready = True
+
+
+def fail_internal_template_reconcile() -> None:
+    begin_internal_template_reconcile()
+
+
+class InternalTemplateNotReady(Exception):
+    """A retryable informational-channel condition, never an auth barrier."""
+
+
+async def render_internal_event(db: AsyncSession, event_type: str, variables: dict[str, Any]) -> tuple[str, str]:
+    """Fresh, strict internal render. No ORM cache, fallback, commit or nested SQL."""
+    from backend.app.i18n import current_language
+    from backend.app.models.settings import Settings
+    from backend.app.services.notification_events import EVENT_CATALOG, IN_APP_ONLY_EVENTS
+
+    if not _internal_templates_ready or event_type not in IN_APP_ONLY_EVENTS or event_type not in EVENT_CATALOG:
+        raise InternalTemplateNotReady()
+    with db.no_autoflush:
+        language = (
+            await db.execute(select(Settings.value).where(Settings.key == "language"))
+        ).scalar_one_or_none() or "en"
+        if language not in {"en", "uk"} or language != current_language():
+            raise InternalTemplateNotReady()
+        # Required shipped locale must exist; an absent or malformed catalog
+        # must not silently produce an English/event-name fallback.
+        try:
+            shipped = json.loads(
+                (Path(__file__).parent.parent / "data" / f"notification_templates_{language}.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            if not shipped[event_type]["title_template"] or not shipped[event_type]["body_template"]:
+                raise InternalTemplateNotReady()
+        except (OSError, ValueError, KeyError, TypeError):
+            raise InternalTemplateNotReady() from None
+        row = (
+            await db.execute(
+                select(NotificationTemplate.title_template, NotificationTemplate.body_template).where(
+                    NotificationTemplate.event_type == event_type
+                )
+            )
+        ).one_or_none()
+    if row is None or not row.title_template or not row.body_template:
+        raise InternalTemplateNotReady()
+    values = {**variables, "app_name": "BamDude", "timestamp": datetime.utcnow().strftime("%Y-%m-%d %H:%M")}
+    required = set(re.findall(r"\{([a-z_]+)\}", row.title_template + row.body_template))
+    if not required <= values.keys():
+        raise InternalTemplateNotReady()
+    service = NotificationService()
+    return service._render_template(row.title_template, values), service._render_template(row.body_template, values)
+
 
 # Honest User-Agent — matches every other outbound httpx client in the codebase
 # (bambu_cloud, makerworld, firmware_check, inventory). This client previously

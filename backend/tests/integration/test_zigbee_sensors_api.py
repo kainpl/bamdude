@@ -11,6 +11,7 @@ import pytest
 from httpx import AsyncClient
 
 from backend.app.services.zigbee.sensors import sensor_store
+from backend.tests.auth_helpers import mint_test_access
 from backend.tests.zigbee_fixtures import BATTERY_SENSOR_FLAGS, MAINS_DEVICE_FLAGS, fake_device
 
 IEEE = "aa:bb:cc:dd:ee:ff:00:11"
@@ -297,7 +298,7 @@ async def test_the_sensor_list_answers_under_the_sensor_permission(async_client:
         )
         await db.commit()
 
-    token = create_access_token(data={"sub": "sensorsonly"})
+    token = await mint_test_access(username="sensorsonly")
     rsp = await async_client.get("/api/v1/zigbee/sensors", headers={"Authorization": f"Bearer {token}"})
 
     assert rsp.status_code == 200, rsp.text

@@ -13,6 +13,7 @@ from backend.app.models.group import Group
 from backend.app.models.oidc_provider import OIDCProvider
 from backend.app.models.settings import Settings
 from backend.app.models.user import User
+from backend.tests.auth_helpers import mint_test_access
 
 pytestmark = pytest.mark.asyncio
 
@@ -22,7 +23,7 @@ async def custom_headers(db):
     user = User(username="g01_custom", role="user", is_active=True, password_hash="unused", groups=[group])
     db.add(user)
     await db.commit()
-    return {"Authorization": f"Bearer {create_access_token({'sub': user.username})}"}
+    return {"Authorization": f"Bearer {await mint_test_access(db, username=user.username)}"}
 
 
 ADMIN_DOORS = [
@@ -255,14 +256,18 @@ async def test_handler_exception_is_not_rewritten_to_credential_failure(async_cl
 
 
 @pytest.mark.parametrize("route", ["login", "refresh"])
-async def test_public_auth_database_outage_is_retryable(async_client, monkeypatch, route):
+async def test_public_auth_database_outage_is_retryable(async_client, db_session, monkeypatch, route):
+    from sqlalchemy.ext.asyncio import AsyncSession
+
     from backend.app.core.database import get_db
     from backend.app.main import app
 
-    broken = SimpleNamespace(execute=AsyncMock(side_effect=OperationalError("private-sql", {}, RuntimeError())))
-
     async def unavailable_db():
-        yield broken
+        # Preserve the real transaction owner used by C's drain accounting;
+        # fail the actual first database operation, not lifecycle bookkeeping.
+        async with AsyncSession(bind=db_session.bind) as broken:
+            broken.execute = AsyncMock(side_effect=OperationalError("private-sql", {}, RuntimeError()))
+            yield broken
 
     app.dependency_overrides[get_db] = unavailable_db
     payload = {"username": "outage", "password": "SafePass123!"} if route == "login" else None
@@ -323,7 +328,7 @@ async def test_safe_preferences_without_settings_permission(async_client, db_ses
     user = User(username="g01-minimal-ui", role="user", is_active=True, password_hash="unused", groups=[group])
     db_session.add_all([user, Settings(key="mqtt_password", value="ui-secret-canary")])
     await db_session.commit()
-    headers = {"Authorization": f"Bearer {create_access_token({'sub': user.username})}"}
+    headers = {"Authorization": f"Bearer {await mint_test_access(db_session, username=user.username)}"}
     response = await async_client.get("/api/v1/settings/ui-preferences", headers=headers)
     assert response.status_code == 200, response.text
     assert "ui-secret-canary" not in response.text and "mqtt_password" not in response.json()
@@ -394,7 +399,7 @@ async def test_canonical_ldap_admin_can_reset_an_existing_users_2fa(async_client
         "DELETE",
         f"/api/v1/auth/2fa/admin/{target.id}",
         json={},
-        headers={"Authorization": f"Bearer {create_access_token({'sub': actor.username})}"},
+        headers={"Authorization": f"Bearer {await mint_test_access(db_session, username=actor.username)}"},
     )
     assert response.status_code == 200, response.text
     assert await db_session.scalar(select(UserTOTP.id).where(UserTOTP.user_id == target.id)) is None

@@ -23,6 +23,9 @@ class UserTOTP(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id", ondelete="CASCADE"), unique=True, index=True)
+    pending_account_identity: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    pending_generation: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    pending_sid: Mapped[str | None] = mapped_column(String(32), nullable=True)
     # TOTP secret — encrypted at rest when MFA_ENCRYPTION_KEY is set.
     # Use .secret / .set_secret() rather than accessing _secret_enc directly.
     _secret_enc: Mapped[str] = mapped_column("secret", String(512))

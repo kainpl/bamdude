@@ -465,8 +465,10 @@ async def _add_to_auto_queue(
             from backend.app.models.user import User
             from backend.app.schemas.auto_queue import AutoQueueItemCreate
             from backend.app.services.auto_queue_add import add_items_to_auto_queue
+            from backend.app.services.domain_authority import capture_chat_writer
 
             user = await db.get(User, tg_chat.user_id) if tg_chat else None
+            authority = await capture_chat_writer(db, tg_chat)
             rows = await add_items_to_auto_queue(
                 db,
                 AutoQueueItemCreate(
@@ -475,6 +477,7 @@ async def _add_to_auto_queue(
                     target_location_id=target_location_id,
                 ),
                 user,
+                authority=authority,
             )
             item = rows[0]
             pos = item.position
@@ -546,6 +549,12 @@ async def cb_qadd_confirm(callback: CallbackQuery, state: FSMContext, tg_chat: T
     staged = None
     try:
         async with async_session() as db:
+            from backend.app.models.printer import Printer
+            from backend.app.services.domain_authority import capture_chat_writer
+
+            authority = await capture_chat_writer(db, tg_chat)
+            target = await db.get(Printer, printer_id)
+            printer_identity = target.connector_identity if target is not None else None
             # A LIBRARY id, resolved as one, with no fall-through to any other
             # table \u2014 see the same note in ``library_scene``: a stale id can name
             # a real archive, whose bytes are somebody else's model.
@@ -580,22 +589,39 @@ async def cb_qadd_confirm(callback: CallbackQuery, state: FSMContext, tg_chat: T
                 routing = json.dumps(intent)
 
         async def attach(session, source) -> None:
-            item = PrintQueueItem(
-                queue_source_id=source.id,
-                source_snapshot=queue_sources.snapshot_for(staged.receipt, source),
-                queue_id=queue_id,
-                library_file_id=file_id,
-                filament_routing=record_queue_source(routing, source),
-                plate_id=plate_id,
-                status="pending",
-                position=await next_queue_position(session, queue_id),
-                created_by_id=tg_chat.user_id if tg_chat else None,
-            )
-            session.add(item)
-            await session.flush()
-            positions.append(item.position)
+            from backend.app.services.domain_authority import fresh
+            from backend.app.services.queue_ops import queue_scope_lock
 
-        await publish_staged(staged, attach)
+            async with queue_scope_lock(session, queue_id):
+                principal = await fresh(
+                    session, authority, permissions=("queue:create", "library:read"), printer_id=printer_id
+                )
+                item = PrintQueueItem(
+                    queue_source_id=source.id,
+                    source_snapshot=queue_sources.snapshot_for(staged.receipt, source),
+                    queue_id=queue_id,
+                    library_file_id=file_id,
+                    filament_routing=record_queue_source(routing, source),
+                    plate_id=plate_id,
+                    status="pending",
+                    position=await next_queue_position(session, queue_id),
+                    created_by_id=principal.user.id if principal is not None else None,
+                )
+                session.add(item)
+                await session.flush()
+                positions.append(item.position)
+
+        from backend.app.services.domain_authority import chat_source_access
+
+        await publish_staged(
+            staged,
+            attach,
+            authority=authority,
+            permissions=("queue:create", "library:read"),
+            printer_id=printer_id,
+            process_lanes=(queue_id,),
+            source_access=chat_source_access(file_id, printer_id, printer_identity, queue_id),
+        )
         await callback.answer(f"\u2705 {t(lang, NS, 'queue_add.added', pos=positions[0])}")
     except Exception as exc:
         # The bytes nobody is going to print go back (\u00a75 step 7), and the

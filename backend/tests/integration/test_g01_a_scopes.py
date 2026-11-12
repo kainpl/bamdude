@@ -19,6 +19,7 @@ from backend.app.models.project import Project
 from backend.app.models.virtual_printer import VirtualPrinter
 from backend.app.services.library_ingest import LibraryReadAccess, find_reusable_row
 from backend.app.services.library_preview_jobs import Authority
+from backend.tests.auth_helpers import mint_test_authority
 from backend.tests.integration.test_library_dedup import _3mf, isolated_archive_dir  # noqa: F401
 from backend.tests.integration.test_workshop_library_rights import _jwt, _key, _user
 
@@ -54,6 +55,7 @@ async def test_shared_ingest_refuses_hidden_match_without_row_or_file_side_effec
     db_session, isolated_archive_dir, writer
 ):
     owner = await _user(db_session, "private-owner", ["library:read_all", "library:upload"])
+    owner_id = owner.id
     viewer = await _user(db_session, "own-uploader", ["library:read_own", "library:upload"])
     content = _3mf()
     original = await save_3mf_bytes_to_library(
@@ -64,7 +66,10 @@ async def test_shared_ingest_refuses_hidden_match_without_row_or_file_side_effec
         source_url="https://example.invalid/private-source",
     )
     before = {p for p in get_library_files_dir().rglob("*") if p.is_file()}
-    kwargs = {"authority": Authority.user(viewer.id), "created_by_id": viewer.id}
+    kwargs = {
+        "authority": Authority.user(viewer.id, capture=await mint_test_authority(db_session, username=viewer.username)),
+        "created_by_id": viewer.id,
+    }
     with pytest.raises(HTTPException) as refusal:
         if writer == "upload":
             await store_library_upload(db_session, filename="mine.3mf", content=content, target_folder=None, **kwargs)
@@ -80,7 +85,7 @@ async def test_shared_ingest_refuses_hidden_match_without_row_or_file_side_effec
     assert {p for p in get_library_files_dir().rglob("*") if p.is_file()} == before
     await db_session.refresh(original.file)
     assert original.file.filename == "secret-canary.3mf"
-    assert original.file.created_by_id == owner.id
+    assert original.file.created_by_id == owner_id
     assert await db_session.scalar(select(func.count()).select_from(LibraryFile)) == 1
 
 
@@ -92,7 +97,7 @@ async def test_http_upload_cannot_disclose_hidden_dedupe_receipt(
     hidden = await save_3mf_bytes_to_library(db_session, content=content, filename="hidden-name-canary.3mf")
     viewer = await _user(db_session, "upload-only", ["library:upload", "library:read_own"])
     if credential == "jwt":
-        headers = _jwt(viewer.username)
+        headers = await _jwt(viewer.username)
     else:
         key = await _key(db_session, viewer, can_manage_library=True)
         headers = {"X-API-Key": key} if credential == "header" else {"Authorization": f"Bearer {key}"}
@@ -119,7 +124,7 @@ async def test_zip_partial_import_reports_neutral_refusal_and_keeps_visible_succ
     response = await async_client.post(
         "/api/v1/library/files/extract-zip?preserve_structure=false",
         files={"file": ("models.zip", buffer.getvalue(), "application/zip")},
-        headers=_jwt(viewer.username),
+        headers=await _jwt(viewer.username),
     )
     assert response.status_code == 200, response.text
     body = response.json()
@@ -146,10 +151,10 @@ async def test_history_delete_requires_printer_writer_and_preserves_newer_rows(
     recent = model(printer_id=printer.id, recorded_at=datetime.now(timezone.utc), **extra)
     db_session.add_all([old, recent])
     await db_session.commit()
-    denied = await async_client.delete(f"/api/v1/{route}/{printer.id}?days=30", headers=_jwt(reader.username))
+    denied = await async_client.delete(f"/api/v1/{route}/{printer.id}?days=30", headers=await _jwt(reader.username))
     assert denied.status_code == 403, denied.text
     assert await db_session.scalar(select(func.count()).select_from(model)) == 2
-    allowed = await async_client.delete(f"/api/v1/{route}/{printer.id}?days=30", headers=_jwt(writer.username))
+    allowed = await async_client.delete(f"/api/v1/{route}/{printer.id}?days=30", headers=await _jwt(writer.username))
     assert allowed.status_code == 200, allowed.text
     assert allowed.json()["deleted"] == 1
     assert await db_session.scalar(select(func.count()).select_from(model)) == 1
@@ -169,7 +174,7 @@ async def test_camera_viewer_cannot_modify_plate_references(async_client, db_ses
     detector = Mock()
     monkeypatch.setattr("backend.app.services.plate_detection.PlateDetector", detector)
     response = await async_client.request(
-        method, f"/api/v1/printers/123/camera/plate-detection/{path}", headers=_jwt(viewer.username)
+        method, f"/api/v1/printers/123/camera/plate-detection/{path}", headers=await _jwt(viewer.username)
     )
     assert response.status_code == 403, response.text
     detector.assert_not_called()
@@ -186,8 +191,8 @@ async def test_reference_writer_updates_and_deletes_through_existing_detector(
     monkeypatch.setattr("backend.app.services.plate_detection.PlateDetector", lambda: detector)
     monkeypatch.setattr("backend.app.services.plate_detection.is_plate_detection_available", lambda: True)
     path = f"/api/v1/printers/{printer.id}/camera/plate-detection/references/0"
-    changed = await async_client.put(path + "?label=Allowed", headers=_jwt(writer.username))
-    removed = await async_client.delete(path, headers=_jwt(writer.username))
+    changed = await async_client.put(path + "?label=Allowed", headers=await _jwt(writer.username))
+    removed = await async_client.delete(path, headers=await _jwt(writer.username))
     assert changed.status_code == removed.status_code == 200
     detector.update_reference_label.assert_called_once_with(printer.id, 0, "Allowed")
     detector.delete_reference.assert_called_once_with(printer.id, 0)
@@ -199,8 +204,8 @@ async def test_debug_stop_is_a_write_and_discovery_reader_cannot_start_scans(asy
     scan = AsyncMock()
     monkeypatch.setattr("backend.app.api.routes.bug_report._set_debug_setting", setter)
     monkeypatch.setattr("backend.app.api.routes.discovery.discovery_service.start", scan)
-    stopped = await async_client.post("/api/v1/bug-report/stop-logging", headers=_jwt(reader.username))
-    discovery = await async_client.post("/api/v1/discovery/start", headers=_jwt(reader.username))
+    stopped = await async_client.post("/api/v1/bug-report/stop-logging", headers=await _jwt(reader.username))
+    discovery = await async_client.post("/api/v1/discovery/start", headers=await _jwt(reader.username))
     assert stopped.status_code == discovery.status_code == 403
     setter.assert_not_called()
     scan.assert_not_called()
@@ -268,11 +273,11 @@ async def test_workshop_preserves_minimal_print_summary_and_metrics_but_masks_ar
     )
     db_session.add(archive)
     await db_session.commit()
-    listing = await async_client.get(f"/api/v1/projects/{project.id}/archives", headers=_jwt(reader.username))
+    listing = await async_client.get(f"/api/v1/projects/{project.id}/archives", headers=await _jwt(reader.username))
     assert listing.status_code == 200, listing.text
     row = listing.json()[0]
     assert (row["id"], row["quantity"], row["status"], row["restricted"]) == (archive.id, 3, "failed", True)
-    timeline = await async_client.get(f"/api/v1/projects/{project.id}/timeline", headers=_jwt(reader.username))
+    timeline = await async_client.get(f"/api/v1/projects/{project.id}/timeline", headers=await _jwt(reader.username))
     assert timeline.status_code == 200, timeline.text
     failed = next(event for event in timeline.json() if event["event_type"] == "print_failed")
     assert failed["description"] is None

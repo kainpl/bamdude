@@ -95,18 +95,45 @@ class Authority:
     provider_id: int | None = None
     chat_row_id: int | None = None
     chat_id: int | None = None
+    capture: object | None = None
 
     @classmethod
-    def user(cls, user_id: int) -> Authority:
-        return cls("user", user_id=user_id)
+    def user(cls, user_id: int, *, capture=None) -> Authority:
+        return cls("user", user_id=user_id, capture=capture)
 
     @classmethod
-    def api_key(cls, key_id: int) -> Authority:
-        return cls("api_key", key_id=key_id)
+    def api_key(cls, key_id: int, *, capture=None) -> Authority:
+        return cls("api_key", key_id=key_id, capture=capture)
 
     @classmethod
     def telegram_chat(cls, row_id: int, provider_id: int, chat_id: int) -> Authority:
         return cls("telegram_chat", provider_id=provider_id, chat_row_id=row_id, chat_id=chat_id)
+
+    def same_actor(self, other: Authority) -> bool:
+        """Receipt ownership is an actor identity; the original capture still gates its writer."""
+        if not isinstance(other, Authority) or self.kind != other.kind:
+            return False
+        if self.kind == "telegram_chat":
+            return (self.chat_row_id, self.provider_id, self.chat_id) == (
+                other.chat_row_id,
+                other.provider_id,
+                other.chat_id,
+            )
+        from backend.app.core.auth_lifetime import FrozenAuthority
+
+        first, second = self.capture, other.capture
+        if not isinstance(first, FrozenAuthority) or not isinstance(second, FrozenAuthority):
+            return False
+        if not first.account_identity or first.account_identity != second.account_identity:
+            return False
+        if self.kind == "user":
+            return first.kind == second.kind == "session"
+        return (
+            self.kind == "api_key"
+            and first.kind == second.kind == "key"
+            and bool(first.key_identity)
+            and first.key_identity == second.key_identity
+        )
 
 
 @dataclass(frozen=True)
@@ -404,6 +431,20 @@ class LibraryPreviewJobs:
         """At least one receipt whose actor still holds its right; the others get nothing (spec §5). With the
         attach's own session the rights are read inside that transaction, before its write."""
         try:
+            if session is not None:
+                marker = ("preview_authority_guard", execution.id)
+                if marker not in session.info or session.info[marker] is not session.get_transaction():
+                    from backend.app.services.domain_authority import captured, guard
+
+                    receipts = sorted(
+                        execution.live_receipts(), key=lambda r: getattr(captured(r.authority), "account_identity", "")
+                    )
+                    for receipt in receipts:
+                        try:
+                            await guard(session, receipt.authority, permissions=(_permission(receipt.purpose),))
+                        except Exception:
+                            self._end_receipt(receipt, "failed", "authority_missing")
+                    session.info[marker] = session.get_transaction()
             for receipt in execution.live_receipts():
                 if not await self._checks.authority_holds(receipt.authority, receipt.purpose, session=session):
                     self._end_receipt(receipt, "failed", "authority_missing")
@@ -626,6 +667,14 @@ async def authority_holds(db, authority: Authority, purpose: str) -> bool:
     from sqlalchemy.orm import selectinload
 
     permission = _permission(purpose)
+    if authority.kind in ("user", "api_key"):
+        from backend.app.services.domain_authority import fresh
+
+        try:
+            await fresh(db, authority, permissions=(permission,))
+            return True
+        except HTTPException:
+            return False
     if authority.kind == "user":
         from backend.app.models.user import User
 

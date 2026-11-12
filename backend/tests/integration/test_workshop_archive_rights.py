@@ -79,14 +79,14 @@ async def desk(db_session, committing_client, catalog):  # noqa: F811 — the fi
 
 
 async def _add(client: AsyncClient, order_id: int, ids: list[int], who: str | None = None, **extra):
-    headers = _jwt(who) if who else None
+    headers = await _jwt(who) if who else None
     return await client.post(
         f"/api/v1/projects/{order_id}/add-archives", json={"archive_ids": ids, **extra}, headers=headers
     )
 
 
 async def _remove(client: AsyncClient, order_id: int, ids: list[int], who: str | None = None):
-    headers = _jwt(who) if who else None
+    headers = await _jwt(who) if who else None
     return await client.post(f"/api/v1/projects/{order_id}/remove-archives", json={"archive_ids": ids}, headers=headers)
 
 
@@ -194,7 +194,7 @@ class TestTheEditorAsksForTheOrder:
     async def test_resending_the_binding_it_has_asks_nothing_more(self, committing_client, db_session, desk, filed):
         archive_id, line = filed
         body = {"notes": "checked", "project_id": desk["a"], "project_line_id": line}
-        r = await committing_client.patch(f"/api/v1/archives/{archive_id}", json=body, headers=_jwt("ar_editor"))
+        r = await committing_client.patch(f"/api/v1/archives/{archive_id}", json=body, headers=await _jwt("ar_editor"))
         assert r.status_code == 200, r.text
         assert r.json()["notes"] == "checked"
 
@@ -207,17 +207,19 @@ class TestTheEditorAsksForTheOrder:
             "line": {"project_line_id": desk["lines_a"][1]},
             "unfile": {"project_id": None},
         }[change]
-        r = await committing_client.patch(f"/api/v1/archives/{archive_id}", json=body, headers=_jwt("ar_editor"))
+        r = await committing_client.patch(f"/api/v1/archives/{archive_id}", json=body, headers=await _jwt("ar_editor"))
         assert r.status_code == 403, r.text
         assert await _order_of(db_session, archive_id) == (desk["a"], line)
-        r = await committing_client.patch(f"/api/v1/archives/{archive_id}", json=body, headers=_jwt("ar_all"))
+        r = await committing_client.patch(f"/api/v1/archives/{archive_id}", json=body, headers=await _jwt("ar_all"))
         assert r.status_code == 200, r.text
         assert await _order_of(db_session, archive_id) != (desk["a"], line)
 
     @pytest.mark.asyncio
     async def test_an_unfiled_print_sent_unfiled_asks_nothing_more(self, committing_client, db_session, desk):
         body = {"notes": "loose", "project_id": None, "project_line_id": None}
-        r = await committing_client.patch(f"/api/v1/archives/{desk['ownerless']}", json=body, headers=_jwt("ar_editor"))
+        r = await committing_client.patch(
+            f"/api/v1/archives/{desk['ownerless']}", json=body, headers=await _jwt("ar_editor")
+        )
         assert r.status_code == 200, r.text
 
 

@@ -9,6 +9,8 @@ Tests the ownership permission model where users can have:
 import pytest
 from httpx import AsyncClient
 
+from backend.tests.auth_helpers import bind_test_key, mint_test_access
+
 
 class TestOwnershipPermissionsSetup:
     """Helper fixture class for ownership permission tests."""
@@ -18,7 +20,7 @@ class TestOwnershipPermissionsSetup:
         """Create test users with different permission levels using the pre-seeded admin."""
         from backend.app.core.auth import create_access_token
 
-        admin_token = create_access_token(data={"sub": "test_admin"})
+        admin_token = await mint_test_access(username="test_admin")
         # /auth/me returns the admin record we need for the return payload.
         admin_user = (await async_client.get("/api/v1/auth/me")).json()
 
@@ -428,7 +430,9 @@ class TestQueueOwnershipPermissions(TestOwnershipPermissionsSetup):
 
         other = await queue_item_factory(created_by_id=auth_setup["operator2_user"]["id"], status="failed")
         raw, key_hash, key_prefix = generate_api_key()
-        db_session.add(APIKey(name="k-queue", key_hash=key_hash, key_prefix=key_prefix, enabled=True, can_queue=True))
+        issued_key = APIKey(name="k-queue", key_hash=key_hash, key_prefix=key_prefix, enabled=True, can_queue=True)
+        await bind_test_key(db_session, issued_key)
+        db_session.add(issued_key)
         await db_session.commit()
 
         response = await async_client.post(
@@ -448,7 +452,9 @@ class TestQueueOwnershipPermissions(TestOwnershipPermissionsSetup):
 
         row = await queue_item_factory(created_by_id=auth_setup["operator_user"]["id"], status="failed")
         raw, key_hash, key_prefix = generate_api_key()
-        db_session.add(APIKey(name="k-status", key_hash=key_hash, key_prefix=key_prefix, enabled=True, can_queue=False))
+        issued_key = APIKey(name="k-status", key_hash=key_hash, key_prefix=key_prefix, enabled=True, can_queue=False)
+        await bind_test_key(db_session, issued_key)
+        db_session.add(issued_key)
         await db_session.commit()
 
         response = await async_client.post(
@@ -1402,8 +1408,9 @@ class TestSliceOwnershipPermissions(TestOwnershipPermissionsSetup):
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_slice_job_polling_is_owner_scoped(self, async_client, auth_setup, readown_slicer):
+    async def test_slice_job_polling_is_owner_scoped(self, async_client, db_session, auth_setup, readown_slicer):
         from backend.app.services.slice_dispatch import slice_dispatch
+        from backend.tests.auth_helpers import mint_test_authority
 
         async def _noop(_job_id):
             return {}
@@ -1415,6 +1422,7 @@ class TestSliceOwnershipPermissions(TestOwnershipPermissionsSetup):
             source_id=1,
             source_name="secret_model.3mf",
             owner_id=auth_setup["operator2_user"]["id"],
+            authority=await mint_test_authority(db_session, username=auth_setup["operator2_user"]["username"]),
             run=_noop,
         )
         other = await async_client.get(
@@ -1436,6 +1444,7 @@ class TestSliceOwnershipPermissions(TestOwnershipPermissionsSetup):
             source_id=2,
             source_name="my_model.3mf",
             owner_id=readown_slicer["user_id"],
+            authority=await mint_test_authority(db_session, username="readown_slicer"),
             run=_noop,
         )
         mine = await async_client.get(

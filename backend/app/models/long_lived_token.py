@@ -33,10 +33,11 @@ V1 hard rules:
 
 from __future__ import annotations
 
-from datetime import datetime
+import uuid
+from datetime import datetime, timezone
 
 from sqlalchemy import DateTime, ForeignKey, Integer, String, func
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, validates
 
 from backend.app.core.database import Base
 
@@ -47,6 +48,13 @@ class LongLivedToken(Base):
     __tablename__ = "long_lived_tokens"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    token_identity: Mapped[str] = mapped_column(
+        String(36), unique=True, nullable=False, default=lambda: str(uuid.uuid4())
+    )
+    owner_identity: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    contract_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    retired_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    retired_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
     user_id: Mapped[int] = mapped_column(
         Integer,
         ForeignKey("users.id", ondelete="CASCADE"),
@@ -75,3 +83,7 @@ class LongLivedToken(Base):
 
     def __repr__(self) -> str:
         return f"<LongLivedToken id={self.id} user_id={self.user_id} name={self.name!r} scope={self.scope}>"
+
+    @validates("created_at", "last_used_at", "expires_at", "revoked_at", "retired_at")
+    def _utc_datetime(self, _name, value):
+        return value.astimezone(timezone.utc).replace(tzinfo=None) if value is not None and value.tzinfo else value

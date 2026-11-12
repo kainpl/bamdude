@@ -8,9 +8,25 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from backend.app.models.local_preset import LocalPreset
+from backend.app.models.user import User
 from backend.app.models.user_filament import UserFilamentFamily, UserFilamentPreset
+from backend.app.services import cloud_credentials
 from backend.app.services.filament_authoring import AuthoringError
 from backend.app.services.filament_push import PUSH_CAPABLE, push_family
+
+OWNER = None
+CAPTURE = None
+
+
+@pytest.fixture(autouse=True)
+async def cloud_owner(db_session):
+    global OWNER, CAPTURE
+    cloud_credentials.open_admission()
+    OWNER = User(username="push-owner", role="admin", is_active=True)
+    db_session.add(OWNER)
+    await db_session.commit()
+    CAPTURE = await cloud_credentials.snapshot(db_session, OWNER, "bambu")
+    await db_session.commit()
 
 
 def _seed_root(db_session, *, fid="Pabc1234", name="Poly PETG B @Bambu Lab P1S 0.4 nozzle"):
@@ -38,6 +54,8 @@ async def _mirror_for(db_session, preset, fid):
     await db_session.flush()
     row = UserFilamentPreset(
         owner_user_id=None,
+        bambu_pushed_owner_identity=OWNER.account_identity,
+        orca_pushed_owner_identity=OWNER.account_identity,
         ecosystem="orca",
         source="local",
         local_preset_id=preset.id,
@@ -51,6 +69,7 @@ async def _mirror_for(db_session, preset, fid):
 
 def _cloud_mock(created_id="PFUS_NEW1"):
     cloud = AsyncMock()
+    cloud.credential_snapshot = CAPTURE
     cloud.is_authenticated = True
     cloud.create_setting.return_value = {"setting_id": created_id}
     cloud.update_setting.return_value = {"setting_id": "PFUS_NEW2"}

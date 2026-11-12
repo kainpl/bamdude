@@ -475,6 +475,7 @@ async def _worker_stream_response(
 
 @router.post("/camera/stream-token")
 async def create_stream_token(
+    request: Request,
     _: User | None = RequirePermission(Permission.CAMERA_VIEW),
 ):
     """Mint a short-lived camera-stream token for the caller.
@@ -483,7 +484,10 @@ async def create_stream_token(
     loaded by ``<img>`` / ``<video>`` tags — those can't send Authorization
     headers. Tokens last 60 minutes and are reusable within that window.
     """
-    return {"token": await create_camera_stream_token()}
+    from backend.app.core.auth import capture_request_authority
+
+    authority = await capture_request_authority(request)
+    return {"token": await create_camera_stream_token(authority=authority)}
 
 
 @router.get("/{printer_id}/camera/stream")

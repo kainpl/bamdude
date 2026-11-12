@@ -11927,6 +11927,14 @@ async def _application_lifespan(app: FastAPI):
     # system language to UK without re-triggering the settings-PATCH flow,
     # or a restore brought in EN rows under a UK config), realign once at
     # startup.  Idempotent — safe to run every boot.  Fire-and-forget.
+    from backend.app.services.notification_service import (
+        begin_internal_template_reconcile,
+        complete_internal_template_reconcile,
+        fail_internal_template_reconcile,
+    )
+
+    begin_internal_template_reconcile()
+
     async def _reconcile_locale_on_startup():
         try:
             from sqlalchemy import delete
@@ -11956,7 +11964,9 @@ async def _application_lifespan(app: FastAPI):
                     result["maintenance_types_updated"],
                     " (cleaned up legacy notification_language row)" if stale.rowcount else "",
                 )
+            complete_internal_template_reconcile()
         except Exception as e:
+            fail_internal_template_reconcile()
             logging.getLogger(__name__).warning("Locale startup reconciliation failed: %s", e)
 
     spawn_background_task(_reconcile_locale_on_startup(), name="reconcile-locale-startup")
@@ -12424,6 +12434,15 @@ async def lifespan(app: FastAPI):
     process_gc.prepare_startup_heap()
     _protect_uvicorn_log_handlers()
     farm_startup_guard.start(Path(app_settings.data_dir))
+    from backend.app.core.auth_runtime import auth_runtime
+    from backend.app.services.cloud_credentials import (
+        close_admission as close_cloud_admission,
+        open_admission as open_cloud_admission,
+    )
+    from backend.app.services.credential_rollout import credential_rollout
+
+    auth_runtime.close_admission()
+    close_cloud_admission()
     try:
         async with _application_lifespan(app):
             from backend.app.mcp_server.runtime import mcp_runtime
@@ -12432,13 +12451,27 @@ async def lifespan(app: FastAPI):
             await mcp_runtime.reload()
             # A restore's fence is finished (a new storage epoch) before the slicer connector admits anything.
             await connector_runtime.startup()
+            if connector_runtime.restore_fenced:
+                raise RuntimeError("Authentication restore finalization is pending")
+            open_cloud_admission()
+            # This only schedules the loop. Technical admission is marked after
+            # ASGI startup.complete; notification readiness never gates startup.
+            credential_rollout.start(lambda: farm_startup_guard.ready)
             try:
                 yield
             finally:
+                auth_runtime.close_admission()
+                close_cloud_admission()
+                if not await credential_rollout.shutdown():
+                    logging.getLogger(__name__).warning("Credential rollout cleanup is still owned at shutdown")
+                if not await auth_runtime.shutdown():
+                    logging.getLogger(__name__).warning("Authentication cleanup is still owned at shutdown")
                 await connector_runtime.shutdown()
                 await mcp_runtime.shutdown()
                 farm_startup_guard.close_admission()
     except BaseException:
+        auth_runtime.close_admission()
+        close_cloud_admission()
         farm_startup_guard.close_admission()
         raise
     else:
@@ -13174,6 +13207,9 @@ app.include_router(library_thumbnail_jobs.router, prefix=app_settings.api_prefix
 app.include_router(library_tags.router, prefix=app_settings.api_prefix)
 app.include_router(library_trash.router, prefix=app_settings.api_prefix)
 # archive_purge router is registered above before archives.router (route order).
+from backend.app.api.routes import credential_rollout as credential_rollout_routes
+
+app.include_router(credential_rollout_routes.router, prefix=app_settings.api_prefix)
 app.include_router(api_keys.router, prefix=app_settings.api_prefix)
 from backend.app.api.routes import mcp_integration
 

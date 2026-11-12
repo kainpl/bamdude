@@ -4377,6 +4377,7 @@ class _ResolvedPlate(NamedTuple):
 async def enqueue_order_plan(
     project_id: int,
     data: PlanEnqueueRequest,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     current_user: User | None = RequireAnyPermission(*_FILES_FUTURE),
     _queue: User | None = RequirePermission(Permission.QUEUE_CREATE),
@@ -4386,10 +4387,16 @@ async def enqueue_order_plan(
 
     if await db.get(OrderWorkingPlan, project_id) is not None:
         raise refusal("working_plan_required")
-    return await _enqueue_order_plan(project_id, data, db, current_user)
+    from backend.app.core.auth import capture_request_authority
+
+    return await _enqueue_order_plan(
+        project_id, data, db, current_user, authority=await capture_request_authority(request)
+    )
 
 
-async def _enqueue_order_plan(project_id, data, db, current_user, *, consumption=None, frozen_options=None):
+async def _enqueue_order_plan(
+    project_id, data, db, current_user, *, consumption=None, frozen_options=None, authority=None
+):
     """Send plan rows to the auto-queue, or to one printer's queue.
 
     Both queue doors (``POST /queue/``, ``POST /auto-queue/``) require
@@ -4431,7 +4438,7 @@ async def _enqueue_order_plan(project_id, data, db, current_user, *, consumption
     """
     from backend.app.services.order_plan_submission import LegacyPlanPublication
 
-    publication = consumption if consumption is not None else LegacyPlanPublication(project_id)
+    publication = consumption if consumption is not None else LegacyPlanPublication(project_id, capture=authority)
     project = await _get_project(db, project_id)
     lines_by_id = {line.id: line for line in project.lines}
     # Plain validated values BEFORE any writer commits. This is the order's

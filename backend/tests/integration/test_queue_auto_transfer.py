@@ -513,7 +513,7 @@ async def test_existing_order_job_needs_no_new_filing_right(async_client, db_ses
     item = await db_session.get(PrintQueueItem, item_id)
     item.project_id, item.project_line_id, item.created_by_id = project.id, line.id, owner.id
     await db_session.commit()
-    headers = _jwt(owner.username)
+    headers = await _jwt(owner.username)
     response = await async_client.get(f"/api/v1/queue/{item_id}/auto-transfer-preview", headers=headers)
     assert response.status_code == 200 and response.json()["allowed"], response.text
     response = await async_client.post(

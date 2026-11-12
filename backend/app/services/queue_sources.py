@@ -49,7 +49,7 @@ import zipfile
 import zlib
 from collections.abc import Awaitable, Callable
 from concurrent.futures import Future
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1012,6 +1012,9 @@ async def publish(
     attach: Callable[[AsyncSession, QueueSource], Awaitable[None]],
     *,
     session_factory: async_sessionmaker | None = None,
+    before_publish: Callable[[AsyncSession], Awaitable[None]] | None = None,
+    before_attach: Callable[[AsyncSession], Awaitable[None]] | None = None,
+    process_lanes=(),
 ) -> QueueSource:
     """Publish the staged bytes and attach the caller's rows — §5 steps 5–7.
 
@@ -1033,7 +1036,12 @@ async def publish(
     receipt._claim()
     publication = _Publication()
     try:
-        async with storage_mutation():
+        async with AsyncExitStack() as guards:
+            await guards.enter_async_context(storage_mutation())
+            if process_lanes:
+                from backend.app.services.queue_ops import queue_process_lanes
+
+                await guards.enter_async_context(queue_process_lanes(process_lanes))
             if receipt.epoch != current_epoch():
                 # A restore replaced the tree: these bytes belong to the old one.
                 receipt.state = "discarded"
@@ -1053,6 +1061,8 @@ async def publish(
                 # file-backed multi-writer boundary this protects in production.
                 if bind.dialect.name == "sqlite" and bind.url.database != ":memory:":
                     await session.execute(text("BEGIN IMMEDIATE"))
+                if before_publish is not None:
+                    await before_publish(session)
                 # No SELECT ... FOR UPDATE: one process owns this spool (§2), the
                 # guard above is the mutual exclusion, and SQLite has no such lock.
                 existing = await session.scalar(select(QueueSource).where(QueueSource.sha256 == receipt.sha256))
@@ -1078,6 +1088,8 @@ async def publish(
 
                 commit_attempted = False
                 try:
+                    if before_attach is not None:
+                        await before_attach(session)
                     await attach(session, row)
                     # Set with no await before the call: from here on the commit may reach the database
                     # whatever this coroutine is told afterwards.

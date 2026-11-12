@@ -11,6 +11,7 @@ from backend.app.core.credential_config import lock_credential_config
 from backend.app.models.settings import Settings
 from backend.app.schemas.auth import SMTPSettingsUpdate, TestSMTPRequest as SMTPProbe
 from backend.app.schemas.settings import AppSettingsUpdate
+from backend.tests.auth_helpers import mint_test_access
 
 pytestmark = pytest.mark.asyncio
 
@@ -310,7 +311,7 @@ async def test_delegated_editor_cannot_submit_read_blanks_as_secret_noops(async_
     db_session.add(user)
     await db_session.commit()
     await seed(db_session, dict.fromkeys(settings.SETTINGS_SECRETS, "12345678"))
-    headers = {"Authorization": "Bearer " + create_access_token({"sub": user.username})}
+    headers = {"Authorization": "Bearer " + await mint_test_access(db_session, username=user.username)}
     for field in settings.SETTINGS_SECRETS:
         response = await async_client.put("/api/v1/settings/", headers=headers, json={field: "", "currency": "EUR"})
         assert response.status_code == 403, response.text
@@ -725,7 +726,7 @@ async def test_ba8_delegated_secret_guesses_always_forbidden_including_equal_and
     db_session.add(user)
     await db_session.commit()
     await seed(db_session, {key: "12345678" for key in settings.SETTINGS_SECRETS if key != "ha_token"})
-    headers = {"Authorization": "Bearer " + create_access_token({"sub": user.username})}
+    headers = {"Authorization": "Bearer " + await mint_test_access(db_session, username=user.username)}
     for field in settings.SETTINGS_SECRETS:
         for value in ["wrong-guess", "12345678", "", None]:
             response = await async_client.put(

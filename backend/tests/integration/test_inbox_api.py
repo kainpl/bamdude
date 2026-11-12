@@ -12,6 +12,7 @@ from backend.app.core.auth import create_access_token
 from backend.app.models.user import User
 from backend.app.models.user_notification import UserNotification
 from backend.app.services.notification_events import EVENT_CATALOG
+from backend.tests.auth_helpers import bind_test_key, mint_test_access
 
 
 async def _admin_id(db) -> int:
@@ -192,7 +193,7 @@ async def test_a_viewer_sees_their_own_inbox_and_nobody_elses(async_client, db_s
     db_session.add_all([_row(other.id, "theirs"), _row(me, "mine")])
     await db_session.commit()
 
-    token = create_access_token(data={"sub": other.username})
+    token = await mint_test_access(db_session, username=other.username)
     r = await async_client.get("/api/v1/inbox/", headers={"Authorization": f"Bearer {token}"})
     assert r.status_code == 200, r.text
     assert [i["title"] for i in r.json()["items"]] == ["theirs"]
@@ -202,7 +203,7 @@ async def test_a_viewer_sees_their_own_inbox_and_nobody_elses(async_client, db_s
 @pytest.mark.integration
 async def test_a_user_without_the_permission_is_refused(async_client, db_session):
     other = await _other_user(db_session)  # in no group at all
-    token = create_access_token(data={"sub": other.username})
+    token = await mint_test_access(db_session, username=other.username)
     r = await async_client.get("/api/v1/inbox/", headers={"Authorization": f"Bearer {token}"})
     assert r.status_code == 403
 
@@ -233,16 +234,16 @@ async def test_an_api_key_is_refused_the_inbox(async_client, db_session):
     viewers = (await db_session.execute(select(Group).where(Group.name == "Viewers"))).scalar_one()
     other.groups.append(viewers)
     raw, key_hash, key_prefix = generate_api_key()
-    db_session.add(
-        APIKey(
-            name=f"k-{key_prefix}",
-            key_hash=key_hash,
-            key_prefix=key_prefix,
-            enabled=True,
-            user_id=other.id,
-            can_read_status=True,
-        )
+    issued_key = APIKey(
+        name=f"k-{key_prefix}",
+        key_hash=key_hash,
+        key_prefix=key_prefix,
+        enabled=True,
+        user_id=other.id,
+        can_read_status=True,
     )
+    await bind_test_key(db_session, issued_key)
+    db_session.add(issued_key)
     await db_session.commit()
 
     del async_client.headers["Authorization"]

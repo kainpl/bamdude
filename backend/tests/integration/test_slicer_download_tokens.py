@@ -23,6 +23,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from backend.app.core.config import settings
+from backend.tests.auth_helpers import mint_test_authority
 
 
 @pytest.fixture
@@ -43,7 +44,7 @@ def _write(path, body: bytes = b"3mf-bytes"):
 async def _token(kind: str, resource_id: int) -> str:
     from backend.app.core.auth import create_slicer_download_token
 
-    return await create_slicer_download_token(kind, resource_id)
+    return await create_slicer_download_token(kind, resource_id, authority=await mint_test_authority())
 
 
 @pytest.fixture

@@ -68,8 +68,11 @@ def _known_service():
 
 async def request_authority(request: Request, user: User | None) -> Authority:
     """The caller as a receipt's actor: the signed-in user, or the API key itself (never its owner's JWT)."""
+    from backend.app.core.auth import capture_request_authority
+
+    capture = await capture_request_authority(request)
     if user is not None:
-        return Authority.user(user.id)
+        return Authority.user(user.id, capture=capture)
     credential = request.headers.get("X-API-Key")
     if not credential:
         header = request.headers.get("Authorization", "")
@@ -77,7 +80,7 @@ async def request_authority(request: Request, user: User | None) -> Authority:
         credential = token if is_api_key_token(token) else None
     if credential:
         try:  # the gate's own lookup for this request, cached on it: no second validation
-            return Authority.api_key((await resolve_api_key_authority(request, credential)).key.id)
+            return Authority.api_key((await resolve_api_key_authority(request, credential)).key.id, capture=capture)
         except APIKeyValidationFailure:
             pass
     raise HTTPException(401, "Not authenticated")
@@ -86,7 +89,7 @@ async def request_authority(request: Request, user: User | None) -> Authority:
 async def _may_read(
     receipt, viewer: Authority, request: Request, db: AsyncSession, user, creds: RequestCredentials
 ) -> bool:
-    if receipt.authority == viewer:
+    if receipt.authority.same_actor(viewer):
         from backend.app.api.routes.library import file_name_visible
 
         row = await db.get(LibraryFile, receipt.execution.source.id)

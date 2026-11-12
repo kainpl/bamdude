@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import JSON, DateTime, String, func
+from sqlalchemy import JSON, BigInteger, DateTime, String, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.app.core.database import Base
@@ -24,6 +25,12 @@ class User(Base):
     __tablename__ = "users"
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    account_identity: Mapped[str] = mapped_column(
+        String(36), unique=True, index=True, nullable=False, default=lambda: str(uuid.uuid4())
+    )
+    session_generation: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0, server_default="0")
+    bambu_cloud_generation: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0, server_default="0")
+    orca_cloud_generation: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0, server_default="0")
     username: Mapped[str] = mapped_column(String(100), unique=True, index=True)
     email: Mapped[str | None] = mapped_column(String(255), unique=True, index=True, nullable=True)
     password_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)

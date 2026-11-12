@@ -4526,6 +4526,21 @@ export interface APIKey {
   last_used: string | null;
   created_at: string;
   expires_at: string | null;
+  contract_version?: number;
+  retired_at?: string | null;
+  retired_reason?: string | null;
+}
+
+export interface CredentialRolloutStatus {
+  contract_key: string;
+  episode_id: string | null;
+  ownerless_api_key_count: number;
+  owned_api_key_count: number;
+  long_lived_token_count: number;
+  created_at: string | null;
+  delivered_at: string | null;
+  notification_state: 'none' | 'pending' | 'delivered';
+  runtime_phase: string;
 }
 
 export interface APIKeyCreate {
@@ -4710,6 +4725,10 @@ export interface LongLivedToken {
   last_used_at: string | null;
   // Plaintext is only returned on create — null on every subsequent listing.
   token: string | null;
+  contract_version?: number;
+  retired_at?: string | null;
+  retired_reason?: string | null;
+  revoked_at?: string | null;
 }
 
 export interface LongLivedTokenCreate {
@@ -14054,6 +14073,7 @@ export const api = {
 
   // API Keys
   getAPIKeys: () => request<APIKey[]>('/api-keys/'),
+  getCredentialRolloutStatus: () => request<CredentialRolloutStatus>('/api-keys/rollout'),
   createAPIKey: (data: APIKeyCreate) =>
     request<APIKeyCreateResponse>('/api-keys/', {
       method: 'POST',

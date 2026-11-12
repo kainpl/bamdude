@@ -48,6 +48,7 @@ from backend.app.services.swap_source_declarations import (
     SOURCE_CHANGED,
     Actor,
     Rights,
+    _bound_digest,
     _fresh_rights,
     _mine,
     _model,
@@ -205,6 +206,14 @@ def _refusal(
     return None
 
 
+async def _guard_actor(db, actor):
+    from backend.app.core.auth_lifetime import guard_accounts
+
+    if actor.capture is None:
+        raise HTTPException(401, "Immutable authority is required")
+    return await guard_accounts(db, [actor.capture])
+
+
 async def _fresh_job_rights(db, actor: Actor, granted: JobRights) -> JobRights:
     """The queue rights read again inside the write transaction, never wider than what the request was granted."""
     if actor.kind == "api_key":
@@ -219,18 +228,11 @@ async def _fresh_job_rights(db, actor: Actor, granted: JobRights) -> JobRights:
             [Permission.QUEUE_READ_ALL.value, Permission.QUEUE_UPDATE_ALL.value],
         )
         return granted
-    from sqlalchemy.orm import selectinload
+    from backend.app.core.auth_lifetime import validate_captured
 
-    from backend.app.models.user import User
-
-    user = (
-        await db.execute(
-            select(User)
-            .options(selectinload(User.groups))
-            .where(User.id == actor.user_id)
-            .execution_options(populate_existing=True)
-        )
-    ).scalar_one_or_none()
+    if actor.capture is None:
+        raise HTTPException(401, "Immutable authority is required")
+    user = (await validate_captured(db, actor.capture)).user
     if user is None or not user.is_active:
         raise HTTPException(403, "You may no longer declare this source.")
     may_read_all = user.has_permission(Permission.QUEUE_READ_ALL.value)
@@ -436,7 +438,7 @@ async def refresh(
 
     started = time.monotonic()
     picked = _validate_selection(list(jobs))
-    digest = _request_digest(source_kind, source_id, declaration_id, source_revision, picked)
+    digest = _bound_digest(_request_digest(source_kind, source_id, declaration_id, source_revision, picked), actor)
     try:
         # What a replay answers, and which lanes the selection touches -- read apart, holding nothing.
         async with async_session() as db:
@@ -458,7 +460,12 @@ async def refresh(
             # The archive (an archive source), then the lanes: in process, then SQLite's writer or PostgreSQL's
             # guards in the same order (``claim_lanes``, spec r4 §4).
             await stack.enter_async_context(
-                claim_lanes(db, lanes, archive_id=source_id if source_kind == "archive" else None)
+                claim_lanes(
+                    db,
+                    lanes,
+                    archive_id=source_id if source_kind == "archive" else None,
+                    before_db=lambda session: _guard_actor(session, actor),
+                )
             )
             # The source and the job rows in the order each kind's other writers keep: an archive BEFORE the rows
             # (archive -> queue: its hard delete, the terminal write, the change_table claim), a library row after

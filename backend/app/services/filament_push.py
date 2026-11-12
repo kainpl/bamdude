@@ -94,39 +94,53 @@ async def push_family(db: AsyncSession, *, filament_id: str, ecosystem: str = "b
         if cloud is not None:
             await cloud.close()
         raise AuthoringError("Bambu Cloud is not connected")
+    from backend.app.services.cloud_credentials import guard_snapshot
+
+    captured = cloud.credential_snapshot
+    presets = {
+        row.local_preset_id: await db.get(LocalPreset, row.local_preset_id) for row in rows if row.local_preset_id
+    }
+    await db.commit()
     results: list[dict] = []
-    try:
-        for row in rows:
-            preset = await db.get(LocalPreset, row.local_preset_id) if row.local_preset_id else None
-            name = preset.name if preset else row.name
-            try:
-                content = json.loads(preset.setting) if preset else {}
-            except ValueError:
-                content = {}
-            content["filament_id"] = filament_id  # the payload always carries the family
-            try:
-                if row.pushed_cloud_id and not row.push_dirty:
-                    results.append(
-                        {"name": name, "status": "up_to_date", "setting_id": row.pushed_cloud_id, "detail": None}
-                    )
-                    continue
-                if row.pushed_cloud_id:
-                    data = await cloud.update_setting(row.pushed_cloud_id, name=name, setting=content)
-                    # Bambu "update" is delete+recreate — a NEW id comes back.
-                    row.pushed_cloud_id = _extract_setting_id(data) or row.pushed_cloud_id
-                    status = "updated"
-                else:
-                    data = await cloud.create_setting("filament", name, "", content)  # roots have no base
-                    row.pushed_cloud_id = _extract_setting_id(data)
-                    status = "pushed"
-                row.pushed_at = datetime.now(timezone.utc)
-                row.push_dirty = False
-                results.append({"name": name, "status": status, "setting_id": row.pushed_cloud_id, "detail": None})
-            except Exception as e:  # noqa: BLE001 — best-effort per preset (spec §5)
-                logger.info("push of %s failed: %s", name, e)
-                results.append({"name": name, "status": "error", "setting_id": None, "detail": str(e)})
-    finally:
-        await cloud.close()
+    with db.no_autoflush:
+        try:
+            for row in rows:
+                preset = presets.get(row.local_preset_id)
+                name = preset.name if preset else row.name
+                try:
+                    content = json.loads(preset.setting) if preset else {}
+                except ValueError:
+                    content = {}
+                content["filament_id"] = filament_id  # the payload always carries the family
+                try:
+                    if (
+                        row.bambu_pushed_owner_identity == captured.account_identity
+                        and row.pushed_cloud_id
+                        and not row.push_dirty
+                    ):
+                        results.append(
+                            {"name": name, "status": "up_to_date", "setting_id": row.pushed_cloud_id, "detail": None}
+                        )
+                        continue
+                    if row.bambu_pushed_owner_identity == captured.account_identity and row.pushed_cloud_id:
+                        data = await cloud.update_setting(row.pushed_cloud_id, name=name, setting=content)
+                        # Bambu "update" is delete+recreate — a NEW id comes back.
+                        row.pushed_cloud_id = _extract_setting_id(data) or row.pushed_cloud_id
+                        status = "updated"
+                    else:
+                        data = await cloud.create_setting("filament", name, "", content)  # roots have no base
+                        row.pushed_cloud_id = _extract_setting_id(data)
+                        status = "pushed"
+                    row.bambu_pushed_owner_identity = captured.account_identity
+                    row.pushed_at = datetime.now(timezone.utc)
+                    row.push_dirty = False
+                    results.append({"name": name, "status": status, "setting_id": row.pushed_cloud_id, "detail": None})
+                except Exception as e:  # noqa: BLE001 — best-effort per preset (spec §5)
+                    logger.info("push of %s failed: %s", name, e)
+                    results.append({"name": name, "status": "error", "setting_id": None, "detail": str(e)})
+        finally:
+            await cloud.close()
+        await guard_snapshot(db, captured)
     await db.commit()
     return results
 
@@ -142,66 +156,84 @@ async def _push_family_orca(db: AsyncSession, rows, filament_id: str, user) -> l
     svc = await _build_orca_cloud(db, user)
     if svc is None:
         raise AuthoringError("Orca Cloud is not connected")
+    from backend.app.services.cloud_credentials import guard_snapshot
+
+    captured = svc.credential_snapshot
+    presets = {
+        row.local_preset_id: await db.get(LocalPreset, row.local_preset_id) for row in rows if row.local_preset_id
+    }
+    await db.commit()
     results: list[dict] = []
-    try:
-        profiles = {str(p.get("id")): p for p in await svc.list_profiles() if p.get("id")}
-        for row in rows:
-            preset = await db.get(LocalPreset, row.local_preset_id) if row.local_preset_id else None
-            name, content = _preset_blob(preset, row, filament_id)
-            try:
-                if row.orca_pushed_profile_id and row.orca_pushed_profile_id not in profiles:
-                    # Deleted in the cloud — recreate under a FRESH id below
-                    # (the old one is a tombstone for 30 days).
-                    row.orca_pushed_profile_id = None
-                    row.orca_pushed_updated_time = None
-                if row.orca_pushed_profile_id and not row.orca_push_dirty:
-                    results.append(
-                        {"name": name, "status": "up_to_date", "profile_id": row.orca_pushed_profile_id, "detail": None}
-                    )
-                    continue
-                if row.orca_pushed_profile_id:
-                    server_time = profiles[row.orca_pushed_profile_id].get("updated_time")
-                    if server_time != row.orca_pushed_updated_time:
+    with db.no_autoflush:
+        try:
+            profiles = {str(p.get("id")): p for p in await svc.list_profiles() if p.get("id")}
+            for row in rows:
+                owned_id = (
+                    row.orca_pushed_profile_id if row.orca_pushed_owner_identity == captured.account_identity else None
+                )
+                preset = presets.get(row.local_preset_id)
+                name, content = _preset_blob(preset, row, filament_id)
+                try:
+                    if owned_id and owned_id not in profiles:
+                        # Deleted in the cloud — recreate under a FRESH id below
+                        # (the old one is a tombstone for 30 days).
+                        owned_id = None
+                        row.orca_pushed_updated_time = None
+                    if owned_id and not row.orca_push_dirty:
                         results.append(
                             {
                                 "name": name,
-                                "status": "conflict",
+                                "status": "up_to_date",
                                 "profile_id": row.orca_pushed_profile_id,
-                                "server_updated_time": server_time,
-                                "row_id": row.id,
                                 "detail": None,
                             }
                         )
                         continue
-                    meta = await svc.push_profile(
-                        profile_id=row.orca_pushed_profile_id,
-                        name=name,
-                        content=content,
-                        original_updated_time=row.orca_pushed_updated_time,
-                    )
-                    status = "updated"
-                else:
-                    profile_id = str(uuid.uuid4())
-                    try:
-                        meta = await svc.push_profile(profile_id=profile_id, name=name, content=content)
-                    except OrcaCloudConflict as c:
-                        if c.code != -3:  # anything but a tombstone collision is real
-                            raise
+                    if owned_id:
+                        server_time = profiles[owned_id].get("updated_time")
+                        if server_time != row.orca_pushed_updated_time:
+                            results.append(
+                                {
+                                    "name": name,
+                                    "status": "conflict",
+                                    "profile_id": row.orca_pushed_profile_id,
+                                    "server_updated_time": server_time,
+                                    "row_id": row.id,
+                                    "detail": None,
+                                }
+                            )
+                            continue
+                        meta = await svc.push_profile(
+                            profile_id=owned_id,
+                            name=name,
+                            content=content,
+                            original_updated_time=row.orca_pushed_updated_time,
+                        )
+                        status = "updated"
+                    else:
                         profile_id = str(uuid.uuid4())
-                        meta = await svc.push_profile(profile_id=profile_id, name=name, content=content)
-                    row.orca_pushed_profile_id = profile_id
-                    status = "pushed"
-                row.orca_pushed_updated_time = meta.get("updated_time")
-                row.orca_pushed_at = datetime.now(timezone.utc)
-                row.orca_push_dirty = False
-                results.append(
-                    {"name": name, "status": status, "profile_id": row.orca_pushed_profile_id, "detail": None}
-                )
-            except Exception as e:  # noqa: BLE001 — best-effort per preset (spec §5)
-                logger.info("orca push of %s failed: %s", name, e)
-                results.append({"name": name, "status": "error", "profile_id": None, "detail": str(e)})
-    finally:
-        await svc.close()
+                        try:
+                            meta = await svc.push_profile(profile_id=profile_id, name=name, content=content)
+                        except OrcaCloudConflict as c:
+                            if c.code != -3:  # anything but a tombstone collision is real
+                                raise
+                            profile_id = str(uuid.uuid4())
+                            meta = await svc.push_profile(profile_id=profile_id, name=name, content=content)
+                        row.orca_pushed_profile_id = profile_id
+                        status = "pushed"
+                    row.orca_pushed_owner_identity = captured.account_identity
+                    row.orca_pushed_updated_time = meta.get("updated_time")
+                    row.orca_pushed_at = datetime.now(timezone.utc)
+                    row.orca_push_dirty = False
+                    results.append(
+                        {"name": name, "status": status, "profile_id": row.orca_pushed_profile_id, "detail": None}
+                    )
+                except Exception as e:  # noqa: BLE001 — best-effort per preset (spec §5)
+                    logger.info("orca push of %s failed: %s", name, e)
+                    results.append({"name": name, "status": "error", "profile_id": None, "detail": str(e)})
+        finally:
+            await svc.close()
+        await guard_snapshot(db, captured)
     await db.commit()
     return results
 
@@ -218,10 +250,18 @@ async def resolve_push_conflict(db: AsyncSession, *, row_id: int, action: str, u
     svc = await _build_orca_cloud(db, user)
     if svc is None:
         raise AuthoringError("Orca Cloud is not connected")
+    from backend.app.services.cloud_credentials import guard_snapshot
+
+    captured = svc.credential_snapshot
+    if row.orca_pushed_owner_identity != captured.account_identity:
+        await svc.close()
+        raise AuthoringError("This cloud copy belongs to a different or unknown account; push a new copy first")
+    await db.commit()
     try:
         if action == "force":
             name, content = _preset_blob(preset, row, row.family_filament_id or "")
             meta = await svc.force_push_profile(profile_id=row.orca_pushed_profile_id, name=name, content=content)
+            await guard_snapshot(db, captured)
             row.orca_pushed_updated_time = meta.get("updated_time")
             row.orca_pushed_at = datetime.now(timezone.utc)
             row.orca_push_dirty = False
@@ -235,6 +275,7 @@ async def resolve_push_conflict(db: AsyncSession, *, row_id: int, action: str, u
             content = profile.get("content")
             if not isinstance(content, dict):
                 raise AuthoringError("the cloud profile carries no usable content")
+            await guard_snapshot(db, captured)
             if preset is not None:
                 preset.setting = json.dumps(content)
                 from backend.app.services.filament_preset_sync import absorb_local_preset

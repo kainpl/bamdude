@@ -22,6 +22,7 @@ from backend.app.models.library import LibraryFile, LibraryFolder
 from backend.app.models.product import Product
 from backend.app.models.user import User
 from backend.app.services.product_sync import apply_folder_products, sync_product_for_file
+from backend.tests.auth_helpers import mint_test_access
 
 pytestmark = pytest.mark.integration
 
@@ -40,8 +41,8 @@ async def _user(db, username: str, permissions: list[str]) -> User:
     return user
 
 
-def _as(name: str) -> dict:
-    return {"Authorization": f"Bearer {create_access_token(data={'sub': name})}"}
+async def _as(name: str) -> dict:
+    return {"Authorization": f"Bearer {await mint_test_access(username=name)}"}
 
 
 @pytest.fixture
@@ -91,7 +92,7 @@ async def shelf(db_session):
 
 
 async def _files(client, shelf, who: str = "test_admin") -> dict:
-    r = await client.get(f"/api/v1/products/{shelf['product']}/files", headers=_as(who))
+    r = await client.get(f"/api/v1/products/{shelf['product']}/files", headers=await _as(who))
     assert r.status_code == 200, r.text
     return r.json()
 

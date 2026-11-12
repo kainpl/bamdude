@@ -46,6 +46,7 @@ from backend.app.schemas.cloud_link import CloudLinkStatus
 from backend.app.services.cloud_link import pairing as cloud_link_pairing
 from backend.app.services.cloud_link.service import cloud_link_service
 from backend.app.services.cloud_link.store import get_config, get_secret, save_credentials, set_publish_set
+from backend.tests.auth_helpers import mint_test_access
 
 BASE = "/api/v1/cloud-link"
 PAIR_PATH = "/api/link/v1/pair"
@@ -95,7 +96,7 @@ async def viewer_client(async_client, test_engine):
         db.add(viewer)
         await db.commit()
 
-    token = create_access_token(data={"sub": "test_viewer"})
+    token = await mint_test_access(username="test_viewer")
     async with AsyncClient(
         transport=ASGITransport(app=app),
         base_url="http://test",

@@ -26,6 +26,7 @@ from backend.app.models.settings import Settings
 from backend.app.schemas.connector import SubmissionCreate
 from backend.app.services import connector_submissions as cs, queue_sources
 from backend.app.services.connector_runtime import connector_runtime
+from backend.tests.auth_helpers import bind_test_key
 from backend.tests.integration.test_filament_routing_dispatch import setup_source
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
@@ -45,7 +46,9 @@ def _clean_state():
 async def _key(db_session, **flags) -> tuple[str, APIKey]:
     raw, key_hash, prefix = generate_api_key()
     values = {"can_queue": True, "can_read_status": True, **flags}
-    key = APIKey(name=f"orca-{prefix}", key_hash=key_hash, key_prefix=prefix, enabled=True, **values)
+    key = await bind_test_key(
+        db_session, APIKey(name=f"orca-{prefix}", key_hash=key_hash, key_prefix=prefix, enabled=True, **values)
+    )
     db_session.add(key)
     await db_session.commit()
     await db_session.refresh(key)

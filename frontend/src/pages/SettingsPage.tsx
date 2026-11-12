@@ -36,6 +36,7 @@ import { CreateUserAdvancedAuthModal } from '../components/CreateUserAdvancedAut
 import { PasswordField } from '../components/PasswordField';
 import { SubmitBlockedHint } from '../components/SubmitBlockedHint';
 import CameraTokensPanel from '../components/settings/CameraTokensPanel';
+import { CredentialRolloutNotice, RetiredCredentialNotice } from '../components/settings/CredentialRolloutNotice';
 import { StandaloneCamerasPanel } from '../components/settings/StandaloneCamerasPanel';
 import { StreamOverlayBuilder } from '../components/StreamOverlayBuilder';
 import { SpoolmanSettings } from '../components/SpoolmanSettings';
@@ -5334,6 +5335,7 @@ export function SettingsPage() {
       {activeTab === 'apikeys' && (
         <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
           <McpSettingsCard />
+          <CredentialRolloutNotice />
           {/* Left Column - API Keys Management */}
           <div>
             <div className="flex items-start justify-between gap-4 mb-4">
@@ -5610,6 +5612,7 @@ export function SettingsPage() {
                           <Key className={`w-5 h-5 ${key.enabled ? 'text-bambu-green' : 'text-bambu-gray'}`} />
                           <div>
                             <p className="text-white font-medium">{key.name}</p>
+                            {(key.retired_reason || key.retired_at) && <RetiredCredentialNotice reason={key.retired_reason ?? ''} />}
                             <p className="text-xs text-bambu-gray">
                               {key.key_prefix}••••••••
                               {key.last_used && ` · ${t('settings.lastUsed')}: ${formatDateOnly(key.last_used, undefined, settings?.date_format as DateFormat | undefined)}`}
@@ -5617,6 +5620,16 @@ export function SettingsPage() {
                           </div>
                         </div>
                         <div className="flex items-center gap-2">
+                          {(key.retired_reason || key.retired_at) && user && hasPermission('api_keys:create') && <Button
+                            variant="secondary" size="sm"
+                            onClick={() => {
+                              setNewAPIKeyName('');
+                              setNewAPIKeyPermissions(previous => Object.fromEntries(
+                                Object.keys(previous).map(name => [name, name === 'can_read_status'])
+                              ) as typeof previous);
+                              setShowCreateAPIKey(true);
+                            }}
+                          >{t('credentialRollout.createNewKey')}</Button>}
                           <div className="flex gap-1 text-xs">
                             {key.can_read_status && (
                               <span className="px-1.5 py-0.5 bg-blue-100 dark:bg-blue-500/20 text-blue-700 dark:text-blue-400 rounded">{t('settings.read')}</span>

@@ -891,6 +891,20 @@ async def _collect_auth_info(db: AsyncSession) -> dict:
         )
     ).scalar() or 0
 
+    # Retirement facts remain visible even when every administrator opted out
+    # of inbox messages. Counts only: no names, hashes or raw credentials.
+    from backend.app.services.credential_rollout import status as rollout_status
+
+    auth["credential_rollout"] = await rollout_status(db)
+    for label, model in (("api_keys", APIKey), ("long_lived_tokens", LongLivedToken)):
+        auth[f"{label}_retired"] = (
+            await db.execute(select(func.count(model.id)).where(model.retired_at.is_not(None)))
+        ).scalar() or 0
+        auth[f"{label}_retired_reasons"] = {
+            reason: (await db.execute(select(func.count(model.id)).where(model.retired_reason == reason))).scalar() or 0
+            for reason in ("legacy_ownerless_reissue_required", "legacy_credential_reissue_required")
+        }
+
     # Groups — system vs custom split matters for permission triage.
     auth["groups_system"] = (
         await db.execute(select(func.count(Group.id)).where(Group.is_system.is_(True)))

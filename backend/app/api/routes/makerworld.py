@@ -389,6 +389,11 @@ async def import_instance(
         provider, provider.import_permission, makerworld_provider.import_permission, request, credentials, x_api_key
     )
 
+    from backend.app.services.domain_authority import guard
+
+    ingest_authority = await request_authority(request, current_user)
+    await db.commit()
+    await guard(db, ingest_authority, permissions=(Permission.LIBRARY_UPLOAD.value,))
     effective_folder: LibraryFolder | None
     if body.folder_id is not None:
         # Eager-load .products so save_3mf_bytes_to_library's
@@ -434,6 +439,7 @@ async def import_instance(
     # the /status handler comment and #1777. The same resolved user is reused
     # for created_by_id on save_3mf_bytes_to_library below so the library row
     # is attributed to the key's owner rather than NULL.
+    await db.commit()
     cloud_token_user = current_user or api_key_cloud_owner
     service = await _build_service(db, provider, current_user, api_key_cloud_owner)
     # One close for the whole request: the meta row and the covers below reuse
@@ -462,7 +468,14 @@ async def import_instance(
         )
         existing_row = existing_q.scalar_one_or_none()
         if existing_row is not None:
+            from backend.app.services.cloud_credentials import guard_snapshot
+            from backend.app.services.domain_authority import guard
+
+            await guard(db, ingest_authority, permissions=(Permission.LIBRARY_UPLOAD.value,))
+            if service.credential_snapshot is not None:
+                await guard_snapshot(db, service.credential_snapshot)
             (await read_access(db, authority=await request_authority(request, current_user))).ensure(existing_row)
+            await db.commit()
             return MakerWorldImportResponse(
                 library_file_id=existing_row.id,
                 filename=existing_row.filename,
@@ -501,7 +514,8 @@ async def import_instance(
             created_by_id=cloud_token_user.id if cloud_token_user else None,
             source_type=provider.source_type,
             source_url=source_url,
-            authority=await request_authority(request, current_user),
+            authority=ingest_authority,
+            credential_snapshots=(service.credential_snapshot,) if service.credential_snapshot is not None else (),
         )
         # ⚠️ ``result.file`` may be a row this import did not create — either
         # the same source_url was imported before, or another row already
@@ -522,6 +536,15 @@ async def import_instance(
                     profile_id=profile_id,
                     variant_url=source_url,
                 )
+                from backend.app.services.cloud_credentials import guard_snapshot
+                from backend.app.services.domain_authority import guard
+
+                await guard(db, ingest_authority, permissions=(Permission.LIBRARY_UPLOAD.value,))
+                if service.credential_snapshot is not None:
+                    await guard_snapshot(db, service.credential_snapshot)
+                current_file = await db.scalar(LibraryFile.active().where(LibraryFile.id == library_file.id))
+                if current_file is None or current_file.file_hash != library_file.file_hash:
+                    raise HTTPException(409, {"code": "source_changed"})
                 db.add(LibraryFileMakerworldMeta(**meta))
                 await db.commit()
             except Exception as exc:
@@ -563,6 +586,7 @@ def _row_to_recent_import(row: LibraryFile, meta: LibraryFileMakerworldMeta | No
 )
 async def redownload_import(
     library_file_id: int,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     current_user: User | None = RequirePermission(makerworld_provider.import_permission),
     api_key_cloud_owner: User | None = Depends(resolve_api_key_cloud_owner),
@@ -576,35 +600,37 @@ async def redownload_import(
     Import again is a no-op; users who actually want fresh bytes (the
     creator pushed an update on MakerWorld) come through this endpoint.
     """
-    from pathlib import Path
+    import uuid
 
-    from backend.app.api.routes.library import calculate_file_hash, to_absolute_path
+    from backend.app.api.routes import library as library_routes
+    from backend.app.api.routes.library_thumbnail_jobs import request_authority
     from backend.app.services import swap_compatibility
-    from backend.app.services.archive import ThreeMFParser
+    from backend.app.services.cloud_credentials import guard_snapshot
+    from backend.app.services.domain_authority import guard
+    from backend.app.services.library_file_runtime import upload_writes
     from backend.app.services.library_helpers import sync_system_tags
+    from backend.app.services.library_ingest import find_reusable_row, prepare_reuse, read_access
 
-    lib = (await db.execute(LibraryFile.active().where(LibraryFile.id == library_file_id))).scalar_one_or_none()
+    authority = await request_authority(request, current_user)
+    lib = await db.scalar(LibraryFile.active().where(LibraryFile.id == library_file_id))
     if lib is None:
-        raise HTTPException(status_code=404, detail="Library file not found")
+        raise HTTPException(404, "Library file not found")
+    (await read_access(db, authority=authority)).ensure(lib)
     if lib.source_type != _SOURCE_TYPE or not lib.source_url:
-        raise HTTPException(
-            status_code=400,
-            detail="This library file is not a MakerWorld import",
-        )
-
-    # The row's ``source_url`` is the provider's canonical key; its own parser
-    # reads the model and (for a per-plate row) the plate back out. A legacy
-    # whole-model row has no plate — ``get_download`` takes the design's first.
+        raise HTTPException(400, "This library file is not a MakerWorld import")
+    proof = (lib.file_path, lib.file_hash, lib.created_at, lib.source_url)
+    old_external = lib.is_external
+    filename = lib.filename
     try:
         ref = makerworld_provider.parse_url(lib.source_url)
     except ProviderError as exc:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unparseable MakerWorld source_url: {lib.source_url!r}",
-        ) from exc
+        raise HTTPException(400, "MakerWorld source is unavailable") from exc
     model_id = int(ref.external_id)
-
     service = await _build_service(db, makerworld_provider, current_user, api_key_cloud_owner)
+    stage = library_routes.get_library_files_dir() / f"{uuid.uuid4().hex}.3mf"
+    committed = False
+    commit_attempted = False
+    thumbnail = None
     try:
         try:
             info = await service.get_download(ref)
@@ -612,74 +638,80 @@ async def redownload_import(
         except ProviderError as exc:
             raise _map_service_error(exc) from exc
         profile_id = int(info.ref.sub_id) if info.ref.sub_id else None
-        file_bytes = download.file_bytes
-
-        # Overwrite the existing file on disk. We deliberately keep
-        # ``lib.file_path`` + ``lib.filename`` unchanged so any external
-        # references (queue items pointing at the on-disk path, project
-        # BOM links, etc.) stay valid.
-        abs_path = to_absolute_path(lib.file_path)
-        if abs_path is None:
-            raise HTTPException(status_code=500, detail="Library file has no resolvable on-disk path")
-        with open(abs_path, "wb") as fh:
-            fh.write(file_bytes)
-
-        # Refresh hash / size / metadata. Mirrors the on-import branch
-        # in ``save_3mf_bytes_to_library`` but operates on the existing row.
-        lib.file_size = len(file_bytes)
-        lib.file_hash = calculate_file_hash(Path(abs_path))
-        # New bytes are declared again, by the row's name exactly as the import
-        # declared the first ones; nothing declared for the old bytes (an
-        # operator's declaration included) carries over to them.
-        swap_compatibility.declare_ingest(
-            lib, swap_compatibility.classify_external_name(lib.filename), origin="classifier"
+        await upload_writes.run(library_routes._write_upload, stage, download.file_bytes)
+        prepared = await library_routes._prepare_library_source(stage, filename)
+        thumbnail = await library_routes._publish_prepared_thumbnail(prepared)
+        presence = await prepare_reuse(
+            db, content_hash=prepared.digest, access=await read_access(db, authority=authority)
         )
+        # Remote metadata/cover work also precedes the short account/source writer.
+        meta = None
         try:
-            parser = ThreeMFParser(str(abs_path))
-            raw_metadata = parser.parse()
-            from backend.app.api.routes.library import _clean_3mf_metadata
-
-            lib.file_metadata = _clean_3mf_metadata(raw_metadata)
-        except Exception:  # noqa: BLE001
-            logger.debug("redownload: 3MF re-parse failed (non-critical)")
-
-        # The plate set is derived from ``file_metadata``, which we have just
-        # rewritten: re-run the sync against the file's CURRENT product links so
-        # a re-download that added or dropped a plate is reflected in every
-        # product this file belongs to. Flushed first — the sync reads the row
-        # back, and it must read the new metadata, not the old.
+            meta = await _fetch_makerworld_meta(
+                service, library_file_id=library_file_id, model_id=model_id, profile_id=profile_id, variant_url=proof[3]
+            )
+        except Exception:
+            logger.warning("MakerWorld metadata was unavailable during refresh")
+        await guard(db, authority, permissions=(Permission.LIBRARY_UPLOAD.value,))
+        if service.credential_snapshot is not None:
+            await guard_snapshot(db, service.credential_snapshot)
+        lib = await db.scalar(
+            LibraryFile.active()
+            .where(LibraryFile.id == library_file_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        if lib is None or (lib.file_path, lib.file_hash, lib.created_at, lib.source_url) != proof:
+            raise HTTPException(409, {"code": "source_changed"})
+        access = await read_access(db, authority=authority)
+        access.ensure(lib)
+        await find_reusable_row(db, content_hash=prepared.digest, access=access, presence=presence)
+        # Publish an owned prepared file by pointer; never overwrite shared old bytes before authorization.
+        lib.file_path = library_routes.to_relative_path(stage)
+        lib.is_external = False
+        lib.file_size = len(download.file_bytes)
+        lib.file_hash = prepared.digest
+        lib.file_metadata = library_routes._without_print_name(prepared.metadata)
+        lib.thumbnail_path = thumbnail
+        swap_compatibility.declare_ingest(lib, swap_compatibility.classify_external_name(filename), origin="classifier")
         await db.flush()
         await sync_system_tags(db, lib)
         await resync_file_products(db, lib.id)
-
-        # Refresh meta row + covers through the same open service.
-        try:
-            meta = await _fetch_makerworld_meta(
-                service,
-                library_file_id=lib.id,
-                model_id=model_id,
-                profile_id=profile_id,
-                variant_url=lib.source_url,
+        if meta is not None:
+            existing_meta = await db.scalar(
+                select(LibraryFileMakerworldMeta).where(LibraryFileMakerworldMeta.library_file_id == lib.id)
             )
-            existing_meta = (
-                await db.execute(
-                    select(LibraryFileMakerworldMeta).where(LibraryFileMakerworldMeta.library_file_id == lib.id)
-                )
-            ).scalar_one_or_none()
             if existing_meta is None:
                 db.add(LibraryFileMakerworldMeta(**meta))
             else:
-                for k, v in meta.items():
-                    if k == "library_file_id":
-                        continue
-                    setattr(existing_meta, k, v)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("redownload: meta refresh failed for library_file_id=%s: %s", lib.id, exc)
-
+                for key, value in meta.items():
+                    if key != "library_file_id":
+                        setattr(existing_meta, key, value)
+        commit_attempted = True
         await db.commit()
-        await db.refresh(lib)
+        committed = True
     finally:
         await service.close()
+        if not committed:
+            await db.rollback()
+            if not commit_attempted:
+                await library_routes._discard_ingest_stage(stage, thumbnail)
+            # An uncertain commit may already reference our bytes. Retain them for reconciliation.
+
+    if not old_external:
+        old_path = library_routes.to_absolute_path(proof[0])
+        if old_path is not None and old_path.resolve().is_relative_to(library_routes.get_library_files_dir().resolve()):
+            from backend.app.models.archive import PrintArchive
+
+            referenced = await db.scalar(select(LibraryFile.id).where(LibraryFile.file_path == proof[0]).limit(1))
+            archived = await db.scalar(
+                select(PrintArchive.id)
+                .where((PrintArchive.file_path == proof[0]) | (PrintArchive.source_3mf_path == proof[0]))
+                .limit(1)
+            )
+            await db.commit()
+            if referenced is None and archived is None:
+                await library_routes._discard_ingest_stage(old_path)
 
     return MakerWorldImportResponse(
         library_file_id=lib.id,

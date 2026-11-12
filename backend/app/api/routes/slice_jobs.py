@@ -36,7 +36,9 @@ async def get_slice_job(
     # Per-row scoping. Jobs started by API-key / auth-disabled callers have
     # owner_id=None and are visible only to READ_ALL pollers (fail-closed,
     # mirrors the ownerless-row rule). 404 not 403 to avoid job-id enumeration.
-    if not can_read_all and (user is None or job.owner_id != user.id):
+    if not can_read_all and (
+        user is None or job.authority is None or job.authority.account_identity != user.account_identity
+    ):
         raise HTTPException(status_code=404, detail="Slice job not found or expired")
     body: dict = {
         "job_id": job.id,

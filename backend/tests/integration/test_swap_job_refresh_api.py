@@ -139,11 +139,13 @@ async def test_the_round_trip_over_http_and_one_notice_after_the_commit(
     queue_id = await a_queue(db_session, printer_factory)
     archive_id = await an_archive(db_session, tmp_path, owner)
     job_id = await a_job(sessions, db_session, archive_id, queue_id=queue_id, owner=owner)
-    await declared(committing_client, archive_id, _jwt("rf_owner"))
+    await declared(committing_client, archive_id, await _jwt("rf_owner"))
 
-    listing = (await listed(committing_client, archive_id, _jwt("rf_owner"))).json()
+    listing = (await listed(committing_client, archive_id, await _jwt("rf_owner"))).json()
     assert listing["counts"] == {"eligible": 1, "refused": 0}
-    done = await refreshed(committing_client, archive_id, listing, [pick(listing, "queue", job_id)], _jwt("rf_owner"))
+    done = await refreshed(
+        committing_client, archive_id, listing, [pick(listing, "queue", job_id)], await _jwt("rf_owner")
+    )
 
     assert done.status_code == 200, done.text
     assert done.json()["refreshed"] == [{"kind": "queue", "id": job_id}]
@@ -159,11 +161,11 @@ async def test_a_refused_refresh_sends_no_notice(
     queue_id = await a_queue(db_session, printer_factory)
     archive_id = await an_archive(db_session, tmp_path, owner)
     job_id = await a_job(sessions, db_session, archive_id, queue_id=queue_id, owner=owner)
-    await declared(committing_client, archive_id, _jwt("rf_refused"))
-    listing = (await listed(committing_client, archive_id, _jwt("rf_refused"))).json()
+    await declared(committing_client, archive_id, await _jwt("rf_refused"))
+    listing = (await listed(committing_client, archive_id, await _jwt("rf_refused"))).json()
     stale = {**pick(listing, "queue", job_id), "revision": "0" * 64}
 
-    answer = await refreshed(committing_client, archive_id, listing, [stale], _jwt("rf_refused"))
+    answer = await refreshed(committing_client, archive_id, listing, [stale], await _jwt("rf_refused"))
 
     assert answer.status_code == 409 and answer.json()["detail"]["error"] == "jobs_changed"
     assert notices == []
@@ -174,7 +176,7 @@ async def test_both_doors_ask_the_queue_rights_too(permissions, committing_clien
     owner = await _user(db_session, f"rf_noq_{len(permissions)}", permissions)
     archive_id = await an_archive(db_session, tmp_path, owner)
 
-    answer = await listed(committing_client, archive_id, _jwt(owner.username))
+    answer = await listed(committing_client, archive_id, await _jwt(owner.username))
 
     assert answer.status_code == 403
 
@@ -188,18 +190,18 @@ async def test_another_owners_job_is_neither_listed_nor_refreshed(
     archive_id = await an_archive(db_session, tmp_path, owner)
     mine = await a_job(sessions, db_session, archive_id, queue_id=queue_id, owner=owner)
     theirs = await a_job(sessions, db_session, archive_id, queue_id=queue_id, owner=other)
-    await declared(committing_client, archive_id, _jwt("rf_mine"))
+    await declared(committing_client, archive_id, await _jwt("rf_mine"))
 
-    listing = (await listed(committing_client, archive_id, _jwt("rf_mine"))).json()
+    listing = (await listed(committing_client, archive_id, await _jwt("rf_mine"))).json()
     assert [(e["kind"], e["id"]) for e in listing["jobs"]] == [("queue", mine)]
-    their_revision = (await listed(committing_client, archive_id, _jwt("rf_mine"))).json()  # never theirs
+    their_revision = (await listed(committing_client, archive_id, await _jwt("rf_mine"))).json()  # never theirs
     assert all(e["id"] != theirs for e in their_revision["jobs"])
     answer = await refreshed(
         committing_client,
         archive_id,
         listing,
         [pick(listing, "queue", mine), {"kind": "queue", "id": theirs, "revision": "a" * 64}],
-        _jwt("rf_mine"),
+        await _jwt("rf_mine"),
     )
 
     assert answer.status_code == 409
@@ -222,7 +224,7 @@ async def test_a_key_limited_to_some_printers_reaches_only_their_queues(
     inside = await a_job(sessions, db_session, archive_id, queue_id=allowed, owner=owner)
     outside = await a_job(sessions, db_session, archive_id, queue_id=elsewhere, owner=owner)
     auto = await a_job(sessions, db_session, archive_id, kind="auto_queue", owner=owner)
-    await declared(committing_client, archive_id, _jwt("rf_keyowner"))
+    await declared(committing_client, archive_id, await _jwt("rf_keyowner"))
     key = {"X-API-Key": await _key(db_session, owner, printer_ids=[allowed])}
     committing_client.headers.pop("Authorization", None)
 
@@ -268,7 +270,7 @@ async def test_the_selection_is_validated_before_anything_is_read(jobs, committi
             "operation_id": str(uuid.uuid4()),
             "jobs": jobs,
         },
-        headers=_jwt(owner.username),
+        headers=await _jwt(owner.username),
     )
 
     assert answer.status_code == 422
@@ -277,7 +279,7 @@ async def test_the_selection_is_validated_before_anything_is_read(jobs, committi
 async def test_a_media_token_opens_neither_door(committing_client, db_session, tmp_path):
     owner = await _user(db_session, "rf_media", SOURCE + QUEUE_OWN)
     archive_id = await an_archive(db_session, tmp_path, owner)
-    token = (await committing_client.post("/api/v1/auth/media-token", headers=_jwt("rf_media"))).json()["token"]
+    token = (await committing_client.post("/api/v1/auth/media-token", headers=await _jwt("rf_media"))).json()["token"]
     committing_client.headers.pop("Authorization", None)
 
     answer = await committing_client.get(f"/api/v1/archives/{archive_id}/swap-declaration/jobs?token={token}")
@@ -295,8 +297,8 @@ async def test_queue_rights_revoked_after_the_listing_commit_nothing(
     queue_id = await a_queue(db_session, printer_factory)
     archive_id = await an_archive(db_session, tmp_path, owner)
     job_id = await a_job(sessions, db_session, archive_id, queue_id=queue_id, owner=owner)
-    await declared(committing_client, archive_id, _jwt("rf_revoked"))
-    listing = (await listed(committing_client, archive_id, _jwt("rf_revoked"))).json()
+    await declared(committing_client, archive_id, await _jwt("rf_revoked"))
+    listing = (await listed(committing_client, archive_id, await _jwt("rf_revoked"))).json()
     real_lock = queue_sources.storage_mutation
 
     def revoke_then_lock():
@@ -313,7 +315,7 @@ async def test_queue_rights_revoked_after_the_listing_commit_nothing(
     spool_patch.setattr(spool, "storage_mutation", revoke_then_lock)
     try:
         answer = await refreshed(
-            committing_client, archive_id, listing, [pick(listing, "queue", job_id)], _jwt("rf_revoked")
+            committing_client, archive_id, listing, [pick(listing, "queue", job_id)], await _jwt("rf_revoked")
         )
     finally:
         spool_patch.undo()

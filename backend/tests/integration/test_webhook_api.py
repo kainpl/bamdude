@@ -14,8 +14,6 @@ a printer that is not connected, a queue with nothing in it.
 import pytest
 from httpx import AsyncClient
 
-from backend.app.core.auth import create_access_token
-
 
 async def _key(async_client: AsyncClient, **flags) -> str:
     """Create an API key and return the raw secret."""
@@ -42,9 +40,10 @@ class _NoJWT:
         return self.client
 
     def __exit__(self, *exc):
-        self.client.headers["Authorization"] = self.saved or (
-            f"Bearer {create_access_token(data={'sub': 'test_admin'})}"
-        )
+        if self.saved is not None:
+            self.client.headers["Authorization"] = self.saved
+        else:
+            self.client.headers.pop("Authorization", None)
 
 
 @pytest.mark.asyncio

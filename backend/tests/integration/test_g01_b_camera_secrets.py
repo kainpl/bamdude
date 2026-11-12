@@ -10,6 +10,7 @@ from backend.app.models.group import Group
 from backend.app.models.printer import Printer
 from backend.app.models.settings import Settings
 from backend.app.models.user import User
+from backend.tests.auth_helpers import mint_test_access
 
 STREAM = "http://camera-user:CANARY_PASSWORD@192.0.2.9/live?key=CANARY_STREAM"
 SNAPSHOT = "http://snapshot-user:CANARY_SNAPSHOT_PASSWORD@192.0.2.10/frame?token=CANARY_SNAPSHOT"
@@ -31,7 +32,7 @@ async def test_camera_urls_never_return_in_any_read_projection(role, async_clien
         user = User(username="camera_" + role, role="user", is_active=True, groups=[group])
         db_session.add(user)
         await db_session.commit()
-        async_client.headers["Authorization"] = "Bearer " + create_access_token({"sub": user.username})
+        async_client.headers["Authorization"] = "Bearer " + await mint_test_access(db_session, username=user.username)
     for door in ("/api/v1/printers/", f"/api/v1/printers/{printer.id}"):
         result = await async_client.get(door)
         assert result.status_code == 200, result.text
@@ -119,7 +120,7 @@ async def test_camera_draft_authority_separate_saved_stream_snapshot_and_no_io_t
     user = User(username="camera_readonly", role="user", is_active=True, groups=[group])
     db_session.add(user)
     await db_session.commit()
-    async_client.headers["Authorization"] = "Bearer " + create_access_token({"sub": user.username})
+    async_client.headers["Authorization"] = "Bearer " + await mint_test_access(db_session, username=user.username)
     count = len(sent)
     result = await async_client.post(door, json={"source": "snapshot"})
     assert result.status_code == 403 and len(sent) == count

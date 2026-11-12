@@ -130,8 +130,12 @@ async def _reconcile(
     ecosystem: str,
     source: str,
     incoming: dict[str, dict],
+    captured,
 ) -> SyncOutcome:
     """incoming: cloud_id -> column dict. Upserts + deletes + family upkeep."""
+    from backend.app.services.cloud_credentials import guard_snapshot
+
+    await guard_snapshot(db, captured)
     outcome = SyncOutcome(ok=True)
     existing_rows = (
         (
@@ -230,11 +234,16 @@ async def sync_bambu_presets_for_user(db: AsyncSession, user: User | None) -> Sy
     # it never mints a cloud_bambu duplicate. A pushed id gone from the
     # listing means the copy was deleted in BS: the family shows as
     # no-longer-pushed.
+    from backend.app.services.cloud_credentials import guard_snapshot
+
+    captured = cloud.credential_snapshot
+    await guard_snapshot(db, captured)
     pushed_rows = (
         (
             await db.execute(
                 select(UserFilamentPreset).where(
                     UserFilamentPreset.source == "local",
+                    UserFilamentPreset.bambu_pushed_owner_identity == captured.account_identity,
                     UserFilamentPreset.pushed_cloud_id.is_not(None),
                 )
             )
@@ -251,7 +260,9 @@ async def sync_bambu_presets_for_user(db: AsyncSession, user: User | None) -> Sy
             row.push_dirty = False
 
     owner_id = user.id if user is not None else None
-    return await _reconcile(db, owner_id=owner_id, ecosystem="bambu", source="cloud_bambu", incoming=incoming)
+    return await _reconcile(
+        db, owner_id=owner_id, ecosystem="bambu", source="cloud_bambu", incoming=incoming, captured=captured
+    )
 
 
 def _orca_family_id(content: dict) -> str | None:
@@ -309,11 +320,16 @@ async def sync_orca_presets_for_user(db: AsyncSession, user: User | None) -> Syn
     # filament-filtered ``incoming`` — a pushed profile the type filter
     # skipped must not read as deleted-in-the-cloud.
     all_pulled_ids = {str(p.get("id")) for p in profiles if p.get("id")}
+    from backend.app.services.cloud_credentials import guard_snapshot
+
+    captured = svc.credential_snapshot
+    await guard_snapshot(db, captured)
     pushed_rows = (
         (
             await db.execute(
                 select(UserFilamentPreset).where(
                     UserFilamentPreset.source == "local",
+                    UserFilamentPreset.orca_pushed_owner_identity == captured.account_identity,
                     UserFilamentPreset.orca_pushed_profile_id.is_not(None),
                 )
             )
@@ -331,7 +347,9 @@ async def sync_orca_presets_for_user(db: AsyncSession, user: User | None) -> Syn
             row.orca_pushed_updated_time = None
 
     owner_id = user.id if user is not None else None
-    return await _reconcile(db, owner_id=owner_id, ecosystem="orca", source="cloud_orca", incoming=incoming)
+    return await _reconcile(
+        db, owner_id=owner_id, ecosystem="orca", source="cloud_orca", incoming=incoming, captured=captured
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -430,13 +448,15 @@ async def _sync_all_connected() -> None:
         users = (
             (
                 await db.execute(
-                    select(User).where((User.cloud_token.is_not(None)) | (User.orca_cloud_token.is_not(None)))
+                    select(User).where(
+                        User.is_active.is_(True), (User.cloud_token.is_not(None)) | (User.orca_cloud_token.is_not(None))
+                    )
                 )
             )
             .scalars()
             .all()
         )
-        targets: list[User | None] = list(users) or [None]  # auth-disabled global scope
+        targets: list[User] = list(users)  # An absent connected owner is never global cloud authority.
         for user in targets:
             if user is None or user.cloud_token:
                 await sync_bambu_presets_for_user(db, user)

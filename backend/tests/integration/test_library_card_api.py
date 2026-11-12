@@ -33,6 +33,7 @@ from pathlib import Path
 import pytest
 
 from backend.app.models.library import LibraryFile
+from backend.tests.auth_helpers import mint_test_authority
 
 pytestmark = pytest.mark.integration
 
@@ -122,14 +123,14 @@ async def make_card_file(db, tmp_path: Path, *, name: str = "lamp.3mf", **card) 
 async def _stream_token() -> str:
     from backend.app.core.auth import create_camera_stream_token
 
-    return await create_camera_stream_token()
+    return await create_camera_stream_token(authority=await mint_test_authority())
 
 
 async def _media_token() -> str:
     """What the card's ``<img>`` carries since audit D9 a2 — the signed-in admin's."""
     from backend.app.core.auth import create_media_token
 
-    return await create_media_token("test_admin")
+    return await create_media_token(authority=await mint_test_authority(username="test_admin"))
 
 
 @pytest.mark.asyncio

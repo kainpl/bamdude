@@ -7,6 +7,7 @@ import httpx
 import pytest
 from sqlalchemy import event, select, update
 
+from backend.app.core.auth import generate_api_key
 from backend.app.mcp_server.contracts import DiagnosticAccess
 from backend.app.models.api_key import APIKey
 from backend.app.models.group import Group
@@ -16,6 +17,7 @@ from backend.app.services.farm_diagnostics.access import DiagnosticError
 from backend.app.services.farm_diagnostics.contracts import IssuesInput, RecoveryInput
 from backend.app.services.print_state_recovery import plan_action
 from backend.app.services.queue_sources import current_epoch
+from backend.tests.auth_helpers import bind_test_key
 from backend.tests.integration.test_mcp_base_transport import key, live_app, runtime  # noqa: F401
 from backend.tests.integration.test_mcp_farm_diagnostics import data, error, rpc
 from backend.tests.integration.test_print_state_recovery import prepare
@@ -26,7 +28,17 @@ READ = frozenset({"system:read", "printers:read", "queue:read_all", "archives:re
 
 
 def actor(scope=None):
-    return DiagnosticAccess(1, 1, READ, False, scope, False, current_epoch())
+    return DiagnosticAccess(
+        1,
+        1,
+        READ,
+        False,
+        scope,
+        False,
+        current_epoch(),
+        key_identity="00000000-0000-0000-0000-000000000001",
+        owner_identity="00000000-0000-0000-0000-000000000002",
+    )
 
 
 def addressed(p, item, action="align_terminal_item", **kwargs):
@@ -54,13 +66,25 @@ async def test_recovery_read_only_key_uses_real_policy_without_preview_or_effect
     p, q, a, item, _ = await prepare(db_session, printer_factory, archive_factory)
     a.extra_data = {"private": "SECRET_NEVER_OUTPUT"}
     await db_session.commit()
-    created = await key(async_client, scope=[p.id])
     group = Group(name="recovery read only", permissions=sorted(READ))
     user = User(username="recovery reader", is_active=True, role="user", groups=[group])
     db_session.add_all([group, user])
     await db_session.flush()
-    await db_session.execute(update(APIKey).where(APIKey.id == created["id"]).values(user_id=user.id))
+    raw, hashed, prefix = generate_api_key()
+    owned_key = APIKey(
+        name="recovery owner",
+        key_hash=hashed,
+        key_prefix=prefix,
+        can_access_mcp=True,
+        can_read_status=True,
+        can_queue=False,
+        can_control_printer=False,
+        printer_ids=[p.id],
+    )
+    await bind_test_key(db_session, owned_key, user)
+    db_session.add(owned_key)
     await db_session.commit()
+    created = {"id": owned_key.id, "key": raw}
     blocked = Mock(side_effect=AssertionError("recovery mutation or signing"))
     for module, name in (
         (store, "make_preview"),

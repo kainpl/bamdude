@@ -24,13 +24,14 @@ icons, and the OIDC button icon on the login page.
 from __future__ import annotations
 
 import secrets
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 import pytest
 from httpx import AsyncClient
 from sqlalchemy import update
 
 from backend.app.core.auth import create_access_token, create_camera_stream_token
+from backend.tests.auth_helpers import mint_test_access, mint_test_authority
 
 _PW = "Aa1!" + secrets.token_urlsafe(12)  # pragma: allowlist secret
 
@@ -86,7 +87,7 @@ async def _mint(client: AsyncClient, jwt: str | None = None) -> str:
 
 
 async def _make_user(client: AsyncClient, *, username: str, permissions: list[str]) -> tuple[str, int]:
-    admin = {"Authorization": f"Bearer {create_access_token(data={'sub': 'test_admin'})}"}
+    admin = {"Authorization": f"Bearer {await mint_test_access(username='test_admin')}"}
     group = await client.post(
         "/api/v1/groups/", headers=admin, json={"name": f"mt_{username}", "permissions": permissions}
     )
@@ -154,7 +155,7 @@ async def test_a_media_route_refuses_no_credential(async_client: AsyncClient, pa
 @pytest.mark.parametrize("path", MEDIA_ROUTES)
 async def test_a_media_route_refuses_the_camera_token(async_client: AsyncClient, path: str):
     """The camera token is handed to kiosks, walls and Home Assistant for video."""
-    camera = await create_camera_stream_token()
+    camera = await create_camera_stream_token(authority=await mint_test_authority())
     assert (await _raw_get(async_client, _with_token(path, camera))).status_code == 401
 
 
@@ -266,8 +267,6 @@ async def test_an_api_key_header_is_held_to_its_scope(async_client: AsyncClient,
 async def test_a_password_change_ends_the_token(
     async_client: AsyncClient, db_session, printer_factory, archive_factory
 ):
-    from backend.app.models.user import User
-
     jwt, uid = await _make_user(async_client, username="mt_pw", permissions=["archives:read_all"])
     printer = await printer_factory()
     archive = await _archive_with_thumbnail(archive_factory, printer.id)
@@ -275,10 +274,12 @@ async def test_a_password_change_ends_the_token(
     path = _with_token(f"/api/v1/archives/{archive.id}/thumbnail", token)
     assert (await _raw_get(async_client, path)).status_code == 200
 
-    await db_session.execute(
-        update(User).where(User.id == uid).values(password_changed_at=datetime.now(timezone.utc) + timedelta(seconds=5))
+    changed = await async_client.post(
+        "/api/v1/users/me/change-password",
+        headers={"Authorization": f"Bearer {jwt}"},
+        json={"current_password": _PW, "new_password": "New_MediaPass1!"},
     )
-    await db_session.commit()
+    assert changed.status_code == 200, changed.text
 
     assert (await _raw_get(async_client, path)).status_code == 401
 
