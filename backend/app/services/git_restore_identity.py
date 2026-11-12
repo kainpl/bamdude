@@ -22,6 +22,7 @@ from backend.app.services.git_restore_records import (
     unknown_outcome,
     uuid_value,
 )
+from backend.app.services.product_facets import id_chunks
 
 
 class ArchiveIdentityConflict(ValueError):
@@ -201,8 +202,10 @@ async def prepare(db, records):
             printer_ids.add(record.entry.get("printer_id") if type(record.entry.get("printer_id")) is int else None)
     owners = await lock_owners(db, records)
     printers = await lock_printers(db, printer_ids)
-    if planned:
-        await lock_prints(db, planned)
+    # Keep the global lock order across bounded statements, not just within
+    # each IN list. The category owner retains every chunk until commit.
+    for ids in id_chunks(planned):
+        await lock_prints(db, ids)
     return planned, printers, owners
 
 
@@ -223,15 +226,15 @@ async def usage_basis(db, usage, id_map, proof_map):
     printers = await lock_printers(db, printer_ids)
     if not expected:
         return printers, {}
-    rows = (
-        await db.execute(
+    current = {}
+    for ids in id_chunks(p.local_id for p in expected.values()):
+        rows = await db.execute(
             select(PrintArchive.id, PrintArchive.recovery_identity, PrintArchive.printer_id)
-            .where(PrintArchive.id.in_(sorted({p.local_id for p in expected.values()})))
+            .where(PrintArchive.id.in_(ids))
             .order_by(PrintArchive.id)
             .with_for_update(read=True, key_share=True)
         )
-    ).all()
-    current = {key: (identity, printer) for key, identity, printer in rows}
+        current.update((key, (identity, printer)) for key, identity, printer in rows)
     valid = {}
     for old, proof in expected.items():
         identity, printer = current.get(proof.local_id, (None, None))

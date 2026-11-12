@@ -16,6 +16,13 @@ nonempty start. These are compatibility heuristics. A renamed old print may not
 match; old source-only or re-slice records without a UUID, hash or start are
 skipped with a separate count. They are never matched by filename alone.
 
+There is also a conservative limit for two different UUID records in the same
+backup with an identical filename and start timestamp, down to the microsecond,
+when this instance cannot prove that their printers differ. After the first
+record is inserted, the second is skipped as an identity conflict, including
+on repeat restore. Being neighbours in one backup does not bypass the conflict
+check. The first record remains unchanged; the two histories are never merged.
+
 An active or uncertain snapshot cannot replace local results or file metadata.
 Only notes, tags, favourites and external links may change. A positively
 identified new execution with an unknown result is restored as cancelled,
