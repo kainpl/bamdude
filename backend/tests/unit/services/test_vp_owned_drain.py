@@ -454,3 +454,28 @@ async def test_unconsumed_option_warning_evidence_stays_bounded(tmp_path):
         await inst.on_print_command("part", {"file": f"part-{number}.3mf"})
     assert len(inst._options_seen) == _SLICER_OPTIONS_CACHE_LIMIT
     assert inst._options_seen == set(inst._slicer_print_options)
+
+
+@pytest.mark.asyncio
+async def test_git_entrypoints_do_not_enter_database_under_shared_guard(monkeypatch):
+    from backend.app.services import git_backup, git_restore
+    from backend.app.services.backup_files import exclusive_operation
+
+    entered = []
+
+    class ForbiddenDatabase:
+        async def __aenter__(self):
+            entered.append(True)
+            raise AssertionError("Busy operation reached the database")
+
+        async def __aexit__(self, *args):
+            return False
+
+    monkeypatch.setattr(git_backup, "async_session", ForbiddenDatabase)
+    monkeypatch.setattr(git_restore, "async_session", ForbiddenDatabase)
+    async with exclusive_operation():
+        backup = await git_backup.GitBackupService().run_backup(1)
+        restore = await git_restore.GitRestoreService().run_restore(1, "a" * 40, [])
+    assert not entered
+    assert backup == {"success": False, "message": "A backup is already running", "log_id": None}
+    assert restore == {"success": False, "message": "A restore is already running", "results": {}}
