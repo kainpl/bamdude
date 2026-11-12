@@ -2284,6 +2284,8 @@ class VirtualPrinterManager:
         so the "copy/download certificate" UI works even before the first VP
         is enabled.
         """
+        if self._admission_closed():
+            raise AdmissionClosed("Virtual printer access is paused for restore; restart after restoring.")
         certs_dir = self._base_dir / "certs"
         cert_service = CertificateService(cert_dir=certs_dir, shared_ca_dir=certs_dir)
         return cert_service.get_ca_certificate_info()

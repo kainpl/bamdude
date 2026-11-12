@@ -83,3 +83,19 @@ async def test_latched_delete_preserves_upload_files_and_does_no_runtime_cleanup
     assert response.status_code == 200
     assert retained.read_bytes() == b"owned"
     assert (await committing_client.get(f"/api/v1/virtual-printers/{vp_id}")).status_code == 404
+
+
+async def test_latched_ca_request_never_constructs_a_certificate_writer(committing_client, tmp_path, monkeypatch):
+    from unittest.mock import Mock
+
+    from backend.app.services.virtual_printer import manager as implementation
+
+    monkeypatch.setattr(virtual_printer_manager, "_base_dir", tmp_path / "not-created")
+    writer = Mock(side_effect=AssertionError("Certificate writer ran after restore latch"))
+    monkeypatch.setattr(implementation, "CertificateService", writer)
+    monkeypatch.setattr(farm_startup_guard, "restart_required", True)
+    response = await committing_client.get("/api/v1/virtual-printers/ca-certificate")
+    assert response.status_code == 409
+    assert "paused for restore" in response.json()["detail"]
+    writer.assert_not_called()
+    assert not (tmp_path / "not-created").exists()

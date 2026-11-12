@@ -341,9 +341,12 @@ async def get_ca_certificate(
     private key never leaves the backend.
     """
     from backend.app.services.virtual_printer import virtual_printer_manager
+    from backend.app.services.virtual_printer.lifecycle import AdmissionClosed
 
     try:
         return virtual_printer_manager.get_ca_certificate_info()
+    except AdmissionClosed as exc:
+        return json_error(409, str(exc))
     except Exception as e:
         logger.error("Failed to obtain virtual printer CA certificate: %s", e)
         return json_error(500, "Could not generate the CA certificate")

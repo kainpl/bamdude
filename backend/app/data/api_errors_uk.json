@@ -1147,6 +1147,7 @@
   "Variant option not found": "Опцію варіанта не знайдено",
   "Verification failed: {}": "Перевірка не вдалася: {}",
   "Video processing failed": "Не вдалося обробити відео",
+  "Virtual printer access is paused for restore; restart after restoring.": "Доступ до віртуальних принтерів призупинено для відновлення; перезапустіть після його завершення.",
   "Virtual printer connections interrupted: {count}.": "Перервано з’єднань віртуальних принтерів: {count}.",
   "Virtual printer not found": "Віртуальний принтер не знайдено",
   "Virtual printer work has not stopped. Wait for accepted uploads to finish, then retry in this process. Restart after restoring, or to abandon this attempt.": "Робота віртуальних принтерів ще не завершилася. Дочекайтеся прийнятих завантажень і повторіть у цьому процесі. Перезапустіть після відновлення або щоб відмовитися від цієї спроби.",
