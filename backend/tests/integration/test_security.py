@@ -281,32 +281,25 @@ class TestOIDCExchangeReplay:
     @pytest.mark.integration
     async def test_exchange_token_is_single_use(self, async_client: AsyncClient, db_session: AsyncSession):
         """The second call to /oidc/exchange with the same token returns 401."""
+        from backend.app.core.auth_lifetime import binding, capture_account, guard_accounts
+
+        user = User(username="oidc_replay_user", auth_source="oidc", is_active=True)
+        db_session.add(user)
+        await db_session.flush()
+        captured = capture_account(user)
+        await guard_accounts(db_session, [captured])
         exchange_token = secrets.token_urlsafe(32)
         db_session.add(
             AuthEphemeralToken(
                 token=exchange_token,
                 token_type="oidc_exchange",
+                **binding(captured),
+                auth_source="oidc",
                 username="oidc_replay_user",
                 expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
             )
         )
         await db_session.commit()
-
-        # Seed the user so the exchange can resolve it
-        from backend.app.core.auth import get_password_hash
-        from backend.app.core.database import async_session
-
-        async with async_session() as db:
-            result = await db.execute(__import__("sqlalchemy").select(User).where(User.username == "oidc_replay_user"))
-            if result.scalar_one_or_none() is None:
-                db.add(
-                    User(
-                        username="oidc_replay_user",
-                        password_hash=get_password_hash("pw"),
-                        is_active=True,
-                    )
-                )
-                await db.commit()
 
         first = await async_client.post("/api/v1/auth/oidc/exchange", json={"oidc_token": exchange_token})
         assert first.status_code == 200
@@ -467,6 +460,8 @@ class TestEmailOTPMaxAttempts:
         from passlib.context import CryptContext
         from sqlalchemy import select as sa_select
 
+        from backend.app.core.auth import _validate_jwt_authority
+        from backend.app.core.auth_lifetime import binding
         from backend.app.models.user_otp_code import UserOTPCode
 
         _pwd_ctx = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
@@ -487,28 +482,38 @@ class TestEmailOTPMaxAttempts:
             AET(
                 token=setup_token,
                 token_type="email_otp_setup",
+                **binding((await _validate_jwt_authority(admin_token)).capture),
                 username="otp_max_admin",
                 nonce=_pwd_ctx.hash(setup_code),
                 expires_at=datetime.now(timezone.utc) + timedelta(minutes=10),
             )
         )
         await db_session.commit()
-        await async_client.post(
+        confirmed = await async_client.post(
             "/api/v1/auth/2fa/email/enable/confirm",
             json={"setup_token": setup_token, "code": setup_code},
             headers=_auth_header(admin_token),
         )
+        assert confirmed.status_code == 200, confirmed.text
 
         # Login to get pre_auth_token
         login_resp = await async_client.post(
             LOGIN_URL, json={"username": "otp_max_admin", "password": "Otp_max_admin1"}
         )
+        assert login_resp.status_code == 200 and login_resp.json()["requires_2fa"], login_resp.text
         pre_auth_token = login_resp.json()["pre_auth_token"]
+        pending = (
+            await db_session.execute(sa_select(AuthEphemeralToken).where(AuthEphemeralToken.token == pre_auth_token))
+        ).scalar_one()
 
         # Insert an OTP record directly (bypassing SMTP)
         real_code = "654321"
         otp = UserOTPCode(
             user_id=user.id,
+            account_identity=pending.account_identity,
+            generation=pending.generation,
+            sid=pending.sid,
+            challenge_id=pending.challenge_id,
             code_hash=_pwd_ctx.hash(real_code),
             attempts=0,
             used=False,
@@ -527,6 +532,9 @@ class TestEmailOTPMaxAttempts:
             )
             # Each attempt must fail with 401
             assert r.status_code == 401
+
+        await db_session.refresh(otp)
+        assert otp.used is True and otp.attempts == UserOTPCode.MAX_ATTEMPTS
 
         # After max attempts, the correct code is also rejected (either OTP
         # invalidated → 401, or rate limit hit → 429). Either means locked out.

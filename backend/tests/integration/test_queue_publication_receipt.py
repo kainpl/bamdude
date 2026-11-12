@@ -9,6 +9,8 @@ own transaction:
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -18,12 +20,14 @@ from backend.app.models.auto_queue import AutoQueueItem
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.queue_source import QueueSource
 from backend.app.models.settings import Settings
+from backend.app.models.user import User
 from backend.app.schemas.auto_queue import AutoQueueItemCreate
 from backend.app.schemas.print_queue import PrintQueueItemCreate
 from backend.app.services import queue_sources
 from backend.app.services.auto_queue_add import add_items_to_auto_queue
 from backend.app.services.queue_add import add_items_to_printer_queue
 from backend.app.services.queue_publication import AlreadyPublished
+from backend.tests.auth_helpers import mint_test_authority
 from backend.tests.integration.test_filament_routing_dispatch import setup_source
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
@@ -46,7 +50,8 @@ def spool_sessions(test_engine, monkeypatch):
 class Receipt:
     """Writes one marker row inside the publication's transaction -- the stand-in for a connector receipt."""
 
-    def __init__(self, *, refuse: BaseException | None = None, fail_record: BaseException | None = None):
+    def __init__(self, *, capture, refuse: BaseException | None = None, fail_record: BaseException | None = None):
+        self.actor = SimpleNamespace(capture=capture)
         self.refuse, self.fail_record = refuse, fail_record
         self.claimed = 0
         self.recorded: tuple[list[int], list[int]] | None = None
@@ -75,6 +80,13 @@ async def _marker(sessions) -> str | None:
         return await session.scalar(select(Settings.value).where(Settings.key == "receipt-marker"))
 
 
+async def _authority(db):
+    user = User(username="receipt-publisher", role="admin")
+    db.add(user)
+    await db.commit()
+    return await mint_test_authority(db, username=user.username)
+
+
 async def _printer_add(db, source, queue, receipt, quantity=2):
     return await add_items_to_printer_queue(
         db,
@@ -97,7 +109,7 @@ async def test_the_printer_writer_records_the_exact_job_ids_in_its_own_transacti
     db_session, tmp_path, printer_factory, monkeypatch, spool_sessions
 ):
     source, _printer, queue, _mqtt = await setup_source(db_session, tmp_path, printer_factory, monkeypatch)
-    receipt = Receipt()
+    receipt = Receipt(capture=await _authority(db_session))
 
     items, _queue = await _printer_add(db_session, source, queue, receipt)
 
@@ -111,7 +123,7 @@ async def test_the_auto_writer_records_the_exact_job_ids_in_its_own_transaction(
     db_session, tmp_path, printer_factory, monkeypatch, spool_sessions
 ):
     source, _printer, _queue, _mqtt = await setup_source(db_session, tmp_path, printer_factory, monkeypatch)
-    receipt = Receipt()
+    receipt = Receipt(capture=await _authority(db_session))
 
     items = await _auto_add(db_session, source, receipt)
 
@@ -125,7 +137,7 @@ async def test_a_claim_refused_as_already_published_commits_nothing(
     db_session, tmp_path, printer_factory, monkeypatch, spool_sessions, writer
 ):
     source, _printer, queue, _mqtt = await setup_source(db_session, tmp_path, printer_factory, monkeypatch)
-    receipt = Receipt(refuse=AlreadyPublished("entry already published"))
+    receipt = Receipt(capture=await _authority(db_session), refuse=AlreadyPublished("entry already published"))
 
     with pytest.raises(AlreadyPublished):
         if writer == "printer":
@@ -145,7 +157,7 @@ async def test_a_receipt_that_cannot_be_written_takes_the_jobs_with_it(
     db_session, tmp_path, printer_factory, monkeypatch, spool_sessions, writer
 ):
     source, _printer, queue, _mqtt = await setup_source(db_session, tmp_path, printer_factory, monkeypatch)
-    receipt = Receipt(fail_record=RuntimeError("receipt write failed"))
+    receipt = Receipt(capture=await _authority(db_session), fail_record=RuntimeError("receipt write failed"))
 
     with pytest.raises(RuntimeError):
         if writer == "printer":

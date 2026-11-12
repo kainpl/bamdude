@@ -697,6 +697,41 @@ async def save_3mf_bytes_to_library(
     for the comparison is removed.
     """
 
+    if source_url:
+        # URL reuse needs no incoming bytes. This read is only a probe: it may
+        # neither repair storage nor authorize the answer after a later await.
+        try:
+            probe = await db.scalar(
+                LibraryFile.active().where(LibraryFile.source_url == source_url).order_by(LibraryFile.id).limit(1)
+            )
+            if probe is not None:
+                (await read_access(db, user_id=created_by_id, authority=authority)).ensure(probe)
+                await db.commit()
+                folder, principal = await _guard_ingest(db, authority, folder)
+                from backend.app.services.cloud_credentials import guard_snapshot
+
+                for credential in credential_snapshots:
+                    await guard_snapshot(db, credential)
+                if publication_check is not None:
+                    await publication_check(db, principal)
+                current = await db.scalar(
+                    LibraryFile.active()
+                    .where(LibraryFile.source_url == source_url)
+                    .order_by(LibraryFile.id)
+                    .limit(1)
+                    .with_for_update()
+                    .execution_options(populate_existing=True)
+                )
+                if current is None:
+                    raise HTTPException(409, {"code": "source_changed"})
+                (await read_access(db, user_id=created_by_id, authority=authority)).ensure(current)
+                if commit:
+                    await db.commit()
+                return IngestResult(file=current, outcome="deduped", superseded_name=filename)
+        except BaseException:
+            await db.rollback()
+            raise
+
     file_type = detect_file_type(filename)
 
     file_path, is_external_upload = _resolve_upload_destination(folder, filename)

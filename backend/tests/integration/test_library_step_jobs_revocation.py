@@ -9,6 +9,7 @@ import asyncio
 import pytest
 
 from backend.app.core.auth import generate_api_key
+from backend.app.core.auth_lifetime import capture_key
 from backend.app.core.permissions import Permission
 from backend.app.models.api_key import APIKey
 from backend.app.models.group import Group
@@ -18,6 +19,7 @@ from backend.app.models.telegram_chat import TelegramChat
 from backend.app.models.user import User
 from backend.app.services import library_preview_jobs as jobs_module
 from backend.app.services.library_preview_jobs import Authority, StepSource
+from backend.tests.auth_helpers import bind_test_key, mint_test_authority
 
 pytestmark = pytest.mark.integration
 UPLOAD, UPDATE_ALL = Permission.LIBRARY_UPLOAD.value, Permission.LIBRARY_UPDATE_ALL.value
@@ -32,7 +34,7 @@ class Gate:
     async def __call__(self, source, *, order, wait_seconds, on_admit, on_hand_off, before_attach):
         on_admit()
         self.entered.set()
-        await self.release.wait()
+        await asyncio.wait_for(self.release.wait(), timeout=30)
         on_hand_off()
         return "succeeded" if await before_attach() else "authority_missing"
 
@@ -62,6 +64,7 @@ async def _user(db, name, permissions):
     db.add(user)
     await db.commit()
     await db.refresh(user)
+    user._test_capture = await mint_test_authority(db, username=name)
     return user
 
 
@@ -87,9 +90,9 @@ async def test_a_user_whose_group_loses_the_right_mid_job_gets_nothing_another_a
     loser = await _user(db_session, "loser", [UPDATE_ALL])
     keeper = await _user(db_session, "keeper", [UPDATE_ALL])
     source = await _source(db_session)
-    lost = jobs.enqueue(source, Authority.user(loser.id), "manual")
-    kept = jobs.enqueue(source, Authority.user(keeper.id), "manual")
-    await jobs.gate.entered.wait()
+    lost = jobs.enqueue(source, Authority.user(loser.id, capture=loser._test_capture), "manual")
+    kept = jobs.enqueue(source, Authority.user(keeper.id, capture=keeper._test_capture), "manual")
+    await asyncio.wait_for(jobs.gate.entered.wait(), timeout=10)
     group = (await db_session.get(User, loser.id)).groups[0]
     group.permissions = [UPLOAD]
     await db_session.commit()
@@ -106,11 +109,12 @@ async def test_an_api_key_disabled_mid_job_gets_nothing(db_session, jobs):
     key = APIKey(
         name="k", key_hash=key_hash, key_prefix=key_prefix, enabled=True, user_id=owner.id, can_manage_library=True
     )
+    await bind_test_key(db_session, key, owner)
     db_session.add(key)
     await db_session.commit()
     await db_session.refresh(key)
-    receipt = jobs.enqueue(await _source(db_session), Authority.api_key(key.id), "manual")
-    await jobs.gate.entered.wait()
+    receipt = jobs.enqueue(await _source(db_session), Authority.api_key(key.id, capture=capture_key(key)), "manual")
+    await asyncio.wait_for(jobs.gate.entered.wait(), timeout=10)
     key.enabled = False
     await db_session.commit()
     jobs.gate.release.set()
@@ -130,7 +134,7 @@ async def test_a_telegram_provider_disabled_mid_job_gets_nothing(db_session, job
     await db_session.commit()
     await db_session.refresh(chat)
     receipt = jobs.enqueue(await _source(db_session), Authority.telegram_chat(chat.id, provider.id, 55), "auto")
-    await jobs.gate.entered.wait()
+    await asyncio.wait_for(jobs.gate.entered.wait(), timeout=10)
     provider.enabled = False
     await db_session.commit()
     jobs.gate.release.set()
@@ -151,8 +155,10 @@ async def test_a_telegram_chat_moved_to_a_group_without_the_right_before_its_sta
     db_session.add(chat)
     await db_session.commit()
     await db_session.refresh(chat)
-    blocker = jobs.enqueue(await _source(db_session), Authority.user(blocker_user.id), "manual")
-    await jobs.gate.entered.wait()  # the blocker holds the runner
+    blocker = jobs.enqueue(
+        await _source(db_session), Authority.user(blocker_user.id, capture=blocker_user._test_capture), "manual"
+    )
+    await asyncio.wait_for(jobs.gate.entered.wait(), timeout=10)  # the blocker holds the runner
     other = LibraryFile(
         filename="q.step", file_path="library/q.step", file_type="step", file_size=1, file_hash="b" * 64
     )

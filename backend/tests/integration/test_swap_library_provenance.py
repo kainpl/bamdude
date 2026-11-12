@@ -419,7 +419,11 @@ async def test_a_makerworld_redownload_declares_its_new_bytes_by_the_rows_name(
 
     assert response.status_code == 200, response.text
     row = await fresh(db_session, row.id)
-    assert row.file_hash == sha(on_disk.read_bytes()) != sha(b"old")
+    from backend.app.api.routes.library import to_absolute_path
+
+    published = to_absolute_path(row.file_path)
+    assert published != on_disk and not on_disk.exists()
+    assert row.file_hash == sha(published.read_bytes()) != sha(b"old")
     assert carrier_of(row) == classifier(True, row)  # nothing of the old bytes' declaration carried over
     assert "swap" in row.file_tags
 

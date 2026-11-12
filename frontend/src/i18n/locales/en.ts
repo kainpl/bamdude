@@ -11925,6 +11925,10 @@ export default {
       cancel: 'Cancel',
       confirm: 'Revoke',
     },
+    confirmDelete: {
+      title: 'Remove this token record?',
+      body: 'This token is already inactive. Removing "{{name}}" only clears this list entry.',
+    },
     create: {
       title: 'Create new token',
       nameLabel: 'Token name',
@@ -11957,6 +11961,8 @@ export default {
       created: 'Token created',
       createFailed: 'Failed to create token',
       revoked: 'Token revoked',
+      removed: 'Token record removed',
+      removeFailed: 'Failed to remove token record',
       revokeFailed: 'Failed to revoke token',
       loadFailed: 'Failed to load tokens',
       copied: 'Copied to clipboard',

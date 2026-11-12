@@ -152,11 +152,13 @@ interface ConfirmRevokeModalProps {
 
 function ConfirmRevokeModal({ token, onConfirm, onCancel }: ConfirmRevokeModalProps) {
   const { t } = useTranslation();
+  const retired = Boolean(token.retired_reason || token.retired_at);
+  const title = retired ? t('cameraTokens.confirmDelete.title') : t('cameraTokens.confirmRevoke.title');
   return (
     <Modal
       onClose={onCancel}
       hideClose
-      ariaLabel={t('cameraTokens.confirmRevoke.title')}
+      ariaLabel={title}
       size="md"
       panelStyle={{ borderColor: 'color-mix(in oklab, var(--color-red-500) 40%, transparent)' }}
     >
@@ -165,10 +167,10 @@ function ConfirmRevokeModal({ token, onConfirm, onCancel }: ConfirmRevokeModalPr
           <AlertTriangle className="w-6 h-6 text-red-600 dark:text-red-400 flex-shrink-0 mt-0.5" />
           <div>
             <h2 className="text-lg font-semibold text-white">
-              {t('cameraTokens.confirmRevoke.title')}
+              {title}
             </h2>
             <p className="text-sm text-bambu-gray mt-1">
-              {t('cameraTokens.confirmRevoke.body', { name: token.name })}
+              {retired ? t('cameraTokens.confirmDelete.body', { name: token.name }) : t('cameraTokens.confirmRevoke.body', { name: token.name })}
             </p>
           </div>
         </div>
@@ -185,7 +187,7 @@ function ConfirmRevokeModal({ token, onConfirm, onCancel }: ConfirmRevokeModalPr
             onClick={onConfirm}
             className="px-4 py-2 bg-red-500 text-white rounded-md hover:bg-red-600"
           >
-            {t('cameraTokens.confirmRevoke.confirm')}
+            {retired ? t('common.delete') : t('cameraTokens.confirmRevoke.confirm')}
           </button>
         </div>
       </div>
@@ -314,12 +316,12 @@ function TokenRow({ token, showOwner, ownerLabel, onRevoke }: TokenRowProps) {
         <button
           type="button"
           onClick={() => onRevoke(token.id)}
-          disabled={retired || !hasPermission(token.scope === 'monitor' ? 'api_keys:delete' : 'camera:view')}
+          disabled={!token.token_identity || !hasPermission(token.scope === 'monitor' ? 'api_keys:delete' : 'camera:view')}
           className="inline-flex items-center gap-1 px-2 py-1 text-sm text-red-700 dark:text-red-400 hover:text-red-900 dark:hover:text-red-300"
-          title={t('cameraTokens.list.revoke')}
+          title={retired ? t('common.delete') : t('cameraTokens.list.revoke')}
         >
           <Trash2 className="w-4 h-4" />
-          {t('cameraTokens.list.revoke')}
+          {retired ? t('common.delete') : t('cameraTokens.list.revoke')}
         </button>
       </td>
     </tr>
@@ -430,14 +432,24 @@ export default function CameraTokensPanel() {
   const confirmRevoke = async () => {
     if (!pendingRevoke) return;
     const id = pendingRevoke.id;
+    const tokenIdentity = pendingRevoke.token_identity;
+    const retired = Boolean(pendingRevoke.retired_reason || pendingRevoke.retired_at);
     setPendingRevoke(null);
+    if (!tokenIdentity) {
+      showToast(retired ? t('cameraTokens.toast.removeFailed') : t('cameraTokens.toast.revokeFailed'), 'error');
+      return;
+    }
     try {
-      await api.revokeLongLivedToken(id);
-      showToast(t('cameraTokens.toast.revoked'));
+      if (retired) {
+        await api.removeRetiredLongLivedToken(id, tokenIdentity);
+      } else {
+        await api.revokeLongLivedToken(id, tokenIdentity);
+      }
+      showToast(retired ? t('cameraTokens.toast.removed') : t('cameraTokens.toast.revoked'));
       await refresh();
     } catch (err) {
       showToast(
-        err instanceof Error ? err.message : t('cameraTokens.toast.revokeFailed'),
+        err instanceof Error ? err.message : retired ? t('cameraTokens.toast.removeFailed') : t('cameraTokens.toast.revokeFailed'),
         'error',
       );
     }

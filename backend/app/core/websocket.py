@@ -10,6 +10,8 @@ from typing import Any
 
 from fastapi import WebSocket
 
+from backend.app.core.auth_lifetime import FrozenAuthority
+
 logger = logging.getLogger(__name__)
 
 # A slow browser gets disconnected and receives a new snapshot on reconnect.
@@ -38,6 +40,7 @@ class ConnectionManager:
         # broadcasts. BamDude has no anonymous users, so this is almost always set.
         self._user_by_conn: dict[WebSocket, int | None] = {}
         self._account_by_conn: dict[WebSocket, str | None] = {}
+        self._authority_by_conn: dict[WebSocket, FrozenAuthority | None] = {}
         # In-process subscribers to the same fan-out the browsers get — today
         # only the Cloud Link uplink. See ``add_internal_listener``.
         self._internal_listeners: list[Callable[[dict[str, Any]], None]] = []
@@ -96,13 +99,28 @@ class ConnectionManager:
             except Exception as e:
                 logger.debug("Internal broadcast listener raised (ignored): %s", e)
 
-    async def connect(self, websocket: WebSocket, user_id: int | None = None, *, account_identity: str | None = None):
+    async def connect(
+        self,
+        websocket: WebSocket,
+        user_id: int | None = None,
+        *,
+        account_identity: str | None = None,
+        authority: FrozenAuthority | None = None,
+    ):
         """Accept a new WebSocket connection, tagged with the authenticated user
-        so per-user broadcasts can target it."""
+        so per-user broadcasts can target browser sessions only.
+
+        The HTTP upgrade always supplies its immutable capture. Capture-less
+        calls remain a trusted Python compatibility surface, not an auth path.
+        """
+        if authority is not None:
+            account_identity = authority.account_identity
+            user_id = authority.user_id if authority.kind == "session" else None
         await websocket.accept()
         self.active_connections.append(websocket)
         self._user_by_conn[websocket] = user_id
         self._account_by_conn[websocket] = account_identity
+        self._authority_by_conn[websocket] = authority
         outbox = _Outbox()
         self._outboxes[websocket] = outbox
         outbox.task = asyncio.create_task(self._writer(websocket, outbox), name="websocket-writer")
@@ -112,6 +130,7 @@ class ConnectionManager:
             self.active_connections.remove(websocket)
         self._user_by_conn.pop(websocket, None)
         self._account_by_conn.pop(websocket, None)
+        self._authority_by_conn.pop(websocket, None)
 
     def _enqueue(self, websocket: WebSocket, data: str, size: int) -> None:
         outbox = self._outboxes.get(websocket)
@@ -270,6 +289,9 @@ class ConnectionManager:
         size = len(data.encode("utf-8"))
         for connection in list(self.active_connections):
             if self._user_by_conn.get(connection) == user_id:
+                authority = self._authority_by_conn.get(connection)
+                if authority is not None and authority.kind != "session":
+                    continue
                 if (
                     expected_account_identity is not None
                     and self._account_by_conn.get(connection) != expected_account_identity

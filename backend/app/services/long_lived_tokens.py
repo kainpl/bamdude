@@ -12,8 +12,8 @@ Token format: ``bblt_<8-char-prefix>_<32-char-secret>``.
 - ``last_used_at`` is updated on successful verify, but rate-limited to once
   per minute per token so an MJPEG keep-alive doesn't write to the DB on
   every chunk.
-- ``revoked_at`` set → verify returns False; admins or the owning user can
-  flip it.
+- ``revoked_at`` set → verify returns False. Retired upgrade records can be
+  deleted by their owner or an admin; deleting metadata never restores access.
 
 Maximum lifetime is 365 days (issue #1108 explicitly rejected "infinite"
 tokens — a leaked permanent token would be irrevocable footgun-by-design).
@@ -29,7 +29,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from fastapi import HTTPException
-from sqlalchemy import or_, select, update
+from sqlalchemy import delete, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.auth import _scan_api_key, hash_password_async, reserve_audit_attempt
@@ -246,6 +246,23 @@ async def revoke_token(db, token_id: int):
     record.revoked_at = utcnow()
     await db.commit()
     return True
+
+
+async def remove_retired_token(db, token_id: int, expected_identity: str) -> bool:
+    """Remove only the selected retired record; caller checks actor and scope.
+
+    Metadata deletion is a distinct intent from revoking a current token. Both
+    its immutable identity and retirement must still match at the actual write.
+    """
+    deleted = await db.execute(
+        delete(LongLivedToken).where(
+            LongLivedToken.id == token_id,
+            LongLivedToken.token_identity == expected_identity,
+            or_(LongLivedToken.retired_at.is_not(None), LongLivedToken.retired_reason.is_not(None)),
+        )
+    )
+    await db.commit()
+    return deleted.rowcount == 1
 
 
 _audit_after: OrderedDict[str, float] = OrderedDict()

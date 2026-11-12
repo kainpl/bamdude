@@ -211,7 +211,10 @@ class TestDeletingAUserUnhooksOtherPeoplesRows:
         admin = User(username="admin", role="admin")
         db_session.add(admin)
         await db_session.flush()
-        await delete_user(user_id=owner.id, delete_items=True, current_user=admin, db=db_session)
+        from backend.tests.auth_helpers import mint_test_authority
+
+        admin._auth_capture = await mint_test_authority(db_session, username=admin.username)
+        await delete_user(user_id=owner.id, delete_items=True, _admin=admin, current_user=admin, db=db_session)
 
         row = (
             await db_session.execute(select(PrintQueueItem).where(PrintQueueItem.id == theirs_id))

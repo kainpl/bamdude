@@ -21,6 +21,7 @@ from backend.app.models.printer import Printer
 from backend.app.models.printer_queue import PrinterQueue
 from backend.app.models.user import User
 from backend.app.services import print_state_recovery_store as store
+from backend.tests.auth_helpers import bind_test_key
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
 
@@ -75,6 +76,7 @@ async def recovery_key(tmp_path, monkeypatch):
             can_control_printer=True,
             printer_ids=[printer.id],
         )
+        await bind_test_key(db, key, user)
         db.add_all([item, key])
         await db.flush()
         queue.current_item_id = item.id

@@ -47,7 +47,7 @@ def _never_actually_walk(monkeypatch):
     """
     from backend.app.services import library_scan
 
-    async def noop(job_id: int) -> None:
+    async def noop(job_id: int, authority=None) -> None:
         return None
 
     monkeypatch.setattr(library_scan, "run_scan", noop)

@@ -95,6 +95,127 @@ class TestSave3mfHappyPath:
 
 class TestSourceUrlDedupe:
     @pytest.mark.asyncio
+    async def test_known_url_checks_current_actor_without_touching_corrupt_bytes(self, db_session, monkeypatch):
+        from unittest.mock import AsyncMock, Mock
+
+        from backend.app.api.routes import library
+        from backend.app.models.user import User
+        from backend.tests.auth_helpers import mint_test_authority
+
+        user = User(username="url-owner", role="admin")
+        db_session.add(user)
+        await db_session.flush()
+        row = LibraryFile(
+            filename="known.3mf",
+            file_path="untouched.3mf",
+            file_type="3mf",
+            file_size=5,
+            source_url="https://example.invalid/known",
+            created_by_id=user.id,
+        )
+        db_session.add(row)
+        await db_session.commit()
+        authority = await mint_test_authority(db_session, username=user.username)
+        write = Mock(side_effect=AssertionError("URL reuse must not write bytes"))
+        prepare = AsyncMock(side_effect=AssertionError("URL reuse must not parse bytes"))
+        monkeypatch.setattr(library, "_write_upload", write)
+        monkeypatch.setattr(library, "_prepare_library_source", prepare)
+        result = await save_3mf_bytes_to_library(
+            db_session, content=b"corrupt 3mf", filename="other.3mf", source_url=row.source_url, authority=authority
+        )
+        assert result.outcome == "deduped" and result.file.id == row.id
+        assert result.file.file_path == "untouched.3mf"
+        write.assert_not_called()
+        prepare.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_url_probe_cannot_authorize_after_account_revoke(self, db_session, monkeypatch):
+        from unittest.mock import Mock
+
+        from fastapi import HTTPException
+        from sqlalchemy import update
+
+        from backend.app.api.routes import library
+        from backend.app.models.user import User
+        from backend.tests.auth_helpers import mint_test_authority
+
+        user = User(username="url-revoked", role="admin")
+        db_session.add(user)
+        await db_session.flush()
+        row = LibraryFile(
+            filename="known.3mf",
+            file_path="untouched.3mf",
+            file_type="3mf",
+            file_size=5,
+            source_url="https://example.invalid/revoked",
+            created_by_id=user.id,
+        )
+        db_session.add(row)
+        await db_session.commit()
+        user_id, row_id = user.id, row.id
+        authority = await mint_test_authority(db_session, username=user.username)
+        original_guard = library._guard_ingest
+
+        async def revoke_before_guard(db, actor, folder):
+            assert not db.in_transaction(), "Probe transaction ends before the final writer"
+            await db.execute(update(User).where(User.id == user_id).values(is_active=False))
+            await db.commit()
+            return await original_guard(db, actor, folder)
+
+        write = Mock(side_effect=AssertionError("Revoked URL reuse must not write bytes"))
+        monkeypatch.setattr(library, "_guard_ingest", revoke_before_guard)
+        monkeypatch.setattr(library, "_write_upload", write)
+        with pytest.raises(HTTPException) as refusal:
+            await save_3mf_bytes_to_library(
+                db_session, content=b"corrupt 3mf", filename="other.3mf", source_url=row.source_url, authority=authority
+            )
+        assert refusal.value.status_code == 401
+        current = await db_session.get(LibraryFile, row_id, populate_existing=True)
+        assert current.file_path == "untouched.3mf" and current.filename == "known.3mf"
+        write.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_url_probe_keeps_hidden_refusal_despite_attribution_override(self, db_session, monkeypatch):
+        from unittest.mock import Mock
+
+        from fastapi import HTTPException
+
+        from backend.app.api.routes import library
+        from backend.app.models.group import Group
+        from backend.app.models.user import User
+        from backend.tests.auth_helpers import mint_test_authority
+
+        group = Group(name="own-url-upload", permissions=["library:upload", "library:read_own"])
+        viewer = User(username="url-viewer", role="user", groups=[group])
+        owner = User(username="hidden-url-owner", role="admin")
+        db_session.add_all([viewer, owner])
+        await db_session.flush()
+        row = LibraryFile(
+            filename="hidden-canary.3mf",
+            file_path="untouched.3mf",
+            file_type="3mf",
+            file_size=5,
+            source_url="https://example.invalid/hidden",
+            created_by_id=owner.id,
+        )
+        db_session.add(row)
+        await db_session.commit()
+        authority = await mint_test_authority(db_session, username=viewer.username)
+        write = Mock(side_effect=AssertionError("Hidden URL must be refused before bytes"))
+        monkeypatch.setattr(library, "_write_upload", write)
+        with pytest.raises(HTTPException) as refusal:
+            await save_3mf_bytes_to_library(
+                db_session,
+                content=b"corrupt 3mf",
+                filename="other.3mf",
+                source_url=row.source_url,
+                created_by_id=owner.id,
+                authority=authority,
+            )
+        assert (refusal.value.status_code, refusal.value.detail) == (400, {"code": "source_unavailable"})
+        write.assert_not_called()
+
+    @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_returns_existing_row_without_rewrite(self, db_session, isolated_archive_dir):
         canonical = "https://makerworld.com/models/12345#profileId-678"

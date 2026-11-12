@@ -6,6 +6,7 @@ import pytest
 
 from backend.app.models.spool import Spool
 from backend.app.models.spool_assignment import SpoolAssignment
+from backend.tests.auth_helpers import bind_test_key
 
 
 @pytest.mark.asyncio
@@ -88,17 +89,19 @@ async def test_picker_and_family_colors_require_inventory_read(async_client, db_
     from backend.app.models.api_key import APIKey
 
     raw, key_hash, key_prefix = generate_api_key()
-    db_session.add(
-        APIKey(
-            name="no-inventory-read",
-            key_hash=key_hash,
-            key_prefix=key_prefix,
-            enabled=True,
-            can_read_status=False,
-        )
+    key = APIKey(
+        name="no-inventory-read",
+        key_hash=key_hash,
+        key_prefix=key_prefix,
+        enabled=True,
+        can_read_status=False,
     )
+    await bind_test_key(db_session, key)
+    db_session.add(key)
     await db_session.commit()
     headers = {"X-API-Key": raw}
+    # Test this current key's scope, not the fixture's independent admin JWT.
+    async_client.headers.pop("Authorization", None)
     picker = await async_client.get("/api/v1/inventory/spools/picker?printer_id=1&ams_id=0&tray_id=0", headers=headers)
     colors = await async_client.get(
         "/api/v1/inventory/spools/family-colors?filament_family_id=GF-PETG", headers=headers

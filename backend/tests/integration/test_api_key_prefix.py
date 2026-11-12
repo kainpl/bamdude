@@ -1,9 +1,9 @@
-"""New API keys carry BamDude's own prefix; keys issued with Bambuddy's keep working.
+"""New API keys carry BamDude's own prefix; pre-contract keys require reissue.
 
 Keys were generated as ``bb_…`` — Bambuddy's prefix, inherited with the fork.
 New keys are ``bd_…``. Only a key's hash is stored and the key itself is shown
-once, so a key already sitting in Home Assistant, Node-RED or the label bridge
-cannot be re-issued under the new prefix: ``bb_`` stays accepted for good.
+once. G01 C deliberately retires every legacy key, including Bambuddy's
+ownerless ``bb_`` rows. Prefix recognition is not a lifetime grant.
 
 The prefix matters only on ``Authorization: Bearer`` — it is how a key is told
 from a session JWT, by the auth middleware and by every gate. ``X-API-Key``
@@ -66,9 +66,15 @@ async def test_a_new_key_works_as_a_bearer_token(async_client):
 @pytest.mark.asyncio
 @pytest.mark.integration
 @pytest.mark.parametrize("transport", ["x-api-key", "bearer"])
-async def test_a_bambuddy_era_key_still_works(async_client, legacy_key, transport):
-    headers = {"X-API-Key": legacy_key} if transport == "x-api-key" else {"Authorization": f"Bearer {legacy_key}"}
+async def test_a_bambuddy_era_key_requires_reissue(async_client, legacy_key, transport):
+    # Remove the client's inherited admin JWT: a key test must exercise only
+    # that key, including X-API-Key's legacy permission-dependency behavior.
+    headers = (
+        {"X-API-Key": legacy_key, "Authorization": ""}
+        if transport == "x-api-key"
+        else {"Authorization": f"Bearer {legacy_key}"}
+    )
 
     response = await async_client.get("/api/v1/printers/", headers=headers)
 
-    assert response.status_code == 200, response.text
+    assert response.status_code == 401, response.text

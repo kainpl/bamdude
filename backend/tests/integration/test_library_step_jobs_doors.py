@@ -18,6 +18,7 @@ import pytest
 from backend.app.api.routes import library
 from backend.app.services import library_preview_jobs as jobs_module
 from backend.app.services.library_preview_jobs import Authority
+from backend.tests.auth_helpers import bind_test_key, mint_test_authority
 
 pytestmark = pytest.mark.integration
 
@@ -122,11 +123,11 @@ async def test_an_api_key_upload_carries_the_key_as_its_authority(async_client, 
 
     admin = (await db_session.execute(select(User).where(User.username == "test_admin"))).scalar_one()
     raw, key_hash, key_prefix = generate_api_key()
-    db_session.add(
-        APIKey(
-            name="k", key_hash=key_hash, key_prefix=key_prefix, enabled=True, user_id=admin.id, can_manage_library=True
-        )
+    key = APIKey(
+        name="k", key_hash=key_hash, key_prefix=key_prefix, enabled=True, user_id=admin.id, can_manage_library=True
     )
+    await bind_test_key(db_session, key, admin)
+    db_session.add(key)
     await db_session.commit()
     response = await async_client.post(
         "/api/v1/library/files",
@@ -195,7 +196,12 @@ async def test_the_telegram_scene_passes_its_chat_as_the_authority(db_session, j
     provider = NotificationProvider(name="bot", provider_type="telegram", enabled=True, config='{"bot_token": "1:x"}')
     db_session.add(provider)
     await db_session.flush()
-    chat = TelegramChat(chat_id=777, provider_id=provider.id, is_active=True)
+    from backend.app.models.group import Group
+
+    group = Group(name="upload-chat", permissions=["library:upload"])
+    db_session.add(group)
+    await db_session.flush()
+    chat = TelegramChat(chat_id=777, provider_id=provider.id, is_active=True, group_id=group.id)
     db_session.add(chat)
     await db_session.commit()
     await db_session.refresh(chat)
@@ -220,21 +226,24 @@ async def test_the_telegram_scene_passes_its_chat_as_the_authority(db_session, j
 
 @pytest.mark.asyncio
 async def test_a_product_import_passes_the_importer_as_the_authority(db_session, jobs):
-    from types import SimpleNamespace as User
-
+    from backend.app.models.user import User
     from backend.app.services.product_card import _ingest_into_library
 
+    user = User(username="product-importer", role="admin")
+    db_session.add(user)
+    await db_session.commit()
+    authority = Authority.user(user.id, capture=await mint_test_authority(db_session, username=user.username))
     result = await _ingest_into_library(
         db_session,
         filename="imported.step",
         content=BOX,
         target_folder=None,
-        user=User(id=1),
-        authority=Authority.user(1),
+        user=user,
+        authority=authority,
     )
     assert result.outcome == "created"
     (receipt,) = jobs._receipts.values()
-    assert receipt.authority == Authority.user(1)
+    assert receipt.authority == authority
 
 
 # --- what never asks ----------------------------------------------------------------------------------------

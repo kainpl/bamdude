@@ -6,12 +6,14 @@ import pytest
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
+from backend.app.core.auth_lifetime import capture_key
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.user import User
 from backend.app.services import queue_counters, queue_ops
 from backend.app.services.printer_queues import ensure_printer_queue
 from backend.app.services.queue_bulk_retry import retry_block
 from backend.app.services.swap_source_declarations import Actor
+from backend.tests.auth_helpers import bind_test_key, mint_test_session
 from backend.tests.integration.queue_test_database import test_engine  # noqa: F401
 
 
@@ -26,8 +28,13 @@ async def test_final_claim_waits_and_never_sees_half_a_retry_block(
         PrintQueueItem(queue_id=printer.id, position=i, status="failed", require_previous_success=True) for i in (1, 2)
     ]
     db_session.add_all([user, *rows])
-    await db_session.commit()
-    queue_id, ids, actor = printer.id, [row.id for row in rows], Actor("user", user.id, user.username)
+    await db_session.flush()
+    issued = await mint_test_session(db_session, user=user)
+    queue_id, ids, actor = (
+        printer.id,
+        [row.id for row in rows],
+        Actor("user", user.id, user.username, capture=issued.capture),
+    )
     factory = async_sessionmaker(test_engine, expire_on_commit=False)
     staged, release, claiming = asyncio.Event(), asyncio.Event(), asyncio.Event()
     original = queue_counters.update_queue_counters
@@ -35,7 +42,7 @@ async def test_final_claim_waits_and_never_sees_half_a_retry_block(
     async def barrier(db, queue_id):
         await original(db, queue_id)
         staged.set()
-        await release.wait()
+        await asyncio.wait_for(release.wait(), 15)
 
     monkeypatch.setattr(queue_counters, "update_queue_counters", barrier)
     if test_engine.dialect.name == "postgresql":
@@ -109,14 +116,18 @@ async def test_waiting_writer_uses_current_authority_and_status(
 
     printer = await printer_factory()
     await ensure_printer_queue(db_session, printer.id)
+    owner = User(username="bulk-key-owner", role="admin", is_active=True, groups=[])
+    db_session.add(owner)
+    await db_session.flush()
     key = APIKey(
         name="bulk-key", key_hash="test-only", key_prefix="bd_test", printer_ids=[printer.id], can_control_printer=True
     )
     row = PrintQueueItem(queue_id=printer.id, position=1, status="failed")
+    await bind_test_key(db_session, key, owner)
     db_session.add_all([key, row])
     await db_session.commit()
     queue_id, item_id, key_id = printer.id, row.id, key.id
-    actor = Actor("api_key", None, "bulk-key", key_id)
+    actor = Actor("api_key", owner.id, "bulk-key", key_id, capture=capture_key(key))
     factory = async_sessionmaker(test_engine, expire_on_commit=False)
     entered, release = asyncio.Event(), asyncio.Event()
     original = queue_bulk_retry.claim_lanes
@@ -124,7 +135,7 @@ async def test_waiting_writer_uses_current_authority_and_status(
     @asynccontextmanager
     async def barrier(db, ids):
         entered.set()
-        await release.wait()
+        await asyncio.wait_for(release.wait(), 15)
         async with original(db, ids):
             yield
 

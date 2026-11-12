@@ -231,13 +231,15 @@ async def test_f22_actual_websocket_bootstrap_uses_file_projection(live, monkeyp
 
     import backend.app.services.printer_manager as manager_module
     from backend.app.api.routes import websocket as route
+    from backend.app.core.auth_lifetime import FrozenAuthority
     from backend.app.core.websocket import ConnectionManager
 
     p, _, m, _, _ = live
     monkeypatch.setattr(route, "printer_manager", m)
     monkeypatch.setattr(manager_module, "printer_manager", m)
     monkeypatch.setattr(route, "ws_manager", ConnectionManager())
-    monkeypatch.setattr(route, "authenticate_websocket_token", AsyncMock(return_value=(True, 7)))
+    capture = FrozenAuthority("session", "projection-account", 7, generation=0, sid="projection-session")
+    monkeypatch.setattr(route, "authenticate_websocket_authority", AsyncMock(return_value=(capture, 7)))
     monkeypatch.setattr(route.background_dispatch, "get_state", AsyncMock(return_value={}))
     app = FastAPI()
     app.include_router(route.router)

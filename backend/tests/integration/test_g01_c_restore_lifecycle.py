@@ -25,7 +25,7 @@ pytestmark = pytest.mark.asyncio
 
 
 @pytest.mark.parametrize("fault", ["auth", "epoch", "commit", "ambiguous", "unlink", None])
-async def test_restore_joint_commit_and_recovery(test_engine, monkeypatch, tmp_path, fault):
+async def test_restore_joint_commit_and_recovery(test_engine, monkeypatch, tmp_path, caplog, fault):
     factory = async_sessionmaker(test_engine, expire_on_commit=False)
     auth_runtime.open_admission()
     async with factory() as db:
@@ -71,6 +71,20 @@ async def test_restore_joint_commit_and_recovery(test_engine, monkeypatch, tmp_p
 
             failing.setattr(Path, "unlink", fail_fence)
         assert await runtime.finish_restore() is (fault is None)
+
+    if fault is not None:
+        stage = {
+            "auth": "auth_invalidation",
+            "epoch": "connector_epoch",
+            "commit": "commit",
+            "ambiguous": "commit",
+            "unlink": "fence_remove",
+        }[fault]
+        error = "PermissionError" if fault == "unlink" else "RuntimeError"
+        assert f"stage={stage} error={error}" in caplog.text
+        assert "private detail" not in caplog.text
+        assert "private commit detail" not in caplog.text
+        assert "fence is held" not in caplog.text
 
     async def facts():
         async with factory() as db:

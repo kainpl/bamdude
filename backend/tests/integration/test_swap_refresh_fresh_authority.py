@@ -18,11 +18,13 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
+from backend.app.core.auth_lifetime import capture_key
 from backend.app.models.api_key import APIKey
 from backend.app.models.group import Group
 from backend.app.models.swap_source_declaration_audit import SwapSourceDeclarationAudit
 from backend.app.models.user import User
 from backend.app.services import swap_job_refresh as jobs, swap_source_declarations as decl
+from backend.tests.auth_helpers import bind_test_key
 from backend.tests.integration.test_swap_declaration_service import (  # noqa: F401 -- fixtures
     ALL,
     a_3mf,
@@ -62,6 +64,7 @@ async def _a_keyed_job(factory, tmp_path, *, printer_ids):
         ).scalar_one()
         fresh_owner.role = "user"
         fresh_owner.groups.append(group)
+        await db.flush()
         key = APIKey(
             name="review",
             key_hash="not-used",
@@ -73,8 +76,10 @@ async def _a_keyed_job(factory, tmp_path, *, printer_ids):
             can_read_status=True,
             can_manage_archives=True,
         )
+        await bind_test_key(db, key, fresh_owner)
         db.add(key)
         await db.commit()
+        owner._test_key_capture = capture_key(key)
         return owner, qid, aid, jid, listed, key.id, group.id
 
 
@@ -86,7 +91,7 @@ def _refresh(owner, aid, jid, listed, kid, scope):
         source_revision=listed["source_revision"],
         jobs=[ref(by_id(listed, "queue", jid))],
         operation_id=str(uuid.uuid4()),
-        actor=decl.Actor("api_key", owner.id, "review key", kid),
+        actor=decl.Actor("api_key", owner.id, "review key", kid, capture=owner._test_key_capture),
         rights=ALL,
         job_rights=jobs.JobRights(True, True),
         printer_scope=scope,
@@ -110,7 +115,7 @@ async def test_a_key_losing_authority_while_waiting_must_not_refresh(factory, tm
     @asynccontextmanager
     async def held(*args, **kwargs):
         waiting.set()
-        await release.wait()
+        await asyncio.wait_for(release.wait(), 15)
         async with original(*args, **kwargs):
             yield
 
@@ -129,7 +134,9 @@ async def test_a_key_losing_authority_while_waiting_must_not_refresh(factory, tm
     release.set()
     with pytest.raises(HTTPException) as caught:
         await asyncio.wait_for(task, 10)
-    assert caught.value.status_code in {403, 409}
+    assert caught.value.status_code == (
+        401 if revocation == "disabled" else 409 if revocation == "printer_scope" else 403
+    )
     assert (await row(factory, "queue", jid)).source_snapshot["swap_compatible"] is None
     assert await _refresh_audits(factory) == 0
 
@@ -146,9 +153,10 @@ async def test_api_key_refresh_rechecks_the_owners_queue_read_right(factory):
             can_queue=True,
             can_read_status=True,
         )
+        await bind_test_key(db, key, user)
         db.add(key)
         await db.commit()
-        actor = decl.Actor("api_key", user.id, "review key", key.id)
+        actor = decl.Actor("api_key", user.id, "review key", key.id, capture=capture_key(key))
     async with factory() as db:
         with pytest.raises(HTTPException) as caught:
             await jobs._fresh_job_rights(db, actor, jobs.JobRights(True, True))
@@ -191,7 +199,7 @@ async def test_a_retry_that_waited_while_the_key_lost_the_printer_gets_no_replay
         entered += 1
         if entered == 1:
             waiting.set()
-            await release.wait()
+            await asyncio.wait_for(release.wait(), 15)
         async with original(*args, **kwargs):
             yield
 
@@ -206,7 +214,7 @@ async def test_a_retry_that_waited_while_the_key_lost_the_printer_gets_no_replay
             source_revision=listed["source_revision"],
             jobs=[ref(by_id(listed, "queue", jid))],
             operation_id=operation,
-            actor=decl.Actor("api_key", owner.id, "review key", kid),
+            actor=decl.Actor("api_key", owner.id, "review key", kid, capture=owner._test_key_capture),
             rights=ALL,
             job_rights=jobs.JobRights(True, True),
             printer_scope=frozenset({qid}),

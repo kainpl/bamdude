@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from backend.app.core.auth import generate_api_key
+from backend.app.core.auth_lifetime import capture_key
 from backend.app.core.permissions import Permission
 from backend.app.models.api_key import APIKey
 from backend.app.models.group import Group
@@ -17,6 +18,7 @@ from backend.app.models.notification import NotificationProvider
 from backend.app.models.telegram_chat import TelegramChat
 from backend.app.models.user import User
 from backend.app.services.library_preview_jobs import Authority, DatabaseChecks, StepSource
+from backend.tests.auth_helpers import bind_test_key, mint_test_authority
 
 pytestmark = pytest.mark.integration
 
@@ -32,11 +34,15 @@ async def _group(db, name, permissions):
 
 async def _user(db, name, permissions, *, active=True):
     group = await _group(db, f"g-{name}", permissions)
-    user = User(username=name, email=f"{name}@example.com", password_hash="x", role="user", is_active=active)
+    user = User(username=name, email=f"{name}@example.com", password_hash="x", role="user", is_active=True)
     user.groups.append(group)
     db.add(user)
     await db.commit()
     await db.refresh(user)
+    user._test_capture = await mint_test_authority(db, username=name)
+    if not active:
+        user.is_active = False
+        await db.commit()
     return user
 
 
@@ -45,6 +51,7 @@ async def _key(db, owner, **flags):
     key = APIKey(name=f"k-{key_prefix}", key_hash=key_hash, key_prefix=key_prefix, enabled=True, user_id=owner.id)
     for name, value in flags.items():
         setattr(key, name, value)
+    await bind_test_key(db, key, owner)
     db.add(key)
     await db.commit()
     await db.refresh(key)
@@ -67,26 +74,35 @@ async def _chat(db, permissions, *, active=True, provider_enabled=True):
 
 @pytest.mark.asyncio
 async def test_a_user_holds_a_purpose_only_with_its_permission_and_while_active(db_session):
+    from sqlalchemy import delete
+
     uploader = await _user(db_session, "uploader", [UPLOAD])
     admin = await _user(db_session, "admin2", [UPLOAD, UPDATE_ALL])
     gone = await _user(db_session, "gone", [UPLOAD, UPDATE_ALL], active=False)
+    deleted = await _user(db_session, "deleted", [UPLOAD, UPDATE_ALL])
+    deleted_actor = Authority.user(deleted.id, capture=deleted._test_capture)
+    await db_session.execute(delete(User).where(User.id == deleted.id))
+    await db_session.commit()
     checks = DatabaseChecks()
-    assert await checks.authority_holds(Authority.user(uploader.id), "auto")
-    assert not await checks.authority_holds(Authority.user(uploader.id), "manual")  # the button is update_all
-    assert await checks.authority_holds(Authority.user(admin.id), "manual")
-    assert not await checks.authority_holds(Authority.user(gone.id), "auto")
+    assert await checks.authority_holds(Authority.user(uploader.id, capture=uploader._test_capture), "auto")
+    assert not await checks.authority_holds(
+        Authority.user(uploader.id, capture=uploader._test_capture), "manual"
+    )  # the button is update_all
+    assert await checks.authority_holds(Authority.user(admin.id, capture=admin._test_capture), "manual")
+    assert not await checks.authority_holds(Authority.user(gone.id, capture=gone._test_capture), "auto")
     assert not await checks.authority_holds(Authority.user(999_999), "auto")
+    assert not await checks.authority_holds(deleted_actor, "auto")  # a real issued capture, now without its account
 
 
 @pytest.mark.asyncio
 async def test_a_right_removed_from_the_group_is_seen_at_once(db_session):
     user = await _user(db_session, "demoted", [UPLOAD, UPDATE_ALL])
     checks = DatabaseChecks()
-    assert await checks.authority_holds(Authority.user(user.id), "manual")
+    assert await checks.authority_holds(Authority.user(user.id, capture=user._test_capture), "manual")
     group = (await db_session.get(User, user.id)).groups[0]
     group.permissions = [UPLOAD]
     await db_session.commit()
-    assert not await checks.authority_holds(Authority.user(user.id), "manual")  # no cache
+    assert not await checks.authority_holds(Authority.user(user.id, capture=user._test_capture), "manual")  # no cache
 
 
 @pytest.mark.asyncio
@@ -94,21 +110,21 @@ async def test_an_api_key_holds_while_enabled_unexpired_scoped_and_owned_and_las
     owner = await _user(db_session, "keyowner", [UPLOAD, UPDATE_ALL])
     key = await _key(db_session, owner, can_manage_library=True)
     checks = DatabaseChecks()
-    assert await checks.authority_holds(Authority.api_key(key.id), "manual")
+    assert await checks.authority_holds(Authority.api_key(key.id, capture=capture_key(key)), "manual")
     await db_session.refresh(key)
     assert key.last_used is None  # read only: nothing written by the check
 
     unscoped = await _key(db_session, owner, can_manage_library=False)
-    assert not await checks.authority_holds(Authority.api_key(unscoped.id), "manual")
+    assert not await checks.authority_holds(Authority.api_key(unscoped.id, capture=capture_key(unscoped)), "manual")
 
     expired = await _key(db_session, owner, can_manage_library=True)
     expired.expires_at = datetime.now(timezone.utc) - timedelta(minutes=1)
     await db_session.commit()
-    assert not await checks.authority_holds(Authority.api_key(expired.id), "manual")
+    assert not await checks.authority_holds(Authority.api_key(expired.id, capture=capture_key(expired)), "manual")
 
     key.enabled = False
     await db_session.commit()
-    assert not await checks.authority_holds(Authority.api_key(key.id), "manual")
+    assert not await checks.authority_holds(Authority.api_key(key.id, capture=capture_key(key)), "manual")
 
 
 @pytest.mark.asyncio
@@ -116,11 +132,11 @@ async def test_an_api_key_dies_with_its_owner(db_session):
     owner = await _user(db_session, "leaver", [UPLOAD, UPDATE_ALL])
     key = await _key(db_session, owner, can_manage_library=True)
     checks = DatabaseChecks()
-    assert await checks.authority_holds(Authority.api_key(key.id), "manual")
+    assert await checks.authority_holds(Authority.api_key(key.id, capture=capture_key(key)), "manual")
     owner_row = await db_session.get(User, owner.id)
     owner_row.is_active = False
     await db_session.commit()
-    assert not await checks.authority_holds(Authority.api_key(key.id), "manual")
+    assert not await checks.authority_holds(Authority.api_key(key.id, capture=capture_key(key)), "manual")
 
 
 @pytest.mark.asyncio

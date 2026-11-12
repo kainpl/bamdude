@@ -194,17 +194,27 @@ class ConnectorRuntime:
 
     async def finish_restore(self) -> bool:
         """Commit auth invalidation and connector epoch together before removing the fence."""
+        stage = "session_open"
         try:
             from backend.app.core import database
             from backend.app.core.auth_lifetime import stage_restore_invalidation
 
             async with database.async_session() as db:
+                stage = "auth_invalidation"
                 await stage_restore_invalidation(db)
+                stage = "connector_epoch"
                 await submissions.stage_storage_epoch(db)
+                stage = "commit"
                 await db.commit()
+                stage = "session_close"
+            stage = "fence_remove"
             fence_path().unlink(missing_ok=True)
-        except Exception:  # noqa: BLE001 -- the fence stays; the next start finishes the rotation
-            logger.warning("Authentication and connector restore finalization failed; admission remains fenced")
+        except Exception as exc:  # noqa: BLE001 -- the fence stays; the next start finishes the rotation
+            logger.warning(
+                "Authentication and connector restore finalization failed: stage=%s error=%s; admission remains fenced",
+                stage,
+                type(exc).__name__,
+            )
             return False
         logger.info("Authentication and connector restore finalization committed")
         return True

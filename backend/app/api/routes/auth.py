@@ -5,7 +5,7 @@ from datetime import timedelta
 from typing import Annotated
 
 import jwt
-from fastapi import APIRouter, Body, Depends, Header, HTTPException, Request, Response, status
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Request, Response, status
 from fastapi.security import HTTPAuthorizationCredentials
 from jwt.exceptions import PyJWTError as JWTError
 from sqlalchemy import delete, select
@@ -1854,6 +1854,7 @@ def _long_lived_token_to_response(record, *, plaintext: str | None = None) -> di
     """
     return {
         "id": record.id,
+        "token_identity": record.token_identity,
         "user_id": record.user_id,
         "name": record.name,
         "scope": record.scope,
@@ -2013,14 +2014,22 @@ async def list_all_long_lived_tokens(
 @router.delete("/tokens/{token_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def revoke_long_lived_token(
     token_id: int,
+    expected_identity: Annotated[str | None, Query(min_length=1, max_length=36)] = None,
+    retired_only: bool = False,
     current_user: User = RequireAnyPermission(Permission.CAMERA_VIEW, Permission.API_KEYS_DELETE),
     db: AsyncSession = Depends(get_auth_db),
 ):
-    """Revoke a long-lived token. Owners can revoke their own; admins any."""
+    """Revoke a current token or remove retired metadata. Owners manage their own; admins any."""
     import logging as _logging
 
     from backend.app.models.long_lived_token import LongLivedToken
-    from backend.app.services.long_lived_tokens import revoke_token
+    from backend.app.services.long_lived_tokens import remove_retired_token, revoke_token
+
+    if current_user is None:
+        raise HTTPException(status_code=403, detail="User session required")
+
+    if retired_only and expected_identity is None:
+        raise HTTPException(status_code=404, detail="Token not found")
 
     record = (await db.execute(select(LongLivedToken).where(LongLivedToken.id == token_id))).scalar_one_or_none()
     if record is None:
@@ -2036,7 +2045,11 @@ async def revoke_long_lived_token(
     principal = await validate_captured(db, current_user._auth_capture, proof=proof)
     current_user = principal.user
     record = await db.get(LongLivedToken, token_id, populate_existing=True)
-    if record is None or record.token_identity != captured_token_identity:
+    if (
+        record is None
+        or record.token_identity != captured_token_identity
+        or (expected_identity is not None and record.token_identity != expected_identity)
+    ):
         raise HTTPException(404, "Token not found")
     if not _can_manage_long_lived_token(current_user, record.scope, "delete"):
         raise HTTPException(status_code=403, detail="monitor_token_permission_denied")
@@ -2052,7 +2065,10 @@ async def revoke_long_lived_token(
                 detail="You can only revoke your own tokens",
             )
 
-    revoked = await revoke_token(db, token_id)
+    if retired_only:
+        revoked = await remove_retired_token(db, token_id, expected_identity)
+    else:
+        revoked = await revoke_token(db, token_id)
     if not revoked:
         # Already revoked is treated as 404 for idempotency from the UI side.
         raise HTTPException(status_code=404, detail="Token not found or already revoked")

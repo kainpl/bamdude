@@ -19,7 +19,11 @@ from backend.app.models.order_working_plan import OrderPlanReceipt, OrderPlanSub
 from backend.app.models.product import Product
 from backend.app.models.project import Project
 from backend.app.models.project_line import ProjectLine
+from backend.app.models.user import User
 from backend.app.services import order_plan_submission as submissions, order_working_plan as working
+from backend.app.services.order_plan_access import PlanAccess
+from backend.app.services.swap_source_declarations import Actor
+from backend.tests.auth_helpers import mint_test_session
 
 pytestmark = pytest.mark.integration
 
@@ -52,6 +56,11 @@ async def sessions(tmp_path, monkeypatch):
         "source_token": "same",
     }
     async with factory() as db:
+        user = User(username="plan-operator", role="admin", is_active=True, groups=[])
+        db.add(user)
+        await db.flush()
+        issued = await mint_test_session(db, user=user)
+        factory.test_access = PlanAccess(Actor("user", user.id, user.username, capture=issued.capture), "all", None)
         db.add(Project(id=1, name="scratch", status="active"))
         db.add(Product(id=1, name="scratch product"))
         await db.flush()
@@ -63,20 +72,16 @@ async def sessions(tmp_path, monkeypatch):
             OrderPlanSubmission(
                 id="op",
                 plan_id=1,
-                actor="user:1",
+                actor=factory.test_access.identity,
                 request_digest="x",
                 request={"parts": [{"entry": entry, "count": 2, "expected_hash": None}]},
             )
         )
         await db.commit()
 
-    async def authority(*args, **kwargs):
-        return None, "all", None
-
     async def inputs(*args):
         return SimpleNamespace(ctx=SimpleNamespace(project=SimpleNamespace(status="active")))
 
-    monkeypatch.setattr(submissions.authority, "fresh", authority)
     monkeypatch.setattr(submissions.order_draft, "inputs", inputs)
     monkeypatch.setattr(working, "projection", lambda *a, **kw: (None, [], []))
     yield factory, engine, schema
@@ -109,7 +114,7 @@ async def blocked(engine, schema, task):
 
 async def test_same_operation_serializes_and_consumes_once(sessions):
     factory, engine, schema = sessions
-    context = submissions.PlanConsumption(1, "op", "entry", SimpleNamespace(identity="user:1"))
+    context = submissions.PlanConsumption(1, "op", "entry", factory.test_access)
     async with factory() as first:
         ticket = await submissions.claim(first, context, "bytes")
         row = AutoQueueItem(project_id=1, position=1)
@@ -134,7 +139,7 @@ async def test_same_operation_serializes_and_consumes_once(sessions):
 
 async def test_cancel_fences_a_capture_that_has_not_claimed(sessions):
     factory, engine, schema = sessions
-    access = SimpleNamespace(identity="user:1", actor=SimpleNamespace(label="Synthetic operator"))
+    access = factory.test_access
     async with factory() as first:
         await submissions.cancel(first, 1, "op", access)
 
@@ -161,7 +166,7 @@ async def test_edit_waits_for_publication_then_refuses_stale_revision(sessions):
     factory, engine, schema = sessions
     async with factory() as first:
         ticket = await submissions.claim(
-            first, submissions.PlanConsumption(1, "op", "entry", SimpleNamespace(identity="user:1")), "bytes"
+            first, submissions.PlanConsumption(1, "op", "entry", factory.test_access), "bytes"
         )
         await submissions.consume(first, ticket, [1, 2], "auto")
 
@@ -192,7 +197,7 @@ async def test_lifecycle_holding_a_line_can_fence_without_fk_deadlock(sessions):
                 with pytest.raises(HTTPException) as error:
                     await submissions.claim(
                         second,
-                        submissions.PlanConsumption(1, "op", "entry", SimpleNamespace(identity="user:1")),
+                        submissions.PlanConsumption(1, "op", "entry", factory.test_access),
                         "bytes",
                     )
                 assert error.value.detail["code"] == "submission_cancelled"
@@ -224,7 +229,7 @@ async def test_real_lifecycle_door_waits_for_the_claim_before_fencing_its_draft(
     async def before_draft(db, *args, **kwargs):
         if db is publisher_db:
             line_held.set()
-            await release_claim.wait()
+            await asyncio.wait_for(release_claim.wait(), 15)
         return await real_lock(db, *args, **kwargs)
 
     async def before_lines(db, lines):
@@ -242,7 +247,7 @@ async def test_real_lifecycle_door_waits_for_the_claim_before_fencing_its_draft(
         async with factory() as db:
             publisher_db = db
             ticket = await submissions.claim(
-                db, submissions.PlanConsumption(1, "op", "entry", SimpleNamespace(identity="user:1")), "bytes"
+                db, submissions.PlanConsumption(1, "op", "entry", factory.test_access), "bytes"
             )
             rows = [AutoQueueItem(project_id=1, project_line_id=1, position=i) for i in (1, 2)]
             db.add_all(rows)
@@ -307,7 +312,7 @@ async def test_simultaneous_first_save_uses_the_unique_order_row(sessions, monke
 
     monkeypatch.setattr(working.draft, "inputs", inputs)
     monkeypatch.setattr(working, "snapshot", lambda *a: {"inputs_token": "inputs", "entries": {}})
-    access = SimpleNamespace(actor=SimpleNamespace(label="test"))
+    access = factory.test_access
     async with factory() as first:
         result = await working.write(first, 2, WorkingWrite(expected_revision=0, entries=[]), access)
         assert result["saved_revision"] == 0

@@ -14,8 +14,9 @@ from unittest.mock import AsyncMock, Mock
 
 import httpx
 import pytest
-from sqlalchemy import event, update
+from sqlalchemy import event
 
+from backend.app.core.auth import generate_api_key
 from backend.app.models.api_key import APIKey
 from backend.app.models.group import Group
 from backend.app.models.library import LibraryFile
@@ -28,6 +29,7 @@ from backend.app.models.user import User
 from backend.app.services import print_state_recovery_preview as tokens, print_state_recovery_store as store
 from backend.app.services.bambu_mqtt import PrinterState
 from backend.app.services.printer_manager import printer_manager
+from backend.tests.auth_helpers import bind_test_key
 from backend.tests.integration.test_mcp_base_transport import key, live_app, runtime  # noqa: F401
 from backend.tests.integration.test_mcp_energy_diagnostics import points
 from backend.tests.integration.test_mcp_farm_diagnostics import (
@@ -251,10 +253,6 @@ async def test_golden_diagnostic_case(
     variables = await seed_case(
         case, variant, db_session, printer_factory, archive_factory, smart_plug_factory, monkeypatch, tmp_path
     )
-    created = await key(async_client)
-    if case["id"] == "power_loss":
-        changed = await async_client.patch(f"/api/v1/api-keys/{created['id']}", json={"can_read_mcp_logs": True})
-        assert changed.status_code == 200
     # Exercise the real owner's permission ceiling, not an administrator role.
     permissions = variant.get("required_permissions", case["required_permissions"])
     owner = User(
@@ -265,8 +263,21 @@ async def test_golden_diagnostic_case(
     )
     db_session.add(owner)
     await db_session.flush()
-    await db_session.execute(update(APIKey).where(APIKey.id == created["id"]).values(user_id=owner.id))
+    raw, hashed, prefix = generate_api_key()
+    issued_key = APIKey(
+        name="golden diagnostic reader",
+        key_hash=hashed,
+        key_prefix=prefix,
+        can_access_mcp=True,
+        can_read_status=True,
+        can_queue=False,
+        can_control_printer=False,
+        can_read_mcp_logs=case["id"] == "power_loss",
+    )
+    await bind_test_key(db_session, issued_key, owner)
+    db_session.add(issued_key)
     await db_session.commit()
+    created = {"id": issued_key.id, "key": raw}
     blocked = Mock(side_effect=AssertionError("diagnostic read performed an action"))
     for module, name in [
         (store, "make_preview"),

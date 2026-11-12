@@ -51,10 +51,10 @@ async def websocket_endpoint(websocket: WebSocket, token: str | None = Query(def
         return
 
     logger.info("WebSocket client connecting...")
-    # Tag the connection with the minting user (None for API-key callers) so the
-    # manager can target per-user broadcasts. Auth already passed above.
+    # Preserve the exact credential capture for lifetime ownership; only a
+    # browser session is tagged for a person's per-user channel.
     authority, user_id = authenticated
-    await ws_manager.connect(websocket, user_id, account_identity=authority.account_identity)
+    await ws_manager.connect(websocket, user_id, account_identity=authority.account_identity, authority=authority)
     logger.info("WebSocket client connected")
     accepted_at = time.monotonic()
 

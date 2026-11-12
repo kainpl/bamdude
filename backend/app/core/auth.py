@@ -2559,7 +2559,10 @@ async def authenticate_websocket_authority(token):
         principal = await resolve_ephemeral_authority(
             token, TokenType.WEBSOCKET, required_permissions=(Permission.WEBSOCKET_CONNECT.value,)
         )
-        return principal.capture, principal.user.id
+        # A key/token's owner remains part of its immutable lifetime binding,
+        # but only browser sessions are a person's private live channel.
+        personal_user_id = principal.user.id if principal.capture.kind == "session" else None
+        return principal.capture, personal_user_id
     except HTTPException as exc:
         if exc.status_code == 401:
             return None

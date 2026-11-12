@@ -19,7 +19,7 @@ const rollout = {
   ownerless_api_key_count: 2, owned_api_key_count: 3, long_lived_token_count: 4,
   created_at: '2026-11-12T00:00:00', delivered_at: null, notification_state: 'pending', runtime_phase: 'pending',
 };
-const retiredToken = { id: 9, user_id: 1, name: 'Old TV', scope: 'monitor', lookup_prefix: 'bdll_old',
+const retiredToken = { id: 9, token_identity: '11111111-1111-4111-8111-111111111111', user_id: 1, name: 'Old TV', scope: 'monitor', lookup_prefix: 'bdll_old',
   created_at: '2026-01-01T00:00:00', expires_at: null, last_used_at: null, token: null,
   retired_reason: 'legacy_credential_reissue_required', retired_at: '2026-11-12T00:00:00', revoked_at: '2026-11-12T00:00:00' };
 
@@ -79,14 +79,71 @@ describe('Credential rollout visibility', () => {
     expect(screen.queryByText(/CANARY_RAW/)).not.toBeInTheDocument();
   });
 
-  it('shows retired monitor tokens and disables revoke while preserving the new-token form', async () => {
-    server.use(http.get('/api/v1/auth/tokens', () => HttpResponse.json([retiredToken])));
+  it('removes a retired monitor record only after confirmation and preserves the new-token form', async () => {
+    let removed = false;
+    server.use(
+      http.get('/api/v1/auth/tokens', () => HttpResponse.json(removed ? [] : [retiredToken])),
+      http.delete('/api/v1/auth/tokens/9', ({ request }) => {
+        const url = new URL(request.url);
+        expect(url.searchParams.get('expected_identity')).toBe(retiredToken.token_identity);
+        expect(url.searchParams.get('retired_only')).toBe('true');
+        removed = true;
+        return new HttpResponse(null, { status: 204 });
+      }),
+    );
     render(<CameraTokensPanel />);
     const row = (await screen.findByText('Old TV')).closest('tr')!;
     expect(within(row).getByText('Needs reissue')).toBeInTheDocument();
-    expect(within(row).getByRole('button', { name: 'Revoke' })).toBeDisabled();
+    fireEvent.click(within(row).getByRole('button', { name: 'Delete' }));
+    expect(removed).toBe(false);
+    const dialog = await screen.findByRole('dialog', { name: 'Remove this token record?' });
+    expect(within(dialog).getByText(/This token is already inactive/)).toBeInTheDocument();
     expect(within(row).getByText(/Use the create form above/)).toBeInTheDocument();
     expect(screen.getByRole('textbox')).toHaveValue('');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Delete' }));
+    await waitFor(() => expect(screen.queryByText('Old TV')).not.toBeInTheDocument());
+    expect(removed).toBe(true);
+  });
+
+  it('requires the existing delete permission to remove retired monitor metadata', async () => {
+    denied.add('api_keys:delete');
+    server.use(http.get('/api/v1/auth/tokens', () => HttpResponse.json([retiredToken])));
+    render(<CameraTokensPanel />);
+    const row = (await screen.findByText('Old TV')).closest('tr')!;
+    expect(within(row).getByRole('button', { name: 'Delete' })).toBeDisabled();
+  });
+
+  it.each([false, true])('does not mutate a list entry missing its immutable identity (retired=%s)', async retired => {
+    server.use(http.get('/api/v1/auth/tokens', () => HttpResponse.json([{
+      ...retiredToken, token_identity: undefined,
+      retired_reason: retired ? retiredToken.retired_reason : null,
+      retired_at: retired ? retiredToken.retired_at : null,
+    }])));
+    render(<CameraTokensPanel />);
+    const row = (await screen.findByText('Old TV')).closest('tr')!;
+    expect(within(row).getByRole('button', { name: retired ? 'Delete' : 'Revoke' })).toBeDisabled();
+  });
+
+  it('pins a current revoke to the selected immutable identity too', async () => {
+    let revoked = false;
+    server.use(
+      http.get('/api/v1/auth/tokens', () => HttpResponse.json(revoked ? [] : [{
+        ...retiredToken, retired_reason: null, retired_at: null, revoked_at: null,
+      }])),
+      http.delete('/api/v1/auth/tokens/9', ({ request }) => {
+        const url = new URL(request.url);
+        expect(url.searchParams.get('expected_identity')).toBe(retiredToken.token_identity);
+        expect(url.searchParams.has('retired_only')).toBe(false);
+        revoked = true;
+        return new HttpResponse(null, { status: 204 });
+      }),
+    );
+    render(<CameraTokensPanel />);
+    fireEvent.click(within((await screen.findByText('Old TV')).closest('tr')!).getByRole('button', { name: 'Revoke' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Revoke this token?' });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Revoke' }));
+    await waitFor(() => expect(screen.queryByText('Old TV')).not.toBeInTheDocument());
+    expect(revoked).toBe(true);
   });
 
   it('shows ownerless retired API key and starts a fresh restricted draft without copying it', async () => {

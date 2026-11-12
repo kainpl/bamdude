@@ -26,6 +26,7 @@ from backend.app.services import (
 from backend.app.services.order_fulfilment import FulfilmentError, LineRequest
 from backend.app.services.order_metrics import attribute, load_order_context
 from backend.app.services.stock_issues import Recipient
+from backend.tests.auth_helpers import bind_test_key
 from backend.tests.integration.test_orders_api import _completed_print, catalog  # noqa: F401 — the shared fixture
 
 pytestmark = pytest.mark.integration
@@ -272,9 +273,9 @@ async def test_a_cancel_by_an_api_key_records_its_owner(committing_client, db_se
     await finished_stock.receive(db_session, position, 2)
     assert await finished_stock.reserve_for_line(db_session, line, 2) == 2
     full_key, key_hash, key_prefix = generate_api_key()
-    db_session.add(
-        APIKey(name="bridge", key_hash=key_hash, key_prefix=key_prefix, user_id=admin.id, can_manage_projects=True)
-    )
+    key = APIKey(name="bridge", key_hash=key_hash, key_prefix=key_prefix, user_id=admin.id, can_manage_projects=True)
+    await bind_test_key(db_session, key, admin)
+    db_session.add(key)
     await db_session.commit()
     jwt = committing_client.headers.pop("Authorization")
     try:

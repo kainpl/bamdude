@@ -38,6 +38,18 @@ Generate new camera and monitor tokens through their existing Settings flow.
 Raw credentials are shown only when issued and cannot be recovered from the
 retired row.
 
+Owners and administrators can remove a retired camera/monitor token record
+after confirmation, using the existing scope permissions. This only removes
+its list entry: the old secret stays invalid, and historical retirement counts
+remain available in Settings and support.
+
+Token lists include their non-secret `token_identity`. Settings sends it as
+`expected_identity` for both revoke and metadata removal, adding
+`retired_only=true` for removal. A stale selection cannot affect a replacement
+at the same numeric id, and metadata removal cannot fall through to revocation
+of a current token. Existing numeric-only API revoke calls retain their old
+contract; clients acting on saved list entries should supply the identity.
+
 Check each consumer you operate after reissue:
 
 | Consumer | Replacement to configure |

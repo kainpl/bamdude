@@ -182,6 +182,185 @@ class TestListLongLivedTokens:
 
 
 class TestRevokeLongLivedToken:
+    async def test_api_key_cannot_remove_a_retired_owner_record(self, async_client, db_session):
+        from datetime import datetime
+
+        from sqlalchemy import update
+
+        from backend.app.models.long_lived_token import LongLivedToken
+
+        created = await async_client.post("/api/v1/auth/tokens", json={"name": "owner record", "expires_in_days": 7})
+        assert created.status_code == 201, created.text
+        token_id = created.json()["id"]
+        await db_session.execute(
+            update(LongLivedToken)
+            .where(LongLivedToken.id == token_id)
+            .values(
+                contract_version=0,
+                revoked_at=datetime.utcnow(),
+                retired_reason="legacy_credential_reissue_required",
+            )
+        )
+        await db_session.commit()
+        issued_key = await async_client.post("/api/v1/api-keys/", json={"name": "status only", "can_read_status": True})
+        assert issued_key.status_code == 200, issued_key.text
+        refused = await async_client.delete(
+            f"/api/v1/auth/tokens/{token_id}",
+            headers={"Authorization": "", "X-API-Key": issued_key.json()["key"]},
+            params={"expected_identity": created.json()["token_identity"], "retired_only": "true"},
+        )
+        assert refused.status_code == 403, refused.text
+        assert await db_session.get(LongLivedToken, token_id) is not None
+
+    @pytest.mark.parametrize("scope", ["camera_stream", "monitor"])
+    async def test_owner_can_remove_retired_metadata_without_reviving_secret(self, async_client, db_session, scope):
+        from datetime import datetime
+
+        from sqlalchemy import update
+
+        from backend.app.core.auth import verify_camera_stream_token
+        from backend.app.models.credential_rollout import CredentialRolloutEpisode
+        from backend.app.models.long_lived_token import LongLivedToken
+
+        created = await async_client.post(
+            "/api/v1/auth/tokens", json={"name": "retired entry", "scope": scope, "expires_in_days": 7}
+        )
+        assert created.status_code == 201, created.text
+        token_id, raw = created.json()["id"], created.json()["token"]
+        await db_session.execute(
+            update(LongLivedToken)
+            .where(LongLivedToken.id == token_id)
+            .values(
+                contract_version=0,
+                revoked_at=datetime.utcnow(),
+                retired_at=datetime.utcnow(),
+                retired_reason="legacy_credential_reissue_required",
+            )
+        )
+        db_session.add(
+            CredentialRolloutEpisode(
+                id="retired-metadata-episode", contract_key="g01-credential-contract-v1", long_lived_token_count=1
+            )
+        )
+        await db_session.commit()
+        assert any(row["id"] == token_id for row in (await async_client.get("/api/v1/auth/tokens")).json())
+        intent = {"expected_identity": created.json()["token_identity"], "retired_only": "true"}
+        # Ordinary revoke must not silently become a metadata-delete action.
+        assert (await async_client.delete(f"/api/v1/auth/tokens/{token_id}")).status_code == 404
+        response = await async_client.delete(f"/api/v1/auth/tokens/{token_id}", params=intent)
+        assert response.status_code == 204, response.text
+        assert all(row["id"] != token_id for row in (await async_client.get("/api/v1/auth/tokens")).json())
+        assert await db_session.get(LongLivedToken, token_id) is None
+        assert not await verify_camera_stream_token(raw)
+        assert (await async_client.delete(f"/api/v1/auth/tokens/{token_id}", params=intent)).status_code == 404
+        # Retirement facts remain historical even after a visible row is removed.
+        status = await async_client.get("/api/v1/api-keys/rollout")
+        assert status.status_code == 200, status.text
+        assert status.json()["long_lived_token_count"] == 1
+
+    async def test_other_user_cannot_remove_retired_metadata(self, async_client, db_session):
+        from datetime import datetime
+
+        from sqlalchemy import update
+
+        from backend.app.models.long_lived_token import LongLivedToken
+
+        created = await async_client.post("/api/v1/auth/tokens", json={"name": "private entry", "expires_in_days": 7})
+        assert created.status_code == 201, created.text
+        token_id = created.json()["id"]
+        await db_session.execute(
+            update(LongLivedToken)
+            .where(LongLivedToken.id == token_id)
+            .values(
+                contract_version=0,
+                revoked_at=datetime.utcnow(),
+                retired_reason="legacy_credential_reissue_required",
+            )
+        )
+        await db_session.commit()
+        await _create_user(async_client, "retired_stranger")
+        stranger = await _login(async_client, "retired_stranger")
+        refused = await async_client.delete(
+            f"/api/v1/auth/tokens/{token_id}",
+            headers=_user_headers(stranger),
+            params={"expected_identity": created.json()["token_identity"], "retired_only": "true"},
+        )
+        assert refused.status_code == 403, refused.text
+        assert await db_session.get(LongLivedToken, token_id) is not None
+
+    @pytest.mark.parametrize("replacement_retired", [False, True])
+    @pytest.mark.parametrize("retired_intent", [False, True])
+    async def test_stale_selected_identity_cannot_change_replacement(
+        self, async_client, db_session, replacement_retired, retired_intent
+    ):
+        from datetime import datetime
+
+        from sqlalchemy import update
+
+        from backend.app.core.auth import verify_camera_stream_token
+        from backend.app.models.long_lived_token import LongLivedToken
+
+        old = await async_client.post("/api/v1/auth/tokens", json={"name": "selected old token", "expires_in_days": 7})
+        assert old.status_code == 201, old.text
+        selected = old.json()
+        token_id = selected["id"]
+        await db_session.execute(
+            update(LongLivedToken)
+            .where(LongLivedToken.id == token_id)
+            .values(
+                contract_version=0,
+                revoked_at=datetime.utcnow(),
+                retired_reason="legacy_credential_reissue_required",
+            )
+        )
+        await db_session.commit()
+        removed = await async_client.delete(
+            f"/api/v1/auth/tokens/{token_id}",
+            params={"expected_identity": selected["token_identity"], "retired_only": "true"},
+        )
+        assert removed.status_code == 204, removed.text
+        new = await async_client.post("/api/v1/auth/tokens", json={"name": "replacement token", "expires_in_days": 7})
+        assert new.status_code == 201, new.text
+        replacement = new.json()
+        assert replacement["id"] == token_id  # Real SQLite primary-key reuse.
+        assert replacement["token_identity"] != selected["token_identity"]
+        if replacement_retired:
+            await db_session.execute(
+                update(LongLivedToken)
+                .where(LongLivedToken.id == token_id)
+                .values(
+                    contract_version=0,
+                    revoked_at=datetime.utcnow(),
+                    retired_reason="legacy_credential_reissue_required",
+                )
+            )
+            await db_session.commit()
+        stale = await async_client.delete(
+            f"/api/v1/auth/tokens/{token_id}",
+            params={
+                "expected_identity": selected["token_identity"],
+                "retired_only": str(retired_intent).lower(),
+            },
+        )
+        assert stale.status_code == 404, stale.text
+        surviving = await db_session.get(LongLivedToken, token_id, populate_existing=True)
+        assert surviving is not None and surviving.token_identity == replacement["token_identity"]
+        assert (surviving.revoked_at is not None) is replacement_retired
+        assert await verify_camera_stream_token(replacement["token"]) is (not replacement_retired)
+
+    async def test_metadata_intent_needs_identity_and_retirement(self, async_client, db_session):
+        from backend.app.models.long_lived_token import LongLivedToken
+
+        created = await async_client.post("/api/v1/auth/tokens", json={"name": "active", "expires_in_days": 7})
+        token = created.json()
+        for params in (
+            {"retired_only": "true"},
+            {"retired_only": "true", "expected_identity": token["token_identity"]},
+        ):
+            refused = await async_client.delete(f"/api/v1/auth/tokens/{token['id']}", params=params)
+            assert refused.status_code == 404, refused.text
+        assert (await db_session.get(LongLivedToken, token["id"], populate_existing=True)).revoked_at is None
+
     async def test_owner_can_revoke_own_token(self, async_client: AsyncClient):
         created = await async_client.post(
             "/api/v1/auth/tokens",

@@ -4715,6 +4715,7 @@ export interface PrintStateHealth {
 
 // Long-lived camera-stream tokens (#1108)
 export interface LongLivedToken {
+  token_identity?: string;
   id: number;
   user_id: number;
   name: string;
@@ -14096,8 +14097,11 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(data),
     }),
-  revokeLongLivedToken: (id: number) =>
-    request<void>(`/auth/tokens/${id}`, { method: 'DELETE' }),
+  revokeLongLivedToken: (id: number, tokenIdentity: string) =>
+    request<void>(`/auth/tokens/${id}?expected_identity=${encodeURIComponent(tokenIdentity)}`, { method: 'DELETE' }),
+
+  removeRetiredLongLivedToken: (id: number, tokenIdentity: string) =>
+    request<void>(`/auth/tokens/${id}?expected_identity=${encodeURIComponent(tokenIdentity)}&retired_only=true`, { method: 'DELETE' }),
 
   // AMS History
   getAMSHistory: (printerId: number, amsId: number, hours = 24) =>
