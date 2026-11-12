@@ -36,11 +36,13 @@ import json
 import logging
 import os
 import re
+from collections import Counter
 from dataclasses import dataclass, field as dataclasses_field
 from datetime import datetime, timezone
 
 import httpx
 from sqlalchemy import select
+from sqlalchemy.exc import MultipleResultsFound
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.database import async_session
@@ -55,6 +57,14 @@ from backend.app.models.user import User
 from backend.app.schemas.git_backup import RestoreCategory
 from backend.app.services import meter_watch, swap_compatibility
 from backend.app.services.git_providers.factory import get_provider_backend
+from backend.app.services.git_restore_fields import (
+    INVALID,
+    MISSING,
+    NUMERIC_FIELDS,
+    SPOOL_FIELDS,
+    read_field,
+    source_id,
+)
 from backend.app.services.printer_manager import printer_manager
 
 logger = logging.getLogger(__name__)
@@ -1335,63 +1345,110 @@ class GitRestoreService:
 
         spool_id_map: dict[int, int] = {}
         tags_kept = 0
+        invalid_fields = reactivated = baseline_above_used = identity_unavailable = 0
+        failed_before, skipped_before = tally.failed, tally.skipped
+        source_ids = Counter(
+            entry["id"] for entry in spools if isinstance(entry, dict) and source_id(entry.get("id")) is not INVALID
+        )
 
         for entry in spools:
             if not isinstance(entry, dict):
                 tally.failed += 1
                 continue
 
-            old_id = entry.get("id") if isinstance(entry.get("id"), int) else None
-            existing, matched_on = await self._find_spool(db, entry)
+            old_id = entry.get("id")
+            if old_id is not None and (source_id(old_id) is INVALID or source_ids[old_id] > 1):
+                tally.failed += 1
+                continue
 
-            fields = {
-                "material": entry.get("material") or "PLA",
-                "subtype": entry.get("subtype"),
-                "color_name": entry.get("color_name"),
-                "rgba": entry.get("rgba"),
-                "brand": entry.get("brand"),
-                "label_weight": entry.get("label_weight") or 1000,
-                "core_weight": entry.get("core_weight") or 250,
-                "weight_used": entry.get("weight_used") or 0,
-                "weight_locked": bool(entry.get("weight_locked")),
-                "slicer_filament": entry.get("slicer_filament"),
-                "slicer_filament_name": entry.get("slicer_filament_name"),
-                "nozzle_temp_min": entry.get("nozzle_temp_min"),
-                "nozzle_temp_max": entry.get("nozzle_temp_max"),
-                "note": entry.get("note"),
-                "cost_per_kg": entry.get("cost_per_kg"),
-                "tag_uid": entry.get("tag_uid"),
-                "tray_uuid": entry.get("tray_uuid"),
-                "data_origin": entry.get("data_origin"),
-                "tag_type": entry.get("tag_type"),
-                "archived_at": _parse_dt(entry.get("archived_at")),
-            }
+            parsed = {key: read_field(entry, key, rule, _parse_dt) for key, rule in SPOOL_FIELDS.items()}
+            invalid_fields += sum(value is INVALID for value in parsed.values())
+            tagged = any(isinstance(parsed[key], str) and parsed[key] for key in ("tag_uid", "tray_uuid"))
+            composite_valid = isinstance(parsed["created_at"], datetime) and all(
+                parsed[key] is not INVALID for key in ("material", "brand", "subtype", "color_name")
+            )
+            if not tagged and not composite_valid:
+                identity_unavailable += 1
+                tally.skipped += 1
+                continue
+            try:
+                existing, matched_on = await self._find_spool(db, entry)
+            except MultipleResultsFound:
+                identity_unavailable += 1
+                tally.skipped += 1
+                continue
+
+            fields = {}
+            for key, value in parsed.items():
+                if key == "created_at":
+                    continue  # Natural-key input and insert-only, never overwrite.
+                if value is MISSING or value is INVALID:
+                    if existing is None:
+                        fields[key] = SPOOL_FIELDS[key].default
+                else:
+                    fields[key] = value
 
             if existing is not None:
-                if old_id is not None:
-                    spool_id_map[old_id] = existing.id
                 if not overwrite:
+                    if old_id is not None:
+                        spool_id_map[old_id] = existing.id
                     tally.skipped += 1
                     continue
                 tags_kept += await self._guard_tag_overwrite(db, existing, fields, matched_on)
+                made_active = (
+                    existing.archived_at is not None and "archived_at" in fields and fields["archived_at"] is None
+                )
                 for key, value in fields.items():
                     setattr(existing, key, value)
-                tally.restored += 1
-                continue
-
-            row = Spool(**fields)
-            # Carry the original created_at across. Without it the row would be
-            # stamped "now", and the composite fallback in _find_spool (which
-            # keys on created_at) would miss on a second restore and insert a
-            # duplicate instead of matching.
-            created_at = _parse_dt(entry.get("created_at"))
-            if created_at is not None:
-                row.created_at = created_at
-            db.add(row)
+                row = existing
+            else:
+                made_active = False
+                row = Spool(**fields)
+                if isinstance(parsed["created_at"], datetime):
+                    row.created_at = parsed["created_at"]
+                db.add(row)
             await db.flush()
             if old_id is not None:
                 spool_id_map[old_id] = row.id
             tally.restored += 1
+            reactivated += made_active
+            baseline = read_field(
+                {"weight_used_baseline": row.weight_used_baseline},
+                "weight_used_baseline",
+                NUMERIC_FIELDS["spools", "weight_used_baseline"],
+                _parse_dt,
+            )
+            used = read_field(
+                {"weight_used": row.weight_used},
+                "weight_used",
+                NUMERIC_FIELDS["spools", "weight_used"],
+                _parse_dt,
+            )
+            if baseline is not INVALID and used is not INVALID and baseline > used:
+                baseline_above_used += 1
+
+        if invalid_fields or tally.failed > failed_before or identity_unavailable or reactivated or baseline_above_used:
+            # Reserve a slot for exact aggregate counts even with a pre-filled tally.
+            previous_notes, tally.notes = tally.notes, []
+            tally.note(
+                "spoolInputSummary",
+                "Spool restore: invalid fields kept or defaulted: "
+                f"{invalid_fields}; failed rows: {tally.failed - failed_before}; "
+                f"skipped rows: {tally.skipped - skipped_before}; reactivated spools: {reactivated}; "
+                f"reset points above used weight retained: {baseline_above_used}.",
+                invalid_fields=invalid_fields,
+                failed_rows=tally.failed - failed_before,
+                skipped_rows=tally.skipped - skipped_before,
+                reactivated=reactivated,
+                baseline_above_used=baseline_above_used,
+            )
+            tally.notes.extend(previous_notes[:19])
+        if identity_unavailable:
+            tally.note(
+                "spoolIdentityUnavailable",
+                f"{identity_unavailable} spool row(s) skipped: their identity was missing or ambiguous.",
+                count=identity_unavailable,
+            )
 
         if tags_kept:
             tally.note(
@@ -1415,36 +1472,33 @@ class GitRestoreService:
         needs it: the matched column holds the incoming value by definition, so
         it is the *other* one that overwrite can corrupt.
         """
-        tag_uid = entry.get("tag_uid")
-        if tag_uid:
-            result = await db.execute(select(Spool).where(Spool.tag_uid == tag_uid))
-            row = result.scalars().first()
-            if row is not None:
-                return row, "tag_uid"
+        parsed = {key: read_field(entry, key, rule, _parse_dt) for key, rule in SPOOL_FIELDS.items()}
+        for column in ("tag_uid", "tray_uuid"):
+            value = parsed[column]
+            if isinstance(value, str) and value:
+                result = await db.execute(select(Spool).where(getattr(Spool, column) == value))
+                row = result.scalars().one_or_none()
+                if row is not None:
+                    return row, column
 
-        tray_uuid = entry.get("tray_uuid")
-        if tray_uuid:
-            result = await db.execute(select(Spool).where(Spool.tray_uuid == tray_uuid))
-            row = result.scalars().first()
-            if row is not None:
-                return row, "tray_uuid"
-
-        created_at = _parse_dt(entry.get("created_at"))
-        if created_at is None:
+        created_at = parsed["created_at"]
+        if not isinstance(created_at, datetime) or any(
+            parsed[key] is INVALID for key in ("material", "brand", "subtype", "color_name")
+        ):
             return None, None
         # created_at is filtered in Python, not here — see _created_at_matches.
         result = await db.execute(
             select(Spool).where(
-                Spool.material == (entry.get("material") or "PLA"),
-                Spool.brand == entry.get("brand"),
-                Spool.subtype == entry.get("subtype"),
-                Spool.color_name == entry.get("color_name"),
+                *(
+                    getattr(Spool, key) == (SPOOL_FIELDS[key].default if parsed[key] is MISSING else parsed[key])
+                    for key in ("material", "brand", "subtype", "color_name")
+                ),
             )
         )
-        for row in result.scalars():
-            if _created_at_matches(row, created_at):
-                return row, None
-        return None, None
+        candidates = [row for row in result.scalars() if _created_at_matches(row, created_at)]
+        if len(candidates) > 1:
+            raise MultipleResultsFound("Ambiguous spool composite")
+        return (candidates[0], None) if candidates else (None, None)
 
     @staticmethod
     async def _guard_tag_overwrite(db: AsyncSession, existing: Spool, fields: dict, matched_on: str | None) -> int:
@@ -1472,6 +1526,8 @@ class GitRestoreService:
         """
         kept = 0
         for column in ("tag_uid", "tray_uuid"):
+            if column not in fields:
+                continue
             # The column we matched on already holds the incoming value.
             if column == matched_on:
                 continue

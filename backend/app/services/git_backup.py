@@ -617,7 +617,10 @@ class GitBackupService:
                     "rgba": s.rgba,
                     "brand": s.brand,
                     "label_weight": s.label_weight,
+                    "core_weight": s.core_weight,
                     "weight_used": s.weight_used,
+                    "weight_used_baseline": s.weight_used_baseline,
+                    "weight_locked": s.weight_locked,
                     "slicer_filament": s.slicer_filament,
                     "slicer_filament_name": s.slicer_filament_name,
                     "nozzle_temp_min": s.nozzle_temp_min,
@@ -626,6 +629,10 @@ class GitBackupService:
                     "note": s.note,
                     "tag_uid": s.tag_uid,
                     "tray_uuid": s.tray_uuid,
+                    "data_origin": s.data_origin,
+                    "tag_type": s.tag_type,
+                    "archived_at": s.archived_at.isoformat() if s.archived_at else None,
+                    "last_used": s.last_used.isoformat() if s.last_used else None,
                     "created_at": s.created_at.isoformat() if s.created_at else None,
                 }
             )

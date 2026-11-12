@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+- Git spool backups now preserve reset-counter anchors, last-used dates, core weight and lock state. Restoring older or damaged metadata keeps local fields when values are absent or invalid, preserves explicit zeros, and skips ambiguous spool identities. Restore notes report exact counts, including spools reactivated by overwrite.
+
 - Recalculating archive filament costs uses only usage linked to that physical print. Unlinked usage with the same name no longer charges repeated prints or replaces a cost already priced from Spoolman; archives without linked pricing evidence use the configured filament estimate.
 
 - Smart-plug printer links and virtual-printer target links now validate an explicitly supplied zero ID instead of treating it as omitted. Missing targets are refused before saving, including the MQTT plug recheck after reconnecting its runtime. Existing handling of omitted fields, null values and explicit clear flags is preserved.

@@ -10216,6 +10216,8 @@ export default {
         spoolUsageUnresolved: '{{count}} usage record(s) skipped - their spool is not in this backup\'s spool list, so there is nothing to attach them to.',
         spoolUsageUnlinked: '{{count}} usage record(s) restored without their print-history link - select Print archives alongside Spool inventory to keep it.',
         spoolTagKept: '{{count}} spool tag(s) left as they are - the backup would have cleared a tag that has since been scanned, or moved one onto a second spool.',
+        spoolInputSummary: 'Spool restore: invalid fields kept or defaulted: {{invalid_fields}}; failed rows: {{failed_rows}}; skipped rows: {{skipped_rows}}; reactivated spools: {{reactivated}}; reset points above used weight retained: {{baseline_above_used}}.',
+        spoolIdentityUnavailable: '{{count}} spool row(s) skipped: their identity was missing or ambiguous.',
         settingsCredentialsSkipped: '{{count}} credential-like key(s) skipped - re-enter secrets manually',
         settingsAuthSkipped: '{{count}} authentication/integration setting(s) skipped - use the owning Settings editor so lockout and credential checks still run',
         settingsCompanionSkipped: '{{keys}} left switched off - the credential each one needs cannot be restored from a backup and this instance has none stored, so switching them on would leave the integration unauthenticated',

@@ -243,6 +243,11 @@ describe('GitRestoreModal', () => {
                   params: { count: 1 },
                   message: 'raw server English, should not be rendered',
                 },
+                {
+                  code: 'spoolInputSummary',
+                  params: { invalid_fields: 1, failed_rows: 0, skipped_rows: 1, reactivated: 2, baseline_above_used: 0 },
+                  message: 'raw spool summary must be translated',
+                },
               ],
             },
           },
@@ -277,6 +282,8 @@ describe('GitRestoreModal', () => {
       screen.getByText(/^1 usage record\(s\) skipped - their spool is not in this backup's spool list/)
     ).toBeInTheDocument();
     expect(screen.queryByText('raw server English, should not be rendered')).not.toBeInTheDocument();
+    expect(screen.getByText(/reactivated spools: 2/)).toBeInTheDocument();
+    expect(screen.queryByText('raw spool summary must be translated')).not.toBeInTheDocument();
   });
 
   it('drops the selection while a newly-picked commit is still being inspected', async () => {
