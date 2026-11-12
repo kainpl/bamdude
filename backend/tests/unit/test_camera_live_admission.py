@@ -12,17 +12,19 @@ from backend.app.api.routes import camera
 from backend.app.services import plate_detection as pd
 from backend.app.services.camera_runtime import CameraCaptureRequest
 from backend.app.services.external_camera import format_mjpeg_frame
+from backend.tests.unit.live_media_harness import media_runtime, request as make_request, serve  # noqa: F401
 
 # A frame's wait: a loaded CI runner delivered the first one at 1.96 s (CI 39126040756), past the 1 s it had.
 FRAME_WAIT_SECONDS = 2.5
 
 
 @pytest_asyncio.fixture
-async def live(monkeypatch):
+async def live(monkeypatch, media_runtime):
     pid = 987_660
     old = b"\xff\xd8old-frame\xff\xd9"
     calls = []
     observer = []
+    responses = []
 
     class Runtime:
         async def stream_builtin(self, **kwargs):
@@ -36,6 +38,8 @@ async def live(monkeypatch):
 
     async def start(external=False):
         printer = SimpleNamespace(
+            id=pid,
+            connector_identity="test-printer-incarnation",
             ip_address="192.0.2.60",
             access_code="synthetic",
             model="A1M",
@@ -43,20 +47,26 @@ async def live(monkeypatch):
             external_camera_type="mjpeg",
             external_camera_snapshot_url=None,
         )
+        request = make_request()
         response = await camera._worker_stream_response(
             printer=printer,
             printer_id=pid,
-            request=SimpleNamespace(is_disconnected=AsyncMock(return_value=False)),
+            request=request,
             fps=5,
             runtime=Runtime(),
             builtin=not external,
         )
-        assert old in await asyncio.wait_for(anext(response.body_iterator), FRAME_WAIT_SECONDS)
+        task, chunks, disconnect = serve(response, request)
+        responses.append((task, disconnect))
+        assert old in (await asyncio.wait_for(chunks.get(), FRAME_WAIT_SECONDS))["body"]
         return response
 
     capture = AsyncMock()
     monkeypatch.setattr("backend.app.services.camera_runtime.capture", capture)
     yield pid, start, observer, calls, capture, old
+    for task, disconnect in responses:
+        disconnect.set()
+        await asyncio.wait_for(task, 2)
     await camera.shutdown_broadcaster(f"printer-{pid}")
     camera._active_worker_streams.pop(pid, None)
     camera._release_printer_frame_state(pid)

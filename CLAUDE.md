@@ -86,6 +86,18 @@ Migration seeds name historical columns for reads and writes. For INSERT use a l
 
 ## Key Invariants
 
+**Live delivery needs current authority and owned cleanup.** The live coordinator
+batches exact credential/account/target reads; admission rereads after accept,
+and short memory proofs guard every send. Mutation hints do not replace durable
+reads or create a pre-commit fence. The outer pure-ASGI media gate sits outside
+buffering HTTP middleware and fails closed for covered routes without a viewer.
+A separate cleanup task owns body/writer join and resource release through
+actual completion, also on ordinary disconnect; restore refuses an unproven
+drain. One viewer cannot stop the shared camera producer. Private WS output
+uses current projection classes on every client path; trusted internal taps
+keep their server contract. Already-entered network sends cannot be recalled.
+Vault: `40-invariants/inv-live-delivery-requires-current-authority.md`.
+
 **A library upload's initial write stays owned until the actual thread ends.**
 `library_file_runtime.upload_writes` registers it before yielding; repeated
 request cancellation cannot detach it. Restore closes admission and proves

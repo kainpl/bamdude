@@ -8,7 +8,7 @@ import weakref
 from collections import OrderedDict
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from typing import Annotated, Any, Literal
 
@@ -309,10 +309,15 @@ async def create_camera_stream_token(*, authority: FrozenAuthority):
     )
 
 
-async def verify_camera_stream_token(token, *, printer_id=None):
+async def verify_camera_stream_token(token, *, printer_id=None, request=None):
     try:
-        await resolve_ephemeral_authority(
+        principal = await resolve_ephemeral_authority(
             token, TokenType.CAMERA_STREAM, required_permissions=(Permission.CAMERA_VIEW.value,), printer_id=printer_id
+        )
+        remember_live_authority(
+            request,
+            JWTAuthority(principal.user, frozenset(), False, principal.capture),
+            (Permission.CAMERA_VIEW.value,),
         )
         return True
     except HTTPException as exc:
@@ -321,7 +326,17 @@ async def verify_camera_stream_token(token, *, printer_id=None):
     from backend.app.services.long_lived_tokens import STREAM_SCOPES, verify_token
 
     async with _auth_database_errors(), async_session() as db:
-        return await verify_token(db, token, scope=STREAM_SCOPES) is not None
+        record = await verify_token(db, token, scope=STREAM_SCOPES)
+        if record is not None and request is not None:
+            from backend.app.services.live_authority import LiveDescriptor, monotonic_expiry
+
+            request.state.live_descriptor = LiveDescriptor(
+                record._auth_capture,
+                (Permission.CAMERA_VIEW.value,),
+                expires=monotonic_expiry(record.expires_at),
+                long_lived_scope=record.scope,
+            )
+        return record is not None
 
 
 # --- Media tokens (audit D9 a2, upstream 816f073a) ---
@@ -1018,6 +1033,8 @@ async def _validate_jwt_authority(token: str) -> JWTAuthority:
             raise JWTValidationFailure("revoked") from exc
         principal.user._auth_capture = principal.capture
         principal.user._auth_source = principal.auth_source
+        principal.user._auth_expires = datetime.fromtimestamp(payload["exp"], timezone.utc).replace(tzinfo=None)
+        principal.user._auth_jti = payload.get("jti")
         return JWTAuthority(
             principal.user,
             frozenset(principal.user.get_permissions()),
@@ -1088,11 +1105,13 @@ async def get_current_user_optional(
     ``user.password_changed_at``). Tokens that fail either check are treated
     exactly like malformed tokens — return None.
     """
-    if credentials is None:
+    if selected_api_key(request, credentials) is not None or credentials is None:
         return None
 
     try:
-        return (await resolve_jwt_authority(request, credentials.credentials)).user
+        authority = await resolve_jwt_authority(request, credentials.credentials)
+        remember_live_authority(request, authority)
+        return authority.user
     except JWTValidationFailure:
         return None
 
@@ -1106,10 +1125,12 @@ async def get_current_user(
     §18.4: rejects revoked ``jti`` values and tokens issued before the user's
     last password change (``iat < password_changed_at``).
     """
-    if credentials is None:
+    if selected_api_key(request, credentials) is not None or credentials is None:
         raise _credentials_exception()
     try:
-        return (await resolve_jwt_authority(request, credentials.credentials)).user
+        authority = await resolve_jwt_authority(request, credentials.credentials)
+        remember_live_authority(request, authority)
+        return authority.user
     except JWTValidationFailure as exc:
         if exc.reason == "inactive":
             raise HTTPException(
@@ -1140,6 +1161,53 @@ def is_api_key_token(token: str | None) -> bool:
     return bool(token) and token.startswith(_API_KEY_PREFIXES)
 
 
+def remember_live_authority(request, authority, permissions=()):
+    """Capture the actual gate winner; never another secret resolution."""
+    if request is None or authority.capture is None:
+        return
+    from backend.app.services.live_authority import LiveDescriptor, monotonic_expiry
+
+    user = authority.owner if isinstance(authority, APIKeyAuthority) else authority.user
+    expires = (
+        authority.key.expires_at if isinstance(authority, APIKeyAuthority) else getattr(user, "_auth_expires", None)
+    )
+    previous = getattr(request.state, "live_descriptor", None)
+    descriptor = LiveDescriptor(
+        authority.capture,
+        tuple(permissions),
+        expires=monotonic_expiry(expires),
+        jti=None if isinstance(authority, APIKeyAuthority) else getattr(user, "_auth_jti", None),
+    )
+    if previous is not None and previous.capture == descriptor.capture:
+        descriptor = replace(
+            descriptor,
+            permissions=tuple(dict.fromkeys((*previous.permissions, *descriptor.permissions))),
+            any_permissions=previous.any_permissions,
+            expires=min(previous.expires, descriptor.expires),
+        )
+    request.state.live_descriptor = descriptor
+
+
+def selected_api_key(request=None, credentials=None, x_api_key=None) -> str | None:
+    """Presence selects one key attempt, including an explicitly empty header."""
+    if request is not None and "x-api-key" in request.headers:
+        return request.headers["x-api-key"]
+    if x_api_key is not None:
+        return x_api_key
+    bearer = credentials.credentials if credentials is not None else None
+    if bearer is None and request is not None:
+        scheme, _, value = request.headers.get("authorization", "").partition(" ")
+        if scheme.lower() == "bearer":
+            bearer = value.strip()
+    return bearer if is_api_key_token(bearer) else None
+
+
+def reject_key_on_token_only_door(request):
+    """A key attempt cannot fall back to a kiosk or one-use URL credential."""
+    if selected_api_key(request) is not None:
+        raise refused()
+
+
 def generate_api_key() -> tuple[str, str, str]:
     """Generate a new API key.
 
@@ -1167,7 +1235,7 @@ async def get_api_key(
     Checks both 'Authorization: Bearer <key>' and 'X-API-Key: <key>' headers.
     """
     api_key_value = None
-    if x_api_key:
+    if x_api_key is not None:
         api_key_value = x_api_key
     elif authorization and authorization.startswith("Bearer "):
         api_key_value = authorization.replace("Bearer ", "")
@@ -1509,19 +1577,15 @@ async def acting_user(request: Request, db: AsyncSession, current_user: User | N
     request (``resolve_api_key_authority`` caches it per request), so this costs
     the owner's row and nothing else.
     """
-    if current_user is not None:
+    credential = selected_api_key(request)
+    if credential is None:
         return current_user
-    credential = request.headers.get("X-API-Key")
-    if not credential:
-        header = request.headers.get("Authorization", "")
-        token = header[7:] if header.startswith("Bearer ") else None
-        credential = token if is_api_key_token(token) else None
-    if not credential:
-        return None
     try:
         authority = await resolve_api_key_authority(request, credential)
-    except APIKeyValidationFailure:
-        return None
+    except APIKeyValidationFailure as exc:
+        if exc.reason == "overloaded":
+            raise HTTPException(503, "API key validation is busy") from exc
+        raise refused() from exc
     return await resolve_apikey_owner(db, authority.key)
 
 
@@ -1782,13 +1846,17 @@ def require_permission(*permissions: str | Permission):
     ) -> User | None:
         async with _auth_database_errors(), async_session() as db:
             # Check for API key first (X-API-Key header)
-            if x_api_key:
-                key_authority = await _api_key_authority_or_none(request, x_api_key)
+            selected_key = selected_api_key(request, credentials, x_api_key)
+            if selected_key is not None:
+                key_authority = await _api_key_authority_or_none(request, selected_key)
+                if key_authority is None:
+                    raise _credentials_exception()
                 if key_authority:
                     # GHSA-r2qv-8222-hqg3: gate on the key's scope flags instead
                     # of allowing any valid key unconditionally.
                     await authorize_api_key(db, key_authority.key, perm_strings, authority=key_authority)
                     await enforce_printer_scope(db, request, key_authority.key)
+                    remember_live_authority(request, key_authority, perm_strings)
                     return None  # API key valid + scoped, allow access
 
             credentials_exception = HTTPException(
@@ -1807,6 +1875,7 @@ def require_permission(*permissions: str | Permission):
                 if key_authority:
                     await authorize_api_key(db, key_authority.key, perm_strings, authority=key_authority)
                     await enforce_printer_scope(db, request, key_authority.key)
+                    remember_live_authority(request, key_authority, perm_strings)
                     return None  # API key valid + scoped, allow access
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
@@ -1824,6 +1893,7 @@ def require_permission(*permissions: str | Permission):
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail=f"Missing required permissions: {', '.join(perm_strings)}",
                 )
+            remember_live_authority(request, authority, perm_strings)
             return authority.user
 
     return permission_checker
@@ -1870,11 +1940,7 @@ def require_energy_cost_update():
             )
 
             # API-key path — X-API-Key header OR a Bearer API key.
-            api_key_value: str | None = None
-            if x_api_key:
-                api_key_value = x_api_key
-            elif credentials is not None and is_api_key_token(credentials.credentials):
-                api_key_value = credentials.credentials
+            api_key_value = selected_api_key(request, credentials, x_api_key)
 
             if api_key_value is not None:
                 key_authority = await _api_key_authority_or_none(request, api_key_value)
@@ -1933,14 +1999,21 @@ def require_any_permission(*permissions: str | Permission):
         x_api_key: Annotated[str | None, Header(alias="X-API-Key")] = None,
     ) -> User | None:
         async with _auth_database_errors(), async_session() as db:
-            if x_api_key:
-                key_authority = await _api_key_authority_or_none(request, x_api_key)
+            selected_key = selected_api_key(request, credentials, x_api_key)
+            if selected_key is not None:
+                key_authority = await _api_key_authority_or_none(request, selected_key)
+                if key_authority is None:
+                    raise _credentials_exception()
                 if key_authority:
                     # GHSA-r2qv-8222-hqg3: require at least one requested scope.
                     await authorize_api_key(
                         db, key_authority.key, perm_strings, require_any=True, authority=key_authority
                     )
                     await enforce_printer_scope(db, request, key_authority.key)
+                    remember_live_authority(request, key_authority)
+                    request.state.live_descriptor = replace(
+                        request.state.live_descriptor, any_permissions=tuple(perm_strings)
+                    )
                     return None
 
             credentials_exception = HTTPException(
@@ -1960,6 +2033,10 @@ def require_any_permission(*permissions: str | Permission):
                         db, key_authority.key, perm_strings, require_any=True, authority=key_authority
                     )
                     await enforce_printer_scope(db, request, key_authority.key)
+                    remember_live_authority(request, key_authority)
+                    request.state.live_descriptor = replace(
+                        request.state.live_descriptor, any_permissions=tuple(perm_strings)
+                    )
                     return None
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
@@ -1977,6 +2054,8 @@ def require_any_permission(*permissions: str | Permission):
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail=f"Missing any of the required permissions: {', '.join(perm_strings)}",
                 )
+            remember_live_authority(request, authority)
+            request.state.live_descriptor = replace(request.state.live_descriptor, any_permissions=tuple(perm_strings))
             return authority.user
 
     return permission_checker
@@ -2010,7 +2089,8 @@ def require_camwall_token():
     the token is always required.
     """
 
-    async def checker(token: str | None = None) -> None:
+    async def checker(token: str | None = None, request: Request = None) -> None:
+        reject_key_on_token_only_door(request)
         if not token or not await verify_camwall_token(token):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -2047,7 +2127,8 @@ def require_overlay_token():
     "if enabled" escape: the token is always required.
     """
 
-    async def checker(token: str | None = None) -> None:
+    async def checker(token: str | None = None, request: Request = None) -> None:
+        reject_key_on_token_only_door(request)
         if not token or not await verify_overlay_token(token):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -2076,7 +2157,7 @@ def require_camera_stream_token():
         printer_id = request.path_params.get("printer_id") if request is not None else None
         if printer_id is not None:
             printer_id = int(printer_id)
-        if not token or not await verify_camera_stream_token(token, printer_id=printer_id):
+        if not token or not await verify_camera_stream_token(token, printer_id=printer_id, request=request):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail=(
@@ -2168,13 +2249,14 @@ def require_media_permission(*permissions: str | Permission):
         credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(security)] = None,
         x_api_key: Annotated[str | None, Header(alias="X-API-Key")] = None,
     ) -> User | None:
-        if token:
+        if token and selected_api_key(request, credentials, x_api_key) is None:
             authority = await _media_token_authority(token)
             if not authority.has_all(*perm_strings):
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail=f"Missing required permissions: {', '.join(perm_strings)}",
                 )
+            remember_live_authority(request, authority, perm_strings)
             return authority.user
         return await header_checker(request=request, credentials=credentials, x_api_key=x_api_key)
 
@@ -2194,13 +2276,15 @@ def require_media_any_permission(*permissions: str | Permission):
         credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(security)] = None,
         x_api_key: Annotated[str | None, Header(alias="X-API-Key")] = None,
     ) -> User | None:
-        if token:
+        if token and selected_api_key(request, credentials, x_api_key) is None:
             authority = await _media_token_authority(token)
             if not authority.has_any(*perm_strings):
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail=f"Missing any of the required permissions: {', '.join(perm_strings)}",
                 )
+            remember_live_authority(request, authority)
+            request.state.live_descriptor = replace(request.state.live_descriptor, any_permissions=tuple(perm_strings))
             return authority.user
         return await header_checker(request=request, credentials=credentials, x_api_key=x_api_key)
 
@@ -2226,11 +2310,13 @@ def require_media_ownership_permission(all_permission: str | Permission, own_per
         credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(security)] = None,
         x_api_key: Annotated[str | None, Header(alias="X-API-Key")] = None,
     ) -> tuple[User | None, bool]:
-        if token:
+        if token and selected_api_key(request, credentials, x_api_key) is None:
             authority = await _media_token_authority(token)
             if authority.has_all(all_perm):
+                remember_live_authority(request, authority, [all_perm])
                 return authority.user, True
             if authority.has_all(own_perm):
+                remember_live_authority(request, authority, [own_perm])
                 return authority.user, False
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -2277,9 +2363,9 @@ async def library_name_scope(request: Request | None, db: AsyncSession, user: Us
             return "none"
         return "all"
 
-    x_api_key = request.headers.get("X-API-Key")
-    if x_api_key and (scope := await key_scope(x_api_key)) is not None:
-        return scope
+    selected_key = selected_api_key(request)
+    if selected_key is not None:
+        return await key_scope(selected_key) or "none"
     header = request.headers.get("Authorization") or ""
     scheme, _, token = header.partition(" ")
     token = token.strip()
@@ -2325,8 +2411,11 @@ def require_ownership_permission(
         """Returns (user, can_modify_all)."""
         async with _auth_database_errors(), async_session() as db:
             # Check for API key first (X-API-Key header)
-            if x_api_key:
-                key_authority = await _api_key_authority_or_none(request, x_api_key)
+            selected_key = selected_api_key(request, credentials, x_api_key)
+            if selected_key is not None:
+                key_authority = await _api_key_authority_or_none(request, selected_key)
+                if key_authority is None:
+                    raise _credentials_exception()
                 if key_authority:
                     # GHSA-r2qv-8222-hqg3: previously any valid key received
                     # (None, True) — a "queue-only" key could delete any user's
@@ -2336,6 +2425,7 @@ def require_ownership_permission(
                     # keeps can_modify_all=True.
                     await authorize_api_key(db, key_authority.key, [all_perm], authority=key_authority)
                     await enforce_printer_scope(db, request, key_authority.key)
+                    remember_live_authority(request, key_authority, [all_perm])
                     return None, True
 
             # Check for Bearer token (could be JWT or API key)
@@ -2347,7 +2437,8 @@ def require_ownership_permission(
                     if key_authority:
                         await authorize_api_key(db, key_authority.key, [all_perm], authority=key_authority)
                         await enforce_printer_scope(db, request, key_authority.key)
-                        return None, True
+                        remember_live_authority(request, key_authority, [all_perm])
+                    return None, True
                     raise HTTPException(
                         status_code=status.HTTP_401_UNAUTHORIZED,
                         detail="Invalid API key",
@@ -2360,8 +2451,10 @@ def require_ownership_permission(
                     raise _credentials_exception() from exc
 
                 if authority.has_all(all_perm):
+                    remember_live_authority(request, authority, [all_perm])
                     return authority.user, True
                 if authority.has_all(own_perm):
+                    remember_live_authority(request, authority, [own_perm])
                     return authority.user, False
 
                 raise HTTPException(
@@ -2551,16 +2644,19 @@ async def resolve_ephemeral_authority(
             raise refused()
         principal.user._auth_capture = principal.capture
         principal.user._auth_source = principal.auth_source
+        principal.user._auth_expires = row.expires_at
         return principal
 
 
-async def authenticate_websocket_authority(token):
+async def authenticate_websocket_authority(token, *, details=False):
     try:
         principal = await resolve_ephemeral_authority(
             token, TokenType.WEBSOCKET, required_permissions=(Permission.WEBSOCKET_CONNECT.value,)
         )
         # A key/token's owner remains part of its immutable lifetime binding,
         # but only browser sessions are a person's private live channel.
+        if details:
+            return principal
         personal_user_id = principal.user.id if principal.capture.kind == "session" else None
         return principal.capture, personal_user_id
     except HTTPException as exc:

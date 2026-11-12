@@ -212,28 +212,14 @@ async def validate_captured(db, capture: FrozenAuthority, *, required_permission
     if user is None or not user.is_active or (capture.user_id and capture.user_id != user.id):
         raise refused()
     key = record = None
-    source = None
-    now = utcnow()
+    session = None
     if capture.kind in {"session", "pending"}:
-        if capture.generation is None or capture.generation != user.session_generation:
-            raise refused()
         if capture.kind == "session":
-            if not capture.sid:
-                raise refused()
             session = (
                 await db.execute(
                     select(AuthSession).where(AuthSession.sid == capture.sid).execution_options(populate_existing=True)
                 )
             ).scalar_one_or_none()
-            if (
-                session is None
-                or session.account_identity != user.account_identity
-                or session.generation != user.session_generation
-                or session.revoked_at is not None
-                or utc_naive(session.expires_at) <= now
-            ):
-                raise refused()
-            source = session.auth_source
     elif capture.kind == "key":
         key = (
             await db.execute(
@@ -242,8 +228,52 @@ async def validate_captured(db, capture: FrozenAuthority, *, required_permission
                 .execution_options(populate_existing=True)
             )
         ).scalar_one_or_none()
+    elif capture.kind == "long_lived":
+        record = (
+            await db.execute(
+                select(LongLivedToken)
+                .where(LongLivedToken.token_identity == capture.token_identity)
+                .execution_options(populate_existing=True)
+            )
+        ).scalar_one_or_none()
+    return validate_loaded(
+        capture,
+        user,
+        session=session,
+        key=key,
+        record=record,
+        required_permissions=required_permissions,
+        printer_id=printer_id,
+    )
+
+
+def validate_loaded(capture, user, *, session=None, key=None, record=None, required_permissions=(), printer_id=None):
+    """One predicate for caller-session and batched live reads; performs no I/O."""
+    if user is None or not user.is_active or (capture.user_id and capture.user_id != user.id):
+        raise refused()
+    if not capture.account_identity or user.account_identity != capture.account_identity:
+        raise refused()
+    source = None
+    now = utcnow()
+    if capture.kind in {"session", "pending"}:
+        if capture.generation is None or capture.generation != user.session_generation:
+            raise refused()
+        if capture.kind == "session":
+            if (
+                not capture.sid
+                or session is None
+                or session.sid != capture.sid
+                or session.account_identity != user.account_identity
+                or session.generation != user.session_generation
+                or session.revoked_at is not None
+                or utc_naive(session.expires_at) <= now
+            ):
+                raise refused()
+            source = session.auth_source
+    elif capture.kind == "key":
         if (
             key is None
+            or key.connector_identity != capture.key_identity
             or key.contract_version != CREDENTIAL_CONTRACT_VERSION
             or key.retired_at is not None
             or key.retired_reason is not None
@@ -260,15 +290,9 @@ async def validate_captured(db, capture: FrozenAuthority, *, required_permission
         if printer_id is not None:
             check_printer_access(key, printer_id)
     elif capture.kind == "long_lived":
-        record = (
-            await db.execute(
-                select(LongLivedToken)
-                .where(LongLivedToken.token_identity == capture.token_identity)
-                .execution_options(populate_existing=True)
-            )
-        ).scalar_one_or_none()
         if (
             record is None
+            or record.token_identity != capture.token_identity
             or record.contract_version != CREDENTIAL_CONTRACT_VERSION
             or record.retired_at is not None
             or record.retired_reason is not None

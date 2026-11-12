@@ -106,6 +106,7 @@ recipient keys prevent repeat durable delivery. Hints address the immutable
 account as well as its numeric id and open no database session. Existing
 ordinary `deliver()` callers retain their original commit behavior.
 
-This unit establishes credential identity and final-write checks. Continuous
-revalidation of all already-open sessions/streams belongs to G01 D; existing
-connector camera revalidation remains in force.
+This identity contract is complemented by the independently reviewed candidate
+for [live access and revocation](live-access.md). That guide describes continuous
+channel checks, credential selection and retryable termination; its candidate
+status is separate from acceptance of the identity contract described here.

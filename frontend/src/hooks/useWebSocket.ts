@@ -14,12 +14,11 @@ import {
 } from '../utils/queryInvalidation';
 import { prioritizeLiveStatusEntries } from '../utils/liveStatusPriority';
 
-// The only auth-failure close code /api/v1/ws emits (backend websocket.py
-// _WS_CLOSE_UNAUTHORIZED). A 4401 means the ws-token was missing / invalid /
-// expired, or the caller lacks WEBSOCKET_CONNECT — none of which a reconnect
-// can fix without a fresh login (which remounts this provider anyway). Treat it
-// as terminal so we don't respawn the /auth/ws-token loop.
+// Confirmed invalid authority or lost websocket permission is terminal. Child
+// expiry and restore use 1001; technical uncertainty uses 1013. Those retry
+// with a fresh mint and retain credentials while the parent remains usable.
 const WS_CLOSE_UNAUTHORIZED = 4401;
+const WS_CLOSE_FORBIDDEN = 4403;
 export function wsReconnectDelay(attempt: number, random = Math.random()): number {
   const ceiling = Math.min(30_000, 3_000 * 2 ** Math.min(attempt, 4));
   return Math.round(ceiling * (0.75 + 0.25 * random));
@@ -405,7 +404,7 @@ export function useWebSocket() {
       // unmounted — both would just respawn the /auth/ws-token loop. A 4401 is
       // terminal (needs a fresh login, which remounts us); every other close
       // code is treated as a network drop and gets bounded backoff.
-      if (disposedRef.current || event.code === WS_CLOSE_UNAUTHORIZED) {
+      if (disposedRef.current || event.code === WS_CLOSE_UNAUTHORIZED || event.code === WS_CLOSE_FORBIDDEN) {
         return;
       }
 

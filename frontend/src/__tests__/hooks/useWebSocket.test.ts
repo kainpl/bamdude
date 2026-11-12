@@ -1071,7 +1071,7 @@ describe('useWebSocket hook', () => {
       expect(ws.close).toHaveBeenCalled();
     });
 
-    it('does NOT reconnect after an auth-rejection close (4401)', async () => {
+    it.each([4401, 4403])('does NOT reconnect after an auth-rejection close (%s)', async (code) => {
       // Regression: a 4401 (ws-token invalid/expired or caller lacks
       // WEBSOCKET_CONNECT) used to reschedule connect() every 3s, spamming
       // /auth/ws-token forever. It must be terminal now.
@@ -1089,7 +1089,7 @@ describe('useWebSocket hook', () => {
 
       // Server rejects auth.
       act(() => {
-        firstWs.simulateClose(4401);
+        firstWs.simulateClose(code);
       });
 
       // No reconnect even after the 3s window elapses.

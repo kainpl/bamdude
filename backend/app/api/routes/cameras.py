@@ -26,7 +26,7 @@ import time
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -48,6 +48,7 @@ from backend.app.schemas.camera import (
 )
 from backend.app.services.camera_credentials import resolve_standalone_camera_credentials
 from backend.app.services.camera_fanout import MjpegBroadcaster, get_or_create_broadcaster, iter_subscriber
+from backend.app.services.live_media import bind_camera, mjpeg_response
 
 logger = logging.getLogger(__name__)
 
@@ -334,6 +335,7 @@ async def camera_stream(
         if not camera.enabled:
             raise HTTPException(404, "This camera is switched off.")
         url, camera_type = camera.url, camera.camera_type
+        bind_camera(request, camera)
 
     fps = min(max(fps, 1), 15)
 
@@ -352,47 +354,32 @@ async def camera_stream(
         )
 
     key = _fanout_key(camera_id)
-    broadcaster: MjpegBroadcaster = await get_or_create_broadcaster(key, _factory)
-    try:
-        queue = await broadcaster.subscribe()
-    except RuntimeError:
-        # The grace-window teardown flipped it to stopped between the lookup
-        # and the subscribe; the registry mints a fresh one on the retry.
-        broadcaster = await get_or_create_broadcaster(key, _factory)
-        queue = await broadcaster.subscribe()
 
-    logger.info("Camera viewer attached to %s (subscribers=%d)", key, broadcaster.subscriber_count)
-
-    async def _is_disconnected() -> bool:
+    async def _prepare(viewer):
+        broadcaster: MjpegBroadcaster = await get_or_create_broadcaster(key, _factory)
         try:
-            return await request.is_disconnected()
-        except Exception:
-            return True
+            queue = await broadcaster.subscribe()
+        except RuntimeError:
+            broadcaster = await get_or_create_broadcaster(key, _factory)
+            queue = await broadcaster.subscribe()
 
-    async def _generate():
-        try:
-            async for chunk in iter_subscriber(
-                broadcaster,
-                queue,
-                is_disconnected=_is_disconnected,
-                on_unsubscribe=lambda remaining: logger.info(
-                    "Camera viewer detached from %s (subscribers=%d)", key, remaining
-                ),
-            ):
-                yield chunk
-        finally:
-            if broadcaster.subscriber_count == 0:
+        async def unsubscribe():
+            remaining = await broadcaster.unsubscribe(queue)
+            logger.info("Camera viewer detached from %s (subscribers=%d)", key, remaining)
+            if remaining == 0:
                 _forget_frames(camera_id)
 
-    return StreamingResponse(
-        _generate(),
-        media_type="multipart/x-mixed-replace; boundary=frame",
-        headers={
-            "Cache-Control": "no-cache, no-store, must-revalidate",
-            "Pragma": "no-cache",
-            "Expires": "0",
-        },
-    )
+        viewer.releases.append(unsubscribe)
+        logger.info("Camera viewer attached to %s (subscribers=%d)", key, broadcaster.subscriber_count)
+
+        async def stopped():
+            return not viewer.handle.deliverable()
+
+        return iter_subscriber(
+            broadcaster, queue, is_disconnected=stopped, before_yield=stopped, request_cleanup=viewer.request_cleanup
+        )
+
+    return mjpeg_response(request, _prepare)
 
 
 # Declared once per method rather than as a single
@@ -417,6 +404,7 @@ async def stop_camera_stream(
 @router.get("/{camera_id}/snapshot")
 async def camera_snapshot(
     camera_id: int,
+    request: Request,
     _token: None = RequireCameraStreamToken,
 ):
     """One JPEG: the live stream's last frame, a recent capture, or a fresh one.
@@ -430,6 +418,7 @@ async def camera_snapshot(
         if not camera.enabled:
             raise HTTPException(404, "This camera is switched off.")
         url, camera_type, snapshot_url = camera.url, camera.camera_type, camera.snapshot_url
+        bind_camera(request, camera)
 
     frame = _live_frame(camera_id) or _cached_snapshot(camera_id)
     if frame is None:

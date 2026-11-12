@@ -735,6 +735,10 @@ class PrinterManager:
         self._models: dict[int, str | None] = {}  # Cache printer models for feature detection
         self._connected_at: dict[int, float] = {}  # Unix timestamp of last connection
         self._printer_info: dict[int, PrinterInfo] = {}  # Cache printer name/serial for callbacks
+        # Record UUIDs, including parked printers observed by a fresh WS grant.
+        # Copy-on-write keeps an event's source snapshot immutable across awaits.
+        # Ordinary disconnect retains these; deletion clears one before yielding.
+        self._record_identities: dict[int, str] = {}
         # The AMS / external-spool reading of a client that has been dropped, so
         # the auto-queue can still tell what a switched-off printer holds
         # (upstream #2876). Kept beside the clients, never inside one: it answers
@@ -778,6 +782,23 @@ class PrinterManager:
         """Get printer info by ID."""
         return self._printer_info.get(printer_id)
 
+    def record_identity_snapshot(self):
+        """Server-only immutable publication snapshot; never a wire field."""
+        from types import MappingProxyType
+
+        return MappingProxyType(self._record_identities)
+
+    def remember_record_identity(self, printer_id: int, identity: str, *, proven_connection=False) -> None:
+        """A fresh admission may seed an unknown parked record, never overwrite
+        a source another connection proved. A proven current connect can replace
+        the UUID after numeric-PK reuse. No database or network work lives here.
+        """
+        if self._printer_lives.get(printer_id, 0) % 2 or not isinstance(identity, str) or not identity:
+            return
+        if printer_id in self._record_identities and not proven_connection:
+            return
+        self._record_identities = {**self._record_identities, printer_id: identity}
+
     def current_client_generation(self, printer_id: int) -> int | None:
         """Return the currently accepted MQTT-client generation, if connected."""
         return self._client_generations.get(printer_id)
@@ -817,6 +838,9 @@ class PrinterManager:
         current = self._printer_lives.get(printer_id, 0)
         life = current + 1 if current % 2 == 0 else current + 2
         self._printer_lives[printer_id] = life
+        self._record_identities = {
+            pid: identity for pid, identity in self._record_identities.items() if pid != printer_id
+        }
         self._client_generations[printer_id] = self._client_generations.get(printer_id, 0) + 1
         return life
 
@@ -1499,6 +1523,7 @@ class PrinterManager:
         self._connected_at[printer_id] = time.time()
         self._models[printer_id] = printer.model  # Cache model for feature detection
         self._printer_info[printer_id] = PrinterInfo(printer.name, printer.serial_number)
+        self.remember_record_identity(printer_id, printer.connector_identity, proven_connection=True)
 
         # Active poll until paho's `_on_connect` flips `state.connected`, capped
         # at 10s. Replaces the prior fixed `await asyncio.sleep(1)` which raced

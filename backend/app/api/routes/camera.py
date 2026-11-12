@@ -7,7 +7,7 @@ import uuid
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import Response
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -41,6 +41,7 @@ from backend.app.services.camera_fanout import (
     shutdown_broadcaster,
 )
 from backend.app.services.camera_runtime import CameraCaptureRequest
+from backend.app.services.live_media import bind_printer, mjpeg_response
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/printers", tags=["camera"])
@@ -260,8 +261,7 @@ def try_get_active_buffered_frame(printer_id: int) -> bytes | None:
     return _last_frames.get(printer_id)
 
 
-# An API-key stream is re-authorised at least this often: it ends, the client reconnects through the gate
-# (OrcaBamDude spec r2 §11). A token or JWT stream keeps its existing behaviour.
+# Independent of the shared current-access freshness proof; never renewed.
 API_KEY_STREAM_LEASE_SECONDS = 300
 PRINTER_IDENTITY_HEADER = "X-BamDude-Printer-Identity"
 
@@ -273,13 +273,6 @@ def _check_printer_identity(request: Request, printer: Printer) -> None:
     identity = request.headers.get(PRINTER_IDENTITY_HEADER)
     if identity is not None and identity != printer.connector_identity:
         raise HTTPException(status_code=404, detail={"error": "printer_not_found", "message": PRINTER_GONE})
-
-
-def _api_key_stream_closed() -> bool:
-    """A restore or shutdown ends header-authenticated streams before their lease."""
-    from backend.app.services.connector_runtime import connector_runtime
-
-    return not connector_runtime.admitting
 
 
 async def get_printer_or_404(printer_id: int, db: AsyncSession) -> Printer:
@@ -299,10 +292,8 @@ async def _worker_stream_response(
     fps: int,
     runtime,
     builtin: bool = False,
-    lease_seconds: float | None = None,
-    stop_when=None,
     access_guard=None,
-) -> StreamingResponse:
+) -> Response:
     """Serve worker-owned live video through the existing HTTP fan-out.
 
     The worker owns the physical source; this process keeps the existing HTTP
@@ -417,59 +408,40 @@ async def _worker_stream_response(
 
         return _stream()
 
-    broadcaster: MjpegBroadcaster = await get_or_create_broadcaster(fanout_key, _factory)
-    try:
-        queue = await broadcaster.subscribe()
-    except RuntimeError:
-        broadcaster = await get_or_create_broadcaster(fanout_key, _factory)
-        queue = await broadcaster.subscribe()
+    bind_printer(request, printer, access_guard)
 
-    logger.info("Camera worker viewer attached to %s (subscribers=%d)", fanout_key, broadcaster.subscriber_count)
-
-    deadline = time.monotonic() + lease_seconds if lease_seconds else None
-
-    async def _is_disconnected() -> bool:
-        # A lease that ran out, or an owner that closes its streams, ends this viewer like a disconnect.
-        if deadline is not None and time.monotonic() >= deadline:
-            return True
-        if stop_when is not None and stop_when():
-            return True
-        if access_guard is not None and await access_guard.closed():
-            return True
+    async def _prepare(viewer):
+        # Register/admit the viewer before any subscription or light lease.
+        broadcaster: MjpegBroadcaster = await get_or_create_broadcaster(fanout_key, _factory)
         try:
-            return await request.is_disconnected()
-        except Exception:
-            return True
+            queue = await broadcaster.subscribe()
+        except RuntimeError:
+            broadcaster = await get_or_create_broadcaster(fanout_key, _factory)
+            queue = await broadcaster.subscribe()
 
-    async def _generate():
-        # One light lease per viewer, for exactly as long as the viewer reads
-        # (services/camera_light): taken inside the generator so a response
-        # that is never iterated never holds it.
+        async def unsubscribe():
+            remaining = await broadcaster.unsubscribe(queue)
+            logger.info("Camera worker viewer detached from %s (subscribers=%d)", fanout_key, remaining)
+
+        viewer.releases.append(unsubscribe)
+        logger.info("Camera worker viewer attached to %s (subscribers=%d)", fanout_key, broadcaster.subscriber_count)
         from backend.app.services import camera_light
 
         light = await camera_light.acquire(printer_id, "stream")
-        try:
-            async for chunk in iter_subscriber(
-                broadcaster,
-                queue,
-                is_disconnected=_is_disconnected,
-                before_yield=_is_disconnected if access_guard is not None else None,
-                on_unsubscribe=lambda remaining: logger.info(
-                    "Camera worker viewer detached from %s (subscribers=%d)", fanout_key, remaining
-                ),
-            ):
-                yield chunk
-        finally:
-            camera_light.release(light)
+        viewer.releases.append(lambda: camera_light.release(light))
+        return iter_subscriber(
+            broadcaster,
+            queue,
+            is_disconnected=lambda: _stopped(viewer),
+            before_yield=lambda: _stopped(viewer),
+            request_cleanup=viewer.request_cleanup,
+        )
 
-    return StreamingResponse(
-        _generate(),
-        media_type="multipart/x-mixed-replace; boundary=frame",
-        headers={
-            "Cache-Control": "no-cache, no-store, must-revalidate",
-            "Pragma": "no-cache",
-            "Expires": "0",
-        },
+    async def _stopped(viewer):
+        return not viewer.handle.deliverable()
+
+    return mjpeg_response(
+        request, _prepare, lease_seconds=API_KEY_STREAM_LEASE_SECONDS if access_guard is not None else None
     )
 
 
@@ -546,15 +518,6 @@ async def camera_stream(
     else:
         printer, access_guard = await _load_stream()
     _check_printer_identity(request, printer)
-    lease = (
-        {
-            "lease_seconds": API_KEY_STREAM_LEASE_SECONDS,
-            "stop_when": _api_key_stream_closed,
-            "access_guard": access_guard,
-        }
-        if access.api_key
-        else {}
-    )
 
     # Check for external camera first
     if printer.external_camera_enabled and printer.external_camera_url:
@@ -572,7 +535,7 @@ async def camera_stream(
             request=request,
             fps=fps,
             runtime=get_camera_runtime(),
-            **lease,
+            access_guard=access_guard,
         )
 
     # Validate FPS - A1/P1 models max out at ~5 FPS
@@ -590,7 +553,7 @@ async def camera_stream(
         fps=fps,
         runtime=get_camera_runtime(),
         builtin=True,
-        **lease,
+        access_guard=access_guard,
     )
 
 
@@ -669,6 +632,7 @@ async def camera_snapshot(
     async with database.async_session() as db:
         printer = await get_printer_or_404(printer_id, db)
     _check_printer_identity(request, printer)
+    bind_printer(request, printer)
 
     # The light for the whole answer — buffered, cached or fresh — so a
     # poller keeps it on between two frames. The capture requests below do

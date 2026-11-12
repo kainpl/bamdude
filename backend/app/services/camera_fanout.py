@@ -381,10 +381,13 @@ async def iter_subscriber(
     is_disconnected: Callable[[], Awaitable[bool]] | None = None,
     before_yield: Callable[[], Awaitable[bool]] | None = None,
     on_unsubscribe: Callable[[int], None] | None = None,
+    request_cleanup: Callable[[], object] | None = None,
 ) -> AsyncGenerator[bytes, None]:
     """Yield chunks from a subscriber queue until upstream ends or client leaves.
 
-    Always unsubscribes from the broadcaster on exit, even on cancellation.
+    By default unsubscribes from the broadcaster on exit. An owned media
+    adapter supplies ``request_cleanup`` instead: its shielded resource owner
+    performs the actual unsubscribe after the body has finished.
     The optional ``on_unsubscribe`` callback receives the post-unsubscribe
     subscriber count — useful for accurate detach-log lines that don't race
     with concurrent unsubscribes.
@@ -414,9 +417,14 @@ async def iter_subscriber(
             if is_disconnected is not None and await is_disconnected():
                 break
     finally:
-        remaining = await broadcaster.unsubscribe(queue)
-        if on_unsubscribe is not None:
-            try:
-                on_unsubscribe(remaining)
-            except Exception:
-                logger.exception("on_unsubscribe callback raised")
+        if request_cleanup is not None:
+            # Owned media cleanup joins the body first and unsubscribes exactly
+            # once outside the request's cancelled AnyIO scope.
+            request_cleanup()
+        else:
+            remaining = await broadcaster.unsubscribe(queue)
+            if on_unsubscribe is not None:
+                try:
+                    on_unsubscribe(remaining)
+                except Exception:
+                    logger.exception("on_unsubscribe callback raised")

@@ -1084,9 +1084,15 @@ async def search_colors(
 
 @router.post("/colors/sync")
 async def sync_from_filamentcolors(
+    request: Request,
     _: User | None = RequirePermission(Permission.INVENTORY_UPDATE),
 ):
     """Sync colors from FilamentColors.xyz API with progress streaming."""
+
+    from backend.app.core.auth import capture_request_authority
+    from backend.app.services import domain_authority
+
+    authority = await capture_request_authority(request)
 
     async def generate():
         from backend.app.core.database import async_session
@@ -1117,7 +1123,9 @@ async def sync_from_filamentcolors(
                     if not results:
                         break
 
+                    page_added = page_skipped = 0
                     async with async_session() as db:
+                        await domain_authority.guard(db, authority, permissions=("inventory:update",))
                         for swatch in results:
                             total_fetched += 1
                             manufacturer_data = swatch.get("manufacturer")
@@ -1130,7 +1138,7 @@ async def sync_from_filamentcolors(
                             hex_color_val = swatch.get("hex_color", "")
 
                             if not manufacturer_name or not color_name_val or not hex_color_val:
-                                skipped += 1
+                                page_skipped += 1
                                 continue
 
                             if not hex_color_val.startswith("#"):
@@ -1147,7 +1155,7 @@ async def sync_from_filamentcolors(
                                 .limit(1)
                             )
                             if existing.scalar_one_or_none():
-                                skipped += 1
+                                page_skipped += 1
                             else:
                                 db.add(
                                     ColorCatalogEntry(
@@ -1158,9 +1166,11 @@ async def sync_from_filamentcolors(
                                         is_default=False,
                                     )
                                 )
-                                added += 1
+                                page_added += 1
 
                         await db.commit()
+                    added += page_added
+                    skipped += page_skipped
 
                     progress = {
                         "type": "progress",
@@ -1185,10 +1195,10 @@ async def sync_from_filamentcolors(
             yield f"data: {json.dumps(result)}\n\n"
 
         except httpx.HTTPError as e:
-            logger.error("HTTP error syncing from FilamentColors.xyz: %s", e)
-            yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
+            logger.warning("Filament color sync provider failed: %s", type(e).__name__)
+            yield f"data: {json.dumps({'type': 'error', 'error': 'Color provider is unavailable'})}\n\n"
         except Exception as e:
-            logger.error("Error syncing from FilamentColors.xyz: %s", e)
+            logger.warning("Filament color sync stopped: %s", type(e).__name__)
             yield f"data: {json.dumps({'type': 'error', 'error': 'Unexpected error during sync'})}\n\n"
 
     return StreamingResponse(generate(), media_type="text/event-stream")

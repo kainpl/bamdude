@@ -659,10 +659,16 @@ class TestCameraLightHooks:
 
                 return asyncio.Queue()
 
+            async def unsubscribe(self, queue):
+                self.subscriber_count = 0
+                return 0
+
         async def fake_get_or_create(key, factory):
             return FakeBroadcaster()
 
-        async def fake_iter(broadcaster, queue, *, is_disconnected, on_unsubscribe, before_yield=None):
+        async def fake_iter(
+            broadcaster, queue, *, is_disconnected, on_unsubscribe=None, before_yield=None, request_cleanup=None
+        ):
             for _ in range(2):
                 events.append("frame")
                 yield b"--frame\r\n"

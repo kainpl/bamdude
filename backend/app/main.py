@@ -12457,11 +12457,16 @@ async def lifespan(app: FastAPI):
             # This only schedules the loop. Technical admission is marked after
             # ASGI startup.complete; notification readiness never gates startup.
             credential_rollout.start(lambda: farm_startup_guard.ready)
+            from backend.app.services.live_authority import live_authority
+
+            live_authority.start()
             try:
                 yield
             finally:
                 auth_runtime.close_admission()
                 close_cloud_admission()
+                if not await live_authority.shutdown():
+                    logging.getLogger(__name__).warning("Live authority cleanup is still owned at shutdown")
                 if not await credential_rollout.shutdown():
                     logging.getLogger(__name__).warning("Credential rollout cleanup is still owned at shutdown")
                 if not await auth_runtime.shutdown():
@@ -12828,15 +12833,31 @@ async def auth_middleware(request, call_next):
 
     # --- Auth gate ---------------------------------------------------------
     auth_header = request.headers.get("Authorization")
-    x_api_key = request.headers.get("X-API-Key")
 
-    # Check for API key auth first
-    from backend.app.core.auth import is_api_key_token
+    from backend.app.core.auth import (
+        APIKeyValidationFailure,
+        finish_request_auth,
+        resolve_api_key_authority,
+        selected_api_key,
+    )
 
-    if x_api_key or (auth_header and auth_header.startswith("Bearer ") and is_api_key_token(auth_header[7:])):
-        # API key authentication - let the request through to be validated by route handler
-        # API keys are validated per-route since they have different permission levels
-        return await call_next(request)
+    key = selected_api_key(request)
+    if key is not None:
+        try:
+            try:
+                await resolve_api_key_authority(request, key)
+            except APIKeyValidationFailure as exc:
+                overloaded = exc.reason == "overloaded"
+                return JSONResponse(
+                    status_code=503 if overloaded else 401,
+                    content={"detail": "API key validation is busy" if overloaded else "Invalid API key"},
+                    headers={"Retry-After": "5"} if overloaded else {"WWW-Authenticate": "Bearer"},
+                )
+            except HTTPException as exc:
+                return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail}, headers=exc.headers)
+            return await call_next(request)
+        finally:
+            await finish_request_auth(request)
 
     # Check for JWT auth
     if not auth_header or not auth_header.startswith("Bearer "):
@@ -13364,11 +13385,17 @@ async def serve_sw_register():
 
 
 # Catch-all route for React Router (must be last)
-# The exact MCP dispatcher is outermost, so neither the SPA nor the ordinary
-# REST-only auth/CORS middleware can answer for this separate key-only path.
+# The exact MCP dispatcher wraps REST, so neither the SPA nor ordinary
+# REST auth/CORS can answer for this separate key-only path. The outer media
+# boundary below passes this non-media path through unchanged.
 from backend.app.mcp_server.runtime import McpMiddleware
 
 app.add_middleware(McpMiddleware)
+
+from backend.app.services.live_media import LiveMediaDeliveryMiddleware, install_live_media_routes
+
+install_live_media_routes(app)
+app.add_middleware(LiveMediaDeliveryMiddleware)
 
 
 @app.get("/{full_path:path}")

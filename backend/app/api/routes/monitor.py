@@ -59,9 +59,13 @@ async def monitor_access(
 
 
 async def kiosk_access(
+    request: Request,
     credentials: HTTPAuthorizationCredentials | None = Depends(security),
     db: AsyncSession = Depends(get_db),
 ) -> MonitorAccess:
+    from backend.app.core.auth import reject_key_on_token_only_door
+
+    reject_key_on_token_only_door(request)
     async with _auth_database_errors():
         record = await verify_token(db, credentials.credentials, scope="monitor") if credentials else None
         owner = (

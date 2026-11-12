@@ -122,11 +122,12 @@ async def guard(db, authority, *, permissions=(), printer_id=None):
     return proof, principal
 
 
-async def slicer_principal(token, resource_kind, resource_id):
+async def slicer_principal(token, resource_kind, resource_id, *, request=None):
     """Keep the slicer protocol's invalid-token 403 while propagating unavailable 503."""
-    from backend.app.core.auth import resolve_ephemeral_authority
+    from backend.app.core.auth import reject_key_on_token_only_door, resolve_ephemeral_authority
     from backend.app.models.auth_ephemeral import TokenType
 
+    reject_key_on_token_only_door(request)
     try:
         return await resolve_ephemeral_authority(
             token, TokenType.SLICER_DOWNLOAD, resource_key=f"{resource_kind}:{resource_id}"

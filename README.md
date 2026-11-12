@@ -431,6 +431,7 @@ BamDude AI includes a setup panel, client packages and a shared diagnostic skill
 ### Authentication
 - Group-based permissions (80+ granular)
 - JWT tokens, API key support
+- Current access checks for live channels, with scoped printer status and independent viewer termination; see the [live access contract](docs/development/live-access.md) for candidate status and API-key precedence
 - **OIDC (OpenID Connect)** — PocketID, Authentik, Keycloak, Authelia, Google, **Azure Entra ID** (`preferred_username` / `upn` claim, optional skip of `email_verified` gate)
 - **SSO autologin** and an option to **disable local username/password login** (lockout-guarded)
 - **SSO Remember Me** — manual sign-in keeps your choice through the provider and two-factor checks, within the administrator's session limit; automatic SSO uses a browser-session cookie

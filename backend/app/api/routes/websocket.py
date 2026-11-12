@@ -1,13 +1,15 @@
+import asyncio
 import logging
 import math
 import time
 import uuid
 
-from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect
 
 from backend.app.core.auth import authenticate_websocket_authority
 from backend.app.core.websocket import ws_manager
 from backend.app.services.background_dispatch import background_dispatch
+from backend.app.services.live_authority import LiveDescriptor, live_authority, monotonic_expiry
 from backend.app.services.printer_manager import printer_manager, printer_state_to_dict
 
 logger = logging.getLogger(__name__)
@@ -44,7 +46,11 @@ async def websocket_endpoint(websocket: WebSocket, token: str | None = Query(def
     bootstrap_id = uuid.uuid4().hex[:12]
     # Authenticate BEFORE ws_manager.connect() so an unauth caller never enters
     # the broadcast set.
-    authenticated = await authenticate_websocket_authority(token or "")
+    try:
+        authenticated = await authenticate_websocket_authority(token or "", details=True)
+    except HTTPException as exc:
+        await websocket.close(code=4403 if exc.status_code == 403 else 1013)
+        return
     if authenticated is None:
         logger.info("WebSocket connect refused: missing/invalid token")
         await websocket.close(code=_WS_CLOSE_UNAUTHORIZED)
@@ -53,16 +59,43 @@ async def websocket_endpoint(websocket: WebSocket, token: str | None = Query(def
     logger.info("WebSocket client connecting...")
     # Preserve the exact credential capture for lifetime ownership; only a
     # browser session is tagged for a person's per-user channel.
-    authority, user_id = authenticated
-    await ws_manager.connect(websocket, user_id, account_identity=authority.account_identity, authority=authority)
-    logger.info("WebSocket client connected")
-    accepted_at = time.monotonic()
-
+    authority = authenticated.capture
+    user_id = authenticated.user.id if authority.kind == "session" else None
+    route_task = asyncio.current_task()
+    live_authority.own(route_task)
     try:
+        handle = live_authority.register(
+            LiveDescriptor(
+                authority,
+                ("websocket:connect",),
+                expires=monotonic_expiry(authenticated.user._auth_expires),
+            )
+        )
+    except HTTPException:
+        # A capacity/restore refusal is retryable to an actual browser, whose
+        # upgrade API otherwise hides a pre-accept close code behind 1006.
+        await websocket.accept()
+        async with asyncio.timeout(5):
+            await websocket.close(code=1013)
+        return
+    try:
+        await ws_manager.connect(
+            websocket, user_id, account_identity=authority.account_identity, authority=authority, live_handle=handle
+        )
+        logger.info("WebSocket client connected")
+        accepted_at = time.monotonic()
         # Send initial status of all printers
         initial_status_started = time.monotonic()
         statuses = printer_manager.get_all_statuses()
-        for printer_id, state in statuses.items():
+        source_identities = printer_manager.record_identity_snapshot()
+        visible_statuses = {
+            pid: state
+            for pid, state in statuses.items()
+            if handle.entitlements is not None
+            and handle.entitlements.allows("printers:read")
+            and handle.entitlements.printer_visible(pid)
+        }
+        for printer_id, state in visible_statuses.items():
             await ws_manager.send(
                 websocket,
                 {
@@ -75,6 +108,7 @@ async def websocket_endpoint(websocket: WebSocket, token: str | None = Query(def
                         printer_manager.get_drying_targets(printer_id),
                     ),
                 },
+                source_printer_identities=source_identities,
             )
 
         dispatch_state = await background_dispatch.get_state()
@@ -91,22 +125,22 @@ async def websocket_endpoint(websocket: WebSocket, token: str | None = Query(def
             {
                 "type": "initial_status_complete",
                 "bootstrap_id": bootstrap_id,
-                "printers": len(statuses),
+                "printers": len(visible_statuses),
             },
         )
         ack_pending = True
-        logger.info("Queued initial status for %s printers", len(statuses))
+        logger.info("Queued initial status for %s printers", len(visible_statuses))
         logger.info(
             "WebSocket bootstrap timing: auth_and_accept=%.3fs initial_queue=%.3fs printers=%s id=%s",
             accepted_at - started,
             time.monotonic() - initial_status_started,
-            len(statuses),
+            len(visible_statuses),
             bootstrap_id,
         )
 
         # Keep connection alive and handle incoming messages
         while True:
-            data = await websocket.receive_json()
+            data = await ws_manager.receive(websocket)
 
             # Handle ping/pong for keepalive
             if data.get("type") == "ping":
@@ -126,7 +160,7 @@ async def websocket_endpoint(websocket: WebSocket, token: str | None = Query(def
                         _bounded_client_ms(data.get("socket_open_ms")),
                         _bounded_client_ms(data.get("first_status_ms")),
                         _bounded_client_ms(data.get("marker_to_cache_ms")),
-                        len(statuses),
+                        len(visible_statuses),
                     )
                     ack_pending = False
 
@@ -152,7 +186,12 @@ async def websocket_endpoint(websocket: WebSocket, token: str | None = Query(def
 
     except WebSocketDisconnect as exc:
         logger.info("WebSocket client disconnected (code=%s)", exc.code)
+    except HTTPException:
+        # Admission failures already select the sole writer's retryable close.
+        pass
     except Exception as e:
         logger.error("WebSocket error: %s", e, exc_info=True)
     finally:
         await ws_manager.disconnect(websocket)
+        # accept itself can fail before the manager has an outbox.
+        live_authority.release(handle)

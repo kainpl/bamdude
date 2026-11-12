@@ -1908,6 +1908,7 @@ async def download_archive_for_slicer(
     archive_id: int,
     token: str,
     filename: str,
+    request: Request,
     db: AsyncSession = Depends(get_db),
 ):
     """Download 3MF file using a slicer download token.
@@ -1921,7 +1922,7 @@ async def download_archive_for_slicer(
     from backend.app.core.auth import authorize_api_key
     from backend.app.services.domain_authority import slicer_principal
 
-    principal = await slicer_principal(token, "archive", archive_id)
+    principal = await slicer_principal(token, "archive", archive_id, request=request)
     if principal.api_key is not None:
         await authorize_api_key(db, principal.api_key, [Permission.ARCHIVES_READ_ALL])
         can_read_all = True
@@ -1983,6 +1984,7 @@ async def get_thumbnail(
 @router.get("/{archive_id}/timelapse")
 async def get_timelapse(
     archive_id: int,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     auth_result: tuple[User | None, bool] = _ARCHIVE_MEDIA_READ,
 ):
@@ -1990,6 +1992,16 @@ async def get_timelapse(
     user, can_read_all = auth_result
     service = ArchiveService(db)
     archive = _ensure_archive_visible(await service.get_archive(archive_id), user, can_read_all)
+    # Capture the observed incarnation before releasing this read transaction.
+    # The live coordinator proves it again before the actual response body.
+    request.state.live_media_binding = {
+        "resource_kind": "archive",
+        "resource_id": archive.id,
+        "resource_stamp": (
+            getattr(archive, "recovery_identity", None) or getattr(archive, "connector_identity", None),
+            archive.created_at,
+        ),
+    }
     if not archive.timelapse_path:
         raise HTTPException(404, "Timelapse not found")
 
@@ -2005,6 +2017,9 @@ async def get_timelapse(
     media_type = {".mp4": "video/mp4", ".avi": "video/x-msvideo", ".mkv": "video/x-matroska"}.get(suffix, "video/mp4")
     ext = suffix if suffix in (".mp4", ".avi", ".mkv") else ".mp4"
 
+    # A slow Range video must not keep this dependency's pooled read session.
+    # get_db's normal exit remains responsible for final session teardown.
+    await db.close()
     return FileResponse(
         path=timelapse_path,
         media_type=media_type,
@@ -4060,6 +4075,7 @@ async def download_source_3mf_for_slicer_with_token(
     archive_id: int,
     token: str,
     filename: str,
+    request: Request,
     db: AsyncSession = Depends(get_db),
 ):
     """Download source 3MF using a slicer download token.
@@ -4073,7 +4089,7 @@ async def download_source_3mf_for_slicer_with_token(
     from backend.app.core.auth import authorize_api_key
     from backend.app.services.domain_authority import slicer_principal
 
-    principal = await slicer_principal(token, "source", archive_id)
+    principal = await slicer_principal(token, "source", archive_id, request=request)
     if principal.api_key is not None:
         await authorize_api_key(db, principal.api_key, [Permission.ARCHIVES_READ_ALL])
         can_read_all = True

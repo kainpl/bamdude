@@ -4,24 +4,27 @@
   list are decided before any camera work starts. An invalid header is refused even beside a valid token.
 - No headers: the existing ``?token=`` for an ``<img>`` keeps working.
 - ``X-BamDude-Printer-Identity`` that does not match is a 404 before the camera is touched.
-- An API-key stream ends at its lease; the client reconnects through the gate.
+- An API-key stream ends at its presented credential expiry; it cannot renew itself.
 """
 
 from __future__ import annotations
 
 import asyncio
+from datetime import timedelta
 from unittest.mock import AsyncMock, patch
 
 import pytest
 from httpx import ASGITransport, AsyncClient
 
 from backend.app.core.auth import create_camera_stream_token, generate_api_key
+from backend.app.core.auth_lifetime import utcnow
 from backend.app.models.api_key import APIKey
 from backend.app.models.group import Group
 from backend.app.models.user import User
 from backend.app.services.camera_metrics import CameraCaptureResult
 from backend.app.services.connector_runtime import connector_runtime
 from backend.tests.auth_helpers import bind_test_key, mint_test_authority
+from backend.tests.unit.live_media_harness import request as make_request
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
 
@@ -193,12 +196,27 @@ async def test_the_token_door_is_unchanged(async_client, printer_factory, captur
     assert without.status_code == 401
 
 
-async def test_an_api_key_stream_ends_at_its_lease(async_client, db_session, printer_factory, monkeypatch):
+@pytest.mark.parametrize("deadline", ["credential", "absolute_lease"])
+async def test_an_api_key_stream_ends_at_its_captured_deadline(
+    async_client, db_session, printer_factory, monkeypatch, deadline
+):
     from backend.app.api.routes import camera
+    from backend.app.services import live_authority
 
     printer = await printer_factory()
-    raw = await _key(db_session)
-    monkeypatch.setattr(camera, "API_KEY_STREAM_LEASE_SECONDS", 0.2)
+    raw = await _key(db_session, expires_at=utcnow() + timedelta(seconds=2) if deadline == "credential" else None)
+    await db_session.close()
+    if deadline == "absolute_lease":
+        monkeypatch.setattr(camera, "API_KEY_STREAM_LEASE_SECONDS", 0.4)
+        monkeypatch.setattr(live_authority, "RECHECK_SECONDS", 0.05)
+    proofs = []
+    original_read = live_authority.LiveAuthority._read
+
+    async def read(self, batch):
+        proofs.extend(handle.descriptor.expires for handle in batch)
+        return await original_read(self, batch)
+
+    monkeypatch.setattr(live_authority.LiveAuthority, "_read", read)
 
     class FakeRuntime:
         async def stream_builtin(self, *, on_frame, disconnect_event, **_kwargs):
@@ -209,19 +227,25 @@ async def test_an_api_key_stream_ends_at_its_lease(async_client, db_session, pri
 
     monkeypatch.setattr("backend.app.services.camera_runtime.get_camera_runtime", lambda: FakeRuntime())
 
-    async with (
-        _headerless(async_client) as client,
-        client.stream("GET", f"/api/v1/printers/{printer.id}/camera/stream", headers={"X-API-Key": raw}) as response,
-    ):
-        assert response.status_code == 200
-        received = 0
+    req = make_request(f"/api/v1/printers/{printer.id}/camera/stream", headers=[(b"x-api-key", raw.encode())])
+    req.scope["http_version"] = "1.1"
+    req.scope["root_path"] = ""
+    received = []
 
-        async def read():
-            nonlocal received
-            async for chunk in response.aiter_bytes():
-                received += len(chunk)
+    async def send(message):
+        if message["type"] == "http.response.start":
+            assert message["status"] == 200
+        if message["type"] == "http.response.body":
+            received.append(message["body"])
 
-        await asyncio.wait_for(read(), timeout=15)
+    async def receive():
+        await asyncio.Event().wait()
 
-    assert received > 0
+    # httpx ASGITransport requires a terminal chunk; a retired media response
+    # deliberately closes without one. Exercise actual ASGI delivery instead.
+    await asyncio.wait_for(async_client._transport.app(req.scope, receive, send), timeout=6)
+    assert b"".join(received)
+    assert proofs and len(set(proofs)) == 1
+    if deadline == "absolute_lease":
+        assert len(proofs) >= 2, "freshness rechecks must not renew the original absolute lease"
     await camera.shutdown_broadcaster(f"printer-{printer.id}")

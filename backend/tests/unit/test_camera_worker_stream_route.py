@@ -4,18 +4,18 @@ import asyncio
 import logging
 import uuid
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
 
 import pytest
 
 from backend.app.api.routes import camera as camera_routes
 from backend.app.services.external_camera import format_mjpeg_frame
+from backend.tests.unit.live_media_harness import media_runtime, request as make_request, serve  # noqa: F401
 
 _JPEG = b"\xff\xd8worker-route-test\xff\xd9"
 
 
 @pytest.mark.asyncio
-async def test_worker_external_route_keeps_http_fanout_and_buffers_frames(caplog):
+async def test_worker_external_route_keeps_http_fanout_and_buffers_frames(caplog, media_runtime):
     caplog.set_level(logging.INFO, logger="backend.app.api.routes.camera")
     printer_id = 987_651
     calls: list[dict] = []
@@ -31,10 +31,12 @@ async def test_worker_external_route_keeps_http_fanout_and_buffers_frames(caplog
             await kwargs["disconnect_event"].wait()
 
     printer = SimpleNamespace(
+        id=printer_id,
+        connector_identity=str(uuid.uuid4()),
         external_camera_url="rtsp://operator:secret@camera.example/live",
         external_camera_type="rtsp",
     )
-    request = SimpleNamespace(is_disconnected=AsyncMock(return_value=False))
+    request = make_request()
     key = f"printer-{printer_id}"
     response = await camera_routes._worker_stream_response(
         printer=printer,
@@ -43,15 +45,18 @@ async def test_worker_external_route_keeps_http_fanout_and_buffers_frames(caplog
         fps=5,
         runtime=WorkerRuntime(),
     )
+    task, chunks, disconnect = serve(response, request)
     try:
-        chunk = await asyncio.wait_for(anext(response.body_iterator), timeout=1)
+        chunk = (await asyncio.wait_for(chunks.get(), timeout=1))["body"]
         assert _JPEG in chunk
-        assert _JPEG in await asyncio.wait_for(anext(response.body_iterator), timeout=1)
+        assert _JPEG in (await asyncio.wait_for(chunks.get(), timeout=1))["body"]
         assert camera_routes._get_cached_snapshot(printer_id) == _JPEG
         assert calls[0]["identity"] == str(
             uuid.uuid5(uuid.NAMESPACE_URL, f"bamdude:printer:{printer_id}:external-camera")
         )
     finally:
+        disconnect.set()
+        await asyncio.wait_for(task, 2)
         await camera_routes.shutdown_broadcaster(key)
         camera_routes._active_worker_streams.pop(printer_id, None)
         camera_routes._release_printer_frame_state(printer_id)
@@ -66,7 +71,7 @@ async def test_worker_external_route_keeps_http_fanout_and_buffers_frames(caplog
 
 
 @pytest.mark.asyncio
-async def test_worker_builtin_route_uses_stable_builtin_identity():
+async def test_worker_builtin_route_uses_stable_builtin_identity(media_runtime):
     printer_id = 987_652
     calls: list[dict] = []
 
@@ -78,13 +83,15 @@ async def test_worker_builtin_route_uses_stable_builtin_identity():
             await kwargs["disconnect_event"].wait()
 
     printer = SimpleNamespace(
+        id=printer_id,
+        connector_identity=str(uuid.uuid4()),
         ip_address="192.0.2.52",
         access_code="12345678",
         model="P1S",
         external_camera_url=None,
         external_camera_type=None,
     )
-    request = SimpleNamespace(is_disconnected=AsyncMock(return_value=False))
+    request = make_request()
     key = f"printer-{printer_id}"
     response = await camera_routes._worker_stream_response(
         printer=printer,
@@ -94,12 +101,15 @@ async def test_worker_builtin_route_uses_stable_builtin_identity():
         runtime=WorkerRuntime(),
         builtin=True,
     )
+    task, chunks, disconnect = serve(response, request)
     try:
-        assert _JPEG in await asyncio.wait_for(anext(response.body_iterator), timeout=1)
+        assert _JPEG in (await asyncio.wait_for(chunks.get(), timeout=1))["body"]
         assert calls[0]["identity"] == str(uuid.uuid5(uuid.NAMESPACE_URL, f"bamdude:printer:{printer_id}:builtin"))
         assert camera_routes.is_stream_active(printer_id)
         assert (await camera_routes.camera_status(printer_id, None))["source"] == "chamber_image"
     finally:
+        disconnect.set()
+        await asyncio.wait_for(task, 2)
         await camera_routes.shutdown_broadcaster(key)
         camera_routes._active_worker_streams.pop(printer_id, None)
         camera_routes._release_printer_frame_state(printer_id)

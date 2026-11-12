@@ -11,6 +11,8 @@ from typing import Any
 from fastapi import WebSocket
 
 from backend.app.core.auth_lifetime import FrozenAuthority
+from backend.app.services import live_projection
+from backend.app.services.live_authority import LiveHandle, live_authority
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +23,10 @@ MAX_PENDING_BYTES = 4 * 1024 * 1024
 SEND_TIMEOUT_SECONDS = 5.0
 
 
+def _undeliverable_code(handle: LiveHandle) -> int:
+    return handle.refusal_code()
+
+
 @dataclass
 class _Outbox:
     messages: deque[tuple[str, int]] = field(default_factory=deque)
@@ -29,6 +35,7 @@ class _Outbox:
     progress: asyncio.Event = field(default_factory=asyncio.Event)
     task: asyncio.Task | None = None
     close_code: int | None = None
+    started: bool = False
 
 
 class ConnectionManager:
@@ -45,6 +52,8 @@ class ConnectionManager:
         # only the Cloud Link uplink. See ``add_internal_listener``.
         self._internal_listeners: list[Callable[[dict[str, Any]], None]] = []
         self._outboxes: dict[WebSocket, _Outbox] = {}
+        self._live_handles: dict[WebSocket, LiveHandle] = {}
+        self._disconnects: dict[WebSocket, asyncio.Task] = {}
 
     # ------------------------------------------------------ internal listeners
 
@@ -106,6 +115,7 @@ class ConnectionManager:
         *,
         account_identity: str | None = None,
         authority: FrozenAuthority | None = None,
+        live_handle: LiveHandle | None = None,
     ):
         """Accept a new WebSocket connection, tagged with the authenticated user
         so per-user broadcasts can target browser sessions only.
@@ -116,6 +126,9 @@ class ConnectionManager:
         if authority is not None:
             account_identity = authority.account_identity
             user_id = authority.user_id if authority.kind == "session" else None
+        if live_handle is not None:
+            self._live_handles[websocket] = live_handle
+            live_handle.on_retire = lambda code: self.retire(websocket, code)
         await websocket.accept()
         self.active_connections.append(websocket)
         self._user_by_conn[websocket] = user_id
@@ -124,6 +137,53 @@ class ConnectionManager:
         outbox = _Outbox()
         self._outboxes[websocket] = outbox
         outbox.task = asyncio.create_task(self._writer(websocket, outbox), name="websocket-writer")
+        if live_handle is not None:
+            live_authority.own(outbox.task, cleanup=True)
+            try:
+                await live_authority.admit(live_handle)
+                if live_handle.descriptor.capture.kind == "key" and live_handle.entitlements is not None:
+                    from backend.app.services.printer_manager import printer_manager
+
+                    for pid, identity in live_handle.entitlements.printer_identities:
+                        printer_manager.remember_record_identity(pid, identity)
+            except BaseException:
+                self.retire(websocket, live_handle.code)
+                raise
+
+    def retire(self, websocket: WebSocket, code: int = 1013) -> None:
+        """Stop production synchronously; the sole writer also owns close."""
+        outbox = self._outboxes.get(websocket)
+        if outbox is None or outbox.close_code is not None:
+            return
+        outbox.close_code = code
+        self._remove(websocket)
+        outbox.messages.clear()
+        outbox.pending_bytes = 0
+        outbox.progress.set()
+        outbox.wake.set()
+        # A pre-start cancellation skips finally. Let that writer enter and
+        # close; otherwise interrupt its currently blocked send immediately.
+        if outbox.started and outbox.task is not None and outbox.task is not asyncio.current_task():
+            outbox.task.cancel()
+
+    async def receive(self, websocket: WebSocket):
+        """A retired silent peer cannot retain the receive route or restore."""
+        handle = self._live_handles.get(websocket)
+        if handle is None:
+            return await websocket.receive_json()
+        receiver = live_authority.own(asyncio.create_task(websocket.receive_json()))
+        stopped = asyncio.create_task(handle.stop.wait())
+        try:
+            done, _ = await asyncio.wait({receiver, stopped}, return_when=asyncio.FIRST_COMPLETED)
+            if stopped in done:
+                from starlette.websockets import WebSocketDisconnect
+
+                raise WebSocketDisconnect(handle.code)
+            return receiver.result()
+        finally:
+            receiver.cancel()
+            stopped.cancel()
+            await asyncio.gather(receiver, stopped, return_exceptions=True)
 
     def _remove(self, websocket: WebSocket) -> None:
         if websocket in self.active_connections:
@@ -133,6 +193,11 @@ class ConnectionManager:
         self._authority_by_conn.pop(websocket, None)
 
     def _enqueue(self, websocket: WebSocket, data: str, size: int) -> None:
+        handle = self._live_handles.get(websocket)
+        if handle is not None and not handle.deliverable():
+            if handle.admitted:
+                handle.retire(_undeliverable_code(handle))
+            return
         outbox = self._outboxes.get(websocket)
         if outbox is None or outbox.close_code is not None:
             return
@@ -154,11 +219,16 @@ class ConnectionManager:
         outbox.wake.set()
 
     async def _writer(self, websocket: WebSocket, outbox: _Outbox) -> None:
+        outbox.started = True
         try:
             while outbox.close_code is None:
                 await outbox.wake.wait()
                 outbox.wake.clear()
                 while outbox.messages and outbox.close_code is None:
+                    handle = self._live_handles.get(websocket)
+                    if handle is not None and not handle.deliverable():
+                        handle.retire(_undeliverable_code(handle))
+                        break
                     data, size = outbox.messages.popleft()
                     outbox.pending_bytes -= size
                     started = time.monotonic()
@@ -178,10 +248,17 @@ class ConnectionManager:
             logger.warning("WebSocket send timed out; closing slow client")
             outbox.close_code = 1013
         except asyncio.CancelledError:
-            raise
+            if outbox.close_code is None:
+                raise
         except Exception:
-            outbox.close_code = 1011
+            outbox.close_code = 1013 if websocket in self._live_handles else 1011
         finally:
+            handle = self._live_handles.get(websocket)
+            if handle is not None:
+                # A failed transport must stop the independent receive route
+                # too. Keep the actual writer owned until its close completes.
+                handle.retire(outbox.close_code or 1013)
+                outbox.close_code = handle.code
             self._remove(websocket)
             outbox.messages.clear()
             outbox.pending_bytes = 0
@@ -194,8 +271,28 @@ class ConnectionManager:
             finally:
                 self._outboxes.pop(websocket, None)
 
-    async def send(self, websocket: WebSocket, message: dict[str, Any]) -> None:
+    async def send(self, websocket: WebSocket, message: dict[str, Any], *, source_printer_identities=None) -> None:
         """Enqueue a direct reply, pacing only this client's snapshot producer."""
+        handle = self._live_handles.get(websocket)
+        if handle is not None:
+            if not handle.deliverable() or handle.entitlements is None:
+                if handle.admitted:
+                    handle.retire(_undeliverable_code(handle))
+                return
+            try:
+                prepared = await live_projection.prepare(message, source_printer_identities=source_printer_identities)
+            except Exception:
+                handle.retire(1013)
+                return
+            try:
+                message = live_projection.shape(
+                    prepared, handle.entitlements, credential_kind=handle.descriptor.capture.kind
+                )
+            except live_projection.IncarnationChanged:
+                handle.retire(1013)
+                return
+            if message is None:
+                return
         data = json.dumps(message)
         self._enqueue(websocket, data, len(data.encode("utf-8")))
         outbox = self._outboxes.get(websocket)
@@ -214,14 +311,26 @@ class ConnectionManager:
             await outbox.progress.wait()
 
     async def disconnect(self, websocket: WebSocket):
+        task = self._disconnects.get(websocket)
+        if task is None:
+            task = live_authority.own(asyncio.create_task(self._finish_disconnect(websocket)), cleanup=True)
+            self._disconnects[websocket] = task
+            task.add_done_callback(lambda _done: self._disconnects.pop(websocket, None))
+        await asyncio.shield(task)
+
+    async def _finish_disconnect(self, websocket: WebSocket):
         """Remove a WebSocket connection."""
         self._remove(websocket)
         outbox = self._outboxes.get(websocket)
+        handle = self._live_handles.get(websocket)
         if outbox and outbox.task:
-            outbox.task.cancel()
+            if handle is not None:
+                self.retire(websocket, handle.code if handle.retired else 1001)
+            else:
+                outbox.task.cancel()
             try:
                 with suppress(asyncio.CancelledError):
-                    await outbox.task
+                    await asyncio.shield(outbox.task)
             finally:
                 # A task cancelled before its first turn never enters the
                 # writer's finally block. Disconnect must release that queue too.
@@ -229,6 +338,10 @@ class ConnectionManager:
                 outbox.pending_bytes = 0
                 outbox.progress.set()
                 self._outboxes.pop(websocket, None)
+        handle = self._live_handles.pop(websocket, None)
+        if handle is not None:
+            handle.on_retire = None
+            live_authority.release(handle)
 
     async def shutdown(self) -> None:
         """Lifespan owns the writers, including clients already evicted."""
@@ -248,11 +361,45 @@ class ConnectionManager:
         if not self.active_connections:
             return
 
-        data = json.dumps(message)
+        data = None
+        prepared = None
+        if any(connection in self._live_handles for connection in self.active_connections):
+            try:
+                prepared = await live_projection.prepare(message)
+            except Exception:
+                for connection in tuple(self.active_connections):
+                    handle = self._live_handles.get(connection)
+                    if handle is not None:
+                        handle.retire(1013)
+                return
+        projections = {}
         started = time.monotonic()
-        size = len(data.encode("utf-8"))
+        size = 0
         for connection in list(self.active_connections):
-            self._enqueue(connection, data, size)
+            handle = self._live_handles.get(connection)
+            if handle is None:
+                if data is None:
+                    data = json.dumps(message)
+                    size = len(data.encode("utf-8"))
+                self._enqueue(connection, data, size)
+                continue
+            if not handle.deliverable() or handle.entitlements is None:
+                if handle.admitted:
+                    handle.retire(_undeliverable_code(handle))
+                continue
+            key = (handle.entitlements, handle.descriptor.capture.kind)
+            if key not in projections:
+                try:
+                    shaped = live_projection.shape(prepared, key[0], credential_kind=key[1])
+                except live_projection.IncarnationChanged:
+                    projections[key] = False
+                else:
+                    serialized = json.dumps(shaped) if shaped is not None else None
+                    projections[key] = (serialized, len(serialized.encode("utf-8"))) if serialized is not None else None
+            if projections[key] is False:
+                handle.retire(1013)
+            elif projections[key] is not None:
+                self._enqueue(connection, *projections[key])
 
         elapsed = time.monotonic() - started
         if elapsed >= 0.25:
@@ -285,8 +432,10 @@ class ConnectionManager:
                 return
             await self.broadcast(message)
             return
-        data = json.dumps(message)
-        size = len(data.encode("utf-8"))
+        data = None
+        prepared = None
+        projections = {}
+        size = 0
         for connection in list(self.active_connections):
             if self._user_by_conn.get(connection) == user_id:
                 authority = self._authority_by_conn.get(connection)
@@ -297,7 +446,38 @@ class ConnectionManager:
                     and self._account_by_conn.get(connection) != expected_account_identity
                 ):
                     continue
-                self._enqueue(connection, data, size)
+                handle = self._live_handles.get(connection)
+                if handle is None:
+                    if data is None:
+                        data = json.dumps(message)
+                        size = len(data.encode("utf-8"))
+                    self._enqueue(connection, data, size)
+                    continue
+                if not handle.deliverable() or handle.entitlements is None:
+                    if handle.admitted:
+                        handle.retire(_undeliverable_code(handle))
+                    continue
+                if prepared is None:
+                    try:
+                        prepared = await live_projection.prepare(message)
+                    except Exception:
+                        handle.retire(1013)
+                        continue
+                key = (handle.entitlements, handle.descriptor.capture.kind)
+                if key not in projections:
+                    try:
+                        shaped = live_projection.shape(prepared, key[0], personal=True, credential_kind=key[1])
+                    except live_projection.IncarnationChanged:
+                        projections[key] = False
+                    else:
+                        serialized = json.dumps(shaped) if shaped is not None else None
+                        projections[key] = (
+                            (serialized, len(serialized.encode("utf-8"))) if serialized is not None else None
+                        )
+                if projections[key] is False:
+                    handle.retire(1013)
+                elif projections[key] is not None:
+                    self._enqueue(connection, *projections[key])
 
     async def send_printer_status(self, printer_id: int, status: dict):
         """Send printer status update to all clients."""

@@ -6024,6 +6024,7 @@ async def download_library_file_for_slicer(
     file_id: int,
     token: str,
     filename: str,
+    request: Request,
     db: AsyncSession = Depends(get_db),
 ):
     """Download a library file using a slicer download token.
@@ -6036,7 +6037,7 @@ async def download_library_file_for_slicer(
     """
     from backend.app.services.domain_authority import slicer_principal
 
-    principal = await slicer_principal(token, "library", file_id)
+    principal = await slicer_principal(token, "library", file_id, request=request)
     file = await db.scalar(LibraryFile.active().where(LibraryFile.id == file_id))
     access = await read_access(db, authority=principal.capture)
     if file is None or not access.allows(file):

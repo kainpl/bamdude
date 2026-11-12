@@ -1,6 +1,8 @@
 """Own authentication work through actual SQL/hash completion during restore."""
 
 import asyncio
+import sys
+import time
 from collections.abc import Coroutine
 from contextlib import asynccontextmanager
 from typing import Any
@@ -25,10 +27,16 @@ class AuthRuntime:
     def open_admission(self):
         self._restore_drained = False
         self.admitting = True
+        module = sys.modules.get("backend.app.services.live_authority")
+        if module is not None:
+            module.live_authority.admitting = True
 
     def close_admission(self):
         self.admitting = False
         self._restore_drained = False
+        module = sys.modules.get("backend.app.services.live_authority")
+        if module is not None:
+            module.live_authority.close_admission()
 
     def ensure_restore_drained(self):
         if self.admitting or not self._restore_drained or self._tasks or self._operations or self._transactions:
@@ -89,12 +97,18 @@ class AuthRuntime:
 
     async def quiesce_for_restore(self, timeout: float = 30) -> bool:
         self.close_admission()
+        started = time.monotonic()
+        module = sys.modules.get("backend.app.services.live_authority")
+        if module is not None and not await module.live_authority.drain(timeout):
+            return False
         # Waiters never own the underlying work; cancellation leaves it tracked.
         tasks = self._tasks | self._operations
         waits = [asyncio.create_task(released.wait()) for released in self._transactions]
         try:
             if tasks or waits:
-                _, pending = await asyncio.wait(tasks | set(waits), timeout=timeout)
+                _, pending = await asyncio.wait(
+                    tasks | set(waits), timeout=max(0, timeout - (time.monotonic() - started))
+                )
                 if pending:
                     return False
             self._restore_drained = not self._tasks and not self._operations and not self._transactions

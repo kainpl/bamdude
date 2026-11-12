@@ -585,12 +585,20 @@ async def _build_client(test_engine, *, commit: bool) -> AsyncGenerator[AsyncCli
 
         invalidate_setup_gate_cache()
 
-        async with AsyncClient(
-            transport=ASGITransport(app=app),
-            base_url="http://test",
-            headers={"Authorization": f"Bearer {admin_token}"},
-        ) as client:
-            yield client
+        try:
+            async with AsyncClient(
+                transport=ASGITransport(app=app),
+                base_url="http://test",
+                headers={"Authorization": f"Bearer {admin_token}"},
+            ) as client:
+                yield client
+        finally:
+            # This transport omits lifespan. Drain the real live SQL/media/WS
+            # owner before removing its database factory or disposing engines.
+            # Clearing registries would hide a leaked viewer/resource lease.
+            from backend.app.services.live_authority import live_authority
+
+            assert await live_authority.shutdown(timeout=2), "Live transport cleanup did not drain"
 
         # The app lifespan called init_db() which used the module-level engine
         # (not the test engine), creating aiosqlite connections. Dispose those
