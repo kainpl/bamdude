@@ -1344,12 +1344,21 @@ class GitRestoreService:
             return
 
         spool_id_map: dict[int, int] = {}
+        claimed_local_ids: set[int] = set()
         tags_kept = 0
         invalid_fields = reactivated = baseline_above_used = identity_unavailable = 0
         failed_before, skipped_before = tally.failed, tally.skipped
         source_ids = Counter(
             entry["id"] for entry in spools if isinstance(entry, dict) and source_id(entry.get("id")) is not INVALID
         )
+        tag_counts = {column: Counter() for column in ("tag_uid", "tray_uuid")}
+        for entry in spools:
+            if not isinstance(entry, dict):
+                continue
+            for column, counts in tag_counts.items():
+                tag = read_field(entry, column, SPOOL_FIELDS[column], _parse_dt)
+                if isinstance(tag, str) and tag:
+                    counts[tag] += 1
 
         for entry in spools:
             if not isinstance(entry, dict):
@@ -1362,7 +1371,13 @@ class GitRestoreService:
                 continue
 
             parsed = {key: read_field(entry, key, rule, _parse_dt) for key, rule in SPOOL_FIELDS.items()}
-            invalid_fields += sum(value is INVALID for value in parsed.values())
+            if any(
+                isinstance(parsed[column], str) and parsed[column] and counts[parsed[column]] > 1
+                for column, counts in tag_counts.items()
+            ):
+                identity_unavailable += 1
+                tally.skipped += 1
+                continue
             tagged = any(isinstance(parsed[key], str) and parsed[key] for key in ("tag_uid", "tray_uuid"))
             composite_valid = isinstance(parsed["created_at"], datetime) and all(
                 parsed[key] is not INVALID for key in ("material", "brand", "subtype", "color_name")
@@ -1374,6 +1389,10 @@ class GitRestoreService:
             try:
                 existing, matched_on = await self._find_spool(db, entry)
             except MultipleResultsFound:
+                identity_unavailable += 1
+                tally.skipped += 1
+                continue
+            if existing is not None and existing.id in claimed_local_ids:
                 identity_unavailable += 1
                 tally.skipped += 1
                 continue
@@ -1390,6 +1409,7 @@ class GitRestoreService:
 
             if existing is not None:
                 if not overwrite:
+                    claimed_local_ids.add(existing.id)
                     if old_id is not None:
                         spool_id_map[old_id] = existing.id
                     tally.skipped += 1
@@ -1408,9 +1428,11 @@ class GitRestoreService:
                     row.created_at = parsed["created_at"]
                 db.add(row)
             await db.flush()
+            claimed_local_ids.add(row.id)
             if old_id is not None:
                 spool_id_map[old_id] = row.id
             tally.restored += 1
+            invalid_fields += sum(value is INVALID for value in parsed.values())
             reactivated += made_active
             baseline = read_field(
                 {"weight_used_baseline": row.weight_used_baseline},

@@ -1,6 +1,6 @@
 ## [Unreleased]
 
-- Git spool backups now preserve reset-counter anchors, last-used dates, core weight and lock state. Restoring older or damaged metadata keeps local fields when values are absent or invalid, preserves explicit zeros, and skips ambiguous spool identities. Restore notes report exact counts, including spools reactivated by overwrite.
+- Git spool backups now preserve reset-counter anchors, last-used dates, core weight and lock state. Restoring older or damaged metadata keeps local fields when values are absent or invalid, preserves explicit zeros, and skips ambiguous spool identities, including shared backup tags and repeated matches to one local spool. Restore notes count corrected fields only on restored rows and report spools reactivated by overwrite.
 
 - Recalculating archive filament costs uses only usage linked to that physical print. Unlinked usage with the same name no longer charges repeated prints or replaces a cost already priced from Spoolman; archives without linked pricing evidence use the configured filament estimate.
 

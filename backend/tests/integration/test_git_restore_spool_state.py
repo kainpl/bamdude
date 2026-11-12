@@ -341,3 +341,98 @@ async def test_category_failure_cannot_publish_tentative_spools_or_maps(db_sessi
     assert await db_session.scalar(select(func.count()).select_from(PrintArchive)) == 1
     assert await db_session.scalar(select(func.count()).select_from(Spool)) == 0
     usage.assert_not_awaited()
+
+
+@pytest.mark.parametrize("column", ["tag_uid", "tray_uuid"])
+@pytest.mark.parametrize("overwrite", [False, True])
+async def test_p3_duplicate_backup_tags_skip_all_rows_before_insert(db_session, monkeypatch, column, overwrite):
+    service = GitRestoreService()
+    usage = AsyncMock()
+    monkeypatch.setattr(service, "_restore_spool_usage", usage)
+    other = "tray_uuid" if column == "tag_uid" else "tag_uid"
+    entries = [
+        {"id": 41, column: "SHARED", other: "A", "core_weight": "bad"},
+        {"id": 42, column: "SHARED", other: "B"},
+        {"id": 43, "tag_uid": "GOOD"},
+    ]
+    tally = await restore(db_session, entries, service=service, overwrite=overwrite)
+    rows = (await db_session.execute(select(Spool))).scalars().all()
+    assert len(rows) == 1 and rows[0].tag_uid == "GOOD"
+    assert (tally.restored, tally.skipped, tally.failed) == (1, 2, 0)
+    assert usage.call_args.args[3] == {43: rows[0].id}
+    assert summary(tally)["invalid_fields"] == 0
+    assert next(n["params"]["count"] for n in tally.notes if n["code"] == "spoolIdentityUnavailable") == 2
+
+
+@pytest.mark.parametrize("column", ["tag_uid", "tray_uuid"])
+async def test_p3_duplicate_backup_tags_do_not_overwrite_local_spool(db_session, column):
+    row = await make_spool(db_session, **{column: "SHARED"})
+    tally = await restore(
+        db_session,
+        [
+            {"id": 41, column: "SHARED", "core_weight": 1},
+            {"id": 42, column: "SHARED", "core_weight": 2},
+        ],
+    )
+    await db_session.refresh(row)
+    assert row.core_weight == 310
+    assert (tally.restored, tally.skipped) == (0, 2)
+
+
+@pytest.mark.parametrize("overwrite", [False, True])
+@pytest.mark.parametrize("existing", [False, True])
+async def test_p3_one_local_spool_cannot_receive_two_source_identities(db_session, monkeypatch, existing, overwrite):
+    if existing:
+        await make_spool(db_session, tray_uuid="TRAY-A")
+        entries = [{"id": 41, "tag_uid": "TAG-A"}, {"id": 42, "tray_uuid": "TRAY-A"}]
+    else:
+        entries = [
+            {"id": source, "tag_uid": tag, "material": "PLA", "created_at": "2026-10-01T12:00:00"}
+            for source, tag in ((41, "A"), (42, "B"))
+        ]
+    service = GitRestoreService()
+    usage = AsyncMock()
+    monkeypatch.setattr(service, "_restore_spool_usage", usage)
+    tally = await restore(db_session, entries, overwrite=overwrite, service=service)
+    rows = (await db_session.execute(select(Spool))).scalars().all()
+    assert len(rows) == 1
+    assert rows[0].tag_uid == ("TAG-A" if existing else "A")
+    assert usage.call_args.args[3] == {41: rows[0].id}
+    assert tally.restored == (0 if existing and not overwrite else 1)
+    assert tally.skipped == (2 if existing and not overwrite else 1)
+    assert next(n["params"]["count"] for n in tally.notes if n["code"] == "spoolIdentityUnavailable") == 1
+
+
+async def test_p3_invalid_fields_on_overwrite_off_rows_do_not_claim_corrections(db_session):
+    row = await make_spool(db_session)
+    tally = await restore(db_session, [{"id": 41, "tag_uid": "TAG-A", "weight_used": "bad"}], overwrite=False)
+    await db_session.refresh(row)
+    assert row.weight_used == 200
+    assert (tally.restored, tally.skipped) == (0, 1)
+    assert not tally.notes
+
+
+@pytest.mark.parametrize("ambiguous", [False, True])
+async def test_p3_invalid_fields_on_unproven_rows_are_not_counted(db_session, ambiguous):
+    if ambiguous:
+        await make_spool(db_session)
+        await make_spool(db_session)
+        entry = {"id": 41, "tag_uid": "TAG-A", "weight_used": "bad"}
+    else:
+        entry = {"id": 41, "created_at": "bad", "weight_used": "bad"}
+    tally = await restore(db_session, [entry])
+    assert (tally.restored, tally.skipped) == (0, 1)
+    assert summary(tally)["invalid_fields"] == 0
+
+
+async def test_p3_invalid_field_counts_include_only_successfully_restored_rows(db_session):
+    await make_spool(db_session)
+    tally = await restore(
+        db_session,
+        [
+            {"id": 41, "tag_uid": "TAG-A", "weight_used": "bad"},
+            {"id": 42, "created_at": "bad", "weight_used": "bad", "brand": []},
+        ],
+    )
+    assert (tally.restored, tally.skipped) == (1, 1)
+    assert summary(tally)["invalid_fields"] == 1
