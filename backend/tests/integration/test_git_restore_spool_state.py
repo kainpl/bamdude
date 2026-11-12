@@ -6,7 +6,7 @@ from datetime import datetime
 from unittest.mock import AsyncMock
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
 
 from backend.app.models.spool import Spool
@@ -395,12 +395,105 @@ async def test_p3_one_local_spool_cannot_receive_two_source_identities(db_sessio
     monkeypatch.setattr(service, "_restore_spool_usage", usage)
     tally = await restore(db_session, entries, overwrite=overwrite, service=service)
     rows = (await db_session.execute(select(Spool))).scalars().all()
+    if not existing:
+        assert len(rows) == 2
+        assert {row.tag_uid for row in rows} == {"A", "B"}
+        assert usage.call_args.args[3] == {
+            entry["id"]: next(row.id for row in rows if row.tag_uid == entry["tag_uid"]) for entry in entries
+        }
+        assert (tally.restored, tally.skipped) == (2, 0)
+        assert not tally.notes
+        return
     assert len(rows) == 1
-    assert rows[0].tag_uid == ("TAG-A" if existing else "A")
+    assert rows[0].tag_uid == "TAG-A"
     assert usage.call_args.args[3] == {41: rows[0].id}
     assert tally.restored == (0 if existing and not overwrite else 1)
     assert tally.skipped == (2 if existing and not overwrite else 1)
     assert next(n["params"]["count"] for n in tally.notes if n["code"] == "spoolIdentityUnavailable") == 1
+
+
+async def collect_bundle(db, tags):
+    """Bulk creation commits identical composites; collector order is unspecified."""
+    db.add_all(
+        Spool(
+            material="PLA",
+            brand="Maker",
+            subtype="Basic",
+            color_name="Red",
+            created_at=datetime(2026, 10, 1, 12),
+            weight_used=10 * (i + 1),
+            **tag,
+        )
+        for i, tag in enumerate(tags)
+    )
+    await db.commit()
+    files = {}
+    await GitBackupService()._collect_spools(db, files)
+    return json.loads(json.dumps(files))[SPOOLS_PATH]["spools"]
+
+
+@pytest.mark.parametrize("overwrite", [False, True])
+@pytest.mark.parametrize(
+    "tags",
+    [
+        [{}, {}, {}],
+        [{"tag_uid": f"TAG-{i}"} for i in range(3)],
+        [{"tray_uuid": f"TRAY-{i}"} for i in range(3)],
+        [{}, {"tag_uid": "TAG-1"}, {"tray_uuid": "TRAY-2"}],
+    ],
+)
+async def test_bulk_bundle_collector_restores_every_spool_without_duplicates(db_session, monkeypatch, tags, overwrite):
+    entries = await collect_bundle(db_session, tags)
+    await db_session.execute(delete(Spool))
+    await db_session.commit()
+    service, usage = GitRestoreService(), AsyncMock()
+    monkeypatch.setattr(service, "_restore_spool_usage", usage)
+    tally = await restore(db_session, entries, overwrite=overwrite, service=service)
+    rows = (await db_session.execute(select(Spool))).scalars().all()
+    assert sorted(row.weight_used for row in rows) == [10, 20, 30]
+    assert (tally.restored, tally.skipped) == (3, 0)
+    mapping = usage.call_args.args[3]
+    assert set(mapping) == {entry["id"] for entry in entries}
+    assert len(set(mapping.values())) == 3
+    by_id = {row.id: row for row in rows}
+    for entry in entries:
+        row = by_id[mapping[entry["id"]]]
+        assert (row.tag_uid, row.tray_uuid, row.weight_used) == (
+            entry["tag_uid"],
+            entry["tray_uuid"],
+            entry["weight_used"],
+        )
+    await restore(db_session, entries, overwrite=overwrite, service=service)
+    assert await db_session.scalar(select(func.count()).select_from(Spool)) == 3
+    assert sorted((await db_session.execute(select(Spool.weight_used))).scalars()) == [10, 20, 30]
+
+
+@pytest.mark.parametrize("column", ["tag_uid", "tray_uuid"])
+@pytest.mark.parametrize("tagged_first", [False, True])
+async def test_bulk_bundle_tagged_member_is_claimed_before_composite(db_session, monkeypatch, column, tagged_first):
+    entries = await collect_bundle(db_session, [{}, {column: "OWN-TAG"}])
+    entries.sort(key=lambda entry: bool(entry[column]), reverse=tagged_first)
+    for entry in entries:
+        entry["weight_used"] += 1
+    service, usage = GitRestoreService(), AsyncMock()
+    monkeypatch.setattr(service, "_restore_spool_usage", usage)
+    tally = await restore(db_session, entries, service=service)
+    assert (tally.restored, tally.skipped) == (2, 0)
+    assert usage.call_args.args[3] == {entry["id"]: entry["id"] for entry in entries}
+    assert sorted((await db_session.execute(select(Spool.weight_used))).scalars()) == [11, 21]
+    assert not tally.notes
+
+
+async def test_bulk_bundle_ambiguous_existing_composites_stay_untouched(db_session, monkeypatch):
+    entries = await collect_bundle(db_session, [{}, {}, {}])
+    for entry in entries:
+        entry["weight_used"] = 999
+    service, usage = GitRestoreService(), AsyncMock()
+    monkeypatch.setattr(service, "_restore_spool_usage", usage)
+    tally = await restore(db_session, entries, service=service)
+    assert (tally.restored, tally.skipped) == (0, 3)
+    assert usage.call_args.args[3] == {}
+    assert sorted((await db_session.execute(select(Spool.weight_used))).scalars()) == [10, 20, 30]
 
 
 async def test_p3_invalid_fields_on_overwrite_off_rows_do_not_claim_corrections(db_session):

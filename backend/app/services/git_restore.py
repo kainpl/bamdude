@@ -1360,7 +1360,14 @@ class GitRestoreService:
                 if isinstance(tag, str) and tag:
                     counts[tag] += 1
 
-        for entry in spools:
+        def carries_tag(entry):
+            return isinstance(entry, dict) and any(
+                isinstance(tag := read_field(entry, column, SPOOL_FIELDS[column], _parse_dt), str) and tag
+                for column in ("tag_uid", "tray_uuid")
+            )
+
+        # Claim physical tags before an untagged composite can consume their row.
+        for entry in sorted(spools, key=carries_tag, reverse=True):
             if not isinstance(entry, dict):
                 tally.failed += 1
                 continue
@@ -1387,7 +1394,7 @@ class GitRestoreService:
                 tally.skipped += 1
                 continue
             try:
-                existing, matched_on = await self._find_spool(db, entry)
+                existing, matched_on = await self._find_spool(db, entry, claimed=claimed_local_ids)
             except MultipleResultsFound:
                 identity_unavailable += 1
                 tally.skipped += 1
@@ -1482,12 +1489,18 @@ class GitRestoreService:
 
         await self._restore_spool_usage(db, usage_payload, tally, spool_id_map, archive_id_map)
 
-    async def _find_spool(self, db: AsyncSession, entry: dict) -> tuple[Spool | None, str | None]:
+    async def _find_spool(
+        self, db: AsyncSession, entry: dict, *, claimed: set[int] | frozenset[int] = frozenset()
+    ) -> tuple[Spool | None, str | None]:
         """Match a backed-up spool to a local row, and say which key matched.
 
         Physical identity first (an RFID/Bambu tag is the spool), then a
         descriptive composite including ``created_at`` so two otherwise
         identical spools added at different times stay distinct.
+
+        Claimed rows stay visible to tag lookups so a second tag alias is
+        refused. Only composite lookup excludes them: bulk-created spools can
+        share every descriptive field and timestamp while being distinct.
 
         The second element names the column that matched — ``"tag_uid"``,
         ``"tray_uuid"`` or ``None`` for the composite. ``_guard_tag_overwrite``
@@ -1517,7 +1530,7 @@ class GitRestoreService:
                 ),
             )
         )
-        candidates = [row for row in result.scalars() if _created_at_matches(row, created_at)]
+        candidates = [row for row in result.scalars() if row.id not in claimed and _created_at_matches(row, created_at)]
         if len(candidates) > 1:
             raise MultipleResultsFound("Ambiguous spool composite")
         return (candidates[0], None) if candidates else (None, None)
