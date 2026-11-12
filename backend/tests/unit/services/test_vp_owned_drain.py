@@ -172,18 +172,23 @@ async def test_mqtt_lease_precedes_response_and_timeout_cancel_retains_root(tmp_
     manager = VirtualPrinterManager()
     manager._instances[inst.id] = inst
     manager.drain_timeout = 0.01
-    with pytest.raises(VPDrainRefused):
-        await manager.drain_for_restore()
-    root = manager._drain_task
-    assert not root.done() and not publish.done()
-    retry = asyncio.create_task(manager.drain_for_restore())
-    await asyncio.sleep(0)
-    retry.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await retry
-    assert manager._drain_task is root and not root.cancelled()
-    release.set()
-    await publish
+    try:
+        with pytest.raises(VPDrainRefused):
+            await manager.drain_for_restore()
+        root = manager._drain_task
+        # A missed10ms caller budget alone is not evidence of owned business:
+        # even a broken owner may simply need more event-loop turns to finish.
+        done, _ = await asyncio.wait({root}, timeout=0.15)
+        assert not done and not publish.done()
+        retry = asyncio.create_task(manager.drain_for_restore())
+        await asyncio.sleep(0)
+        retry.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await retry
+        assert manager._drain_task is root and not root.cancelled()
+    finally:
+        release.set()
+        await publish
     manager.drain_timeout = 5
     await manager.drain_for_restore()
     callback.assert_awaited_once()
