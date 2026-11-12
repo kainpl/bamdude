@@ -86,6 +86,20 @@ Migration seeds name historical columns for reads and writes. For INSERT use a l
 
 ## Key Invariants
 
+**Restore owns VP retirement until actual completion.** The canonical restore
+restart latch closes every ordinary VP runtime door; generic crash/operator
+holds do not. FTP and MQTT lease local business before acknowledgement, and a
+timeout/cancel leaves one reachable owner running. Never cancel that business
+between library and queue commits. Only close listeners and publish ownership
+under the manager's non-reentrant sync lock; DB/network/task joins stay outside.
+Close idle writers (short TLS grace, then abort) before joining services.
+Transparent proxies are cut/joined and reported as interruptions, not completed
+uploads. A replacement waits for predecessor proof and the latest configuration.
+Git goes from VP proof to its categories; ZIP retains its other quiesce/fence
+contracts. Both use the existing operation guard; scheduled local busy is a
+retry, not failure. VP drain does not make physical-print writers quiet.
+Vault: `40-invariants/inv-vp-retirement-is-restore-owned.md`.
+
 **Git metadata restore cannot claim a different physical print.** Archives match
 their execution UUID; legacy keys must be usable and unambiguous, and never
 become a fallback match for a different UUID. Active or uncertain snapshots

@@ -220,6 +220,22 @@ class GitBackupService:
         raise ValueError(f"Unknown provider: {provider}")
 
     async def run_backup(self, config_id: int, trigger: str = "manual") -> dict:
+        from backend.app.services.backup_files import BackupBusyError, exclusive_operation
+        from backend.app.services.git_restore import git_restore_service
+
+        if git_restore_service.is_running:
+            return {
+                "success": False,
+                "message": "A restore is currently running; wait for it to finish before backing up",
+                "log_id": None,
+            }
+        try:
+            async with exclusive_operation():
+                return await self._run_backup_owned(config_id, trigger)
+        except BackupBusyError:
+            return {"success": False, "message": "A backup is already running", "log_id": None}
+
+    async def _run_backup_owned(self, config_id: int, trigger: str = "manual") -> dict:
         """Run a backup operation.
 
         Args:

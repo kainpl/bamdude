@@ -1204,6 +1204,13 @@ async def _restore_backup(file: UploadFile, db: AsyncSession):
                 from backend.app.services.farm_startup_guard import notify_change
 
                 await notify_change()
+                from backend.app.services.virtual_printer.lifecycle import VPDrainRefused, drain_warning
+
+                await db.rollback()
+                try:
+                    vp_drain = await virtual_printer_manager.drain_for_restore()
+                except VPDrainRefused as exc:
+                    raise HTTPException(409, str(exc)) from exc
                 await _quiesce_part_render()
                 await _quiesce_library_previews()
                 from backend.app.mcp_server.runtime import mcp_runtime
@@ -1221,8 +1228,6 @@ async def _restore_backup(file: UploadFile, db: AsyncSession):
                     raise HTTPException(
                         409, "Obico readers and writers have not stopped; retry restore after they finish"
                     )
-                if virtual_printer_manager.is_enabled:
-                    await virtual_printer_manager.configure(enabled=False)
                 print_scheduler.stop()
                 await smart_plug_manager.stop_scheduler()
                 # Nothing buffered belongs to the storage that replaces this one, and no
@@ -1284,7 +1289,10 @@ async def _restore_backup(file: UploadFile, db: AsyncSession):
             logger.info("Restore complete - restart required")
             return {
                 "success": True,
-                "message": "Backup restored successfully. Please restart BamDude for changes to take effect.",
+                "message": (
+                    "Backup restored successfully. Please restart BamDude for changes to take effect. "
+                    + drain_warning(vp_drain)
+                ).strip(),
             }
         except HTTPException:
             raise

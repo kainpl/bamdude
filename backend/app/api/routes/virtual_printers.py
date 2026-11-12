@@ -622,7 +622,9 @@ async def delete_virtual_printer(
     # row (upstream Bambuddy v0.2.4.5).
     try:
         upload_dir = virtual_printer_manager._base_dir / "uploads" / str(vp_id)
-        if upload_dir.exists():
+        from backend.app.services.virtual_printer.lifecycle import restore_required
+
+        if not restore_required() and upload_dir.exists() and not virtual_printer_manager.has_owned_instance(vp_id):
             import shutil
 
             shutil.rmtree(upload_dir, ignore_errors=True)
@@ -635,4 +637,7 @@ async def delete_virtual_printer(
     except Exception as e:
         logger.error("Failed to sync virtual printers after delete: %s", e)
 
-    return {"detail": "Deleted", "id": vp_id}
+    result = {"detail": "Deleted", "id": vp_id}
+    if virtual_printer_manager.has_owned_instance(vp_id):
+        result.update(runtime_state="stopping", runtime_proven=False)
+    return result

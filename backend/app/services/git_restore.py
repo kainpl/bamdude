@@ -796,7 +796,23 @@ class GitRestoreService:
 
     # --- Restore -----------------------------------------------------------
 
-    async def run_restore(
+    async def run_restore(self, config_id, ref, categories, overwrite_existing=False):
+        from backend.app.services.backup_files import BackupBusyError, exclusive_operation
+        from backend.app.services.git_backup import git_backup_service
+
+        if git_backup_service.is_running:
+            return {
+                "success": False,
+                "message": "A backup is currently running. Wait for it to finish before restoring.",
+                "results": {},
+            }
+        try:
+            async with exclusive_operation():
+                return await self._run_restore_owned(config_id, ref, categories, overwrite_existing)
+        except BackupBusyError:
+            return {"success": False, "message": "A restore is already running", "results": {}}
+
+    async def _run_restore_owned(
         self,
         config_id: int,
         ref: str,
@@ -808,6 +824,8 @@ class GitRestoreService:
         # the mirror-image lock against us.
         from backend.app.services.farm_startup_guard import farm_startup_guard
         from backend.app.services.git_backup import git_backup_service
+        from backend.app.services.virtual_printer import virtual_printer_manager
+        from backend.app.services.virtual_printer.lifecycle import VPDrainRefused, drain_warning
 
         # The lock serialises two concurrent restores; the backup side has no
         # lock of its own, and relies on this region staying await-free after the
@@ -857,10 +875,13 @@ class GitRestoreService:
                         raise RuntimeError(error)
 
                     settings_keys_written: set[str] = set()
+                    # End config/log read transaction before callbacks may need the DB.
+                    await db.commit()
                     farm_startup_guard.hold("restore")
                     from backend.app.services.farm_startup_guard import notify_change
 
                     await notify_change()
+                    drain = await virtual_printer_manager.drain_for_restore()
                     await self._apply(
                         db, payload, categories, overwrite_existing, settings_keys_written, results=results
                     )
@@ -885,12 +906,24 @@ class GitRestoreService:
 
                     return {
                         "success": True,
-                        "message": f"Restored {total_restored} item(s) from {resolved[:7]}",
+                        "message": (
+                            f"Restored {total_restored} item(s) from {resolved[:7]} " + drain_warning(drain, git=True)
+                        ).strip(),
                         "log_id": log_id,
                         "ref": resolved,
                         "results": {name: tally.as_dict() for name, tally in results.items()},
                     }
 
+                except VPDrainRefused as exc:
+                    await db.rollback()
+                    refused_log = await db.get(GitBackupLog, log_id)
+                    if refused_log:
+                        refused_log.status = "failed"
+                        refused_log.completed_at = datetime.now(timezone.utc)
+                        refused_log.files_changed = 0
+                        refused_log.error_message = str(exc)
+                        await db.commit()
+                    raise
                 except Exception as e:
                     # Rolls back the category that was mid-flight. Every category
                     # already in ``results`` committed as it finished (see

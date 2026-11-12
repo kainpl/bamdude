@@ -482,6 +482,25 @@ describe('GitRestoreModal', () => {
     expect(screen.getByRole('button', { name: /Restore$/ })).toBeEnabled();
   });
 
+  it('shows a VP drain 409 message without a success panel', async () => {
+    const message = 'Virtual printer work has not stopped. Retry in this process.';
+    server.use(http.post('/api/v1/git-backup/restore', () =>
+      HttpResponse.json({ detail: message }, { status: 409 })
+    ));
+    render(<GitRestoreModal onClose={vi.fn()} />);
+    const checkboxes = await waitFor(() => screen.getAllByRole('checkbox') as HTMLInputElement[]);
+    await userEvent.click(checkboxes[1]);
+    await userEvent.click(screen.getByRole('button', { name: /Restore$/ }));
+    await waitFor(() => screen.getByText('Restore from backup?'));
+    expect(screen.getAllByText(/Resending can duplicate|resending can duplicate/).length).toBeGreaterThan(0);
+    const buttons = screen.getAllByRole('button', { name: /Restore$/ });
+    await userEvent.click(buttons[buttons.length - 1]);
+    await waitFor(() => expect(screen.getByText(message)).toBeInTheDocument());
+    expect(screen.queryByText('Restore from backup?')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Reload now/ })).not.toBeInTheDocument();
+    expect(screen.getByLabelText('Backup commit')).toBeInTheDocument();
+  });
+
   it('does not refresh the data caches when a restore was refused', async () => {
     server.use(
       http.post('/api/v1/git-backup/restore', () =>

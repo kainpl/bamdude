@@ -401,6 +401,28 @@ def _clean_print_lifecycle_registries():
 
 
 @pytest.fixture(autouse=True)
+def _fresh_vp_restore_generation(monkeypatch, data_dir_isolation):
+    """Each test models a fresh process, not a retry of another test's restore.
+
+    F intentionally keeps its latch and owned root until process exit. Pytest
+    instead reuses module singletons across function-scoped event loops/DBs.
+    Never reopen these owners in product CRUD just to make tests independent.
+    """
+    from backend.app.services.farm_startup_guard import farm_startup_guard
+    from backend.app.services.virtual_printer import virtual_printer_manager as manager
+
+    monkeypatch.setattr(farm_startup_guard, "restart_required", False)
+    for attr in ("_sync_task", "_drain_task"):
+        monkeypatch.setattr(manager, attr, None)
+    for attr in ("_instances", "_retiring", "_starts"):
+        monkeypatch.setattr(manager, attr, {})
+    for attr in ("_camera_tasks", "_drain_instances"):
+        monkeypatch.setattr(manager, attr, set())
+    monkeypatch.setattr(manager, "_sync_revision", 0)
+    monkeypatch.setattr(manager, "_sync_lock", asyncio.Lock())
+
+
+@pytest.fixture(autouse=True)
 def _fresh_archive_process_locks():
     """A contended asyncio lock belongs to the test's function-scoped loop.
 

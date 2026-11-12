@@ -557,10 +557,17 @@ async def restore_backup(
     if not config:
         raise HTTPException(status_code=404, detail="No configuration found. Configure backup first.")
 
-    restore_result = await git_restore_service.run_restore(
-        config.id,
-        ref=request.ref,
-        categories=request.categories,
-        overwrite_existing=request.overwrite_existing,
-    )
+    from backend.app.services.virtual_printer.lifecycle import VPDrainRefused
+
+    config_id = config.id
+    await db.rollback()  # Do not keep the API dependency's read snapshot across drain.
+    try:
+        restore_result = await git_restore_service.run_restore(
+            config_id,
+            ref=request.ref,
+            categories=request.categories,
+            overwrite_existing=request.overwrite_existing,
+        )
+    except VPDrainRefused as exc:
+        raise HTTPException(409, str(exc)) from exc
     return GitRestoreResponse(**restore_result)

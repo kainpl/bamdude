@@ -10169,6 +10169,7 @@ export default {
       title: 'Restore from Git Backup',
       subtitle: 'Pick a commit and choose what to restore',
       idleFarmWarning: 'Restore only while the farm is idle, with no active prints or uploads. Large restores can block database writes, including saving a print completion.',
+      vpDrainWarning: 'Restore disconnects virtual printer proxies and may interrupt transfers to printers. Accepted local uploads finish, but a later slicer command may be refused. Inspect pending jobs and their options before restarting and resuming; resending can duplicate a job.',
       commitLabel: 'Backup commit',
       latestCommit: 'Latest backup (branch tip)',
       categoriesLabel: 'What to restore',
@@ -10499,6 +10500,7 @@ export default {
     },
   },
   virtualPrinter: {
+    stoppingUnproven: 'Stop not yet confirmed',
     nozzle: {
       diameter: 'Nozzle diameter',
       flow: 'Flow type',
