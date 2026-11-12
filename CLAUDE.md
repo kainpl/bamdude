@@ -86,6 +86,17 @@ Migration seeds name historical columns for reads and writes. For INSERT use a l
 
 ## Key Invariants
 
+**Git metadata restore cannot claim a different physical print.** Archives match
+their execution UUID; legacy keys must be usable and unambiguous, and never
+become a fallback match for a different UUID. Active or uncertain snapshots
+and local prints allow only operator fields. File paths, order links and
+existing execution identity stay local. Energy numbers and provenance form one
+bundle. Usage links recheck the committed archive UUID, not just its integer id,
+and retain spool/printer row lifetimes through their write. Categories commit
+separately; metadata import never replays physical accounting or completion.
+Until restore admission/drain is accepted, the farm must be idle.
+Vault: 40-invariants/inv-git-restore-keeps-execution-identity.md.
+
 **A retained integration credential belongs to its effective destination.** Public reads expose presence, never the value, and save and draft tests share keep/clear/replace resolution. Every pair writer takes the pre-existing installation credential anchor before authoritative adapter rows (existing outer resource guards stay outermost); PostgreSQL locks it and SQLite reserves its writer before reads. Missing anchor fails closed; bootstrap/full restore creates it before admission. Freeze the validated pair and finish the short transaction before network I/O. Partial restore cannot rebind local credential destinations; full private backups retain credentials. Vault: `40-invariants/inv-integration-credential-belongs-to-destination.md`.
 
 **Obico evidence is an observation, not a new camera capture or print authority.** The opt-in bounded recorder owns immutable analysed JPEG bytes and validated server-returned center tuples; display projection never guesses the ML backend or corrects upstream height scaling. Images use the encoded JPEG grid without EXIF rotation, and buffer arrival is not exposure time. One store owns publication, quotas and deletion. Reference-based backup pins protect originals without pausing recording; logical deletion commits first, then pin check and actual unlink share one guard until owned I/O finishes. Printer deletion uses short store barriers, never holds that guard across archive/task/VP work and never waits for backup copying; restore separately drains its owner. Error/cancellation rolls back the request before reacquiring the store guard. Startup inventories only owned names and sizes, leaving content verification to read/backup/restore; foreign plain files/directories are untouched and never traversed. Runtime generations fence stale observations without entering SQL; restore drains Obico before replacing live storage. Vault: `40-invariants/inv-obico-evidence-is-an-observation.md`.

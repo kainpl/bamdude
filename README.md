@@ -412,6 +412,7 @@ BamDude AI includes a setup panel, client packages and a shared diagnostic skill
 - **Orca Cloud profile sync & push** — pair once (under BamDude's own registered app identity, via a device code) and use your Orca Cloud printer/process/filament presets as a preset tier in the slice dialog and AMS-slot picker; mirrored server-side into the filament family catalog alongside Bambu Cloud's. Authored filament families push back to Orca Cloud too, with explicit conflict resolution when a profile changed in the cloud
 - K-profiles (pressure advance)
 - Git backup (GitHub + GitLab)
+  - Restore only with the farm idle and no active uploads. Large SQLite restores can block database writes, including print completion. [Git metadata restore](docs/development/git-metadata-restore.md) describes archive identity, legacy limits and the metadata-only scope.
 - API keys & webhooks
 - LDAP/Active Directory authentication
 

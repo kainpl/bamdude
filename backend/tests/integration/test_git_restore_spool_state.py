@@ -208,7 +208,7 @@ async def test_ambiguous_tag_and_missing_identity_have_no_writes_or_maps(db_sess
     await make_spool(db_session)
     await make_spool(db_session)
     service = GitRestoreService()
-    usage = AsyncMock()
+    usage = AsyncMock(return_value=(0, False))
     monkeypatch.setattr(service, "_restore_spool_usage", usage)
     tally = await restore(db_session, [{"id": 41, "tag_uid": "TAG-A", "core_weight": 1}, {"id": 42}], service=service)
     assert tally.skipped == 2 and usage.call_args.args[3] == {}
@@ -218,7 +218,7 @@ async def test_ambiguous_tag_and_missing_identity_have_no_writes_or_maps(db_sess
 
 async def test_duplicate_source_ids_and_bool_are_failed_before_mutation(db_session, monkeypatch):
     service = GitRestoreService()
-    usage = AsyncMock()
+    usage = AsyncMock(return_value=(0, False))
     monkeypatch.setattr(service, "_restore_spool_usage", usage)
     tally = await restore(
         db_session,
@@ -262,7 +262,7 @@ async def test_large_invalid_payload_reports_exact_counts_with_twenty_note_cap(d
     assert "T99" not in json.dumps(tally.notes)
 
 
-async def test_s1_still_ignores_canonical_usage_alias(db_session):
+async def test_s2_connects_canonical_usage_alias_without_debiting_weight(db_session):
     row = await make_spool(db_session)
     service = GitRestoreService()
     tally = _CategoryTally()
@@ -277,8 +277,8 @@ async def test_s1_still_ignores_canonical_usage_alias(db_session):
         {},
     )
     await db_session.commit()
-    assert tally.restored == 1 and row.weight_used == 200
-    assert await db_session.scalar(select(func.count()).select_from(SpoolUsageHistory)) == 0
+    assert tally.restored == 2 and row.weight_used == 200
+    assert await db_session.scalar(select(func.count()).select_from(SpoolUsageHistory)) == 1
 
 
 @pytest.mark.parametrize("overwrite", [False, True])
@@ -326,11 +326,21 @@ async def test_category_failure_cannot_publish_tentative_spools_or_maps(db_sessi
 
     monkeypatch.setattr(db_session, "flush", fail_second_spool)
     service = GitRestoreService()
-    usage = AsyncMock()
+    usage = AsyncMock(return_value=(0, False))
     monkeypatch.setattr(service, "_restore_spool_usage", usage)
     results = {}
     payload = {
-        "archives/print_archives.json": {"archives": [{"id": 71, "filename": "previous-category", "file_size": 0}]},
+        "archives/print_archives.json": {
+            "archives": [
+                {
+                    "id": 71,
+                    "filename": "previous-category",
+                    "file_size": 0,
+                    "status": "completed",
+                    "started_at": "2026-10-01T12:00:00",
+                }
+            ]
+        },
         SPOOLS_PATH: {"spools": [{"id": 41, "tag_uid": "FIRST"}, {"id": 42, "tag_uid": "SECOND"}]},
     }
     with pytest.raises(type(failure)):
@@ -348,7 +358,7 @@ async def test_category_failure_cannot_publish_tentative_spools_or_maps(db_sessi
 @pytest.mark.parametrize("overwrite", [False, True])
 async def test_p3_duplicate_backup_tags_skip_all_rows_before_insert(db_session, monkeypatch, column, overwrite):
     service = GitRestoreService()
-    usage = AsyncMock()
+    usage = AsyncMock(return_value=(0, False))
     monkeypatch.setattr(service, "_restore_spool_usage", usage)
     other = "tray_uuid" if column == "tag_uid" else "tag_uid"
     entries = [
@@ -392,7 +402,7 @@ async def test_p3_one_local_spool_cannot_receive_two_source_identities(db_sessio
             for source, tag in ((41, "A"), (42, "B"))
         ]
     service = GitRestoreService()
-    usage = AsyncMock()
+    usage = AsyncMock(return_value=(0, False))
     monkeypatch.setattr(service, "_restore_spool_usage", usage)
     tally = await restore(db_session, entries, overwrite=overwrite, service=service)
     rows = (await db_session.execute(select(Spool))).scalars().all()
@@ -447,7 +457,7 @@ async def test_bulk_bundle_collector_restores_every_spool_without_duplicates(db_
     entries = await collect_bundle(db_session, tags)
     await db_session.execute(delete(Spool))
     await db_session.commit()
-    service, usage = GitRestoreService(), AsyncMock()
+    service, usage = GitRestoreService(), AsyncMock(return_value=(0, False))
     monkeypatch.setattr(service, "_restore_spool_usage", usage)
     tally = await restore(db_session, entries, overwrite=overwrite, service=service)
     rows = (await db_session.execute(select(Spool))).scalars().all()
@@ -476,7 +486,7 @@ async def test_bulk_bundle_tagged_member_is_claimed_before_composite(db_session,
     entries.sort(key=lambda entry: bool(entry[column]), reverse=tagged_first)
     for entry in entries:
         entry["weight_used"] += 1
-    service, usage = GitRestoreService(), AsyncMock()
+    service, usage = GitRestoreService(), AsyncMock(return_value=(0, False))
     monkeypatch.setattr(service, "_restore_spool_usage", usage)
     tally = await restore(db_session, entries, service=service)
     assert (tally.restored, tally.skipped) == (2, 0)
@@ -489,7 +499,7 @@ async def test_bulk_bundle_ambiguous_existing_composites_stay_untouched(db_sessi
     entries = await collect_bundle(db_session, [{}, {}, {}])
     for entry in entries:
         entry["weight_used"] = 999
-    service, usage = GitRestoreService(), AsyncMock()
+    service, usage = GitRestoreService(), AsyncMock(return_value=(0, False))
     monkeypatch.setattr(service, "_restore_spool_usage", usage)
     tally = await restore(db_session, entries, service=service)
     assert (tally.restored, tally.skipped) == (0, 3)
@@ -527,7 +537,7 @@ async def test_recycled_tag_add_missing_does_not_duplicate_existing_spool(db_ses
     await db_session.refresh(first)
     assert getattr(first, column) is None and getattr(second, column) == tag
     before = [tuple(getattr(row, col.name) for col in Spool.__table__.columns) for row in (first, second)]
-    service, usage = GitRestoreService(), AsyncMock()
+    service, usage = GitRestoreService(), AsyncMock(return_value=(0, False))
     monkeypatch.setattr(service, "_restore_spool_usage", usage)
     tally = await restore(db_session, entries, overwrite=False, service=service)
     rows = (await db_session.execute(select(Spool).order_by(Spool.id))).scalars().all()

@@ -1,7 +1,7 @@
 """Literal Git metadata rules; missing, invalid, null and zero stay distinct.
 
-Archive/usage numeric rules are parser-only until the identity/outcome review.
-Only spool fields are connected to a writer in this stage.
+Archive and usage writers apply these rules only after proving row identity
+and deciding precedence. Spool matching has its own reviewed identity rules.
 """
 
 from collections.abc import Callable

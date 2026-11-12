@@ -100,6 +100,8 @@ describe('GitRestoreModal', () => {
       expect(screen.getByText('Restore from Git Backup')).toBeInTheDocument();
     });
     expect(screen.getByLabelText('Backup commit')).toBeInTheDocument();
+    expect(screen.getByRole('note')).toHaveTextContent('Restore only while the farm is idle');
+    expect(screen.getByRole('note')).toHaveTextContent('saving a print completion');
   });
 
   it('defaults to the latest commit and lists recent commits', async () => {
@@ -279,7 +281,7 @@ describe('GitRestoreModal', () => {
     // The locale string with {{count}} filled in, not the server's English —
     // which is what makes the note translatable for a non-English user.
     expect(
-      screen.getByText(/^1 usage record\(s\) skipped - their spool is not in this backup's spool list/)
+      screen.getByText(/^1 usage record\(s\) skipped - no accepted spool identity was available/)
     ).toBeInTheDocument();
     expect(screen.queryByText('raw server English, should not be rendered')).not.toBeInTheDocument();
     expect(screen.getByText(/reactivated spools: 2/)).toBeInTheDocument();
