@@ -9,6 +9,7 @@ import pytest
 from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
 
+from backend.app.api.routes.inventory import LinkTagRequest, link_tag_to_spool
 from backend.app.models.spool import Spool
 from backend.app.models.spool_usage_history import SpoolUsageHistory
 from backend.app.schemas.git_backup import RestoreCategory
@@ -494,6 +495,46 @@ async def test_bulk_bundle_ambiguous_existing_composites_stay_untouched(db_sessi
     assert (tally.restored, tally.skipped) == (0, 3)
     assert usage.call_args.args[3] == {}
     assert sorted((await db_session.execute(select(Spool.weight_used))).scalars()) == [10, 20, 30]
+
+
+@pytest.mark.parametrize("column", ["tag_uid", "tray_uuid"])
+@pytest.mark.parametrize(
+    "relation", ["different_time", "different_description", "missing_composite", "invalid_composite"]
+)
+async def test_recycled_tag_add_missing_does_not_duplicate_existing_spool(db_session, monkeypatch, column, relation):
+    tag = "AABB" if column == "tag_uid" else "A" * 32
+    tags = {"tag_uid": None, "tray_uuid": None, column: tag}
+    first = await make_spool(db_session, color_name="Blue" if relation == "different_time" else "Red", **tags)
+    second = await make_spool(
+        db_session,
+        tag_uid=None,
+        color_name="Blue",
+        weight_used=20,
+        created_at=datetime(2026, 10, 1 if relation == "different_description" else 2, 12),
+    )
+    files = {}
+    await GitBackupService()._collect_spools(db_session, files)
+    entries = json.loads(json.dumps(files))[SPOOLS_PATH]["spools"]
+    owner = next(entry for entry in entries if entry["id"] == first.id)
+    if relation == "missing_composite":
+        del owner["created_at"]
+    elif relation == "invalid_composite":
+        owner["brand"] = []
+
+    first.archived_at = datetime(2026, 10, 3)
+    await db_session.commit()
+    await link_tag_to_spool(second.id, LinkTagRequest(**{column: tag}), db_session, None)
+    await db_session.refresh(first)
+    assert getattr(first, column) is None and getattr(second, column) == tag
+    before = [tuple(getattr(row, col.name) for col in Spool.__table__.columns) for row in (first, second)]
+    service, usage = GitRestoreService(), AsyncMock()
+    monkeypatch.setattr(service, "_restore_spool_usage", usage)
+    tally = await restore(db_session, entries, overwrite=False, service=service)
+    rows = (await db_session.execute(select(Spool).order_by(Spool.id))).scalars().all()
+    assert [tuple(getattr(row, col.name) for col in Spool.__table__.columns) for row in rows] == before
+    assert (tally.restored, tally.skipped) == (0, 2)
+    assert usage.call_args.args[3] == {first.id: second.id}
+    assert next(n["params"]["count"] for n in tally.notes if n["code"] == "spoolIdentityUnavailable") == 1
 
 
 async def test_p3_invalid_fields_on_overwrite_off_rows_do_not_claim_corrections(db_session):

@@ -185,6 +185,17 @@ def _parse_dt(value) -> datetime | None:
     return parsed
 
 
+def _spool_composite_key(parsed: dict) -> tuple | None:
+    """A parsed backup row's descriptive identity, not its current tag holder's."""
+    keys = ("material", "brand", "subtype", "color_name")
+    if not isinstance(parsed["created_at"], datetime) or any(parsed[key] is INVALID for key in keys):
+        return None
+    return (
+        *(SPOOL_FIELDS[key].default if parsed[key] is MISSING else parsed[key] for key in keys),
+        parsed["created_at"],
+    )
+
+
 def _created_at_matches(row, created_at: datetime | None) -> bool:
     """Does ``row.created_at`` equal a timestamp read out of a backup?
 
@@ -1344,7 +1355,7 @@ class GitRestoreService:
             return
 
         spool_id_map: dict[int, int] = {}
-        claimed_local_ids: set[int] = set()
+        claimed_by: dict[int, tuple | None] = {}
         tags_kept = 0
         invalid_fields = reactivated = baseline_above_used = identity_unavailable = 0
         failed_before, skipped_before = tally.failed, tally.skipped
@@ -1394,12 +1405,12 @@ class GitRestoreService:
                 tally.skipped += 1
                 continue
             try:
-                existing, matched_on = await self._find_spool(db, entry, claimed=claimed_local_ids)
+                existing, matched_on = await self._find_spool(db, entry, claimed=claimed_by)
             except MultipleResultsFound:
                 identity_unavailable += 1
                 tally.skipped += 1
                 continue
-            if existing is not None and existing.id in claimed_local_ids:
+            if existing is not None and existing.id in claimed_by:
                 identity_unavailable += 1
                 tally.skipped += 1
                 continue
@@ -1416,7 +1427,7 @@ class GitRestoreService:
 
             if existing is not None:
                 if not overwrite:
-                    claimed_local_ids.add(existing.id)
+                    claimed_by[existing.id] = _spool_composite_key(parsed)
                     if old_id is not None:
                         spool_id_map[old_id] = existing.id
                     tally.skipped += 1
@@ -1435,7 +1446,7 @@ class GitRestoreService:
                     row.created_at = parsed["created_at"]
                 db.add(row)
             await db.flush()
-            claimed_local_ids.add(row.id)
+            claimed_by[row.id] = _spool_composite_key(parsed)
             if old_id is not None:
                 spool_id_map[old_id] = row.id
             tally.restored += 1
@@ -1490,7 +1501,7 @@ class GitRestoreService:
         await self._restore_spool_usage(db, usage_payload, tally, spool_id_map, archive_id_map)
 
     async def _find_spool(
-        self, db: AsyncSession, entry: dict, *, claimed: set[int] | frozenset[int] = frozenset()
+        self, db: AsyncSession, entry: dict, *, claimed: dict[int, tuple | None] | None = None
     ) -> tuple[Spool | None, str | None]:
         """Match a backed-up spool to a local row, and say which key matched.
 
@@ -1499,8 +1510,9 @@ class GitRestoreService:
         identical spools added at different times stay distinct.
 
         Claimed rows stay visible to tag lookups so a second tag alias is
-        refused. Only composite lookup excludes them: bulk-created spools can
-        share every descriptive field and timestamp while being distinct.
+        refused. Composite lookup excludes only claims by a row with the same
+        valid composite: distinct bulk siblings may share every field, but a
+        recycled tag can claim a differently described spool that still exists.
 
         The second element names the column that matched — ``"tag_uid"``,
         ``"tray_uuid"`` or ``None`` for the composite. ``_guard_tag_overwrite``
@@ -1530,7 +1542,11 @@ class GitRestoreService:
                 ),
             )
         )
-        candidates = [row for row in result.scalars() if row.id not in claimed and _created_at_matches(row, created_at)]
+        key = _spool_composite_key(parsed)
+        sibling_claims = {local for local, owner in (claimed or {}).items() if owner is not None and owner == key}
+        candidates = [
+            row for row in result.scalars() if row.id not in sibling_claims and _created_at_matches(row, created_at)
+        ]
         if len(candidates) > 1:
             raise MultipleResultsFound("Ambiguous spool composite")
         return (candidates[0], None) if candidates else (None, None)
