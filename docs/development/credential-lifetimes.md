@@ -1,7 +1,7 @@
 # Credential lifetimes
 
-This contract is implemented on the G01 C development branch. Deployment and
-independent acceptance are separate from the implementation checks.
+This independently accepted contract is implemented in `feature/v0.7.3-fixes`.
+It is not included in the stable 0.7.3 release.
 
 Accounts have an immutable identity, independent of username and numeric row
 id. A browser session has its own server-side record and records the actual
