@@ -1,8 +1,8 @@
 # Live access and revocation
 
-This is the implementation contract for G01 D. The candidate requires independent
-acceptance before integration into the fixes line. Credential identity and the
-upgrade/reissue procedure remain in [credential lifetimes](credential-lifetimes.md).
+This is the accepted G01 D implementation contract in the current fixes line,
+after stable 0.7.3. Credential identity and the upgrade/reissue procedure remain
+in [credential lifetimes](credential-lifetimes.md).
 
 ## Selecting a credential
 
@@ -108,3 +108,12 @@ Generic finite exports/downloads, one-use slicer file delivery and ordinary poll
 do not gain a continuous body watcher. Their request authentication still follows
 the explicit-key rule. No archive identity, physical-print history or queue model
 is changed by this contract.
+
+## Known limits
+
+- Dispatch display text stays masked if a non-null source id no longer resolves
+  to a current visible row, including for administrators.
+- Metadata lookup can fail before viewer registration. That path returns 503
+  without `Retry-After`; clients should still back off before retrying.
+- `firmware_upload_progress` omits its message/error/filename fields; the current
+  UI reads upload progress through REST polling instead.

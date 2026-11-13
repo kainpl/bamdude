@@ -72,6 +72,8 @@ support is a bug report, a translation PR or a star. If you would rather chip in
 
 **Credential upgrade in current development:** sessions and credentials are bound to immutable accounts in `feature/v0.7.3-fixes`. Upgrading requires signing in again and reissuing legacy API keys and camera/monitor tokens; Settings shows the affected counts. Follow the [replacement checklist](docs/development/credential-lifetimes.md) for integrations before upgrading. These changes have passed independent acceptance and are not included in stable 0.7.3.
 
+**Live access in current development:** revoking a session or credential stops its open WebSockets, camera views and covered private media within five seconds, while other device sessions and shared camera viewers keep running. Live events use current permissions and printer scope. An explicitly supplied API key must be valid; it cannot fall back to a browser session or URL token. See the [live access contract](docs/development/live-access.md) for expiry, retry behavior and delivery limits. These accepted changes are not included in stable 0.7.3.
+
 Integration editors show configured credentials without returning them. Keeping a saved credential requires an unchanged effective destination; connection tests use the draft without saving it. API clients can use explicit keep/replace/clear actions as described in the [credential-editing contract](docs/development/credential-edits.md). These changes are also in development after 0.7.3.
 
 **SSO and LDAP in current development:** SSO Remember Me works through callback and 2FA; LDAP groups support AD, lldap, OpenLDAP and POSIX with safe handling of incomplete searches. These accepted changes are in `feature/v0.7.3-fixes` and are not included in stable 0.7.3. The [authentication handoff contract](docs/development/authentication-handoffs.md) covers API behavior and upgrade compatibility.
@@ -431,7 +433,7 @@ BamDude AI includes a setup panel, client packages and a shared diagnostic skill
 ### Authentication
 - Group-based permissions (80+ granular)
 - JWT tokens, API key support
-- Current access checks for live channels, with scoped printer status and independent viewer termination; see the [live access contract](docs/development/live-access.md) for candidate status and API-key precedence
+- Current access checks for live channels, with scoped printer status and independent viewer termination; see the [live access contract](docs/development/live-access.md) for bounded revocation and API-key precedence
 - **OIDC (OpenID Connect)** — PocketID, Authentik, Keycloak, Authelia, Google, **Azure Entra ID** (`preferred_username` / `upn` claim, optional skip of `email_verified` gate)
 - **SSO autologin** and an option to **disable local username/password login** (lockout-guarded)
 - **SSO Remember Me** — manual sign-in keeps your choice through the provider and two-factor checks, within the administrator's session limit; automatic SSO uses a browser-session cookie
