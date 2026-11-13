@@ -345,7 +345,7 @@ async def preview(
             snapshot.printers = [p for p in snapshot.printers if p.printer_id in printer_scope]
         ranked = await ff.rank_active_orders(db)
         walk = ranked[: ranked.index(project_id) + 1] if project_id in ranked else [project_id]
-        plans = await plan_for_orders(db, walk, capacity=ff.capacity_from_snapshot(snapshot))
+        plans = await plan_for_orders(db, walk, snapshot=snapshot)
         plans[project_id] = plan
         f = await simulate(snapshot, plans, walk, project_id, now)
         accepting = ff.accepting_models(snapshot, project_id)

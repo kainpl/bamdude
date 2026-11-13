@@ -6824,6 +6824,7 @@ export interface DraftPreviewRequest {
 export interface OrderPrinterResources {
   models: string[] | null;
   printer_ids: number[] | null;
+  include_paused_queues?: boolean;
 }
 export interface OrderPrinterResourceState {
   resources: OrderPrinterResources;

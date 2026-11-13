@@ -22,6 +22,10 @@ def constrained(policy):
     return bool(policy and (policy.get("models") is not None or policy.get("printer_ids") is not None))
 
 
+def includes_paused_queues(policy):
+    return (policy or {}).get("include_paused_queues") is True
+
+
 def token(policy):
     from backend.app.services.order_draft import digest
 
@@ -131,7 +135,14 @@ async def update(db, project_id, request, access):
     current = project.printer_resources or {"models": None, "printer_ids": None}
     if token(current) != request.expected_token:
         raise refusal()
-    policy = request.resources.model_dump()
+    policy = request.resources.model_dump(include={"models", "printer_ids"})
+    include_paused = (
+        request.resources.include_paused_queues
+        if "include_paused_queues" in request.resources.model_fields_set
+        else includes_paused_queues(current)
+    )
+    if include_paused:
+        policy["include_paused_queues"] = True
     ids = policy["printer_ids"]
     if ids is not None:
         available = set(
@@ -142,7 +153,7 @@ async def update(db, project_id, request, access):
     # A printer-scoped key cannot change routing of an order across the whole farm.
     if access.actor.kind == "api_key" and printer_scope is not None:
         raise order_plan_access.denied()
-    project.printer_resources = policy if constrained(policy) else None
+    project.printer_resources = policy if constrained(policy) or include_paused else None
     await db.flush()
     return await read(db, project_id, printer_scope)
 
@@ -325,7 +336,10 @@ async def replan(db, project_id, request, access):
                 exclude_printer_ids=excluded_printer,
             )
             fleet = await _current_fleet_capacity(
-                db, exclude_auto_ids=excluded_auto, exclude_printer_ids=excluded_printer
+                db,
+                exclude_auto_ids=excluded_auto,
+                exclude_printer_ids=excluded_printer,
+                include_paused_queues=includes_paused_queues(data.ctx.project.printer_resources),
             )
             recipes = {pid: [c for c in candidates if visible(c[1])] for pid, candidates in data.recipes.items()}
             plan = plan_lines(data.ctx, figures, recipes, queued, data.price, fleet)

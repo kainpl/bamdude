@@ -19,8 +19,12 @@ function proposal(): OrderResourceProposal {
 }
 beforeEach(() => {
   vi.clearAllMocks();
-  vi.spyOn(api, 'getOrderPrinterResources').mockResolvedValue(state());
-  vi.spyOn(api, 'updateOrderPrinterResources').mockImplementation(async (_id, _token, resources) => ({ ...state(), token: 'd'.repeat(64), resources }));
+  let stored = state();
+  vi.spyOn(api, 'getOrderPrinterResources').mockImplementation(async () => stored);
+  vi.spyOn(api, 'updateOrderPrinterResources').mockImplementation(async (_id, _token, resources) => {
+    stored = { ...stored, token: 'd'.repeat(64), resources };
+    return stored;
+  });
   vi.spyOn(api, 'getWorkingPlan').mockResolvedValue({ revision: 2 } as WorkingPlan);
   vi.spyOn(api, 'previewOrderResourceReplan').mockResolvedValue(proposal());
   vi.spyOn(api, 'applyOrderResourceReplan').mockResolvedValue({ working_plan: { revision: 3 } as WorkingPlan, removed_auto_ids: [2,3], removed_printer_ids: [4] });
@@ -32,6 +36,24 @@ it('shows a visible named action and persistent whole-farm summary', async () =>
   await screen.findByText('Whole farm');
   fireEvent.click(screen.getByRole('button', { name: 'Configure restrictions' }));
   expect(configure).toHaveBeenCalledOnce();
+});
+
+it('saves paused-queue planning directly from the order card', async () => {
+  const onChanged = vi.fn();
+  render(<OrderPrinterResources orderId={1} editable onConfigure={vi.fn()} onChanged={onChanged} />);
+  const toggle = await screen.findByRole('checkbox', { name: 'Include paused printers in the print plan' });
+  expect(toggle).not.toBeChecked();
+  fireEvent.click(toggle);
+  await waitFor(() => expect(toggle).toBeChecked());
+  expect(api.updateOrderPrinterResources).toHaveBeenCalledWith(1, 'a'.repeat(64), {
+    models: null, printer_ids: null, include_paused_queues: true,
+  });
+  expect(onChanged).toHaveBeenCalledOnce();
+  fireEvent.click(toggle);
+  await waitFor(() => expect(toggle).not.toBeChecked());
+  expect(api.updateOrderPrinterResources).toHaveBeenLastCalledWith(1, 'd'.repeat(64), {
+    models: null, printer_ids: null, include_paused_queues: false,
+  });
 });
 
 it('explains intersection, preserves product files and saves only explicit order choices', async () => {

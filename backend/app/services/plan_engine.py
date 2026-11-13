@@ -36,6 +36,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from functools import lru_cache
+from typing import TYPE_CHECKING
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -59,6 +60,9 @@ from backend.app.services.order_queue import awaiting_auto_row_conditions, queue
 from backend.app.services.product_composition import PlateRecipe, estimate_seconds, recipes_for_products
 from backend.app.utils.model_compatibility import model_compatibility
 from backend.app.utils.printer_models import normalize_model_name
+
+if TYPE_CHECKING:
+    from backend.app.services.farm_forecast import FarmSnapshot
 
 logger = logging.getLogger(__name__)
 
@@ -1383,7 +1387,11 @@ async def queued_yield_by_line(
 
 
 async def _current_fleet_capacity(
-    db: AsyncSession, *, exclude_auto_ids: tuple[int, ...] = (), exclude_printer_ids: tuple[int, ...] = ()
+    db: AsyncSession,
+    *,
+    exclude_auto_ids: tuple[int, ...] = (),
+    exclude_printer_ids: tuple[int, ...] = (),
+    include_paused_queues: bool = False,
 ) -> FleetCapacity:
     """Read the forecast-owned farm snapshot through its narrow planning adapter.
 
@@ -1402,12 +1410,18 @@ async def _current_fleet_capacity(
     return capacity_from_snapshot(
         await load_snapshot(
             db, datetime.utcnow(), exclude_auto_ids=exclude_auto_ids, exclude_printer_ids=exclude_printer_ids
-        )
+        ),
+        include_paused_queues=include_paused_queues,
     )
 
 
 async def plan_for_orders(
-    db: AsyncSession, project_ids: list[int], *, capacity: FleetCapacity | None = None, working: bool = True
+    db: AsyncSession,
+    project_ids: list[int],
+    *,
+    capacity: FleetCapacity | None = None,
+    snapshot: FarmSnapshot | None = None,
+    working: bool = True,
 ) -> dict[int, OrderPlan]:
     """The plan of every order in ``project_ids``, in ONE round of queries.
 
@@ -1459,7 +1473,15 @@ async def plan_for_orders(
     # A batch is often a comparison of independent orders (the candidates
     # dialog is one caller), so every order starts from the same farm snapshot.
     # Within an order ``plan_lines`` shares its copy across every line.
-    fleet = capacity if capacity is not None else await _current_fleet_capacity(db)
+    from backend.app.services.farm_forecast import capacity_from_snapshot, load_snapshot
+    from backend.app.services.order_resources import includes_paused_queues
+
+    fleets = {}
+    if capacity is None:
+        if snapshot is None:
+            snapshot = await load_snapshot(db, datetime.utcnow())
+        modes = {includes_paused_queues(ctx.project.printer_resources) for ctx in contexts}
+        fleets = {mode: capacity_from_snapshot(snapshot, include_paused_queues=mode) for mode in modes}
     plans = {
         ctx.project.id: plan_lines(
             ctx,
@@ -1467,7 +1489,9 @@ async def plan_for_orders(
             recipes_by_product,
             queued,
             price_per_gram,
-            fleet.copy(),
+            (
+                capacity if capacity is not None else fleets[includes_paused_queues(ctx.project.printer_resources)]
+            ).copy(),
         )
         for ctx in contexts
     }

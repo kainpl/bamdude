@@ -505,16 +505,15 @@ def _initial_state(snapshot: FarmSnapshot, *, assume_queues_resumed: bool = Fals
     return state
 
 
-def capacity_from_snapshot(snapshot: FarmSnapshot) -> FleetCapacity:
+def capacity_from_snapshot(snapshot: FarmSnapshot, *, include_paused_queues: bool = False) -> FleetCapacity:
     """The initial planner's deliberately narrow view of a live farm.
 
     The forecast first walks existing running, queued and staged work, so a
-    new order starts behind existing work. The draft is sized for the fleet
-    when its queues resume, including the load already waiting in those
-    queues. Live forecasts build their own state with pauses still in effect.
+    new order starts behind existing work. An order can plan for the fleet
+    after its queues resume, including work already waiting in those queues.
     Maintenance, queue errors and auto-routing opt-outs exclude a machine.
     """
-    state = _initial_state(snapshot, assume_queues_resumed=True)
+    state = _initial_state(snapshot, assume_queues_resumed=include_paused_queues)
     model_by_printer = {machine.printer_id: machine.model for machine in snapshot.printers}
     return FleetCapacity(
         [
@@ -1222,9 +1221,7 @@ async def forecast_projects(
     due_of = {row.id: row.due_date for row in status_rows}
     active_targets = {pid for pid in wanted if status_of.get(pid) == "active"}
     walk = ranked[: max((i for i, pid in enumerate(ranked) if pid in active_targets), default=-1) + 1]
-    plans: dict[int, OrderPlan] = (
-        await plan_for_orders(db, walk, capacity=capacity_from_snapshot(snapshot)) if walk else {}
-    )
+    plans: dict[int, OrderPlan] = await plan_for_orders(db, walk, snapshot=snapshot) if walk else {}
     out = forecast_orders(snapshot, plans, walk, {pid for pid in active_targets if pid in plans}, now)
     for pid in wanted:
         if pid not in out and pid in status_of:

@@ -301,7 +301,16 @@ async def test_rebuilding_draft_keeps_fleet_distribution_when_queues_pause(
     assert sum(expected.values()) == 10
     for model in printers:
         await pause(model, True)
+    assert await rebuild() == {}
+
+    selected = await choose(client, s, models=list(printers), include_paused_queues=True)
+    assert selected["resources"]["include_paused_queues"] is True
     assert await rebuild() == expected
+    _, resource_proposal = await review(client, s)
+    assert {entry["plate_id"]: entry["count"] for entry in resource_proposal["entries"]} == expected
+    forecast = await client.get(f"/api/v1/projects/{s['order']}/forecast")
+    assert forecast.status_code == 200, forecast.text
+    assert forecast.json()["now_seconds"] is None
     for model in ("H2D", "P2S"):
         await pause(model, False)
         assert await rebuild() == expected
@@ -311,6 +320,13 @@ async def test_rebuilding_draft_keeps_fleet_distribution_when_queues_pause(
     remaining = await rebuild()
     assert set(remaining) == {plates["H2D"], plates["P2S"]}
     assert sum(remaining.values()) == 10
+
+    whole_farm = await choose(client, s, models=None)
+    assert whole_farm["resources"]["include_paused_queues"] is True
+    restored = await choose(client, s, models=list(printers), include_paused_queues=False)
+    assert not restored["resources"].get("include_paused_queues", False)
+    await pause("P2S", True)
+    assert await rebuild() == {plates["H2D"]: 10}
 
 
 @pytest.mark.parametrize("change", ["new_job", "policy", "tampered"])

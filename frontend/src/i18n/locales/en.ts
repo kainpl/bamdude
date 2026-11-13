@@ -93,6 +93,8 @@ export default {
   },
 
   orderResources: {
+    includePausedQueues: 'Include paused printers in the print plan',
+    includePausedQueuesHelp: 'Plan for these printers after their queues resume. Rebuild an existing draft to apply the new choice. The forecast uses the current queue state.',
     title: 'Printers for this order',
     configure: 'Configure restrictions',
     wholeFarm: 'Whole farm',

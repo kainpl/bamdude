@@ -274,6 +274,8 @@ export function OrderView({
           <div className="space-y-4">
           {actions.resources && <OrderPrinterResources orderId={order.id}
             editable={order.status === 'active' && hasPermission('orders:update')}
+            prepareChange={async () => (await preparePlanAction.current?.()) ?? false}
+            onChanged={() => { setFitDraft(null); setPlanActionRevision(value => value + 1); }}
             onConfigure={() => { void (async () => {
               if (!await preparePlanAction.current?.()) return;
               actions.resources?.({ orderId: order.id, onChanged: () => {

@@ -178,10 +178,14 @@ async def load(
                 bucket = queued.setdefault(line_id, {})
                 bucket[p.id] = max(0, bucket.get(p.id, 0) - recipe.yield_by_part.get(p.id, 0))
     supply = await stock_offers.load_supply(db, ctx)
-    capacity = await plan_engine._current_fleet_capacity(db, exclude_auto_ids=tuple(item.id for item in removable))
-    from backend.app.services.order_resources import constrained, permits, recipe_permitted
+    from backend.app.services.order_resources import constrained, includes_paused_queues, permits, recipe_permitted
 
     resources = getattr(ctx.project, "printer_resources", None)
+    capacity = await plan_engine._current_fleet_capacity(
+        db,
+        exclude_auto_ids=tuple(item.id for item in removable),
+        include_paused_queues=includes_paused_queues(resources),
+    )
     capacity.machines = [m for m in capacity.machines if permits(resources, m.printer_id, m.model)]
     all_candidates = recipes.get(line.product_id, [])
     if constrained(resources):

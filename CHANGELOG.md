@@ -1,6 +1,6 @@
 ## [Unreleased]
 
-- **Queue pauses no longer concentrate an order's print plan on the unpaused models.** The plan counts compatible printers and their existing load as if the queues resumed. The live completion forecast still accounts for the pause.
+- **Plan an order with printers whose queues are paused.** An option in the order's printer card includes eligible paused printers and their existing workload in the print plan. The completion forecast still accounts for the pause.
 
 - Browser sessions, API keys and camera/monitor tokens now belong to immutable accounts, preventing a recreated username or reused row id from inheriting access. Upgrading requires signing in again and replacing all legacy API keys and long-lived tokens, including ownerless keys. Settings and support show retirement counts; administrators receive an inbox notice after the server opens sign-in. Reissue only the scopes and printers each integration needs, then update its configured credential. See the [credential lifetime and replacement guide](docs/development/credential-lifetimes.md).
 
