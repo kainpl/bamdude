@@ -15,6 +15,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from .lifecycle import TLS_CLOSE_GRACE, TLS_HANDSHAKE_TIMEOUT, Activities, AdmissionClosed, Connections, close_writer
+
 if TYPE_CHECKING:
     from backend.app.services.virtual_printer.mqtt_bridge import MQTTBridge
 
@@ -108,7 +110,12 @@ class SimpleMQTTServer:
         nozzle_diameter: str = "0.4",
         nozzle_flow: str = "standard",
         has_target: bool = False,
+        activities: Activities | None = None,
     ):
+        self.activities = activities or Activities()
+        self.connections = Connections()
+        self._projection_tasks = set()
+        self._stop_task = None
         self.serial = serial
         self.access_code = access_code
         self.model = model
@@ -185,7 +192,7 @@ class SimpleMQTTServer:
 
     async def start(self) -> None:
         """Start the MQTT server."""
-        if self._running:
+        if self.activities.closed or self._running:
             return
 
         logger.info("Starting simple MQTT server on port %s", self.port)
@@ -246,7 +253,13 @@ class SimpleMQTTServer:
                 self.bind_address,
                 self.port,
                 ssl=ssl_context,
+                ssl_handshake_timeout=TLS_HANDSHAKE_TIMEOUT,
+                ssl_shutdown_timeout=TLS_CLOSE_GRACE,
             )
+            if self.activities.closed:
+                self._server.close()
+                await self._server.wait_closed()
+                return
             self.ready.set()
 
             logger.info("Simple MQTT server listening on port %s", self.port)
@@ -269,37 +282,31 @@ class SimpleMQTTServer:
         finally:
             await self.stop()
 
-    async def stop(self) -> None:
-        """Stop the MQTT server."""
-        logger.info("Stopping simple MQTT server")
-        self._running = False
+    def close_admission(self):
+        self.activities.closing = True
         self.ready.clear()
+        if self._server:
+            self._server.close()
 
-        # Stop periodic status push
+    async def stop(self):
+        if self._stop_task is None:
+            self.close_admission()
+            self._stop_task = asyncio.create_task(self._stop_owned())
+        await asyncio.shield(self._stop_task)
+
+    async def _stop_owned(self):
+        await self.activities.join()
+        self._running = False
         if self._status_push_task:
             self._status_push_task.cancel()
-            try:
-                await self._status_push_task
-            except asyncio.CancelledError:
-                pass  # Expected when stopping the periodic status push task
+            await asyncio.gather(self._status_push_task, return_exceptions=True)
             self._status_push_task = None
-
-        # Close all client connections (iterate over copy to avoid modification during iteration)
-        for _client_id, writer in list(self._clients.items()):
-            try:
-                writer.close()
-                await writer.wait_closed()
-            except OSError:
-                pass  # Best-effort client connection cleanup; client may have disconnected
+        await self.connections.disconnect()
+        await asyncio.gather(*tuple(self._projection_tasks))
         self._clients.clear()
         self._client_serials.clear()
-
         if self._server:
-            try:
-                self._server.close()
-                await self._server.wait_closed()
-            except OSError:
-                pass  # Best-effort server shutdown; port may already be released
+            await self._server.wait_closed()
             self._server = None
 
     @staticmethod
@@ -345,7 +352,17 @@ class SimpleMQTTServer:
 
         logger.info("Periodic status push task stopped")
 
-    async def push_raw_to_clients(self, topic: str, payload: bytes) -> None:
+    async def push_raw_to_clients(self, topic, payload):
+        if self.activities.closed:
+            return
+        task = asyncio.current_task()
+        self._projection_tasks.add(task)
+        try:
+            await self._push_raw_owned(topic, payload)
+        finally:
+            self._projection_tasks.discard(task)
+
+    async def _push_raw_owned(self, topic: str, payload: bytes) -> None:
         """Publish a pre-serialized MQTT payload on ``topic`` to connected slicers.
 
         Called by ``MQTTBridge`` from the asyncio loop (scheduled via
@@ -397,7 +414,14 @@ class SimpleMQTTServer:
             self._clients.pop(client_id, None)
             self._client_serials.pop(client_id, None)
 
-    async def _handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+    async def _handle_client(self, reader, writer):
+        with self.connections.track(writer):
+            if self.activities.closed:
+                await close_writer(writer)
+                return
+            await self._owned_handle_client(reader, writer)
+
+    async def _owned_handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         """Handle an MQTT client connection."""
         addr = writer.get_extra_info("peername")
         client_id = f"{addr[0]}:{addr[1]}" if addr else "unknown"
@@ -538,7 +562,7 @@ class SimpleMQTTServer:
             self._client_serials.pop(client_id, None)
             try:
                 writer.close()
-                await writer.wait_closed()
+                await close_writer(writer)
             except OSError:
                 pass  # Best-effort socket cleanup on client disconnect
 
@@ -1186,7 +1210,14 @@ class SimpleMQTTServer:
         except OSError as e:
             logger.error("Failed to send print response: %s", e)
 
-    async def _handle_publish(self, header: int, payload: bytes, writer: asyncio.StreamWriter, client_id: str) -> None:
+    async def _handle_publish(self, header, payload, writer, client_id):
+        try:
+            with self.activities.business():
+                await self._process_publish(header, payload, writer, client_id)
+        except AdmissionClosed:
+            await close_writer(writer)
+
+    async def _process_publish(self, header: int, payload: bytes, writer: asyncio.StreamWriter, client_id: str) -> None:
         """Handle MQTT PUBLISH packet. Serial-adaptive: accepts any device/*/request topic."""
         try:
             # Parse topic
@@ -1236,6 +1267,14 @@ class SimpleMQTTServer:
                     message[:200],
                 )
                 return
+
+            if not isinstance(data, dict):
+                logger.debug("Ignoring MQTT publish with a non-object JSON root")
+                return
+            for block in ("pushing", "info", "print"):
+                if block in data and not isinstance(data[block], dict):
+                    logger.warning("Ignoring MQTT publish with a non-object %s block", block)
+                    return
 
             # Record sequence_id → this client so a bridge-forwarded response
             # routes back only to the slicer that issued the command (V5).

@@ -248,8 +248,9 @@ async def test_real_restore_http_does_not_wait_for_its_own_authentication(async_
 
 
 @pytest.mark.parametrize("revoke_during_preflight", [False, True])
+@pytest.mark.parametrize("stop_at", ["prepare", "apply"])
 async def test_restore_http_rechecks_original_actor_before_any_file_move(
-    async_client, db_session, monkeypatch, revoke_during_preflight
+    async_client, db_session, monkeypatch, tmp_path, revoke_during_preflight, stop_at
 ):
     from io import BytesIO
     from zipfile import ZipFile
@@ -257,7 +258,13 @@ async def test_restore_http_rechecks_original_actor_before_any_file_move(
     from backend.app.api.routes import settings as settings_routes
     from backend.app.core import db_portable
     from backend.app.mcp_server.runtime import mcp_runtime
-    from backend.app.services import backup_files, cloud_credentials, library_scan, obico_history_files
+    from backend.app.services import (
+        backup_files,
+        cloud_credentials,
+        connector_runtime as connector_module,
+        library_scan,
+        obico_history_files,
+    )
     from backend.app.services.background_dispatch import background_dispatch
     from backend.app.services.connector_runtime import connector_runtime
     from backend.app.services.credential_rollout import credential_rollout
@@ -277,6 +284,11 @@ async def test_restore_http_rechecks_original_actor_before_any_file_move(
     original = auth_lifetime.capture_account(actor)
     await db_session.rollback()
     moved = []
+    fences_at_apply = []
+    fence = tmp_path / "connector-restore-fence"
+    monkeypatch.setattr(connector_module, "fence_path", lambda: fence)
+    monkeypatch.setattr(connector_runtime, "_fenced", False)
+    monkeypatch.setattr(database, "close_all_connections", AsyncMock())
 
     class Files:
         committed = False
@@ -286,8 +298,13 @@ async def test_restore_http_rechecks_original_actor_before_any_file_move(
 
         def prepare(self):
             moved.append(True)
-            # Stop exactly at the first destructive boundary. Never replace a
-            # real database or run any device/service shutdown in this probe.
+            if stop_at == "prepare":
+                raise RuntimeError("test boundary reached")
+
+        def apply(self):
+            # The real connector fence must already be durable at the first
+            # replacement. Never actually replace files or the database here.
+            fences_at_apply.append(fence.exists())
             raise RuntimeError("test boundary reached")
 
         def finish(self):
@@ -317,7 +334,6 @@ async def test_restore_http_rechecks_original_actor_before_any_file_move(
     monkeypatch.setattr(settings_routes, "_quiesce_library_previews", AsyncMock())
     monkeypatch.setattr(mcp_runtime, "quiesce_for_restore", AsyncMock(return_value=True))
     monkeypatch.setattr(connector_runtime, "quiesce_for_restore", AsyncMock(return_value=True))
-    monkeypatch.setattr(connector_runtime, "clear_restore_fence", Mock())
     monkeypatch.setattr(obico_detection_service, "quiesce", AsyncMock(return_value=True))
     monkeypatch.setattr(virtual_printer_manager, "configure", AsyncMock())
     monkeypatch.setattr(scheduler, "stop", Mock())
@@ -338,6 +354,9 @@ async def test_restore_http_rechecks_original_actor_before_any_file_move(
     if revoke_during_preflight:
         assert response.status_code == 401, response.text
         assert moved == []
+        assert fences_at_apply == []
     else:
         assert response.status_code == 500, response.text
         assert moved == [True]
+        assert fences_at_apply == ([True] if stop_at == "apply" else [])
+    assert not fence.exists()  # No replacement committed, so the old epoch stands.

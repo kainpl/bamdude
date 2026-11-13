@@ -53,7 +53,7 @@ class TestVirtualPrinterSettingsAPI:
     @pytest.mark.integration
     async def test_update_mode_to_file_manager(self, async_client: AsyncClient):
         """Verify mode can be set to file_manager (the default)."""
-        response = await async_client.put("/api/v1/settings/virtual-printer?mode=file_manager")
+        response = await async_client.put("/api/v1/settings/virtual-printer", json={"mode": "file_manager"})
 
         assert response.status_code == 200
         result = response.json()
@@ -63,7 +63,7 @@ class TestVirtualPrinterSettingsAPI:
     @pytest.mark.integration
     async def test_update_mode_to_print_queue(self, async_client: AsyncClient):
         """Verify mode can be set to print_queue."""
-        response = await async_client.put("/api/v1/settings/virtual-printer?mode=print_queue")
+        response = await async_client.put("/api/v1/settings/virtual-printer", json={"mode": "print_queue"})
 
         assert response.status_code == 200
         result = response.json()
@@ -78,14 +78,14 @@ class TestVirtualPrinterSettingsAPI:
         API now refuses to accept them on writes too.
         """
         for legacy in ("immediate", "review", "queue"):
-            response = await async_client.put(f"/api/v1/settings/virtual-printer?mode={legacy}")
+            response = await async_client.put("/api/v1/settings/virtual-printer", json={"mode": legacy})
             assert response.status_code == 400, f"expected 400 for legacy mode={legacy}, got {response.status_code}"
 
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_update_access_code(self, async_client: AsyncClient):
         """Verify access code can be set."""
-        response = await async_client.put("/api/v1/settings/virtual-printer?access_code=12345678")
+        response = await async_client.put("/api/v1/settings/virtual-printer", json={"access_code": "12345678"})
 
         assert response.status_code == 200
         result = response.json()
@@ -95,7 +95,7 @@ class TestVirtualPrinterSettingsAPI:
     @pytest.mark.integration
     async def test_update_access_code_wrong_length(self, async_client: AsyncClient):
         """Verify access code validation for length."""
-        response = await async_client.put("/api/v1/settings/virtual-printer?access_code=123")
+        response = await async_client.put("/api/v1/settings/virtual-printer", json={"access_code": "123"})
 
         # Should fail validation
         assert response.status_code == 400
@@ -104,21 +104,19 @@ class TestVirtualPrinterSettingsAPI:
     @pytest.mark.integration
     async def test_enable_without_access_code(self, async_client: AsyncClient):
         """Verify enabling fails without access code set."""
-        # First ensure no access code is set by checking current state
-        # Then try to enable
-        response = await async_client.put("/api/v1/settings/virtual-printer?enabled=true")
+        response = await async_client.put("/api/v1/settings/virtual-printer", json={"enabled": True})
 
-        # If access code wasn't set, this should fail
-        # If it was already set, it will succeed
-        # Both are valid test outcomes
-        assert response.status_code in [200, 400]
+        assert response.status_code == 400, response.text
+        current = await async_client.get("/api/v1/settings/virtual-printer")
+        assert current.json()["enabled"] is False
 
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_enable_with_access_code(self, async_client: AsyncClient):
         """Verify enabling succeeds when access code is set."""
         # First set access code
-        await async_client.put("/api/v1/settings/virtual-printer?access_code=12345678")
+        saved = await async_client.put("/api/v1/settings/virtual-printer", json={"access_code": "12345678"})
+        assert saved.status_code == 200, saved.text
 
         # Then enable (this will start the servers which may fail in test env)
         # We mock the manager to avoid actually starting servers
@@ -135,9 +133,11 @@ class TestVirtualPrinterSettingsAPI:
                 }
             )
 
-            response = await async_client.put("/api/v1/settings/virtual-printer?enabled=true")
+            response = await async_client.put("/api/v1/settings/virtual-printer", json={"enabled": True})
 
             assert response.status_code == 200
+            assert mock_manager.configure.await_args.kwargs["enabled"] is True
+            assert mock_manager.configure.await_args.kwargs["access_code"] == "12345678"
 
     @pytest.mark.asyncio
     @pytest.mark.integration
@@ -156,11 +156,23 @@ class TestVirtualPrinterSettingsAPI:
                 }
             )
 
-            response = await async_client.put("/api/v1/settings/virtual-printer?enabled=false")
+            response = await async_client.put("/api/v1/settings/virtual-printer", json={"enabled": False})
 
             assert response.status_code == 200
             result = response.json()
             assert result["enabled"] is False
+            assert mock_manager.configure.await_args.kwargs["enabled"] is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_credentials_in_query_are_still_rejected(self, async_client: AsyncClient):
+        response = await async_client.put(
+            "/api/v1/settings/virtual-printer?access_code=query-canary", json={"access_code": "12345678"}
+        )
+        assert response.status_code == 422
+        assert response.json()["detail"] == "Credentials must be submitted in the JSON body"
+        current = await async_client.get("/api/v1/settings/virtual-printer")
+        assert current.json()["access_code_set"] is False
 
 
 class TestVirtualPrinterAutoDispatchAPI:
