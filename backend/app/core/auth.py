@@ -2438,7 +2438,7 @@ def require_ownership_permission(
                         await authorize_api_key(db, key_authority.key, [all_perm], authority=key_authority)
                         await enforce_printer_scope(db, request, key_authority.key)
                         remember_live_authority(request, key_authority, [all_perm])
-                    return None, True
+                        return None, True
                     raise HTTPException(
                         status_code=status.HTTP_401_UNAUTHORIZED,
                         detail="Invalid API key",

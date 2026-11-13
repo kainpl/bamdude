@@ -52,7 +52,8 @@ class LiveDescriptor:
     resource_kind: str | None = None
     resource_id: int | None = None
     resource_stamp: tuple | None = field(default=None, repr=False)
-    include_trashed_archive: bool = False
+    include_trashed: bool = False
+    resource_printer_scope: bool = True
     product_link: tuple | None = field(default=None, repr=False)
     long_lived_scope: str | None = None
 
@@ -113,6 +114,15 @@ class LiveHandle:
             return 1001
         return 4401 if now >= self.parent_until else 1013
 
+    def admission_error(self):
+        """Before headers, distinguish a proved refusal from uncertain authority."""
+        code = self.refusal_code()
+        if code == 4403:
+            return HTTPException(403, "Access denied")
+        if code == 4401 or time.monotonic() >= self.descriptor.expires:
+            return HTTPException(401, "Invalid or revoked credential", headers={"WWW-Authenticate": "Bearer"})
+        return HTTPException(503, "Authentication temporarily unavailable", headers={"Retry-After": "5"})
+
 
 class LiveAuthority:
     def __init__(self):
@@ -158,7 +168,7 @@ class LiveAuthority:
                     self._wake.set()
                     await handle.changed.wait()
             if not handle.deliverable():
-                raise HTTPException(503, "Authentication temporarily unavailable")
+                raise handle.admission_error()
         except TimeoutError as exc:
             handle.retire(1013)
             raise HTTPException(503, "Authentication temporarily unavailable", headers={"Retry-After": "5"}) from exc
@@ -566,10 +576,7 @@ class LiveAuthority:
                     )
                     if d.resource_kind is not None:
                         resource = metadata.get((d.resource_kind, d.resource_id), {})
-                        if not resource or (
-                            resource.get("deleted_at") is not None
-                            and not (d.resource_kind == "archive" and d.include_trashed_archive)
-                        ):
+                        if not resource or (resource.get("deleted_at") is not None and not d.include_trashed):
                             raise HTTPException(401)
                         if (
                             d.resource_stamp is not None
@@ -580,8 +587,10 @@ class LiveAuthority:
                             raise HTTPException(401)
                         if d.resource_kind == "part" and not resource.get("_product_exists"):
                             raise HTTPException(401)
-                        if resource.get("printer_id") is not None and not entitlement.printer_visible(
-                            resource["printer_id"]
+                        if (
+                            d.resource_printer_scope
+                            and resource.get("printer_id") is not None
+                            and not entitlement.printer_visible(resource["printer_id"])
                         ):
                             raise HTTPException(403)
                         domain = {"archive": "archives", "library": "library"}.get(d.resource_kind)

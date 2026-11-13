@@ -124,9 +124,21 @@ def _ensure_archive_visible(
 # headers, and either way the same ownership rule as every other archive read.
 # The operator's photos are NOT behind it (``get_photo``): notifications link
 # them for services that fetch without credentials.
-_ARCHIVE_MEDIA_READ = Depends(
-    require_media_ownership_permission(Permission.ARCHIVES_READ_ALL, Permission.ARCHIVES_READ_OWN)
-)
+async def _archive_media_read(
+    request: Request,
+    auth_result: tuple[User | None, bool] = Depends(
+        require_media_ownership_permission(Permission.ARCHIVES_READ_ALL, Permission.ARCHIVES_READ_OWN)
+    ),
+):
+    # Physical-printer scope does not restrict print history. The final live
+    # proof repeats this route policy while retaining owner/incarnation checks.
+    binding = dict(getattr(request.state, "live_media_binding", {}))
+    binding["resource_printer_scope"] = False
+    request.state.live_media_binding = binding
+    return auth_result
+
+
+_ARCHIVE_MEDIA_READ = Depends(_archive_media_read)
 
 
 def _parse_applied_patches(raw: str | None) -> list[AppliedPatch] | None:
@@ -1963,9 +1975,9 @@ async def get_thumbnail(
         await service.get_archive(archive_id, include_trashed=True), user, can_read_all, include_trashed=True
     )
     # Preserve this route's trash-preview policy in the final live proof. The
-    # captured incarnation, current owner, credential and printer checks remain.
+    # captured incarnation, current owner and credential checks remain.
     binding = dict(getattr(request.state, "live_media_binding", {}))
-    binding["include_trashed_archive"] = True
+    binding["include_trashed"] = True
     request.state.live_media_binding = binding
     if not archive.thumbnail_path:
         raise HTTPException(404, "Thumbnail not found")
@@ -2001,6 +2013,7 @@ async def get_timelapse(
     # Capture the observed incarnation before releasing this read transaction.
     # The live coordinator proves it again before the actual response body.
     request.state.live_media_binding = {
+        **getattr(request.state, "live_media_binding", {}),
         "resource_kind": "archive",
         "resource_id": archive.id,
         "resource_stamp": (

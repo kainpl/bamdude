@@ -1,10 +1,14 @@
 """Presence-selected API keys cover the registered HTTP gateway, not a list of GETs."""
 
 import re
+from unittest.mock import AsyncMock
 
 import pytest
+from fastapi import HTTPException
 from fastapi.routing import APIRoute
+from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy import select
+from starlette.requests import Request
 
 from backend.app.core import auth
 from backend.app.main import PUBLIC_API_PATTERNS, PUBLIC_API_PREFIXES, PUBLIC_API_ROUTES, app
@@ -69,6 +73,21 @@ async def test_optional_invalid_jwt_remains_optional():
         await auth.get_current_user_optional(HTTPAuthorizationCredentials(scheme="Bearer", credentials="invalid"))
         is None
     )
+
+
+async def test_ownership_bearer_branch_still_refuses_invalid_key_without_selector(monkeypatch, db_session):
+    """Defense in depth: a later selector refactor must never turn invalid into ALL."""
+    monkeypatch.setattr(auth, "selected_api_key", lambda *args: None)
+    monkeypatch.setattr(auth, "_api_key_authority_or_none", AsyncMock(return_value=None))
+    checker = auth.require_ownership_permission("archives:read_all", "archives:read_own")
+    request = Request({"type": "http", "method": "GET", "path": "/", "headers": []})
+    with pytest.raises(HTTPException) as caught:
+        await checker(
+            request=request,
+            credentials=HTTPAuthorizationCredentials(scheme="Bearer", credentials="bd_invalid"),
+            x_api_key=None,
+        )
+    assert caught.value.status_code == 401
 
 
 @pytest.mark.parametrize(

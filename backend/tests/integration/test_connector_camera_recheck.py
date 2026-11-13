@@ -309,10 +309,10 @@ async def test_check_timeout_closes_delivery_but_restore_still_owns_sql(
     runtime(monkeypatch)
     entered, deadline_cancelled, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
     coordinator = live_authority.live_authority
-    original = coordinator._read
+    original = live_authority.LiveAuthority._read
 
-    async def blocked(batch):
-        result = await original(batch)
+    async def blocked(self, batch):
+        result = await original(self, batch)
         if any(handle.admitted for handle in batch):
             entered.set()
             # Model an actual driver/continuation that has not completed even
@@ -326,7 +326,7 @@ async def test_check_timeout_closes_delivery_but_restore_still_owns_sql(
                     continue
         return result
 
-    monkeypatch.setattr(coordinator, "_read", blocked)
+    monkeypatch.setattr(live_authority.LiveAuthority, "_read", blocked)
     try:
         async with streaming(async_client._transport.app, printer.id, raw, "key") as (task, bodies):
             await asyncio.wait_for(entered.wait(), 2)
@@ -363,7 +363,7 @@ async def test_database_failure_is_fail_closed_without_raw_error(
     runtime(monkeypatch, stalled)
     async with streaming(async_client._transport.app, printer.id, raw, "key") as (task, _):
         monkeypatch.setattr(
-            live_authority.live_authority,
+            live_authority.LiveAuthority,
             "_read",
             AsyncMock(side_effect=RuntimeError("private-database-detail")),
         )
@@ -378,25 +378,25 @@ async def test_revoke_after_handshake_before_first_frame_delivers_nothing(
     raw, key, owner, group = await principal(db_session)
     runtime(monkeypatch)
     entered, release = asyncio.Event(), asyncio.Event()
-    original = live_authority.live_authority._read
+    original = live_authority.LiveAuthority._read
 
-    async def delayed(batch):
+    async def delayed(self, batch):
         if batch:
             # The header was accepted, but no live proof has been published.
             entered.set()
             await release.wait()
-        return await original(batch)
+        return await original(self, batch)
 
-    monkeypatch.setattr(live_authority.live_authority, "_read", delayed)
+    monkeypatch.setattr(live_authority.LiveAuthority, "_read", delayed)
     task, bodies, _ = start_stream(async_client._transport.app, printer.id, raw, "key")
     try:
         await asyncio.wait_for(entered.wait(), 5)
         await change_authority(db_session, key, owner, group, printer, "disable")
         release.set()
         response = await asyncio.wait_for(task, 2)
-        # D admits before starting headers: a retired pending proof is 503,
+        # D admits before starting headers: a confirmed revoked credential is 401,
         # never an empty successful 200. No private media send may start.
-        assert response.status_code == 503
+        assert response.status_code == 401
         assert not any(JPEG in body for _, body in bodies)
         assert not camera_fanout.get_subscriber_count(f"printer-{printer.id}")
     finally:

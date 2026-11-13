@@ -4,6 +4,7 @@ import asyncio
 from types import SimpleNamespace
 
 import pytest
+from fastapi import HTTPException
 from starlette.requests import Request
 
 from backend.app.services import live_media
@@ -16,6 +17,9 @@ class Handle:
         self.retired = False
         self.on_retire = None
         self.stop = asyncio.Event()
+
+    def admission_error(self):
+        return HTTPException(503, "Authentication temporarily unavailable", headers={"Retry-After": "5"})
 
     def deliverable(self):
         return self.admitted and not self.retired

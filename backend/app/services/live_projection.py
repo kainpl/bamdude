@@ -373,9 +373,18 @@ def shape(event: PreparedEvent, access: Entitlements, *, personal=False, credent
             }
             family = {"print_library_file": "library", "reprint_archive": "archive"}.get(raw.get("kind"))
             row = event.rows.get((family, raw.get("source_id")))
-            if family and _owns(access, family, row, credential_kind, event.source_printer_identities):
+            visible = family and _owns(access, family, row, credential_kind, event.source_printer_identities)
+            # Captured jobs may outlive their original row. With no source id,
+            # only the domain's full reader can see its captured display text.
+            domain = {"library": "library", "archive": "archives"}.get(family)
+            captured_visible = domain and raw.get("source_id") is None and access.allows(f"{domain}:read_all")
+            if visible:
                 out["source_id"] = row["id"]
                 out["source_name"] = row.get("print_name") or row.get("filename")
+            elif captured_visible and "source_name" in raw:
+                out["source_name"] = raw["source_name"]
+            if (visible or captured_visible) and "message" in raw:
+                out["message"] = raw["message"]
             return out
 
         active = [out for raw in data.get("active_jobs", []) if (out := job(raw)) is not None]
@@ -484,12 +493,10 @@ def shape(event: PreparedEvent, access: Entitlements, *, personal=False, credent
         if not access.allows("firmware:read"):
             return None
         # Both current producers address one printer, including batch progress.
-        # Arbitrary driver messages/errors do not belong in a live projection.
-        return {
-            k: deepcopy(message[k])
-            for k in ("type", "printer_id", "run_id", "status", "progress", "percent", "firmware_version")
-            if k in message
-        }
+        fields = ("type", "printer_id", "run_id", "status", "progress", "percent", "firmware_version")
+        if kind == "firmware_batch_progress":
+            fields += ("message",)  # the batch progress column's existing status text
+        return {k: deepcopy(message[k]) for k in fields if k in message}
     if kind == "macro_executed":
         if not access.allows("printers:read"):
             return None
@@ -502,5 +509,9 @@ def shape(event: PreparedEvent, access: Entitlements, *, personal=False, credent
             }
         )
     if kind == "plate_not_empty":
-        return {"type": kind, "printer_id": pid} if access.allows("printers:read") else None
+        if not access.allows("printers:read"):
+            return None
+        return {
+            k: deepcopy(message[k]) for k in ("type", "printer_id", "printer_name", "reason", "message") if k in message
+        }
     return None

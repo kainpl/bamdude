@@ -15,11 +15,12 @@ from functools import wraps
 from typing import Any
 
 import anyio
-from fastapi import Depends, HTTPException, Request
+from fastapi import Depends, Request
 from fastapi.dependencies.utils import get_parameterless_sub_dependant
 from fastapi.routing import APIRoute, request_response
 from starlette.datastructures import MutableHeaders
 from starlette.responses import FileResponse, Response
+from starlette.routing import compile_path
 
 from backend.app.services.live_authority import live_authority
 
@@ -62,14 +63,10 @@ def _template(path: str, prefix: str) -> str:
 
 
 def _pattern(template: str) -> re.Pattern:
-    parts = re.split(r"(\{[^}]+\})", template)
-    return re.compile(
-        "^"
-        + "".join(
-            ".+" if part.endswith(":path}") else "[^/]+" if part.startswith("{") else re.escape(part) for part in parts
-        )
-        + "$"
-    )
+    # Match exactly as Starlette Route.matches does, including a final newline
+    # before "$" and an empty {path:path} value. A stricter outer matcher could
+    # let a routed media response bypass the final delivery boundary.
+    return compile_path(template)[0]
 
 
 class _DeliveryStopped(Exception):
@@ -328,7 +325,7 @@ class OwnedMediaResponse(Response):
         async def body_send(message):
             if message["type"] == "http.response.start":
                 if not handle.deliverable():
-                    raise HTTPException(503, "Authentication temporarily unavailable")
+                    raise handle.admission_error()
                 viewer.headers_started = True
             if message["type"] == "http.response.body" and not handle.deliverable():
                 raise _DeliveryStopped()
@@ -368,7 +365,7 @@ class OwnedMediaResponse(Response):
                 if not handle.retired and disconnect not in done:
                     raise
                 if handle.retired and not viewer.headers_started and not viewer.disconnect_seen:
-                    raise HTTPException(503, "Authentication temporarily unavailable") from None
+                    raise handle.admission_error() from None
         finally:
             viewer.cancel_body()
             disconnect.cancel()
@@ -467,7 +464,7 @@ class LiveMediaDeliveryMiddleware:
         if (
             scope["type"] != "http"
             or scope["method"] not in MEDIA_METHODS
-            or not any(p.fullmatch(scope["path"]) for p in self.patterns)
+            or not any(p.match(scope["path"]) for p in self.patterns)
         ):
             await self.app(scope, receive, send)
             return

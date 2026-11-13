@@ -78,9 +78,10 @@ async def test_exact_logout_closes_only_that_sid_after_current_read(live):
 
 
 @pytest.mark.parametrize(
-    "kind,include_trashed,allowed", [("archive", False, False), ("archive", True, True), ("library", True, False)]
+    "kind,include_trashed,allowed",
+    [("archive", False, False), ("archive", True, True), ("library", False, False), ("library", True, True)],
 )
-async def test_trash_thumbnail_policy_is_archive_only_and_still_requires_the_row(live, kind, include_trashed, allowed):
+async def test_trash_thumbnail_policy_matches_route_and_still_requires_the_row(live, kind, include_trashed, allowed):
     from backend.app.models.archive import PrintArchive
     from backend.app.models.library import LibraryFile
 
@@ -110,7 +111,7 @@ async def test_trash_thumbnail_policy_is_archive_only_and_still_requires_the_row
             resource_kind=kind,
             resource_id=row_id,
             resource_stamp=module.resource_stamp(kind, metadata),
-            include_trashed_archive=include_trashed,
+            include_trashed=include_trashed,
         )
     )
     try:
@@ -594,6 +595,26 @@ async def test_admission_deadline_is_retryable_503_and_keeps_actual_check_owned(
     finally:
         release.set()
         await asyncio.gather(runtime._check, return_exceptions=True)
+        runtime.release(handle)
+
+
+@pytest.mark.parametrize("code,status", [(4401, 401), (4403, 403), (1013, 503)])
+async def test_admission_reports_confirmed_refusal_separately_from_uncertainty(live, monkeypatch, code, status):
+    runtime, factory = live
+    issued, _ = await issue(factory)
+    handle = runtime.register(descriptor(issued))
+
+    async def refused(batch):
+        return dict.fromkeys(batch, code), {}
+
+    monkeypatch.setattr(runtime, "_read", refused)
+    try:
+        with pytest.raises(HTTPException) as caught:
+            await runtime.admit(handle)
+        assert caught.value.status_code == status
+        assert (caught.value.headers or {}).get("Retry-After") == ("5" if status == 503 else None)
+        assert handle.retired and not handle.deliverable()
+    finally:
         runtime.release(handle)
 
 

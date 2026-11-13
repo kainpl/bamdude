@@ -6057,6 +6057,7 @@ async def download_library_file_for_slicer(
 @router.get("/files/{file_id}/thumbnail")
 async def get_thumbnail(
     file_id: int,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     auth_result: tuple[User | None, bool] = _LIBRARY_MEDIA_READ,
 ):
@@ -6067,6 +6068,10 @@ async def get_thumbnail(
     user, can_read_all = auth_result
     result = await db.execute(select(LibraryFile).where(LibraryFile.id == file_id))
     file = _ensure_library_file_visible(result.scalar_one_or_none(), user, can_read_all, include_trashed=True)
+
+    binding = dict(getattr(request.state, "live_media_binding", {}))
+    binding["include_trashed"] = True
+    request.state.live_media_binding = binding
 
     abs_thumb_path = to_absolute_path(file.thumbnail_path)
     if not abs_thumb_path or not abs_thumb_path.exists():

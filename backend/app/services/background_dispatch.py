@@ -1465,6 +1465,8 @@ class BackgroundDispatchService:
                 recent_event={
                     "status": "dispatched",
                     "job_id": job.id,
+                    "kind": job.kind,
+                    "source_id": job.source_id,
                     "source_name": source_name,
                     "printer_id": printer_id,
                     "printer_name": printer_name,
@@ -1505,6 +1507,8 @@ class BackgroundDispatchService:
                         if job.outcome.get("deferred")
                         else ("completed" if job.outcome.get("success") else "failed"),
                         "job_id": job.id,
+                        "kind": job.kind,
+                        "source_id": job.source_id,
                         "source_name": source_name,
                         "printer_id": printer_id,
                         "printer_name": printer_name,
@@ -1596,6 +1600,8 @@ class BackgroundDispatchService:
                     recent_event={
                         "status": "cancelling",
                         "job_id": active_job.id,
+                        "kind": active_job.kind,
+                        "source_id": active_job.source_id,
                         "source_name": active_job.source_name,
                         "printer_id": active_job.printer_id,
                         "printer_name": active_job.printer_name,
@@ -1636,6 +1642,8 @@ class BackgroundDispatchService:
                 recent_event={
                     "status": "cancelled",
                     "job_id": cancelled_job.id,
+                    "kind": cancelled_job.kind,
+                    "source_id": cancelled_job.source_id,
                     "source_name": cancelled_job.source_name,
                     "printer_id": cancelled_job.printer_id,
                     "printer_name": cancelled_job.printer_name,
@@ -1892,6 +1900,8 @@ class BackgroundDispatchService:
                 recent_event={
                     "status": "dispatched",
                     "job_id": job.id,
+                    "kind": job.kind,
+                    "source_id": job.source_id,
                     "source_name": source_name,
                     "printer_id": printer_id,
                     "printer_name": printer_name,
@@ -1942,6 +1952,8 @@ class BackgroundDispatchService:
                         recent_event={
                             "status": "processing",
                             "job_id": job_to_start.id,
+                            "kind": job_to_start.kind,
+                            "source_id": job_to_start.source_id,
                             "source_name": job_to_start.source_name,
                             "printer_id": job_to_start.printer_id,
                             "printer_name": job_to_start.printer_name,
@@ -2086,6 +2098,8 @@ class BackgroundDispatchService:
                 recent_event={
                     "status": "processing",
                     "job_id": active.job.id,
+                    "kind": active.job.kind,
+                    "source_id": active.job.source_id,
                     "source_name": active.job.source_name,
                     "printer_id": active.job.printer_id,
                     "printer_name": active.job.printer_name,
@@ -2107,6 +2121,8 @@ class BackgroundDispatchService:
                 recent_event={
                     "status": "processing",
                     "job_id": active.job.id,
+                    "kind": active.job.kind,
+                    "source_id": active.job.source_id,
                     "source_name": active.job.source_name,
                     "printer_id": active.job.printer_id,
                     "printer_name": active.job.printer_name,
@@ -2136,6 +2152,8 @@ class BackgroundDispatchService:
                 recent_event={
                     "status": "deferred" if deferred else ("failed" if failed else "completed"),
                     "job_id": job.id,
+                    "kind": job.kind,
+                    "source_id": job.source_id,
                     "source_name": job.source_name,
                     "printer_id": job.printer_id,
                     "printer_name": job.printer_name,
@@ -2168,6 +2186,8 @@ class BackgroundDispatchService:
                 recent_event={
                     "status": "cancelled",
                     "job_id": job.id,
+                    "kind": job.kind,
+                    "source_id": job.source_id,
                     "source_name": job.source_name,
                     "printer_id": job.printer_id,
                     "printer_name": job.printer_name,

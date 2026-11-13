@@ -67,10 +67,14 @@ lifecycle; POST/PUT/DELETE handlers sharing those URLs retain their ordinary
 transaction/response lifecycle. A successful covered response without its bound
 viewer fails closed.
 
-Archive thumbnails retain the trash UI's existing visibility policy. That route
-alone opts into trashed archive rows after its usual visibility check; current
-credential, ownership, printer scope and captured incarnation still apply. Other
-archive media and deleted library resources do not inherit this exception.
+Archive and library thumbnails retain the trash UI's existing visibility policy.
+Each thumbnail route explicitly opts into its trashed rows after the usual
+visibility check; other media retain their route's active-row policy. Archive
+history media, like archive JSON, are not restricted by an API key's printer list.
+Physical-printer media still enforce that list. Final proofs repeat the route's
+policy, including current credential, ownership and captured incarnation checks.
+Before headers, confirmed credential/access refusals return 401/403; only genuine
+uncertainty returns retryable 503.
 
 Body production and the outer pure-ASGI delivery gate both check the viewer. The
 outer gate is outside the buffering HTTP middleware, so buffered chunks cannot
@@ -78,6 +82,10 @@ start a new server-facing send after retirement. Video is checked per 64 KiB bod
 including single and multipart Range responses. HEAD, ETag, If-Range and 416
 semantics are preserved. File I/O is off the event loop and remains owned until
 the actual thread finishes.
+
+Coverage uses Starlette's own compiled route matching, including decoded trailing
+newlines and empty `:path` parameters, so a routed response cannot bypass the
+outer boundary through a stricter coverage expression.
 
 Retirement cancels only the viewer's body/writer. A separate owned cleanup joins
 that work, closes iterators/files and releases subscription/light references;

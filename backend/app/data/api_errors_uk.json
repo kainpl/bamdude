@@ -80,6 +80,7 @@
   "Access code is required when enabling": "Код доступу обовʼязковий при увімкненні",
   "Access code is required when enabling virtual printer": "Код доступу обовʼязковий при увімкненні віртуального принтера",
   "Access code must be exactly 8 characters": "Код доступу має містити рівно 8 символів",
+  "Access denied": "Доступ заборонено",
   "Account has no local password set": "Для облікового запису не задано локального пароля",
   "Additional parts already issued or held cannot be removed": "Не можна прибрати додаткові деталі, які вже видано або прийнято під замовлення",
   "Additional parts must be printed parts": "Додатковими можуть бути лише друковані деталі",

@@ -24,10 +24,14 @@ async def coordinator(monkeypatch, async_client):
     assert await runtime.shutdown(timeout=5)
 
 
-def _scope(path, client, extra_headers=()):
+def _scope(path, client, extra_headers=(), *, newline=False):
     req = request(path, headers=[(key.lower(), value) for key, value in [*client.headers.raw, *extra_headers]])
     req.scope["http_version"] = "1.1"
     req.scope["root_path"] = ""
+    if newline:
+        # Uvicorn decodes the request target before Starlette route matching.
+        req.scope["path"] = path + "\n"
+        req.scope["raw_path"] = (path + "%0A").encode()
     return req.scope
 
 
@@ -56,7 +60,8 @@ def _backpressure(app, scope):
     return asyncio.create_task(app(scope, receive, send)), starts, entered, resume, disconnect
 
 
-async def test_actual_stack_and_route_inventory():
+@pytest.mark.parametrize("newline", [False, True])
+async def test_actual_stack_and_route_inventory(newline):
     from fastapi.routing import APIRoute
     from starlette.middleware.base import BaseHTTPMiddleware
 
@@ -94,6 +99,18 @@ async def test_actual_stack_and_route_inventory():
         for method in route.methods & {"GET", "HEAD"}
     }
     assert installed == derived
+    # The outer boundary must cover every spelling accepted by the actual
+    # router, including its trailing-newline "$" behavior and empty path tails.
+    gate = live_media.LiveMediaDeliveryMiddleware(app, prefix=settings.api_prefix)
+    for route in installed_routes:
+        values = dict.fromkeys(route.param_convertors, "1")
+        for path_tail in ("nested/preview.png", ""):
+            for name, convertor in route.param_convertors.items():
+                if convertor.regex == ".*":
+                    values[name] = path_tail
+            path = route.path_format.format(**values) + ("\n" if newline else "")
+            assert route.path_regex.match(path), (route.path, path)
+            assert any(pattern.match(path) for pattern in gate.patterns), (route.path, path)
     # Paths alone deduplicate a GET and its write sibling and hid accidental
     # media adapters on POST/PUT/DELETE. Those mutations keep their original
     # auth/transaction/response lifecycle.
@@ -149,6 +166,7 @@ async def _entered(task, event):
         await asyncio.gather(waiter, return_exceptions=True)
 
 
+@pytest.mark.parametrize("newline", [False, True])
 @pytest.mark.parametrize(
     "reason", ["retirement", "restore", "disconnect", "caller_cancel", "caller_then_retire", "retire_then_caller"]
 )
@@ -159,6 +177,7 @@ async def test_actual_outer_send_does_not_wait_for_client_resume(
     db_session,
     monkeypatch,
     reason,
+    newline,
 ):
     from backend.app.main import app
     from backend.app.services import camera_runtime
@@ -173,10 +192,11 @@ async def test_actual_outer_send_does_not_wait_for_client_resume(
                 await asyncio.sleep(0)
 
     monkeypatch.setattr(camera_runtime, "get_camera_runtime", lambda: Worker())
-    scope = _scope(f"/api/v1/printers/{printer.id}/camera/stream", async_client)
+    scope = _scope(f"/api/v1/printers/{printer.id}/camera/stream", async_client, newline=newline)
     task, starts, entered, resume, disconnect = _backpressure(app, scope)
     try:
         await _entered(task, entered)
+        assert scope["state"]["live_media_outer"] is True
         viewer = scope["state"]["live_media_viewer"]
         if reason == "retirement":
             viewer.handle.retire(4401)
@@ -253,6 +273,7 @@ async def test_negative_control_without_outer_abort_stays_waiting_for_client(
         await asyncio.gather(task, return_exceptions=True)
 
 
+@pytest.mark.parametrize("newline", [False, True])
 @pytest.mark.parametrize("primed", [False, True])
 @pytest.mark.parametrize("reason", ["retirement", "disconnect"])
 async def test_actual_camera_buffered_pipeline_retirement_and_cleanup(
@@ -263,6 +284,7 @@ async def test_actual_camera_buffered_pipeline_retirement_and_cleanup(
     monkeypatch,
     primed,
     reason,
+    newline,
 ):
     from backend.app.main import app
     from backend.app.services import camera_light, camera_runtime
@@ -318,11 +340,12 @@ async def test_actual_camera_buffered_pipeline_retirement_and_cleanup(
     if primed:
         await asyncio.wait_for(peer.get(), 3)
         assert broadcaster._last_chunk is not None
-    scope = _scope(f"/api/v1/printers/{printer.id}/camera/stream", async_client)
+    scope = _scope(f"/api/v1/printers/{printer.id}/camera/stream", async_client, newline=newline)
     task, starts, entered, resume, disconnect = _backpressure(app, scope)
     try:
         await _entered(task, entered)
         await asyncio.wait_for(produced.wait(), 5)
+        assert scope["state"]["live_media_outer"] is True
         viewer = scope["state"]["live_media_viewer"]
         await broadcaster._lock.acquire()
         try:
@@ -423,6 +446,7 @@ async def test_actual_camera_waiting_frame_cleanup_does_not_need_gc(
         await asyncio.gather(task, return_exceptions=True)
 
 
+@pytest.mark.parametrize("newline", [False, True])
 @pytest.mark.parametrize("range_header", [None, b"bytes=0-1048575", b"bytes=0-524287,600000-1048575"])
 async def test_actual_video_buffered_range_pipeline_retirement(
     async_client,
@@ -433,6 +457,7 @@ async def test_actual_video_buffered_range_pipeline_retirement(
     monkeypatch,
     tmp_path,
     range_header,
+    newline,
 ):
     from backend.app.api.routes import archives
     from backend.app.main import app
@@ -458,7 +483,7 @@ async def test_actual_video_buffered_range_pipeline_retirement(
 
     monkeypatch.setattr(live_media._OwnedFileBody, "_io", observed)
     headers = [] if range_header is None else [(b"range", range_header)]
-    scope = _scope(f"/api/v1/archives/{archive.id}/timelapse", async_client, headers)
+    scope = _scope(f"/api/v1/archives/{archive.id}/timelapse", async_client, headers, newline=newline)
     task, starts, entered, resume, _ = _backpressure(app, scope)
     try:
         await _entered(task, entered)
@@ -466,6 +491,7 @@ async def test_actual_video_buffered_range_pipeline_retirement(
         # can stall before the fifth file read. The first send is already held.
         if range_header != b"bytes=0-524287,600000-1048575":
             await asyncio.wait_for(produced.wait(), 5)
+        assert scope["state"]["live_media_outer"] is True
         viewer = scope["state"]["live_media_viewer"]
         viewer.handle.retire(4401)
         resume.set()

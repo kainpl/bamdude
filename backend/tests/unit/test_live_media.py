@@ -64,11 +64,15 @@ async def test_cleanup_stays_owned_at_contended_unsubscribe_and_repeated_cancel(
     await broadcaster.force_shutdown()
 
 
-async def test_cancel_before_body_start_does_not_acquire(media_runtime):
+@pytest.mark.parametrize("status", [401, 403, 503])
+async def test_cancel_before_body_start_does_not_acquire(media_runtime, status):
     acquired = []
     entered = asyncio.Event()
 
     async def admit(handle):
+        handle.admission_error = lambda: HTTPException(
+            status, "Synthetic admission refusal", headers={"Retry-After": "5"} if status == 503 else None
+        )
         entered.set()
         await asyncio.Event().wait()
 
@@ -84,8 +88,33 @@ async def test_cancel_before_body_start_does_not_acquire(media_runtime):
     req.state.live_media_viewer.handle.retire()
     with pytest.raises(HTTPException) as caught:
         await asyncio.wait_for(task, 2)
-    assert caught.value.status_code == 503
+    assert caught.value.status_code == status
+    assert caught.value.headers == ({"Retry-After": "5"} if status == 503 else None)
     assert not acquired
+    assert not media_runtime.handles
+
+
+@pytest.mark.parametrize("status", [401, 403, 503])
+async def test_refused_response_start_preserves_admission_status_and_retry(media_runtime, status):
+    async def prepare(viewer):
+        # The payload lost authority after admit but before its first headers.
+        viewer.handle.admitted = False
+        viewer.handle.admission_error = lambda: HTTPException(
+            status, "Synthetic admission refusal", headers={"Retry-After": "5"} if status == 503 else None
+        )
+
+        async def frames():
+            yield b"must-not-send"
+
+        return frames()
+
+    req = request()
+    task, chunks, _ = serve(live_media.mjpeg_response(req, prepare), req)
+    with pytest.raises(HTTPException) as caught:
+        await asyncio.wait_for(task, 2)
+    assert caught.value.status_code == status
+    assert caught.value.headers == ({"Retry-After": "5"} if status == 503 else None)
+    assert chunks.empty()
     assert not media_runtime.handles
 
 
@@ -180,12 +209,15 @@ async def test_if_range_mismatch_returns_full_body(tmp_path, media_runtime):
     assert (await chunks.get())["body"] == b"whole-video"
 
 
+@pytest.mark.parametrize("path", ["/api/v1/printers/1/camera/stream", "/api/v1/library/files/1/card-file/"])
+@pytest.mark.parametrize("newline", [False, True])
 @pytest.mark.parametrize("method", ["GET", "HEAD"])
-async def test_covered_success_without_handle_fails_closed_but_errors_survive(caplog, method):
+async def test_covered_success_without_handle_fails_closed_but_errors_survive(caplog, method, newline, path):
     async def app(scope, receive, send):
         await Response(b"private")(scope, receive, send)
 
-    req = request(method=method)
+    path += "\n" if newline else ""
+    req = request(path, method=method)
     bodies = []
     caplog.set_level(logging.INFO, logger=live_media.__name__)
     await live_media.LiveMediaDeliveryMiddleware(app, prefix="/api/v1")(req.scope, None, lambda_send(bodies))
@@ -196,7 +228,7 @@ async def test_covered_success_without_handle_fails_closed_but_errors_survive(ca
         await Response(b"denied", status_code=401)(scope, receive, send)
 
     await live_media.LiveMediaDeliveryMiddleware(refused, prefix="/api/v1")(
-        request(method=method).scope, None, lambda_send(bodies)
+        request(path, method=method).scope, None, lambda_send(bodies)
     )
     assert bodies[-1]["body"] == b"denied"
 
