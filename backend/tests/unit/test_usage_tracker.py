@@ -41,6 +41,26 @@ def _empty_usage_journal():
         yield
 
 
+@pytest.fixture(autouse=True)
+def _accounting_math_dependencies(monkeypatch):
+    # Ordered query fakes below exercise grams/mapping/cost arithmetic. Real
+    # archive incarnation/transaction fences are tested with file SQLite in
+    # test_duplicate_claims_wal; do not make a coroutine pretend to be a bind.
+    monkeypatch.setattr("backend.app.services.usage_tracker._lock_usage_archive", AsyncMock())
+
+    async def analyze(manager, printer_id, archive_id, path, plate_id, **kwargs):
+        from backend.app.services.print_file_analysis import PrintFileAnalysis
+        from backend.app.utils import threemf_tools
+
+        return PrintFileAnalysis(
+            filament_usage=threemf_tools.extract_filament_usage_from_3mf(path, plate_id) or [],
+            layer_usage=threemf_tools.extract_layer_filament_usage_from_3mf(path, plate_id),
+            filament_properties=threemf_tools.extract_filament_properties_from_3mf(path) or {},
+        )
+
+    monkeypatch.setattr("backend.app.services.print_file_analysis.get_print_file_analysis", analyze)
+
+
 def _make_spool(spool_id=1, label_weight=1000, weight_used=0, tag_uid=None, tray_uuid=None):
     """Create a mock Spool object."""
     spool = MagicMock()
@@ -70,6 +90,8 @@ def _make_archive(archive_id=1, file_path="archives/1/test.3mf", extra_data=None
     archive = MagicMock()
     archive.id = archive_id
     archive.file_path = file_path
+    archive.recovery_identity = f"test-archive-{archive_id}"
+    archive.plate_index = None
     archive.extra_data = extra_data
     return archive
 
@@ -116,6 +138,14 @@ def _mock_db_sequential(responses):
         return result
 
     db.execute = mock_execute
+
+    # The initial identity snapshot is a separate get(), before the existing
+    # ordered 3MF/archive queries. It must not consume their first result.
+    from backend.app.models.archive import PrintArchive
+
+    db.get = AsyncMock(
+        side_effect=lambda model, *a, **kw: responses[0] if model is PrintArchive and responses else None
+    )
     return db
 
 

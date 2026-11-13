@@ -15,6 +15,13 @@ import sys
 #: Containers keyed by printer (or by tuples that start with one), as ``(module, attribute path)``. Locks and tasks
 #: belong here too: one a test contended or started is bound to that test's event loop.
 PRINTER_KEYED_REGISTRIES = (
+    ("backend.app.services.printer_manager", "printer_manager._layer_grants"),
+    ("backend.app.services.printer_manager", "printer_manager._layer_publications_pending"),
+    ("backend.app.services.printer_manager", "printer_manager._unproven_starts"),
+    ("backend.app.main", "_active_print_identities"),
+    ("backend.app.main", "_print_ams_mapping_identities"),
+    ("backend.app.main", "_last_projection_broadcast"),
+    ("backend.app.main", "_projection_repeat_available"),
     ("backend.app.services.printer_manager", "printer_manager._print_start_admissions"),
     ("backend.app.services.printer_manager", "printer_manager._print_start_resolutions"),
     ("backend.app.services.printer_manager", "printer_manager._print_run_bindings"),
@@ -73,6 +80,9 @@ PRINTER_KEYED_REGISTRIES = (
 #: absent until then, and nothing to empty while absent. Every other entry must exist once its module is loaded.
 LAZY = frozenset(
     {
+        "printer_manager._layer_grants",
+        "printer_manager._layer_publications_pending",
+        "printer_manager._unproven_starts",
         "printer_manager._print_start_admissions",
         "printer_manager._print_start_resolutions",
         "printer_manager._print_effect_generations",

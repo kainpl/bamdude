@@ -94,22 +94,24 @@ async def test_invalid_maps_or_entries_remain_ignored(test_engine, raw):
 async def test_invalid_base_aborts_without_guessing_or_marking_complete(test_engine):
     async with test_engine.begin() as conn:
         await _put(conn, {"stagger_concurrent": "broken", "stagger_tag_limits": '{"1":6}'})
+        before = await _read(conn)
     with pytest.raises(ValueError):
         async with test_engine.begin() as conn:
             await migration.upgrade(conn)
     async with test_engine.begin() as conn:
         saved = await _read(conn)
-        assert saved == {"stagger_concurrent": "broken", "stagger_tag_limits": '{"1":6}'}
+        assert saved == before
 
 
 async def test_marker_and_rewrite_rollback_together(test_engine):
     async with test_engine.begin() as conn:
         await _put(conn, {"stagger_tag_limits": '{"1":6}'})
+        before = await _read(conn)
     with pytest.raises(RuntimeError):
         async with test_engine.begin() as conn:
             await migration.upgrade(conn)
             raise RuntimeError("interrupted before commit")
     async with test_engine.begin() as conn:
-        assert await _read(conn) == {"stagger_tag_limits": '{"1":6}'}
+        assert await _read(conn) == before
         await migration.upgrade(conn)
         assert json.loads((await _read(conn))["stagger_tag_limits"]) == {"1": 2}

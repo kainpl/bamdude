@@ -134,7 +134,12 @@ class TestTheEndOfAPrintAsksThePlugItself:
         from backend.app import main
 
         archive = SimpleNamespace(
-            energy_start_kwh=1.0, energy_kwh=None, energy_cost=None, completed_at=None, extra_data=None
+            recovery_identity="test-energy-run",
+            energy_start_kwh=1.0,
+            energy_kwh=None,
+            energy_cost=None,
+            completed_at=None,
+            extra_data=None,
         )
         db = SimpleNamespace(
             get=AsyncMock(return_value=archive),
@@ -186,7 +191,12 @@ class TestTheEndOfAPrintAsksThePlugItself:
         from backend.app import main
 
         archive = SimpleNamespace(
-            energy_start_kwh=1.0, energy_kwh=None, energy_cost=None, completed_at=None, extra_data={"notes": "x"}
+            recovery_identity="test-energy-run",
+            energy_start_kwh=1.0,
+            energy_kwh=None,
+            energy_cost=None,
+            completed_at=None,
+            extra_data={"notes": "x"},
         )
         db = SimpleNamespace(
             get=AsyncMock(return_value=archive),
@@ -230,7 +240,12 @@ class TestTheEndOfAPrintAsksThePlugItself:
         from backend.app import main
 
         archive = SimpleNamespace(
-            energy_start_kwh=1.0, energy_kwh=None, energy_cost=None, completed_at=None, extra_data={}
+            recovery_identity="test-energy-run",
+            energy_start_kwh=1.0,
+            energy_kwh=None,
+            energy_cost=None,
+            completed_at=None,
+            extra_data={},
         )
         db = SimpleNamespace(
             get=AsyncMock(return_value=archive),

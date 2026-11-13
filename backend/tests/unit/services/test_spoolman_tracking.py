@@ -298,7 +298,7 @@ class TestStorePrintData:
             queue_item = (
                 SimpleNamespace(plate_id=queue_plate_id, ams_mapping=None) if queue_plate_id is not None else None
             )
-            queue_result.scalar_one_or_none.return_value = queue_item
+            queue_result.scalars.return_value.all.return_value = [queue_item] if queue_item is not None else []
             delete_result = MagicMock()
             db.execute = AsyncMock(side_effect=[queue_result, delete_result])
             db.add = MagicMock()

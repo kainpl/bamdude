@@ -13,8 +13,8 @@ just fetched another plate's file.
 
 from __future__ import annotations
 
+import ast
 import inspect
-import re
 
 from backend.app import main
 from backend.app.main import _name_after_plate_reject
@@ -40,9 +40,22 @@ def test_nothing_to_go_on_is_an_empty_name():
 
 
 def test_the_reject_branch_renames_through_the_helper_and_disowns_the_name_for_lookups():
-    source = re.sub(r"\(\s+", "(", inspect.getsource(main._on_print_start_impl))
-    branch = source[source.index("Could not re-download correct plate") :]
-    branch = branch[: branch.index("Post-download content-hash adoption")]
+    tree = ast.parse(inspect.getsource(main._on_print_start_impl))
+    # Locate the retry-refusal block by its AST, not a neighboring comment.
+    branches = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.If)
+        and ast.unparse(node.test) == "not retry_succeeded"
+        and any(
+            isinstance(child, ast.Call)
+            and isinstance(child.func, ast.Name)
+            and child.func.id == "_name_after_plate_reject"
+            for child in ast.walk(node)
+        )
+    ]
+    assert len(branches) == 1
+    branch = ast.unparse(branches[0])
     assert "_name_after_plate_reject(subtask_name, corrected_subtask, filename)" in branch
-    # Lookups: only a name that points at the running plate survives.
-    assert 'subtask_name = corrected_subtask or ""' in branch
+    assert "subtask_name = corrected_subtask or ''" in branch
+    assert "current.print_name = corrected_name" in branch

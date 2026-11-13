@@ -86,6 +86,13 @@ async def test_a_failing_notification_never_reaches_the_completion():
         await notify_usage_not_recorded(1, [(0, 1.0)], _Session(), logging.getLogger(__name__))
 
 
+@pytest.fixture(autouse=True)
+def _arithmetic_archive_guard(monkeypatch):
+    # This module tests notification aggregation, with ordered query fakes.
+    # Incarnation/lock behavior remains under the real file-SQLite WAL tests.
+    monkeypatch.setattr("backend.app.services.usage_tracker._lock_usage_archive", AsyncMock())
+
+
 # -- the internal tracker collects what it could not charge -------------------
 
 

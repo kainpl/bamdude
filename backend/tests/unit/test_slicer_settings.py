@@ -44,5 +44,11 @@ class TestPreferredSlicerSchema:
     def test_partial_update_preserves_other_fields(self):
         """Updating preferred_slicer should not affect other fields."""
         update = AppSettingsUpdate(preferred_slicer="orcaslicer")
-        data = update.model_dump(exclude_none=True)
+        data = update.model_dump(exclude_unset=True)
         assert data == {"preferred_slicer": "orcaslicer"}
+
+    def test_mcp_acknowledgements_default_false_but_are_not_patch_fields(self):
+        update = AppSettingsUpdate(preferred_slicer="orcaslicer")
+        assert update.mcp_http_risk_acknowledged is False
+        assert update.mcp_http_trusted_network_acknowledged is False
+        assert update.model_fields_set == {"preferred_slicer"}

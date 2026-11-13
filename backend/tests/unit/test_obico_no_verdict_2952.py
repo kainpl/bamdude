@@ -127,4 +127,7 @@ async def test_the_reason_stays_behind_settings_read_but_the_class_does_not(monk
 
     admin = SimpleNamespace(has_permission=lambda p: p in ("printers:read", "settings:read"))
     body = await obico_routes.get_printer_status(user=admin)
-    assert "ml.internal" in body["per_printer"][1]["error"]
+    assert body["per_printer"][1]["error"] == "Obico failure detection is temporarily unavailable."
+    assert "ml.internal" not in str(body)
+    # Sanitizing the API must not destroy the service's internal diagnostic.
+    assert "ml.internal" in service.get_per_printer()[1]["error"]

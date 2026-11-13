@@ -22,6 +22,7 @@ APP = Path(__file__).resolve().parents[2] / "app"
 
 #: ``printer_manager`` attributes that are not per-printer test state, with the reason.
 PROCESS_SCOPED = {
+    "_layer_projection_callback": "a process-lifetime callback installed by main, not a per-printer container",
     "_clients": "the MQTT client per printer; tests install one with monkeypatch.setitem",
     "_models": "model cache filled alongside a client",
     "_printer_info": "name/serial cache filled alongside a client",

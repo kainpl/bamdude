@@ -6,11 +6,8 @@ is an int in both schemas and works only because its one consumer re-parses
 defensively. A new int tunable that skips the list fails exactly as quietly.
 """
 
-import inspect
-
 import pytest
 
-from backend.app.api.routes import settings as settings_routes
 from backend.app.core import query_timing as qt
 from backend.app.schemas.settings import AppSettings, AppSettingsUpdate
 
@@ -38,12 +35,17 @@ def test_a_negative_threshold_is_refused(field):
 
 
 @pytest.mark.parametrize("key", ["slow_query_ms", "slow_request_ms"])
-def test_both_keys_are_parsed_as_integers_not_strings(key):
-    """The rows are stored as text; without a place in the int list the API
-    would answer a string and the number input would silently misbehave."""
-    source = inspect.getsource(settings_routes.get_settings)
-    int_block = source.split("float(setting.value)", 1)[1]
-    assert f'"{key}"' in int_block.split("int(setting.value)", 1)[0]
+@pytest.mark.asyncio
+async def test_both_keys_are_parsed_as_integers_not_strings(key, async_client, db_session):
+    """A text DB value must cross the actual GET route as an integer."""
+    from backend.app.models.settings import Settings
+
+    db_session.add(Settings(key=key, value="1500"))
+    await db_session.commit()
+    response = await async_client.get("/api/v1/settings/")
+    assert response.status_code == 200
+    assert response.json()[key] == 1500
+    assert type(response.json()[key]) is int
 
 
 @pytest.mark.asyncio
