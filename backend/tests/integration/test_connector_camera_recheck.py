@@ -44,7 +44,9 @@ async def clean(monkeypatch, tmp_path):
     connector_runtime._reset_for_tests()
     monkeypatch.setattr(live_authority, "RECHECK_SECONDS", 0.50)
     monkeypatch.setattr(live_authority, "CHECK_SECONDS", 1.0)
-    monkeypatch.setattr(live_authority, "PROOF_SECONDS", 1.0)
+    # A healthy proof must outlive an allowed read plus its refresh tick.
+    # Keep the production proof window; mutation/default delivery bounds below remain unchanged.
+    monkeypatch.setattr(live_authority, "PROOF_SECONDS", 3.0)
     monkeypatch.setattr(camera_fanout, "_DISCONNECT_POLL_SECONDS", 0.025)
     yield
     await camera_fanout.shutdown_all_broadcasters()
@@ -166,8 +168,11 @@ def runtime(monkeypatch, stalled=False):
             if stalled:
                 await disconnect_event.wait()
             else:
+                # Windows asyncio can promote sub-resolution timers immediately.
+                # Pace the fake without changing any authority deadline below.
+                interval = max(0.01, 2 * time.get_clock_info("monotonic").resolution)
                 while not disconnect_event.is_set():
-                    await asyncio.sleep(0.01)
+                    await asyncio.sleep(interval)
                     on_frame(JPEG)
                     yield CHUNK
 
@@ -302,7 +307,7 @@ async def test_check_timeout_closes_delivery_but_restore_still_owns_sql(
     printer = await printer_factory()
     raw, *_ = await principal(db_session)
     runtime(monkeypatch)
-    entered, release = asyncio.Event(), asyncio.Event()
+    entered, deadline_cancelled, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
     coordinator = live_authority.live_authority
     original = coordinator._read
 
@@ -317,6 +322,7 @@ async def test_check_timeout_closes_delivery_but_restore_still_owns_sql(
                 try:
                     await release.wait()
                 except asyncio.CancelledError:
+                    deadline_cancelled.set()  # the real CHECK_SECONDS timeout cancelled this actual check
                     continue
         return result
 
@@ -325,6 +331,17 @@ async def test_check_timeout_closes_delivery_but_restore_still_owns_sql(
         async with streaming(async_client._transport.app, printer.id, raw, "key") as (task, bodies):
             await asyncio.wait_for(entered.wait(), 2)
             actual = coordinator._check
+            admitted = [handle for handle in coordinator.handles if handle.admitted and not handle.retired]
+            assert len(admitted) == 1
+            handle = admitted[0]
+            await asyncio.wait_for(deadline_cancelled.wait(), 2)
+            assert actual in coordinator.tasks and not actual.done()
+            assert handle.deliverable()  # healthy setup did not expire before the injected failure
+            # Expired-proof fault only after actual timeout cancellation is
+            # observed. The live gate must stop delivery while real work stays
+            # charged, without shrinking every healthy viewer's proof window.
+            handle.proof_until = time.monotonic() - 0.01
+            coordinator._wake.set()
             await asyncio.wait_for(asyncio.shield(task), 2)
             assert actual in coordinator.tasks and not actual.done()
             assert not await coordinator.drain(0)

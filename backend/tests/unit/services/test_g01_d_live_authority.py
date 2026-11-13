@@ -595,3 +595,50 @@ async def test_admission_deadline_is_retryable_503_and_keeps_actual_check_owned(
         release.set()
         await asyncio.gather(runtime._check, return_exceptions=True)
         runtime.release(handle)
+
+
+async def test_actual_tick_naturally_expires_admitted_proof_and_keeps_cancel_resistant_check_owned(live, monkeypatch):
+    runtime, factory = live
+    issued, _ = await issue(factory)
+    handle = runtime.register(descriptor(issued))
+    entered, cancelled, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    original = runtime._read
+    try:
+        await runtime.admit(handle)
+        proof_until = handle.proof_until
+
+        async def resistant(batch):
+            result = await original(batch)
+            entered.set()
+            while not release.is_set():
+                try:
+                    await release.wait()
+                except asyncio.CancelledError:
+                    cancelled.set()
+            return result
+
+        monkeypatch.setattr(runtime, "_read", resistant)
+        runtime._wake.set()
+        await asyncio.wait_for(entered.wait(), 2)
+        actual = runtime._check
+        await asyncio.wait_for(cancelled.wait(), 2)
+        assert actual in runtime.tasks and not actual.done()
+        # Natural production proof expiry: no proof assignment, manual retire,
+        # synthetic clock or delivery consumer can trigger the stop below.
+        assert handle.proof_until == proof_until
+        await asyncio.wait_for(handle.stop.wait(), 5)
+        assert time.monotonic() >= proof_until
+        assert handle.proof_until == proof_until
+        assert handle.retired and handle.code == 1013 and not handle.admitted
+        assert actual in runtime.tasks and not actual.done()
+        assert not await runtime.drain(0)
+        release.set()
+        await asyncio.wait_for(asyncio.shield(actual), 2)
+        assert actual.done() and actual not in runtime.tasks
+        runtime.release(handle)
+        assert await runtime.drain(2)
+    finally:
+        release.set()
+        if runtime._check is not None:
+            await asyncio.gather(runtime._check, return_exceptions=True)
+        runtime.release(handle)
