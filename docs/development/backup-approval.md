@@ -1,5 +1,8 @@
 # Git backup approval and partial restore
 
+Accepted and integrated on the fixes development branch after 0.7.3. Existing
+schedules require the administrator save described below after upgrading.
+
 Git backups may contain integration credentials and other private farm data.
 An active administrator with Git backup permission must explicitly save the
 configuration, and the target repository must be confirmed private. After this
@@ -34,3 +37,8 @@ Configure those through their own editor. The original browser authority is
 checked again after remote reads before applying categories or sending printer
 commands. Full ZIP backup retains its complete snapshot contract. Print
 archives remain a history of individual physical prints.
+
+Accepted UI limitations: preview estimates potential replacements even with
+Overwrite off, so final counts and refusal reasons can differ after existing
+rows are skipped. A blocked manual run can still show an English error toast
+in the Ukrainian interface; the Settings approval warning is localized.
