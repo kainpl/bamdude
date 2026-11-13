@@ -1324,6 +1324,7 @@ async def test_after_its_archive_commit_the_closer_touches_nothing_of_the_next_p
                     file_path="",
                     file_size=0,
                     status="printing",
+                    extra_data={"next_print": True},
                 )
             )
             await other.execute(
@@ -1364,6 +1365,7 @@ async def test_after_its_archive_commit_the_closer_touches_nothing_of_the_next_p
         item = await db.get(PrintQueueItem, a.item_id)
         queue = await db.get(PrinterQueue, a.printer_id)
         assert (archive.filename, archive.status) == ("new-run.3mf", "printing")
+        assert archive.extra_data == {"next_print": True}
         assert (bool(printer.awaiting_plate_clear), item.status, queue.status) == (False, "printing", "printing")
     if with_analysis:
         context = print_file_analysis._finishing_contexts(printer_manager).get((a.printer_id, a.archive_id))
