@@ -135,7 +135,7 @@ async def test_interrupted_upload_finishes_and_ftp_stop_is_repeatable(tmp_path):
     record["after_interrupted_upload"] = {"business_running": bad._business, "failed": getattr(bad, "failed", False)}
     sessions_before = len(ftp._sessions)
     outcomes = []
-    for _ in range(2):  # a later retry, with nothing running, still refuses
+    for _ in range(2):  # a later retry must remain proven, with nothing running
         try:
             await asyncio.wait_for(ftp.stop(), 5)
             outcomes.append("proven")

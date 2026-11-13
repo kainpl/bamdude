@@ -86,3 +86,44 @@ async def test_actual_service_refuses_before_apply_and_finishes_its_log(test_eng
     async with sessions() as db:
         row = (await db.execute(select(GitBackupLog))).scalar_one()
         assert row.status == "failed" and row.files_changed == 0
+
+
+@pytest.mark.parametrize("language", ["en", "uk"])
+async def test_git_success_keeps_counts_and_prefix_in_the_same_language(test_engine, config, monkeypatch, language):
+    from backend.app.services import git_restore
+
+    monkeypatch.setattr(git_restore, "async_session", async_sessionmaker(test_engine, expire_on_commit=False))
+    service = GitRestoreService()
+    monkeypatch.setattr(service, "_resolve_ref", AsyncMock(return_value=("a" * 40, None, None)))
+    monkeypatch.setattr(service, "_read_categories", AsyncMock(return_value=({}, None)))
+
+    async def apply(*args, results, **kwargs):
+        tally = git_restore._CategoryTally()
+        tally.restored = 2
+        results["archives"] = tally
+
+    monkeypatch.setattr(service, "_apply", apply)
+    monkeypatch.setattr(
+        virtual_printer_manager,
+        "drain_for_restore",
+        AsyncMock(
+            return_value={
+                "proxy_connections_cut": {"mqtt": 3},
+                "camera_leases_released": 2,
+                "uploads_without_options": 0,
+            }
+        ),
+    )
+    set_language_cache(language)
+    try:
+        result = await service.run_restore(config["id"], "a" * 40, [RestoreCategory.ARCHIVES])
+        assert result["success"]
+        if language == "uk":
+            assert "Відновлено 2 записів із aaaaaaa" in result["message"]
+            assert "Звільнено" in result["message"] or "камер" in result["message"].lower()
+            assert "Restored" not in result["message"] and "Virtual printer" not in result["message"]
+        else:
+            assert "Restored 2 item(s) from aaaaaaa" in result["message"]
+            assert "connections interrupted: 3" in result["message"] and "leases released: 2" in result["message"]
+    finally:
+        set_language_cache("en")
