@@ -244,10 +244,10 @@ class FarmStartupGuard:
 
     def hold(self, reason):
         with self._mutex:
-            if not self.active:
-                return
             if reason == "restore":
                 self.restart_required = True
+            if not self.active:
+                return
             state = deepcopy(self.state)
             # A new restore is a new review boundary, even when another hold
             # already exists. A dialog opened before it cannot release it.

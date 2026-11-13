@@ -41,9 +41,16 @@ async def exercise_concurrent_due(backup):
         episode = config.admission_episode_id
         config.next_scheduled_run = datetime.utcnow() - timedelta(seconds=1)
         await db.commit()
-    # Concurrent manual and scheduled refusals are different attempts, one
-    # durable episode and one item per eligible immutable recipient.
-    await asyncio.gather(service.run_backup(cid, "manual"), other.run_backup(cid, "scheduled"))
+    # The shared ZIP/Git guard refuses the overlapping call before admission.
+    # Retry that occurrence after the owner exits: it still gets its own
+    # attempt, within the same durable notification episode.
+    results = await asyncio.gather(service.run_backup(cid, "manual"), other.run_backup(cid, "scheduled"))
+    assert sum(r.get("message") == "A backup is already running" for r in results) == 1
+    async with factory() as db:
+        assert await db.scalar(select(func.count()).select_from(GitBackupLog)) == 2
+    index = next(i for i, r in enumerate(results) if r.get("log_id") is None)
+    retried = await (service if index == 0 else other).run_backup(cid, "manual" if index == 0 else "scheduled")
+    assert retried["reason_code"] == "approval_required"
     async with factory() as db:
         assert await db.scalar(select(func.count()).select_from(GitBackupLog)) == 3
         assert await db.scalar(select(func.count()).select_from(UserNotification)) == 1

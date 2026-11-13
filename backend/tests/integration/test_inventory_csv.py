@@ -533,8 +533,29 @@ class TestInventoryCsvUsageColumns:
         assert spool.last_used is not None
         assert spool.last_used.year == 2026 and spool.last_used.month == 6 and spool.last_used.day == 1
 
-    async def test_import_rejects_bad_last_used(self, async_client: AsyncClient):
-        csv_text = "material,color_name,rgba,last_used\nPLA,White,ffffffff,not-a-date\n"
+    @pytest.mark.parametrize(
+        "raw",
+        ["2026-06-01T12:30:00+02:00", "2026-06-01T07:00:00-03:30", "2026-06-01T10:30:00Z", "2026-06-01T10:30:00"],
+    )
+    async def test_last_used_preview_and_persisted_value_are_naive_utc(self, async_client, db_session, raw):
+        from datetime import datetime
+
+        expected = datetime(2026, 6, 1, 10, 30)
+        csv_text = f"material,color_name,rgba,last_used\nPLA,White,ffffffff,{raw}\n"
+        preview = await async_client.post("/api/v1/inventory/spools/import?dry_run=true", files=_csv_upload(csv_text))
+        assert preview.status_code == 200, preview.text
+        assert preview.json()["valid_count"] == 1
+        assert datetime.fromisoformat(preview.json()["rows"][0]["spool"]["last_used"]) == expected
+        assert (await db_session.execute(select(Spool))).scalars().all() == []
+        response = await async_client.post("/api/v1/inventory/spools/import", files=_csv_upload(csv_text))
+        assert response.status_code == 200, response.text
+        assert response.json()["created"] == 1
+        spool = (await db_session.execute(select(Spool))).scalars().one()
+        assert spool.last_used == expected and spool.last_used.tzinfo is None
+
+    @pytest.mark.parametrize("raw", ["not-a-date", "0001-01-01T00:00:00+14:00", "9999-12-31T23:59:59-14:00"])
+    async def test_import_rejects_bad_last_used(self, async_client: AsyncClient, raw):
+        csv_text = f"material,color_name,rgba,last_used\nPLA,White,ffffffff,{raw}\n"
 
         response = await async_client.post("/api/v1/inventory/spools/import?dry_run=true", files=_csv_upload(csv_text))
 
