@@ -491,7 +491,12 @@ async def test_reused_printer_pk_cannot_deliver_new_incarnation_before_recheck(m
     assert [row["data"]["progress"] for row in old.sent] == [1]
     assert [row["data"]["progress"] for row in fresh.sent] == [99]
     assert observed == [{"type": "printer_status", "printer_id": 1, "data": {"progress": 99}}]
+    # This test owns no endpoint receive loop. Run its old channel's route
+    # finalizer explicitly even if retirement already completed the writer.
+    await manager.disconnect(old)
     await manager.shutdown()
+    assert handle not in live_authority.handles
+    assert not manager._live_handles and not manager._outboxes
 
 
 @pytest.mark.asyncio
