@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+- **Queue pauses no longer concentrate an order's print plan on the unpaused models.** The plan counts compatible printers and their existing load as if the queues resumed. The live completion forecast still accounts for the pause.
+
 - Browser sessions, API keys and camera/monitor tokens now belong to immutable accounts, preventing a recreated username or reused row id from inheriting access. Upgrading requires signing in again and replacing all legacy API keys and long-lived tokens, including ownerless keys. Settings and support show retirement counts; administrators receive an inbox notice after the server opens sign-in. Reissue only the scopes and printers each integration needs, then update its configured credential. See the [credential lifetime and replacement guide](docs/development/credential-lifetimes.md).
 
   Delayed imports, queue publications and cloud credential completions recheck their original authority before writing. Known-source library re-imports reuse an authorized record without rewriting incoming bytes. Personal inbox delivery stays limited to browser sessions; API-key and long-lived-token connections retain their own status access. Settings can remove retired camera/monitor records and ties each action to the selected record. Restore invalidates browser credentials and rotates the connector namespace in one transaction; an incomplete finalization keeps admission fenced until recovery, with the failed stage recorded without secret values. Notice failures do not block sign-in.
