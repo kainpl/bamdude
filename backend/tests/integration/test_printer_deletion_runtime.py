@@ -1237,32 +1237,60 @@ async def test_a_pause_or_resume_edge_overtaken_by_a_deletion_records_nothing_on
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("seam", ["after-the-archive-commit", "during-the-plate-gate"])
+@pytest.mark.parametrize(
+    "seam", ["during-usage-booking", "during-session-clear", "after-the-archive-commit", "during-the-plate-gate"]
+)
+@pytest.mark.parametrize("with_analysis", [False, True])
 async def test_after_its_archive_commit_the_closer_touches_nothing_of_the_next_printer(
-    db_session, printer_factory, archive_factory, monkeypatch, test_engine, seam
+    db_session, printer_factory, archive_factory, monkeypatch, test_engine, tmp_path, caplog, seam, with_analysis
 ):
-    """Both ids, the printer, its archive, queue and queue row replaced after the closer's own commit -- right after
-    it, or while the plate gate is being armed. Each later write proves the record and the row again."""
+    """Replace the printer, archive and queue at each completion commit or while arming the plate gate.
+
+    The old closer must neither read expired fields nor touch the next print's rows or analysis lease.
+    """
+    import logging
+    import sys
+    from unittest.mock import AsyncMock
+
     from sqlalchemy import insert, update
 
     from backend.app.models.archive import PrintArchive
     from backend.app.models.print_queue import PrintQueueItem
-    from backend.app.services import print_reconciliation, printer_deletion
+    from backend.app.services import print_file_analysis, print_reconciliation, printer_deletion, usage_tracker
     from backend.tests.integration.test_reconcile_retires_its_own_run import a_bound_printing_run
 
     factory = async_sessionmaker_for(test_engine, monkeypatch)
     a = await a_bound_printing_run(db_session, printer_factory, archive_factory)
+    analysis_path = tmp_path / "source.3mf"
+    analysis_path.write_bytes(b"test-source")
+    if with_analysis:
+        await db_session.execute(
+            update(PrintArchive).where(PrintArchive.id == a.archive_id).values(file_path=str(analysis_path))
+        )
+        await db_session.commit()
+        monkeypatch.setattr(print_file_analysis, "get_print_file_analysis", AsyncMock(return_value=None))
     life = printer_manager.printer_life(a.printer_id)
     real_commit = AsyncSession.commit
     real_arm = printer_manager.arm_awaiting_plate_clear
     replaced = []
+    replacement_identity = []
+    commit_owners = {
+        "during-usage-booking": usage_tracker._on_print_complete.__code__,
+        "during-session-clear": usage_tracker.clear_persisted_session_of.__code__,
+        "after-the-archive-commit": print_reconciliation._reconcile_complete_archive.__code__,
+    }
 
     async def commit(self):
-        closing = any(
-            isinstance(obj, PrintArchive) and obj.id == a.archive_id and obj.status == "completed" for obj in self.dirty
+        # Accounting and queue reads can autoflush the archive before commit.
+        # Observe the transaction's actual row, not the transient ORM dirty set,
+        # so this seam still fires after the archive was genuinely committed.
+        # Several helpers commit the same session. Inject at the named owner,
+        # not at an earlier accounting commit that happens to see the same row.
+        closing = sys._getframe(1).f_code is commit_owners.get(seam) and (
+            await self.scalar(select(PrintArchive.status).where(PrintArchive.id == a.archive_id)) == "completed"
         )
         await real_commit(self)
-        if seam == "after-the-archive-commit" and closing and not replaced:
+        if closing and not replaced:
             await replace()
 
     async def arm(printer_id, archive_id):
@@ -1309,14 +1337,27 @@ async def test_after_its_archive_commit_the_closer_touches_nothing_of_the_next_p
             await other.execute(
                 update(PrinterQueue).where(PrinterQueue.id == a.printer_id).values(current_item_id=a.item_id)
             )
+            replacement_identity.append(
+                await other.scalar(select(PrintArchive.recovery_identity).where(PrintArchive.id == a.archive_id))
+            )
             await other.commit()
         printer_deletion.finish(mark, committed=True)
+        if with_analysis:
+            assert print_file_analysis.begin_historical_print_file_analysis_finishing(
+                printer_manager,
+                a.printer_id,
+                a.archive_id,
+                analysis_path,
+                None,
+                expected_identity=replacement_identity[0],
+            )
 
     monkeypatch.setattr(AsyncSession, "commit", commit)
     monkeypatch.setattr(printer_manager, "arm_awaiting_plate_clear", arm)
     await print_reconciliation.reconcile_printer_prints(a.printer_id, "FINISH", "cube.gcode.3mf", printer_life=life)
 
     assert replaced
+    assert not [r for r in caplog.records if r.name == print_reconciliation.__name__ and r.levelno >= logging.ERROR]
     async with factory() as db:
         printer = await db.get(Printer, a.printer_id)
         archive = await db.get(PrintArchive, a.archive_id)
@@ -1324,6 +1365,12 @@ async def test_after_its_archive_commit_the_closer_touches_nothing_of_the_next_p
         queue = await db.get(PrinterQueue, a.printer_id)
         assert (archive.filename, archive.status) == ("new-run.3mf", "printing")
         assert (bool(printer.awaiting_plate_clear), item.status, queue.status) == (False, "printing", "printing")
+    if with_analysis:
+        context = print_file_analysis._finishing_contexts(printer_manager).get((a.printer_id, a.archive_id))
+        assert context is not None and context.archive_identity == replacement_identity[0]
+        print_file_analysis.discard_print_file_analysis(
+            printer_manager, a.printer_id, a.archive_id, expected_identity=replacement_identity[0]
+        )
 
 
 # --------------------------------------------------------------------------- #
