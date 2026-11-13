@@ -447,6 +447,7 @@ async def _reconcile_complete_archive(
         return None
     analysis = None
     analysis_leased = False
+    analysis_printer_id, analysis_archive_id = archive.printer_id, archive.id
     path = _archive_file_path(archive.file_path or "")
     if archive.printer_id is not None and path is not None:
         analysis_leased = begin_historical_print_file_analysis_finishing(
@@ -520,12 +521,21 @@ async def _reconcile_complete_archive(
                         expected_identity=archive.recovery_identity,
                         owner_only=True,
                     )
+                    # Accounting can commit and roll back its session if the
+                    # archive changed hands. Do not read expired ORM fields or
+                    # continue cleanup for a printer deleted during that await.
+                    if record_lives is not None and not record_lives():
+                        return None
                     # Only this execution's own session row, addressed by its archive stamp in one
                     # statement: a print that started during the awaits above keeps its row, whatever
                     # its name (GH #115, Codex USN-1).
                     await usage_tracker.clear_persisted_session_of(db, archive.printer_id, archive.recovery_identity)
+                    if record_lives is not None and not record_lives():
+                        return None
             except Exception:
-                logger.exception("reconcile: usage booking failed for archive %s", archive.id)
+                if record_lives is not None and not record_lives():
+                    return None
+                logger.exception("reconcile: usage booking failed for archive %s", analysis_archive_id)
 
         # The metadata as it is NOW, under the print's lock: an attach may have
         # finished the swap declaration during the awaits above, and the copy
@@ -644,7 +654,9 @@ async def _reconcile_complete_archive(
         return archive.id
     finally:
         if analysis_leased:
-            discard_print_file_analysis(printer_manager, archive.printer_id, archive.id)
+            discard_print_file_analysis(
+                printer_manager, analysis_printer_id, analysis_archive_id, expected_identity=loaded[3]
+            )
 
 
 def _accepted_terminal_checkpoint(archive: PrintArchive) -> dict | None:

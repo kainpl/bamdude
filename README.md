@@ -418,6 +418,7 @@ BamDude AI includes a setup panel, client packages and a shared diagnostic skill
 - **Orca Cloud profile sync & push** — pair once (under BamDude's own registered app identity, via a device code) and use your Orca Cloud printer/process/filament presets as a preset tier in the slice dialog and AMS-slot picker; mirrored server-side into the filament family catalog alongside Bambu Cloud's. Authored filament families push back to Orca Cloud too, with explicit conflict resolution when a profile changed in the cloud
 - K-profiles (pressure advance)
 - Git backup (GitHub, GitLab, Gitea and Forgejo), with private-repository checks, current administrator approval, visible blocked schedules and safe partial restore. [Upgrade and approval guide](docs/development/backup-approval.md).
+  - Restore only with the farm idle and no active uploads. Large SQLite restores can block database writes, including print completion. [Git metadata restore](docs/development/git-metadata-restore.md) describes archive identity, legacy limits and the metadata-only scope.
 - API keys & webhooks
 - LDAP/Active Directory authentication
 
@@ -514,6 +515,10 @@ BamDude uses **SQLite** by default — nothing to set up. One variable, `DATABAS
 | `postgresql+asyncpg://…` | your own PostgreSQL server |
 
 The bundled server comes from our open-source [embedded-postgres](https://github.com/kainpl/embedded-postgres) package (PostgreSQL 18 + pgvector + pg_stat_statements; Linux x86_64/aarch64/armv7l, macOS, Windows) and arrives with the Python dependencies — nothing to install by hand. It lives under `DATA_DIR/postgres/`, listens on `127.0.0.1` only, and generates its own password. Pin `EMBEDDED_PG_PORT=6432` if you want to reach it with psql or DBeaver.
+
+The PostgreSQL connection pool defaults to 20 persistent connections plus up to 60 overflow connections per engine. `DB_POOL_SIZE` and `DB_MAX_OVERFLOW` override these values. Allow room in the server's `max_connections` for all workers, other clients and PostgreSQL's reserved slots; 80 per engine is not a shared limit across processes. The bundled server keeps its minimum of 120 connections. SQLite pool defaults are unchanged.
+
+PostgreSQL checks idle pooled connections before checkout by default. Set `DB_POOL_PRE_PING=false` and restart BamDude to disable that check; a request may then fail when it first uses a connection the server has closed. This setting does not recover interrupted transactions and is ignored on SQLite.
 
 Every installer asks which one you want: `install.sh --db sqlite|embedded|external`, a **Database** page in the Windows installer (where the bundled server can run as its own `BamDudePostgres` service), and the same question in `docker-install.sh`. Switching from SQLite imports your existing database automatically on the next start.
 

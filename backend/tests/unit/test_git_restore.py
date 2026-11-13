@@ -1006,7 +1006,17 @@ class TestRestoreSpools:
         db_session.add(archive)
         await db_session.flush()
 
-        await _service()._restore_spools(db_session, inventory, usage, False, tally, {77: archive.id})
+        from backend.app.services.git_restore_records import ArchiveProof
+
+        await _service()._restore_spools(
+            db_session,
+            inventory,
+            usage,
+            False,
+            tally,
+            {77: archive.id},
+            archive_proofs={77: ArchiveProof(archive.id, archive.recovery_identity, archive.printer_id)},
+        )
         await db_session.commit()
 
         row = (await db_session.execute(select(SpoolUsageHistory))).scalar_one()
@@ -1022,7 +1032,7 @@ class TestRestoreSpools:
 
         assert (await db_session.execute(select(SpoolUsageHistory))).scalars().first() is None
         assert tally.skipped == 1
-        assert any("their spool is not in this backup's spool list" in note for note in _messages(tally))
+        assert any("no accepted spool identity map" in note for note in _messages(tally))
         # No remedy is offered, because none exists: overwrite does not change
         # which spools land in the map (a skipped spool is mapped anyway), and
         # usage history is always restored alongside the spools category.
@@ -1093,8 +1103,8 @@ class TestRestoreSpools:
         assert len(rows) == 3
         assert all(row.archive_id is None for row in rows)
         # Only the two that had a link to lose are counted.
-        assert any("2 usage record(s) restored without their print-history link" in n for n in _messages(tally))
-        assert any("select Print archives alongside" in n for n in _messages(tally))
+        assert any("2 usage record(s) restored without a proven print-history link" in n for n in _messages(tally))
+        assert any("select both categories" in n for n in _messages(tally))
 
     @pytest.mark.asyncio
     async def test_no_note_when_every_archive_link_resolves(self, db_session):
@@ -1109,7 +1119,17 @@ class TestRestoreSpools:
         db_session.add(archive)
         await db_session.flush()
 
-        await _service()._restore_spools(db_session, inventory, usage, False, tally, {7: archive.id})
+        from backend.app.services.git_restore_records import ArchiveProof
+
+        await _service()._restore_spools(
+            db_session,
+            inventory,
+            usage,
+            False,
+            tally,
+            {7: archive.id},
+            archive_proofs={7: ArchiveProof(archive.id, archive.recovery_identity, archive.printer_id)},
+        )
         await db_session.commit()
 
         row = (await db_session.execute(select(SpoolUsageHistory))).scalar_one()
@@ -1275,7 +1295,7 @@ class TestRestoreArchives:
             "id": 77,
             "filename": "benchy.3mf",
             "file_size": 2048,
-            "content_hash": "abc123",
+            "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             "print_name": "Benchy",
             "status": "completed",
             "started_at": "2026-03-01 10:00:00",
@@ -1310,7 +1330,7 @@ class TestRestoreArchives:
                 filename="benchy.3mf",
                 file_path="/data/benchy.3mf",
                 file_size=2048,
-                content_hash="abc123",
+                content_hash="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 started_at=datetime(2026, 3, 1, 10, 0, 0),
             )
         )
@@ -1357,7 +1377,7 @@ class TestRestoreArchives:
                 filename="benchy.3mf",
                 file_path="/data/benchy.3mf",
                 file_size=2048,
-                content_hash="abc123",
+                content_hash="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 started_at=None,
             )
         )
@@ -1379,7 +1399,7 @@ class TestRestoreArchives:
                 filename="benchy.3mf",
                 file_path="/data/benchy.3mf",
                 file_size=2048,
-                content_hash="abc123",
+                content_hash="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 started_at=datetime(2026, 3, 1, 10, 0, 0),
             )
         )
@@ -1436,7 +1456,7 @@ class TestRestoreArchives:
                 filename="benchy.3mf",
                 file_path="",
                 file_size=2048,
-                content_hash="abc123",
+                content_hash="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 started_at=datetime(2026, 3, 1, 10, 0, 0),
                 deleted_at=datetime(2026, 3, 5, 9, 0, 0),
             )
@@ -1465,7 +1485,7 @@ class TestRestoreArchives:
                 filename="benchy.3mf",
                 file_path="",
                 file_size=2048,
-                content_hash="abc123",
+                content_hash="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 started_at=datetime(2026, 3, 1, 10, 0, 0),
                 deleted_at=datetime(2026, 3, 5, 9, 0, 0),
             )
@@ -1490,7 +1510,7 @@ class TestRestoreArchives:
                 filename="benchy.3mf",
                 file_path="/data/benchy.3mf",
                 file_size=2048,
-                content_hash="abc123",
+                content_hash="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 started_at=datetime(2026, 3, 1, 10, 0, 0),
                 notes="old",
             )
@@ -1519,13 +1539,14 @@ class TestRestoreArchives:
         row = (await db_session.execute(select(PrintArchive))).scalar_one()
         assert row.printer_id is None
         assert row.project_id is None
-        assert any("no longer exist" in note for note in _messages(tally))
+        assert any(n["code"] == "archivesPrinterUnproven" for n in tally.notes)
+        assert any(n["code"] == "archivesOrderLinksIgnored" for n in tally.notes)
 
     @pytest.mark.asyncio
     async def test_valid_printer_link_is_preserved(self, db_session, printer_factory):
         printer = await printer_factory()
         tally = _CategoryTally()
-        entry = self._archive_entry(printer_id=printer.id)
+        entry = self._archive_entry(printer_id=printer.id, printer_serial=printer.serial_number)
 
         await _service()._restore_archives(db_session, {"archives": [entry]}, False, tally, {})
         await db_session.commit()
@@ -2253,7 +2274,7 @@ class TestSoftDeletedArchiveRoundTrip:
                 filename="trashed.3mf",
                 file_path="",
                 file_size=1024,
-                content_hash="hash-trashed",
+                content_hash="5555555555555555555555555555555555555555555555555555555555555555",
                 started_at=datetime(2026, 3, 1, 10, 0, 0),
                 deleted_at=deleted_at,
             )
@@ -2292,10 +2313,11 @@ class TestRestoredArchiveOwnership:
 
     def _entry(self, **overrides):
         entry = {
+            "status": "completed",
             "id": 77,
             "filename": "benchy.3mf",
             "file_size": 2048,
-            "content_hash": "abc123",
+            "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             "started_at": "2026-03-01 10:00:00",
             "created_at": "2026-03-01 10:00:00",
         }
@@ -2341,8 +2363,18 @@ class TestRestoredArchiveOwnership:
     async def test_the_owner_note_is_emitted_once_for_many_rows(self, db_session):
         tally = _CategoryTally()
         archives = [
-            self._entry(id=1, content_hash="h1", filename="a.3mf", created_by_id=4242),
-            self._entry(id=2, content_hash="h2", filename="b.3mf", created_by_id=4243),
+            self._entry(
+                id=1,
+                content_hash="1111111111111111111111111111111111111111111111111111111111111111",
+                filename="a.3mf",
+                created_by_id=4242,
+            ),
+            self._entry(
+                id=2,
+                content_hash="2222222222222222222222222222222222222222222222222222222222222222",
+                filename="b.3mf",
+                created_by_id=4243,
+            ),
         ]
 
         await _service()._restore_archives(db_session, {"archives": archives}, False, tally, {})
@@ -2413,10 +2445,11 @@ class TestRestoredArchiveOwnership:
         bob = await self._user(db_session, "bob")
         db_session.add(
             PrintArchive(
+                status="completed",
                 filename="benchy.3mf",
                 file_path="/data/benchy.3mf",
                 file_size=2048,
-                content_hash="abc123",
+                content_hash="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 started_at=datetime(2026, 3, 1, 10, 0, 0),
                 created_by_id=bob.id,
             )
@@ -2437,10 +2470,11 @@ class TestRestoredArchiveOwnership:
         bob = await self._user(db_session, "bob")
         db_session.add(
             PrintArchive(
+                status="completed",
                 filename="benchy.3mf",
                 file_path="/data/benchy.3mf",
                 file_size=2048,
-                content_hash="abc123",
+                content_hash="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 started_at=datetime(2026, 3, 1, 10, 0, 0),
                 created_by_id=bob.id,
             )
@@ -2468,10 +2502,11 @@ class TestRestoredArchiveOwnership:
         bob = await self._user(db_session, "bob")
         db_session.add(
             PrintArchive(
+                status="completed",
                 filename="benchy.3mf",
                 file_path="/data/benchy.3mf",
                 file_size=2048,
-                content_hash="abc123",
+                content_hash="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 started_at=datetime(2026, 3, 1, 10, 0, 0),
                 created_by_id=bob.id,
             )
@@ -2501,10 +2536,11 @@ class TestRestoredArchiveOwnership:
         bob = await self._user(db_session, "bob")
         db_session.add(
             PrintArchive(
+                status="completed",
                 filename="benchy.3mf",
                 file_path="/data/benchy.3mf",
                 file_size=2048,
-                content_hash="abc123",
+                content_hash="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 started_at=datetime(2026, 3, 1, 10, 0, 0),
                 created_by_id=bob.id,
             )
@@ -2557,10 +2593,11 @@ class TestRestoredArchiveOwnership:
         bob = await self._user(db_session, "bob")
         db_session.add(
             PrintArchive(
+                status="completed",
                 filename="benchy.3mf",
                 file_path="/data/benchy.3mf",
                 file_size=2048,
-                content_hash="abc123",
+                content_hash="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 started_at=datetime(2026, 3, 1, 10, 0, 0),
                 created_by_id=bob.id,
             )
@@ -2584,10 +2621,11 @@ class TestRestoredArchiveOwnership:
         """
         db_session.add(
             PrintArchive(
+                status="completed",
                 filename="benchy.3mf",
                 file_path="/data/benchy.3mf",
                 file_size=2048,
-                content_hash="abc123",
+                content_hash="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 started_at=datetime(2026, 3, 1, 10, 0, 0),
                 deleted_at=datetime(2026, 3, 4, 8, 0, 0),
             )
@@ -2612,10 +2650,11 @@ class TestRestoredArchiveOwnership:
         bob = await self._user(db_session, "bob")
         db_session.add(
             PrintArchive(
+                status="completed",
                 filename="benchy.3mf",
                 file_path="/data/benchy.3mf",
                 file_size=2048,
-                content_hash="abc123",
+                content_hash="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 started_at=datetime(2026, 3, 1, 10, 0, 0),
                 created_by_id=bob.id,
             )
@@ -2635,10 +2674,11 @@ class TestRestoredArchiveOwnership:
         """Control for the deleted_at half, with the note that goes with it."""
         db_session.add(
             PrintArchive(
+                status="completed",
                 filename="benchy.3mf",
                 file_path="/data/benchy.3mf",
                 file_size=2048,
-                content_hash="abc123",
+                content_hash="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 started_at=datetime(2026, 3, 1, 10, 0, 0),
                 deleted_at=datetime(2026, 3, 4, 8, 0, 0),
             )
@@ -2665,10 +2705,11 @@ class TestRestoredArchiveOwnership:
         user = await self._user(db_session)
         db_session.add(
             PrintArchive(
+                status="completed",
                 filename="owned.3mf",
                 file_path="",
                 file_size=1024,
-                content_hash="hash-owned",
+                content_hash="3333333333333333333333333333333333333333333333333333333333333333",
                 started_at=datetime(2026, 3, 1, 10, 0, 0),
                 created_by_id=user.id,
             )
@@ -2704,10 +2745,11 @@ class TestArchiveOwnerNaturalKey:
 
     def _entry(self, **overrides):
         entry = {
+            "status": "completed",
             "id": 77,
             "filename": "benchy.3mf",
             "file_size": 2048,
-            "content_hash": "abc123",
+            "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             "started_at": "2026-03-01 10:00:00",
             "created_at": "2026-03-01 10:00:00",
         }
@@ -2789,8 +2831,18 @@ class TestArchiveOwnerNaturalKey:
     async def test_the_unmatched_note_is_emitted_once_for_many_rows(self, db_session):
         tally = _CategoryTally()
         archives = [
-            self._entry(id=1, content_hash="h1", filename="a.3mf", created_by_username="alice"),
-            self._entry(id=2, content_hash="h2", filename="b.3mf", created_by_username="carol"),
+            self._entry(
+                id=1,
+                content_hash="1111111111111111111111111111111111111111111111111111111111111111",
+                filename="a.3mf",
+                created_by_username="alice",
+            ),
+            self._entry(
+                id=2,
+                content_hash="2222222222222222222222222222222222222222222222222222222222222222",
+                filename="b.3mf",
+                created_by_username="carol",
+            ),
         ]
 
         await _service()._restore_archives(db_session, {"archives": archives}, False, tally, {})
@@ -2847,10 +2899,11 @@ class TestArchiveOwnerNaturalKey:
         bob = await self._user(db_session, "bob")
         db_session.add(
             PrintArchive(
+                status="completed",
                 filename="benchy.3mf",
                 file_path="/data/benchy.3mf",
                 file_size=2048,
-                content_hash="abc123",
+                content_hash="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 started_at=datetime(2026, 3, 1, 10, 0, 0),
                 created_by_id=bob.id,
             )
@@ -2871,10 +2924,11 @@ class TestArchiveOwnerNaturalKey:
         alice = await self._user(db_session, "alice")
         db_session.add(
             PrintArchive(
+                status="completed",
                 filename="owned.3mf",
                 file_path="",
                 file_size=1024,
-                content_hash="hash-owned",
+                content_hash="3333333333333333333333333333333333333333333333333333333333333333",
                 started_at=datetime(2026, 3, 1, 10, 0, 0),
                 created_by_id=alice.id,
             )
@@ -2906,10 +2960,11 @@ class TestArchiveOwnerNaturalKey:
 
         db_session.add(
             PrintArchive(
+                status="completed",
                 filename="unowned.3mf",
                 file_path="",
                 file_size=1024,
-                content_hash="hash-unowned",
+                content_hash="4444444444444444444444444444444444444444444444444444444444444444",
                 started_at=datetime(2026, 3, 1, 10, 0, 0),
             )
         )
@@ -3128,6 +3183,7 @@ class TestApplyOrdering:
         calls: list[str] = []
         service = self._recording_service(calls)
         db = MagicMock()
+        db.in_transaction.return_value = False
         db.commit = AsyncMock(side_effect=lambda: calls.append("commit"))
 
         await service._apply(
@@ -3145,6 +3201,7 @@ class TestApplyOrdering:
         calls: list[str] = []
         service = self._recording_service(calls)
         db = MagicMock()
+        db.in_transaction.return_value = False
         db.commit = AsyncMock(side_effect=lambda: calls.append("commit"))
 
         await service._apply(
@@ -3166,6 +3223,7 @@ class TestApplyOrdering:
         """
         service = self._recording_service([])
         db = MagicMock()
+        db.in_transaction.return_value = False
         db.commit = AsyncMock(side_effect=RuntimeError("database is locked"))
         results: dict = {}
 
@@ -3179,6 +3237,7 @@ class TestApplyOrdering:
         """So a raise mid-run still leaves the committed categories visible."""
         service = self._recording_service([])
         db = MagicMock()
+        db.in_transaction.return_value = False
         db.commit = AsyncMock()
         service._restore_spools = AsyncMock(side_effect=RuntimeError("boom"))
         results: dict = {}
@@ -3323,7 +3382,8 @@ class TestKprofilePhaseFailure:
                         {
                             "id": 1,
                             "filename": "benchy.3mf",
-                            "content_hash": "hash-later",
+                            "content_hash": "6666666666666666666666666666666666666666666666666666666666666666",
+                            "status": "completed",
                             "started_at": "2026-03-01 10:00:00",
                         }
                     ],

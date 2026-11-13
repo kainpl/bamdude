@@ -25,6 +25,8 @@ vi.mock('../../api/client', () => ({
     remove: vi.fn().mockResolvedValue({}),
   },
   api: {
+    getUiPreferences: vi.fn().mockResolvedValue({}),
+    updateUiPreferences: vi.fn().mockResolvedValue({}),
     getSettings: vi.fn().mockResolvedValue({}),
     getPrinters: vi.fn().mockResolvedValue([]),
     getModelCompatibility: vi.fn().mockResolvedValue({ models: {} }),
@@ -66,6 +68,13 @@ const createMockPrinter = (overrides: Partial<VirtualPrinterConfig> = {}): Virtu
 });
 
 describe('VirtualPrinter nozzle configuration', () => {
+  it('shows an unproven retirement instead of a running update', () => {
+    render(<VirtualPrinterCard printer={createMockPrinter({ status: {
+      running: false, pending_files: 1, runtime_state: 'stopping', runtime_proven: false,
+    } })} models={models} />);
+    expect(screen.getByText('Stop not yet confirmed')).toBeInTheDocument();
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(multiVirtualPrinterApi.update).mockResolvedValue(createMockPrinter());

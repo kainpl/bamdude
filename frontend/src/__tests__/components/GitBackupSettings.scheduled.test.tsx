@@ -7,7 +7,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { fireEvent, screen, waitFor } from '@testing-library/react';
+import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { render } from '../utils';
 import { GitBackupSettings } from '../../components/GitBackupSettings';
 import { http, HttpResponse } from 'msw';
@@ -67,6 +67,27 @@ describe('GitBackupSettings - Scheduled Local Backups', () => {
     await waitFor(() => {
       expect(screen.getByText('Scheduled Local Backups')).toBeInTheDocument();
     });
+  });
+
+  it.each(['scheduled', 'uploaded'])('warns before %s ZIP restore and retains server interruption counts', async (entry) => {
+    const message = 'Backup restored. Virtual printer connections interrupted: 3. Camera proxy leases released: 2.';
+    server.use(
+      http.post('/api/v1/local-backup/backups/:filename/restore', () => HttpResponse.json({ success: true, message })),
+      http.post('/api/v1/settings/restore', () => HttpResponse.json({ success: true, message })),
+    );
+    const { container } = render(<GitBackupSettings />);
+    await screen.findByText('bamdude-backup-20260412-120000.zip');
+    if (entry === 'scheduled') {
+      fireEvent.click(screen.getByTitle('Restore from this backup'));
+    } else {
+      const input = container.querySelector('input[type="file"][accept=".zip"]');
+      expect(input).not.toBeNull();
+      fireEvent.change(input!, { target: { files: [new File(['zip'], 'backup.zip', { type: 'application/zip' })] } });
+    }
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByText(/Restore disconnects virtual printer proxies/)).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Restore Backup' }));
+    await waitFor(() => expect(screen.getAllByText(message).length).toBeGreaterThan(0));
   });
 
   it('shows frequency dropdown when enabled', async () => {
