@@ -34,12 +34,16 @@ Design notes worth knowing before editing:
 import asyncio
 import json
 import logging
+import math
 import os
 import re
 from dataclasses import dataclass, field as dataclasses_field
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 import httpx
+from fastapi import HTTPException
+from pydantic import TypeAdapter, ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -214,44 +218,23 @@ def _is_protected_setting_key(key: str) -> bool:
     )
 
 
-# There used to be an ``_is_skipped_setting_key`` here, the union of the two
-# predicates above, shared by the preview and the restore so neither could drift
-# from the other. It is gone because a name is no longer enough to decide: the
-# third refusal below depends on the payload's *other* values and on local
-# database state. ``_plan_settings`` is the shared classifier now, and it covers
-# all three reasons.
-
-
-# Toggles whose *safety* depends on a companion credential that the blocklist
-# above refuses to restore. Writing the toggle alone is not a partial restore,
-# it is a downgrade:
-#
-#   * prometheus_enabled with no token opens /api/v1/metrics. The route is on
-#     PUBLIC_API_ROUTES and its own gate is ``if token:`` (api/routes/metrics.py),
-#     so an empty or absent token means no authentication at all — a full,
-#     unauthenticated dump of the instance to anyone who can reach the port. On
-#     an instance that never enabled Prometheus there is no token row, so
-#     overwrite-off alone is enough to do it.
-#   * the other four switch an integration on with no way to authenticate to it,
-#     which breaks the login path (LDAP) or the connection (MQTT, HA).
-#
-# virtual_printer_enabled is largely vestigial post-migration — core/database.py
-# copies the rows into the virtual_printers table — but it is the same shape, and
-# refusing a vestigial toggle is a harmless no-op.
-#
-# ldap_enabled is deliberately NOT here. It was, paired with
-# ldap_bind_password — but this rule judges availability ("will the integration
-# work?"), and that is the wrong question for an authentication source. An
-# anonymous bind is a working config, so the pair let a backup omit the password
-# and have the toggle written; the whole LDAP family is refused by prefix above
-# instead. _is_protected_setting_key runs first in _plan_settings, so leaving the
-# entry here would be dead code that reads like coverage.
+# These edits use the owning Settings credential resolver against the retained
+# local/default/environment configuration. Backup credential presence is never
+# authority. Anonymous MQTT and VP proxy retain the owning editor's exceptions;
+# LDAP and authentication policy are always outside partial restore.
 _COMPANION_CREDENTIALS = {
     "prometheus_enabled": "prometheus_token",
     "mqtt_enabled": "mqtt_password",
     "ha_enabled": "ha_token",
     "virtual_printer_enabled": "virtual_printer_access_code",
 }
+_OWNING_GROUP_EDIT_GROUPS = (
+    frozenset({"prometheus_enabled"}),
+    frozenset({"mqtt_enabled"}),
+    frozenset({"ha_enabled"}),
+    frozenset({"virtual_printer_enabled", "virtual_printer_archive_name_source"}),
+)
+_OWNING_GROUP_EDIT_KEYS = frozenset().union(*_OWNING_GROUP_EDIT_GROUPS)
 
 # Companion credentials a reader takes from the environment rather than from a
 # Settings row. ha_token is the only one: get_homeassistant_settings prefers
@@ -259,33 +242,16 @@ _COMPANION_CREDENTIALS = {
 # both set, so an env-configured instance has a usable credential and no row.
 _COMPANION_CREDENTIAL_ENV = {"ha_token": "HA_TOKEN"}
 
-# The pairs above divide into two classes, because "did the *backup* carry a
-# usable credential?" does not mean the same thing for both.
-#
-# For the availability pairs it is the condition that stops the rule
-# over-refusing. An anonymous MQTT broker and an anonymous LDAP bind are working
-# configs, so a backup with an empty credential is describing something that
-# works, and refusing its toggle would be a false positive. Those pairs only
-# matter when the restore would produce a config weaker than *both* the backup
-# and the local instance.
-#
-# For the exposure pair it does not transfer. An empty prometheus_token removes
-# /api/v1/metrics' only gate (the route is on PUBLIC_API_ROUTES and its own
-# check is ``if token:``), so the exposure is a property of the toggle itself,
-# not of a downgrade relative to the backup: a backup taken on an instance that
-# enabled Prometheus *without* a token — the field is optional and defaults to
-# "" — is the more likely source of one, not the less. So an exposure toggle
-# skips this condition and is judged on local state alone.
+# Metrics is an exposure toggle. Kept as explicit policy metadata for the
+# service's direct predicate tests; actual admission is delegated to the owner.
 _COMPANION_EXPOSURE_TOGGLES = frozenset({"prometheus_enabled"})
 
 
 def _setting_value_is_true(value: object) -> bool:
-    """True if a settings *payload* value would be stored as "on".
+    """Interpret an existing toggle for a read-only destination comparison.
 
-    Deliberately as narrow as ``api.routes.settings.setting_is_true``: a restore
-    writes ``str(value)`` verbatim and no reader in the codebase treats "1",
-    "on" or "yes" as on, so restoring one of those cannot switch anything on.
-    Bool-tolerant because a backup's JSON can carry a real boolean.
+    Restorable payload booleans separately use the owning schema and canonical
+    storage encoding in _restore_setting_value.
     """
     if isinstance(value, bool):
         return value
@@ -304,6 +270,243 @@ def _is_usable_credential(value: object) -> bool:
     return value is not None and bool(str(value).strip())
 
 
+# Deliberately explicit: adding a future Settings editor field must not silently
+# grant an old Git backup permission to change it. Validation still belongs to
+# the current editor schema, rather than a second set of restore validators.
+_RESTORABLE_SETTING_KEYS = frozenset(
+    [
+        "save_thumbnails",
+        "capture_finish_photo",
+        "camera_light_auto",
+        "camera_light_auto_obico",
+        "delete_timelapse_after_attach",
+        "archive_3mf_retention_enabled",
+        "archive_3mf_retention_days",
+        "log_retention_days",
+        "slow_query_ms",
+        "slow_request_ms",
+        "runout_zero_point_enabled",
+        "runout_archive_spool_enabled",
+        "ams_sync_bidirectional",
+        "runout_purge_grams",
+        "usage_events_retention_hours",
+        "default_filament_cost",
+        "currency",
+        "energy_cost_per_kwh",
+        "document_supplier_name",
+        "document_supplier_address",
+        "document_supplier_phone",
+        "document_supplier_code",
+        "document_supplier_iban",
+        "spoolman_enabled",
+        "zigbee_enabled",
+        "device_labels_enabled",
+        "zigbee_transport",
+        "zigbee_path",
+        "spoolman_url",
+        "spoolman_sync_mode",
+        "spoolman_disable_weight_sync",
+        "spoolman_report_partial_usage",
+        "auto_add_unknown_rfid",
+        "disable_filament_warnings",
+        "spool_display_template",
+        "check_updates",
+        "check_printer_firmware",
+        "include_beta_updates",
+        "telemetry_enabled",
+        "language",
+        "bed_cooled_threshold",
+        "ams_humidity_good",
+        "ams_humidity_fair",
+        "ams_temp_good",
+        "ams_temp_fair",
+        "ams_temp_alarm",
+        "ams_history_retention_days",
+        "inbox_retention_days",
+        "plug_power_history_retention_days",
+        "sensor_history_retention_days",
+        "plug_power_sample_seconds",
+        "printer_sensor_history_retention_days",
+        "prefer_lowest_filament",
+        "queue_shortest_first",
+        "auto_queue_rebalance_models",
+        "auto_queue_compatible_models",
+        "auto_order_for_batches",
+        "preheat_enabled",
+        "preheat_filament_targets",
+        "preheat_max_wait_seconds",
+        "preheat_soak_seconds",
+        "queue_drying_enabled",
+        "queue_drying_block",
+        "ambient_drying_enabled",
+        "print_drying_enabled",
+        "drying_presets",
+        "ams_humidity_thresholds",
+        "zigbee_sensor_reporting",
+        "zigbee_sensor_stale_multiplier",
+        "zigbee_sensor_poll_seconds",
+        "stagger_enabled",
+        "stagger_concurrent",
+        "stagger_interval_minutes",
+        "stagger_wait_for_bed",
+        "forecast_upload_seconds",
+        "forecast_operator_absence_enabled",
+        "forecast_operator_absence_start",
+        "forecast_operator_absence_end",
+        "forecast_operator_timezone",
+        "forecast_plate_clear_minutes",
+        "stagger_split_by_tags",
+        "stagger_group_tag_ids",
+        "stagger_split_by_location",
+        "stagger_group_location_ids",
+        "stagger_tag_limits",
+        "stagger_location_limits",
+        "per_printer_mapping_expanded",
+        "date_format",
+        "time_format",
+        "default_printer_id",
+        "virtual_printer_enabled",
+        "virtual_printer_mode",
+        "virtual_printer_archive_name_source",
+        "dark_style",
+        "dark_background",
+        "dark_accent",
+        "light_style",
+        "light_background",
+        "light_accent",
+        "ftp_retry_enabled",
+        "ftp_retry_count",
+        "ftp_retry_delay",
+        "ftp_timeout",
+        "mqtt_enabled",
+        "mqtt_topic_prefix",
+        "external_url",
+        "docker_compose_dir",
+        "ha_enabled",
+        "library_disk_warning_gb",
+        "library_all_files_recursive",
+        "firmware_batch_concurrency",
+        "camera_view_mode",
+        "slice_engine",
+        "preferred_slicer",
+        "open_in_slicer",
+        "use_slicer_api",
+        "orcaslicer_api_url",
+        "bambu_studio_api_url",
+        "slicer_stall_timeout_minutes",
+        "prometheus_enabled",
+        "low_stock_threshold",
+        "forecast_global_lead_time_days",
+        "location_sensor_poll_interval",
+        "location_sensor_alert_defaults",
+        "user_notifications_enabled",
+        "local_backup_enabled",
+        "local_backup_schedule",
+        "local_backup_time",
+        "local_backup_retention",
+        "local_backup_path",
+        "obico_enabled",
+        "obico_save_detections",
+        "obico_sensitivity",
+        "obico_action",
+        "obico_poll_interval",
+        "obico_enabled_printers",
+        "default_sidebar_order",
+        "gcode_snippets",
+    ]
+)
+
+_RESTORE_AUTH_POLICY_KEYS = frozenset(
+    {"session_max_hours", "telegram_registration_open", "connector_enabled", "connector_max_upload_bytes"}
+)
+_RESTORE_RUNTIME_KEYS = frozenset({"secret_actions", "ha_url_from_env", "ha_token_from_env", "ha_env_managed"})
+_FROZEN_DESTINATION_KEYS = frozenset(
+    {
+        "mqtt_topic_prefix",
+        "spoolman_url",
+        "orcaslicer_api_url",
+        "bambu_studio_api_url",
+        "external_url",
+        "docker_compose_dir",
+        "local_backup_path",
+        "zigbee_transport",
+        "zigbee_path",
+        "virtual_printer_mode",
+        "preferred_slicer",
+        "slice_engine",
+        "use_slicer_api",
+    }
+)
+_URL_DESTINATION_KEYS = frozenset({"spoolman_url", "orcaslicer_api_url", "bambu_studio_api_url", "external_url"})
+_OPERATOR_SETTING_KEYS = frozenset(
+    {
+        "forecast_operator_absence_enabled",
+        "forecast_operator_absence_start",
+        "forecast_operator_absence_end",
+        "forecast_operator_timezone",
+    }
+)
+_SETTINGS_REFUSAL_BUCKETS = (
+    "blocked",
+    "protected",
+    "companion",
+    "unknown",
+    "invalid",
+    "runtime",
+    "destination",
+    "masked",
+)
+_MASKED_SETTING_VALUE = re.compile(r"(?:\*{3,}|[•●]{3,}|\[redacted\]|<redacted>|__redacted__)", re.IGNORECASE)
+
+
+def _restore_setting_value(key: str, value: object) -> str:
+    """Validate the backup's storage representation through the owning schema.
+
+    Update fields are optional to support PATCH; null is only restorable when
+    the *effective* settings field is nullable too. Booleans use the storage
+    reader's exact vocabulary, avoiding lax Pydantic ``on``/``1`` coercion.
+    """
+    from backend.app.schemas.settings import AppSettings, AppSettingsUpdate
+
+    field = AppSettings.model_fields[key]
+    if field.annotation is bool:
+        if isinstance(value, str) and value.lower() in {"true", "false"}:
+            value = value.lower() == "true"
+        elif not isinstance(value, bool):
+            raise ValueError("Invalid stored boolean")
+    elif isinstance(value, bool):
+        raise ValueError("Boolean is not a numeric or string setting")
+    if value == "None" and type(None) in getattr(field.annotation, "__args__", ()):
+        value = None
+    updated = AppSettingsUpdate.model_validate({key: value})
+    validated = TypeAdapter(field.rebuild_annotation()).validate_python(getattr(updated, key))
+    if isinstance(validated, float) and not math.isfinite(validated):
+        raise ValueError("Non-finite setting")
+    if isinstance(validated, bool):
+        return "true" if validated else "false"
+    return str(validated)
+
+
+def _local_destination(key: str, local: dict[str, str], defaults) -> str:
+    """Resolve only destinations, matching their existing owning readers."""
+    from backend.app.core.config import settings
+
+    value = local.get(key, getattr(defaults, key))
+    if key == "use_slicer_api":
+        return "true" if _setting_value_is_true(value) else "false"
+    if key == "preferred_slicer":
+        return value or defaults.preferred_slicer
+    if key == "orcaslicer_api_url":
+        return value or settings.slicer_api_url
+    if key == "bambu_studio_api_url":
+        return value or settings.bambu_studio_api_url
+    if key == "external_url":
+        return value or os.environ.get("APP_URL", "http://localhost:5173")
+    if key == "local_backup_path":
+        return value or str(settings.base_dir / "backups")
+    return value
+
+
 @dataclass(frozen=True)
 class _SettingsPlan:
     """Which keys of a settings payload will not be written, and why.
@@ -313,20 +516,29 @@ class _SettingsPlan:
     change. The companion bucket is why this needs a session at all: unlike the
     two name-based buckets it depends on local database state.
 
-    The three buckets are disjoint — a key is classified once, in order.
+    The refusal buckets are disjoint — a key is classified once, in order.
+    Accepted values are already validated and encoded for the settings reader.
+    Destination no-ops remain counted but preserve the local row verbatim.
     """
 
     blocked: tuple[str, ...] = ()
     protected: tuple[str, ...] = ()
     companion: tuple[str, ...] = ()
+    unknown: tuple[str, ...] = ()
+    invalid: tuple[str, ...] = ()
+    runtime: tuple[str, ...] = ()
+    destination: tuple[str, ...] = ()
+    masked: tuple[str, ...] = ()
+    accepted: dict[str, str] = dataclasses_field(default_factory=dict)
+    no_op: frozenset[str] = frozenset()
 
     @property
     def refused(self) -> frozenset[str]:
-        return frozenset(self.blocked) | frozenset(self.protected) | frozenset(self.companion)
+        return frozenset().union(*(getattr(self, name) for name in _SETTINGS_REFUSAL_BUCKETS))
 
     @property
     def refused_count(self) -> int:
-        return len(self.blocked) + len(self.protected) + len(self.companion)
+        return sum(len(getattr(self, name)) for name in _SETTINGS_REFUSAL_BUCKETS)
 
 
 @dataclass(frozen=True)
@@ -483,81 +695,107 @@ class GitRestoreService:
         return parsed, bad
 
     @staticmethod
-    async def _plan_settings(db: AsyncSession, values: dict) -> _SettingsPlan:
-        """Classify every key of a settings payload into its refusal bucket.
+    async def _plan_settings(db: AsyncSession, values: dict, *, overwrite: bool = True) -> _SettingsPlan:
+        """One fail-closed classifier for preview and guarded apply.
 
-        Keys with an unusable name land in no bucket: they are the restore's
-        ``failed``, not a refusal, and the preview counts them because the run
-        will still report on them.
-
-        Reads local state, so it must run before anything is added to the
-        session — otherwise "does this instance already have a credential" would
-        see the restore's own writes.
+        Apply owns the credential anchor before this read. Always refresh the
+        identity map: a previously generated preview is not current authority.
+        The result contains canonical storage values, never backup raw values.
         """
-        blocked: list[str] = []
-        protected: list[str] = []
-        # Toggle -> credential for the pairs that survived the payload-only
-        # conditions and still need local state to judge.
-        candidates: dict[str, str] = {}
+        from backend.app.core.credential_config import CREDENTIAL_SETTING_KEYS, canonical_url
+        from backend.app.schemas.settings import AppSettings
 
+        buckets = {name: [] for name in _SETTINGS_REFUSAL_BUCKETS}
+        accepted: dict[str, str] = {}
+        no_op: set[str] = set()
+        wanted = (
+            _FROZEN_DESTINATION_KEYS
+            | CREDENTIAL_SETTING_KEYS
+            | _OWNING_GROUP_EDIT_KEYS
+            | _OPERATOR_SETTING_KEYS
+            | set(_COMPANION_CREDENTIALS)
+            | set(_COMPANION_CREDENTIALS.values())
+        )
+        rows = await db.execute(
+            select(Settings).where(Settings.key.in_(wanted)).execution_options(populate_existing=True)
+        )
+        local = {row.key: row.value for row in rows.scalars().all()}
+        defaults = AppSettings()
         for key, value in values.items():
             if not isinstance(key, str) or not key:
+                buckets["invalid"].append(key)
                 continue
-            if _is_blocked_setting_key(key):
-                blocked.append(key)
+            if key in _RESTORE_RUNTIME_KEYS or key.endswith(("_configured", "_from_env")):
+                reason = "runtime"
+            elif _is_blocked_setting_key(key):
+                reason = "blocked"
+            elif _is_protected_setting_key(key) or key in _RESTORE_AUTH_POLICY_KEYS or key.startswith("mcp_"):
+                reason = "protected"
+            elif key.startswith("_"):
+                reason = "runtime"
+            elif key not in _RESTORABLE_SETTING_KEYS:
+                reason = "unknown"
+            elif isinstance(value, str) and _MASKED_SETTING_VALUE.fullmatch(value.strip()):
+                reason = "masked"
+            else:
+                try:
+                    normalized = _restore_setting_value(key, value)
+                except (ValidationError, ValueError, TypeError, KeyError):
+                    buckets["invalid"].append(key)
+                    continue
+                if key in _FROZEN_DESTINATION_KEYS:
+                    current = _local_destination(key, local, defaults)
+                    incoming = _local_destination(key, {**local, key: normalized}, defaults)
+                    if key in _URL_DESTINATION_KEYS:
+                        current, incoming = canonical_url(current), canonical_url(incoming)
+                    if current != incoming:
+                        buckets["destination"].append(key)
+                        continue
+                    # Even an equivalent address is not written: retain opaque
+                    # legacy tuples and never copy environment defaults to DB.
+                    no_op.add(key)
+                accepted[key] = normalized
                 continue
-            if _is_protected_setting_key(key):
-                protected.append(key)
+            buckets[reason].append(key)
+        for group in _OWNING_GROUP_EDIT_GROUPS:
+            actual_edits = {
+                key: accepted[key] == "true" if key in _COMPANION_CREDENTIALS else accepted[key]
+                for key in sorted(group & accepted.keys())
+                if overwrite or key not in local
+            }
+            if not actual_edits:
                 continue
+            from backend.app.api.routes.settings import resolve_settings_credentials
 
-            credential = _COMPANION_CREDENTIALS.get(key)
-            if credential is None:
-                continue
-            # Turning something *off* is always safe to write.
-            if not _setting_value_is_true(value):
-                continue
-            # Expressed as the predicate rather than assumed, so the map cannot
-            # go quietly inert if _SECRET_KEY_HINTS is ever edited: a credential
-            # the restore is willing to write travels with its toggle.
-            if not _is_blocked_setting_key(credential):
-                continue
-            # The backup itself carried no credential here. For an availability
-            # pair that describes a working config — an anonymous MQTT broker and
-            # an anonymous LDAP bind both are (mqtt_relay.py and ldap_service.py
-            # pass empty credentials straight through) — so refusing the toggle
-            # would be a false positive. For an exposure pair a blank credential
-            # is the hole itself, so the condition is skipped and only local
-            # state decides. See _COMPANION_EXPOSURE_TOGGLES.
-            if key not in _COMPANION_EXPOSURE_TOGGLES and not _is_usable_credential(values.get(credential)):
-                continue
-            candidates[key] = credential
-
-        if not candidates:
-            return _SettingsPlan(blocked=tuple(blocked), protected=tuple(protected))
-
-        # One SELECT covering both halves of every candidate pair.
-        wanted = set(candidates) | set(candidates.values())
-        rows = await db.execute(select(Settings).where(Settings.key.in_(wanted)))
-        local = {row.key: row.value for row in rows.scalars().all()}
-
-        companion: list[str] = []
-        for toggle, credential in candidates.items():
-            if _is_usable_credential(local.get(credential)):
-                continue
-            env_name = _COMPANION_CREDENTIAL_ENV.get(credential)
-            if env_name and _is_usable_credential(os.environ.get(env_name)):
-                continue
-            # Already on locally with no credential: the exposure pre-dates this
-            # restore, so refusing changes nothing and "left switched off" would
-            # be a lie.
-            if _setting_value_is_true(local.get(toggle)):
-                continue
-            companion.append(toggle)
-
+            # Validate each complete actual adapter edit against retained
+            # DB/default/environment credentials. A paired disable+metadata
+            # change must see the disabled final state. Refused backup secrets
+            # can neither satisfy nor trigger the owning credential rule.
+            try:
+                await resolve_settings_credentials(db, actual_edits)
+            except HTTPException as exc:
+                if exc.status_code not in {400, 422}:
+                    raise
+                for key in actual_edits:
+                    buckets["companion"].append(key)
+                    accepted.pop(key)
+        operator_edits = {key for key in _OPERATOR_SETTING_KEYS & accepted.keys() if overwrite or key not in local}
+        if operator_edits:
+            # Owning PUT validates this effective pair in addition to its field
+            # schemas. Existing rows skipped by overwrite=False are not edits:
+            # a valid backup pair must not become an invalid partial write.
+            effective = {
+                key: accepted[key]
+                if key in accepted and (overwrite or key not in local)
+                else local.get(key, getattr(defaults, key))
+                for key in ("forecast_operator_absence_start", "forecast_operator_absence_end")
+            }
+            if effective["forecast_operator_absence_start"] == effective["forecast_operator_absence_end"]:
+                for key in sorted(operator_edits):
+                    buckets["invalid"].append(key)
+                    accepted.pop(key)
         return _SettingsPlan(
-            blocked=tuple(blocked),
-            protected=tuple(protected),
-            companion=tuple(companion),
+            **{name: tuple(keys) for name, keys in buckets.items()}, accepted=accepted, no_op=frozenset(no_op)
         )
 
     async def preview(self, db: AsyncSession, config: GitBackupConfig, ref: str = "HEAD") -> dict:
@@ -669,22 +907,35 @@ class GitRestoreService:
             # policy keys stay unmentioned on purpose.
             plan = await self._plan_settings(db, values)
             detail = None
-            if plan.companion and not plan.blocked:
+            if any(getattr(plan, name) for name in _SETTINGS_REFUSAL_BUCKETS[3:]) or plan.protected:
+                params = {name: len(getattr(plan, name)) for name in _SETTINGS_REFUSAL_BUCKETS}
+                params["credentials"] = params.pop("blocked")
+                params["count"] = plan.refused_count
+                detail = _Detail(
+                    "settingsPolicyWillSkip",
+                    f"{plan.refused_count} setting(s) cannot be restored "
+                    f"(credentials: {params['credentials']}; protected: {params['protected']}; "
+                    f"integration settings: {params['companion']}; unknown: {params['unknown']}; "
+                    f"invalid: {params['invalid']}; runtime: {params['runtime']}; "
+                    f"local destinations: {params['destination']}; masks: {params['masked']})",
+                    params,
+                )
+            elif plan.companion and not plan.blocked:
                 # An exposure toggle becomes a candidate whether or not the
                 # backup carried its credential, so this commit can refuse a
                 # switch without having a single credential-like key to skip —
                 # "0 credential-like key(s) will be skipped" would read as noise.
                 detail = _Detail(
                     "settingsCompanionOnlyWillSkip",
-                    f"{len(plan.companion)} switch(es) will be left off — the credential each one needs "
-                    "cannot be restored from a backup",
+                    f"{len(plan.companion)} integration setting(s) will be skipped — retained local credentials "
+                    "do not satisfy current Settings checks",
                     {"companion": len(plan.companion)},
                 )
             elif plan.companion:
                 detail = _Detail(
                     "settingsCompanionWillSkip",
                     f"{len(plan.blocked)} credential-like key(s) will be skipped, and "
-                    f"{len(plan.companion)} switch(es) that depend on them will be left off",
+                    f"{len(plan.companion)} integration setting(s) that fail local credential checks will be skipped",
                     {"count": len(plan.blocked), "companion": len(plan.companion)},
                 )
             elif plan.blocked:
@@ -746,6 +997,57 @@ class GitRestoreService:
         ref: str,
         categories: list[RestoreCategory],
         overwrite_existing: bool = False,
+        *,
+        authority=None,
+        required_permissions=(),
+    ) -> dict:
+        """Own HTTP restores through remote work and every final publication.
+
+        Direct trusted Python callers may omit authority. HTTP always passes
+        the original browser capture; it never resolves a new credential.
+        """
+        if authority is not None:
+            from backend.app.core.auth_runtime import auth_runtime
+
+            async with auth_runtime.operation():
+                return await self._run_restore(
+                    config_id,
+                    ref,
+                    categories,
+                    overwrite_existing,
+                    authority=authority,
+                    required_permissions=required_permissions,
+                )
+        return await self._run_restore(config_id, ref, categories, overwrite_existing)
+
+    @staticmethod
+    async def _guard_restore_actor(db, authority, required_permissions):
+        if authority is None:
+            return
+        from backend.app.core.auth_lifetime import guard_accounts, validate_captured
+        from backend.app.core.credential_config import lock_credential_config
+        from backend.app.core.permissions import Permission
+
+        if authority.kind != "session":
+            raise HTTPException(403, "A signed-in administrator is required")
+        # Shared B anchor precedes the C account lock and all domain rows.
+        await lock_credential_config(db)
+        proof = await guard_accounts(db, [authority])
+        principal = await validate_captured(
+            db, authority, required_permissions=(Permission.GIT_RESTORE, *required_permissions), proof=proof
+        )
+        if not principal.user.is_admin:
+            raise HTTPException(403, "Administrator required")
+
+    async def _run_restore(
+        self,
+        config_id: int,
+        ref: str,
+        categories: list[RestoreCategory],
+        overwrite_existing: bool = False,
+        *,
+        authority=None,
+        required_permissions=(),
     ) -> dict:
         """Apply selected categories from one backup commit."""
         # Import locally to avoid a module-level cycle: the backup service takes
@@ -778,6 +1080,14 @@ class GitRestoreService:
                 config = result.scalar_one_or_none()
                 if not config:
                     return {"success": False, "message": "Configuration not found", "results": {}}
+                config = SimpleNamespace(
+                    **{
+                        key: getattr(config, key)
+                        for key in ("id", "provider", "repository_url", "access_token", "branch", "api_base_url")
+                    }
+                )
+                await self._guard_restore_actor(db, authority, required_permissions)
+                await db.rollback()
 
                 self._progress = "Resolving commit..."
                 resolved, error, _ = await self._resolve_ref(config, ref)
@@ -787,7 +1097,6 @@ class GitRestoreService:
                 log = GitBackupLog(config_id=config_id, status="running", trigger="restore", commit_sha=resolved)
                 db.add(log)
                 await db.commit()
-                await db.refresh(log)
                 log_id = log.id
 
                 # Owned here rather than by _apply so the failure path can see
@@ -796,17 +1105,31 @@ class GitRestoreService:
                 # commit, so every entry present is on disk.
                 results: dict[str, _CategoryTally] = {}
                 try:
+                    await self._guard_restore_actor(db, authority, required_permissions)
+                    await db.rollback()
                     payload, error = await self._read_categories(config, resolved, categories)
                     if error:
                         raise RuntimeError(error)
 
                     settings_keys_written: set[str] = set()
+                    if authority is not None:
+                        # The operational hold is itself a privileged effect;
+                        # a revoked download must not stop an untouched farm.
+                        await self._guard_restore_actor(db, authority, required_permissions)
+                        await db.rollback()
                     farm_startup_guard.hold("restore")
                     from backend.app.services.farm_startup_guard import notify_change
 
                     await notify_change()
                     await self._apply(
-                        db, payload, categories, overwrite_existing, settings_keys_written, results=results
+                        db,
+                        payload,
+                        categories,
+                        overwrite_existing,
+                        settings_keys_written,
+                        results=results,
+                        authority=authority,
+                        required_permissions=required_permissions,
                     )
                     await db.commit()
 
@@ -841,14 +1164,19 @@ class GitRestoreService:
                     # _apply), so those rows survive this — and reporting an
                     # empty result over them would tell the user nothing was
                     # restored while their archives and spools are on disk.
-                    logger.exception("Restore failed for config %s ref %s", config_id, resolved)
+                    if not isinstance(e, HTTPException):
+                        logger.exception("Restore failed for config %s ref %s", config_id, resolved)
                     await db.rollback()
                     committed = sum(tally.restored for tally in results.values())
                     log.status = "failed"
                     log.completed_at = datetime.now(timezone.utc)
                     log.files_changed = committed
-                    log.error_message = str(e)[:1000]
+                    log.error_message = (
+                        "Restore authorization is no longer valid" if isinstance(e, HTTPException) else str(e)[:1000]
+                    )
                     await db.commit()
+                    if isinstance(e, HTTPException):
+                        raise
                     return {
                         "success": False,
                         "message": str(e),
@@ -907,6 +1235,9 @@ class GitRestoreService:
         overwrite: bool,
         settings_keys_written: set[str] | None = None,
         results: dict[str, _CategoryTally] | None = None,
+        *,
+        authority=None,
+        required_permissions=(),
     ) -> dict[str, _CategoryTally]:
         """Apply categories in dependency order and return per-category tallies.
 
@@ -945,6 +1276,7 @@ class GitRestoreService:
 
         # Archives first: spool usage history references archive_id.
         if RestoreCategory.ARCHIVES in categories:
+            await self._guard_restore_actor(db, authority, required_permissions)
             self._progress = "Restoring print archives..."
             tally = _CategoryTally()
             await self._restore_archives(db, payload.get(ARCHIVES_PATH), overwrite, tally, archive_id_map)
@@ -952,6 +1284,7 @@ class GitRestoreService:
             results[RestoreCategory.ARCHIVES.value] = tally
 
         if RestoreCategory.SPOOLS in categories:
+            await self._guard_restore_actor(db, authority, required_permissions)
             self._progress = "Restoring spool inventory..."
             tally = _CategoryTally()
             await self._restore_spools(
@@ -966,6 +1299,7 @@ class GitRestoreService:
             results[RestoreCategory.SPOOLS.value] = tally
 
         if RestoreCategory.SETTINGS in categories:
+            await self._guard_restore_actor(db, authority, required_permissions)
             self._progress = "Restoring app settings..."
             tally = _CategoryTally()
             await self._restore_settings(
@@ -993,7 +1327,14 @@ class GitRestoreService:
             self._progress = "Sending K-profiles to printers..."
             tally = _CategoryTally()
             try:
-                await self._restore_kprofiles(db, payload, tally)
+                await self._guard_restore_actor(db, authority, required_permissions)
+                if authority is not None:
+                    await db.rollback()
+                await self._restore_kprofiles(
+                    db, payload, tally, authority=authority, required_permissions=required_permissions
+                )
+            except HTTPException:
+                raise
             except Exception as e:
                 # Everything above is committed and cannot be un-committed, so
                 # letting this reach run_restore's handler would report
@@ -1613,38 +1954,23 @@ class GitRestoreService:
         from backend.app.core.credential_config import lock_credential_config
 
         await lock_credential_config(db)
-        plan = await self._plan_settings(db, values)
-        refused = plan.refused
+        plan = await self._plan_settings(db, values, overwrite=overwrite)
 
-        for key, value in sorted(values.items(), key=lambda item: str(item[0])):
-            if not isinstance(key, str) or not key:
-                tally.failed += 1
-                continue
-            if key in refused:
-                # Refusals are reported in the notes and nowhere else. They are
-                # already outside the preview's item count, and the preview is
-                # the number the user was shown, so counting them here would
-                # make restored + skipped + failed exceed it. The two skips
-                # below stay counted because they depend on this run's flags,
-                # which the preview cannot see.
-                continue
-            if value is None:
+        for key, value in sorted(plan.accepted.items()):
+            if key in plan.no_op:
                 tally.skipped += 1
                 continue
-
-            result = await db.execute(select(Settings).where(Settings.key == key))
+            result = await db.execute(
+                select(Settings).where(Settings.key == key).execution_options(populate_existing=True)
+            )
             existing = result.scalar_one_or_none()
-            if existing is not None:
-                if not overwrite:
-                    tally.skipped += 1
-                    continue
-                existing.value = str(value)
-                tally.restored += 1
-                if keys_written is not None:
-                    keys_written.add(key)
+            if existing is not None and not overwrite:
+                tally.skipped += 1
                 continue
-
-            db.add(Settings(key=key, value=str(value)))
+            if existing is not None:
+                existing.value = value
+            else:
+                db.add(Settings(key=key, value=value))
             tally.restored += 1
             if keys_written is not None:
                 keys_written.add(key)
@@ -1666,12 +1992,25 @@ class GitRestoreService:
             keys = ", ".join(sorted(plan.companion))
             tally.note(
                 "settingsCompanionSkipped",
-                f"{keys} left switched off — the credential each one needs cannot be restored from a "
-                "backup and this instance has none stored, so switching them on would leave the "
-                "integration unauthenticated",
+                f"{keys} not restored — retained local credentials do not satisfy current Settings checks; "
+                "review the owning Settings editor",
                 keys=keys,
                 count=len(plan.companion),
             )
+
+        for name, label in (
+            ("unknown", "unknown setting(s) skipped — use the current Settings editor"),
+            ("invalid", "malformed setting(s) skipped — current validation failed"),
+            ("runtime", "runtime or per-user setting(s) skipped"),
+            (
+                "destination",
+                "local destination setting(s) skipped — retained local connections and paths are preserved",
+            ),
+            ("masked", "masked setting value(s) skipped — masks cannot restore credentials"),
+        ):
+            count = len(getattr(plan, name))
+            if count:
+                tally.note(f"settings{name.title()}Skipped", f"{count} {label}", count=count)
 
     async def _reconfigure_mqtt_relay(self, db: AsyncSession, keys_written: set[str], tally: _CategoryTally) -> None:
         """Push restored mqtt_* settings into the live relay.
@@ -1693,35 +2032,24 @@ class GitRestoreService:
             return
 
         try:
-            from backend.app.services.mqtt_relay import mqtt_relay
+            from backend.app.api.routes.settings import _apply_mqtt_runtime
 
-            rows = await db.execute(select(Settings).where(Settings.key.in_(_MQTT_SETTING_KEYS)))
-            stored = {s.key: s.value for s in rows.scalars().all()}
-
-            # Same shape and defaults the settings PUT handler builds.
-            await mqtt_relay.configure(
-                {
-                    "mqtt_enabled": (stored.get("mqtt_enabled") or "false") == "true",
-                    "mqtt_broker": stored.get("mqtt_broker") or "",
-                    "mqtt_port": int(stored.get("mqtt_port") or "1883"),
-                    "mqtt_username": stored.get("mqtt_username") or "",
-                    "mqtt_password": stored.get("mqtt_password") or "",
-                    "mqtt_topic_prefix": stored.get("mqtt_topic_prefix") or "bambuddy",
-                    "mqtt_use_tls": (stored.get("mqtt_use_tls") or "false") == "true",
-                }
-            )
+            await _apply_mqtt_runtime(db)
         except Exception:
             # Same call is best-effort in the settings PUT handler: the rows are
             # committed either way, and a broker that refuses the new config
             # must not turn a successful restore into a failed one. Noted rather
             # than swallowed silently, so the user knows to restart.
-            logger.warning("Could not reconfigure the MQTT relay after a settings restore", exc_info=True)
+            # Sender exceptions can contain a retained broker URI or password.
+            logger.warning("Could not reconfigure the MQTT relay after a settings restore")
             tally.note(
                 "settingsMqttRelayFailed",
                 "MQTT settings restored, but the relay could not be reconnected — restart BamDude",
             )
 
-    async def _restore_kprofiles(self, db: AsyncSession, payload: dict, tally: _CategoryTally) -> None:
+    async def _restore_kprofiles(
+        self, db: AsyncSession, payload: dict, tally: _CategoryTally, *, authority=None, required_permissions=()
+    ) -> None:
         by_serial: dict[str, list[tuple[str, dict]]] = {}
         for path, content in payload.items():
             match = _KPROFILE_PATH_RE.match(path)
@@ -1735,6 +2063,9 @@ class GitRestoreService:
 
         result = await db.execute(select(Printer))
         printers = {p.serial_number: p for p in result.scalars().all() if p.serial_number}
+        if authority is not None:
+            printers = {serial: SimpleNamespace(id=p.id, name=p.name) for serial, p in printers.items()}
+            await db.rollback()
 
         # Overwrite is not offered for K-profiles: extrusion_cali_set replaces
         # the profile occupying a slot, so writing is always an overwrite on the
@@ -1860,6 +2191,13 @@ class GitRestoreService:
                         printer=printer.name,
                     )
 
+                await self._guard_restore_actor(db, authority, required_permissions)
+                if authority is not None:
+                    # This final read admits the send under the ordinary
+                    # permission linearization contract. Release SQL before
+                    # MQTT I/O; a revoke overlapping an admitted send may
+                    # finish, while every later delayed batch rechecks.
+                    await db.rollback()
                 try:
                     seq = client.set_kprofiles_batch(profile_dicts, nozzle)
                 except Exception as e:

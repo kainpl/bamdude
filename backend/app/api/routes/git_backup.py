@@ -1,6 +1,7 @@
 """API routes for Git backup (GitHub and GitLab)."""
 
 import logging
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import delete, desc, select
@@ -31,6 +32,7 @@ from backend.app.schemas.git_backup import (
     _validate_repo_url,
 )
 from backend.app.services.git_backup import git_backup_service
+from backend.app.services.git_backup_approval import BLOCK_MESSAGES, approval_reason
 from backend.app.services.git_restore import git_restore_service
 
 logger = logging.getLogger(__name__)
@@ -77,7 +79,7 @@ async def _enforce_private_repo(repo_url: str, token: str, provider: str, api_ba
         raise HTTPException(status_code=400, detail=_PUBLIC_REPO_ERROR)
 
 
-def _config_to_response(config: GitBackupConfig) -> dict:
+def _config_to_response(config: GitBackupConfig, reason: str | None = None) -> dict:
     """Convert config model to response dict."""
     try:
         public_api_base = _validate_api_base_url(config.api_base_url)
@@ -104,12 +106,18 @@ def _config_to_response(config: GitBackupConfig) -> dict:
         "last_backup_message": _safe_backup_message(config.last_backup_status) if config.last_backup_message else None,
         "last_backup_commit_sha": config.last_backup_commit_sha,
         "next_scheduled_run": config.next_scheduled_run,
+        "approval_required": reason is not None,
+        "blocked_reason": reason,
+        "last_backup_reason_code": config.last_backup_reason_code,
+        "last_successful_backup_at": config.last_successful_backup_at,
         "created_at": config.created_at,
         "updated_at": config.updated_at,
     }
 
 
 def _safe_backup_message(status: str | None) -> str:
+    if status == "blocked":
+        return "Git backup is paused. An administrator must review and save the configuration."
     if status == "success":
         return "Git backup completed."
     if status == "skipped":
@@ -145,13 +153,18 @@ def _git_scope(values: dict) -> tuple:
 
 
 async def _write_config(
-    db: AsyncSession, body: GitBackupConfigCreate | GitBackupConfigUpdate, *, partial: bool
+    db: AsyncSession, body: GitBackupConfigCreate | GitBackupConfigUpdate, *, partial: bool, actor: User
 ) -> dict:
+    actor_identity = actor.account_identity
+    actor_capture = getattr(actor, "_auth_capture", None)
+    if actor_capture is None:
+        raise HTTPException(401, "Authentication required")
     await lock_credential_config(db)
     config = (await db.execute(select(GitBackupConfig).limit(1))).scalar_one_or_none()
     if partial and config is None:
         raise HTTPException(404, "No configuration found")
     before = _snapshot(config)
+    before_revision = config.revision if config else None
     config_id = config.id if config else None
     changes = body.model_dump(exclude_unset=partial, exclude={"secret_actions", "access_token"}, mode="json")
     if config and "api_base_url" not in body.model_fields_set:
@@ -189,13 +202,29 @@ async def _write_config(
         config = (
             await db.execute(select(GitBackupConfig).limit(1).execution_options(populate_existing=True))
         ).scalar_one_or_none()
-        if (config.id if config else None) != config_id or _snapshot(config) != before:
+        if (
+            (config.id if config else None) != config_id
+            or _snapshot(config) != before
+            or (config.revision if config else None) != before_revision
+        ):
             raise HTTPException(409, "Git backup configuration changed during verification; reload and retry")
     if config is None:
         config = GitBackupConfig()
         db.add(config)
+    from backend.app.core.auth_lifetime import guard_accounts, validate_captured
+
+    proof = await guard_accounts(db, [actor_capture])
+    principal = await validate_captured(db, actor_capture, required_permissions=(Permission.GIT_BACKUP,), proof=proof)
+    if not principal.user.is_admin:
+        raise HTTPException(403, "An active administrator must approve Git backup configuration")
     for field, value in resolved.items():
         setattr(config, field, value)
+    # Re-read after any network verification, under the same anchor. The
+    # immutable account is independent of session/password generation.
+    config.approved_by_identity = actor_identity
+    if await approval_reason(db, config, lock=True):
+        raise HTTPException(403, "An active administrator must approve Git backup configuration")
+    config.revision = str(uuid4())
     config.next_scheduled_run = (
         git_backup_service._calculate_next_run(config.schedule_type) if config.schedule_enabled else None
     )
@@ -216,7 +245,7 @@ async def get_config(
     if not config:
         return None
 
-    return _config_to_response(config)
+    return _config_to_response(config, await approval_reason(db, config))
 
 
 @router.post("/config", response_model=GitBackupConfigResponse, dependencies=[RequireAdmin()])
@@ -226,7 +255,7 @@ async def save_config(
     _: User | None = RequirePermission(Permission.GIT_BACKUP),
 ):
     """Create or replace the singleton config, preserving only scoped secrets."""
-    return await _write_config(db, config_data, partial=False)
+    return await _write_config(db, config_data, partial=False, actor=_)
 
 
 @router.patch("/config", response_model=GitBackupConfigResponse, dependencies=[RequireAdmin()])
@@ -236,7 +265,7 @@ async def update_config(
     _: User | None = RequirePermission(Permission.GIT_BACKUP),
 ):
     """Partially update the singleton config under the shared credential guard."""
-    return await _write_config(db, update_data, partial=True)
+    return await _write_config(db, update_data, partial=True, actor=_)
 
 
 @router.delete("/config", dependencies=[RequireAdmin()])
@@ -335,7 +364,19 @@ async def trigger_backup(
     if not config.enabled:
         raise HTTPException(status_code=400, detail="Backup is disabled")
 
-    backup_result = await git_backup_service.run_backup(config.id, trigger="manual")
+    config_id = config.id
+    # The service owns its own admission transaction, not this request's read.
+    await db.rollback()
+    backup_result = await git_backup_service.run_backup(config_id, trigger="manual")
+    if backup_result.get("reason_code") in BLOCK_MESSAGES:
+        raise HTTPException(
+            409,
+            {
+                "code": backup_result["reason_code"],
+                "message": backup_result["message"],
+                "log_id": backup_result["log_id"],
+            },
+        )
 
     return GitBackupTriggerResponse(
         **{**backup_result, "message": _safe_backup_message("success" if backup_result.get("success") else "failed")}
@@ -374,6 +415,10 @@ async def get_status(
         progress=git_backup_service.progress or git_restore_service.progress,
         last_backup_at=config.last_backup_at,
         last_backup_status=config.last_backup_status,
+        approval_required=(reason := await approval_reason(db, config)) is not None,
+        blocked_reason=reason,
+        last_backup_reason_code=config.last_backup_reason_code,
+        last_successful_backup_at=config.last_successful_backup_at,
         next_scheduled_run=config.next_scheduled_run,
     )
 
@@ -409,6 +454,8 @@ async def get_logs(
             completed_at=log.completed_at,
             status=log.status,
             trigger=log.trigger,
+            reason_code=log.reason_code,
+            scheduled_for=log.scheduled_for,
             commit_sha=log.commit_sha,
             files_changed=log.files_changed,
             error_message=_safe_backup_message(log.status) if log.error_message else None,
@@ -424,6 +471,7 @@ async def clear_logs(
     _: User | None = RequirePermission(Permission.GIT_BACKUP),
 ):
     """Clear backup logs, optionally keeping the most recent entries."""
+    await lock_credential_config(db)
     result = await db.execute(select(GitBackupConfig).limit(1))
     config = result.scalar_one_or_none()
 
@@ -557,10 +605,24 @@ async def restore_backup(
     if not config:
         raise HTTPException(status_code=404, detail="No configuration found. Configure backup first.")
 
+    authority = getattr(current_user, "_auth_capture", None)
+    if authority is None:
+        raise HTTPException(401, "Authentication required")
+    config_id = config.id
+    await db.rollback()
     restore_result = await git_restore_service.run_restore(
-        config.id,
+        config_id,
         ref=request.ref,
         categories=request.categories,
         overwrite_existing=request.overwrite_existing,
+        authority=authority,
+        required_permissions=tuple(
+            {Permission.GIT_RESTORE.value}
+            | {
+                permission.value
+                for category, permission in _CATEGORY_WRITE_PERMISSION.items()
+                if category in request.categories
+            }
+        ),
     )
     return GitRestoreResponse(**restore_result)

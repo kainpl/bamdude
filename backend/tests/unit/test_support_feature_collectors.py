@@ -77,6 +77,8 @@ async def test_git_backup_info_shape_on_empty_db(db_session):
         "providers_used": {},
         "schedule_enabled_count": 0,
         "last_failure_count": 0,
+        "blocked_count": 0,
+        "blocked_by_reason": {},
     }
 
 

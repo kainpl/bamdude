@@ -65,6 +65,27 @@ class GitBackupService:
         self._running_backup: bool = False
         self._backup_progress: str | None = None
         self._http_client: httpx.AsyncClient | None = None
+        self._closed = False
+        self._generation = 0
+        self._tasks: set[asyncio.Task] = set()
+        self._export_fields = (
+            "id",
+            "provider",
+            "repository_url",
+            "access_token",
+            "branch",
+            "api_base_url",
+            "enabled",
+            "schedule_enabled",
+            "schedule_type",
+            "backup_kprofiles",
+            "backup_cloud_profiles",
+            "backup_settings",
+            "backup_spools",
+            "backup_archives",
+            "approved_by_identity",
+            "revision",
+        )
 
     async def _get_client(self) -> httpx.AsyncClient:
         """Get or create HTTP client."""
@@ -74,28 +95,33 @@ class GitBackupService:
 
     async def start_scheduler(self):
         """Start the background scheduler loop."""
-        if self._scheduler_task is not None:
+        if self._scheduler_task is not None and not self._scheduler_task.done():
             return
+        if self._tasks:
+            raise RuntimeError("Git backup work has not drained")
+        self._closed = False
+        self._generation += 1
         logger.info("Starting Git backup scheduler")
         self._scheduler_task = asyncio.create_task(self._scheduler_loop())
 
     def stop_scheduler(self):
-        """Stop the scheduler."""
+        """Close admission. Restore/shutdown must also await the owned drain."""
+        self._closed = True
+        self._generation += 1
         if self._scheduler_task:
             self._scheduler_task.cancel()
-            self._scheduler_task = None
             logger.info("Stopped Git backup scheduler")
 
     async def _scheduler_loop(self):
         """Main scheduler loop - checks for due backups."""
-        while True:
+        while not self._closed:
             try:
                 await asyncio.sleep(self._check_interval)
                 await self._check_scheduled_backups()
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.error("Error in Git backup scheduler: %s", e)
+                logger.warning("Git backup scheduler failed (%s)", type(e).__name__)
                 await asyncio.sleep(60)
 
     async def _check_scheduled_backups(self):
@@ -107,17 +133,16 @@ class GitBackupService:
                     GitBackupConfig.schedule_enabled == True,  # noqa: E712
                 )
             )
-            configs = result.scalars().all()
+            configs = [(config.id, config.next_scheduled_run) for config in result.scalars().all()]
 
-            now = datetime.now(timezone.utc)
-            for config in configs:
-                # Handle both naive (from DB) and aware datetimes
-                next_run = config.next_scheduled_run
-                if next_run and next_run.tzinfo is None:
-                    next_run = next_run.replace(tzinfo=timezone.utc)
-                if next_run and next_run <= now:
-                    logger.info("Running scheduled backup for config %s", config.id)
-                    await self.run_backup(config.id, trigger="scheduled")
+        now = datetime.now(timezone.utc)
+        for config_id, next_run in configs:
+            # Handle both naive (from DB) and aware datetimes
+            if next_run and next_run.tzinfo is None:
+                next_run = next_run.replace(tzinfo=timezone.utc)
+            if next_run and next_run <= now:
+                logger.info("Running scheduled backup for config %s", config_id)
+                await self.run_backup(config_id, trigger="scheduled")
 
     def _calculate_next_run(self, schedule_type: str, from_time: datetime | None = None) -> datetime:
         """Calculate the next scheduled run time."""
@@ -219,178 +244,244 @@ class GitBackupService:
 
         raise ValueError(f"Unknown provider: {provider}")
 
+    async def _finish_attempt(self, config_id, frozen, log_id, result, *, reason=None):
+        from backend.app.services.git_backup_approval import load_config, stage_blocked_attempt
+        from backend.app.services.notification_inbox import StagedInboxBatch, dispatch_staged
+
+        batch = StagedInboxBatch()
+
+        async with async_session() as db:
+            config = await load_config(db, config_id)
+            log = await db.scalar(
+                select(GitBackupLog)
+                .where(
+                    GitBackupLog.id == log_id,
+                    GitBackupLog.config_id == config_id,
+                    GitBackupLog.attempt_identity == frozen.attempt_identity,
+                    GitBackupLog.status == "running",
+                )
+                .with_for_update()
+            )
+            if (
+                config is None
+                or log is None
+                or log.status != "running"
+                or log.config_id != config_id
+                or log.attempt_identity != frozen.attempt_identity
+            ):
+                return
+            same_config = config.revision == frozen.revision
+            if reason and same_config:
+                batch = await stage_blocked_attempt(db, config, log, reason)
+            else:
+                log.status = result["status"]
+                log.completed_at = datetime.utcnow()
+                log.commit_sha = result.get("commit_sha")
+                log.files_changed = result.get("files_changed", 0)
+                log.error_message = result.get("error")
+                if same_config:
+                    config.last_backup_at = log.completed_at
+                    config.last_backup_status = log.status
+                    config.last_backup_message = result.get("message", "")
+                    if log.status == "success":
+                        config.last_successful_backup_at = log.completed_at
+                        config.last_backup_commit_sha = log.commit_sha
+            await db.commit()
+        await dispatch_staged(batch)
+
+    async def _recheck(self, config_id, frozen, generation):
+        from backend.app.services.git_backup_approval import approval_reason, load_config
+
+        async with async_session() as db:
+            config = await load_config(db, config_id)
+            if self._closed or generation != self._generation or config is None:
+                return "configuration_changed"
+            if any(getattr(config, k) != getattr(frozen, k) for k in self._export_fields):
+                return "configuration_changed"
+            reason = await approval_reason(db, config, lock=True)
+            await db.commit()
+            return reason
+
     async def run_backup(self, config_id: int, trigger: str = "manual") -> dict:
-        """Run a backup operation.
+        from types import SimpleNamespace
 
-        Args:
-            config_id: ID of the backup configuration
-            trigger: "manual" or "scheduled"
+        from backend.app.services.git_backup_approval import (
+            BLOCK_MESSAGES,
+            approval_reason,
+            claim_attempt,
+            close_episode,
+            load_config,
+            stage_blocked_attempt,
+        )
+        from backend.app.services.git_restore import git_restore_service
+        from backend.app.services.notification_inbox import StagedInboxBatch, dispatch_staged
 
-        Returns:
-            dict with success, message, log_id, commit_sha, files_changed
-        """
+        if self._closed:
+            return {"success": False, "message": "Git backup is temporarily unavailable.", "log_id": None}
         if self._running_backup:
             return {"success": False, "message": "A backup is already running", "log_id": None}
-
-        # ⚠️ The mirror of the restore's own check. A restore rewrites the very
-        # rows a backup is reading, so the two overlapping would commit a
-        # snapshot that is half old and half new — and nothing about the commit
-        # would say so. Imported here rather than at module scope: the restore
-        # service imports this one, and a top-level pair would be a cycle.
-        from backend.app.services.git_restore import git_restore_service
-
         if git_restore_service.is_running:
             return {
                 "success": False,
                 "message": "A restore is currently running; wait for it to finish before backing up",
                 "log_id": None,
             }
-
         self._running_backup = True
+        task = asyncio.current_task()
+        self._tasks.add(task)
+        generation = self._generation
         log_id = None
-
+        frozen = None
+        reason = None
         try:
-            async with async_session() as db:
-                from backend.app.core.credential_config import lock_credential_config
-
-                await lock_credential_config(db)
-                # Get config
-                result = await db.execute(select(GitBackupConfig).where(GitBackupConfig.id == config_id))
-                config = result.scalar_one_or_none()
-
-                if not config:
-                    return {"success": False, "message": "Configuration not found", "log_id": None}
-
-                if not config.enabled:
-                    return {"success": False, "message": "Backup is disabled", "log_id": None}
-
-                # The session does not expire on commit: this authorized pair is
-                # frozen for this run, while its database lock ends before I/O.
-                await db.commit()
-
-                # Defense in depth: re-verify the repo is still private before
-                # each push. The save endpoint already enforces this on every
-                # config change, but a user can flip the repo from private to
-                # public in the provider's UI between configuration and the
-                # next scheduled run. Backups carry MQTT credentials, HA /
-                # Prometheus tokens, the Bambu Cloud email, and the printer
-                # access codes (via K-profiles) — failing closed is the only
-                # safe behaviour. Upstream Bambuddy commit 48a7024b.
-                privacy_check = await self.test_connection(
-                    config.repository_url,
-                    config.access_token,
-                    provider=config.provider,
-                    api_base_url=config.api_base_url,
-                )
-                if not privacy_check.get("success") or privacy_check.get("is_private") is not True:
-                    visibility_note = (
-                        "the target repository is no longer private"
-                        if privacy_check.get("is_private") is False
-                        else "could not confirm the target repository is private"
-                    )
-                    abort_message = (
-                        f"Backup aborted: {visibility_note}. BamDude backups carry credentials "
-                        "and are refused for any non-private target. Make the repository private "
-                        "to resume scheduled backups."
-                    )
-                    log = GitBackupLog(
-                        config_id=config_id, status="failed", trigger=trigger, error_message=abort_message
-                    )
-                    log.completed_at = datetime.now(timezone.utc)
-                    db.add(log)
-                    config.last_backup_at = datetime.now(timezone.utc)
-                    config.last_backup_status = "failed"
-                    config.last_backup_message = abort_message
-                    await db.commit()
-                    return {"success": False, "message": abort_message, "log_id": log.id}
-
-                # Create log entry
-                log = GitBackupLog(config_id=config_id, status="running", trigger=trigger)
-                db.add(log)
-                await db.commit()
-                await db.refresh(log)
-                log_id = log.id
-
-                try:
-                    # Collect backup data
-                    self._backup_progress = "Collecting profiles..."
-                    backup_data = await self._collect_backup_data(db, config)
-
-                    if not backup_data:
-                        # No data to backup
-                        log.status = "skipped"
-                        log.completed_at = datetime.now(timezone.utc)
-                        log.error_message = "No data to backup"
-                        config.last_backup_at = datetime.now(timezone.utc)
-                        config.last_backup_status = "skipped"
-                        config.last_backup_message = "No data to backup"
-                        if config.schedule_enabled:
-                            config.next_scheduled_run = self._calculate_next_run(config.schedule_type)
-                        await db.commit()
+            # A guarded allowed read may turn into refusal. Roll back and
+            # restart before fanout: its sorted all-account locks must never
+            # follow the one-account approver guard from that read.
+            batch = StagedInboxBatch()
+            for _admission_retry in range(3):
+                async with async_session() as db:
+                    config = await load_config(db, config_id)
+                    if config is None or not config.enabled:
+                        return {"success": False, "message": "Backup configuration is unavailable.", "log_id": None}
+                    now = datetime.utcnow()
+                    log = await claim_attempt(db, config, trigger, now)
+                    if log is None:
                         return {
-                            "success": True,
-                            "message": "No data to backup",
-                            "log_id": log_id,
-                            "commit_sha": None,
-                            "files_changed": 0,
+                            "success": False,
+                            "message": "Scheduled occurrence was already claimed or is not due.",
+                            "log_id": None,
                         }
-
-                    # Push to provider
-                    provider_name = (config.provider or "github").title()
-                    self._backup_progress = f"Pushing to {provider_name}..."
+                    reason = await approval_reason(db, config)
+                    if reason is None:
+                        reason = await approval_reason(db, config, lock=True)
+                        if reason:
+                            await db.rollback()
+                            continue
+                    # A manual attempt never consumes an already due scheduled
+                    # occurrence. Otherwise a concurrent manual refusal could
+                    # erase that slot's required history before the tick claims it.
+                    if config.schedule_enabled and (trigger == "scheduled" or config.next_scheduled_run is None):
+                        config.next_scheduled_run = self._calculate_next_run(config.schedule_type, now)
+                    if reason:
+                        batch = await stage_blocked_attempt(db, config, log, reason)
+                    else:
+                        close_episode(config)
+                    await db.flush()
+                    log_id = log.id
+                    frozen = SimpleNamespace(**{k: getattr(config, k) for k in self._export_fields})
+                    frozen.attempt_identity = log.attempt_identity
                     await db.commit()
-                    push_result = await self._push_to_provider(config, backup_data)
+                break
+            else:
+                raise TimeoutError()
+            await dispatch_staged(batch)
+            if reason:
+                return {"success": False, "reason_code": reason, "message": BLOCK_MESSAGES[reason], "log_id": log_id}
 
-                    # Update log and config
-                    log.status = push_result["status"]
-                    log.completed_at = datetime.now(timezone.utc)
-                    log.commit_sha = push_result.get("commit_sha")
-                    log.files_changed = push_result.get("files_changed", 0)
-                    log.error_message = push_result.get("error")
+            # Only an admitted run may contact the provider or capture secrets.
+            privacy = await self.test_connection(
+                frozen.repository_url,
+                frozen.access_token,
+                provider=frozen.provider,
+                api_base_url=frozen.api_base_url,
+            )
+            if not privacy.get("success") or privacy.get("is_private") is not True:
+                result = {
+                    "status": "failed",
+                    "message": "Git backup requires a confirmed private repository.",
+                    "error": "Git backup requires a confirmed private repository.",
+                }
+            else:
+                reason = await self._recheck(config_id, frozen, generation)
+                if reason:
+                    result = {"status": "failed", "message": "Git backup authorization or configuration changed."}
+                else:
+                    self._backup_progress = "Collecting profiles..."
+                    async with async_session() as db:
+                        backup_data = await self._collect_backup_data(db, frozen)
+                    # The capture may await remote profile calls. Recheck the
+                    # exact approved tuple and source lifecycle before push.
+                    reason = await self._recheck(config_id, frozen, generation)
+                    if reason:
+                        result = {"status": "failed", "message": "Git backup authorization or configuration changed."}
+                    elif not backup_data:
+                        result = {"status": "skipped", "message": "No data to backup"}
+                    else:
+                        self._backup_progress = "Pushing Git backup..."
+                        result = await self._push_to_provider(frozen, backup_data)
+            await self._finish_attempt(
+                config_id, frozen, log_id, result, reason=reason if reason in BLOCK_MESSAGES else None
+            )
+            if reason in BLOCK_MESSAGES:
+                return {"success": False, "reason_code": reason, "message": BLOCK_MESSAGES[reason], "log_id": log_id}
+            return {
+                "success": result["status"] in {"success", "skipped"},
+                "message": result.get("message", ""),
+                "log_id": log_id,
+                "commit_sha": result.get("commit_sha"),
+                "files_changed": result.get("files_changed", 0),
+            }
+        except asyncio.CancelledError:
+            if frozen is not None and log_id is not None:
+                from backend.app.services.preview_artifacts import owned
 
-                    config.last_backup_at = datetime.now(timezone.utc)
-                    config.last_backup_status = push_result["status"]
-                    config.last_backup_message = push_result.get("message", "")
-                    config.last_backup_commit_sha = push_result.get("commit_sha")
+                await owned(
+                    asyncio.create_task(
+                        self._finish_attempt(
+                            config_id,
+                            frozen,
+                            log_id,
+                            {
+                                "status": "failed",
+                                "message": "Git backup was interrupted.",
+                                "error": "Git backup was interrupted.",
+                            },
+                        )
+                    )
+                )
+            raise
+        except Exception as exc:
+            logger.warning("Git backup failed (%s)", type(exc).__name__)
+            if frozen is not None and log_id is not None:
+                await self._finish_attempt(
+                    config_id,
+                    frozen,
+                    log_id,
+                    {
+                        "status": "failed",
+                        "message": "Git backup did not complete.",
+                        "error": "Git backup did not complete.",
+                    },
+                )
+            # Infra failures are not approval blocks or invalid credentials.
+            from fastapi import HTTPException
+            from sqlalchemy.exc import SQLAlchemyError
 
-                    if config.schedule_enabled:
-                        config.next_scheduled_run = self._calculate_next_run(config.schedule_type)
+            from backend.app.services.notification_service import InternalTemplateNotReady
 
-                    await db.commit()
-
-                    return {
-                        "success": push_result["status"] in ("success", "skipped"),
-                        "message": push_result.get("message", "Backup completed"),
-                        "log_id": log_id,
-                        "commit_sha": push_result.get("commit_sha"),
-                        "files_changed": push_result.get("files_changed", 0),
-                    }
-
-                except Exception as e:
-                    logger.error("Backup failed: %s", e)
-                    log.status = "failed"
-                    log.completed_at = datetime.now(timezone.utc)
-                    log.error_message = str(e)
-
-                    config.last_backup_at = datetime.now(timezone.utc)
-                    config.last_backup_status = "failed"
-                    config.last_backup_message = str(e)
-
-                    if config.schedule_enabled:
-                        config.next_scheduled_run = self._calculate_next_run(config.schedule_type)
-
-                    await db.commit()
-                    return {
-                        "success": False,
-                        "message": str(e),
-                        "log_id": log_id,
-                        "commit_sha": None,
-                        "files_changed": 0,
-                    }
-
+            if isinstance(exc, (SQLAlchemyError, TimeoutError, InternalTemplateNotReady)):
+                raise HTTPException(
+                    503, "Git backup is temporarily unavailable.", headers={"Retry-After": "5"}
+                ) from None
+            if isinstance(exc, HTTPException):
+                raise
+            return {"success": False, "message": "Git backup did not complete.", "log_id": log_id}
         finally:
+            self._tasks.discard(task)
             self._running_backup = False
             self._backup_progress = None
+
+    async def quiesce_for_restore(self, seconds=10):
+        self._closed = True
+        self._generation += 1
+        scheduler = self._scheduler_task
+        if scheduler is not None and scheduler not in self._tasks:
+            scheduler.cancel()
+        tasks = {t for t in (*self._tasks, scheduler) if t is not None and not t.done()}
+        if tasks:
+            _, pending = await asyncio.wait(tasks, timeout=seconds)
+            return not pending
+        return True
 
     async def _collect_backup_data(self, db: AsyncSession, config: GitBackupConfig) -> dict:
         """Collect data to backup based on config settings.

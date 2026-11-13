@@ -74,11 +74,13 @@ interface StatusBadgeProps {
 }
 
 function StatusBadge({ status }: StatusBadgeProps) {
+  const { t } = useTranslation();
   if (!status) return null;
 
   const styles: Record<string, string> = {
     success: 'bg-green-100 dark:bg-green-500/20 text-green-700 dark:text-green-400',
     failed: 'bg-red-100 dark:bg-red-500/20 text-red-700 dark:text-red-400',
+    blocked: 'bg-orange-100 dark:bg-orange-500/20 text-orange-700 dark:text-orange-400',
     skipped: 'bg-yellow-100 dark:bg-yellow-500/20 text-yellow-700 dark:text-yellow-400',
     running: 'bg-blue-100 dark:bg-blue-500/20 text-blue-700 dark:text-blue-400',
   };
@@ -86,6 +88,7 @@ function StatusBadge({ status }: StatusBadgeProps) {
   const icons: Record<string, React.ReactNode> = {
     success: <CheckCircle className="w-3 h-3" />,
     failed: <XCircle className="w-3 h-3" />,
+    blocked: <AlertTriangle className="w-3 h-3" />,
     skipped: <SkipForward className="w-3 h-3" />,
     running: <Loader2 className="w-3 h-3 animate-spin" />,
   };
@@ -93,7 +96,7 @@ function StatusBadge({ status }: StatusBadgeProps) {
   return (
     <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium ${styles[status] || 'bg-gray-500/20 text-gray-400'}`}>
       {icons[status]}
-      {status.charAt(0).toUpperCase() + status.slice(1)}
+      {t(`backup.statusLabels.${status}`, { defaultValue: status.charAt(0).toUpperCase() + status.slice(1) })}
     </span>
   );
 }
@@ -111,6 +114,7 @@ function GitBackupSettingsContent() {
   const canReadSettings = hasPermission('settings:read');
   const canUpdateSettings = hasPermission('settings:update');
   const canCreateBackup = hasPermission('settings:backup');
+  const canApproveGitBackup = hasPermission('git:backup');
   const canRestoreBackup = hasPermission('settings:restore');
 
   // Pull system time/date format so backup status timestamps follow the
@@ -298,6 +302,15 @@ function GitBackupSettingsContent() {
   const connectedPrinters = printerStatuses.filter(p => p.connected).length;
   const noPrintersConnected = totalPrinters > 0 && connectedPrinters === 0;
   const somePrintersDisconnected = connectedPrinters > 0 && connectedPrinters < totalPrinters;
+
+  // Current admission state wins over historical attempt status. A successful
+  // admin re-save/regrant can clear the warning before the next scheduled run.
+  const approvalRequired = status?.approval_required ?? config?.approval_required ?? false;
+  const blockedReason = status ? status.blocked_reason : config?.blocked_reason;
+  const approvalReasonKey = blockedReason === 'approver_not_authorized'
+    ? 'backup.approval.approverNotAuthorized' : 'backup.approval.required';
+  const lastAttemptAt = status ? status.last_backup_at : config?.last_backup_at;
+  const lastSuccessfulAt = status ? status.last_successful_backup_at : config?.last_successful_backup_at;
 
   // Initialize form from config
   useEffect(() => {
@@ -513,6 +526,14 @@ function GitBackupSettingsContent() {
                 <p className="text-sm text-bambu-gray">
                   {t('backup.gitDescription')}
                 </p>
+                {approvalRequired && (
+                  <div role="alert" className="rounded-lg border border-orange-500/40 bg-orange-500/10 p-3 space-y-2 text-sm text-orange-800 dark:text-orange-300">
+                    <p className="font-medium flex items-center gap-2"><AlertTriangle className="w-4 h-4 shrink-0" />{t('backup.approval.title')}</p>
+                    <p>{t(approvalReasonKey)}</p>
+                    <p>{t('backup.approval.reviewHint')}</p>
+                    <a href="/settings?tab=backup" className="underline">{t('backup.approval.openSettings')}</a>
+                  </div>
+                )}
 
                 {/* Provider selector */}
                 <div>
@@ -787,11 +808,11 @@ function GitBackupSettingsContent() {
                   <div className="flex items-center gap-2 text-bambu-gray">
                     {status.last_backup_at ? (
                       <>
-                        <span>{t('backup.lastBackupAt')} {formatRelativeTime(status.last_backup_at, 'system', t)}</span>
+                        <span>{t('backup.approval.lastAttempt')} {formatDateTime(status.last_backup_at, timeFormat, dateFormat)}</span>
                         <StatusBadge status={status.last_backup_status} />
                       </>
                     ) : (
-                      <span>{t('backup.noBackupsYet')}</span>
+                      <span>{t('backup.approval.noAttempts')}</span>
                     )}
                   </div>
                   {status.next_scheduled_run && (
@@ -801,6 +822,15 @@ function GitBackupSettingsContent() {
                     </span>
                   )}
                 </div>
+              )}
+
+              {(config || status?.configured) && (
+                <p className="text-sm text-bambu-gray">
+                  {t('backup.approval.lastSuccess')} {lastSuccessfulAt
+                    ? formatDateTime(lastSuccessfulAt, timeFormat, dateFormat) : t('backup.approval.noSuccess')}
+                  {!status?.configured && <span className="block">{t('backup.approval.lastAttempt')} {lastAttemptAt
+                    ? formatDateTime(lastAttemptAt, timeFormat, dateFormat) : t('backup.approval.noAttempts')}</span>}
+                </p>
               )}
 
               {/* Save error banner — full message, whitespace preserved so
@@ -824,6 +854,13 @@ function GitBackupSettingsContent() {
                 disabled={!connectionChanged || saveConnectionMutation.isPending || !repoUrl}>
                 {t('settings.credentials.saveConnection')}
               </Button>}
+              {approvalRequired && config && canApproveGitBackup && (
+                <Button variant="primary" onClick={saveConnection}
+                  disabled={saveConnectionMutation.isPending || !repoUrl || status?.is_running || status?.restore_running}>
+                  {saveConnectionMutation.isPending && <Loader2 className="w-4 h-4 animate-spin" />}
+                  {t('backup.approval.resave')}
+                </Button>
+              )}
               {/* Action buttons */}
               <div className="flex flex-wrap items-center gap-2">
                 {status?.configured ? (
@@ -929,7 +966,12 @@ function GitBackupSettingsContent() {
                     {logs.slice(0, 10).map((log) => (
                       <tr key={log.id} className="border-b border-bambu-dark-tertiary/50 hover:bg-bambu-dark-secondary">
                         <td className="py-2 px-2 text-white">{formatDateTime(log.started_at, timeFormat, dateFormat)}</td>
-                        <td className="py-2 px-2"><StatusBadge status={log.status} /></td>
+                        <td className="py-2 px-2">
+                          <StatusBadge status={log.status} />
+                          {log.status === 'blocked' && <p className="text-xs text-bambu-gray mt-1">{t(log.reason_code === 'approver_not_authorized'
+                            ? 'backup.approval.approverNotAuthorized' : 'backup.approval.required')}</p>}
+                          {log.scheduled_for && <p className="text-xs text-bambu-gray mt-1">{t('backup.approval.scheduledFor')} {formatDateTime(log.scheduled_for, timeFormat, dateFormat)}</p>}
+                        </td>
                         <td className="py-2 px-2">
                           {log.commit_sha ? (
                             <a

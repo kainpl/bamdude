@@ -1253,5 +1253,8 @@
   "«{}»: only {} can be assembled": "«{}»: зібрати можна лише {}",
   "«{}»: only {} can be issued": "«{}»: видати можна лише {}",
   "«{}»: only {} can be received": "«{}»: оприбуткувати можна лише {}",
-  "«{}»: only {} can be written off": "«{}»: списати можна лише {}"
+  "«{}»: only {} can be written off": "«{}»: списати можна лише {}",
+  "An active administrator must approve Git backup configuration": "Конфігурацію Git-бекапу має погодити активний адміністратор",
+  "Git backup is temporarily unavailable.": "Git-бекап тимчасово недоступний.",
+  "Git backup work has not stopped; restart before restoring": "Робота Git-бекапу ще не завершилася; перезапустіть застосунок перед відновленням"
 }

@@ -1227,6 +1227,10 @@ async def _restore_backup(file: UploadFile, db: AsyncSession, *, authority=None)
                 slice_dispatch.close_admission()
                 library_scan.close_admission()
                 farm_startup_guard.hold("restore")
+                from backend.app.services.git_backup import git_backup_service
+
+                if not await git_backup_service.quiesce_for_restore():
+                    raise HTTPException(409, "Git backup work has not stopped; restart before restoring")
                 if not await slice_dispatch.quiesce_for_restore():
                     raise HTTPException(409, "Slicing work has not stopped; restart before restoring")
                 if not await library_scan.quiesce_for_restore():

@@ -1050,17 +1050,25 @@ async def _collect_git_backup_info(db: AsyncSession) -> dict:
     providers_used: dict[str, int] = {}
     last_failure_count = 0
     schedule_enabled_count = 0
+    blocked_by_reason: dict[str, int] = {}
+    from backend.app.services.git_backup_approval import approval_reason
+
     for cfg in rows:
         providers_used[cfg.provider] = providers_used.get(cfg.provider, 0) + 1
         if cfg.last_backup_status == "failed":
             last_failure_count += 1
         if cfg.schedule_enabled:
             schedule_enabled_count += 1
+        reason = await approval_reason(db, cfg) if cfg.enabled else None
+        if reason:
+            blocked_by_reason[reason] = blocked_by_reason.get(reason, 0) + 1
     return {
         "configs_total": len(rows),
         "providers_used": providers_used,
         "schedule_enabled_count": schedule_enabled_count,
         "last_failure_count": last_failure_count,
+        "blocked_count": sum(blocked_by_reason.values()),
+        "blocked_by_reason": blocked_by_reason,
     }
 
 

@@ -226,6 +226,10 @@ class GitBackupConfigResponse(BaseModel):
     last_backup_message: str | None
     last_backup_commit_sha: str | None
     next_scheduled_run: datetime | None
+    approval_required: bool = False
+    blocked_reason: str | None = None
+    last_backup_reason_code: str | None = None
+    last_successful_backup_at: datetime | None = None
 
     created_at: datetime
     updated_at: datetime
@@ -243,6 +247,8 @@ class GitBackupLogResponse(BaseModel):
     completed_at: datetime | None
     status: str
     trigger: str
+    scheduled_for: datetime | None = None
+    reason_code: str | None = None
     commit_sha: str | None
     files_changed: int
     error_message: str | None
@@ -255,6 +261,10 @@ class GitBackupStatus(BaseModel):
     """Schema for current backup status."""
 
     configured: bool = Field(description="Whether backup is configured")
+    approval_required: bool = False
+    blocked_reason: str | None = None
+    last_backup_reason_code: str | None = None
+    last_successful_backup_at: datetime | None = None
     enabled: bool = Field(description="Whether backup is enabled")
     is_running: bool = Field(description="Whether a backup is currently running")
     # Reported separately from ``is_running`` because the two block different

@@ -416,7 +416,7 @@ BamDude AI includes a setup panel, client packages and a shared diagnostic skill
 - Local OrcaSlicer preset import
 - **Orca Cloud profile sync & push** — pair once (under BamDude's own registered app identity, via a device code) and use your Orca Cloud printer/process/filament presets as a preset tier in the slice dialog and AMS-slot picker; mirrored server-side into the filament family catalog alongside Bambu Cloud's. Authored filament families push back to Orca Cloud too, with explicit conflict resolution when a profile changed in the cloud
 - K-profiles (pressure advance)
-- Git backup (GitHub + GitLab)
+- Git backup (GitHub, GitLab, Gitea and Forgejo), with private-repository checks, current administrator approval, visible blocked schedules and safe partial restore. [Upgrade and approval guide](docs/development/backup-approval.md).
 - API keys & webhooks
 - LDAP/Active Directory authentication
 

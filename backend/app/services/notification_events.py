@@ -33,6 +33,7 @@ def _e(severity: str, group: str) -> EventMeta:
 
 
 EVENT_CATALOG: dict[str, EventMeta] = {
+    "git_backup_not_admitted": _e("warning", "system"),
     "credentials_reissue_required": _e("warning", "system"),
     # print
     "print_start": _e("info", "print"),
@@ -89,7 +90,9 @@ EVENT_CATALOG: dict[str, EventMeta] = {
 # Events shown only inside BamDude — never offered to Telegram / email / push
 # providers. Grow it together with the sender that raises the event through
 # ``NotificationService.notify_in_app`` (spec §3.3).
-IN_APP_ONLY_EVENTS: frozenset[str] = frozenset({"plug_meter_stalled", "credentials_reissue_required"})
+IN_APP_ONLY_EVENTS: frozenset[str] = frozenset(
+    {"plug_meter_stalled", "credentials_reissue_required", "git_backup_not_admitted"}
+)
 
 # Two provider flags each govern several catalog events. The service owns the
 # behaviour (which column gates which message); the map lives here because the

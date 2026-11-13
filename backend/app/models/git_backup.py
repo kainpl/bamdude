@@ -4,8 +4,9 @@ Supports GitHub, GitLab, Gitea, and Forgejo as backup providers.
 """
 
 from datetime import datetime
+from uuid import uuid4
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.app.core.database import Base
@@ -42,6 +43,14 @@ class GitBackupConfig(Base):
     last_backup_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_backup_commit_sha: Mapped[str | None] = mapped_column(String(40), nullable=True)
     next_scheduled_run: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # Independent configuration approval, never a browser session/generation.
+    approved_by_identity: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    revision: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    last_successful_backup_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_backup_reason_code: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    admission_episode_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    admission_episode_reason: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    admission_episode_notified_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
@@ -55,14 +64,18 @@ class GitBackupLog(Base):
     """Log entry for Git backup runs."""
 
     __tablename__ = "git_backup_logs"
+    __table_args__ = (Index("uq_git_backup_occurrence", "config_id", "scheduled_for", unique=True),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
     config_id: Mapped[int] = mapped_column(ForeignKey("git_backup_config.id", ondelete="CASCADE"))
+    attempt_identity: Mapped[str | None] = mapped_column(String(36), nullable=True, default=lambda: str(uuid4()))
 
     started_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     status: Mapped[str] = mapped_column(String(20))  # running/success/failed/skipped
     trigger: Mapped[str] = mapped_column(String(20))  # manual/scheduled
+    scheduled_for: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    reason_code: Mapped[str | None] = mapped_column(String(40), nullable=True)
 
     commit_sha: Mapped[str | None] = mapped_column(String(40), nullable=True)
     files_changed: Mapped[int] = mapped_column(Integer, default=0)

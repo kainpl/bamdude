@@ -7621,6 +7621,10 @@ export interface NotificationProviderUpdate {
 export type ScheduleType = 'hourly' | 'daily' | 'weekly';
 
 export interface GitBackupConfig {
+  approval_required: boolean;
+  blocked_reason: string | null;
+  last_successful_backup_at: string | null;
+  last_backup_reason_code: string | null;
   api_base_url_private?: boolean;
   id: number;
   repository_url: string;
@@ -7663,6 +7667,8 @@ export interface GitBackupConfigCreate {
 }
 
 export interface GitBackupLog {
+  reason_code: string | null;
+  scheduled_for: string | null;
   id: number;
   config_id: number;
   started_at: string;
@@ -7675,6 +7681,10 @@ export interface GitBackupLog {
 }
 
 export interface GitBackupStatus {
+  approval_required: boolean;
+  blocked_reason: string | null;
+  last_successful_backup_at: string | null;
+  last_backup_reason_code: string | null;
   configured: boolean;
   enabled: boolean;
   is_running: boolean;

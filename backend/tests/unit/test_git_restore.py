@@ -240,7 +240,7 @@ class TestRestoreSettings:
     @pytest.mark.asyncio
     async def test_inserts_missing_keys(self, db_session):
         tally = _CategoryTally()
-        payload = {"version": "1.0", "settings": {"currency": "EUR", "theme": "dark"}}
+        payload = {"version": "1.0", "settings": {"currency": "EUR", "dark_style": "glow"}}
 
         await _service()._restore_settings(db_session, payload, overwrite=False, tally=tally)
         await db_session.commit()
@@ -251,7 +251,7 @@ class TestRestoreSettings:
             .scalars()
             .all()
         }
-        assert rows == {"currency": "EUR", "theme": "dark"}
+        assert rows == {"currency": "EUR", "dark_style": "glow"}
         assert tally.restored == 2
 
     @pytest.mark.asyncio
@@ -408,12 +408,17 @@ class TestCompanionCredentials:
 
         rows = await self._rows(db_session)
         assert rows == {"currency": "EUR"}
-        assert any("prometheus_enabled" in note and "switched off" in note for note in _messages(tally))
+        assert any("prometheus_enabled" in note and "not restored" in note for note in _messages(tally))
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("toggle,credential", sorted(_COMPANION_CREDENTIALS.items()))
     async def test_every_pair_refuses_its_toggle(self, db_session, toggle, credential, monkeypatch):
         monkeypatch.delenv("HA_TOKEN", raising=False)
+        if toggle == "mqtt_enabled":
+            # Anonymous MQTT is valid; this pair exercises a retained account
+            # whose required local password is missing.
+            db_session.add(Settings(key="mqtt_username", value="retained-account"))
+            await db_session.commit()
         await self._restore(db_session, **{toggle: "true", credential: "s3cret"})
         assert toggle not in await self._rows(db_session)
 
@@ -489,14 +494,14 @@ class TestCompanionCredentials:
         companion one were all counted as ``skipped`` despite never being in the
         preview's count.
         """
-        db_session.add(Settings(key="theme", value="light"))
+        db_session.add(Settings(key="dark_style", value="classic"))
         await db_session.commit()
 
         values = {
             "currency": "EUR",  # inserted    -> restored
-            "theme": "dark",  # exists, overwrite off -> skipped
-            "low_stock_threshold": None,  # no value    -> skipped
-            "": "junk",  # unusable key -> failed
+            "dark_style": "glow",  # exists, overwrite off -> skipped
+            "default_printer_id": None,  # nullable editor value -> restored
+            "": "junk",  # unusable name -> refused with invalid reason
             "bambu_cloud_token": "x",  # blocked     -> refused
             "auth_enabled": "false",  # protected   -> refused
             "prometheus_enabled": "true",  # companion   -> refused
@@ -511,7 +516,7 @@ class TestCompanionCredentials:
         await db_session.commit()
 
         assert tally.restored + tally.skipped + tally.failed == item_count
-        assert (tally.restored, tally.skipped, tally.failed) == (1, 2, 1)
+        assert (tally.restored, tally.skipped, tally.failed) == (2, 1, 0)
 
     @pytest.mark.asyncio
     async def test_the_spools_tally_holds_the_same_invariant(self, db_session):
@@ -580,7 +585,7 @@ class TestCompanionCredentials:
 
         rows = await self._rows(db_session)
         assert rows == {"currency": "EUR"}
-        assert any("prometheus_enabled" in note and "switched off" in note for note in _messages(tally))
+        assert any("prometheus_enabled" in note and "not restored" in note for note in _messages(tally))
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("token", ["", "   "])
@@ -607,23 +612,15 @@ class TestCompanionCredentials:
         assert detail.params == {"companion": 1}
 
     @pytest.mark.asyncio
-    async def test_the_availability_class_keeps_the_backup_credential_condition(self, db_session):
-        """The other half of the same change: only Prometheus loses condition 2.
-
-        Absent is treated like blank here — an anonymous broker is a working
-        config, so refusing it would be a false positive.
-
-        LDAP used to be in this list and is not any more: the same reasoning that
-        makes an anonymous bind legitimate is what let an authored payload point
-        the instance at another directory, so the family is refused outright
-        rather than judged on availability. See
-        ``test_the_whole_ldap_family_is_protected``.
+    async def test_anonymous_mqtt_is_allowed_but_nonproxy_vp_needs_local_code(self, db_session):
+        """The actual editor permits anonymous MQTT, but VP needs local code
+        unless the retained local mode is proxy. Backup omission is no bypass.
         """
         await self._restore(db_session, mqtt_enabled="true", virtual_printer_enabled="true")
 
         rows = await self._rows(db_session)
         assert rows["mqtt_enabled"] == "true"
-        assert rows["virtual_printer_enabled"] == "true"
+        assert "virtual_printer_enabled" not in rows
 
     def test_every_exposure_toggle_is_a_companion_toggle(self):
         assert _COMPANION_EXPOSURE_TOGGLES.issubset(_COMPANION_CREDENTIALS)
@@ -638,7 +635,8 @@ class TestCompanionCredentials:
         tally = await self._restore(db_session, prometheus_enabled="true", prometheus_token="s3cret")
 
         assert (await self._rows(db_session))["prometheus_enabled"] == "true"
-        assert not any("switched off" in note for note in _messages(tally))
+        assert tally.restored == 1
+        assert "settingsCompanionSkipped" not in _codes(tally)
 
     @pytest.mark.asyncio
     async def test_the_exposure_route_still_stands_down_for_a_local_token(self, db_session):
@@ -649,7 +647,8 @@ class TestCompanionCredentials:
         tally = await self._restore(db_session, prometheus_enabled="true")
 
         assert (await self._rows(db_session))["prometheus_enabled"] == "true"
-        assert not any("switched off" in note for note in _messages(tally))
+        assert tally.restored == 1
+        assert "settingsCompanionSkipped" not in _codes(tally)
 
     @pytest.mark.asyncio
     async def test_the_exposure_route_still_stands_down_when_already_on(self, db_session):
@@ -660,7 +659,8 @@ class TestCompanionCredentials:
         tally = await self._restore(db_session, overwrite=True, prometheus_enabled="true")
 
         assert (await self._rows(db_session))["prometheus_enabled"] == "true"
-        assert not any("switched off" in note for note in _messages(tally))
+        assert tally.restored == 0
+        assert "settingsCompanionSkipped" in _codes(tally)
 
     @pytest.mark.asyncio
     async def test_an_anonymous_broker_is_not_a_false_positive(self, db_session):
@@ -668,7 +668,8 @@ class TestCompanionCredentials:
         tally = await self._restore(db_session, mqtt_enabled="true", mqtt_broker="10.0.0.5")
 
         assert (await self._rows(db_session))["mqtt_enabled"] == "true"
-        assert not any("switched off" in note for note in _messages(tally))
+        assert tally.restored == 1
+        assert "settingsCompanionSkipped" not in _codes(tally)
 
     @pytest.mark.asyncio
     async def test_a_blank_ldap_bind_password_no_longer_lets_the_toggle_through(self, db_session):
@@ -691,26 +692,28 @@ class TestCompanionCredentials:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("value", ["1", "on", "yes"])
-    async def test_spellings_no_reader_treats_as_on_are_written(self, db_session, value):
+    async def test_noncanonical_boolean_spellings_are_refused(self, db_session, value):
         await self._restore(db_session, prometheus_enabled=value, prometheus_token="s3cret")
-        assert (await self._rows(db_session))["prometheus_enabled"] == value
+        assert "prometheus_enabled" not in await self._rows(db_session)
 
     @pytest.mark.asyncio
     async def test_ha_token_in_the_environment_counts_as_usable(self, db_session, monkeypatch):
         monkeypatch.setenv("HA_TOKEN", "from-env")
+        monkeypatch.setenv("HA_URL", "http://retained-ha.local")
         await self._restore(db_session, ha_enabled="true", ha_token="s3cret")
         assert (await self._rows(db_session))["ha_enabled"] == "true"
 
     @pytest.mark.asyncio
-    async def test_a_toggle_already_on_locally_is_written(self, db_session):
-        """The exposure pre-dates the restore, so "left switched off" would be a lie."""
+    async def test_already_on_metrics_without_local_token_cannot_be_reapproved(self, db_session):
+        """Do not reapprove an invalid legacy exposure; also do not claim to disable it."""
         db_session.add(Settings(key="prometheus_enabled", value="true"))
         await db_session.commit()
 
         tally = await self._restore(db_session, overwrite=True, prometheus_enabled="true", prometheus_token="s3cret")
 
         assert (await self._rows(db_session))["prometheus_enabled"] == "true"
-        assert not any("switched off" in note for note in _messages(tally))
+        assert tally.restored == 0
+        assert "settingsCompanionSkipped" in _codes(tally)
 
     # --- The map itself ----------------------------------------------------
 
@@ -730,10 +733,10 @@ class TestCompanionCredentials:
         assert set(_COMPANION_CREDENTIAL_ENV) <= set(_COMPANION_CREDENTIALS.values())
 
     @pytest.mark.asyncio
-    async def test_plan_leaves_unusable_key_names_in_no_bucket(self, db_session):
-        """They are the restore's ``failed``, not a refusal."""
+    async def test_plan_refuses_unusable_names_and_normalizes_ordinary_values(self, db_session):
+        """Preview and apply exclude malformed names using the same reason."""
         plan = await _service()._plan_settings(db_session, {"": "x", 7: "y", "currency": "EUR"})
-        assert plan == _SettingsPlan()
+        assert plan == _SettingsPlan(invalid=("", 7), accepted={"currency": "EUR"})
 
 
 class TestSpoolTagOverwrite:
@@ -3011,7 +3014,7 @@ class TestMqttRelayReconfigure:
         assert sent["mqtt_port"] == 8883
         assert sent["mqtt_use_tls"] is True
         assert sent["mqtt_password"] == "kept"
-        assert sent["mqtt_topic_prefix"] == "bambuddy"
+        assert sent["mqtt_topic_prefix"] == "bamdude"
         assert tally.notes == []
 
     @pytest.mark.asyncio
@@ -3079,11 +3082,13 @@ class TestMqttRelayReconfigure:
     async def test_a_refused_mqtt_enabled_is_not_reported_as_written(self, db_session):
         """So the relay reconfigures from the *local* mqtt_enabled, not the backup's.
 
-        The companion rule refuses ``mqtt_enabled`` when the backup's password
-        cannot come across and there is none stored locally. It must not then
+        The companion rule refuses ``mqtt_enabled`` when the retained account
+        has no local password. It must not then
         appear in ``keys_written``, or _reconfigure_mqtt_relay would be asked to
         bring up a broker connection the restore deliberately declined to enable.
         """
+        db_session.add(Settings(key="mqtt_username", value="retained-account"))
+        await db_session.commit()
         written: set[str] = set()
 
         await _service()._restore_settings(
@@ -3195,7 +3200,7 @@ class TestKprofilePhaseFailure:
     leaving the relay pointed at the pre-restore broker.
     """
 
-    _SETTINGS = {"version": "1.0", "settings": {"mqtt_topic_prefix": "restored/topic", "currency": "EUR"}}
+    _SETTINGS = {"version": "1.0", "settings": {"mqtt_enabled": "false", "currency": "EUR"}}
 
     def _payload(self, profiles=None):
         return {
@@ -3242,9 +3247,7 @@ class TestKprofilePhaseFailure:
             .scalars()
             .all()
         }
-        assert rows == {"mqtt_topic_prefix": "restored/topic", "currency": "EUR"}, (
-            "committed before the phase that failed"
-        )
+        assert rows == {"mqtt_enabled": "false", "currency": "EUR"}, "committed before the phase that failed"
 
     @pytest.mark.asyncio
     async def test_the_failure_is_counted_and_explained(self, db_session):
@@ -3281,7 +3284,7 @@ class TestKprofilePhaseFailure:
         assert result["results"][RestoreCategory.SETTINGS.value]["restored"] == 2
         assert result["results"][RestoreCategory.KPROFILES.value]["failed"] == 1
         relay.configure.assert_awaited_once()
-        assert relay.configure.await_args.args[0]["mqtt_topic_prefix"] == "restored/topic"
+        assert relay.configure.await_args.args[0]["mqtt_enabled"] is False
 
     @pytest.mark.asyncio
     async def test_a_failure_before_the_commit_still_reports_nothing_restored(self, db_session):

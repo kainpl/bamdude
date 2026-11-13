@@ -258,5 +258,10 @@
     "name": "Integration credentials need reissuing",
     "title_template": "Integration credentials need reissuing",
     "body_template": "Legacy API keys ({owned_api_key_count} owned, {ownerless_api_key_count} ownerless) and camera/monitor tokens ({long_lived_token_count}) have been retired. Create new credentials in Settings → API Keys, then replace them in HA, scripts/webhooks, bridge, MCP/AI hosts, OrcaBamDude and saved camera/TV/OBS/kiosk links. Browser sign-in alone does not reconnect integrations. Review scopes and test one allowed operation; do not blindly retry a print."
+  },
+  "git_backup_not_admitted": {
+    "name": "Git backup paused",
+    "title_template": "Git backup paused",
+    "body_template": "Scheduled Git backups are paused because administrator approval is required or the approving account is no longer authorized. Review and save the configuration in Settings → Backup. The last successful backup is shown separately."
   }
 }

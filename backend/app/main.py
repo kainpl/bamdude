@@ -12318,7 +12318,8 @@ async def _application_lifespan(app: FastAPI):
     except Exception:
         pass
     notification_service.stop_digest_scheduler()
-    git_backup_service.stop_scheduler()
+    if not await git_backup_service.quiesce_for_restore():
+        logging.warning("Git backup shutdown work remains owned")
     local_backup_service.stop_scheduler()
     stop_ams_history_recording()
     stop_filament_preset_sync()
