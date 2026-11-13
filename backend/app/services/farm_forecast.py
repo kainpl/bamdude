@@ -96,6 +96,8 @@ class MachineState:
     stagger_interval_seconds: int | None = None
     requires_operator: bool = False
     awaiting_operator: bool = False
+    #: An otherwise eligible machine temporarily held by a queue pause.
+    queue_paused: bool = False
 
 
 @dataclass
@@ -408,7 +410,7 @@ def _sequence(state: _State) -> None:
     state.order_finish = order_finish
 
 
-def _initial_state(snapshot: FarmSnapshot) -> _State:
+def _initial_state(snapshot: FarmSnapshot, *, assume_queues_resumed: bool = False) -> _State:
     """What every printer already owes, then the staging area dealt out longest-first.
 
     Every machine of the snapshot is walked, parked ones included: what a
@@ -429,7 +431,7 @@ def _initial_state(snapshot: FarmSnapshot) -> _State:
             printer_id=machine.printer_id,
             key=model_key(machine.model),
             free_at=0.0,
-            accepts_new_work=machine.accepts_new_work,
+            accepts_new_work=machine.accepts_new_work or (assume_queues_resumed and machine.queue_paused),
             gap=max(0.0, float(machine.plate_clear_seconds)),
             waiting=max(0.0, float(machine.waiting_seconds)),
             interval=int(machine.stagger_interval_seconds or (stagger.interval_seconds if stagger else 0)),
@@ -503,17 +505,15 @@ def _initial_state(snapshot: FarmSnapshot) -> _State:
     return state
 
 
-def capacity_from_snapshot(snapshot: FarmSnapshot) -> FleetCapacity:
+def capacity_from_snapshot(snapshot: FarmSnapshot, *, include_paused_queues: bool = False) -> FleetCapacity:
     """The initial planner's deliberately narrow view of a live farm.
 
     The forecast first walks existing running, queued and staged work, so a
-    new order starts behind actual occupancy.  Only machines that can receive
-    new auto-queue work become lanes.  An offline printer is still a lane when
-    it is active and eligible — connectivity is dispatch-time information —
-    whereas archived, maintenance, paused and auto-disabled lanes are kept in
-    the forecast's accounting but deliberately not offered to the planner.
+    new order starts behind existing work. An order can plan for the fleet
+    after its queues resume, including work already waiting in those queues.
+    Maintenance, queue errors and auto-routing opt-outs exclude a machine.
     """
-    state = _initial_state(snapshot)
+    state = _initial_state(snapshot, assume_queues_resumed=include_paused_queues)
     model_by_printer = {machine.printer_id: machine.model for machine in snapshot.printers}
     return FleetCapacity(
         [
@@ -1022,18 +1022,15 @@ async def load_snapshot(
                 manual_wait = 0
         drying_wait = scheduler.drying_remaining_seconds(printer_id) if gates.drying_blocks else 0
         waiting = max(manual_wait, drying_wait)
+        # A missing queue row is historically routable; explicit opt-out or
+        # an inactive/error lane does not become eligible by pausing it.
+        accepts_auto = bool(is_active) and auto_distribute_eligible is not False and queue_status != "error"
+        paused = bool(is_paused) or queue_status == "paused"
         machines[printer_id] = MachineState(
             printer_id=printer_id,
             model=printer_manager.effective_model_for(printer_id, model),
-            accepts_new_work=(
-                bool(is_active)
-                # A legacy/imported printer can temporarily have no queue row;
-                # that was historically routable and must remain so.  An
-                # explicit false is the operator's reservation switch.
-                and auto_distribute_eligible is not False
-                and not is_paused
-                and queue_status not in ("paused", "error")
-            ),
+            accepts_new_work=accepts_auto and not paused,
+            queue_paused=accepts_auto and paused,
             plate_clear_seconds=float(gap),
             waiting_seconds=float(waiting),
             stagger_interval_seconds=(int(interval_minutes) * 60) if interval_minutes else None,
@@ -1224,9 +1221,7 @@ async def forecast_projects(
     due_of = {row.id: row.due_date for row in status_rows}
     active_targets = {pid for pid in wanted if status_of.get(pid) == "active"}
     walk = ranked[: max((i for i, pid in enumerate(ranked) if pid in active_targets), default=-1) + 1]
-    plans: dict[int, OrderPlan] = (
-        await plan_for_orders(db, walk, capacity=capacity_from_snapshot(snapshot)) if walk else {}
-    )
+    plans: dict[int, OrderPlan] = await plan_for_orders(db, walk, snapshot=snapshot) if walk else {}
     out = forecast_orders(snapshot, plans, walk, {pid for pid in active_targets if pid in plans}, now)
     for pid in wanted:
         if pid not in out and pid in status_of:

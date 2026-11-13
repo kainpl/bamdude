@@ -403,6 +403,7 @@ async def replan(db, project_id, request, access):
     if request.apply:
         await access_policy.guard(db, access)
     from backend.app.services.order_metrics import attribute
+    from backend.app.services.order_resources import includes_paused_queues
     from backend.app.services.plan_engine import (
         _current_fleet_capacity,
         counted_parts_by_line,
@@ -454,7 +455,9 @@ async def replan(db, project_id, request, access):
                         queued.get(line.line_id, {}).get(part_id, 0) + count * entry.count
                     )
         excluded = {(e["line_id"], e["plate_id"]) for e in manual if e["count"] == 0}
-        fleet = await _current_fleet_capacity(db)
+        fleet = await _current_fleet_capacity(
+            db, include_paused_queues=includes_paused_queues(data.ctx.project.printer_resources)
+        )
         proposed = deepcopy(manual)
         for line in data.ctx.lines:
             recipes = {

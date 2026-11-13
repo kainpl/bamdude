@@ -2,7 +2,7 @@
 
 from typing import Literal
 
-from pydantic import BaseModel, Field, StrictInt, field_validator
+from pydantic import BaseModel, Field, StrictBool, StrictInt, field_validator
 
 from backend.app.schemas.order_working_plan import WorkingEntry
 from backend.app.utils.printer_models import normalize_model_name
@@ -11,6 +11,7 @@ from backend.app.utils.printer_models import normalize_model_name
 class PrinterResources(BaseModel):
     models: list[str] | None = Field(default=None, min_length=1, max_length=64)
     printer_ids: list[StrictInt] | None = Field(default=None, min_length=1, max_length=256)
+    include_paused_queues: StrictBool = False
 
     @field_validator("models")
     @classmethod

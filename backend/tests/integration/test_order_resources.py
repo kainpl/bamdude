@@ -251,6 +251,84 @@ async def test_replan_reviews_both_queues_then_replaces_only_the_shared_draft(
     assert await db_session.get(ProductPlate, s["plate"].id)
 
 
+async def test_rebuilding_draft_keeps_fleet_distribution_when_queues_pause(
+    committing_client, db_session, resource_shop, printer_factory
+):
+    from backend.app.services.printer_queues import ensure_printer_queue
+
+    client, s = committing_client, resource_shop
+    printers = {"P1S": s["other"], "H2D": await printer_factory(name="H2D", model="H2D")}
+    printers["P2S"] = await printer_factory(name="P2S", model="P2S")
+    plates = {}
+    for model, printer in printers.items():
+        await ensure_printer_queue(db_session, printer.id)
+        file = LibraryFile(
+            filename=f"{model}.gcode.3mf",
+            file_path=f"{model}.gcode.3mf",
+            file_type="gcode",
+            file_size=1,
+            file_metadata={**s["file"].file_metadata, "sliced_for_model": model},
+        )
+        db_session.add(file)
+        await db_session.flush()
+        plate = ProductPlate(product_id=s["plate"].product_id, library_file_id=file.id, plate_index=0)
+        db_session.add(plate)
+        await db_session.flush()
+        plates[model] = plate.id
+    await db_session.commit()
+    await choose(client, s, models=list(printers))
+    path = f"/api/v1/projects/{s['order']}/working-plan"
+    current = (await client.get(path)).json()
+    saved = await client.put(path, json={"expected_revision": current["revision"], "entries": []})
+    assert saved.status_code == 200, saved.text
+
+    async def rebuild():
+        current = (await client.get(path)).json()
+        result = await client.post(
+            path + "/replan",
+            json={"expected_revision": current["revision"], "kind": "rebuild", "inputs_token": current["inputs_token"]},
+        )
+        assert result.status_code == 200, result.text
+        return {entry["plate_id"]: entry["count"] for entry in result.json()["entries"]}
+
+    async def pause(model, paused):
+        result = await client.patch(f"/api/v1/queues/{printers[model].id}", json={"is_paused": paused})
+        assert result.status_code == 200, result.text
+        assert result.json()["is_paused"] == paused
+
+    expected = await rebuild()
+    assert set(expected) == set(plates.values())
+    assert sum(expected.values()) == 10
+    for model in printers:
+        await pause(model, True)
+    assert await rebuild() == {}
+
+    selected = await choose(client, s, models=list(printers), include_paused_queues=True)
+    assert selected["resources"]["include_paused_queues"] is True
+    assert await rebuild() == expected
+    _, resource_proposal = await review(client, s)
+    assert {entry["plate_id"]: entry["count"] for entry in resource_proposal["entries"]} == expected
+    forecast = await client.get(f"/api/v1/projects/{s['order']}/forecast")
+    assert forecast.status_code == 200, forecast.text
+    assert forecast.json()["now_seconds"] is None
+    for model in ("H2D", "P2S"):
+        await pause(model, False)
+        assert await rebuild() == expected
+
+    printers["P1S"].is_active = False
+    await db_session.commit()
+    remaining = await rebuild()
+    assert set(remaining) == {plates["H2D"], plates["P2S"]}
+    assert sum(remaining.values()) == 10
+
+    whole_farm = await choose(client, s, models=None)
+    assert whole_farm["resources"]["include_paused_queues"] is True
+    restored = await choose(client, s, models=list(printers), include_paused_queues=False)
+    assert not restored["resources"].get("include_paused_queues", False)
+    await pause("P2S", True)
+    assert await rebuild() == {plates["H2D"]: 10}
+
+
 @pytest.mark.parametrize("change", ["new_job", "policy", "tampered"])
 async def test_changed_review_refuses_before_any_queue_deletion(committing_client, db_session, resource_shop, change):
     s = resource_shop

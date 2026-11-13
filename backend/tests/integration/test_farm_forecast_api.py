@@ -214,8 +214,10 @@ async def test_archived_printers_are_gone_and_parked_ones_owe_but_take_nothing(d
     assert accepts[off.id] is False and accepts[x1.id] is False and accepts[p2.id] is False
     assert accepts[p1.id] is True
     # The parked machines remain in the snapshot so held work is not erased,
-    # but only the active, unpaused, auto-eligible P1S becomes a plan lane.
-    assert [lane.printer_id for lane in farm_forecast.capacity_from_snapshot(snap).machines] == [p1.id]
+    # Draft sizing assumes the queue resumes. Forecast placement still excludes it.
+    assert {lane.printer_id for lane in farm_forecast.capacity_from_snapshot(snap).machines} == {p1.id}
+    resumed = farm_forecast.capacity_from_snapshot(snap, include_paused_queues=True)
+    assert {lane.printer_id for lane in resumed.machines} == {p1.id, x1.id}
 
 
 @pytest.mark.asyncio
