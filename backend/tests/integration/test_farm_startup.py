@@ -184,7 +184,16 @@ async def test_asgi_readiness_is_after_startup_complete_is_delivered(held, monke
 
 
 @pytest.mark.parametrize("scope", [[], [1]])
-async def test_scoped_key_cannot_release_global_hold(async_client, held, scope):
+async def test_scoped_key_cannot_release_global_hold(async_client, held, scope, db_session):
+    if scope:
+        from backend.app.models.printer import Printer
+
+        printer = Printer(
+            name="Scope fixture", serial_number="scope-fixture", ip_address="127.0.0.1", access_code="test"
+        )
+        db_session.add(printer)
+        await db_session.commit()
+        scope = [printer.id]
     made = await async_client.post(
         "/api/v1/api-keys/",
         json={

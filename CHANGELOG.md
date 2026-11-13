@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+- Reconnect reconciliation stops its completion cleanup if the printer was deleted during filament accounting. It no longer reads an expired archive after that race, and its analysis cleanup cannot release a newer print's context under reused printer and archive IDs.
+
 - Virtual printers detached when deleting a physical printer now show their saved configuration as unproven while an earlier upload delays the runtime update.
 
 - Deleting a virtual printer whose shutdown cannot be confirmed no longer blocks edits to other virtual printers. Its ID stays reserved, and restore explicitly requires restart. A saved VP shows its configuration as unproven while waiting behind another retirement. Routine slicer disconnects and malformed MQTT blocks no longer emit workflow tracebacks; unexpected errors still do.
