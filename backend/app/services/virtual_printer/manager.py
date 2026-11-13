@@ -2314,6 +2314,13 @@ class VirtualPrinterManager:
     def _admission_closed(self):
         return restore_required() or self._drain_task is not None
 
+    def mark_config_pending(self, vp_id):
+        """The saved VP is unproven even while the runner is busy elsewhere."""
+        if not self._admission_closed():
+            instance = self.get_instance(vp_id)
+            if instance is not None:
+                instance._config_pending = True
+
     async def sync_from_db(self):
         if self._admission_closed() or not self._session_factory:
             return
@@ -2562,6 +2569,10 @@ class VirtualPrinterManager:
             cleanup.finish()
         except BaseException:
             self._unproven[instance.id] = instance
+            deletion = self._deletions.get(instance.id)
+            if deletion is not None:
+                # Wake sync without releasing the ID or claiming cleanup proof.
+                deletion["done"].set()
             raise
         finally:
             self._retiring.pop(instance.id, None)

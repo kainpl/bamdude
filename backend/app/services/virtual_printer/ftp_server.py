@@ -17,7 +17,15 @@ import zipfile
 from collections.abc import Callable
 from pathlib import Path
 
-from .lifecycle import TLS_CLOSE_GRACE, TLS_HANDSHAKE_TIMEOUT, Activities, AdmissionClosed, Connections, close_writer
+from .lifecycle import (
+    TLS_CLOSE_GRACE,
+    TLS_HANDSHAKE_TIMEOUT,
+    Activities,
+    AdmissionClosed,
+    Connections,
+    PeerDisconnected,
+    close_writer,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -92,8 +100,11 @@ class FTPSession:
         """Send an FTP response."""
         response = f"{code} {message}\r\n"
         logger.debug("%sFTP -> %s: %s", self._log_prefix, self.remote_ip, response.strip())
-        self.writer.write(response.encode("utf-8"))
-        await self.writer.drain()
+        try:
+            self.writer.write(response.encode("utf-8"))
+            await self.writer.drain()
+        except OSError as exc:
+            raise PeerDisconnected(type(exc).__name__) from exc
 
     async def handle(self) -> None:
         """Handle the FTP session."""
@@ -143,6 +154,8 @@ class FTPSession:
 
         except asyncio.CancelledError:
             logger.info("%sFTP session cancelled from %s", self._log_prefix, self.remote_ip)
+        except PeerDisconnected as exc:
+            logger.info("%sFTP peer disconnected from %s: %s", self._log_prefix, self.remote_ip, exc)
         except Exception as e:
             logger.error("%sFTP session error from %s: %s", self._log_prefix, self.remote_ip, e)
         finally:

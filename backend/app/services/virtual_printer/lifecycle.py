@@ -28,6 +28,10 @@ class AdmissionClosed(RuntimeError):
     pass
 
 
+class PeerDisconnected(ConnectionError):
+    """A reply could not reach the slicer; not an internal workflow defect."""
+
+
 class Teardown:
     """Finish independent cleanup steps before reporting an unproven owner."""
 
@@ -134,6 +138,8 @@ class Activities:
         self._quiet.clear()
         try:
             yield
+        except PeerDisconnected:
+            raise
         except Exception:
             logging.getLogger(__name__).exception("VP activity ended with an error")
             raise

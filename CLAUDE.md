@@ -103,6 +103,8 @@ independent idle teardown before reporting failure; retain an explicit unproven
 owner rather than a failed retirement task that blocks unrelated VPs. Pending
 roots permit retry, completed unproven roots require restart. Delete reserves
 the VP ID through commit and retirement proof, cleaning its uploads before reuse.
+Every retirement outcome wakes deletion-reservation waiters; failure keeps the
+ID reserved. Mark the saved VP pending before joining a busy sync coordinator.
 Vault: `40-invariants/inv-vp-retirement-is-restore-owned.md`.
 
 **Git metadata restore cannot claim a different physical print.** Archives match

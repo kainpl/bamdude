@@ -579,6 +579,7 @@ async def update_virtual_printer(
     logger.info("Updated virtual printer: %s (id=%d)", vp.name, vp.id)
 
     # Sync services
+    virtual_printer_manager.mark_config_pending(vp.id)
     try:
         await virtual_printer_manager.sync_from_db()
     except Exception as e:

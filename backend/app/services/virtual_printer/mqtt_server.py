@@ -1271,6 +1271,10 @@ class SimpleMQTTServer:
             if not isinstance(data, dict):
                 logger.debug("Ignoring MQTT publish with a non-object JSON root")
                 return
+            for block in ("pushing", "info", "print"):
+                if block in data and not isinstance(data[block], dict):
+                    logger.warning("Ignoring MQTT publish with a non-object %s block", block)
+                    return
 
             # Record sequence_id → this client so a bridge-forwarded response
             # routes back only to the slicer that issued the command (V5).
