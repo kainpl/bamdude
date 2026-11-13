@@ -38,6 +38,27 @@ async def choose(client, s, **resources):
     return response.json()
 
 
+@pytest.mark.parametrize("scope", ["all", "one", "none"])
+async def test_paused_planning_flag_keeps_whole_order_key_authority(
+    committing_client, db_session, resource_shop, scope
+):
+    s = resource_shop
+    path = f"/api/v1/projects/{s['order']}/printer-resources"
+    current = await committing_client.get(path)
+    assert current.status_code == 200, current.text
+    printer_ids = {"all": None, "one": [s["printer"].id], "none": []}[scope]
+    made = await committing_client.post("/api/v1/api-keys/", json={"name": "planning", "printer_ids": printer_ids})
+    assert made.status_code == 200, made.text
+    response = await committing_client.put(
+        path,
+        headers={"X-API-Key": made.json()["key"]},
+        json={"expected_token": current.json()["token"], "resources": {"include_paused_queues": True}},
+    )
+    assert response.status_code == (200 if scope == "all" else 403), response.text
+    project = await db_session.get(Project, s["order"], populate_existing=True)
+    assert bool((project.printer_resources or {}).get("include_paused_queues")) == (scope == "all")
+
+
 async def pending_rows(db, s):
     printer = PrintQueueItem(
         queue_id=s["printer"].id,

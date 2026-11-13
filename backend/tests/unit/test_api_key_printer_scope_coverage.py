@@ -30,6 +30,7 @@ _LOOKS_LIKE_A_PRINTER = re.compile(r"printer|queue", re.IGNORECASE)
 # Names a key-reachable route carries that are NOT a printer reference.
 NOT_A_PRINTER = {
     "acknowledge_queue_change": "a boolean acknowledgement of reviewed Auto Queue removal, not a printer reference",
+    "include_paused_queues": "an order's boolean planning preference, not a printer or queue reference",
     "enqueue_position": "where in the queue a new job goes: 'end' or 'next'",
     "printer_reachable": "a label bridge reporting whether ITS label printer answers",
     "printer_models": "model names a maintenance type applies to, not printers",
