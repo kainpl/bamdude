@@ -364,8 +364,9 @@ async def test_a_tick_costs_the_same_queries_whatever_the_farm_and_its_history(
     finally:
         event.remove(test_engine.sync_engine, "before_cursor_execute", count_statement)
     selects = [s for s in statements if s.lstrip().upper().startswith("SELECT")]
-    # Fixed: printers page, candidates, queues, items, counts, archives, archive counts, users, three refs, episode items.
-    assert len(selects) <= 14, len(selects)
+    # Fixed batch reads, including plate-gate owners and recovery action intent/outcome rows.
+    # Both farm sizes fit the same budget; per-printer or terminal-history reads exceed it.
+    assert len(selects) <= 16, len(selects)
 
 
 async def test_the_loop_survives_a_failing_tick_and_stops_cleanly(factory, monkeypatch):
