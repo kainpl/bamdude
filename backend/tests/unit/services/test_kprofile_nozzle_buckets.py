@@ -293,7 +293,13 @@ class TestPrimeKProfileTables:
         manager = PrinterManager()
         manager._schedule_async = MagicMock()
         printer = SimpleNamespace(
-            id=7, ip_address="192.168.1.100", serial_number="TESTSERIAL0000", access_code="x", model="X1C", name="P"
+            id=7,
+            connector_identity="00000000-0000-4000-8000-000000000007",
+            ip_address="192.168.1.100",
+            serial_number="TESTSERIAL0000",
+            access_code="x",
+            model="X1C",
+            name="P",
         )
         with patch("backend.app.services.printer_manager.BambuMQTTClient") as mock_client_cls:
             mock_client_cls.return_value = MagicMock(state=MagicMock(connected=True))

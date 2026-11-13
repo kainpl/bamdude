@@ -165,18 +165,38 @@ class TestCameraStream:
         factories: list = []
 
         class FakeBroadcaster:
-            subscriber_count = 1
+            def __init__(self):
+                self.queues = set()
+                self.released = 0
+
+            @property
+            def subscriber_count(self):
+                return len(self.queues)
 
             async def subscribe(self):
                 import asyncio
 
-                return asyncio.Queue()
+                queue = asyncio.Queue()
+                self.queues.add(queue)
+                return queue
+
+            async def unsubscribe(self, queue):
+                self.queues.remove(queue)
+                self.released += 1
+                return self.subscriber_count
+
+        shared = FakeBroadcaster()
 
         async def fake_get_or_create(key, factory):
             factories.append(key)
-            return FakeBroadcaster()
+            return shared
 
-        async def fake_iter(broadcaster, queue, *, is_disconnected, on_unsubscribe):
+        async def fake_iter(
+            broadcaster, queue, *, is_disconnected, on_unsubscribe=None, before_yield=None, request_cleanup=None
+        ):
+            assert broadcaster is shared
+            assert before_yield is not None and request_cleanup is not None
+            assert not await before_yield()
             yield b"--frame\r\n"
 
         with (
@@ -190,6 +210,7 @@ class TestCameraStream:
         # Both viewers asked the registry for the SAME key, which is what makes
         # it one upstream rather than two.
         assert factories == [f"camera-{camera_id}", f"camera-{camera_id}"]
+        assert shared.released == 2 and shared.subscriber_count == 0
 
     @pytest.mark.asyncio
     @pytest.mark.integration

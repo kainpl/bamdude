@@ -1101,7 +1101,7 @@ describe('useWebSocket hook', () => {
       vi.useRealTimers();
     });
 
-    it('does NOT open a socket or reconnect when ws-token mint returns 403', async () => {
+    it.each([401, 403])('does NOT open a socket or reconnect when ws-token mint returns %s', async (status) => {
       // An authenticated user whose group lacks WEBSOCKET_CONNECT. POST
       // /auth/ws-token returns 403; the hook must NOT fall through to a
       // tokenless socket (server closes it 4401) and must NOT enter the
@@ -1110,7 +1110,7 @@ describe('useWebSocket hook', () => {
 
       const { api, ApiError } = await import('../../api/client');
       vi.mocked(api.getWebSocketToken).mockRejectedValueOnce(
-        new ApiError('Insufficient permissions', 403),
+        new ApiError('Authentication refused', status),
       );
 
       const { useWebSocket } = await import('../../hooks/useWebSocket');
@@ -1125,8 +1125,93 @@ describe('useWebSocket hook', () => {
         await vi.advanceTimersByTimeAsync(3000);
       });
       expect(wsInstances.length).toBe(0);
+      expect(api.getWebSocketToken).toHaveBeenCalledTimes(1);
 
       vi.useRealTimers();
+    });
+
+    it.each([1001, 1013])('remints after close %s and preserves the parent credentials', async (code) => {
+      vi.useFakeTimers();
+      const { api, setAuthToken, getAuthToken } = await import('../../api/client');
+      const { useWebSocket } = await import('../../hooks/useWebSocket');
+      const invalidated = vi.fn();
+      window.addEventListener('bamdude:auth-invalidated', invalidated);
+      setAuthToken('still-valid-parent');
+      vi.mocked(api.getWebSocketToken)
+        .mockResolvedValueOnce({ token: 'first-child' })
+        .mockResolvedValueOnce({ token: 'renewed-child' });
+      const { unmount } = renderHook(() => useWebSocket(), { wrapper: createWrapper(queryClient) });
+      try {
+        const first = await waitForWs();
+        expect(first.url).toContain('token=first-child');
+        act(() => { first.open(); first.simulateClose(code); });
+        await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
+        expect(api.getWebSocketToken).toHaveBeenCalledTimes(2);
+        expect(wsInstances).toHaveLength(2);
+        expect(getLatestWs()?.url).toContain('token=renewed-child');
+        expect(getAuthToken()).toBe('still-valid-parent');
+        expect(localStorage.getItem('auth_token')).toBe('still-valid-parent');
+        expect(invalidated).not.toHaveBeenCalled();
+      } finally {
+        unmount();
+        setAuthToken(null);
+        window.removeEventListener('bamdude:auth-invalidated', invalidated);
+        vi.useRealTimers();
+      }
+    });
+
+    it('retries a 503 mint with fresh authority and preserves parent credentials', async () => {
+      vi.useFakeTimers();
+      const { api, ApiError, setAuthToken, getAuthToken } = await import('../../api/client');
+      const { useWebSocket } = await import('../../hooks/useWebSocket');
+      setAuthToken('parent-during-outage');
+      vi.mocked(api.getWebSocketToken)
+        .mockRejectedValueOnce(new ApiError('Authentication temporarily unavailable', 503))
+        .mockResolvedValueOnce({ token: 'after-outage' });
+      const { unmount } = renderHook(() => useWebSocket(), { wrapper: createWrapper(queryClient) });
+      try {
+        await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+        expect(wsInstances).toHaveLength(0);
+        expect(api.getWebSocketToken).toHaveBeenCalledTimes(1);
+        expect(getAuthToken()).toBe('parent-during-outage');
+        await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
+        expect(api.getWebSocketToken).toHaveBeenCalledTimes(2);
+        expect(wsInstances).toHaveLength(1);
+        expect(getLatestWs()?.url).toContain('token=after-outage');
+        expect(localStorage.getItem('auth_token')).toBe('parent-during-outage');
+      } finally {
+        unmount();
+        setAuthToken(null);
+        vi.useRealTimers();
+      }
+    });
+
+    it('ignores a stale deferred mint after unmount and a new hook mount', async () => {
+      vi.useFakeTimers();
+      const { api } = await import('../../api/client');
+      const { useWebSocket } = await import('../../hooks/useWebSocket');
+      let resolveOld!: (value: { token: string }) => void;
+      vi.mocked(api.getWebSocketToken)
+        .mockImplementationOnce(() => new Promise(resolve => { resolveOld = resolve; }))
+        .mockResolvedValueOnce({ token: 'current-mount' });
+      const old = renderHook(() => useWebSocket(), { wrapper: createWrapper(queryClient) });
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      expect(api.getWebSocketToken).toHaveBeenCalledTimes(1);
+      old.unmount();
+      const current = renderHook(() => useWebSocket(), { wrapper: createWrapper(queryClient) });
+      try {
+        const socket = await waitForWs();
+        expect(socket.url).toContain('token=current-mount');
+        await act(async () => { resolveOld({ token: 'stale-mount' }); });
+        await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
+        expect(wsInstances).toHaveLength(1);
+        expect(getLatestWs()).toBe(socket);
+        expect(socket.close).not.toHaveBeenCalled();
+        expect(api.getWebSocketToken).toHaveBeenCalledTimes(2);
+      } finally {
+        current.unmount();
+        vi.useRealTimers();
+      }
     });
 
     it('does NOT reconnect when a close fires during unmount', async () => {

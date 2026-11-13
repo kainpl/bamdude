@@ -1,6 +1,7 @@
 """Durable live-admission, family batching and actual-owner regression oracles."""
 
 import asyncio
+import json
 import time
 from datetime import timedelta
 
@@ -74,6 +75,80 @@ async def test_exact_logout_closes_only_that_sid_after_current_read(live):
     finally:
         runtime.release(a)
         runtime.release(b)
+
+
+async def test_narrowed_key_class_retires_old_socket_then_fresh_admission_gets_only_current_snapshot(live, monkeypatch):
+    from backend.app.core import websocket
+    from backend.app.core.auth_lifetime import capture_key
+    from backend.app.services import live_projection
+    from backend.tests.auth_helpers import bind_test_key
+
+    runtime, factory = live
+    monkeypatch.setattr(websocket, "live_authority", runtime)
+    monkeypatch.setattr(live_projection, "live_authority", runtime)
+    first, _ = await issue(factory)
+    async with factory() as db:
+        owner = await db.get(User, first.capture.user_id)
+        printers = [
+            Printer(name=f"printer-{n}", serial_number=f"NARROW-{n}", ip_address="127.0.0.1", access_code="test")
+            for n in range(2)
+        ]
+        key = APIKey(name="narrowed", key_hash="scalar-only", key_prefix="bd_test", can_read_status=True)
+        await bind_test_key(db, key, owner)
+        db.add_all([key, *printers])
+        await db.commit()
+        desc = module.LiveDescriptor(capture_key(key), ("websocket:connect",))
+        key_id, printer_ids = key.id, [printer.id for printer in printers]
+
+    class Browser:
+        def __init__(self):
+            self.sent, self.closed = [], []
+            self.delivered = asyncio.Event()
+
+        async def accept(self):
+            pass
+
+        async def send_text(self, value):
+            self.sent.append(json.loads(value))
+            self.delivered.set()
+
+        async def close(self, code):
+            self.closed.append(code)
+
+    manager, old, fresh = websocket.ConnectionManager(), Browser(), Browser()
+    old_handle = runtime.register(desc)
+    try:
+        await manager.connect(old, authority=desc.capture, live_handle=old_handle)
+        assert old_handle.entitlements.printers is None
+        await manager.send(old, {"type": "printer_status", "printer_id": printer_ids[1], "data": {"progress": 1}})
+        await asyncio.wait_for(old.delivered.wait(), 3)
+        async with factory() as db:
+            await db.execute(update(APIKey).where(APIKey.id == key_id).values(printer_ids=[printer_ids[0]]))
+            await db.commit()
+        # Current durable scope changes the projection class. The old socket
+        # must resync rather than silently purging some future printer events.
+        await asyncio.wait_for(old_handle.stop.wait(), 3)
+        assert old_handle.code == 1013 and not old_handle.deliverable()
+        await manager.disconnect(old)
+        assert old.closed == [1013]
+        fresh_handle = runtime.register(desc)
+        await manager.connect(fresh, authority=desc.capture, live_handle=fresh_handle)
+        assert fresh_handle.entitlements.printers == frozenset({printer_ids[0]})
+        for printer_id in printer_ids:
+            await manager.send(fresh, {"type": "printer_status", "printer_id": printer_id, "data": {"progress": 2}})
+        await manager.send(fresh, {"type": "initial_status_complete", "bootstrap_id": "fresh-scope", "printers": 1})
+        async with asyncio.timeout(3):
+            while len(fresh.sent) != 2:
+                fresh.delivered.clear()
+                await fresh.delivered.wait()
+        assert fresh.sent[0]["type"] == "printer_status"
+        assert fresh.sent[0]["printer_id"] == printer_ids[0]
+        assert fresh.sent[0]["data"]["progress"] == 2
+        assert fresh.sent[1] == {"type": "initial_status_complete", "bootstrap_id": "fresh-scope", "printers": 1}
+        assert len(old.sent) == 1
+    finally:
+        await manager.shutdown()
+        runtime.release(old_handle)
 
 
 async def test_bulk_reads_have_same_predicate_and_query_count_for_more_identical_viewers(live, test_engine):

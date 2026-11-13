@@ -3,14 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from httpx import ASGITransport, AsyncClient
 from sqlalchemy import delete, update
 
 from backend.app.core.auth import generate_api_key
@@ -19,7 +20,7 @@ from backend.app.models.group import Group
 from backend.app.models.printer import Printer
 from backend.app.models.settings import Settings
 from backend.app.models.user import User
-from backend.app.services import camera_fanout, camera_key_access
+from backend.app.services import camera_fanout, live_authority
 from backend.app.services.connector_runtime import connector_runtime
 from backend.app.services.connector_submissions import STORAGE_EPOCH_KEY, server_identity
 from backend.tests.auth_helpers import bind_test_key
@@ -27,13 +28,23 @@ from backend.tests.auth_helpers import bind_test_key
 pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
 JPEG = b"\xff\xd8oq2-frame\xff\xd9"
 CHUNK = b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + JPEG + b"\r\n"
+logger = logging.getLogger(__name__)
 
 
 @pytest.fixture(autouse=True)
-async def clean(monkeypatch):
+async def clean(monkeypatch, tmp_path):
+    from backend.tests import conftest as shared_fixtures
+
+    # Rechecks and authority mutations intentionally use concurrent sessions.
+    # A cancelled aiosqlite read can invalidate StaticPool's one connection,
+    # destroying an in-memory database beneath the mutation. Use the regular
+    # shared bootstrap with a disposable file, so replacement connections keep
+    # the schema and sessions have independent transaction/close ownership.
+    monkeypatch.setattr(shared_fixtures, "TEST_DATABASE_URL", f"sqlite+aiosqlite:///{tmp_path / 'camera-recheck.db'}")
     connector_runtime._reset_for_tests()
-    monkeypatch.setattr(camera_key_access, "RECHECK_SECONDS", 0.50)
-    monkeypatch.setattr(camera_key_access, "CHECK_TIMEOUT_SECONDS", 0.50)
+    monkeypatch.setattr(live_authority, "RECHECK_SECONDS", 0.50)
+    monkeypatch.setattr(live_authority, "CHECK_SECONDS", 1.0)
+    monkeypatch.setattr(live_authority, "PROOF_SECONDS", 1.0)
     monkeypatch.setattr(camera_fanout, "_DISCONNECT_POLL_SECONDS", 0.025)
     yield
     await camera_fanout.shutdown_all_broadcasters()
@@ -57,26 +68,72 @@ async def principal(db):
     )
     db.add(key)
     await db.commit()
+    await db.close()
     return raw, key, owner, group
+
+
+def start_stream(app, printer_id, raw, header):
+    """Observe the actual server-facing ASGI boundary, including truncation.
+
+    Retirement deliberately ends an already-started response without a final
+    body, which httpx's buffered ASGITransport treats as a protocol assertion.
+    This receiver records status and every body send start without requiring
+    a terminal chunk that a revoked viewer must never receive.
+    """
+    first = asyncio.Event()
+    bodies = []
+    response = SimpleNamespace(status_code=None, content=b"")
+    path = f"/api/v1/printers/{printer_id}/camera/stream"
+    headers = [(b"x-api-key", raw.encode())] if header == "key" else [(b"authorization", f"Bearer {raw}".encode())]
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "GET",
+        "scheme": "http",
+        "path": path,
+        "raw_path": path.encode(),
+        "root_path": "",
+        "query_string": b"",
+        "headers": headers,
+        "client": ("127.0.0.1", 1234),
+        "server": ("test", 80),
+    }
+    requested = False
+    disconnected = asyncio.Event()
+
+    async def receive():
+        nonlocal requested
+        if not requested:
+            requested = True
+            return {"type": "http.request", "body": b"", "more_body": False}
+        await disconnected.wait()
+        return {"type": "http.disconnect"}
+
+    async def send(message):
+        if message["type"] == "http.response.start":
+            response.status_code = message["status"]
+        elif message["type"] == "http.response.body" and message.get("body"):
+            bodies.append((time.monotonic(), message["body"]))
+            if response.status_code == 200 and JPEG in message["body"]:
+                first.set()
+
+    async def run():
+        await app(scope, receive, send)
+        response.content = b"".join(body for _, body in bodies)
+        return response
+
+    return asyncio.create_task(run()), bodies, first
 
 
 @asynccontextmanager
 async def streaming(app, printer_id, raw, header):
-    first = asyncio.Event()
-    bodies = []
-
-    async def observed(scope, receive, send):
-        async def capture(message):
-            if message["type"] == "http.response.body" and message.get("body"):
-                bodies.append((time.monotonic(), message["body"]))
-                first.set()
-            await send(message)
-
-        await app(scope, receive, capture)
-
-    headers = {"X-API-Key": raw} if header == "key" else {"Authorization": f"Bearer {raw}"}
-    async with AsyncClient(transport=ASGITransport(app=observed), base_url="http://test") as client:
-        task = asyncio.create_task(client.get(f"/api/v1/printers/{printer_id}/camera/stream", headers=headers))
+    # The oracle starts at a successful private-frame admission, before its
+    # caller mutates authority. A bounded retry here tolerates an explicitly
+    # retryable initial 503 under parallel-host load; never retry delivery or
+    # a failure after the mutation has started.
+    for attempt in range(3):
+        task, bodies, first = start_stream(app, printer_id, raw, header)
         try:
             waiting = asyncio.create_task(first.wait())
             try:
@@ -87,9 +144,15 @@ async def streaming(app, printer_id, raw, header):
                 await asyncio.gather(waiting, return_exceptions=True)
             if task.done():
                 response = await task
-                assert response.status_code == 200, response.text
-            assert bodies, "stream closed before its first frame"
+                if response.status_code == 503 and not first.is_set() and attempt < 2:
+                    assert not any(JPEG in body for _, body in bodies)
+                    logger.info("Camera test pre-mutation setup retry: status=503 attempt=%s", attempt + 1)
+                    await asyncio.sleep(0.05)
+                    continue
+                assert response.status_code == 200, response.content
+            assert first.is_set() and bodies, "stream closed before its first private frame"
             yield task, bodies
+            return
         finally:
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
@@ -169,6 +232,7 @@ async def change_authority(db, key, owner, group, printer, change):
     elif change == "epoch":
         await db.execute(update(Settings).where(Settings.key == STORAGE_EPOCH_KEY).values(value=str(uuid.uuid4())))
     await db.commit()
+    await db.close()
 
 
 @pytest.mark.parametrize("header", ["key", "bearer"])
@@ -198,8 +262,9 @@ async def test_http_delivery_stops_on_current_authority_change(
 async def test_real_default_bound_without_shortened_recheck(
     async_client, db_session, printer_factory, monkeypatch, header, stalled
 ):
-    monkeypatch.setattr(camera_key_access, "RECHECK_SECONDS", 2.0)
-    monkeypatch.setattr(camera_key_access, "CHECK_TIMEOUT_SECONDS", 1.0)
+    monkeypatch.setattr(live_authority, "RECHECK_SECONDS", 1.0)
+    monkeypatch.setattr(live_authority, "CHECK_SECONDS", 1.0)
+    monkeypatch.setattr(live_authority, "PROOF_SECONDS", 3.0)
     monkeypatch.setattr(camera_fanout, "_DISCONNECT_POLL_SECONDS", 1.0)
     printer = await printer_factory()
     raw, key, owner, group = await principal(db_session)
@@ -237,26 +302,37 @@ async def test_check_timeout_closes_delivery_but_restore_still_owns_sql(
     printer = await printer_factory()
     raw, *_ = await principal(db_session)
     runtime(monkeypatch)
-    release = asyncio.Event()
-    original = camera_key_access.CameraKeyStreamGuard._allowed
-    calls = 0
+    entered, release = asyncio.Event(), asyncio.Event()
+    coordinator = live_authority.live_authority
+    original = coordinator._read
 
-    async def blocked(self):
-        nonlocal calls
-        calls += 1
-        if calls > 1:
-            await release.wait()
-        return await original(self)
+    async def blocked(batch):
+        result = await original(batch)
+        if any(handle.admitted for handle in batch):
+            entered.set()
+            # Model an actual driver/continuation that has not completed even
+            # when the check timeout cancels its waiter. The real read occurs
+            # first; ownership must persist through this final continuation.
+            while not release.is_set():
+                try:
+                    await release.wait()
+                except asyncio.CancelledError:
+                    continue
+        return result
 
-    monkeypatch.setattr(camera_key_access.CameraKeyStreamGuard, "_allowed", blocked)
+    monkeypatch.setattr(coordinator, "_read", blocked)
     try:
         async with streaming(async_client._transport.app, printer.id, raw, "key") as (task, bodies):
+            await asyncio.wait_for(entered.wait(), 2)
+            actual = coordinator._check
             await asyncio.wait_for(asyncio.shield(task), 2)
-            assert connector_runtime._requests
+            assert actual in coordinator.tasks and not actual.done()
+            assert not await coordinator.drain(0)
             count = len(bodies)
             release.set()
-            await asyncio.sleep(0.05)
-            assert not connector_runtime._requests and len(bodies) == count
+            assert await coordinator.drain(2)
+            assert actual.done() and actual not in coordinator.tasks
+            assert len(bodies) == count
     finally:
         release.set()
 
@@ -270,8 +346,8 @@ async def test_database_failure_is_fail_closed_without_raw_error(
     runtime(monkeypatch, stalled)
     async with streaming(async_client._transport.app, printer.id, raw, "key") as (task, _):
         monkeypatch.setattr(
-            camera_key_access.CameraKeyStreamGuard,
-            "_allowed",
+            live_authority.live_authority,
+            "_read",
             AsyncMock(side_effect=RuntimeError("private-database-detail")),
         )
         await asyncio.wait_for(asyncio.shield(task), 2)
@@ -285,28 +361,31 @@ async def test_revoke_after_handshake_before_first_frame_delivers_nothing(
     raw, key, owner, group = await principal(db_session)
     runtime(monkeypatch)
     entered, release = asyncio.Event(), asyncio.Event()
-    original = camera_key_access.CameraKeyStreamGuard._allowed
+    original = live_authority.live_authority._read
 
-    async def delayed(self):
-        entered.set()
-        await release.wait()
-        return await original(self)
+    async def delayed(batch):
+        if batch:
+            # The header was accepted, but no live proof has been published.
+            entered.set()
+            await release.wait()
+        return await original(batch)
 
-    monkeypatch.setattr(camera_key_access.CameraKeyStreamGuard, "_allowed", delayed)
-    async with AsyncClient(transport=ASGITransport(app=async_client._transport.app), base_url="http://test") as client:
-        task = asyncio.create_task(
-            client.get(f"/api/v1/printers/{printer.id}/camera/stream", headers={"X-API-Key": raw})
-        )
-        try:
-            await asyncio.wait_for(entered.wait(), 5)
-            await change_authority(db_session, key, owner, group, printer, "disable")
-            release.set()
-            response = await asyncio.wait_for(task, 2)
-            assert response.status_code == 200 and not response.content
-        finally:
-            release.set()
-            task.cancel()
-            await asyncio.gather(task, return_exceptions=True)
+    monkeypatch.setattr(live_authority.live_authority, "_read", delayed)
+    task, bodies, _ = start_stream(async_client._transport.app, printer.id, raw, "key")
+    try:
+        await asyncio.wait_for(entered.wait(), 5)
+        await change_authority(db_session, key, owner, group, printer, "disable")
+        release.set()
+        response = await asyncio.wait_for(task, 2)
+        # D admits before starting headers: a retired pending proof is 503,
+        # never an empty successful 200. No private media send may start.
+        assert response.status_code == 503
+        assert not any(JPEG in body for _, body in bodies)
+        assert not camera_fanout.get_subscriber_count(f"printer-{printer.id}")
+    finally:
+        release.set()
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
 
 
 async def test_initial_namespace_read_remains_restore_owned_after_request_cancel(
@@ -325,19 +404,16 @@ async def test_initial_namespace_read_remains_restore_owned_after_request_cancel
         return await original(db)
 
     monkeypatch.setattr(connector_submissions, "read_server_identity", blocked)
-    async with AsyncClient(transport=ASGITransport(app=async_client._transport.app), base_url="http://test") as client:
-        task = asyncio.create_task(
-            client.get(f"/api/v1/printers/{printer.id}/camera/stream", headers={"X-API-Key": raw})
-        )
-        try:
-            await asyncio.wait_for(entered.wait(), 5)
-            task.cancel()
-            await asyncio.gather(task, return_exceptions=True)
-            assert len(connector_runtime._requests) == 1
-            assert not await connector_runtime._drain(0)
-            release.set()
-            assert await connector_runtime._drain(2)
-        finally:
-            release.set()
-            task.cancel()
-            await asyncio.gather(task, return_exceptions=True)
+    task, _, _ = start_stream(async_client._transport.app, printer.id, raw, "key")
+    try:
+        await asyncio.wait_for(entered.wait(), 5)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        assert len(connector_runtime._requests) == 1
+        assert not await connector_runtime._drain(0)
+        release.set()
+        assert await connector_runtime._drain(2)
+    finally:
+        release.set()
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)

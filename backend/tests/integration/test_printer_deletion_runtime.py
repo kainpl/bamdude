@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import uuid
 from contextlib import asynccontextmanager
 
 import pytest
@@ -398,7 +399,14 @@ async def fake_mqtt(monkeypatch, test_engine):
 
 
 def _printer(pid: int):
-    fields = {"id": pid, "name": "p", "ip_address": "10.0.0.9", "serial_number": "SN1", "access_code": "x"}
+    fields = {
+        "id": pid,
+        "connector_identity": str(uuid.uuid4()),
+        "name": "p",
+        "ip_address": "10.0.0.9",
+        "serial_number": "SN1",
+        "access_code": "x",
+    }
     return type("P", (), {**fields, "model": "X1C"})()
 
 

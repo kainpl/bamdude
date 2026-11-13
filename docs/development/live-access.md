@@ -15,6 +15,10 @@ browser, camera-wall, overlay, monitor or slicer URL token. Ordinary JWT/query-t
 precedence is retained when no key is selected. Authentication overload/storage
 uncertainty returns retryable 503, rather than clearing otherwise valid credentials.
 
+The `/ws` upgrade remains query-token only. It also rejects a selected key header
+(including an empty `X-API-Key` or key Bearer) before verifying the query token;
+WebSocket upgrades do not pass through the HTTP authentication middleware.
+
 ## Already-open channels
 
 WebSockets and covered camera/private-media responses capture their exact issuing

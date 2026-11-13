@@ -6,7 +6,7 @@ import uuid
 
 from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect
 
-from backend.app.core.auth import authenticate_websocket_authority
+from backend.app.core.auth import authenticate_websocket_authority, selected_api_key
 from backend.app.core.websocket import ws_manager
 from backend.app.services.background_dispatch import background_dispatch
 from backend.app.services.live_authority import LiveDescriptor, live_authority, monotonic_expiry
@@ -44,6 +44,11 @@ async def websocket_endpoint(websocket: WebSocket, token: str | None = Query(def
     """
     started = time.monotonic()
     bootstrap_id = uuid.uuid4().hex[:12]
+    # Upgrade bypasses the HTTP gate. This door accepts only the minted query
+    # credential; a selected key cannot borrow it or open a raw-key WS door.
+    if selected_api_key(websocket) is not None:
+        await websocket.close(code=_WS_CLOSE_UNAUTHORIZED)
+        return
     # Authenticate BEFORE ws_manager.connect() so an unauth caller never enters
     # the broadcast set.
     try:

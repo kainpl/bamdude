@@ -37,6 +37,7 @@ class TestPrinterManager:
         """Create a mock Printer object."""
         printer = MagicMock()
         printer.id = 1
+        printer.connector_identity = "00000000-0000-4000-8000-000000000001"
         printer.ip_address = "192.168.1.100"
         printer.serial_number = "00M09A123456789"
         printer.access_code = "12345678"
