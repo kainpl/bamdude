@@ -59,3 +59,42 @@ async def exercise_concurrent_due(backup):
 
 async def test_concurrent_due_and_manual_on_separate_sqlite_connections(backup):
     await exercise_concurrent_due(backup)
+
+
+async def exercise_admission_races_below_guard(backup):
+    """Pin DB claim/episode serialisation independently of the public guard."""
+    service, factory, (cid, _, _) = backup
+    async with factory() as db:
+        (await db.get(GitBackupConfig, cid)).approved_by_identity = None
+        await db.commit()
+    other = git_backup.GitBackupService()
+    # Enter two admitted bodies directly: neither can be refused by the
+    # process-wide ZIP/Git guard before it reaches the database claim.
+    results = await asyncio.gather(
+        service._run_backup_owned(cid, "scheduled"), other._run_backup_owned(cid, "scheduled")
+    )
+    assert sum(r.get("reason_code") == "approval_required" for r in results) == 1
+    assert sum(r.get("log_id") is not None for r in results) == 1
+    async with factory() as db:
+        assert await db.scalar(select(func.count()).select_from(GitBackupLog)) == 1
+        assert await db.scalar(select(func.count()).select_from(UserNotification)) == 1
+        config = await db.get(GitBackupConfig, cid)
+        episode = config.admission_episode_id
+        assert episode is not None
+        config.next_scheduled_run = datetime.utcnow() - timedelta(seconds=1)
+        await db.commit()
+    # Both calls must enter admission, producing distinct attempts but the
+    # same durable episode and no duplicate notification.
+    results = await asyncio.gather(service._run_backup_owned(cid, "manual"), other._run_backup_owned(cid, "scheduled"))
+    assert all(r.get("reason_code") == "approval_required" for r in results)
+    assert len({r["log_id"] for r in results}) == 2
+    async with factory() as db:
+        assert await db.scalar(select(func.count()).select_from(GitBackupLog)) == 3
+        assert await db.scalar(select(func.count()).select_from(UserNotification)) == 1
+        assert (await db.get(GitBackupConfig, cid)).admission_episode_id == episode
+    service._collect_backup_data.assert_not_awaited()
+    service._push_to_provider.assert_not_awaited()
+
+
+async def test_admission_races_below_guard_on_separate_sqlite_connections(backup):
+    await exercise_admission_races_below_guard(backup)
