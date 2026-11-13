@@ -28,6 +28,7 @@ from backend.app.models.printer_queue import PrinterQueue
 from backend.app.services import dispatch_phase, print_state_recovery_preview as previews, queue_sources
 from backend.app.services.archive_write_scope import load_active_archive_for_write
 from backend.app.services.print_state_recovery import (
+    CLOSE_PRINT_ACTION,
     GATE_OWNER_ACTION,
     RUNTIME_ACTION,
     RecoveryFacts,
@@ -426,6 +427,18 @@ async def read_facts(db, printer_ids: list[int], targets: list[tuple[int, str, i
     ):
         for value in (await db.scalars(select(col).where(col.in_(needed)))).all():
             refs[value].add(reason)
+    printing_ids = [a.id for a in archives.values() if a.status == "printing"]
+    completed_execution_ids = (
+        set(
+            (
+                await db.scalars(
+                    select(PrintCompletionReceipt.archive_id).where(PrintCompletionReceipt.archive_id.in_(printing_ids))
+                )
+            ).all()
+        )
+        if printing_ids
+        else set()
+    )
     active_users = dict(
         (
             await db.execute(
@@ -575,6 +588,7 @@ async def read_facts(db, printer_ids: list[int], targets: list[tuple[int, str, i
             else 0,
             repair_runtime=repair_runtime,
             target_kind=kind,
+            has_completion_receipt=archive is not None and archive.id in completed_execution_ids,
             gate=gates.get(pid),
         )
     return result, qs, (items, archives)
@@ -1039,7 +1053,7 @@ def explain_facts(key, facts, action=None):
                 from backend.app.services.print_state_recovery import _classify_single
 
                 blockers = sorted(set(blockers) | set((_classify_single(facts) or {}).get("blocked_reasons", [])))
-        elif needs_completion or action in {"cancel_terminal_claims", "settle_swap_by_operator"}:
+        elif needs_completion or action in {CLOSE_PRINT_ACTION, "cancel_terminal_claims", "settle_swap_by_operator"}:
             blockers = ["requires_operator_confirmation"]
         else:
             after = public_plan(plan_action(facts, action))
@@ -1093,7 +1107,7 @@ def _pin_runtime_objects(nonce: str, f: RecoveryFacts) -> None:
     while len(_preview_pins) >= _MAX_PREVIEW_PINS:
         _preview_pins.pop(next(iter(_preview_pins)))
     expected = runtime_context_release.capture(printer_manager, f.printer_id)
-    r = f.runtime
+    r = f.runtime if f.runtime is not None else f.repair_runtime
     admission = r.get("admission")
     named = (
         (r.get("current") or {}).get("ref"),
@@ -1130,6 +1144,7 @@ async def make_preview(
     confirmed_completed=False,
     confirmed_idle=False,
     confirmed_manual_swap=False,
+    operator_outcome=None,
     note="",
 ):
     key = (printer_id, kind, target_id)
@@ -1143,6 +1158,7 @@ async def make_preview(
         confirmed_completed=confirmed_completed,
         confirmed_idle=confirmed_idle,
         confirmed_manual_swap=confirmed_manual_swap,
+        operator_outcome=operator_outcome,
     )
     nonce = str(uuid4())
     body = {
@@ -1161,7 +1177,9 @@ async def make_preview(
         "epoch": queue_sources.current_epoch(),
         "plan_hash": previews.digest(plan),
     }
-    if f.runtime is not None and action == RUNTIME_ACTION:
+    if operator_outcome is not None:
+        body["operator_outcome"] = operator_outcome
+    if action == RUNTIME_ACTION or (action == CLOSE_PRINT_ACTION and "runtime" in plan):
         _pin_runtime_objects(nonce, f)
     return {
         "preview_token": previews.sign(body),
@@ -1215,15 +1233,21 @@ def public_plan(plan):
 async def apply_preview(session_factory, payload, actor, actor_label, *, recheck=None):
     if payload.get("actor") != actor or payload.get("epoch") != queue_sources.current_epoch():
         raise ValueError("recovery_changed")
-    if payload.get("action") == RUNTIME_ACTION:
+    action = payload.get("action")
+    if action in {RUNTIME_ACTION, CLOSE_PRINT_ACTION}:
         # Shielded: a client that goes away after the first commit does not leave the protocol half done --
         # it runs to its outcome, which history then shows (R8.8).
-        operation = asyncio.ensure_future(_apply_runtime(session_factory, payload, actor, actor_label, recheck))
+        apply = _apply_runtime if action == RUNTIME_ACTION else _apply_rows
+        operation = asyncio.ensure_future(apply(session_factory, payload, actor, actor_label, recheck))
         _runtime_operations.add(operation)
         operation.add_done_callback(_runtime_operations.discard)
         operation.add_done_callback(lambda _done: _unpin(payload.get("nonce")))
         operation.add_done_callback(_retrieve)
         return await asyncio.shield(operation)
+    return await _apply_rows(session_factory, payload, actor, actor_label, recheck)
+
+
+async def _apply_rows(session_factory, payload, actor, actor_label, recheck):
     key = (payload["printer_id"], payload["kind"], payload["target_id"])
     nonce = payload["nonce"]
     input_hash = previews.digest(payload)
@@ -1264,6 +1288,7 @@ async def apply_preview(session_factory, payload, actor, actor_label, *, recheck
                 confirmed_completed=payload["confirmed_completed"],
                 confirmed_idle=payload.get("confirmed_idle", False),
                 confirmed_manual_swap=payload.get("confirmed_manual_swap", False),
+                operator_outcome=payload.get("operator_outcome"),
             )
             if previews.digest(plan) != payload["plan_hash"]:
                 raise ValueError("recovery_changed")
@@ -1271,6 +1296,11 @@ async def apply_preview(session_factory, payload, actor, actor_label, *, recheck
                 await recheck(payload["action"], db)
             if previews.clock() > payload["expires"]:
                 raise ValueError("recovery_preview_expired")
+            close_print = payload["action"] == CLOSE_PRINT_ACTION
+            release_context = close_print and "runtime" in plan
+            pin = _preview_pins.get(nonce) if release_context else None
+            if release_context and (pin is None or previews.clock() > pin[0]):
+                raise ValueError("recovery_changed")
             # Explicit allowlists, no setattr loop over client fields.
             item = items.get(f.item["id"]) if f.item else None
             archive = archives.get(archive_id)
@@ -1290,8 +1320,7 @@ async def apply_preview(session_factory, payload, actor, actor_label, *, recheck
                 settle_by_operator(archive, action_identity=nonce, actor=actor, at=ended_at)
                 queues[key[0]].is_paused = True
             if plan["archive"].get("close"):
-                # An interrupted attempt ends failed, with no completion, usage, swap or command
-                # (I-R4); the job waits for the operator's Retry, the queue for its Resume.
+                # Close the addressed job and archive without running any completion effects.
                 ended_at = datetime.now(timezone.utc)
                 archive.status = plan["archive"]["status"]
                 archive.failure_reason = plan["archive"]["failure_reason"]
@@ -1306,6 +1335,11 @@ async def apply_preview(session_factory, payload, actor, actor_label, *, recheck
                 q.current_item_id = None
                 q.status = plan["queue"]["status"]
                 q.last_activity_at = ended_at
+                if close_print:
+                    q.is_paused = True
+                    extra = plan["archive"]["extra_data"]
+                    extra["operator_interrupted_print"]["action_id"] = nonce
+                    archive.extra_data = extra
             elif plan["archive"]:
                 archive.completed_at = plan["archive"]["completed_at"]
                 extra = plan["archive"]["extra_data"]
@@ -1357,7 +1391,7 @@ async def apply_preview(session_factory, payload, actor, actor_label, *, recheck
                             "completed_at": (f.archive or {}).get("completed_at"),
                             "queue": f.queue,
                         },
-                        "after": after,
+                        "after": {k: v for k, v in after.items() if k != "runtime"},
                         "note": payload["note"],
                         "members": [
                             {
@@ -1365,13 +1399,18 @@ async def apply_preview(session_factory, payload, actor, actor_label, *, recheck
                                 "identity": m["recovery_identity"],
                                 "archive_id": m["archive_id"],
                                 "before_status": m["status"],
-                                "after_status": "cancelled" if "members" in plan else m["status"],
+                                "after_status": item.status
+                                if close_print
+                                else "cancelled"
+                                if "members" in plan
+                                else m["status"],
                             }
                             for m in f.members
                         ],
                         "applied_at": ended_at,
                         "confirmed_idle": payload.get("confirmed_idle", False),
                         "confirmed_manual_swap": payload.get("confirmed_manual_swap", False),
+                        **({"operator_outcome": payload["operator_outcome"]} if close_print else {}),
                         "reason_codes": classify(f)["blocked_reasons"],
                         "archive_preserved": True,
                         "estimate": {
@@ -1411,7 +1450,11 @@ async def apply_preview(session_factory, payload, actor, actor_label, *, recheck
                     latest_runtime = repair_runtime_snapshot(key[0], archive_id)
                     if previews.digest(latest_runtime) != previews.digest(f.repair_runtime):
                         raise ValueError("recovery_changed")
+                if close_print and (not latest["idle"] or latest["observation_unproven"]):
+                    raise ValueError("recovery_changed")
                 await db.commit()
+                if release_context:
+                    _release_closed_print_context(key[0], archive_id, f, pin[1], nonce)
             except IntegrityError:
                 await db.rollback()
                 async with session_factory() as retry:
@@ -1429,6 +1472,24 @@ async def apply_preview(session_factory, payload, actor, actor_label, *, recheck
     except Exception:
         logger.warning("operator recovery committed; event delivery failed action=%s", nonce)
     return result
+
+
+def _release_closed_print_context(printer_id, archive_id, f, expected, nonce):
+    """After the close commits, clear only the context the operator previewed, synchronously."""
+    from backend.app.services import runtime_context_release
+    from backend.app.services.printer_manager import printer_manager
+
+    latest, runtime = live_snapshot(printer_id), repair_runtime_snapshot(printer_id, archive_id)
+    if (
+        latest["idle"]
+        and not latest["observation_unproven"]
+        and previews.digest(latest["identity"]) == previews.digest(f.live["identity"])
+        and previews.digest(runtime) == previews.digest(f.repair_runtime)
+        and runtime_context_release.release(printer_manager, expected)
+    ):
+        return
+    # Leave a changed or successor context alone. A held terminal context is visible in diagnostics.
+    logger.info("operator recovery committed; runtime context changed or unavailable action=%s", nonce)
 
 
 # --- The in-memory repair (spec printer-runtime-stall r3 R6, R8) -------------------------------------------------

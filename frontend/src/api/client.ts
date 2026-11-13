@@ -19,7 +19,7 @@ import { farmRead, farmReadBudget } from './farmReadBudget';
 
 export type PrintStateAction =
   | 'align_terminal_item' | 'fill_estimated_end_and_align' | 'release_orphan_header' | 'delete_stale_item'
-  | 'close_interrupted_attempt' | 'clear_terminal_runtime_context' | 'cancel_terminal_claims' | 'settle_swap_by_operator'
+  | 'close_interrupted_attempt' | 'close_interrupted_print' | 'clear_terminal_runtime_context' | 'cancel_terminal_claims' | 'settle_swap_by_operator'
   | 'restore_gate_owner_row';
 /** A run the printer's process still holds in memory (kind ``runtime``): what the operator reads beside it. */
 export interface PrintStateRuntimeView {
@@ -79,6 +79,7 @@ export interface PrintStateIssuePage {
 export interface PrintStatePreviewInput {
   kind: 'item' | 'header' | 'runtime' | 'archive'; target_id: number; action: PrintStateAction; confirmed_completed: boolean;
   confirmed_idle?: boolean; confirmed_manual_swap?: boolean;
+  operator_outcome?: 'interrupted' | 'unknown';
   note: string;
 }
 /** What an in-memory repair removes: the held run, and whether its start and dispatch's registrations go too. */
@@ -113,6 +114,7 @@ export interface PrintStateAudit {
   /** Apply of the in-memory repair: its answer. */
   operation_id?: string; reason?: string | null; queue_paused?: boolean; queue_was_paused?: boolean;
   outcome?: PrintStateRuntimeOutcome | PrintStateOutcomeRecord | null;
+  operator_outcome?: 'interrupted' | 'unknown';
   /** History of the in-memory repair: an intent whose process ended before an outcome was recorded. */
   process_ended?: boolean;
 }

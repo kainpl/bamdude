@@ -337,3 +337,139 @@ async def test_apply_requires_a_literal_boolean_confirmation(value):
     with pytest.raises(ValidationError):
         RecoveryApplyRequest(preview_token="a" * 32, confirmed=value)
     assert RecoveryApplyRequest(preview_token="a" * 32, confirmed=True).confirmed is True
+
+
+async def prepare_stuck_print(db, printer_factory, archive_factory, monkeypatch, *, with_context=True):
+    from backend.app.services.print_run_binding import bind_print_run
+    from backend.app.services.printer_manager import printer_manager
+
+    p, q, a, item, pending = await prepare(db, printer_factory, archive_factory)
+    a.status, a.completed_at, a.dispatch_phase = "printing", None, "accepted"
+    p.awaiting_plate_clear = True
+    p.awaiting_plate_clear_archive_id = a.id
+    p.awaiting_plate_clear_token = "existing-gate"
+    await db.commit()
+
+    monkeypatch.setattr(store, "_observations", {})
+    tick = [100.0]
+    monkeypatch.setattr(store, "clock", lambda: tick[0])
+    # This singleton uses per-printer run bindings; give each case independent state.
+    monkeypatch.setattr(printer_manager, "_print_run_bindings", {})
+    if with_context:
+        bind_print_run(
+            printer_manager,
+            printer_id=p.id,
+            archive_id=a.id,
+            queue_item_id=item.id,
+            claim_started_at=item.started_at,
+            archive_identity=a.recovery_identity,
+            client_generation=1,
+            observed_subtask_id="123",
+        )
+    return (p, q, a, item, pending), tick
+
+
+@pytest.mark.parametrize(
+    ("outcome", "status", "with_context"),
+    [
+        ("interrupted", "failed", True),
+        ("unknown", "cancelled", True),
+        ("unknown", "cancelled", False),
+    ],
+)
+async def test_close_stopped_print_after_explicit_confirmation(
+    db_session, test_engine, printer_factory, archive_factory, telemetry, monkeypatch, outcome, status, with_context
+):
+    from backend.app.services.print_run_binding import current_print_run
+    from backend.app.services.print_state_recovery import CLOSE_PRINT_ACTION
+    from backend.app.services.printer_manager import printer_manager
+
+    (p, q, a, item, pending), tick = await prepare_stuck_print(
+        db_session, printer_factory, archive_factory, monkeypatch, with_context=with_context
+    )
+    key = (p.id, "item", item.id)
+
+    async def preview(**kwargs):
+        return await store.make_preview(db_session, *key, CLOSE_PRINT_ACTION, "user:1", **kwargs)
+
+    # Neither one idle sighting nor an omitted operator assertion is enough.
+    with pytest.raises(ValueError, match="recovery_not_allowed"):
+        await preview(confirmed_idle=True, operator_outcome=outcome)
+    tick[0] += 11
+    page = await store.list_issues(db_session, None)
+    issue = next(row for row in page["issues"] if row["kind"] == "item" and row["item_id"] == item.id)
+    assert issue["actions"] == [CLOSE_PRINT_ACTION], issue
+    with pytest.raises(ValueError, match="recovery_not_allowed"):
+        await preview(operator_outcome=outcome)
+    with pytest.raises(ValueError, match="recovery_not_allowed"):
+        await preview(confirmed_idle=True)
+    answer = await preview(confirmed_idle=True, operator_outcome=outcome, note="Checked printer")
+    assert answer["after"]["archive"]["status"] == status
+    assert ("runtime" in answer["after"]) == with_context
+    payload = tokens.verify(answer["preview_token"])
+    factory = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+    result = await store.apply_preview(factory, payload, "user:1", "Operator")
+    assert await store.apply_preview(factory, payload, "user:1", "Operator") == result
+    assert result["operator_outcome"] == outcome
+    assert result["note"] == "Checked printer"
+    assert result["members"][0]["after_status"] == status
+    assert await db_session.scalar(select(func.count()).select_from(PrintStateRecoveryAction)) == 1
+    for row in (p, q, a, item, pending):
+        await db_session.refresh(row)
+    assert a.status == item.status == status
+    assert a.completed_at == item.completed_at
+    assert a.extra_data["historical"] == {"kept": True}
+    assert a.extra_data["operator_interrupted_print"]["action_id"] == result["id"]
+    assert bool(a.extra_data.get("recovered_outcome_uncertain")) == (outcome == "unknown")
+    assert p.awaiting_plate_clear and p.awaiting_plate_clear_token == "existing-gate"
+    assert q.is_paused and q.status == "paused" and q.current_item_id is None
+    assert pending.status == "pending" and q.pending_count == 1
+    assert current_print_run(printer_manager, p.id) is None
+    from backend.app.models.print_completion_receipt import PrintCompletionReceipt
+    from backend.app.models.spool_usage_history import SpoolUsageHistory
+
+    for model in (PrintCompletionReceipt, SpoolUsageHistory):
+        assert await db_session.scalar(select(func.count()).select_from(model)) == 0
+
+
+@pytest.mark.parametrize("change", ["running", "stale", "new_binding", "completion_receipt"])
+async def test_stopped_print_preview_refuses_changed_identity_or_evidence(
+    db_session, test_engine, printer_factory, archive_factory, telemetry, monkeypatch, change
+):
+    from backend.app.models.print_completion_receipt import PrintCompletionReceipt
+    from backend.app.services.print_run_binding import bind_print_run, current_print_run
+    from backend.app.services.print_state_recovery import CLOSE_PRINT_ACTION
+    from backend.app.services.printer_manager import printer_manager
+
+    (p, q, a, item, _), tick = await prepare_stuck_print(db_session, printer_factory, archive_factory, monkeypatch)
+    await store.list_issues(db_session, None)
+    tick[0] += 11
+    preview = await store.make_preview(
+        db_session,
+        p.id,
+        "item",
+        item.id,
+        CLOSE_PRINT_ACTION,
+        "user:1",
+        confirmed_idle=True,
+        operator_outcome="interrupted",
+    )
+    if change == "running":
+        telemetry.state = "RUNNING"
+    elif change == "stale":
+        monkeypatch.setattr(printer_manager, "peek_status", lambda _: (telemetry, 10.0, True))
+    elif change == "new_binding":
+        bind_print_run(printer_manager, printer_id=p.id, archive_id=a.id + 1)
+    else:
+        db_session.add(PrintCompletionReceipt(archive_id=a.id))
+        await db_session.commit()
+    held = current_print_run(printer_manager, p.id)
+    factory = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+    with pytest.raises(ValueError, match="recovery_changed"):
+        await store.apply_preview(factory, tokens.verify(preview["preview_token"]), "user:1", "Operator")
+    for row in (q, a, item):
+        await db_session.refresh(row)
+    assert q.current_item_id == item.id and not q.is_paused
+    assert a.status == item.status == "printing"
+    assert current_print_run(printer_manager, p.id) is held
+    assert await db_session.scalar(select(func.count()).select_from(PrintStateRecoveryAction)) == 0
