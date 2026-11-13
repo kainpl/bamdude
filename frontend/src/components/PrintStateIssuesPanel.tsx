@@ -195,6 +195,7 @@ export function PrintStateIssuesPanel({ search = window.location.search }: { sea
             ? t('printStateRecovery.targetArchive', { archive: row.archive_id ?? '—' })
             : t('printStateRecovery.target', { item: row.item_id ?? '—', archive: row.archive_id ?? '—' })}
           {historyOutcome(row, t) ? ` · ${historyOutcome(row, t)}` : ''}
+          {row.operator_outcome ? ` · ${t(`printStateRecovery.recordedPrintOutcome.${row.operator_outcome}`)}` : ''}
           {row.note ? ` · ${row.note}` : ''}</p>)}
         {history.next && <Button variant="secondary" onClick={() => void showHistory(history.printer, history.next ?? undefined)}
           disabled={historyBusy}>{t('printStateRecovery.nextPage')}</Button>}

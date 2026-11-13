@@ -9,6 +9,8 @@ import math
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 
+from backend.app.utils.failure_reasons import NO_STATUS_UPDATE, OTHER
+
 OUTCOMES = {
     "completed": "completed",
     "failed": "failed",
@@ -18,12 +20,14 @@ OUTCOMES = {
 }
 #: The one in-memory repair (spec printer-runtime-stall-diagnostics r3 R6): a finished run's context.
 RUNTIME_ACTION = "clear_terminal_runtime_context"
+CLOSE_PRINT_ACTION = "close_interrupted_print"
 ACTIONS = (
     "align_terminal_item",
     "fill_estimated_end_and_align",
     "release_orphan_header",
     "delete_stale_item",
     "close_interrupted_attempt",
+    CLOSE_PRINT_ACTION,
     RUNTIME_ACTION,
     "cancel_terminal_claims",
     "settle_swap_by_operator",
@@ -78,6 +82,7 @@ class RecoveryFacts:
     foreign_active_users: int = 0
     repair_runtime: dict | None = None
     target_kind: str | None = None
+    has_completion_receipt: bool = False
     #: The printer's plate gate as the database holds it (``armed``, ``archive_id``, ``token``),
     #: read beside the rows so a preview names the gate it was made for.
     gate: dict | None = None
@@ -261,7 +266,18 @@ def _classify_runtime(f: RecoveryFacts) -> dict | None:
     if a is not None:
         extra = a.get("extra_data")
         if isinstance(extra, dict) and extra.get("recovered_outcome_uncertain"):
-            reasons.add("outcome_unknown")
+            # An audited operator close is terminal even when its physical result is unknown.
+            # Only the matching RAM context may be released; it cannot turn into good output.
+            close = extra.get("operator_interrupted_print")
+            if not (
+                a.get("status") == "cancelled"
+                and a.get("failure_reason") == NO_STATUS_UPDATE
+                and isinstance(close, dict)
+                and close.get("outcome") == "unknown"
+                and close.get("action_id")
+                and close.get("archive_identity") == a.get("recovery_identity")
+            ):
+                reasons.add("outcome_unknown")
         if not a.get("recovery_identity"):
             reasons.add("identity_missing")
         reasons.update(runtime_effect_debt(extra, a.get("recovery_identity")))
@@ -270,6 +286,27 @@ def _classify_runtime(f: RecoveryFacts) -> dict | None:
         printing = telemetry.get("fresh") is True and state in ("RUNNING", "PAUSE")
         reasons.add("printer_printing" if printing else "live_unknown")
 
+    reasons.update(_runtime_ownership_reasons(r, current))
+
+    if q is None:
+        reasons.add("queue_missing")
+    else:
+        if not q.get("recovery_identity"):
+            reasons.add("identity_missing")
+        if (
+            q.get("status") == "printing"
+            or q.get("current_item_id") is not None
+            or f.active_item_ids
+            or f.printing_archive_ids
+        ):
+            reasons.add("queue_busy")
+
+    actions = [RUNTIME_ACTION] if code == "terminal_runtime_context" and not reasons else []
+    return {"code": code, "actions": actions, "blocked_reasons": sorted(reasons)}
+
+
+def _runtime_ownership_reasons(r, current):
+    reasons = set()
     owners = r.get("owners") if isinstance(r.get("owners"), dict) else {}
     for name in RUNTIME_OWNERS:
         value = owners.get(name)
@@ -296,29 +333,20 @@ def _classify_runtime(f: RecoveryFacts) -> dict | None:
     if not isinstance(r.get("terminal_accepted"), bool):
         reasons.add("context_owner_unknown")
     generation = r.get("effect_generation")
-    if type(generation) is not int:
+    if (current is not None or generation is not None) and type(generation) is not int:
         reasons.add("context_owner_unknown")
-    elif generation != current.get("effect_generation"):
-        reasons.add("activity_changed")
-    reasons.update(_admission_reasons(r.get("admission"), current))
-    reasons.update(_registration_reasons(r.get("macro_selection")))
-    reasons.update(_registration_reasons(r.get("swap_config")))
-
-    if q is None:
-        reasons.add("queue_missing")
-    else:
-        if not q.get("recovery_identity"):
-            reasons.add("identity_missing")
-        if (
-            q.get("status") == "printing"
-            or q.get("current_item_id") is not None
-            or f.active_item_ids
-            or f.printing_archive_ids
-        ):
-            reasons.add("queue_busy")
-
-    actions = [RUNTIME_ACTION] if code == "terminal_runtime_context" and not reasons else []
-    return {"code": code, "actions": actions, "blocked_reasons": sorted(reasons)}
+    if current:
+        if generation != current.get("effect_generation"):
+            reasons.add("activity_changed")
+        reasons.update(_admission_reasons(r.get("admission"), current))
+    elif r.get("admission") is not None:
+        reasons.add("admission_unproven")
+    for key in ("macro_selection", "swap_config"):
+        registration = r.get(key)
+        reasons.update(_registration_reasons(registration))
+        if not current and isinstance(registration, dict) and registration.get("present"):
+            reasons.add("ambiguous_owner")
+    return reasons
 
 
 def estimated_end(f: RecoveryFacts):
@@ -415,11 +443,96 @@ def _interrupted_dispatch(f: RecoveryFacts) -> dict | None:
     }
 
 
+def _interrupted_print(f: RecoveryFacts) -> dict | None:
+    """Close only a single proven execution, after fresh local telemetry has settled on IDLE."""
+    q, i, a, r = f.queue, f.item, f.archive, f.repair_runtime or {}
+    if not (
+        f.target_kind == "item"
+        and q
+        and i
+        and a
+        and i["status"] == a["status"] == "printing"
+        and f.live.get("idle") is True
+    ):
+        return None
+
+    reasons = _runtime_ownership_reasons(r, r.get("current"))
+    telemetry = r.get("telemetry") or {}
+    if telemetry.get("fresh") is not True or telemetry.get("state") != "IDLE" or not f.live.get("stable_inactive"):
+        reasons.add("live_unknown")
+    if f.live.get("busy") or f.live.get("effects") or r.get("terminal_accepted") is not False:
+        reasons.add("effects_pending")
+    if not all(row.get("recovery_identity") for row in (q, i, a)):
+        reasons.add("identity_missing")
+    if (
+        a.get("printer_id") != f.printer_id
+        or q.get("printer_id") != f.printer_id
+        or a.get("queue_id") != q["id"]
+        or i.get("queue_id") != q["id"]
+        or i.get("archive_id") != a["id"]
+        or a.get("deleted_at") is not None
+        or f.archive_users != 1
+        or f.foreign_active_users
+        or not f.members_complete
+        or f.active_item_ids != (i["id"],)
+        or len(f.printing_archive_ids) != 1
+        or q.get("current_item_id") != i["id"]
+        or q.get("status") != "printing"
+    ):
+        reasons.add("ambiguous_owner")
+
+    claim, start = utc(i.get("started_at")), utc(a.get("started_at"))
+    snapshot = i.get("source_snapshot") or {}
+    provenance = (snapshot.get("provenance") or {}) if isinstance(snapshot, dict) else None
+    if (
+        not isinstance(provenance, dict)
+        or (provenance.get("kind") == "archive" and provenance.get("id") == a["id"])
+        or not claim
+        or not start
+        or start < claim
+        or start > utc(f.now)
+        or i.get("completed_at") is not None
+        or a.get("completed_at") is not None
+    ):
+        reasons.add("execution_unproven")
+
+    current = r.get("current")
+    if current and (
+        current.get("archive_id") != a["id"]
+        or current.get("archive_identity") != a.get("recovery_identity")
+        or current.get("queue_item_id") != i["id"]
+        or utc(f.live.get("started_at")) != claim
+    ):
+        reasons.add("ambiguous_owner")
+    if a.get("dispatch_phase") != "accepted" and not (
+        a.get("dispatch_phase") is None and current and _nonzero_id(current.get("observed_subtask_id"))
+    ):
+        reasons.add("execution_unproven")
+
+    extra = a.get("extra_data")
+    reasons.update(runtime_effect_debt(extra, a.get("recovery_identity")))
+    if isinstance(extra, dict) and (
+        extra.get("recovered_outcome_uncertain") or extra.get("terminal_effects_uncertain")
+    ):
+        reasons.add("effects_pending")
+    # A saved completion receipt is positive evidence; even an explicit confirmation cannot overrule it.
+    if f.has_completion_receipt:
+        reasons.add("effects_pending")
+    return {
+        "code": "interrupted_print",
+        "actions": [] if reasons else [CLOSE_PRINT_ACTION],
+        "blocked_reasons": sorted(reasons),
+    }
+
+
 def _classify_single(f: RecoveryFacts) -> dict | None:
     if f.runtime is not None:
         return _classify_runtime(f)
     q, i, a = f.queue, f.item, f.archive
     interrupted = _interrupted_dispatch(f)
+    if interrupted is not None:
+        return interrupted
+    interrupted = _interrupted_print(f)
     if interrupted is not None:
         return interrupted
     if i is None and a and a.get("status") == "printing":
@@ -745,7 +858,13 @@ def classify(f: RecoveryFacts) -> dict | None:
 
 
 def plan_action(
-    f: RecoveryFacts, action: str, *, confirmed_completed=False, confirmed_idle=False, confirmed_manual_swap=False
+    f: RecoveryFacts,
+    action: str,
+    *,
+    confirmed_completed=False,
+    confirmed_idle=False,
+    confirmed_manual_swap=False,
+    operator_outcome=None,
 ) -> dict:
     if f.target_kind == "archive" and action != "settle_swap_by_operator":
         raise ValueError("recovery_not_allowed")
@@ -802,6 +921,34 @@ def plan_action(
             "macro_selection": r["macro_selection"]["present"],
             "swap_config": r["swap_config"]["present"],
         }
+        return plan
+    if action == CLOSE_PRINT_ACTION:
+        if confirmed_idle is not True or operator_outcome not in ("interrupted", "unknown"):
+            raise ValueError("recovery_not_allowed")
+        unknown = operator_outcome == "unknown"
+        code = NO_STATUS_UPDATE if unknown else OTHER
+        status = "cancelled" if unknown else "failed"
+        plan["archive"] = {
+            "close": True,
+            "status": status,
+            "failure_reason": code,
+            "error_message": None,
+            "extra_data": {
+                **(a.get("extra_data") or {}),
+                "operator_interrupted_print": {"outcome": operator_outcome, "archive_identity": a["recovery_identity"]},
+                **({"recovered_outcome_uncertain": True} if unknown else {}),
+            },
+        }
+        plan["item"] = {"close": True, "status": status, "error_code": None if unknown else code, "error_message": None}
+        plan["queue"] = {"current_item_id": None, "status": "paused", "is_paused": True}
+        r = f.repair_runtime
+        if r.get("current"):
+            plan["runtime"] = {
+                "archive_id": a["id"],
+                "admission": r["admission"] is not None,
+                "macro_selection": r["macro_selection"]["present"],
+                "swap_config": r["swap_config"]["present"],
+            }
         return plan
     if action == "close_interrupted_attempt":
         # The end time is the apply's own clock, outside the plan, so the preview's plan hash holds.

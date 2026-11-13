@@ -48,6 +48,7 @@ WRITE_PERMISSIONS = {
     ),
     "delete_stale_item": (Permission.QUEUE_UPDATE_ALL, Permission.PRINTERS_CONTROL, Permission.QUEUE_DELETE_ALL),
     "close_interrupted_attempt": (Permission.QUEUE_UPDATE_ALL, Permission.PRINTERS_CONTROL),
+    "close_interrupted_print": (Permission.QUEUE_UPDATE_ALL, Permission.PRINTERS_CONTROL),
     # The in-memory repair pauses a queue and sends nothing to the printer: the read rights and the queue's
     # update right (spec printer-runtime-stall r3 R6).
     "clear_terminal_runtime_context": (Permission.QUEUE_UPDATE_ALL,),
@@ -150,6 +151,7 @@ async def preview(
                 actor,
                 confirmed_completed=data.confirmed_completed,
                 confirmed_idle=data.confirmed_idle,
+                operator_outcome=data.operator_outcome,
                 confirmed_manual_swap=data.confirmed_manual_swap,
                 note=data.note,
             )

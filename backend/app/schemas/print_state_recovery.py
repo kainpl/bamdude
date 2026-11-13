@@ -10,6 +10,7 @@ RecoveryAction = Literal[
     "release_orphan_header",
     "delete_stale_item",
     "close_interrupted_attempt",
+    "close_interrupted_print",
     "clear_terminal_runtime_context",
     "cancel_terminal_claims",
     "settle_swap_by_operator",
@@ -26,6 +27,7 @@ class RecoveryPreviewRequest(BaseModel):
     confirmed_completed: StrictBool = False
     confirmed_idle: StrictBool = False
     confirmed_manual_swap: StrictBool = False
+    operator_outcome: Literal["interrupted", "unknown"] | None = None
     note: str = Field(default="", max_length=500)
 
 

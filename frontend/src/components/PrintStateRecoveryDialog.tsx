@@ -45,6 +45,7 @@ export function PrintStateRecoveryDialog({ issue, action, onClose, onApplied }: 
   const [completed, setCompleted] = useState(false);
   const [idle, setIdle] = useState(false);
   const [manualSwap, setManualSwap] = useState(false);
+  const [operatorOutcome, setOperatorOutcome] = useState<'interrupted' | 'unknown' | null>(null);
   const [confirmed, setConfirmed] = useState(false);
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
@@ -52,6 +53,7 @@ export function PrintStateRecoveryDialog({ issue, action, onClose, onApplied }: 
   const [result, setResult] = useState<PrintStateAudit | null>(null);
   const estimate = action === 'fill_estimated_end_and_align';
   const close = action === 'close_interrupted_attempt';
+  const closePrint = action === 'close_interrupted_print';
   const runtime = action === 'clear_terminal_runtime_context';
   const group = action === 'cancel_terminal_claims';
   const settlement = action === 'settle_swap_by_operator';
@@ -74,10 +76,11 @@ export function PrintStateRecoveryDialog({ issue, action, onClose, onApplied }: 
       const answer = await api.previewPrintState(issue.printer_id, {
         kind: issue.kind as 'item' | 'header' | 'runtime' | 'archive', target_id: issue.target_id, action,
         confirmed_completed: completed, confirmed_idle: idle, confirmed_manual_swap: manualSwap, note,
+        ...(closePrint && operatorOutcome ? { operator_outcome: operatorOutcome } : {}),
       });
       setPreview(answer);
     } catch (e) {
-      if (e instanceof ApiError && e.status === 409) { setIdle(false); setManualSwap(false); setCompleted(false); }
+      if (e instanceof ApiError && e.status === 409) { setIdle(false); setManualSwap(false); setCompleted(false); setOperatorOutcome(null); }
       setError(e instanceof ApiError && e.status === 409 ? t('printStateRecovery.changed') : t('printStateRecovery.failed'));
     } finally { setBusy(false); }
   };
@@ -93,7 +96,7 @@ export function PrintStateRecoveryDialog({ issue, action, onClose, onApplied }: 
       else onClose();
     } catch (e) {
       if (e instanceof ApiError && e.status === 409) {
-        setIdle(false); setManualSwap(false); setCompleted(false);
+        setIdle(false); setManualSwap(false); setCompleted(false); setOperatorOutcome(null);
         setPreview(null); setConfirmed(false); setError(t('printStateRecovery.changed'));
       } else {
         // Retain the same token after a lost response: the server's audit makes
@@ -113,7 +116,7 @@ export function PrintStateRecoveryDialog({ issue, action, onClose, onApplied }: 
       {!result && (preview
         ? <Button variant={action === 'delete_stale_item' ? 'danger' : 'primary'} onClick={() => void apply()}
           disabled={busy || !confirmed}>{t('printStateRecovery.apply')}</Button>
-        : <Button onClick={() => void prepare()} disabled={busy || (estimate && !completed) || ((group || settlement) && !idle) || (settlement && !manualSwap)}>{t('printStateRecovery.preview')}</Button>)}
+        : <Button onClick={() => void prepare()} disabled={busy || (estimate && !completed) || ((group || settlement || closePrint) && !idle) || (settlement && !manualSwap) || (closePrint && !operatorOutcome)}>{t('printStateRecovery.preview')}</Button>)}
     </>}>
     <div className="p-4 space-y-4 text-sm">
       <p className="break-words">{issue.printer_name} · {t('printStateRecovery.target', {
@@ -121,6 +124,7 @@ export function PrintStateRecoveryDialog({ issue, action, onClose, onApplied }: 
       })}</p>
       <p>{t('printStateRecovery.preserved')}</p>
       {estimate && <p className="text-amber-600 dark:text-amber-300">{t('printStateRecovery.estimate')}</p>}
+      {closePrint && <p className="text-amber-600 dark:text-amber-300">{t('printStateRecovery.closePrintHelp')}</p>}
       {close && <p className="text-amber-600 dark:text-amber-300">{t('printStateRecovery.interruptedUncertain')}</p>}
       {runtime && <div className="space-y-1 text-amber-700 dark:text-amber-300">
         <p>{t('printStateRecovery.runtime.willPause')}</p>
@@ -128,7 +132,12 @@ export function PrintStateRecoveryDialog({ issue, action, onClose, onApplied }: 
       </div>}
       {result && <RuntimeOutcome result={result} />}
       {!preview && !result && <>
-        {(group || settlement) && <label className="flex gap-2 items-start"><input type="checkbox" checked={idle} onChange={e => setIdle(e.target.checked)} /><span>{t('printStateRecovery.idleAssertion')}</span></label>}
+        {(group || settlement || closePrint) && <label className="flex gap-2 items-start"><input type="checkbox" checked={idle} onChange={e => setIdle(e.target.checked)} /><span>{t('printStateRecovery.idleAssertion')}</span></label>}
+        {closePrint && <fieldset className="space-y-2">
+          <legend className="mb-2 font-medium">{t('printStateRecovery.closePrintOutcome')}</legend>
+          <label className="flex gap-2 items-start"><input type="radio" name="operatorOutcome" checked={operatorOutcome === 'interrupted'} onChange={() => setOperatorOutcome('interrupted')} />{t('printStateRecovery.closePrintInterrupted')}</label>
+          <label className="flex gap-2 items-start"><input type="radio" name="operatorOutcome" checked={operatorOutcome === 'unknown'} onChange={() => setOperatorOutcome('unknown')} />{t('printStateRecovery.closePrintUnknown')}</label>
+        </fieldset>}
         {settlement && <label className="flex gap-2 items-start"><input type="checkbox" checked={manualSwap} onChange={e => setManualSwap(e.target.checked)} /><span>{t('printStateRecovery.manualSwapAssertion')}</span></label>}
         {estimate && <label className="flex gap-2 items-start">
           <input type="checkbox" checked={completed} onChange={e => setCompleted(e.target.checked)} />
@@ -140,7 +149,8 @@ export function PrintStateRecoveryDialog({ issue, action, onClose, onApplied }: 
         </label>
       </>}
       {preview && !result && <>
-        {runtime && <RuntimeRelease preview={preview} />}
+        {closePrint && operatorOutcome && <p className="font-medium">{t(`printStateRecovery.recordedPrintOutcome.${operatorOutcome}`)}</p>}
+        {(runtime || closePrint) && <RuntimeRelease preview={preview} />}
         {group && <div className="overflow-x-auto"><p>{t('printStateRecovery.groupExplanation')}</p><table className="w-full text-left"><thead><tr><th>{t('printStateRecovery.fields.item')}</th><th>{t('printStateRecovery.before')}</th><th>{t('printStateRecovery.after')}</th></tr></thead><tbody>{preview.members?.map(m => <tr key={m.id}><td>#{m.id}</td><td>{t(`printStateRecovery.states.${m.status}`)}</td><td>{t('printStateRecovery.states.cancelled')}</td></tr>)}</tbody></table></div>}
         {settlement && <><p>{t('printStateRecovery.settlementChange')}</p><p>{t('printStateRecovery.swapModeFact')}: {t(preview.swap_mode_enabled ? 'common.yes' : 'common.no')}</p><p>{t('printStateRecovery.settlementNext')}</p></>}
         {preview.estimate && <p className="text-amber-700 dark:text-amber-300">{t('printStateRecovery.estimatedLabel')}: {' '}

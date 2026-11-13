@@ -521,3 +521,28 @@ describe('Releasing a finished context', () => {
     expect(screen.queryByText(/already begun/)).not.toBeInTheDocument();
   });
 });
+
+it('requires both assertions and a separate confirmation before closing a stopped print', async () => {
+  const stopped: PrintStateIssue = { ...issue, code: 'interrupted_print', actions: ['close_interrupted_print'] };
+  vi.mocked(api.previewPrintState).mockResolvedValue({
+    ...preview, action: 'close_interrupted_print',
+    after: { ...preview.after, item: { status: 'cancelled' }, archive: { status: 'cancelled' } },
+  });
+  const user = userEvent.setup();
+  render(<PrintStateRecoveryDialog issue={stopped} action="close_interrupted_print" onClose={vi.fn()} onApplied={vi.fn()} />);
+  const prepare = screen.getByRole('button', { name: 'Preview change' });
+  expect(prepare).toBeDisabled();
+  await user.click(screen.getByRole('checkbox', { name: 'I confirm that this printer is idle.' }));
+  expect(prepare).toBeDisabled();
+  await user.click(screen.getByRole('radio', { name: /do not know the result/i }));
+  await user.click(prepare);
+  expect(api.previewPrintState).toHaveBeenCalledWith(7, expect.objectContaining({
+    action: 'close_interrupted_print', target_id: 11, confirmed_idle: true, operator_outcome: 'unknown',
+  }));
+  expect(await screen.findByText('Print result unknown')).toBeInTheDocument();
+  const apply = screen.getByRole('button', { name: 'Apply this change' });
+  expect(apply).toBeDisabled();
+  await user.click(screen.getByRole('checkbox', { name: /I reviewed this change/i }));
+  await user.click(apply);
+  expect(api.applyPrintState).toHaveBeenCalledWith(7, 'opaque-preview');
+});

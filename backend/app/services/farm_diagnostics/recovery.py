@@ -25,6 +25,7 @@ ISSUE_CODES = frozenset(
         "header_without_active_item",
         "multiple_active_items",
         "active_archive_without_current_run",
+        "interrupted_print",
         "interrupted_dispatch",
         "terminal_runtime_context",
         "runtime_context_unresolved",
