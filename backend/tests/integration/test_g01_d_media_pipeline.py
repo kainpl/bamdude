@@ -63,12 +63,16 @@ async def test_actual_stack_and_route_inventory():
     from backend.app.core.config import settings
     from backend.app.main import app
 
+    installed_routes = [
+        route for route in app.routes if isinstance(route, APIRoute) and getattr(route, "_live_media_installed", False)
+    ]
+    assert all(route.methods <= {"GET", "HEAD"} for route in installed_routes)
     installed = {
-        live_media._template(route.path, settings.api_prefix)
-        for route in app.routes
-        if isinstance(route, APIRoute) and getattr(route, "_live_media_installed", False)
+        (method, live_media._template(route.path, settings.api_prefix))
+        for route in installed_routes
+        for method in route.methods
     }
-    assert installed == live_media.MEDIA_ROUTES
+    assert {path for _, path in installed} == live_media.MEDIA_ROUTES
 
     def media_dependency(dependant):
         call = dependant.call
@@ -84,14 +88,52 @@ async def test_actual_stack_and_route_inventory():
         return any(media_dependency(child) for child in dependant.dependencies)
 
     derived = {
-        live_media._template(route.path, settings.api_prefix)
+        (method, live_media._template(route.path, settings.api_prefix))
         for route in app.routes
-        if isinstance(route, APIRoute) and "GET" in route.methods and media_dependency(route.dependant)
+        if isinstance(route, APIRoute) and media_dependency(route.dependant)
+        for method in route.methods & {"GET", "HEAD"}
     }
     assert installed == derived
+    # Paths alone deduplicate a GET and its write sibling and hid accidental
+    # media adapters on POST/PUT/DELETE. Those mutations keep their original
+    # auth/transaction/response lifecycle.
+    writes = {
+        (method, live_media._template(route.path, settings.api_prefix))
+        for route in app.routes
+        if isinstance(route, APIRoute)
+        and live_media._template(route.path, settings.api_prefix) in live_media.MEDIA_ROUTES
+        for method in route.methods - {"GET", "HEAD"}
+    }
+    assert writes == {
+        ("DELETE", "/archives/{archive_id}/timelapse"),
+        ("POST", "/projects/{project_id}/cover-image"),
+        ("DELETE", "/projects/{project_id}/cover-image"),
+        ("PUT", "/products/{product_id}/cover-image"),
+        ("DELETE", "/products/{product_id}/cover-image"),
+        ("PUT", "/product-parts/{part_id}/image"),
+    }
+    assert not installed.intersection(writes)
     classes = [middleware.cls for middleware in app.user_middleware]
     assert classes.index(live_media.LiveMediaDeliveryMiddleware) < classes.index(BaseHTTPMiddleware)
     assert classes.count(BaseHTTPMiddleware) == 4
+
+
+@pytest.mark.parametrize(
+    "method,path",
+    [
+        ("DELETE", "/archives/1/timelapse"),
+        ("POST", "/projects/1/cover-image"),
+        ("DELETE", "/projects/1/cover-image"),
+        ("PUT", "/products/1/cover-image"),
+        ("DELETE", "/products/1/cover-image"),
+        ("PUT", "/product-parts/1/image"),
+    ],
+)
+async def test_non_media_write_paths_keep_strict_explicit_key_selection(async_client, method, path):
+    # The client's valid JWT must not rescue an explicitly invalid key merely
+    # because a write sharing a media URL bypasses the delivery-only adapter.
+    response = await async_client.request(method, "/api/v1" + path, headers={"X-API-Key": "invalid-key"})
+    assert response.status_code == 401
 
 
 async def _entered(task, event):

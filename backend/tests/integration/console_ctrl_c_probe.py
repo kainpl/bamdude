@@ -22,8 +22,8 @@ from backend.app.services import embedded_postgres as ep  # noqa: E402
 def main() -> None:
     asyncio.run(ep.start())
     try:
-        ctypes.windll.kernel32.GenerateConsoleCtrlEvent(0, 0)  # CTRL_C_EVENT, this console
         try:
+            ctypes.windll.kernel32.GenerateConsoleCtrlEvent(0, 0)  # CTRL_C_EVENT, this console
             time.sleep(4)
         except KeyboardInterrupt:
             print("PROBE_GOT_CTRL_C", flush=True)

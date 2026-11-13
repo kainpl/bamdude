@@ -77,6 +77,59 @@ async def test_exact_logout_closes_only_that_sid_after_current_read(live):
         runtime.release(b)
 
 
+@pytest.mark.parametrize(
+    "kind,include_trashed,allowed", [("archive", False, False), ("archive", True, True), ("library", True, False)]
+)
+async def test_trash_thumbnail_policy_is_archive_only_and_still_requires_the_row(live, kind, include_trashed, allowed):
+    from backend.app.models.archive import PrintArchive
+    from backend.app.models.library import LibraryFile
+
+    runtime, factory = live
+    first, _ = await issue(factory)
+    model = PrintArchive if kind == "archive" else LibraryFile
+    values = {
+        "filename": "trashed.3mf",
+        "file_path": "trashed.3mf",
+        "file_size": 0,
+        "created_by_id": first.capture.user_id,
+        "deleted_at": utcnow(),
+    }
+    if kind == "library":
+        values["file_type"] = "3mf"
+    async with factory() as db:
+        row = model(**values)
+        db.add(row)
+        await db.commit()
+        row_id = row.id
+    metadata = (await runtime.resource_rows({(kind, row_id)}))[kind, row_id]
+    permission = "archives:read_all" if kind == "archive" else "library:read_all"
+    handle = runtime.register(
+        module.LiveDescriptor(
+            first.capture,
+            (permission,),
+            resource_kind=kind,
+            resource_id=row_id,
+            resource_stamp=module.resource_stamp(kind, metadata),
+            include_trashed_archive=include_trashed,
+        )
+    )
+    try:
+        outcomes, _ = await runtime._read([handle])
+        if allowed:
+            assert isinstance(outcomes[handle], tuple)
+            await runtime.admit(handle)
+            assert handle.deliverable()
+            async with factory() as db:
+                await db.execute(delete(model).where(model.id == row_id))
+                await db.commit()
+            outcomes, _ = await runtime._read([handle])
+            assert outcomes[handle] == 4401
+        else:
+            assert outcomes[handle] == 4401
+    finally:
+        runtime.release(handle)
+
+
 async def test_narrowed_key_class_retires_old_socket_then_fresh_admission_gets_only_current_snapshot(live, monkeypatch):
     from backend.app.core import websocket
     from backend.app.core.auth_lifetime import capture_key

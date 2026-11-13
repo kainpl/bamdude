@@ -224,6 +224,18 @@ async def test_a_trashed_own_archive_still_shows_its_thumbnail(
         await _raw_get(async_client, _with_token(f"/api/v1/archives/{archive.id}/thumbnail", token))
     ).status_code == 200
 
+    # This thumbnail-only policy does not reopen the trashed archive's video.
+    assert (
+        await _raw_get(async_client, _with_token(f"/api/v1/archives/{archive.id}/timelapse", token))
+    ).status_code == 404
+    _, other_uid = await _make_user(async_client, username="mt_trash_other", permissions=["archives:read_own"])
+    other = await _archive_with_thumbnail(archive_factory, printer.id, created_by_id=other_uid)
+    other.deleted_at = datetime.now(timezone.utc)
+    await db_session.commit()
+    assert (
+        await _raw_get(async_client, _with_token(f"/api/v1/archives/{other.id}/thumbnail", token))
+    ).status_code == 404
+
 
 @pytest.mark.asyncio
 @pytest.mark.integration

@@ -12,6 +12,7 @@ from backend.tests.unit.services.test_g01_d_live_authority import (
     test_long_lived_admission_and_recheck_preserve_the_verified_scope as assert_ll_scope,
     test_parent_deadline_bounds_memory_delivery_even_when_child_lives_longer as assert_parent_deadline,
     test_reused_numeric_row_id_never_rebinds_pending_or_admitted_capture as assert_identity_reuse,
+    test_trash_thumbnail_policy_is_archive_only_and_still_requires_the_row as assert_trash_policy,
     test_unknown_commit_then_close_requires_new_admission_epoch as assert_unknown_outcome,
 )
 
@@ -45,3 +46,10 @@ async def test_identity_reuse_on_postgres(live, kind):
 
 async def test_ll_scope_on_postgres(live):
     await assert_ll_scope(live)
+
+
+@pytest.mark.parametrize(
+    "kind,include_trashed,allowed", [("archive", False, False), ("archive", True, True), ("library", True, False)]
+)
+async def test_trash_thumbnail_policy_on_postgres(live, kind, include_trashed, allowed):
+    await assert_trash_policy(live, kind, include_trashed, allowed)

@@ -225,30 +225,64 @@ async def test_f20_usage_fence_and_pair_read_the_same_completed_snapshot(live, d
     assert resolve_layer_pair(m, p.id).total_layers == 42
 
 
-async def test_f22_actual_websocket_bootstrap_uses_file_projection(live, monkeypatch):
+async def test_f22_actual_websocket_bootstrap_uses_file_projection(live, db_session, test_engine, monkeypatch):
+    from datetime import timedelta
+    from types import SimpleNamespace
+
     from fastapi import FastAPI
-    from fastapi.testclient import TestClient
+    from sqlalchemy.ext.asyncio import async_sessionmaker
 
     import backend.app.services.printer_manager as manager_module
     from backend.app.api.routes import websocket as route
-    from backend.app.core.auth_lifetime import FrozenAuthority
-    from backend.app.core.websocket import ConnectionManager
+    from backend.app.core import auth, database, websocket
+    from backend.app.core.auth_lifetime import VerifiedOutcome, capture_account, stage_session, utcnow
+    from backend.app.core.auth_runtime import auth_runtime
+    from backend.app.models.user import User
+    from backend.app.services import live_authority as authority_module, live_projection
+    from backend.tests.integration.test_g01_d_ws_scope_bootstrap import Peer
 
     p, _, m, _, _ = live
+    factory = async_sessionmaker(test_engine, expire_on_commit=False)
+    runtime, manager = authority_module.LiveAuthority(), websocket.ConnectionManager()
+    for module in (authority_module, websocket, route, live_projection):
+        monkeypatch.setattr(module, "live_authority", runtime)
+    monkeypatch.setattr(database, "async_session", factory)
+    monkeypatch.setattr(auth, "async_session", factory)
     monkeypatch.setattr(route, "printer_manager", m)
     monkeypatch.setattr(manager_module, "printer_manager", m)
-    monkeypatch.setattr(route, "ws_manager", ConnectionManager())
-    capture = FrozenAuthority("session", "projection-account", 7, generation=0, sid="projection-session")
-    monkeypatch.setattr(route, "authenticate_websocket_authority", AsyncMock(return_value=(capture, 7)))
+    monkeypatch.setattr(route, "ws_manager", manager)
+    auth_runtime.open_admission()
+    owner = User(username="layer-bootstrap-owner", role="admin", is_active=True)
+    db_session.add(owner)
+    await db_session.flush()
+    issued = await stage_session(db_session, VerifiedOutcome(capture_account(owner), "local"), remember_me=False)
+    await db_session.commit()
+    principal = SimpleNamespace(
+        capture=issued.capture,
+        user=SimpleNamespace(id=owner.id, _auth_expires=utcnow() + timedelta(minutes=10)),
+    )
+    # Stub only the derived-token resolution boundary. The actual post-accept
+    # live coordinator validates the durable session/account and domain grant.
+    resolver = AsyncMock(return_value=principal)
+    monkeypatch.setattr(route, "authenticate_websocket_authority", resolver)
     monkeypatch.setattr(route.background_dispatch, "get_state", AsyncMock(return_value={}))
     app = FastAPI()
     app.include_router(route.router)
-    with TestClient(app) as http, http.websocket_connect("/ws?token=synthetic") as ws:
-        payload = ws.receive_json()
+    peer = Peer(app)
+    try:
+        statuses, marker = await peer.bootstrap()
+        assert len(statuses) == 1
+        payload = statuses[0]
         assert payload["printer_id"] == p.id
         assert (
             payload["data"]["layer_num"],
             payload["data"]["total_layers"],
             payload["data"]["total_layers_source"],
         ) == (14, 693, "file")
-        assert ws.receive_json()["type"] == "initial_status_complete"
+        assert marker["type"] == "initial_status_complete" and marker["printers"] == 1
+        resolver.assert_awaited_with("derived-child", details=True)
+    finally:
+        await peer.disconnect()
+        await manager.shutdown()
+        assert await runtime.shutdown(timeout=3)
+        assert not runtime.handles and not runtime.tasks and not runtime.cleanups

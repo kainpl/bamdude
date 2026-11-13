@@ -52,6 +52,7 @@ class LiveDescriptor:
     resource_kind: str | None = None
     resource_id: int | None = None
     resource_stamp: tuple | None = field(default=None, repr=False)
+    include_trashed_archive: bool = False
     product_link: tuple | None = field(default=None, repr=False)
     long_lived_scope: str | None = None
 
@@ -565,7 +566,10 @@ class LiveAuthority:
                     )
                     if d.resource_kind is not None:
                         resource = metadata.get((d.resource_kind, d.resource_id), {})
-                        if not resource or resource.get("deleted_at") is not None:
+                        if not resource or (
+                            resource.get("deleted_at") is not None
+                            and not (d.resource_kind == "archive" and d.include_trashed_archive)
+                        ):
                             raise HTTPException(401)
                         if (
                             d.resource_stamp is not None

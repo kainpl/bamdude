@@ -62,7 +62,15 @@ does not stop another viewer or a shared camera producer.
 The covered inventory is the route registry in `services/live_media.py`: printer
 and standalone camera streams/snapshots, camera covers, private library/archive/
 Workshop images and timelapse video. Route coverage is tested against the actual
-application. A successful covered response without its bound viewer fails closed.
+application by HTTP method and path. Only GET/HEAD media responses use this
+lifecycle; POST/PUT/DELETE handlers sharing those URLs retain their ordinary
+transaction/response lifecycle. A successful covered response without its bound
+viewer fails closed.
+
+Archive thumbnails retain the trash UI's existing visibility policy. That route
+alone opts into trashed archive rows after its usual visibility check; current
+credential, ownership, printer scope and captured incarnation still apply. Other
+archive media and deleted library resources do not inherit this exception.
 
 Body production and the outer pure-ASGI delivery gate both check the viewer. The
 outer gate is outside the buffering HTTP middleware, so buffered chunks cannot

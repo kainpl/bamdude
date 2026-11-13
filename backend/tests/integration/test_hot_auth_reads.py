@@ -221,15 +221,18 @@ async def test_api_key_authority_change_during_hash_fails_closed(async_client, d
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_dual_header_invalid_key_falls_back_but_valid_denied_key_does_not(async_client, db_session):
+async def test_explicit_key_header_is_not_rescued_by_jwt_and_valid_denied_key_stays_denied(async_client, db_session):
     from backend.app.core import auth
     from backend.app.models.api_key import APIKey
 
     token = await mint_test_access(db_session, username="test_admin")
+    jwt_only = await async_client.get("/api/v1/queue/", headers={"Authorization": f"Bearer {token}"})
+    assert jwt_only.status_code == 200, jwt_only.text
     invalid = await async_client.get(
         "/api/v1/queue/", headers={"X-API-Key": "bb_invalid", "Authorization": f"Bearer {token}"}
     )
-    assert invalid.status_code == 200, invalid.text
+    # D O1: an explicit key selects the key door, even with a usable JWT.
+    assert invalid.status_code == 401, invalid.text
 
     raw, key_hash, key_prefix = auth.generate_api_key()
     db_session.add(

@@ -1948,6 +1948,7 @@ async def download_archive_for_slicer(
 @router.get("/{archive_id}/thumbnail")
 async def get_thumbnail(
     archive_id: int,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     auth_result: tuple[User | None, bool] = _ARCHIVE_MEDIA_READ,
 ):
@@ -1961,6 +1962,11 @@ async def get_thumbnail(
     archive = _ensure_archive_visible(
         await service.get_archive(archive_id, include_trashed=True), user, can_read_all, include_trashed=True
     )
+    # Preserve this route's trash-preview policy in the final live proof. The
+    # captured incarnation, current owner, credential and printer checks remain.
+    binding = dict(getattr(request.state, "live_media_binding", {}))
+    binding["include_trashed_archive"] = True
+    request.state.live_media_binding = binding
     if not archive.thumbnail_path:
         raise HTTPException(404, "Thumbnail not found")
 

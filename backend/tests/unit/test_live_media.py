@@ -180,11 +180,12 @@ async def test_if_range_mismatch_returns_full_body(tmp_path, media_runtime):
     assert (await chunks.get())["body"] == b"whole-video"
 
 
-async def test_covered_success_without_handle_fails_closed_but_errors_survive(caplog):
+@pytest.mark.parametrize("method", ["GET", "HEAD"])
+async def test_covered_success_without_handle_fails_closed_but_errors_survive(caplog, method):
     async def app(scope, receive, send):
         await Response(b"private")(scope, receive, send)
 
-    req = request()
+    req = request(method=method)
     bodies = []
     caplog.set_level(logging.INFO, logger=live_media.__name__)
     await live_media.LiveMediaDeliveryMiddleware(app, prefix="/api/v1")(req.scope, None, lambda_send(bodies))
@@ -194,7 +195,9 @@ async def test_covered_success_without_handle_fails_closed_but_errors_survive(ca
     async def refused(scope, receive, send):
         await Response(b"denied", status_code=401)(scope, receive, send)
 
-    await live_media.LiveMediaDeliveryMiddleware(refused, prefix="/api/v1")(request().scope, None, lambda_send(bodies))
+    await live_media.LiveMediaDeliveryMiddleware(refused, prefix="/api/v1")(
+        request(method=method).scope, None, lambda_send(bodies)
+    )
     assert bodies[-1]["body"] == b"denied"
 
 
@@ -203,6 +206,41 @@ def lambda_send(messages):
         messages.append(message)
 
     return send
+
+
+@pytest.mark.parametrize("method", ["POST", "PUT", "DELETE"])
+async def test_non_media_write_methods_share_path_without_viewer_or_proof(monkeypatch, method):
+    from fastapi.routing import APIRoute
+
+    app = FastAPI()
+    path = "/api/v1/projects/{project_id}/cover-image"
+
+    @app.get(path)
+    async def read_media():
+        return Response(b"private-image")
+
+    @app.api_route(path, methods=[method])
+    async def write_metadata():
+        return Response(b"saved", headers={"X-Write-Control": "original"})
+
+    async def forbidden_descriptor(_request):
+        raise AssertionError("write must not acquire a media descriptor")
+
+    monkeypatch.setattr(live_media, "_descriptor", forbidden_descriptor)
+    assert live_media.install_live_media_routes(app, prefix="/api/v1") == {"/projects/{project_id}/cover-image"}
+    read, write = [route for route in app.routes if isinstance(route, APIRoute)]
+    assert read._live_media_installed
+    assert not getattr(write, "_live_media_installed", False)
+    # Both halves are required: a path-only outer gate would fail closed on
+    # this successful original write response because it has no media handle.
+    req = request("/api/v1/projects/1/cover-image", method=method)
+    messages = []
+    await live_media.LiveMediaDeliveryMiddleware(app, prefix="/api/v1")(req.scope, None, lambda_send(messages))
+    assert messages[0]["status"] == 200
+    assert (b"x-write-control", b"original") in messages[0]["headers"]
+    assert b"".join(message.get("body", b"") for message in messages) == b"saved"
+    assert "live_media_viewer" not in req.scope["state"]
+    assert "live_media_outer" not in req.scope["state"]
 
 
 async def test_outer_gate_blocks_buffered_chunks_when_client_resumes(media_runtime):

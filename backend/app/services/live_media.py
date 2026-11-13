@@ -24,6 +24,7 @@ from starlette.responses import FileResponse, Response
 from backend.app.services.live_authority import live_authority
 
 logger = logging.getLogger(__name__)
+MEDIA_METHODS = frozenset({"GET", "HEAD"})
 
 # These are route templates, not an authorization allowlist. A successful body
 # on one of them must have a handle even if an adapter is accidentally removed.
@@ -418,7 +419,12 @@ def install_live_media_routes(app, prefix=None):
         prefix = settings.api_prefix
     installed = set()
     for route in app.routes:
-        if not isinstance(route, APIRoute) or _template(route.path, prefix) not in MEDIA_ROUTES:
+        if (
+            not isinstance(route, APIRoute)
+            or not route.methods
+            or not route.methods <= MEDIA_METHODS
+            or _template(route.path, prefix) not in MEDIA_ROUTES
+        ):
             continue
         installed.add(_template(route.path, prefix))
         if getattr(route, "_live_media_installed", False):
@@ -458,7 +464,11 @@ class LiveMediaDeliveryMiddleware:
         self.patterns = tuple(_pattern(prefix + path) for path in MEDIA_ROUTES)
 
     async def __call__(self, scope, receive, send):
-        if scope["type"] != "http" or not any(p.fullmatch(scope["path"]) for p in self.patterns):
+        if (
+            scope["type"] != "http"
+            or scope["method"] not in MEDIA_METHODS
+            or not any(p.fullmatch(scope["path"]) for p in self.patterns)
+        ):
             await self.app(scope, receive, send)
             return
         state = scope.setdefault("state", {})
