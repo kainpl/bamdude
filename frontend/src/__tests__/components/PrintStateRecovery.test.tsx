@@ -522,14 +522,24 @@ describe('Releasing a finished context', () => {
   });
 });
 
-it('requires both assertions and a separate confirmation before closing a stopped print', async () => {
+it.each([
+  [true, 'The old print context is no longer held.'],
+  [false, /its context could not be released/],
+  [undefined, /This is the saved close result/],
+] as const)('shows close and context outcomes separately (%s)', async (released, text) => {
   const stopped: PrintStateIssue = { ...issue, code: 'interrupted_print', actions: ['close_interrupted_print'] };
   vi.mocked(api.previewPrintState).mockResolvedValue({
     ...preview, action: 'close_interrupted_print',
     after: { ...preview.after, item: { status: 'cancelled' }, archive: { status: 'cancelled' } },
   });
+  vi.mocked(api.applyPrintState).mockResolvedValue({
+    id: 'closed', action: 'close_interrupted_print', printer_id: 7, queue_id: 4, item_id: 11, archive_id: 19,
+    ...(released !== undefined ? { context_released: released } : {}),
+  });
+  const onClose = vi.fn(); const onApplied = vi.fn();
   const user = userEvent.setup();
-  render(<PrintStateRecoveryDialog issue={stopped} action="close_interrupted_print" onClose={vi.fn()} onApplied={vi.fn()} />);
+  render(<PrintStateRecoveryDialog issue={stopped} action="close_interrupted_print" onClose={onClose} onApplied={onApplied} />);
+  expect(screen.getByText(/pending automatic plate swap cannot be closed/)).toBeInTheDocument();
   const prepare = screen.getByRole('button', { name: 'Preview change' });
   expect(prepare).toBeDisabled();
   await user.click(screen.getByRole('checkbox', { name: 'I confirm that this printer is idle.' }));
@@ -545,4 +555,11 @@ it('requires both assertions and a separate confirmation before closing a stoppe
   await user.click(screen.getByRole('checkbox', { name: /I reviewed this change/i }));
   await user.click(apply);
   expect(api.applyPrintState).toHaveBeenCalledWith(7, 'opaque-preview');
+  expect(await screen.findByText('The recorded print is closed. Its archive is preserved.')).toBeInTheDocument();
+  expect(screen.getByText(text)).toBeInTheDocument();
+  expect(onApplied).toHaveBeenCalledOnce();
+  expect(onClose).not.toHaveBeenCalled();
+  expect(screen.queryByRole('button', { name: 'Apply this change' })).not.toBeInTheDocument();
+  await user.click(screen.getAllByRole('button', { name: 'Close' }).at(-1)!);
+  expect(onClose).toHaveBeenCalledOnce();
 });

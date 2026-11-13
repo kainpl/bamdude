@@ -115,6 +115,8 @@ export interface PrintStateAudit {
   operation_id?: string; reason?: string | null; queue_paused?: boolean; queue_was_paused?: boolean;
   outcome?: PrintStateRuntimeOutcome | PrintStateOutcomeRecord | null;
   operator_outcome?: 'interrupted' | 'unknown';
+  /** Response-only observation after closing a stopped print; absent in history and on replay. */
+  context_released?: boolean;
   /** History of the in-memory repair: an intent whose process ended before an outcome was recorded. */
   process_ended?: boolean;
 }

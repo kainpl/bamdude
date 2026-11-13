@@ -8,7 +8,7 @@
 
 - **Plan an order with printers whose queues are paused.** An option in the order's printer card includes eligible paused printers and their existing workload in the print plan. The completion forecast still accounts for the pause.
 
-- Print state diagnostics can close a stuck queue print when the printer is confirmed idle. The operator records whether the print was interrupted or its result is unknown. The queue stays paused, the archive and plate-clear prompt are kept, and no good parts are credited.
+- Print state diagnostics can close a stuck queue print when the printer is confirmed idle. The operator records whether the print was interrupted or its result is unknown. The queue stays paused, the archive and plate-clear prompt are kept, and no good parts are credited. The dialog separately reports whether the old process context was released; a release failure does not undo the committed close. Only the closed archive's in-memory usage session is forgotten, allowing AMS remaining-weight synchronization to resume without charging filament. Prints with a pending automatic plate swap are excluded; this action never settles or replays a swap.
 
 - Browser sessions, API keys and camera/monitor tokens now belong to immutable accounts, preventing a recreated username or reused row id from inheriting access. Upgrading requires signing in again and replacing all legacy API keys and long-lived tokens, including ownerless keys. Settings and support show retirement counts; administrators receive an inbox notice after the server opens sign-in. Reissue only the scopes and printers each integration needs, then update its configured credential. See the [credential lifetime and replacement guide](docs/development/credential-lifetimes.md).
 
