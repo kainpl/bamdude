@@ -2321,6 +2321,12 @@ class VirtualPrinterManager:
             if instance is not None:
                 instance._config_pending = True
 
+    def mark_target_config_pending(self, printer_id):
+        """Printer deletion can save target detaches behind another retirement."""
+        for instance in self._instances.values():
+            if instance.target_printer_id == printer_id:
+                self.mark_config_pending(instance.id)
+
     async def sync_from_db(self):
         if self._admission_closed() or not self._session_factory:
             return

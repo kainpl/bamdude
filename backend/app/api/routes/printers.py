@@ -958,6 +958,7 @@ async def _delete_printer(
     forget_printer_rebuild(printer_id)
     from backend.app.services.virtual_printer import virtual_printer_manager
 
+    virtual_printer_manager.mark_target_config_pending(printer_id)
     try:
         await virtual_printer_manager.sync_from_db()
     except Exception:
