@@ -35,6 +35,7 @@ import { Button } from './Button';
 import { BugReportBubble } from './BugReportBubble';
 import { isAnyModalOpen } from './modalStack';
 import { Modal } from './Modal';
+import { EmbeddedCameraProvider } from '../contexts/EmbeddedCameraContext';
 
 
 // Sidebar groups (for visual section dividers + labels). Group membership
@@ -853,6 +854,10 @@ export function Layout() {
   ].filter(Boolean);
 
   return (
+    // The one floating camera window belongs to the app shell: opened on the
+    // Printers page, it stays open on every page under this layout. It is
+    // drawn after the shell, inside #root (inert under a modal) at z-40.
+    <EmbeddedCameraProvider>
     <div className="flex min-h-screen">
       {/* Compact Header */}
       {isSidebarCompact && (
@@ -1579,5 +1584,6 @@ export function Layout() {
         onLoggingChange={setBugReportLogging}
       />
     </div>
+    </EmbeddedCameraProvider>
   );
 }
