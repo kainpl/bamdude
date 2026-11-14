@@ -1057,6 +1057,14 @@ export default {
       camWall: 'Cam wall'
     },
     camWall: {
+      tileSize: {
+        groupLabel: 'Tile size',
+        small: 'Small tiles',
+        medium: 'Medium tiles',
+        large: 'Large tiles',
+        extraLarge: 'One tile per row',
+        hint: 'How many cameras fit in a row. Only the camera you picked is live, at any size.',
+      },
       noPrinters: 'No printers to show',
       noSignal: 'No signal',
       transportUnknown: 'Protocol unknown',
@@ -4057,7 +4065,8 @@ export default {
       passwordChanged: 'Password changed successfully',
       connectionFailed: 'Connection failed',
       testFailed: 'Test failed',
-      cameraConnected: 'Camera connected{{resolution}}',
+      cameraConnected: 'Camera connected',
+      cameraConnectedAt: 'Camera connected ({{resolution}})',
       noPermissionUpdate: "You don't have permission to change settings"
     },
     testConnection: 'Test Connection',
@@ -4761,6 +4770,10 @@ export default {
     cameraUnavailableDesc: 'Make sure the printer is powered on and connected.',
     retry: 'Retry',
     cameraStream: 'Camera stream',
+    chamberLightTurnedOn: 'Chamber light on',
+    chamberLightTurnedOff: 'Chamber light off',
+    printerNumber: 'Printer {{id}}',
+    cameraNumber: 'Camera {{id}}',
     zoomOut: 'Zoom out',
     zoomIn: 'Zoom in',
     resetZoom: 'Reset zoom',
@@ -4900,17 +4913,60 @@ export default {
       fpsHint: 'A1 and P1 cameras top out around 5 fps whatever you ask for.',
       token: 'Streaming Overlay token (optional)',
       tokenHint:
-        'Only needed when login is enabled: OBS has no session of its own. Create one above with the Streaming Overlay scope.',
+        'Only needed when login is enabled: OBS has no session of its own. Paste a Streaming Overlay token or create one here. It is kept in this page only \u2014 never saved in the browser \u2014 and it opens the overlay of every printer its owner may view, not only the one chosen here.',
+      showToken: 'Show token',
+      hideToken: 'Hide token',
+      createToken: 'Create token',
+      tokenName: 'Token name',
+      tokenDays: 'Valid for (days)',
+      createTokenSubmit: 'Create',
+      createTokenHint:
+        'Creates a Streaming Overlay token for your account and puts it in the address. It is listed with your other tokens above, where you can revoke it.',
+      tokenCreatedHint:
+        'The new token is in the address below. Copy the address now: once you leave this page the token cannot be shown again.',
+      rememberedHint: 'Your choices are remembered in this browser. The token never is.',
+      resetChoices: 'Reset choices',
+      resetChoicesHint: 'Back to the defaults. The token stays.',
+      importLabel: 'Import an overlay address',
+      importAction: 'Import',
+      imported: 'Address imported',
+      importFailed: 'That is not a stream overlay address.',
+      importHint:
+        'Paste an address from an existing scene to edit it. Only its settings are read: the address built here always points at this server, and a token in it is used as it is \u2014 it is not checked, saved or sent anywhere.',
       tokenWarning:
         'This URL contains a token \u2014 anyone who can read it can watch the stream and see the file name. Revoke the token to cut it off.',
       fields: 'Fields to show',
       fieldPrinter: 'Printer name',
+      fieldModel: 'Printer model',
       fieldFilename: 'File name',
       fieldStatus: 'Status',
       fieldProgress: 'Progress bar',
       fieldLayers: 'Layer count',
       fieldEta: 'Time remaining and ETA',
       fieldCamera: 'Camera feed',
+      design: 'Design',
+      designClassic: 'Classic',
+      designV2: 'Version 2',
+      designHint:
+        'Classic lays the text over the picture. Version 2 frames it: printer and model in a corner, the job in a panel below, and a stacked arrangement in a portrait source.',
+      layout: 'Layout',
+      layoutAuto: 'Fit the browser source',
+      layoutLandscape: 'Landscape (1920 \u00d7 1080)',
+      layoutPortrait: 'Portrait (1080 \u00d7 1920)',
+      layoutBoth: 'Both: landscape and portrait',
+      layoutHint:
+        'A fixed layout is drawn at one size and scaled to the source, so it looks the same in the preview, in a browser tab and in OBS. "Fit the browser source" sizes the overlay by its window.',
+      landscape: 'Landscape',
+      portrait: 'Portrait',
+      sourceSize: 'Browser source size: {{width}} \u00d7 {{height}}',
+      transparency: 'Background transparency',
+      transparencyHint:
+        'Fades the dark panels so another source in your scene shows through them. At 100% only the text and the bar are left.',
+      customColours: 'Custom progress colours',
+      progressFrom: 'Start colour',
+      progressTo: 'End colour',
+      customColoursHint:
+        'The progress bar runs from the start colour on the left to the end colour on the right. Pick the same colour twice for a plain bar.',
       chamberHint:
         'Chamber temperature only appears on models with a real chamber sensor \u2014 P1 and A1 printers report a meaningless value, so it is left out there.',
       urlTitle: 'Overlay URL',
@@ -4918,13 +4974,26 @@ export default {
       showPreview: 'Show preview',
       hidePreview: 'Hide preview',
       previewTitle: 'Overlay preview',
+      noPrinter: 'Add a printer first: an overlay address names the printer it shows.',
+      replaceTokenTitle: 'Replace the token created here?',
+      replaceTokenMessage:
+        'The token you created on this page cannot be shown again once it is replaced. Copy the address first if you still need it.',
+      replaceTokenConfirm: 'Replace token',
     },
     invalidPrinterId: 'Invalid printer ID',
     cameraStream: 'Camera stream',
+    noSignal: 'No signal',
     progress: 'Progress',
     eta: 'ETA',
     printerIdle: 'Printer is idle',
     printerOffline: 'Printer offline',
+    tokenRefused: 'This overlay\u2019s token is not accepted',
+    noAnswer: 'No answer from the server',
+    v2: {
+      layers: 'Layers',
+      remaining: 'Remaining',
+      finish: 'Finish',
+    },
     status: {
       printing: 'Printing',
       paused: 'Paused',
@@ -11903,7 +11972,8 @@ export default {
     zoomOut: 'Zoom out',
     resetZoom: 'Reset zoom',
     zoomIn: 'Zoom in',
-    dragToResize: 'Drag to resize'
+    dragToResize: 'Drag to resize',
+    reconnectingIn: 'Reconnecting in {{countdown}}s...'
   },
 
   // Timelapse Viewer

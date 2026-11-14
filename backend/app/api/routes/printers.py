@@ -129,6 +129,7 @@ from backend.app.utils.http import build_content_disposition
 from backend.app.utils.kprofile_lookup import build_slot_k_resolver
 from backend.app.utils.model_compatibility import compatibility_matrix, effective_model_for_state, model_compatibility
 from backend.app.utils.printer_configs import is_bed_slinger
+from backend.app.utils.printer_models import normalize_model_name
 from backend.app.utils.printer_storage import storage_capability_for
 from backend.app.utils.slot_nozzle import slot_nozzle
 from backend.app.utils.temperature_limits import is_within, limits_for
@@ -551,6 +552,16 @@ async def get_printer(
     return _serialize_printer(printer, include_secret=_caller_can_view_printer_secrets(user))
 
 
+async def _retire_camera_stream(printer_id: int) -> None:
+    """End the printer's running camera upstream after a committed change; a failure is logged, never raised."""
+    from backend.app.api.routes.camera import retire_printer_stream
+
+    try:
+        await retire_printer_stream(printer_id)
+    except Exception as e:
+        logger.warning("Could not retire the camera stream of printer %s: %s", printer_id, type(e).__name__)
+
+
 @router.patch("/{printer_id}", response_model=PrinterResponse)
 async def update_printer(
     printer_id: int,
@@ -633,11 +644,24 @@ async def update_printer(
         key in update_data and update_data[key] != getattr(printer, key)
         for key in ("ip_address", "access_code", "is_active")
     )
+    from backend.app.api.routes.camera import camera_source_of
+
+    camera_before = camera_source_of(printer)
     for field, value in update_data.items():
         setattr(printer, field, value)
 
     await db.commit()
     await db.refresh(printer)
+
+    # A live view keeps the upstream it was opened on; a camera that changed must not go on being served
+    # (and lent to captures) as the new one. After the commit, so a viewer that reconnects reads the saved
+    # row — and never able to fail a change that is already saved.
+    if camera_source_of(printer) != camera_before:
+        # The refresh above put the session back in a transaction. Retiring waits for the worker to let
+        # the camera go — seconds — and no pooled connection is held across a camera wait (#2572): end
+        # the transaction first. ``expire_on_commit=False`` keeps the refreshed row readable below.
+        await db.commit()
+        await _retire_camera_stream(printer_id)
 
     # A name-only edit does not reconnect MQTT, but callbacks, notifications,
     # and relays read the connected printer's lightweight in-memory info.
@@ -950,12 +974,22 @@ async def _delete_printer(
     from backend.app.services.camera_metrics import forget_printer
 
     forget_printer(printer_id)
+    # The camera's two id-keyed leftovers. A pending switch-off would reach the light of the printer that
+    # takes this id; and a still-running upstream would be joined by that printer's first viewer, and its
+    # frames lent to its captures, until every old viewer had been gone for the grace window.
+    from backend.app.services import camera_light
+
+    camera_light.forget_printer(printer_id)
     # Both halves of the advertised-profile memory: the entries themselves and
     # the "this process already rebuilt it" mark. An id is reused by the next
     # printer created, which would otherwise inherit a stranger's masked slots
     # and never get a rebuild of its own.
     ams_advertised_overlay.forget_printer(printer_id)
     forget_printer_rebuild(printer_id)
+    # The first await after the commit, so AFTER every synchronous forget above: a printer created with
+    # the reused id during this wait keeps what it registers. The stopped broadcaster stays in the
+    # registry meanwhile, so that printer's first viewer is chained behind it and never joins it.
+    await _retire_camera_stream(printer_id)
     from backend.app.services.virtual_printer import virtual_printer_manager
 
     try:
@@ -1754,6 +1788,7 @@ async def _build_printer_status(
 @router.get("/{printer_id}/overlay-status")
 async def get_overlay_status(
     printer_id: int,
+    viewer: str | None = None,
     _: None = RequireOverlayToken,
     db: AsyncSession = Depends(get_db),
 ) -> dict:
@@ -1761,10 +1796,14 @@ async def get_overlay_status(
 
     A token-authenticated sibling of ``get_printer_status`` for embeds with no
     login session — OBS loads ``/overlay/{id}?token=...`` and this feeds it.
-    Deliberately flat and minimal (name, camera rotation, live print state, and
-    the one setting the overlay reads) rather than the full ``PrinterStatus``: a
-    token holder gets exactly the fields the overlay renders, nothing more — no
-    serial number, no IP address.
+    Deliberately flat and minimal (name, model, camera rotation, live print
+    state, and the one setting the overlay reads) rather than the full
+    ``PrinterStatus``: a token holder gets exactly the fields the overlay
+    renders, nothing more — no serial number, no IP address.
+
+    The model is the short display name (``show=model`` draws it beside the
+    name, upstream #3099), never the raw column: that one may hold an internal
+    code or the long marketing name, and the page OBS loads should need no map.
 
     It *does* include the print filename, because the overlay names the part on
     screen. That is why it sits behind its own ``overlay`` scope instead of the
@@ -1779,6 +1818,17 @@ async def get_overlay_status(
 
     time_format = await get_setting(db, "time_format") or "system"
     state = printer_manager.get_status(printer_id)
+    # Is the stream this token watches alive? A stream the server ends cleanly
+    # fires nothing on the browser's <img>, and the token cannot read the
+    # session's /camera/status — so the same two flags ride this feed. Within
+    # the grant: the token already opens this printer's stream. Flags only —
+    # no source type, telemetry or viewer count. Given the overlay's own
+    # correlation id (``viewer``), a third flag: whether THAT stream is still
+    # attached — two overlays of one printer share the upstream, and the one
+    # the server ended would otherwise read "alive" and keep its last frame.
+    from backend.app.api.routes.camera import stream_liveness
+
+    camera = stream_liveness(printer_id, viewer)
 
     if not state:
         # Never connected this run — mirror get_printer_status()'s disconnected
@@ -1786,6 +1836,7 @@ async def get_overlay_status(
         return {
             "id": printer_id,
             "name": printer.name,
+            "model": normalize_model_name(printer.model),
             "camera_rotation": printer.camera_rotation or 0,
             "connected": False,
             "state": None,
@@ -1799,6 +1850,7 @@ async def get_overlay_status(
             "stg_cur_name": None,
             "temperatures": {},
             "time_format": time_format,
+            "camera": camera,
         }
 
     from backend.app.services.layer_projection import resolve_layer_pair
@@ -1807,6 +1859,7 @@ async def get_overlay_status(
     return {
         "id": printer_id,
         "name": printer.name,
+        "model": normalize_model_name(printer.model),
         "camera_rotation": printer.camera_rotation or 0,
         "connected": state.connected,
         "state": state.state,
@@ -1822,6 +1875,7 @@ async def get_overlay_status(
         # Filtered rather than passed through — see display_temperatures.
         "temperatures": display_temperatures(state.temperatures, printer.model),
         "time_format": time_format,
+        "camera": camera,
     }
 
 
@@ -4156,6 +4210,11 @@ async def set_chamber_light(
     success = client.set_chamber_light(on)
     if not success:
         raise HTTPException(500, "Failed to control chamber light")
+    # An explicit switch takes the light from the camera's lease — also when it changes nothing ("on" for a
+    # light the lease lit), which no report from the printer would tell it.
+    from backend.app.services import camera_light
+
+    camera_light.note_operator_switch(printer_id)
 
     return {"success": True, "message": f"Chamber light {'on' if on else 'off'}"}
 

@@ -168,6 +168,7 @@ export class ApiError extends Error {
 
 import type { AppliedEntry } from '../utils/reportingStatus';
 import { byLocationName } from '../utils/locationOrder';
+import { statusApiPath, type CameraSource } from '../utils/cameraSource';
 
 const API_BASE = '/api/v1';
 
@@ -289,9 +290,22 @@ export function getAuthToken(): string | null {
 // Stream token for image/video URLs loaded via <img>/<video> tags
 // (these can't send Authorization headers, so a query param token is used)
 let streamToken: string | null = null;
+const streamTokenListeners = new Set<() => void>();
 
 export function setStreamToken(token: string | null) {
+  if (token === streamToken) return;
   streamToken = token;
+  streamTokenListeners.forEach((listener) => listener());
+}
+
+/** Told when the stream token changes — for `useSyncExternalStore`. The owner
+ *  of a live stream image re-renders on it and gives the image its new address
+ *  itself, once (`useCameraImageRef`). */
+export function subscribeStreamToken(listener: () => void): () => void {
+  streamTokenListeners.add(listener);
+  return () => {
+    streamTokenListeners.delete(listener);
+  };
 }
 
 export function getStreamToken(): string | null {
@@ -4724,6 +4738,10 @@ export interface CameraDiagnoseResult {
 export interface CameraStreamStatus {
   active: boolean;
   stalled: boolean;
+  /** Whether the stream of the view that asked (by the id it sent) is still
+   *  attached. `active` / `stalled` answer for the upstream every viewer
+   *  shares. Absent when the read named no stream, or on an older server. */
+  viewer_attached?: boolean | null;
   has_frames: boolean;
   seconds_since_frame: number | null;
   stream_uptime: number | null;
@@ -5208,6 +5226,8 @@ export interface CamWallPrinter {
 export interface OverlayStatus {
   id: number;
   name: string;
+  /** The model's short display name (`show=model`). Absent on an older server. */
+  model?: string | null;
   camera_rotation: number;
   connected: boolean;
   state: string | null;
@@ -5226,6 +5246,10 @@ export interface OverlayStatus {
    *  real chamber sensor. */
   temperatures: Record<string, number>;
   time_format: 'system' | '12h' | '24h';
+  /** Whether this printer's camera stream is alive — the overlay's token
+   *  cannot read the session's camera status route, and a stream the server
+   *  ends cleanly fires nothing on the image. Absent on an older server. */
+  camera?: { active: boolean; stalled: boolean; viewer_attached?: boolean | null };
 }
 
 export interface CloudAuthStatus {
@@ -11819,9 +11843,11 @@ export const api = {
   // Token-authenticated streaming-overlay feed (upstream #2613). OBS — or any
   // embed with no login session — loads /overlay/{id}?token=... and this backs
   // it. Auth is always on here, so the token is always required.
-  getOverlayStatus: (printerId: number, token: string) =>
+  // `viewer` is the id the overlay gave the stream it draws: with it the
+  // feed's `camera` also says whether THAT stream is still attached.
+  getOverlayStatus: (printerId: number, token: string, viewer?: string) =>
     request<OverlayStatus>(
-      `/printers/${printerId}/overlay-status?token=${encodeURIComponent(token)}`,
+      `/printers/${printerId}/overlay-status?${viewer ? `viewer=${encodeURIComponent(viewer)}&` : ''}token=${encodeURIComponent(token)}`,
     ),
   cloudLogin: (email: string, password: string, region = 'global') =>
     request<CloudLoginResponse>('/cloud/login', {
@@ -13488,6 +13514,9 @@ export const api = {
     request<{ success: boolean; message?: string; error?: string }>(`/printers/${printerId}/camera/test`),
   getCameraStatus: (printerId: number) =>
     request<CameraStreamStatus>(`/printers/${printerId}/camera/status`),
+  /** The stream status of whatever a view shows — a printer's camera or a camera of its own. */
+  getCameraSourceStatus: (source: CameraSource, viewer?: string) =>
+    request<CameraStreamStatus>(statusApiPath(source, viewer)),
   // Camera diagnostic (#1395 follow-up) — staged check the operator
   // can run inline to self-diagnose "connection lost" before opening a
   // ticket. The modal renders one row per stage and looks up the

@@ -95,6 +95,58 @@ async def _capture(command, bootstrap: WorkerBootstrap) -> dict:
     }
 
 
+async def _produce_chamber_frames(ip_address: str, access_code: str, fps: int, model: str | None, publish) -> None:
+    """Publish a chamber-image camera's frames, redialling it on the RTSP cameras' budget.
+
+    One TCP session at a time: the socket of a finished session is closed, and
+    its close awaited, before the next connect (the port serves one client).
+    Reconnects are counted in a row — a session that held for the model's stable
+    window gives them back — and a camera that never delivered a frame ends at
+    once.  Cancellation (the last viewer left) ends it wherever it is waiting.
+    """
+    import time
+    from types import SimpleNamespace
+
+    from backend.app.services import camera, camera_profiles, external_camera
+
+    profile = camera_profiles.get_camera_profile(model)
+    budget = external_camera._ReconnectBudget(profile.rtsp_reconnect_max, profile.rtsp_reconnect_stable_seconds)
+    outcome = SimpleNamespace(consecutive_failures=0, end_reason=None)
+    while True:
+        first_frame_at: float | None = None
+        last_frame_at: float | None = None
+        connection = await camera.generate_chamber_image_stream(ip_address, access_code, fps)
+        if connection is not None:
+            reader, chamber_writer = connection
+            try:
+                while frame := await camera.read_next_chamber_frame(reader, timeout=30.0):
+                    last_frame_at = time.monotonic()
+                    first_frame_at = first_frame_at or last_frame_at
+                    publish(frame)
+            finally:
+                chamber_writer.close()
+                try:
+                    await chamber_writer.wait_closed()
+                except OSError:
+                    pass
+        budget.count_session(outcome, first_frame_at, last_frame_at)
+        if not budget.allows_redial(outcome, first_frame_at):
+            logger.warning(
+                "Chamber image stream ended: reason=%s consecutive_failures=%d",
+                outcome.end_reason,
+                outcome.consecutive_failures,
+            )
+            return
+        delay = external_camera._rtsp_reconnect_delay(budget.attempt, profile)
+        logger.warning(
+            "Chamber image stream ended, reconnecting (attempt %d/%d, delay=%.3fs)...",
+            budget.attempt,
+            budget.max_retries,
+            delay,
+        )
+        await external_camera._wait_for_rtsp_retry(delay, None)
+
+
 async def _serve_capture(request: dict, bootstrap: WorkerBootstrap, writer, write_lock: asyncio.Lock) -> None:
     """Keep control readable while one physical capture awaits its transport."""
 
@@ -381,28 +433,16 @@ async def run(bootstrap: WorkerBootstrap) -> int:
                             identity=subscription.identity,
                         )
                         if isinstance(subscription, LiveBuiltinSubscription):
-                            from backend.app.services.camera import (
-                                generate_chamber_image_stream,
-                                is_chamber_image_model,
-                                read_next_chamber_frame,
-                            )
+                            from backend.app.services.camera import is_chamber_image_model
 
                             if is_chamber_image_model(subscription.model):
-                                connection = await generate_chamber_image_stream(
-                                    subscription.ip_address, subscription.access_code, subscription.fps
+                                await _produce_chamber_frames(
+                                    subscription.ip_address,
+                                    subscription.access_code,
+                                    subscription.fps,
+                                    subscription.model,
+                                    lambda frame: live_registry.publish(subscription.identity, frame),
                                 )
-                                if connection is None:
-                                    return
-                                reader, chamber_writer = connection
-                                try:
-                                    while frame := await read_next_chamber_frame(reader, timeout=30.0):
-                                        live_registry.publish(subscription.identity, frame)
-                                finally:
-                                    chamber_writer.close()
-                                    try:
-                                        await chamber_writer.wait_closed()
-                                    except OSError:
-                                        pass
                                 return
                         from backend.app.services.camera_profiles import get_camera_profile
                         from backend.app.services.external_camera import generate_mjpeg_stream
@@ -414,6 +454,7 @@ async def run(bootstrap: WorkerBootstrap) -> int:
                             "rtsp" if isinstance(subscription, LiveBuiltinSubscription) else subscription.camera_type,
                             subscription.fps,
                             on_frame=lambda frame: live_registry.publish(subscription.identity, frame),
+                            on_still_scene=lambda still: live_registry.mark_still(subscription.identity, still),
                             rtsp_profile=(
                                 get_camera_profile(subscription.model)
                                 if isinstance(subscription, LiveBuiltinSubscription)
@@ -425,7 +466,9 @@ async def run(bootstrap: WorkerBootstrap) -> int:
                     lease, _queue = await live_registry.subscribe(subscription.identity, producer)
                     live_leases[lease.lease_id] = lease
 
-                    async def forward(queue=_queue, session_id=subscription.media_session_id) -> None:
+                    async def forward(
+                        queue=_queue, session_id=subscription.media_session_id, identity=subscription.identity
+                    ) -> None:
                         from backend.app.services.camera_worker_media import (
                             MediaHello,
                             WorkerMediaFrame,
@@ -455,6 +498,9 @@ async def run(bootstrap: WorkerBootstrap) -> int:
                                         attempt_id=None,
                                         first_frame_ms=None,
                                         cleanup_ms=None,
+                                        # The verdict as it stands when the frame leaves; it falls
+                                        # before a changed picture is published, never after.
+                                        still_scene=live_registry.is_still(identity),
                                     ),
                                 )
                         finally:

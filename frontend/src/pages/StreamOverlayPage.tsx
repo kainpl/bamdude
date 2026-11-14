@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useSearchParams } from 'react-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
@@ -6,6 +6,21 @@ import { Layers, Clock, Timer, Printer, Flame, Square, Box } from 'lucide-react'
 import { LoadingBlock } from '../components/LoadingBlock';
 import { api, ApiError, withStreamToken } from '../api/client';
 import { formatDuration, formatETA, type TimeFormat } from '../utils/date';
+import { fillStyle, useRotatedBox } from '../hooks/useRotatedFit';
+import { useCameraImageRef } from '../hooks/useCameraImageRef';
+import { useCameraStreamRecovery, type CameraStreamHealth } from '../hooks/useCameraStreamRecovery';
+import { printerSource, streamPath } from '../utils/cameraSource';
+import { normalizeModelName } from '../utils/printer';
+import {
+  overlayDesign,
+  overlayLayout,
+  overlayTransparency,
+  progressFill,
+  type OverlayDesign,
+  type OverlayLayout,
+} from '../utils/overlayOptions';
+import { StreamOverlayV2 } from '../components/StreamOverlayV2';
+import { OverlayCanvas } from '../components/OverlayCanvas';
 
 type TFunction = (key: string, options?: Record<string, unknown>) => string;
 
@@ -25,6 +40,11 @@ function formatPrintName(
 
 type OverlaySize = 'small' | 'medium' | 'large';
 
+/** How old the last answer of the status feed may be before its figures stop
+ *  being shown as live. Longer than the feed's slowest retry (30 s apart), so
+ *  one missed poll never blanks a broadcast. */
+const FEED_STALE_MS = 30_000;
+
 interface OverlayConfig {
   size: OverlaySize;
   fps: number;
@@ -35,9 +55,14 @@ interface OverlayConfig {
   showFilename: boolean;
   showStatus: boolean;
   showPrinter: boolean;
+  showModel: boolean;
   showNozzle: boolean;
   showBed: boolean;
   showChamber: boolean;
+  progressFill: string | undefined;
+  design: OverlayDesign;
+  transparency: number;
+  layout: OverlayLayout | null;
 }
 
 function parseConfig(params: URLSearchParams): OverlayConfig {
@@ -51,8 +76,13 @@ function parseConfig(params: URLSearchParams): OverlayConfig {
   const cameraParam = params.get('camera');
   const showCamera = cameraParam !== 'false' && cameraParam !== '0';
 
+  // One of the three sizes or medium — never the address's own text: Version 2
+  // writes the size into the markup for its stylesheet to match.
+  const sizeParam = params.get('size');
+  const size: OverlaySize = sizeParam === 'small' || sizeParam === 'large' ? sizeParam : 'medium';
+
   return {
-    size: (params.get('size') as OverlaySize) || 'medium',
+    size,
     fps,
     showCamera,
     showProgress: show.includes('progress'),
@@ -61,12 +91,22 @@ function parseConfig(params: URLSearchParams): OverlayConfig {
     showFilename: show.includes('filename'),
     showStatus: show.includes('status'),
     showPrinter: show.includes('printer'),
+    // Independent of the name: `show=model` alone draws only the model.
+    showModel: show.includes('model'),
     // ⚠️ Absent from the default set on purpose: temperatures are opt-in, so
     // every overlay URL already pasted into an OBS scene keeps looking exactly
     // the same after upgrading.
     showNozzle: show.includes('nozzle'),
     showBed: show.includes('bed'),
     showChamber: show.includes('chamber'),
+    // Undefined unless the URL names a valid colour: the bar keeps its own.
+    progressFill: progressFill(params.get('progressFrom'), params.get('progressTo')),
+    // Classic unless the URL says `design=2`: every address already in a scene
+    // keeps the design it was made with.
+    design: overlayDesign(params.get('design')),
+    transparency: overlayTransparency(params.get('backgroundTransparency')),
+    // Null keeps the overlay sized by its window.
+    layout: overlayLayout(params.get('layout')),
   };
 }
 
@@ -126,7 +166,50 @@ function TempReading({ icon, label, current, target, sizes }: TempReadingProps) 
   );
 }
 
-function getSizeClasses(size: OverlaySize) {
+// Classic on the portrait canvas (`layout=portrait`): the canvas is 1080 wide
+// and usually shown small — a phone-shaped stream — so the text is larger, and
+// a long file name wraps instead of being cut after a few characters.
+function getPortraitSizeClasses(size: OverlaySize) {
+  switch (size) {
+    case 'small':
+      return {
+        container: 'p-6',
+        text: 'text-2xl',
+        textLarge: 'text-3xl',
+        progressHeight: 'h-3',
+        icon: 'w-6 h-6 shrink-0',
+        gap: 'gap-3',
+        logoHeight: 'h-24',
+        filename: 'break-words',
+      };
+    case 'large':
+      return {
+        container: 'p-8',
+        text: 'text-4xl',
+        textLarge: 'text-5xl',
+        progressHeight: 'h-5',
+        icon: 'w-9 h-9 shrink-0',
+        gap: 'gap-5',
+        logoHeight: 'h-32',
+        filename: 'break-words',
+      };
+    case 'medium':
+    default:
+      return {
+        container: 'p-8',
+        text: 'text-3xl',
+        textLarge: 'text-4xl',
+        progressHeight: 'h-4',
+        icon: 'w-8 h-8 shrink-0',
+        gap: 'gap-4',
+        logoHeight: 'h-28',
+        filename: 'break-words',
+      };
+  }
+}
+
+function getSizeClasses(size: OverlaySize, portrait = false) {
+  if (portrait) return getPortraitSizeClasses(size);
   switch (size) {
     case 'small':
       return {
@@ -137,6 +220,7 @@ function getSizeClasses(size: OverlaySize) {
         icon: 'w-3 h-3',
         gap: 'gap-2',
         logoHeight: 'h-12',
+        filename: 'truncate',
       };
     case 'large':
       return {
@@ -147,6 +231,7 @@ function getSizeClasses(size: OverlaySize) {
         icon: 'w-6 h-6',
         gap: 'gap-4',
         logoHeight: 'h-24',
+        filename: 'truncate',
       };
     case 'medium':
     default:
@@ -158,6 +243,7 @@ function getSizeClasses(size: OverlaySize) {
         icon: 'w-4 h-4',
         gap: 'gap-3',
         logoHeight: 'h-16',
+        filename: 'truncate',
       };
   }
 }
@@ -168,12 +254,9 @@ export function StreamOverlayPage() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const id = parseInt(printerId || '0', 10);
-  const [imageKey, setImageKey] = useState(Date.now());
-  const [streamFailures, setStreamFailures] = useState(0);
-  const [retryStream, setRetryStream] = useState(false);
 
   const config = useMemo(() => parseConfig(searchParams), [searchParams]);
-  const sizes = getSizeClasses(config.size);
+  const sizes = getSizeClasses(config.size, config.layout === 'portrait');
 
   // Kiosk mode (upstream #2613): OBS and other embeds have no login session, so
   // they pass an `overlay`-scoped token in the URL. When present, every data
@@ -183,11 +266,21 @@ export function StreamOverlayPage() {
   const token = searchParams.get('token');
   const kiosk = token != null && token !== '';
 
+  // The id of the stream this page has open (set below, once the recovery
+  // hook has named it), and the id the feed's latest answer was asked about.
+  const streamViewer = useRef<string | undefined>(undefined);
+  const feedAskedAbout = useRef<string | undefined>(undefined);
+
   // Kiosk path: one token-authenticated call for name + live status + the one
   // setting the overlay reads. No JWT, so this is the only feed available.
-  const { data: overlay, error: overlayError } = useQuery({
+  const { data: overlay, error: overlayError, dataUpdatedAt: overlayReadAt } = useQuery({
     queryKey: ['overlayStatus', id, token],
-    queryFn: () => api.getOverlayStatus(id, token!),
+    queryFn: async () => {
+      const viewer = streamViewer.current;
+      const answer = await (viewer ? api.getOverlayStatus(id, token!, viewer) : api.getOverlayStatus(id, token!));
+      feedAskedAbout.current = viewer;
+      return answer;
+    },
     enabled: id > 0 && kiosk,
     retry: (attempt, error) => !(error instanceof ApiError && (error.status === 401 || error.status === 403)) && attempt < 3,
     retryDelay: attempt => Math.min(30_000, 1000 * 2 ** attempt),
@@ -203,7 +296,7 @@ export function StreamOverlayPage() {
     enabled: id > 0 && !kiosk,
   });
 
-  const { data: statusData } = useQuery({
+  const { data: statusData, error: statusError, dataUpdatedAt: statusReadAt } = useQuery({
     queryKey: ['printerStatus', id],
     queryFn: () => api.getPrinterStatus(id),
     enabled: id > 0 && !kiosk,
@@ -222,11 +315,16 @@ export function StreamOverlayPage() {
   const printer = useMemo(
     () =>
       kiosk
-        ? overlay && { name: overlay.name, camera_rotation: overlay.camera_rotation }
+        ? overlay && { name: overlay.name, model: overlay.model, camera_rotation: overlay.camera_rotation }
         : printerData,
     [kiosk, overlay, printerData],
   );
   const status = kiosk ? overlay : statusData;
+  // The model by its display name, through OUR map: the row may hold an
+  // internal code or the long marketing name. The token feed already sends the
+  // display name; passing it through again costs nothing. Empty when the URL
+  // does not ask for it or an older server's feed does not name it.
+  const modelName = config.showModel ? normalizeModelName(printer?.model) : '';
 
   // Temperature readings the URL asked for, in a fixed order, skipping any the
   // printer does not report. Labels reuse printers.heaterHistory.* so the
@@ -356,26 +454,117 @@ export function StreamOverlayPage() {
   }, [printer, t]);
 
   const kioskRefused = kiosk && overlayError instanceof ApiError && (overlayError.status === 401 || overlayError.status === 403);
-  // Cancel any pending image retry when the feed definitively refuses the
-  // token. An image error itself has no HTTP status, so transient errors back off.
-  useEffect(() => {
-    if (!retryStream || kioskRefused) return;
-    const timer = setTimeout(() => {
-      setImageKey(Date.now());
-      setRetryStream(false);
-    }, Math.min(30_000, 3000 * 2 ** Math.min(Math.max(streamFailures - 1, 0), 4)));
-    return () => clearTimeout(timer);
-  }, [retryStream, kioskRefused, streamFailures]);
 
-  const handleStreamError = () => {
-    setStreamFailures(value => value + 1);
-    setRetryStream(true);
-  };
+  // ⚠️ React Query keeps the last answer for as long as the page lives, and
+  // nobody watches this page: it is composited into a broadcast. Figures the
+  // page can no longer refresh are therefore taken down —
+  // - a refused token (above) shows one quiet line and nothing of the print;
+  // - a feed whose last answer is older than FEED_STALE_MS is drawn like a
+  //   printer that went offline (below), until it answers again.
+  // The moment is a timer, not a comparison made while rendering: nothing
+  // re-renders an overlay whose feed has gone quiet.
+  const feedReadAt = kiosk ? overlayReadAt : statusReadAt;
+  const feedError = kiosk ? overlayError : statusError;
+  const [staleSince, setStaleSince] = useState(0);
+  useEffect(() => {
+    if (!feedReadAt) return;
+    const timer = setTimeout(() => setStaleSince(feedReadAt), Math.max(0, feedReadAt + FEED_STALE_MS - Date.now()));
+    return () => clearTimeout(timer);
+  }, [feedReadAt]);
+  const feedStale = feedReadAt > 0 && staleSince === feedReadAt;
+  // Never answered at all: remembered here, because a query without data
+  // forgets its error each time it tries again.
+  const [unanswered, setUnanswered] = useState(false);
+  if (!feedReadAt && feedError && !unanswered) setUnanswered(true);
+  if (feedReadAt && unanswered) setUnanswered(false);
+
+  // Is the stream this page draws still alive? Asked of the SERVER, because a
+  // stream it ends cleanly fires nothing on the image and the broadcast would
+  // show a frozen frame until somebody reloaded the source.
+  // - OBS (token in the URL): the token cannot read the session's camera status
+  //   route, so the answer rides the feed this page already polls with that
+  //   token (`camera`). Each answer is read once: while the feed is away, the
+  //   last one must not count as a second bad read. A server that does not
+  //   send the field leaves only the image's own `error`.
+  // - signed in: the ordinary camera status route.
+  // Either way the read names the stream this page has open, because the
+  // upstream is shared: another overlay of the same printer, or its owner's
+  // camera wall, keeps it "alive" after the server has ended THIS viewer.
+  const feedCamera = useRef<{ health: CameraStreamHealth | undefined; at: number; viewer: string | undefined }>(
+    { health: undefined, at: 0, viewer: undefined },
+  );
+  const feedCameraRead = useRef(0);
+  // Signed in without `camera:view`: the status route refuses for as long as
+  // the page lives. Asked once, not every five seconds for a whole broadcast.
+  const statusRefused = useRef(false);
+  useEffect(() => {
+    feedCamera.current = { health: overlay?.camera, at: overlayReadAt, viewer: feedAskedAbout.current };
+  }, [overlay, overlayReadAt]);
+  const readStreamHealth = useCallback(async (viewerId: string): Promise<CameraStreamHealth | null> => {
+    if (!kiosk) {
+      if (statusRefused.current) return null;
+      try {
+        return await api.getCameraSourceStatus(printerSource(id), viewerId);
+      } catch (error) {
+        if (error instanceof ApiError && (error.status === 401 || error.status === 403)) statusRefused.current = true;
+        throw error;
+      }
+    }
+    const { health, at, viewer } = feedCamera.current;
+    if (!health || at === feedCameraRead.current) return null;
+    feedCameraRead.current = at;
+    // An answer asked about the stream before this one says nothing of this one.
+    return viewer === viewerId ? health : { active: health.active, stalled: health.stalled };
+  }, [kiosk, id]);
+
+  // A refused token ends it: nothing is retried once the feed says 401/403.
+  // Nobody can press Retry on a broadcast, so after its bounded attempts the
+  // overlay shows "No signal" and tries again once a minute.
+  const showsCamera = id > 0 && config.showCamera && !kioskRefused && !!status;
+  const {
+    phase: streamPhase,
+    generation: streamGeneration,
+    viewerId: streamViewerId,
+    onError: handleStreamError,
+    onLoad: handleStreamLoad,
+  } = useCameraStreamRecovery({ enabled: showsCamera, readHealth: readStreamHealth, slowRetryMs: 60_000 });
+  useEffect(() => {
+    streamViewer.current = config.showCamera ? streamViewerId : undefined;
+  }, [config.showCamera, streamViewerId]);
+
+  // Append the kiosk token directly rather than leaning on withStreamToken's
+  // module cache — the cache is populated by an effect and would miss the first
+  // render (a 401 flash before the retry). The logged-in path keeps the cache.
+  const camPath = streamPath(printerSource(id), config.fps, streamGeneration, streamViewerId);
+  const streamUrl = kiosk && token
+    ? `${camPath}&token=${encodeURIComponent(token)}`
+    : withStreamToken(camPath);
+  // The mounted image gets its URL from the hook, never as a prop, and loses
+  // it when it goes: OBS is Chromium, and a dropped <img> keeps its request.
+  const { attachImage: attachStreamImage } = useCameraImageRef(streamUrl);
+
+  // The picture fills the browser source: a sideways camera is laid out in
+  // the source's sides swapped, or it is cropped. The box appears once the
+  // status has loaded; the hook picks it up then.
+  const { boxRef: sceneRef, box: scene } = useRotatedBox(printer?.camera_rotation);
 
   if (!id) {
     return (
       <div className="min-h-screen bg-black flex items-center justify-center">
         <p className="text-white">{t('streamOverlay.invalidPrinterId')}</p>
+      </div>
+    );
+  }
+
+  if (kioskRefused || (!status && unanswered)) {
+    // One quiet line, whatever was on screen before: the token this address
+    // carries is not accepted (never valid, expired or revoked), or the server
+    // has not answered at all. The second keeps trying; the first does not.
+    return (
+      <div className="min-h-screen bg-black flex items-center justify-center">
+        <p className={`${sizes.text} text-white/60`}>
+          {kioskRefused ? t('streamOverlay.tokenRefused') : t('streamOverlay.noAnswer')}
+        </p>
       </div>
     );
   }
@@ -391,28 +580,83 @@ export function StreamOverlayPage() {
     );
   }
 
-  const isPrinting = status.state === 'RUNNING' || status.state === 'PAUSE';
+  // ⚠️ A dropped MQTT session flips only `connected`: the server keeps answering
+  // with the last state, progress, layers, ETA and temperatures it cached. On a
+  // broadcast those would sit frozen and look live, so an offline printer shows
+  // the offline line and none of them. The file name stays — it names the job
+  // that was running, which is still true. A feed that stopped answering is
+  // the same case seen from here: what it last said is no longer known to hold.
+  const online = status.connected && !feedStale;
+  const isPrinting = online && (status.state === 'RUNNING' || status.state === 'PAUSE');
   const progress = status.progress || 0;
-  // Append the kiosk token directly rather than leaning on withStreamToken's
-  // module cache — the cache is populated by an effect and would miss the first
-  // render (a 401 flash before the retry). The logged-in path keeps the cache.
-  const camPath = `/api/v1/printers/${id}/camera/stream?fps=${config.fps}&t=${imageKey}`;
-  const streamUrl = kiosk && token
-    ? `${camPath}&token=${encodeURIComponent(token)}`
-    : withStreamToken(camPath);
 
-  return (
-    <div className="min-h-screen bg-black relative overflow-hidden">
+  // `layout=` draws the overlay on a fixed canvas scaled to the browser
+  // source; without it the overlay is sized by its window, as it always was.
+  const framed = (body: React.ReactElement, ground: string) =>
+    config.layout ? <OverlayCanvas layout={config.layout} ground={ground}>{body}</OverlayCanvas> : body;
+
+  if (config.design === 'v2') {
+    // The same facts as Classic below, handed over as values: what must not be
+    // shown (an offline printer's frozen figures) is null, and Version 2 only
+    // draws. The status names the offline printer itself — this design has no
+    // separate idle line.
+    const remaining = isPrinting && config.showEta && status.remaining_time != null && status.remaining_time > 0
+      ? status.remaining_time
+      : null;
+    // Around a canvas in a source of another shape: the same ground the
+    // design itself has, see-through when the URL asks for it.
+    const alpha = 1 - config.transparency / 100;
+    return framed(
+      <StreamOverlayV2
+        layout={config.layout}
+        size={config.size}
+        transparency={config.transparency}
+        progressFill={config.progressFill}
+        camera={showsCamera ? {
+          attach: attachStreamImage,
+          generation: streamGeneration,
+          rotation: printer?.camera_rotation ?? 0,
+          phase: streamPhase,
+          onError: handleStreamError,
+          onLoad: handleStreamLoad,
+        } : null}
+        name={config.showPrinter && printer ? printer.name : null}
+        model={modelName || null}
+        filename={config.showFilename && status.current_print
+          ? formatPrintName(status.current_print.replace(/\.gcode\.3mf$|\.3mf$|\.gcode$/i, ''), status.gcode_file, t)
+          : null}
+        status={config.showStatus ? (online ? getStatusText(status, t) : t('streamOverlay.printerOffline')) : null}
+        state={online ? status.state : 'OFFLINE'}
+        progress={config.showProgress && isPrinting ? Math.min(Math.max(progress, 0), 100) : null}
+        layers={config.showLayers && isPrinting && status.layer_num != null && status.total_layers != null && status.total_layers > 0
+          ? `${status.layer_num} / ${status.total_layers}`
+          : null}
+        remaining={remaining != null ? formatDuration(remaining * 60) : null}
+        finish={remaining != null ? formatETA(remaining, timeFormat, t) : null}
+        temperatures={online ? tempReadings : []}
+      />,
+      alpha === 0 ? 'transparent' : `rgba(0, 0, 0, ${alpha})`,
+    );
+  }
+
+  return framed(
+    <div ref={sceneRef} className={`${config.layout ? 'h-full' : 'min-h-screen'} bg-black relative overflow-hidden`}>
       {/* Camera feed - fullscreen background (optional) */}
-      {config.showCamera && !kioskRefused && (
+      {showsCamera && streamPhase === 'live' && (
         <img
-          key={imageKey}
-          src={streamUrl}
+          ref={attachStreamImage}
+          key={streamGeneration}
           alt={t('streamOverlay.cameraStream')}
           className="absolute inset-0 w-full h-full object-contain"
-          style={printer?.camera_rotation ? { transform: `rotate(${printer.camera_rotation}deg)` } : undefined}
+          style={fillStyle(scene, printer?.camera_rotation)}
           onError={handleStreamError}
+          onLoad={handleStreamLoad}
         />
+      )}
+      {showsCamera && streamPhase === 'failed' && (
+        <div className="absolute inset-0 flex items-center justify-center">
+          <p className={`${sizes.text} text-white/60`}>{t('streamOverlay.noSignal')}</p>
+        </div>
       )}
 
       {/* BamDude logo - top right */}
@@ -433,22 +677,26 @@ export function StreamOverlayPage() {
       <div className="absolute bottom-0 left-0 right-0 z-10 bg-gradient-to-t from-black/80 via-black/60 to-transparent">
         <div className={`${sizes.container}`}>
           {/* Printer name */}
-          {config.showPrinter && printer && (
+          {printer && (config.showPrinter || modelName) && (
             <div className={`flex items-center ${sizes.gap} mb-2`}>
               <Printer className={`${sizes.icon} text-white/70`} />
-              <span className={`${sizes.text} text-white font-medium`}>{printer.name}</span>
+              {config.showPrinter && (
+                <span className={`${sizes.text} text-white font-medium`}>{printer.name}</span>
+              )}
+              {config.showPrinter && modelName && <span className={`${sizes.text} text-white/50`}>·</span>}
+              {modelName && <span className={`${sizes.text} text-white/70`}>{modelName}</span>}
             </div>
           )}
 
           {/* Filename */}
           {config.showFilename && status.current_print && (
-            <div className={`${sizes.textLarge} text-white font-semibold mb-2 truncate drop-shadow-md`}>
+            <div className={`${sizes.textLarge} text-white font-semibold mb-2 ${sizes.filename} drop-shadow-md`}>
               {formatPrintName(status.current_print.replace(/\.gcode\.3mf$|\.3mf$|\.gcode$/i, ''), status.gcode_file, t)}
             </div>
           )}
 
           {/* Status text */}
-          {config.showStatus && (
+          {config.showStatus && online && (
             <div className={`${sizes.text} text-white/70 mb-2`}>
               {getStatusText(status, t)}
             </div>
@@ -464,7 +712,10 @@ export function StreamOverlayPage() {
               <div className={`w-full bg-white/20 rounded-full ${sizes.progressHeight}`}>
                 <div
                   className={`bg-bambu-green ${sizes.progressHeight} rounded-full transition-all duration-500`}
-                  style={{ width: `${progress}%` }}
+                  style={{
+                    width: `${progress}%`,
+                    ...(config.progressFill ? { backgroundImage: config.progressFill } : {}),
+                  }}
                 />
               </div>
             </div>
@@ -512,7 +763,7 @@ export function StreamOverlayPage() {
               so a single-nozzle machine shows one nozzle, and a model without a
               chamber sensor shows no chamber row even with `chamber` in
               ?show= (the backend omits the reading entirely for those). */}
-          {tempReadings.length > 0 && (
+          {online && tempReadings.length > 0 && (
             <div className={`flex items-center ${sizes.gap} flex-wrap mt-2`}>
               {tempReadings.map((reading) => (
                 <TempReading
@@ -530,11 +781,12 @@ export function StreamOverlayPage() {
           {/* Idle state */}
           {!isPrinting && (
             <div className={`${sizes.text} text-white/70 py-2`}>
-              {status.connected ? t('streamOverlay.printerIdle') : t('streamOverlay.printerOffline')}
+              {online ? t('streamOverlay.printerIdle') : t('streamOverlay.printerOffline')}
             </div>
           )}
         </div>
       </div>
-    </div>
+    </div>,
+    '#000',
   );
 }

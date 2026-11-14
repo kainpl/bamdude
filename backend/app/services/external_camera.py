@@ -8,6 +8,7 @@ to ensure they are well-formed before use.
 """
 
 import asyncio
+import contextlib
 import functools
 import logging
 import random
@@ -673,6 +674,7 @@ async def generate_mjpeg_stream(
     printer_id: int | None = None,
     stream_id: str | None = None,
     rtsp_profile: CameraProfile | None = None,
+    on_still_scene: Callable[[bool], None] | None = None,
 ) -> AsyncGenerator[bytes, None]:
     """Generator yielding MJPEG frames for streaming.
 
@@ -700,6 +702,12 @@ async def generate_mjpeg_stream(
         stop_event: When set, the reconnect loops stop retrying. An explicit
             stop kills the current ffmpeg; without this the loop would spawn a
             replacement and take the device straight back.
+        on_still_scene: Called (``rtsp`` only) whenever the freeze watch's
+            verdict changes, BEFORE the frame it applies to is published: True
+            once a redial has shown the same picture — a still scene, a live
+            camera — and False with the first changed picture. A consumer that
+            asks for a frame from after some moment may then take a repeat
+            that arrived after it. Exceptions are logged and swallowed.
 
     Yields:
         MJPEG frame data with HTTP multipart boundaries
@@ -719,77 +727,95 @@ async def generate_mjpeg_stream(
 
     if camera_type == "mjpeg":
         # Proxy MJPEG stream directly, with reconnect on timeout
-        max_retries = 3
-        for attempt in range(max_retries + 1):
+        budget = _ReconnectBudget(_EXTERNAL_RECONNECT_MAX, _EXTERNAL_RECONNECT_STABLE_SECONDS)
+        while True:
             camera_metrics.current.get().begin_attempt()
-            frame_yielded = False
+            first_frame_at: float | None = None
+            last_frame_at: float | None = None
             async for frame in _stream_mjpeg(url):
-                frame_yielded = True
+                last_frame_at = time.monotonic()
+                first_frame_at = first_frame_at or last_frame_at
                 camera_metrics.record_frame(frame, output=False)
                 current_time = asyncio.get_event_loop().time()
                 if current_time - last_frame_time >= frame_interval:
                     last_frame_time = current_time
                     yield _publish(frame)
             metric = camera_metrics.current.get()
-            metric.consecutive_failures = 0 if frame_yielded else min(2**53 - 1, metric.consecutive_failures + 1)
-            if not frame_yielded or attempt == max_retries or (stop_event is not None and stop_event.is_set()):
-                if not frame_yielded:
-                    metric.end_reason = metric.end_reason or "connect_failed"
-                elif attempt == max_retries:
-                    metric.end_reason = metric.end_reason or "retry_exhausted"
+            budget.count_session(metric, first_frame_at, last_frame_at)
+            if stop_event is not None and stop_event.is_set():
+                break
+            if not budget.allows_redial(metric, first_frame_at):
                 break
             logger.warning(
                 "External MJPEG stream ended, reconnecting (attempt %d/%d)...",
-                attempt + 1,
-                max_retries,
+                budget.attempt,
+                budget.max_retries,
             )
-            await asyncio.sleep(2)
+            if not await _wait_for_rtsp_retry(2.0, stop_event):
+                break
 
     elif camera_type == "rtsp":
-        # External cameras retain their historical three retries.  A Bambu
-        # RTSPS source can opt into its model profile so P2S gets its relaxed
+        # An external camera has three reconnects in a row.  A Bambu RTSPS
+        # source can opt into its model profile so P2S gets its relaxed
         # probe settings and farm-safe reconnect backoff in the worker too.
-        max_retries = 3 if rtsp_profile is None else rtsp_profile.rtsp_reconnect_max
-        attempt = 0
-        while attempt <= max_retries:
-            frame_yielded = False
-            first_frame_at: float | None = None
-            async for frame in _stream_rtsp(url, fps, on_process=on_process, profile=rtsp_profile):
-                frame_yielded = True
-                first_frame_at = first_frame_at or time.monotonic()
-                yield _publish(frame)
-            metric = camera_metrics.current.get()
-            metric.consecutive_failures = 0 if frame_yielded else min(2**53 - 1, metric.consecutive_failures + 1)
-            if stop_event is not None and stop_event.is_set():
-                break
-            if (
-                rtsp_profile is not None
-                and first_frame_at is not None
-                and time.monotonic() - first_frame_at >= rtsp_profile.rtsp_reconnect_stable_seconds
-            ):
-                # A stream that held for a meaningful interval gets a fresh
-                # reconnect budget; a flaky source cannot retry forever.
-                attempt = 0
-            if not frame_yielded or attempt == max_retries:
-                if not frame_yielded:
-                    metric.end_reason = metric.end_reason or "connect_failed"
-                elif attempt == max_retries:
-                    metric.end_reason = metric.end_reason or "retry_exhausted"
-                break
-            attempt += 1
-            delay = 2.0 if rtsp_profile is None else _rtsp_reconnect_delay(attempt, rtsp_profile)
-            logger.warning(
-                "External RTSP stream ended, reconnecting (attempt %d/%d, delay=%.3fs)...",
-                attempt,
-                max_retries,
-                delay,
-            )
-            if not await _wait_for_rtsp_retry(delay, stop_event):
-                break
+        budget = (
+            _ReconnectBudget(_EXTERNAL_RECONNECT_MAX, _EXTERNAL_RECONNECT_STABLE_SECONDS)
+            if rtsp_profile is None
+            else _ReconnectBudget(rtsp_profile.rtsp_reconnect_max, rtsp_profile.rtsp_reconnect_stable_seconds)
+        )
+        # One watch for the whole stream: what a redial shows is compared with
+        # the picture the session before it froze on.  A camera without a
+        # profile may legitimately repeat frames, so its limit adapts.
+        watch = _FreezeWatch(adaptive=rtsp_profile is None)
+        told_still = False
+        try:
+            while True:
+                first_frame_at = last_frame_at = None
+                watch.start_session()
+                # Closed before the redial: a frozen session still holds the
+                # camera's one connection.
+                async with contextlib.aclosing(
+                    _stream_rtsp(url, fps, on_process=on_process, profile=rtsp_profile)
+                ) as session:
+                    async for frame in session:
+                        last_frame_at = now = time.monotonic()
+                        first_frame_at = first_frame_at or now
+                        if watch.observe(frame, now):
+                            break
+                        if on_still_scene is not None and watch.still_scene != told_still:
+                            told_still = watch.still_scene
+                            try:
+                                on_still_scene(told_still)
+                            except Exception:
+                                logger.exception("on_still_scene callback raised")
+                        yield _publish(frame)
+                metric = camera_metrics.current.get()
+                watch.count_session(metric)
+                budget.count_session(metric, first_frame_at, last_frame_at, healthy_until=watch.healthy_until)
+                if stop_event is not None and stop_event.is_set():
+                    break
+                unproven = bool(metric.end_reason)
+                if not budget.allows_redial(metric, first_frame_at):
+                    if watch.ended_session and not unproven:
+                        metric.end_reason = "source_frozen"
+                    break
+                delay = 2.0 if rtsp_profile is None else _rtsp_reconnect_delay(budget.attempt, rtsp_profile)
+                # A redial the watch asked for is reported by the watch, once it
+                # knows what the new session shows.
+                if not watch.ended_session:
+                    logger.warning(
+                        "External RTSP stream ended, reconnecting (attempt %d/%d, delay=%.3fs)...",
+                        budget.attempt,
+                        budget.max_retries,
+                        delay,
+                    )
+                if not await _wait_for_rtsp_retry(delay, stop_event):
+                    break
+        finally:
+            watch.close()
 
     elif camera_type == "usb":
-        camera_metrics.current.get().begin_attempt()
-        # Use ffmpeg to stream from USB camera
+        # Use ffmpeg to stream from USB camera; its CameraAttempt counts the attempt, as for RTSP.
         async for frame in _stream_usb(url, fps, on_process=on_process):
             yield _publish(frame)
 
@@ -885,7 +911,10 @@ async def _stream_mjpeg(url: str) -> AsyncGenerator[bytes, None]:
                     yield frame
 
     except asyncio.CancelledError:
+        # Re-raised: swallowed, the reconnect loop saw an ordinary end of session,
+        # waited and dialled the camera again for a producer already cancelled.
         logger.info("MJPEG stream cancelled")
+        raise
     except (aiohttp.ClientError, OSError, ValueError) as e:
         logger.error("MJPEG stream error: %s", e)
 
@@ -1061,6 +1090,223 @@ async def _stream_rtsp(
         logger.error("RTSP stream error: %s", summarize_ffmpeg_stderr(str(e)))
 
 
+# An external camera has no model profile: three reconnects in a row, given
+# back by a session that held as long as the built-in cameras' stable window.
+_EXTERNAL_RECONNECT_MAX = 3
+_EXTERNAL_RECONNECT_STABLE_SECONDS = 30.0
+
+
+class _ReconnectBudget:
+    """Reconnects of one live stream, counted in a row (upstream 2315b8fb5).
+
+    A session that delivered frames for the stable window gives the budget back,
+    so a camera that drops now and then is redialled for as long as somebody
+    watches; one that delivers and drops at once, or refuses, spends it.  A
+    session without a frame is one more failure of a stream that has delivered
+    before, and the end of one that never did: a first connect must not keep
+    its viewers waiting through a whole budget.
+    """
+
+    def __init__(self, max_retries: int, stable_seconds: float) -> None:
+        self.max_retries = max_retries
+        self.stable_seconds = stable_seconds
+        self.attempt = 0
+        self.delivered = False
+
+    def count_session(
+        self,
+        metric,
+        first_frame_at: float | None,
+        last_frame_at: float | None,
+        *,
+        healthy_until: float | None = None,
+    ) -> None:
+        """Record a finished session in the stream's telemetry and in the budget.
+
+        The stable window is measured to the session's LAST FRAME, never to
+        the moment it ended: a source that goes silent ends at its read
+        timeout, and that silence is not health — a camera that sends one
+        frame per connection would be forgiven every time.  ``healthy_until``
+        is given for a session ended because its picture had stopped changing:
+        the window is then measured to that moment, not to the end of the
+        repeats that followed it.
+        """
+        if first_frame_at is None or last_frame_at is None:
+            metric.consecutive_failures = min(2**53 - 1, metric.consecutive_failures + 1)
+            return
+        metric.consecutive_failures = 0
+        self.delivered = True
+        ended = last_frame_at if healthy_until is None else healthy_until
+        if ended - first_frame_at >= self.stable_seconds:
+            self.attempt = 0
+
+    def allows_redial(self, metric, first_frame_at: float | None) -> bool:
+        """Take one reconnect of the budget; False ends the stream with its reason."""
+        frameless = first_frame_at is None
+        # A session that already named its end (a cleanup that could not be
+        # proven) is never followed by another process, whatever it delivered:
+        # the one not proven dead still holds the camera's single connection.
+        if metric.end_reason:
+            return False
+        if frameless and not self.delivered:
+            metric.end_reason = "connect_failed"
+            return False
+        if self.attempt >= self.max_retries:
+            metric.end_reason = metric.end_reason or ("connect_failed" if frameless else "retry_exhausted")
+            return False
+        self.attempt += 1
+        return True
+
+
+# How long an RTSP session may deliver byte-identical frames before it is ended
+# and redialled, and the interval at which a picture that really does not change
+# is checked again (upstream e0149ae4a / 4a1f602bf; their measurements on X1C
+# and P2S).
+_RTSP_FROZEN_SECONDS = 20.0
+_RTSP_STILL_RECHECK_SECONDS = 300.0
+
+
+class _FreezeWatch:
+    """Notices an RTSP picture that has stopped changing, across the sessions of one stream.
+
+    A session can stay up and keep delivering frames while no new picture
+    arrives: the source's encoder runs on over a dead sensor, or the output rate
+    repeats the last frame.  Nothing downstream can tell such a frame from a new
+    one, so every consumer of the live frame took it for fresh.  A live camera
+    rarely repeats a frame byte for byte (sensor noise), so identical frames for
+    longer than the limit end the session and the stream's ordinary reconnect
+    loop redials.
+
+    What the redial shows decides the rest.  The same bytes again from a fresh
+    connection: the camera is alive and its scene is still, and it is only
+    checked again at the long interval until the picture changes.  A new
+    picture: the source had stopped, or — for a camera without a profile, which
+    may be slower than the output rate or hold a static scene in a smart codec —
+    it is just slow to change, so the limit there is three times the longest gap
+    it has shown between two pictures, never below the short limit and never
+    above the long one.
+
+    Frames are compared as bytes: equal length first, then a memory compare that
+    stops at the first difference.  Nothing is decoded or hashed.
+    """
+
+    def __init__(self, *, adaptive: bool) -> None:
+        self.adaptive = adaptive
+        self.still_scene = False
+        #: The session now running was ended by this watch.
+        self.ended_session = False
+        self._previous: bytes | None = None
+        self._changed_at = 0.0
+        self._picture_changed = False
+        self._identical = 0
+        self._longest_gap = 0.0
+        self._frozen_on: bytes | None = None
+        self._unchanged_for = 0.0
+        # (identical frames, seconds, limit) of a freeze whose outcome is not known yet
+        self._unreported: tuple[int, float, float] | None = None
+
+    def limit(self) -> float:
+        if self.still_scene:
+            return _RTSP_STILL_RECHECK_SECONDS
+        if not self.adaptive:
+            return _RTSP_FROZEN_SECONDS
+        return min(max(_RTSP_FROZEN_SECONDS, 3 * self._longest_gap), _RTSP_STILL_RECHECK_SECONDS)
+
+    def start_session(self) -> None:
+        self.ended_session = False
+        self._previous = None
+        self._picture_changed = False
+        self._identical = 0
+
+    def observe(self, frame: bytes, now: float) -> bool:
+        """Take the session's next frame; True means end the session and redial."""
+        previous = self._previous
+        if previous is None:
+            if self._frozen_on is not None:
+                self.still_scene = frame == self._frozen_on
+                if not self.still_scene:
+                    self._frozen_on = None
+                    if self.adaptive:
+                        self._longest_gap = max(self._longest_gap, self._unchanged_for)
+                self._report("the same picture" if self.still_scene else "a new picture")
+            self._previous = frame
+            self._changed_at = now
+            return False
+        if len(frame) == len(previous) and frame == previous:
+            self._identical += 1
+            self._unchanged_for = now - self._changed_at
+            if self._unchanged_for <= self.limit():
+                return False
+            self.ended_session = True
+            self._frozen_on = frame
+            if not self.still_scene:
+                self._unreported = (self._identical, self._unchanged_for, self.limit())
+            return True
+        if self.adaptive:
+            self._longest_gap = max(self._longest_gap, now - self._changed_at)
+        self._previous = frame
+        self._changed_at = now
+        self._picture_changed = True
+        self._identical = 0
+        self.still_scene = False
+        self._frozen_on = None
+        return False
+
+    @property
+    def healthy_until(self) -> float | None:
+        """To when a session this watch ended counts for the reconnect budget's stable window.
+
+        A confirmed still scene is a healthy camera for as long as it delivers;
+        otherwise only the time the picture was seen changing counts, so a
+        source that shows one picture per connection and then nothing new is
+        not forgiven for the repeats it sent.
+        """
+        if not self.ended_session:
+            return None
+        if self.still_scene:
+            return self._changed_at + self._unchanged_for
+        return self._changed_at if self._picture_changed else float("-inf")
+
+    def count_session(self, metric) -> None:
+        if not self.ended_session:
+            return
+        if self.still_scene:
+            metric.still_rechecks_total = min(2**53 - 1, metric.still_rechecks_total + 1)
+        else:
+            metric.frozen_restarts_total = min(2**53 - 1, metric.frozen_restarts_total + 1)
+
+    def close(self) -> None:
+        """The stream is over; a freeze whose redial never showed a picture is still reported."""
+        self._report("no frame")
+
+    def _report(self, shown: str) -> None:
+        # One line per freeze, written when its outcome is known — never per
+        # frame, and never per re-check of a scene already reported as still.
+        if self._unreported is None:
+            return
+        identical, seconds, limit = self._unreported
+        self._unreported = None
+        if self.still_scene:
+            logger.info(
+                "Camera picture stopped changing: %d identical frames over %.0fs (limit %.0fs); the session was "
+                "restarted and shows the same picture, so the scene is still and is checked again every %.0fs "
+                "until it changes",
+                identical,
+                seconds,
+                limit,
+                _RTSP_STILL_RECHECK_SECONDS,
+            )
+            return
+        logger.warning(
+            "Camera picture stopped changing: %d identical frames over %.0fs (limit %.0fs); the session was "
+            "restarted and delivered %s",
+            identical,
+            seconds,
+            limit,
+            shown,
+        )
+
+
 def _rtsp_reconnect_delay(reconnect_count: int, profile: CameraProfile) -> float:
     """Return the worker-safe equivalent of the built-in RTSP backoff."""
 
@@ -1129,80 +1375,75 @@ async def _stream_usb(
         "-",
     ]
 
-    process = None
-    stderr_drain: FfmpegStderrDrain | None = None
+    # One attempt owns the process and both its pipes (upstream #2580): the exit is waited for with a bound,
+    # after the kill too, and stdout is drained meanwhile so a full pipe cannot hold ffmpeg in its last write.
+    # The hand-written teardown this replaces awaited ``process.wait()`` after the kill with no bound at all.
     try:
-        logger.info("Starting USB camera stream from %s at %s fps", device, fps)
-        process = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        # Register BEFORE the startup probe below. A previous leak still holding
-        # the device makes this ffmpeg block in open()/ioctl rather than exit
-        # with "busy", so it never reaches the probe — and an unreapable process
-        # fighting over /dev/videoN is exactly the symptom (#2675).
-        if on_process is not None:
-            on_process(process)
-
-        # Give ffmpeg a moment to start and check for immediate failures
-        await asyncio.sleep(0.5)
-        if process.returncode is not None:
-            stderr = await process.stderr.read()
-            logger.error(
-                "ffmpeg USB stream failed immediately: %s", summarize_ffmpeg_stderr(stderr) or NO_FFMPEG_OUTPUT
+        async with CameraAttempt(f"external-usb device={device}") as attempt:
+            logger.info("Starting USB camera stream from %s at %s fps", device, fps)
+            process = attempt.process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
             )
-            return
+            # Register BEFORE the startup probe below. A previous leak still holding
+            # the device makes this ffmpeg block in open()/ioctl rather than exit
+            # with "busy", so it never reaches the probe — and an unreapable process
+            # fighting over /dev/videoN is exactly the symptom (#2675).
+            if on_process is not None:
+                on_process(process)
 
-        # Same as the RTSP path above — see services/ffmpeg_stderr.
-        stderr_drain = FfmpegStderrDrain(process, name=f"ext-usb-{process.pid}").start()
+            # Give ffmpeg a moment to start and check for immediate failures
+            await asyncio.sleep(0.5)
+            if process.returncode is not None:
+                stderr = await process.stderr.read()
+                logger.error(
+                    "ffmpeg USB stream failed immediately: %s", summarize_ffmpeg_stderr(stderr) or NO_FFMPEG_OUTPUT
+                )
+                return
 
-        buffer = b""
-        jpeg_start = b"\xff\xd8"
-        jpeg_end = b"\xff\xd9"
+            # Same as the RTSP path above — see services/ffmpeg_stderr.
+            attempt.stderr = FfmpegStderrDrain(process, name=f"ext-usb-{process.pid}").start()
 
-        while True:
-            try:
-                chunk = await asyncio.wait_for(process.stdout.read(8192), timeout=30.0)
+            buffer = b""
+            jpeg_start = b"\xff\xd8"
+            jpeg_end = b"\xff\xd9"
 
-                if not chunk:
+            while True:
+                try:
+                    chunk = await asyncio.wait_for(process.stdout.read(8192), timeout=30.0)
+
+                    if not chunk:
+                        break
+
+                    buffer += chunk
+
+                    # Extract complete frames
+                    while True:
+                        start_idx = buffer.find(jpeg_start)
+                        if start_idx == -1:
+                            buffer = buffer[-2:] if len(buffer) > 2 else buffer
+                            break
+
+                        if start_idx > 0:
+                            buffer = buffer[start_idx:]
+
+                        end_idx = buffer.find(jpeg_end, 2)
+                        if end_idx == -1:
+                            break
+
+                        frame = buffer[: end_idx + 2]
+                        buffer = buffer[end_idx + 2 :]
+                        yield frame
+
+                except TimeoutError:
+                    logger.warning("USB stream read timeout")
                     break
 
-                buffer += chunk
-
-                # Extract complete frames
-                while True:
-                    start_idx = buffer.find(jpeg_start)
-                    if start_idx == -1:
-                        buffer = buffer[-2:] if len(buffer) > 2 else buffer
-                        break
-
-                    if start_idx > 0:
-                        buffer = buffer[start_idx:]
-
-                    end_idx = buffer.find(jpeg_end, 2)
-                    if end_idx == -1:
-                        break
-
-                    frame = buffer[: end_idx + 2]
-                    buffer = buffer[end_idx + 2 :]
-                    yield frame
-
-            except TimeoutError:
-                logger.warning("USB stream read timeout")
-                break
-
     except asyncio.CancelledError:
+        # Re-raised, as the MJPEG and RTSP readers do: swallowed, a cancelled producer read as an ordinary
+        # end of stream.
         logger.info("USB stream cancelled")
-    except OSError as e:
-        logger.error("USB stream error: %s", e)
-    finally:
-        if stderr_drain is not None:
-            await stderr_drain.aclose()
-        if process and process.returncode is None:
-            process.terminate()
-            try:
-                await asyncio.wait_for(process.wait(), timeout=2.0)
-            except TimeoutError:
-                process.kill()
-                await process.wait()
+        raise
+    except (OSError, CameraCleanupError) as e:
+        logger.error("USB stream error: %s", summarize_ffmpeg_stderr(str(e)))

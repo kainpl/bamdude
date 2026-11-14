@@ -155,6 +155,9 @@ class LiveProducerRegistry:
         self._producers: dict[str, asyncio.Task[None]] = {}
         self._subscribers: dict[str, dict[str, asyncio.Queue[bytes]]] = {}
         self._latest: dict[str, bytes] = {}
+        # Producers whose source the freeze watch has judged a still scene (a redial showed the
+        # same picture). Stamped on every frame relayed to the main process; gone with the producer.
+        self._still: set[str] = set()
         self._raw_leases: dict[str, RawCameraLease] = {}
         self._probe_leases: set[str] = set()
         self._lock = asyncio.Lock()
@@ -233,6 +236,7 @@ class LiveProducerRegistry:
                 return
             self._subscribers.pop(lease.identity, None)
             self._latest.pop(lease.identity, None)
+            self._still.discard(lease.identity)
             producer = self._producers.pop(lease.identity, None)
             if producer is not None:
                 producer.cancel()
@@ -244,6 +248,16 @@ class LiveProducerRegistry:
             (result,) = await asyncio.gather(producer, return_exceptions=True)
             if isinstance(result, BaseException) and not isinstance(result, asyncio.CancelledError):
                 raise RuntimeError("camera producer cleanup failed") from result
+
+    def mark_still(self, identity: str, still: bool) -> None:
+        """The producer's verdict on its own source: a still scene (True) or not known to be one."""
+        if still:
+            self._still.add(identity)
+        else:
+            self._still.discard(identity)
+
+    def is_still(self, identity: str) -> bool:
+        return identity in self._still
 
     def publish(self, identity: str, frame: bytes) -> None:
         if not 0 < len(frame) <= MAX_LIVE_FRAME_BYTES:
@@ -272,6 +286,7 @@ class LiveProducerRegistry:
                 logger.info("Camera worker live producer ended: identity=%s", identity)
         if self._producers.get(identity) is task:
             self._producers.pop(identity, None)
+            self._still.discard(identity)
             for queue in self._subscribers.get(identity, {}).values():
                 if queue.full():
                     queue.get_nowait()

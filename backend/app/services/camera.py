@@ -810,22 +810,35 @@ async def test_camera_connection(
     ip_address: str,
     access_code: str,
     model: str | None,
+    printer_id: int | None = None,
 ) -> dict:
     """Test if the camera stream is accessible.
 
     Returns dict with success status and any error message.
+
+    With ``printer_id`` a camera that is being watched is not dialled a second time (most firmware allows one
+    connection): the live view's frame is the proof, and the answer carries ``live_view: True``.
     """
-    from backend.app.services.camera_runtime import CameraCaptureRequest, capture
+    from backend.app.services.camera_runtime import CAMERA_BUSY_WITH_LIVE_VIEW, CameraCaptureRequest, capture
 
     try:
         result = await capture(
             CameraCaptureRequest.builtin(
-                ip_address=ip_address, access_code=access_code, model=model, timeout=15, purpose="diagnose"
+                ip_address=ip_address,
+                access_code=access_code,
+                model=model,
+                timeout=15,
+                purpose="diagnose",
+                view_printer_id=printer_id,
             )
         )
     except Exception:
         logger.exception("Camera connection test failed")
         result = None
+    if result is not None and result.source == "live_view":
+        if result.frame:
+            return {"success": True, "message": "Camera connection successful", "live_view": True}
+        return {"success": False, "error": CAMERA_BUSY_WITH_LIVE_VIEW, "live_view": True}
     if result is not None and result.frame:
         return {"success": True, "message": "Camera connection successful"}
     return {

@@ -162,3 +162,89 @@ class TestUsbSnapshotProcessOwnership:
         # A leaked exemption would make that pid permanently unreapable — the
         # janitor's blind spot, inverted.
         assert 52031 not in _active_capture_pids
+
+
+class _NeverReader:
+    async def read(self, _size: int = -1) -> bytes:
+        await asyncio.Event().wait()
+        return b""
+
+
+class _StuckUsbProc:
+    """ffmpeg that ignores SIGTERM and whose ``wait()`` does not return after the kill either (#2580)."""
+
+    def __init__(self, pid: int = 52090) -> None:
+        self.pid = pid
+        self.returncode = None
+        self.stdout = _NeverReader()
+        self.stderr = _NeverReader()
+        self.signals: list[str] = []
+
+    def terminate(self) -> None:
+        self.signals.append("terminate")
+
+    def kill(self) -> None:
+        self.signals.append("kill")
+
+    async def wait(self) -> int:
+        await asyncio.Event().wait()
+        return 0
+
+
+class _ObedientUsbProc(_StuckUsbProc):
+    def terminate(self) -> None:
+        self.signals.append("terminate")
+        self.returncode = -15
+
+    async def wait(self) -> int:
+        while self.returncode is None:
+            await asyncio.sleep(0.01)
+        return self.returncode
+
+
+async def _watch(monkeypatch, proc) -> asyncio.Task:
+    async def fake_create_subprocess_exec(*_args, **_kwargs):
+        return proc
+
+    monkeypatch.setattr(external_camera, "get_ffmpeg_path", lambda: "/fake/ffmpeg")
+    monkeypatch.setattr(external_camera, "Path", _FakePath)
+    monkeypatch.setattr(external_camera.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+
+    async def consume() -> None:
+        async for _frame in external_camera._stream_usb("/dev/video0", 10):
+            pass
+
+    task = asyncio.create_task(consume())
+    await asyncio.sleep(0.7)  # past the half-second startup probe, into the read
+    assert not task.done()
+    return task
+
+
+class TestUsbStreamTeardown:
+    """Upstream 31888777a leg 3: the USB stream ends like the RTSP one — bounded, and cancelled when cancelled."""
+
+    @pytest.mark.asyncio
+    async def test_a_process_that_never_exits_does_not_hold_the_teardown_forever(self, monkeypatch):
+        from backend.app.services import camera_cleanup
+
+        proc = _StuckUsbProc()
+        task = await _watch(monkeypatch, proc)
+        task.cancel()
+        done, _pending = await asyncio.wait({task}, timeout=8)
+        try:
+            assert done, "the producer's teardown waited for a process that never reports its exit"
+            assert proc.signals == ["terminate", "kill"]
+        finally:
+            proc.returncode = -9
+            camera_cleanup._unreaped_processes.pop(proc.pid, None)
+            if not done:
+                task.cancel()
+
+    @pytest.mark.asyncio
+    async def test_a_cancelled_usb_stream_ends_cancelled(self, monkeypatch):
+        proc = _ObedientUsbProc(pid=52091)
+        task = await _watch(monkeypatch, proc)
+        task.cancel()
+        await asyncio.wait({task}, timeout=5)
+        assert task.cancelled(), "the cancellation was swallowed: the producer read as an ordinary end of stream"
+        assert proc.signals == ["terminate"]

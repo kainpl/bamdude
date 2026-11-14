@@ -3940,20 +3940,24 @@ async def _capture_snapshot_for_notification(
             logger.info("[SNAPSHOT] Capturing from external camera for printer %s", printer_id)
             from backend.app.services.camera_runtime import CameraCaptureRequest, capture
 
-            frame_data = (
-                await capture(
-                    CameraCaptureRequest.external(
-                        url=printer.external_camera_url,
-                        camera_type=printer.external_camera_type or "mjpeg",
-                        snapshot_url=printer.external_camera_snapshot_url,
-                        purpose=purpose,
-                        printer_id=printer_id,
-                    )
+            external_result = await capture(
+                CameraCaptureRequest.external(
+                    url=printer.external_camera_url,
+                    camera_type=printer.external_camera_type or "mjpeg",
+                    snapshot_url=printer.external_camera_snapshot_url,
+                    purpose=purpose,
+                    printer_id=printer_id,
                 )
-            ).frame
+            )
+            frame_data = external_result.frame
             if frame_data and len(frame_data) <= 2_500_000:
                 logger.info("[SNAPSHOT] External camera frame: %s bytes", len(frame_data))
                 return _apply_camera_rotation(frame_data, printer, logger)
+            if external_result.source == "live_view":
+                # The camera is being watched and its view had no usable frame (camera_runtime.capture stood
+                # down). That is not a broken camera: no built-in stand-in from another angle either.
+                logger.info("[SNAPSHOT] External camera of printer %s is busy with its live view", printer_id)
+                return None
 
         # Try buffered frame from active stream
         from backend.app.api.routes.camera import get_buffered_frame, is_stream_active
@@ -4071,12 +4075,17 @@ async def _maybe_bank_inprint_frame(printer_id: int, layer_num: int) -> None:
         # fan-out buffer is momentarily empty — some firmwares (X2D 01.01.00.00,
         # and the single-connection port-6000 chamber stream) drop the live viewer
         # when a second socket opens. Same discipline as
-        # ``obico_detection._capture_frame``. External cameras don't compete.
-        if not (printer.external_camera_enabled and printer.external_camera_url):
-            from backend.app.api.routes.camera import get_buffered_frame, is_stream_active
+        # ``obico_detection._capture_frame``. An external camera competes just the same: a USB device has
+        # one handle (#2707), so the question is asked for both kinds. Only a camera with its own snapshot
+        # URL is let through, as before: that is an HTTP GET beside the stream (camera_runtime.capture).
+        from backend.app.api.routes.camera import live_frame_for_capture
 
-            if is_stream_active(printer_id) and get_buffered_frame(printer_id) is None:
-                return
+        has_snapshot_url = bool(
+            printer.external_camera_enabled and printer.external_camera_url and printer.external_camera_snapshot_url
+        )
+        defer_live, buffered_live = live_frame_for_capture(printer_id)
+        if defer_live and buffered_live is None and not has_snapshot_url:
+            return
         # Reuses the notification snapshot path, which honours the
         # ``capture_finish_photo`` setting (returns None when disabled) so we
         # don't bank frames the user never asked for. Under its own purpose:

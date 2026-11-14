@@ -93,6 +93,34 @@ class TestCreateLongLivedToken:
         assert listed is not None
         assert listed["token"] is None  # plaintext gone forever
 
+    @pytest.mark.parametrize("scope", ["overlay", "camera_stream", "camwall"])
+    async def test_the_answer_that_carries_the_token_is_never_stored_by_a_cache(
+        self, async_client: AsyncClient, scope: str
+    ):
+        """The one response that holds the plaintext must not sit in a proxy or a browser cache."""
+        response = await async_client.post(
+            "/api/v1/auth/tokens",
+            json={"name": "OBS", "expires_in_days": 30, "scope": scope},
+        )
+        assert response.status_code == 201, response.text
+        assert response.json()["token"].startswith("bblt_")
+        assert response.headers["cache-control"] == "no-store"
+
+    async def test_no_listing_gives_a_created_overlay_token_back(self, async_client: AsyncClient):
+        """The overlay builder shows a token it created once: nothing can fetch it again."""
+        created = await async_client.post(
+            "/api/v1/auth/tokens",
+            json={"name": "OBS", "expires_in_days": 30, "scope": "overlay"},
+        )
+        assert created.status_code == 201, created.text
+        plaintext = created.json()["token"]
+
+        for path in ("/api/v1/auth/tokens", "/api/v1/auth/tokens/all"):
+            listing = await async_client.get(path)
+            assert listing.status_code == 200, listing.text
+            assert plaintext not in listing.text
+            assert all(row["token"] is None for row in listing.json())
+
     async def test_create_rejects_expires_in_zero(self, async_client: AsyncClient):
         """Issue #1108: ``expire_in: 0`` (never) is explicitly forbidden."""
         response = await async_client.post(

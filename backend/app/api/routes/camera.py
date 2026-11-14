@@ -28,7 +28,7 @@ from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.models.printer import Printer
 from backend.app.models.user import User
-from backend.app.services import camera_metrics
+from backend.app.services import camera_metrics, camera_viewers
 from backend.app.services.camera import (
     is_chamber_image_model,
     test_camera_connection,
@@ -51,9 +51,27 @@ _last_frames: dict[int, bytes] = {}
 
 # Track last frame timestamp for each printer (for stall detection)
 _last_frame_times: dict[int, float] = {}
+# When a printer's frame BYTES last arrived, monotonic (a repeat counts): what the age limit of a lent
+# frame is measured from. ``_last_frame_times`` is wall-clock and steps with it.
+_last_frame_arrivals: dict[int, float] = {}
+# A lent frame whose bytes last arrived longer ago than this is not a frame. A stream that delivered
+# before is redialled for its whole reconnect budget — minutes — with its relay still registered, and
+# its buffer would go on answering with the picture from before the camera dropped. The standalone
+# cameras' limit (``routes/cameras._LIVE_FRAME_MAX_AGE_SECONDS``).
+LIVE_FRAME_MAX_AGE_SECONDS = 10.0
 # Admission evidence is separate from wall-clock timestamps used by camera/status.
 # Each frame belongs to one producer generation and its actual camera configuration.
+# Its time is when this PICTURE first arrived: a source can keep delivering the bytes it froze
+# on (upstream e0149ae4a), and a repeat of the frame before it is not evidence of anything new.
 _live_frame_metadata: dict[int, tuple[float, str, CameraCaptureRequest]] = {}
+# Printers whose current producer (the token) is showing what the WORKER judged a still scene: it
+# ended the session, redialled, and the new connection showed the same picture — a live camera, a
+# plate nothing moves on. Written with every relayed frame from the flag that frame carries, and only
+# for a repeat; it falls with the first changed picture and means nothing for another producer.
+_still_scene_streams: dict[int, str] = {}
+# Wall-clock twin of that time. ``_last_frame_times`` keeps meaning "bytes arrived": a still
+# scene that repeats a frame is a live stream, not a stalled one.
+_last_change_times: dict[int, float] = {}
 
 # Track stream start times for each printer
 _stream_start_times: dict[int, float] = {}
@@ -73,9 +91,19 @@ _active_worker_streams: dict[int, tuple[str, str]] = {}
 def get_buffered_frame(printer_id: int) -> bytes | None:
     """Get the last buffered frame for a printer from an active stream.
 
-    Returns the JPEG frame data if available, or None if no active stream.
+    Returns the JPEG frame data if available, or None if no active stream — or when the stream has
+    delivered nothing for :data:`LIVE_FRAME_MAX_AGE_SECONDS`: every reader of the buffer comes through
+    here, so none of them is handed the picture a dropped camera left behind. The state itself stays
+    with the relay that owns it. A frame with no recorded arrival is not judged by age (only the relay
+    writes the buffer, and it records both).
     """
-    return _last_frames.get(printer_id)
+    frame = _last_frames.get(printer_id)
+    if frame is None:
+        return None
+    arrived = _last_frame_arrivals.get(printer_id)
+    if arrived is not None and time.monotonic() - arrived > LIVE_FRAME_MAX_AGE_SECONDS:
+        return None
+    return frame
 
 
 def is_stream_active(printer_id: int) -> bool:
@@ -105,6 +133,7 @@ def live_frame_for_capture(
     not_before: float | None = None,
     expected_source: CameraCaptureRequest | None = None,
     generation: str | None = None,
+    accept_still_scene: bool = False,
 ) -> tuple[bool, bytes | None]:
     """Should a one-shot capture stand down for the live view, and to what frame?
 
@@ -140,13 +169,55 @@ def live_frame_for_capture(
         if metadata is None:
             return True, None
         arrived, producer, source_request = metadata
-        if (
-            producer != live_stream_generation(printer_id)
-            or (not_before is not None and arrived <= not_before)
-            or (expected_source is not None and not source_request.same_source(expected_source))
+        if producer != live_stream_generation(printer_id) or (
+            expected_source is not None and not source_request.same_source(expected_source)
         ):
             return True, None
+        if not_before is not None and arrived <= not_before:
+            # The PICTURE is from before the moment asked for. A repeat of it whose bytes arrived since
+            # is evidence only for a caller that asked for "a frame of now" (``accept_still_scene``) and
+            # only while the worker's still-scene verdict stands: without it the source may as well be
+            # frozen, and nothing here can tell. A caller whose moment is a CHANGE it made to the scene
+            # (the light it switched on) never asks: the picture it waits for is a different one.
+            if not (
+                accept_still_scene
+                and still_scene_stands(printer_id)
+                and _last_frame_arrivals.get(printer_id, arrived) > not_before
+            ):
+                return True, None
     return True, get_buffered_frame(printer_id)
+
+
+def still_scene_stands(printer_id: int) -> bool:
+    """The worker's verdict "a still scene, alive" stands for the producer now feeding this printer's view."""
+    producer = _still_scene_streams.get(printer_id)
+    return producer is not None and producer == live_stream_generation(printer_id)
+
+
+def live_view_repeats_since(printer_id: int, moment: float) -> bool:
+    """The view has delivered bytes since ``moment`` (monotonic) but no new picture.
+
+    For a consumer that waited for a frame from after ``moment`` and got none: its buffer is not empty and
+    the stream is not stalled — the camera keeps sending the picture it showed before.
+    """
+    metadata = _live_frame_metadata.get(printer_id)
+    if metadata is None or metadata[1] != live_stream_generation(printer_id):
+        return False
+    last_bytes = _last_frame_arrivals.get(printer_id)
+    return last_bytes is not None and metadata[0] <= moment < last_bytes
+
+
+def live_view_frame(printer_id: int, kind: Literal["builtin", "external"]) -> tuple[bool, bytes | None]:
+    """:func:`live_frame_for_capture` for a capture of ONE of the printer's two cameras.
+
+    What ``camera_runtime.capture`` asks before it lets the worker dial. A view of the printer's external
+    camera holds no socket of the built-in one (and the reverse), so a capture of the other device is not
+    deferred — and is never handed the wrong camera's frame.
+    """
+    active = _active_worker_streams.get(printer_id)
+    if active is not None and (active[1] == "external") != (kind == "external"):
+        return False, None
+    return live_frame_for_capture(printer_id)
 
 
 def live_frame_observation(printer_id: int) -> tuple[bool, bytes | None, float | None, float | None]:
@@ -162,7 +233,7 @@ def live_frame_observation(printer_id: int) -> tuple[bool, bytes | None, float |
     metadata = _live_frame_metadata.get(printer_id)
     if metadata is None or metadata[1] != live_stream_generation(printer_id):
         return defer, frame, None, None
-    return defer, frame, _last_frame_times.get(printer_id), metadata[0]
+    return defer, frame, _last_change_times.get(printer_id, _last_frame_times.get(printer_id)), metadata[0]
 
 
 def _new_fanout_stream_id(printer_id: int) -> str:
@@ -205,10 +276,55 @@ def _release_printer_frame_state(printer_id: int | None) -> None:
         return
     _last_frames.pop(printer_id, None)
     _last_frame_times.pop(printer_id, None)
+    _last_frame_arrivals.pop(printer_id, None)
     _live_frame_metadata.pop(printer_id, None)
+    _still_scene_streams.pop(printer_id, None)
+    _last_change_times.pop(printer_id, None)
     _stream_start_times.pop(printer_id, None)
     _snapshot_frames.pop(printer_id, None)
     _snapshot_frame_times.pop(printer_id, None)
+
+
+def camera_source_of(printer) -> tuple:
+    """What a live view of ``printer`` dials: the choice ``camera_stream`` makes, with everything it reads.
+
+    Two answers that differ mean the running upstream is of a camera the printer no longer has — see
+    :func:`retire_printer_stream`. Saved external fields of a printer whose external camera is off are not
+    part of it, and neither is the printer's own address while an external camera is the source.
+    """
+    if printer.external_camera_enabled and printer.external_camera_url:
+        return (
+            "external",
+            printer.external_camera_url,
+            printer.external_camera_type,
+            printer.external_camera_snapshot_url,
+        )
+    return ("builtin", printer.ip_address, printer.access_code, printer.model)
+
+
+async def retire_printer_stream(printer_id: int) -> bool:
+    """End the printer's running camera upstream because its camera changed, or the printer is gone.
+
+    The broadcaster key and the worker identity carry no configuration on purpose (a rotated access token
+    must not add a second producer), so a saved change does not reach a running upstream by itself: every
+    viewer, reconnecting ones included, kept the OLD source until all of them had been gone for the grace
+    window at once — on a kiosk wall, never — and background captures were lent the old camera's frame
+    (upstream 31888777a). A deleted printer's upstream would likewise be joined by the printer that takes
+    its id.
+
+    Returns once the old upstream has let go: the relay's ``finally`` has released the worker lease (the
+    worker confirms its producer ended) and dropped the frame state it owned. The stopped broadcaster stays
+    in the registry, so a viewer that reconnects meanwhile is chained behind it and never dials beside it
+    (``40-invariants/inv-single-camera-socket``). Current viewers' responses end; their pages reconnect and
+    the relay they open reads the saved configuration.
+    """
+    stopped = await shutdown_broadcaster(f"printer-{printer_id}")
+    # A snapshot cached from the old camera is not the new one's either, watched or not.
+    _snapshot_frames.pop(printer_id, None)
+    _snapshot_frame_times.pop(printer_id, None)
+    if stopped:
+        logger.info("Retired the camera upstream of printer %s: its camera source changed", printer_id)
+    return stopped
 
 
 def _snapshot_response(printer_id: int, image_data: bytes) -> Response:
@@ -258,7 +374,7 @@ def try_get_active_buffered_frame(printer_id: int) -> bytes | None:
     """
     if not is_stream_active(printer_id):
         return None
-    return _last_frames.get(printer_id)
+    return get_buffered_frame(printer_id)
 
 
 # Independent of the shared current-access freshness proof; never renewed.
@@ -284,6 +400,19 @@ async def get_printer_or_404(printer_id: int, db: AsyncSession) -> Printer:
     return printer
 
 
+async def _printer_for_capture(printer_id: int) -> Printer:
+    """The printer row for a route that is about to wait on its camera, read in a session that is closed again.
+
+    A capture takes seconds — the worker's whole timeout against a printer that does not answer. A
+    ``Depends(get_db)`` session stays in the transaction its printer SELECT opened until the request ends, so
+    every such request pinned a pooled connection for the wait (#2572; upstream cf0ba31f1 for the test,
+    diagnose and plate routes). ``expire_on_commit=False`` keeps the loaded columns readable afterwards and
+    the callers read scalar columns only. Via the module, so the maker is looked up at call time.
+    """
+    async with database.async_session() as db:
+        return await get_printer_or_404(printer_id, db)
+
+
 async def _worker_stream_response(
     *,
     printer: Printer,
@@ -293,6 +422,7 @@ async def _worker_stream_response(
     runtime,
     builtin: bool = False,
     access_guard=None,
+    viewer_id: str | None = None,
 ) -> Response:
     """Serve worker-owned live video through the existing HTTP fan-out.
 
@@ -332,6 +462,12 @@ async def _worker_stream_response(
         started = time.monotonic()
         frames = 0
         first_frame_ms: float | None = None
+        still_scene = False
+
+        def _note_still_scene(still: bool) -> None:
+            # The worker's verdict on the frame that follows (camera_runtime hands it over first).
+            nonlocal still_scene
+            still_scene = still
 
         def _observe_worker_frame(frame: bytes) -> None:
             nonlocal frames, first_frame_ms
@@ -346,9 +482,26 @@ async def _worker_stream_response(
                 )
             if _active_worker_streams.get(printer_id) != (worker_stream_token, source):
                 return  # A departing producer cannot overwrite its successor's frame.
-            _last_frames[printer_id] = frame
-            _last_frame_times[printer_id] = time.time()
-            _live_frame_metadata[printer_id] = (time.monotonic(), worker_stream_token, source_request)
+            evidence = _live_frame_metadata.get(printer_id)
+            # Bytes compare length first and stop at the first difference; nothing is decoded.
+            repeated = (
+                evidence is not None and evidence[1] == worker_stream_token and frame == _last_frames.get(printer_id)
+            )
+            arrived = time.time()
+            _last_frame_times[printer_id] = arrived
+            _last_frame_arrivals[printer_id] = time.monotonic()
+            if still_scene and repeated:
+                _still_scene_streams[printer_id] = worker_stream_token
+            else:
+                # A changed picture is no still scene, whatever the frame was stamped with.
+                _still_scene_streams.pop(printer_id, None)
+            if not repeated:
+                # A repeat of the previous frame keeps the time its picture first arrived, so a
+                # check that waits for a frame from after its own start is never handed a
+                # picture from before it.
+                _last_frames[printer_id] = frame
+                _last_change_times[printer_id] = arrived
+                _live_frame_metadata[printer_id] = (time.monotonic(), worker_stream_token, source_request)
             _remember_snapshot(printer_id, frame)
 
         async def _stream():
@@ -371,6 +524,7 @@ async def _worker_stream_response(
                         fps=fps,
                         disconnect_event=disconnect_event,
                         on_frame=_observe_worker_frame,
+                        on_still_scene=_note_still_scene,
                     )
                     if builtin
                     else runtime.stream_external(
@@ -380,6 +534,7 @@ async def _worker_stream_response(
                         fps=fps,
                         disconnect_event=disconnect_event,
                         on_frame=_observe_worker_frame,
+                        on_still_scene=_note_still_scene,
                     )
                 )
                 async for chunk in stream:
@@ -424,6 +579,9 @@ async def _worker_stream_response(
             logger.info("Camera worker viewer detached from %s (subscribers=%d)", fanout_key, remaining)
 
         viewer.releases.append(unsubscribe)
+        # THIS viewer, by the correlation id its view sent: removed with it, whatever ends it, so the
+        # view's status read can tell its own ended stream from a healthy shared upstream.
+        viewer.releases.append(camera_viewers.attach(fanout_key, viewer_id))
         logger.info("Camera worker viewer attached to %s (subscribers=%d)", fanout_key, broadcaster.subscriber_count)
         from backend.app.services import camera_light
 
@@ -467,6 +625,7 @@ async def camera_stream(
     printer_id: int,
     request: Request,
     fps: int = 10,
+    viewer: str | None = None,
     access: CameraAccess = Depends(require_camera_token_or_headers()),
 ):
     """Stream live video from printer camera as MJPEG.
@@ -485,6 +644,8 @@ async def camera_stream(
     Args:
         printer_id: Printer ID
         fps: Target frames per second (default: 10, max: 30)
+        viewer: The view's correlation id for this stream (not a secret, not authority); its
+            status read asks whether THIS viewer is still attached. A malformed one is ignored.
     """
 
     # Fetch the printer in a short-lived session so the pooled DB connection is
@@ -536,6 +697,7 @@ async def camera_stream(
             fps=fps,
             runtime=get_camera_runtime(),
             access_guard=access_guard,
+            viewer_id=viewer,
         )
 
     # Validate FPS - A1/P1 models max out at ~5 FPS
@@ -554,6 +716,7 @@ async def camera_stream(
         runtime=get_camera_runtime(),
         builtin=True,
         access_guard=access_guard,
+        viewer_id=viewer,
     )
 
 
@@ -673,6 +836,22 @@ def _reusable_frame(printer_id: int) -> tuple[str, bytes] | None:
     return None
 
 
+def _snapshot_of_live_view(printer_id: int, frame: bytes | None) -> Response:
+    """The answer when ``camera_runtime.capture`` stood down for a live view: its frame, or "come back".
+
+    A view that is still starting (or between two sessions) holds the camera's one connection and has no
+    frame to lend; the snapshot is then a 503 with ``Retry-After`` — never a second reader (upstream #2707).
+    """
+    if frame is None:
+        raise HTTPException(
+            status_code=503,
+            detail="The camera's live view is still starting. Try again in a moment.",
+            headers={"Retry-After": "2"},
+        )
+    camera_metrics.remember_delivery(printer_id, "live_buffer")
+    return _snapshot_response(printer_id, frame)
+
+
 async def _snapshot_from(printer_id: int, printer):
     """One frame from ``printer``: external camera, live buffer, recent cache, or a fresh capture."""
     import tempfile
@@ -694,10 +873,13 @@ async def _snapshot_from(printer_id: int, printer):
                     camera_type=printer.external_camera_type,
                     timeout=15,
                     snapshot_url=printer.external_camera_snapshot_url,
+                    view_printer_id=printer_id,
                 )
             )
         except CameraWorkerUnavailable as exc:
             raise HTTPException(status_code=503, detail="Camera worker is unavailable.") from exc
+        if result.source == "live_view":
+            return _snapshot_of_live_view(printer_id, result.frame)
         frame_data = result.frame
         camera_metrics.remember_delivery(
             printer_id,
@@ -743,10 +925,13 @@ async def _snapshot_from(printer_id: int, printer):
                     access_code=printer.access_code,
                     model=printer.model,
                     timeout=15,
+                    view_printer_id=printer_id,
                 )
             )
         except CameraWorkerUnavailable as exc:
             raise HTTPException(status_code=503, detail="Camera worker is unavailable.") from exc
+        if result.source == "live_view":
+            return _snapshot_of_live_view(printer_id, result.frame)
         camera_metrics.remember_delivery(
             printer_id,
             "shared_capture" if result.source == "coalesced" else "own_capture" if result.frame else None,
@@ -772,19 +957,19 @@ async def _snapshot_from(printer_id: int, printer):
 @router.get("/{printer_id}/camera/test")
 async def test_camera(
     printer_id: int,
-    db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.CAMERA_VIEW),
 ):
     """Test camera connection for a printer.
 
     Returns success status and any error message.
     """
-    printer = await get_printer_or_404(printer_id, db)
+    printer = await _printer_for_capture(printer_id)
 
     result = await test_camera_connection(
         ip_address=printer.ip_address,
         access_code=printer.access_code,
         model=printer.model,
+        printer_id=printer_id,
     )
 
     return result
@@ -793,7 +978,6 @@ async def test_camera(
 @router.post("/{printer_id}/camera/diagnose")
 async def diagnose_camera_route(
     printer_id: int,
-    db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.CAMERA_VIEW),
 ):
     """Run staged diagnostics for a printer's camera path.
@@ -808,7 +992,7 @@ async def diagnose_camera_route(
 
     from backend.app.services.camera_diagnose import diagnose_camera
 
-    printer = await get_printer_or_404(printer_id, db)
+    printer = await _printer_for_capture(printer_id)
 
     # Look up live-stream evidence so the diagnostic can short-circuit
     # instead of fighting a viewer for the printer's single camera slot.
@@ -827,10 +1011,40 @@ async def diagnose_camera_route(
     return result.to_dict()
 
 
+def stream_liveness(printer_id: int, viewer: str | None = None) -> dict[str, bool]:
+    """Whether this printer's live stream is registered, and whether it has stopped delivering.
+
+    The ONE rule behind ``/camera/status`` and the ``camera`` field of the token-authenticated overlay
+    feed (``/printers/{id}/overlay-status``): a view re-opens its stream on this answer, so the two
+    must not drift apart. Stalled = registered for more than the 5 s start-up grace and no frame for
+    more than 10 s.
+
+    ``active`` / ``stalled`` answer for the SHARED upstream. Given the view's correlation id, the
+    answer also carries ``viewer_attached`` — whether that one viewer is still on the fan-out — because
+    a viewer the server ended while another keeps watching sees a healthy upstream and a frozen frame.
+    The field is absent when it cannot be said (no id, a malformed one).
+    """
+    import time
+
+    active = printer_id in _active_worker_streams
+    now = time.time()
+    last_frame_time = _last_frame_times.get(printer_id)
+    stream_start_time = _stream_start_times.get(printer_id)
+    since_frame = None if last_frame_time is None else now - last_frame_time
+    uptime = None if stream_start_time is None else now - stream_start_time
+    stalled = active and uptime is not None and uptime > 5 and (since_frame is None or since_frame > 10)
+    liveness = {"active": active, "stalled": stalled}
+    viewer_attached = camera_viewers.attached(f"printer-{printer_id}", viewer)
+    if viewer_attached is not None:
+        liveness["viewer_attached"] = viewer_attached
+    return liveness
+
+
 @router.get("/{printer_id}/camera/status")
 async def camera_status(
     printer_id: int,
     _: User | None = RequirePermission(Permission.CAMERA_VIEW),
+    viewer: str | None = None,
 ):
     """Get the status of an active camera stream.
 
@@ -859,31 +1073,38 @@ async def camera_status(
     if last_frame_time is not None:
         seconds_since_frame = current_time - last_frame_time
 
+    # A picture that stopped changing while frames keep arriving: reported, never called a stall
+    # here. The worker ends and redials a frozen RTSP session by its own limit, and a still scene
+    # is a healthy stream — a browser reconnect would fix neither.
+    last_change_time = _last_change_times.get(printer_id)
+    seconds_since_change = None
+    if last_change_time is not None:
+        seconds_since_change = current_time - last_change_time
+
     # Calculate stream uptime
     stream_uptime = None
     if stream_start_time is not None:
         stream_uptime = current_time - stream_start_time
 
+    liveness = stream_liveness(printer_id, viewer)
     return {
+        # Whether the stream of the view that asks (by its correlation id) is still attached.
+        **({"viewer_attached": liveness["viewer_attached"]} if "viewer_attached" in liveness else {}),
         "active": has_active_stream,
         "has_frames": printer_id in _last_frames,
         "seconds_since_frame": seconds_since_frame,
+        "seconds_since_change": seconds_since_change,
         "stream_uptime": stream_uptime,
         # A support bundle can distinguish a built-in protocol from an
         # operator-configured external camera without inspecting credentials.
         "source": source,
         "telemetry": camera_metrics.for_printer(printer_id),
         "last_snapshot": camera_metrics.delivery_for_printer(printer_id),
-        # External-camera streams are intentionally direct today, so this is
-        # their viewer count only when the built-in fan-out path is active.
+        # Viewers of the printer's one fan-out, whichever camera feeds it: the
+        # built-in and the external camera share the ``printer-{id}`` broadcaster.
         "subscribers": get_subscriber_count(f"printer-{printer_id}"),
         # Consider stalled if no frame for more than 10 seconds after stream started
-        "stalled": (
-            has_active_stream
-            and stream_uptime is not None
-            and stream_uptime > 5  # Give 5 seconds for stream to start
-            and (seconds_since_frame is None or seconds_since_frame > 10)
-        ),
+        "stalled": liveness["stalled"],
     }
 
 
@@ -904,7 +1125,7 @@ async def test_external_camera(
 ):
     """Probe a frozen draft through the worker, never persist its credentials."""
     from backend.app.services.camera_credentials import CAMERA_SECRET_FIELDS, resolve_camera_credentials
-    from backend.app.services.camera_runtime import test_external_connection
+    from backend.app.services.camera_runtime import test_external_connection, test_on_live_view
 
     field = "external_camera_snapshot_url" if payload.source == "snapshot" else "external_camera_url"
     supplied = "url" in payload.model_fields_set
@@ -919,7 +1140,21 @@ async def test_external_camera(
     camera_type = "snapshot" if payload.source == "snapshot" else payload.camera_type or printer.external_camera_type
     if not url or camera_type not in {"mjpeg", "rtsp", "snapshot", "usb"}:
         raise HTTPException(422, "A camera URL and supported camera type are required")
+    # The saved stream source, as the live view reads it — a draft address is another device.
+    saved_stream = (
+        payload.source == "stream"
+        and bool(printer.external_camera_enabled)
+        and (url, camera_type) == (printer.external_camera_url, printer.external_camera_type)
+    )
     await db.rollback()
+    if saved_stream:
+        # Somebody is watching this very camera: its live view is the proof, a second dial would fail on a
+        # single-reader source (or drop the viewer). The answer carries no URL, as below.
+        watched = await test_on_live_view(
+            CameraCaptureRequest.external(url=url, camera_type=camera_type, view_printer_id=printer_id)
+        )
+        if watched is not None:
+            return watched
     result = await test_external_connection(url, camera_type)
     if not result.get("success"):
         # The worker owns transport diagnostics. An untrusted peer's error can
@@ -934,7 +1169,6 @@ async def check_plate_empty(
     plate_type: str | None = None,
     use_external: bool | None = None,
     include_debug_image: bool = False,
-    db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.CAMERA_VIEW),
 ):
     """Check if the build plate is empty using camera vision.
@@ -963,7 +1197,7 @@ async def check_plate_empty(
         - difference_percent: float - How different from calibration reference
         - message: str - Human-readable result message
         - needs_calibration: bool - True if calibration is required
-        - light_warning: bool - True if chamber light is off
+        - light_warning: bool - True if the chamber was still dark after the check
     """
     from backend.app.services.plate_detection import (
         check_plate_empty as do_check,
@@ -972,7 +1206,7 @@ async def check_plate_empty(
     from backend.app.services.printer_manager import printer_manager
 
     # Check printer exists first (before OpenCV check)
-    printer = await get_printer_or_404(printer_id, db)
+    printer = await _printer_for_capture(printer_id)
 
     # #1359: when the caller doesn't pin a value, default to the printer's
     # external-camera config so the UI's manual check captures from the
@@ -989,12 +1223,6 @@ async def check_plate_empty(
             status_code=503,
             detail="Plate detection not available. Install opencv-python-headless to enable.",
         )
-
-    # Check chamber light status
-    light_warning = False
-    state = printer_manager.get_status(printer_id)
-    if state and not state.chamber_light:
-        light_warning = True
 
     from backend.app.services.plate_detection import PlateDetector
 
@@ -1029,6 +1257,12 @@ async def check_plate_empty(
         polygon=printer.plate_detection_polygon,
         external_camera_snapshot_url=printer.external_camera_snapshot_url if printer.external_camera_enabled else None,
     )
+
+    # The check lights a dark chamber itself (the ``plate_check`` light lease), so a light that was off
+    # BEFORE it says nothing about the frame that was judged. Warn only when the chamber is still dark
+    # after it: no controllable light, a refused command, or a printer that never reported the switch.
+    state = printer_manager.get_status(printer_id)
+    light_warning = bool(state and not state.chamber_light)
 
     # Get reference count for the response
     detector = PlateDetector()
@@ -1065,7 +1299,6 @@ async def calibrate_plate_detection(
     printer_id: int,
     label: str | None = None,
     use_external: bool | None = None,
-    db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.PRINTERS_UPDATE),
 ):
     """Calibrate plate detection by capturing a reference image of the empty plate.
@@ -1100,7 +1333,7 @@ async def calibrate_plate_detection(
     from backend.app.services.printer_manager import printer_manager
 
     # Check printer exists first (before OpenCV check)
-    printer = await get_printer_or_404(printer_id, db)
+    printer = await _printer_for_capture(printer_id)
 
     # #1359: default to the printer's external-camera config when the
     # caller doesn't pin a value, so the reference saved here uses the
@@ -1116,10 +1349,6 @@ async def calibrate_plate_detection(
             detail="Plate detection not available. Install opencv-python-headless to enable.",
         )
 
-    # Check chamber light - warn but don't block
-    state = printer_manager.get_status(printer_id)
-    light_warning = state and not state.chamber_light
-
     success, message, index = await calibrate_plate(
         printer_id=printer.id,
         ip_address=printer.ip_address,
@@ -1132,7 +1361,10 @@ async def calibrate_plate_detection(
         external_camera_snapshot_url=printer.external_camera_snapshot_url if printer.external_camera_enabled else None,
     )
 
-    if light_warning and success:
+    # Read AFTER the capture: it lights a dark chamber itself, so only a chamber still dark then is worth a
+    # warning on the reference that was just saved.
+    state = printer_manager.get_status(printer_id)
+    if success and state and not state.chamber_light:
         message += " (Warning: Chamber light was off)"
 
     return {"success": success, "message": message, "index": index}

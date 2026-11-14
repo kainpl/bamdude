@@ -35,7 +35,9 @@ _identity_salt = uuid.uuid4().bytes
 @dataclass(frozen=True)
 class CameraCaptureResult:
     frame: bytes | None
-    source: Literal["fresh", "coalesced"] | None
+    #: ``live_view``: the frame a live view already had — or, with no frame, a view that holds the camera and
+    #: has not delivered one yet (services/camera_runtime.capture). Never a worker result.
+    source: Literal["fresh", "coalesced", "live_view"] | None
     attempt_id: str | None = None
     first_frame_ms: float | None = None
     caller_wait_ms: float | None = None
@@ -71,6 +73,9 @@ class CameraMetrics:
         self.cleanup_ms: float | None = None
         self.attempts_total = 0
         self.reconnects_total = 0
+        # Sessions ended because the picture had stopped changing, and re-checks of a still scene.
+        self.frozen_restarts_total = 0
+        self.still_rechecks_total = 0
         self.output_frames = 0
         self.consecutive_failures = 0
         self.subscriber_dropped_frames = 0
@@ -126,6 +131,8 @@ class CameraMetrics:
             "frame_age_ms": round((now - self.last_frame_at) * 1000, 3) if self.last_frame_at is not None else None,
             "attempts_total": self.attempts_total,
             "reconnects_total": self.reconnects_total,
+            "frozen_restarts_total": self.frozen_restarts_total,
+            "still_rechecks_total": self.still_rechecks_total,
             "consecutive_failures": self.consecutive_failures,
             "cleanup_ms": self.cleanup_ms,
             "output_frames": self.output_frames,

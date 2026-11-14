@@ -4,6 +4,7 @@ import { availableEngines, hasEngineChoice, resolveEngine, type SliceEngineId } 
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useSearchParams } from 'react-router';
 import { api, macrosApi } from '../api/client';
+import { cameraTestMessage } from '../utils/cameraTestMessage';
 import type { SecretAction } from '../api/client';
 import { SecretInput } from '../components/SecretInput';
 import { credentialDraft } from '../utils/credentialDraft';
@@ -285,6 +286,9 @@ export function SettingsPage() {
   const releaseNotesHeadingId = useId();
   const macroHeadingId = useId();
   const [localSettings, setLocalSettings] = useState<AppSettings | null>(null);
+  // Moves when the streaming-overlay builder created a token, so the token
+  // list above it reads the tokens again.
+  const [overlayTokensCreated, setOverlayTokensCreated] = useState(0);
   const [secretActions, setSecretActions] = useState<Record<string, SecretAction>>({});
   // Transient typed strings for the per-filament humidity threshold inputs
   // (#1605). Committed back to localSettings.ams_humidity_thresholds on blur so
@@ -1621,7 +1625,7 @@ export function SettingsPage() {
       const result = await api.testExternalCamera(printerId, url || undefined, cameraType, source);
       setExtCameraTestResults(prev => ({ ...prev, [printerId]: result }));
       if (result.success) {
-        showToast(t('settings.toast.cameraConnected', { resolution: result.resolution || '' }), 'success');
+        showToast(cameraTestMessage(t, result.resolution), 'success');
       } else {
         showToast(result.error || t('settings.toast.connectionFailed'), 'error');
       }
@@ -5763,7 +5767,7 @@ export function SettingsPage() {
                 </h3>
               </CardHeader>
               <CardContent>
-                <CameraTokensPanel />
+                <CameraTokensPanel refreshKey={overlayTokensCreated} />
               </CardContent>
             </Card>
 
@@ -5778,7 +5782,7 @@ export function SettingsPage() {
                 </h3>
               </CardHeader>
               <CardContent>
-                <StreamOverlayBuilder />
+                <StreamOverlayBuilder onTokenCreated={() => setOverlayTokensCreated((count) => count + 1)} />
               </CardContent>
             </Card>
           </div>

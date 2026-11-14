@@ -1,12 +1,25 @@
 import { useTranslation } from 'react-i18next';
 import { CARD_SIZE_LABELS } from '../utils/cardSize';
 
-const TITLE_KEYS = [
-  'printers.cardSize.small',
-  'printers.cardSize.medium',
-  'printers.cardSize.large',
-  'printers.cardSize.extraLarge',
-] as const;
+const TITLE_KEYS = {
+  cards: [
+    'printers.cardSize.small',
+    'printers.cardSize.medium',
+    'printers.cardSize.large',
+    'printers.cardSize.extraLarge',
+  ],
+  tiles: [
+    'printers.camWall.tileSize.small',
+    'printers.camWall.tileSize.medium',
+    'printers.camWall.tileSize.large',
+    'printers.camWall.tileSize.extraLarge',
+  ],
+} as const;
+
+const GROUP_LABEL_KEYS = {
+  cards: 'printers.cardSize.groupLabel',
+  tiles: 'printers.camWall.tileSize.groupLabel',
+} as const;
 
 interface CardSizeSwitchProps {
   value: number;
@@ -15,6 +28,9 @@ interface CardSizeSwitchProps {
   disabled?: boolean;
   /** Inside an overflow popover: stretch to the popover's width. */
   fullWidth?: boolean;
+  /** What the sizes are sizes OF — only the wording changes: the Cam Wall
+   *  sizes its tiles with the same control. */
+  kind?: 'cards' | 'tiles';
 }
 
 /**
@@ -22,13 +38,13 @@ interface CardSizeSwitchProps {
  * and the Queue page so the two never drift apart in look or behaviour; what
  * each size means (grid columns, card anatomy) stays with the page.
  */
-export function CardSizeSwitch({ value, onChange, disabled = false, fullWidth = false }: CardSizeSwitchProps) {
+export function CardSizeSwitch({ value, onChange, disabled = false, fullWidth = false, kind = 'cards' }: CardSizeSwitchProps) {
   const { t } = useTranslation();
   return (
     <div
       className={`flex h-8 items-center bg-bambu-dark rounded-lg border border-bambu-dark-tertiary ${fullWidth ? 'w-full' : ''}`}
       role="group"
-      aria-label={t('printers.cardSize.groupLabel')}
+      aria-label={t(GROUP_LABEL_KEYS[kind])}
     >
       {CARD_SIZE_LABELS.map((label, index) => {
         const size = index + 1;
@@ -49,7 +65,7 @@ export function CardSizeSwitch({ value, onChange, disabled = false, fullWidth = 
                 ? 'bg-bambu-green text-white'
                 : 'text-bambu-gray hover:text-white hover:bg-bambu-dark-tertiary'
             }`}
-            title={t(TITLE_KEYS[index])}
+            title={t(TITLE_KEYS[kind][index])}
           >
             {label}
           </button>

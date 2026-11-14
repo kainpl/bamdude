@@ -9,6 +9,7 @@ import {
   setStreamToken,
 } from '../api/client';
 import { useAuth } from '../contexts/AuthContext';
+import { isOwnedCameraImage } from './useCameraImageRef';
 
 /** `src` with its `token=` replaced by (or given) *token*. */
 function stampToken(src: string, token: string): string {
@@ -27,6 +28,10 @@ function stampToken(src: string, token: string): string {
  * *applies* narrows it to the sources that take THIS token: the camera routes
  * take the camera token and every other picture the media token, and neither
  * accepts the other (audit D9 a2).
+ *
+ * An image whose address `useCameraImageRef` writes — a live stream — is left
+ * to it: its owner re-renders on the new token and re-opens the stream once.
+ * Stamped here as well, the stream was restarted twice per refresh.
  */
 export function rewriteMediaSrcWithToken(
   root: ParentNode,
@@ -41,7 +46,7 @@ export function rewriteMediaSrcWithToken(
     )
     .forEach((el) => {
       const src = el.getAttribute('src') || '';
-      if (src.includes(tokenParam) || !applies(src)) return;
+      if (src.includes(tokenParam) || !applies(src) || isOwnedCameraImage(el)) return;
       el.src = stampToken(src, token);
       updated += 1;
     });
@@ -147,6 +152,9 @@ export function useStreamTokenSync() {
       if (!src.includes(`token=${encodeURIComponent(token)}`)) {
         // Rendered without its token, or with the other one. Stamp it — once
         // per token, so a picture that fails for another reason cannot loop.
+        // (A live stream's image has ONE writer, its owner, which follows the
+        // token by itself.)
+        if (isOwnedCameraImage(el)) return;
         if (el.dataset.tokenStamped === token) return;
         el.dataset.tokenStamped = token;
         el.src = stampToken(src, token);
