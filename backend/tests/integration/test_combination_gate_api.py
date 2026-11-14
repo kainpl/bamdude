@@ -21,7 +21,7 @@ from backend.app.models.library import LibraryFile
 from backend.app.models.line_config import ProjectLineChoice, ProjectLinePartCount
 from backend.app.models.product import Product, ProductPart, ProductPlate, product_files
 from backend.app.models.product_variant import ProductVariantGroup, ProductVariantOption
-from backend.app.models.project import Project
+from backend.app.models.project import Project, ProjectEvent
 from backend.app.models.project_line import ProjectLine
 from backend.app.services import combination_gate, line_config
 from backend.tests.fixtures.part_bindings import bind
@@ -335,6 +335,36 @@ async def test_a_counts_only_change_of_a_line_without_a_stored_choice_is_not_che
     # A changed choice on that line is still checked.
     other = await committing_client.put(url, json={"choices": {str(jar.lid): jar.snap}})
     assert {x["code"] for x in _refusal(other)["reasons"]} == {"part_not_sliced"}
+
+
+@pytest.mark.asyncio
+async def test_naming_the_choice_such_a_line_already_reads_journals_nothing(
+    committing_client, db_session, jar, saved_line
+):
+    """The same line, asked for the choice its kit already reads: the missing row is written,
+    the kit is the same, and the order's journal gets no «configured» entry."""
+    await db_session.execute(
+        delete(ProjectLineChoice).where(
+            ProjectLineChoice.line_id == saved_line.id, ProjectLineChoice.group_id == jar.weight
+        )
+    )
+    await db_session.commit()
+
+    async def configured():
+        return (
+            await db_session.execute(
+                select(ProjectEvent.id).where(
+                    ProjectEvent.project_id == saved_line.order.id, ProjectEvent.kind == "line_configured"
+                )
+            )
+        ).all()
+
+    before = await configured()
+    url = f"/api/v1/projects/{saved_line.order.id}/lines/{saved_line.id}/configuration"
+    r = await committing_client.put(url, json={"choices": {str(jar.weight): jar.w400}})
+    assert r.status_code == 200, r.text
+    assert await _choices(db_session, saved_line.id) == {jar.weight: jar.w400, jar.kind: jar.solid, jar.lid: jar.screw}
+    assert await configured() == before
 
 
 # ---------- «every value needs its own part» is a mark on the group, off by default ----------

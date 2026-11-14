@@ -319,7 +319,7 @@ async def test_a_binding_already_in_the_table_is_not_moved_twice(legacy_db, capl
     assert await fetch_all(legacy_db, "SELECT part_id, option_id, group_id FROM product_part_options") == [
         (PART_ID, OPTION_ID, GROUP_ID)
     ]
-    assert "moved 0 part binding(s)" in caplog.text
+    assert "moved 0 part binding(s) into product_part_options; 1 were already there" in caplog.text
 
 
 async def test_the_move_says_what_it_moved_and_what_it_could_not(legacy_db, caplog):
@@ -328,6 +328,6 @@ async def test_the_move_says_what_it_moved_and_what_it_could_not(legacy_db, capl
     (record,) = [r for r in caplog.records if r.name == m225.logger.name]
     assert record.levelno == logging.INFO
     assert record.getMessage() == (
-        "m225: moved 1 part binding(s) into product_part_options; 1 named an option that no longer exists "
-        "and were not moved"
+        "m225: moved 1 part binding(s) into product_part_options; 0 were already there; 1 named an option "
+        "that no longer exists and were not moved"
     )

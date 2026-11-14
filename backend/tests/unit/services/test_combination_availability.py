@@ -62,6 +62,20 @@ def test_a_value_no_part_names_at_all_is_the_only_reason():
     assert [(u.code, u.group_id, u.option_id) for u in got] == [("option_without_part", 1, 13)]
 
 
+def test_a_second_reason_is_not_hidden_behind_a_value_no_part_names():
+    body_solid_400 = part(bound={1: {11}, 2: {21}})
+    snap_lid_for_mesh = part(bound={3: {32}, 2: {22}})
+    parts = [body_solid_400, snap_lid_for_mesh]
+    # 1200 + solid + snap: nothing names 1200, and the snap lid exists for mesh only — with a
+    # 1200 body added the snap lid would still be missing, so both are said at once. Solid is
+    # named by the body once the weight is taken as met, and is not reported.
+    got = availability(parts, {1: 13, 2: 21, 3: 32}, sliced={p.id for p in parts}, strict_groups={1, 2, 3})
+    assert [(u.code, u.group_id, u.option_id) for u in got] == [
+        ("option_without_part", 1, 13),
+        ("option_without_part", 3, 32),
+    ]
+
+
 def test_values_named_somewhere_but_not_in_this_kit_are_all_reported():
     body_400_solid = part(bound={1: {11}, 2: {21}})
     body_600_mesh = part(bound={1: {12}, 2: {22}})

@@ -102,6 +102,7 @@ async def upgrade(conn):
         move = (
             f"INSERT INTO product_part_options (part_id, option_id, group_id) {select_bindings} ON CONFLICT DO NOTHING"
         )
+    bound = await conn.scalar(text(f"SELECT COUNT(*) FROM {_TABLE} WHERE {_COLUMN} IS NOT NULL")) or 0
     moved = await conn.execute(text(move))
     dangling = await conn.scalar(
         text(
@@ -110,9 +111,10 @@ async def upgrade(conn):
         )
     )
     logger.info(
-        "m225: moved %d part binding(s) into product_part_options; %d named an option that no longer exists "
-        "and were not moved",
+        "m225: moved %d part binding(s) into product_part_options; %d were already there; %d named an option "
+        "that no longer exists and were not moved",
         moved.rowcount,
+        max(bound - moved.rowcount - (dangling or 0), 0),
         dangling or 0,
     )
     await _drop_binding_column(conn)

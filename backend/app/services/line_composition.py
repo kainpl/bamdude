@@ -267,8 +267,9 @@ def availability(
     has options in: there the chosen option must be named by a part of the kit. An
     unmarked group never closes anything by this rule — «Magnet: no / yes» with the magnet
     bound to «yes» keeps «no» orderable. When a chosen value is named by NO counted part at
-    all (or nothing is chosen), only such values are reported: they are what is missing,
-    and the other groups' values merely have no kit left around them.
+    all (or nothing is chosen), such values are reported, and of the other groups only a
+    value that stays unnamed with those groups' conditions taken as met — the rest merely
+    have no kit left around them.
 
     ``part_not_sliced``, for every product with variant groups: a printed part of the kit
     needs a sliced source (``sliced``: part ids); a purchased one needs none. Pure —
@@ -288,7 +289,23 @@ def availability(
         if not any(option_id in bound.get(group_id, ()) for _p, bound in kit):
             missing.append(Unavailable("option_without_part", group_id, option_id, None))
     nowhere = [u for u in missing if u.option_id not in named[u.group_id]]
-    out = nowhere or missing
+    out = missing
+    if nowhere:
+        # A value no part names empties the kit around it, so the other groups' values
+        # look unnamed too. Ask again with those groups' conditions taken as met: what is
+        # still unnamed is a reason of its own and is reported beside them.
+        absent = {u.group_id for u in nowhere}
+        around = [
+            bound
+            for _p, bound in counted_parts
+            if in_kit({g: options for g, options in bound.items() if g not in absent}, chosen)
+        ]
+        own = [
+            u
+            for u in missing
+            if u.group_id not in absent and not any(u.option_id in bound.get(u.group_id, ()) for bound in around)
+        ]
+        out = sorted(nowhere + own, key=lambda u: u.group_id or 0)
     out += [
         Unavailable("part_not_sliced", None, None, p.id) for p, _b in kit if p.kind == "printed" and p.id not in sliced
     ]

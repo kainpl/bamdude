@@ -395,7 +395,8 @@ async def set_configuration(
     product = await _product(db, line.product_id)
     current = (await load_line_configs(db, [line.id])).get(line.id, LineConfig())
     new_choices, new_counts = _validate(product, line.mode, {**current.choices, **choices}, counts)
-    if line.mode == "product" and new_choices != {**_defaults(product), **current.choices}:
+    read_choices = {**_defaults(product), **current.choices}
+    if line.mode == "product" and new_choices != read_choices:
         from backend.app.services import combination_gate
 
         await combination_gate.ensure_available(db, product, new_choices)
@@ -427,6 +428,10 @@ async def set_configuration(
         after = await part_stock.reserve_for_line(
             db, line, reserved_before, comp=new_comp, created_by=actor.id if actor else None
         )
+    if new_choices == read_choices and new_counts == current.counts:
+        # A line saved without a row for a group got its rows; the kit it reads is the
+        # same, so the order's journal has nothing to say.
+        return ConfigOutcome(reserved_before, after, [], line.config_key)
     await order_journal.record(
         db,
         line.project_id,
