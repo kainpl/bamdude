@@ -47,6 +47,10 @@ _DECODERS = ("PNG", "JPEG", "WEBP")
 _ACCEPTED = frozenset({"PNG", "JPEG", "MPO", "WEBP"})
 
 
+class LogoStoreUnavailable(Exception):
+    """The logo's folder cannot be written (a root-owned folder after a ``sudo`` restore, a read-only volume)."""
+
+
 class LogoRefused(Exception):
     """An upload that is not a logo. ``reason``: ``too_large`` / ``too_many_pixels`` / ``animated`` / ``not_an_image``."""
 
@@ -79,20 +83,47 @@ def forget() -> None:
     _cache = None
 
 
+# Whether the current unreadable episode has been logged: one WARNING per episode, not one per poll.
+_unreadable_logged = False
+
+
+def _unreadable(exc: OSError) -> None:
+    """A logo that is there and cannot be read is no logo. Said once per episode, and never with the path:
+    the directory's name is enough to find it, and the rest of the path names the installation's user."""
+    global _unreadable_logged
+    if not _unreadable_logged:
+        _unreadable_logged = True
+        logger.warning(
+            "The stream overlay logo in %s/ cannot be read (%s); overlays are drawn without it",
+            DIRECTORY_NAME,
+            type(exc).__name__,
+        )
+
+
 def _read() -> tuple[tuple[int, int] | None, Logo | None]:
+    global _unreadable_logged
     path = _path()
     try:
         info = path.stat()
         content = path.read_bytes()
     except (FileNotFoundError, NotADirectoryError):
+        _unreadable_logged = False
         return None, None
+    except OSError as exc:  # PermissionError, a directory in its place, an I/O error: no logo, never a failure
+        _unreadable(exc)
+        return None, None
+    _unreadable_logged = False
     return (info.st_mtime_ns, info.st_size), Logo(hashlib.sha256(content).hexdigest()[:32], content)
 
 
 def _signature() -> tuple[int, int] | None:
+    global _unreadable_logged
     try:
         info = _path().stat()
     except (FileNotFoundError, NotADirectoryError):
+        _unreadable_logged = False  # gone: an unreadable file that comes back is a new episode
+        return None
+    except OSError:
         return None
     return info.st_mtime_ns, info.st_size
 
@@ -145,6 +176,13 @@ def _encode(content: bytes) -> bytes:
 
 def _write(content: bytes) -> None:
     png = _encode(content)
+    try:
+        _store(png)
+    except OSError as exc:
+        raise LogoStoreUnavailable(type(exc).__name__) from exc
+
+
+def _store(png: bytes) -> None:
     target = directory()
     target.mkdir(parents=True, exist_ok=True)
     # Replaced atomically, so a reader never sees half a PNG; the temporary file never outlives this call.
@@ -161,11 +199,17 @@ def _write(content: bytes) -> None:
 
 
 def _remove() -> None:
-    _path().unlink(missing_ok=True)
+    try:
+        _path().unlink(missing_ok=True)
+    except NotADirectoryError:
+        return  # no folder, so no logo
+    except OSError as exc:
+        raise LogoStoreUnavailable(type(exc).__name__) from exc
 
 
 async def save(content: bytes) -> Logo:
     """Validate and store a logo, replacing the saved one; a refused upload leaves the saved one as it was.
+    :class:`LogoStoreUnavailable` when the folder cannot be written.
 
     The file work runs in a thread a cancelled caller still waits for (``preview_artifacts.disk``).
     """
@@ -174,8 +218,8 @@ async def save(content: bytes) -> Logo:
     finally:
         forget()
     logo = await current()
-    if logo is None:  # removed again between the write and the read
-        raise LogoRefused("not_an_image")
+    if logo is None:  # removed again between the write and the read, or written and not readable
+        raise LogoStoreUnavailable("read_back")
     logger.info("Stream overlay logo saved (revision %s, %d bytes)", logo.revision, len(logo.content))
     return logo
 

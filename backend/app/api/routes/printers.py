@@ -1833,7 +1833,13 @@ async def get_overlay_status(
     # under this same token instead of probing a route that answers 404 (routes/overlay_branding).
     from backend.app.services import overlay_logo
 
-    saved_logo = await overlay_logo.current()
+    # Branding never takes the feed down: an overlay that asked for no logo reads this answer too, and it
+    # carries the broadcast's progress, temperatures and camera liveness.
+    try:
+        saved_logo = await overlay_logo.current()
+    except Exception as exc:
+        logger.warning("Stream overlay feed answers without a logo (%s)", type(exc).__name__)
+        saved_logo = None
     logo = {"revision": saved_logo.revision} if saved_logo else None
 
     if not state:

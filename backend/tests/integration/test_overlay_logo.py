@@ -44,8 +44,9 @@ async def _token(async_client: AsyncClient, scope: str = "overlay") -> dict:
 
 
 @pytest.fixture(autouse=True)
-def _fresh_cache():
+def _fresh_cache(monkeypatch):
     overlay_logo.forget()
+    monkeypatch.setattr(overlay_logo, "_unreadable_logged", False)
     yield
     overlay_logo.forget()
 
@@ -295,6 +296,89 @@ class TestTheFeed:
         (directory / "logo.png").write_bytes(_image())
 
         assert (await async_client.get(INFO)).json()["exists"] is True
+
+
+# ---------------------------------------------------------------- a logo that cannot be read or written
+
+
+class TestAFolderWeCannotUse:
+    """A ``sudo`` restore or a changed Docker volume leaves ``overlay-branding/`` unreadable. Branding is never
+    worth a broadcast: the feed keeps answering, without a logo."""
+
+    @staticmethod
+    def _unreadable_logo():
+        # A directory where the file belongs: it is found, and reading it fails (PermissionError on Windows,
+        # IsADirectoryError elsewhere) â€” what a root-owned file does, on every platform a test runs on.
+        (settings.base_dir / "overlay-branding" / "logo.png").mkdir(parents=True)
+
+    async def test_the_feed_answers_without_a_logo(self, async_client: AsyncClient, printer_factory, caplog):
+        printer = await printer_factory()
+        token = (await _token(async_client))["token"]
+        self._unreadable_logo()
+
+        with caplog.at_level("WARNING", logger="backend.app.services.overlay_logo"):
+            answers = [
+                await async_client.get(f"/api/v1/printers/{printer.id}/overlay-status", params={"token": token})
+                for _ in range(2)
+            ]
+
+        assert [answer.status_code for answer in answers] == [200, 200], answers[0].text
+        assert answers[0].json()["logo"] is None
+        warnings_ = [record for record in caplog.records if record.name == "backend.app.services.overlay_logo"]
+        assert len(warnings_) == 1, "one warning per episode, not one per poll"
+        assert "overlay-branding" in warnings_[0].getMessage()
+        assert str(settings.base_dir) not in warnings_[0].getMessage()
+
+    async def test_the_feed_survives_any_failure_of_the_branding(
+        self, async_client: AsyncClient, printer_factory, monkeypatch
+    ):
+        async def broken():
+            raise RuntimeError("anything at all")
+
+        monkeypatch.setattr(overlay_logo, "current", broken)
+        printer = await printer_factory()
+        token = (await _token(async_client))["token"]
+
+        answer = await async_client.get(f"/api/v1/printers/{printer.id}/overlay-status", params={"token": token})
+
+        assert answer.status_code == 200, answer.text
+        assert answer.json()["logo"] is None
+
+    async def test_the_reads_say_there_is_none(self, async_client: AsyncClient):
+        token = (await _token(async_client))["token"]
+        self._unreadable_logo()
+
+        assert (await async_client.get(STREAM_LOGO, params={"token": token})).status_code == 404
+        assert (await async_client.get(UPLOAD)).status_code == 404
+        assert (await async_client.get(INFO)).json() == {"exists": False, "revision": None}
+
+    async def test_a_readable_logo_ends_the_episode(self, async_client: AsyncClient, monkeypatch, caplog):
+        monkeypatch.setattr(overlay_logo, "CACHE_SECONDS", 0.0)
+        self._unreadable_logo()
+        with caplog.at_level("WARNING", logger="backend.app.services.overlay_logo"):
+            await async_client.get(INFO)
+            (settings.base_dir / "overlay-branding" / "logo.png").rmdir()
+            assert (await async_client.get(INFO)).json()["exists"] is False
+            self._unreadable_logo()
+            await async_client.get(INFO)
+
+        assert len([r for r in caplog.records if r.levelname == "WARNING"]) == 2
+
+    async def test_an_upload_into_a_folder_that_cannot_be_written_is_refused(self, async_client: AsyncClient):
+        # A plain file where the folder belongs: nothing can be created in it.
+        (settings.base_dir / "overlay-branding").write_bytes(b"")
+
+        answer = await async_client.post(UPLOAD, files=_file(_image()))
+
+        assert answer.status_code == 507, answer.text
+        assert "overlay-branding" in answer.json()["detail"]
+
+    async def test_removing_a_logo_that_cannot_be_removed_is_refused(self, async_client: AsyncClient):
+        self._unreadable_logo()
+
+        answer = await async_client.delete(UPLOAD)
+
+        assert answer.status_code == 507, answer.text
 
 
 # ---------------------------------------------------------------- backups carry it

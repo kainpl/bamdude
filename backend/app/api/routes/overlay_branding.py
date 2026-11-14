@@ -36,6 +36,13 @@ def _refuse(reason: str) -> HTTPException:
     return HTTPException(422, "The logo must be a PNG, JPEG or WebP image")
 
 
+def _unavailable() -> HTTPException:
+    """The folder cannot be written — a refusal that says where to look, never a bare 500."""
+    return HTTPException(
+        507, "The overlay-branding folder in the data directory cannot be written; check its permissions"
+    )
+
+
 # Whoever may open an overlay signed in (it draws the camera) or read the settings the builder lives in.
 _MAY_SEE = RequireAnyPermission(Permission.SETTINGS_READ, Permission.CAMERA_VIEW)
 
@@ -85,10 +92,15 @@ async def upload_logo(file: UploadFile = File(...), _=RequirePermission(Permissi
         logo = await overlay_logo.save(content)
     except overlay_logo.LogoRefused as refused:
         raise _refuse(refused.reason) from None
+    except overlay_logo.LogoStoreUnavailable:
+        raise _unavailable() from None
     return _info(logo)
 
 
 @router.delete("/settings/overlay-logo")
 async def delete_logo(_=RequirePermission(Permission.SETTINGS_UPDATE)):
-    await overlay_logo.remove()
+    try:
+        await overlay_logo.remove()
+    except overlay_logo.LogoStoreUnavailable:
+        raise _unavailable() from None
     return _info(None)
