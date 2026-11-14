@@ -1057,6 +1057,14 @@ export default {
       camWall: 'Cam wall'
     },
     camWall: {
+      tileSize: {
+        groupLabel: 'Tile size',
+        small: 'Small tiles',
+        medium: 'Medium tiles',
+        large: 'Large tiles',
+        extraLarge: 'One tile per row',
+        hint: 'How many cameras fit in a row. Only the camera you picked is live, at any size.',
+      },
       noPrinters: 'No printers to show',
       noSignal: 'No signal',
       transportUnknown: 'Protocol unknown',

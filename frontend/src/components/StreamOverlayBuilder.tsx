@@ -472,7 +472,7 @@ export function StreamOverlayBuilder({ onTokenCreated }: StreamOverlayBuilderPro
             <input
               id="overlay-builder-token"
               type={revealToken ? 'text' : 'password'}
-              autoComplete="off"
+              autoComplete="new-password"
               spellCheck={false}
               value={token}
               onChange={(e) => setToken(e.target.value)}
@@ -732,7 +732,7 @@ export function StreamOverlayBuilder({ onTokenCreated }: StreamOverlayBuilderPro
           <input
             id="overlay-builder-import"
             type="password"
-            autoComplete="off"
+            autoComplete="new-password"
             spellCheck={false}
             value={importText}
             onChange={(e) => {

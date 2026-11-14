@@ -8,6 +8,8 @@ import { CameraTile, type CameraTileMode, type CameraTileStatusMode } from './Ca
 import { printerSource, sourceKey, standaloneSource, type CameraSource } from '../utils/cameraSource';
 import { filterKnownHMSErrors } from './HMSErrorModal';
 import { api, type HMSError, type PrinterStatus } from '../api/client';
+import { CardSizeSwitch } from './CardSizeSwitch';
+import { camWallGridClass, DEFAULT_CAM_WALL_TILE_SIZE } from '../utils/camWallTileSize';
 
 // The wall only ever reads these fields off a printer, so it asks for no more
 // than that. `Printer[]` satisfies this structurally, and so does the smaller
@@ -78,6 +80,12 @@ interface CameraWallProps {
   /** Hide the settings popover. A passive display has nobody standing at it, and
    *  its settings come from the URL rather than this browser's localStorage. */
   hideSettings?: boolean;
+  /** 1 = S … 4 = XL: how many tiles fit in a row. The grid only — which tile
+   *  is live is the operator's pick, one at a time, at every size. */
+  tileSize?: number;
+  /** Given by a wall whose page has no size switch of its own (the standalone
+   *  /camwall): the size is then offered in the settings popover. */
+  onChangeTileSize?: (size: number) => void;
 }
 
 const MIN_SNAPSHOT_SEC = 2;
@@ -101,6 +109,8 @@ export function CameraWall({
   statusOverride,
   streamToken,
   hideSettings = false,
+  tileSize = DEFAULT_CAM_WALL_TILE_SIZE,
+  onChangeTileSize,
 }: CameraWallProps) {
   const { t } = useTranslation();
   // Keyed by `sourceKey`, not by a printer id: two kinds of source share this
@@ -266,6 +276,17 @@ export function CameraWall({
           </button>
           {showSettings && (
             <div className="absolute right-0 top-9 z-30 w-72 space-y-3 rounded-lg border border-bambu-dark-tertiary bg-bambu-dark-secondary p-3 shadow-xl">
+              {onChangeTileSize && (
+                <div className="space-y-1">
+                  <span className="block text-xs font-medium text-white">
+                    {t('printers.camWall.tileSize.groupLabel')}
+                  </span>
+                  <CardSizeSwitch value={tileSize} onChange={onChangeTileSize} kind="tiles" fullWidth />
+                  <span className="block text-[11px] text-bambu-gray">
+                    {t('printers.camWall.tileSize.hint')}
+                  </span>
+                </div>
+              )}
               <label className="block space-y-1">
                 <span className="text-xs font-medium text-white">
                   {t('printers.camWall.settings.snapshotInterval')}
@@ -323,7 +344,7 @@ export function CameraWall({
         </div>
       </div>
 
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+      <div className={camWallGridClass(tileSize)}>
         {tiles.map((tile) => {
           const mode = modeByKey.get(tile.key) ?? 'paused';
           // Narrowed once, here: `tile.printer` inside a callback below is a

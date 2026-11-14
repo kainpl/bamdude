@@ -171,6 +171,34 @@ describe('PrintersPage', () => {
     }
   });
 
+  // The switch was greyed out in wall view: the wall had one fixed grid.
+  it('sizes the wall tiles with the size switch, apart from the card size', async () => {
+    localStorage.setItem('printerPageView', 'camwall');
+    localStorage.setItem('printerCardSize', '3');
+    localStorage.removeItem('camWallTileSize');
+    const view = render(<PrintersPage />);
+    try {
+      await userEvent.click(screen.getByRole('button', { name: 'View' }));
+      const sizes = await screen.findByRole('group', { name: 'Tile size' });
+      expect(screen.queryByRole('group', { name: 'Card size' })).not.toBeInTheDocument();
+      const button = (label: string) =>
+        Array.from(sizes.querySelectorAll('button')).find((candidate) => candidate.textContent === label)!;
+      // The wall's own size — M until picked — not the cards' L.
+      expect(button('M')).toHaveAttribute('aria-pressed', 'true');
+      expect(button('XL')).not.toBeDisabled();
+
+      await userEvent.click(button('XL'));
+
+      await waitFor(() => expect(button('XL')).toHaveAttribute('aria-pressed', 'true'));
+      expect(localStorage.getItem('camWallTileSize')).toBe('4');
+      expect(localStorage.getItem('printerCardSize')).toBe('3');
+    } finally {
+      view.unmount();
+      localStorage.removeItem('printerPageView');
+      localStorage.removeItem('camWallTileSize');
+    }
+  });
+
   it('restores only the last saved camera and switches the single popup to another card', async () => {
     // Seeded WITHOUT `kind`: that is what an install saved before a camera could
     // stand on its own, and such a row must still read as a printer's camera.

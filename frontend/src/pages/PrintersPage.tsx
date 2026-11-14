@@ -146,6 +146,7 @@ import { ConfirmModal } from '../components/ConfirmModal';
 import { FileManagerModal } from '../components/FileManagerModal';
 import { EmbeddedCameraViewer } from '../components/EmbeddedCameraViewer';
 import { CameraWall } from '../components/CameraWall';
+import { CAM_WALL_TILE_SIZE_KEY, DEFAULT_CAM_WALL_TILE_SIZE } from '../utils/camWallTileSize';
 import { MQTTDebugModal } from '../components/MQTTDebugModal';
 import { CalibrationModal } from '../components/CalibrationModal';
 import { HMSErrorModal, filterKnownHMSErrors, hmsBrief } from '../components/HMSErrorModal';
@@ -9283,6 +9284,10 @@ export function PrintersPage() {
       ? 'camwall'
       : (parsePrintersPageView(localStorage.getItem('printerPageView') ?? '') ?? 'cards')
   );
+  // The wall's own S / M / L / XL, apart from the card size: the same switch
+  // sizes whichever view is on screen.
+  const [camWallTileSize, setCamWallTileSize] = useState<number>(() =>
+    readStoredCardSize(CAM_WALL_TILE_SIZE_KEY, DEFAULT_CAM_WALL_TILE_SIZE));
   const [camWallSnapshotSec, setCamWallSnapshotSec] = useState<number>(() => {
     const saved = parseInt(localStorage.getItem('camWallSnapshotSec') || '', 10);
     return Number.isFinite(saved) && saved > 0 ? saved : 8;
@@ -10318,16 +10323,28 @@ export function PrintersPage() {
         ]}
       />
 
-      {/* Card size selector */}
-      <CardSizeSwitch
-        value={cardSize}
-        onChange={(size) => {
-          setCardSize(size);
-          localStorage.setItem('printerCardSize', String(size));
-        }}
-        disabled={displayedPageView === 'camwall'}
-        fullWidth={inMenu}
-      />
+      {/* Size selector: the cards' in card view, the wall's tiles in wall
+          view — each remembered under its own key. */}
+      {displayedPageView === 'camwall' ? (
+        <CardSizeSwitch
+          kind="tiles"
+          value={camWallTileSize}
+          onChange={(size) => {
+            setCamWallTileSize(size);
+            localStorage.setItem(CAM_WALL_TILE_SIZE_KEY, String(size));
+          }}
+          fullWidth={inMenu}
+        />
+      ) : (
+        <CardSizeSwitch
+          value={cardSize}
+          onChange={(size) => {
+            setCardSize(size);
+            localStorage.setItem('printerCardSize', String(size));
+          }}
+          fullWidth={inMenu}
+        />
+      )}
     </>
   );
 
@@ -10579,6 +10596,7 @@ export function PrintersPage() {
           cameras={wallCameras}
           snapshotIntervalSec={camWallSnapshotSec}
           statusMode={camWallStatusMode}
+          tileSize={camWallTileSize}
           onOpenPrinterCard={(id) => setExpandedPrinterId(id)}
           onChangeSnapshotIntervalSec={(next) => {
             setCamWallSnapshotSec(next);
