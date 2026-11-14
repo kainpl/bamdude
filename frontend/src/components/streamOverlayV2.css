@@ -29,6 +29,10 @@
   line-height: 1.3;
   font-variant-numeric: tabular-nums;
 }
+/* On a fixed canvas (`?layout=`) the design fills the canvas, not the window. */
+.so2[data-canvas] {
+  height: 100%;
+}
 .so2[data-size='small'] {
   --so2-scale: 0.8;
 }

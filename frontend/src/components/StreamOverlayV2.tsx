@@ -19,6 +19,7 @@ import { useTranslation } from 'react-i18next';
 import { Clock, Layers, Printer, Timer } from 'lucide-react';
 import { fillStyle, useRotatedBox } from '../hooks/useRotatedFit';
 import type { CameraStreamPhase } from '../hooks/useCameraStreamRecovery';
+import { OVERLAY_CANVAS, type OverlayLayout } from '../utils/overlayOptions';
 import './streamOverlayV2.css';
 
 export interface OverlayV2Camera {
@@ -40,6 +41,8 @@ export interface OverlayV2Reading {
 }
 
 interface StreamOverlayV2Props {
+  /** A fixed canvas (`?layout=`), or null: follow the shape of the window. */
+  layout: OverlayLayout | null;
   size: 'small' | 'medium' | 'large';
   /** 0 (solid) … 100 (the dark grounds are gone). */
   transparency: number;
@@ -58,7 +61,7 @@ interface StreamOverlayV2Props {
   temperatures: OverlayV2Reading[];
 }
 
-// The shape of the browser source decides the arrangement.
+// Without `?layout=` the shape of the browser source decides the arrangement.
 function useViewportOrientation(): 'landscape' | 'portrait' {
   const [portrait, setPortrait] = useState(() => window.matchMedia('(orientation: portrait)').matches);
   useEffect(() => {
@@ -74,7 +77,8 @@ function useViewportOrientation(): 'landscape' | 'portrait' {
 export function StreamOverlayV2(props: StreamOverlayV2Props) {
   const { t } = useTranslation();
   const { camera, name, model, filename, status, progress, temperatures } = props;
-  const layout = useViewportOrientation();
+  const viewport = useViewportOrientation();
+  const layout = props.layout ?? viewport;
 
   const alpha = 1 - props.transparency / 100;
   // The app paints the page's body; with a see-through ground that colour
@@ -99,7 +103,12 @@ export function StreamOverlayV2(props: StreamOverlayV2Props) {
   ].filter((stat) => stat.value != null);
   const hasPanel = Boolean(filename || status || progress != null || stats.length > 0 || temperatures.length > 0);
 
-  const rootStyle: CSSProperties & { '--so2-alpha': number } = { '--so2-alpha': alpha };
+  const rootStyle: CSSProperties & { '--so2-alpha': number; '--so2-unit'?: string } = { '--so2-alpha': alpha };
+  if (props.layout) {
+    // On a canvas the type follows the canvas, not the window it is scaled into.
+    const { width, height } = OVERLAY_CANVAS[props.layout];
+    rootStyle['--so2-unit'] = `${Math.min(width, height) / 100}px`;
+  }
 
   return (
     <div
@@ -107,6 +116,7 @@ export function StreamOverlayV2(props: StreamOverlayV2Props) {
       data-overlay-design="2"
       data-size={props.size}
       data-layout={layout}
+      data-canvas={props.layout ? '' : undefined}
       data-state={props.state ?? undefined}
       style={rootStyle}
     >

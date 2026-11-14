@@ -8,17 +8,21 @@
  * the configuration, which keeps a scene in OBS reproducible by copy-paste and
  * means two displays can show different fields off one token.
  */
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Copy, ExternalLink, Eye, EyeOff } from 'lucide-react';
 import { api, type Printer } from '../api/client';
 import { useToast } from '../contexts/ToastContext';
 import { Select } from './Select';
-import { overlayColour } from '../utils/overlayOptions';
+import { OVERLAY_CANVAS, overlayColour, type OverlayLayout } from '../utils/overlayOptions';
 
 type OverlaySize = 'small' | 'medium' | 'large';
 // The value the URL carries: `design=2`; Classic is the absence of it.
 type BuilderDesign = 'classic' | '2';
+// `auto` emits no `layout` at all — the overlay is sized by its window, which
+// is what every address built before the choice existed does. `both` builds
+// one address per fixed layout.
+type BuilderLayout = 'auto' | OverlayLayout | 'both';
 
 // Order matters: it is the order the fields appear in the overlay, so the
 // checkbox list reads as a preview of the result.
@@ -65,6 +69,7 @@ export function StreamOverlayBuilder() {
   const [progressTo, setProgressTo] = useState(DEFAULT_PROGRESS_TO);
   const [design, setDesign] = useState<BuilderDesign>('classic');
   const [transparency, setTransparency] = useState(0);
+  const [layout, setLayout] = useState<BuilderLayout>('auto');
   const [token, setToken] = useState('');
   const [preview, setPreview] = useState(false);
 
@@ -88,7 +93,7 @@ export function StreamOverlayBuilder() {
     };
   }, []);
 
-  const url = useMemo(() => {
+  const buildUrl = useCallback((target: OverlayLayout | null) => {
     const id = printerId ?? 1;
     const params = new URLSearchParams();
     // Emit ?show= in the canonical field order rather than click order, so the
@@ -111,22 +116,36 @@ export function StreamOverlayBuilder() {
       // Version 2 only: Classic has no ground to fade.
       if (transparency > 0) params.set('backgroundTransparency', String(transparency));
     }
+    if (target) params.set('layout', target);
     if (token.trim()) params.set('token', token.trim());
     return `${window.location.origin}/overlay/${id}?${params.toString()}`;
   }, [printerId, fields, size, fps, showCamera, customColours, progressFrom, progressTo, design, transparency, token]);
 
-  // The address the open preview shows: the URL once it has stood still.
-  const [previewUrl, setPreviewUrl] = useState(url);
+  // One address per output: one, or a landscape and a portrait one for "both".
+  const outputs = useMemo(() => {
+    const targets: (OverlayLayout | null)[] = layout === 'both'
+      ? ['landscape', 'portrait']
+      : [layout === 'auto' ? null : layout];
+    return targets.map((target) => ({ layout: target, url: buildUrl(target) }));
+  }, [layout, buildUrl]);
+
+  // What the open preview shows: the outputs once they have stood still.
+  const [settled, setSettled] = useState(outputs);
   useEffect(() => {
-    const timer = setTimeout(() => setPreviewUrl(url), PREVIEW_SETTLE_MS);
+    const timer = setTimeout(() => setSettled(outputs), PREVIEW_SETTLE_MS);
     return () => clearTimeout(timer);
-  }, [url]);
+  }, [outputs]);
+
+  const layoutName = (target: OverlayLayout) =>
+    target === 'portrait'
+      ? t('streamOverlay.builder.portrait', 'Portrait')
+      : t('streamOverlay.builder.landscape', 'Landscape');
 
   const toggleField = (key: string) => {
     setFields((prev) => (prev.includes(key) ? prev.filter((f) => f !== key) : [...prev, key]));
   };
 
-  const copyUrl = async () => {
+  const copyUrl = async (url: string) => {
     try {
       // ⚠️ Same fallback as CopyButton: the clipboard API needs a secure
       // context, and plenty of BamDude installs are plain HTTP on a LAN. Not
@@ -230,6 +249,32 @@ export function StreamOverlayBuilder() {
             </p>
           </div>
         )}
+
+        <div>
+          <label htmlFor="overlay-builder-layout" className="block text-sm font-medium text-white mb-1">
+            {t('streamOverlay.builder.layout', 'Layout')}
+          </label>
+          <Select
+            className="w-full"
+            id="overlay-builder-layout"
+            value={layout}
+            onChange={(e) => {
+              const next = e.target.value;
+              setLayout(next === 'landscape' || next === 'portrait' || next === 'both' ? next : 'auto');
+            }}
+          >
+            <option value="auto">{t('streamOverlay.builder.layoutAuto', 'Fit the browser source')}</option>
+            <option value="landscape">{t('streamOverlay.builder.layoutLandscape', 'Landscape (1920 × 1080)')}</option>
+            <option value="portrait">{t('streamOverlay.builder.layoutPortrait', 'Portrait (1080 × 1920)')}</option>
+            <option value="both">{t('streamOverlay.builder.layoutBoth', 'Both: landscape and portrait')}</option>
+          </Select>
+          <p className="text-xs text-bambu-gray mt-1">
+            {t(
+              'streamOverlay.builder.layoutHint',
+              'A fixed layout is drawn at one size and scaled to the source, so it looks the same in the preview, in a browser tab and in OBS. "Fit the browser source" sizes the overlay by its window.',
+            )}
+          </p>
+        </div>
 
         <div>
           <label htmlFor="overlay-builder-size" className="block text-sm font-medium text-white mb-1">
@@ -372,28 +417,41 @@ export function StreamOverlayBuilder() {
         <p className="text-sm font-medium text-white mb-1">
           {t('streamOverlay.builder.urlTitle', 'Overlay URL')}
         </p>
-        <div className="flex items-center gap-2">
-          <code className="flex-1 px-3 py-2 bg-bambu-dark rounded-md text-bambu-green text-xs break-all font-mono select-all">
-            {url}
-          </code>
-          <button
-            type="button"
-            onClick={() => void copyUrl()}
-            className="flex items-center gap-2 px-3 py-2 bg-bambu-green text-white rounded-md hover:bg-bambu-green/90"
-          >
-            <Copy className="w-4 h-4" />
-            {t('cameraTokens.created.copy', 'Copy')}
-          </button>
-          <a
-            href={url}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="flex items-center gap-2 px-3 py-2 bg-bambu-dark-tertiary text-white rounded-md hover:bg-bambu-dark-tertiary/80"
-          >
-            <ExternalLink className="w-4 h-4" />
-            {t('streamOverlay.builder.open', 'Open')}
-          </a>
-        </div>
+        {outputs.map((output) => (
+          <div key={output.layout ?? 'auto'} className="mb-3 last:mb-0">
+            {output.layout && (
+              <p className="text-xs text-bambu-gray mb-1">
+                <span className="text-white">{layoutName(output.layout)}</span>
+                {' · '}
+                <span>
+                  {t('streamOverlay.builder.sourceSize', 'Browser source size: {{width}} × {{height}}', OVERLAY_CANVAS[output.layout])}
+                </span>
+              </p>
+            )}
+            <div className="flex items-center gap-2">
+              <code className="flex-1 px-3 py-2 bg-bambu-dark rounded-md text-bambu-green text-xs break-all font-mono select-all">
+                {output.url}
+              </code>
+              <button
+                type="button"
+                onClick={() => void copyUrl(output.url)}
+                className="flex items-center gap-2 px-3 py-2 bg-bambu-green text-white rounded-md hover:bg-bambu-green/90"
+              >
+                <Copy className="w-4 h-4" />
+                {t('cameraTokens.created.copy', 'Copy')}
+              </button>
+              <a
+                href={output.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center gap-2 px-3 py-2 bg-bambu-dark-tertiary text-white rounded-md hover:bg-bambu-dark-tertiary/80"
+              >
+                <ExternalLink className="w-4 h-4" />
+                {t('streamOverlay.builder.open', 'Open')}
+              </a>
+            </div>
+          </div>
+        ))}
         {token.trim() && (
           <p className="text-xs text-bambu-gray mt-2">
             {t(
@@ -420,12 +478,22 @@ export function StreamOverlayBuilder() {
             : t('streamOverlay.builder.showPreview', 'Show preview')}
         </button>
         {preview && (
-          <iframe
-            key={previewUrl}
-            src={previewUrl}
-            title={t('streamOverlay.builder.previewTitle', 'Overlay preview')}
-            className="mt-3 w-full aspect-video rounded-md border border-bambu-dark-tertiary bg-black"
-          />
+          // "Both" is two viewers of one printer's stream: the server fans one
+          // camera connection out to them, so this costs the printer nothing more.
+          <div className="mt-3 flex flex-wrap items-start gap-3">
+            {settled.map((output) => (
+              <iframe
+                key={output.url}
+                src={output.url}
+                title={output.layout
+                  ? `${t('streamOverlay.builder.previewTitle', 'Overlay preview')} — ${layoutName(output.layout)}`
+                  : t('streamOverlay.builder.previewTitle', 'Overlay preview')}
+                className={`rounded-md border border-bambu-dark-tertiary bg-black ${
+                  output.layout === 'portrait' ? 'w-56 aspect-[9/16]' : 'min-w-64 flex-1 aspect-video'
+                }`}
+              />
+            ))}
+          </div>
         )}
       </div>
     </div>

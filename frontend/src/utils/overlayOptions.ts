@@ -61,3 +61,20 @@ export function overlayTransparency(raw: string | null | undefined): number {
   const value = Number(raw);
   return value <= 100 ? value : 0;
 }
+
+export type OverlayLayout = 'landscape' | 'portrait';
+
+/** The size each layout is drawn at before it is scaled to the browser source. */
+export const OVERLAY_CANVAS: Record<OverlayLayout, { width: number; height: number }> = {
+  landscape: { width: 1920, height: 1080 },
+  portrait: { width: 1080, height: 1920 },
+};
+
+/**
+ * `layout=landscape|portrait` draws the overlay on a fixed canvas. Null — no
+ * parameter, or anything else — keeps the overlay sized by its window, as
+ * every address from before the parameter expects.
+ */
+export function overlayLayout(raw: string | null | undefined): OverlayLayout | null {
+  return raw === 'landscape' || raw === 'portrait' ? raw : null;
+}

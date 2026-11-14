@@ -242,4 +242,68 @@ describe('StreamOverlayBuilder', () => {
       expect(shownUrl()).not.toContain('backgroundTransparency');
     });
   });
+
+  describe('layout', () => {
+    const shownUrls = () => Array.from(document.querySelectorAll('code')).map((code) => code.textContent ?? '');
+
+    it('starts sized by the browser source: one address, no layout in it', async () => {
+      render(<StreamOverlayBuilder />);
+
+      await waitFor(() => expect(screen.getByLabelText('Layout')).toBeInTheDocument());
+      expect(screen.getByLabelText('Layout')).toHaveValue('auto');
+      expect(shownUrls()).toHaveLength(1);
+      expect(shownUrl()).not.toContain('layout=');
+    });
+
+    it.each([
+      ['landscape', '1920 × 1080'],
+      ['portrait', '1080 × 1920'],
+    ])('emits layout=%s and names the browser-source size', async (layout, size) => {
+      const user = userEvent.setup();
+      render(<StreamOverlayBuilder />);
+
+      await waitFor(() => expect(screen.getByLabelText('Layout')).toBeInTheDocument());
+      await user.selectOptions(screen.getByLabelText('Layout'), layout);
+
+      await waitFor(() => expect(shownUrl()).toContain(`layout=${layout}`));
+      expect(shownUrls()).toHaveLength(1);
+      expect(screen.getByText(`Browser source size: ${size}`)).toBeInTheDocument();
+    });
+
+    it('builds one address per layout for "both", each with its own Copy and Open', async () => {
+      const user = userEvent.setup();
+      render(<StreamOverlayBuilder />);
+
+      await waitFor(() => expect(screen.getByLabelText('Layout')).toBeInTheDocument());
+      await user.selectOptions(screen.getByLabelText('Layout'), 'both');
+
+      await waitFor(() => expect(shownUrls()).toHaveLength(2));
+      expect(shownUrls()[0]).toContain('layout=landscape');
+      expect(shownUrls()[1]).toContain('layout=portrait');
+      expect(screen.getByText('Browser source size: 1920 × 1080')).toBeInTheDocument();
+      expect(screen.getByText('Browser source size: 1080 × 1920')).toBeInTheDocument();
+      expect(screen.getAllByRole('button', { name: 'Copy' })).toHaveLength(2);
+      const open = screen.getAllByRole('link', { name: 'Open' });
+      expect(open.map((link) => link.getAttribute('href'))).toEqual(shownUrls());
+    });
+
+    it('previews both layouts side by side, each on its own address', async () => {
+      const user = userEvent.setup();
+      render(<StreamOverlayBuilder />);
+
+      await waitFor(() => expect(screen.getByLabelText('Layout')).toBeInTheDocument());
+      await user.selectOptions(screen.getByLabelText('Layout'), 'both');
+      await waitFor(() => expect(shownUrls()).toHaveLength(2));
+      expect(document.querySelector('iframe')).toBeNull();
+
+      await user.click(screen.getByText('Show preview'));
+
+      await waitFor(() => expect(document.querySelectorAll('iframe')).toHaveLength(2));
+      await waitFor(() =>
+        expect(Array.from(document.querySelectorAll('iframe')).map((frame) => frame.getAttribute('src'))).toEqual(
+          shownUrls(),
+        ),
+      );
+    });
+  });
 });

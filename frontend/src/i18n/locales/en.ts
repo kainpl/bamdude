@@ -4913,6 +4913,16 @@ export default {
       designV2: 'Version 2',
       designHint:
         'Classic lays the text over the picture. Version 2 frames it: printer and model in a corner, the job in a panel below, and a stacked arrangement in a portrait source.',
+      layout: 'Layout',
+      layoutAuto: 'Fit the browser source',
+      layoutLandscape: 'Landscape (1920 \u00d7 1080)',
+      layoutPortrait: 'Portrait (1080 \u00d7 1920)',
+      layoutBoth: 'Both: landscape and portrait',
+      layoutHint:
+        'A fixed layout is drawn at one size and scaled to the source, so it looks the same in the preview, in a browser tab and in OBS. "Fit the browser source" sizes the overlay by its window.',
+      landscape: 'Landscape',
+      portrait: 'Portrait',
+      sourceSize: 'Browser source size: {{width}} \u00d7 {{height}}',
       transparency: 'Background transparency',
       transparencyHint:
         'Fades the dark panels so another source in your scene shows through them. At 100% only the text and the bar are left.',

@@ -11,8 +11,16 @@ import { useCameraImageRef } from '../hooks/useCameraImageRef';
 import { useCameraStreamRecovery, type CameraStreamHealth } from '../hooks/useCameraStreamRecovery';
 import { printerSource, streamPath } from '../utils/cameraSource';
 import { normalizeModelName } from '../utils/printer';
-import { overlayDesign, overlayTransparency, progressFill, type OverlayDesign } from '../utils/overlayOptions';
+import {
+  overlayDesign,
+  overlayLayout,
+  overlayTransparency,
+  progressFill,
+  type OverlayDesign,
+  type OverlayLayout,
+} from '../utils/overlayOptions';
 import { StreamOverlayV2 } from '../components/StreamOverlayV2';
+import { OverlayCanvas } from '../components/OverlayCanvas';
 
 type TFunction = (key: string, options?: Record<string, unknown>) => string;
 
@@ -49,6 +57,7 @@ interface OverlayConfig {
   progressFill: string | undefined;
   design: OverlayDesign;
   transparency: number;
+  layout: OverlayLayout | null;
 }
 
 function parseConfig(params: URLSearchParams): OverlayConfig {
@@ -86,6 +95,8 @@ function parseConfig(params: URLSearchParams): OverlayConfig {
     // keeps the design it was made with.
     design: overlayDesign(params.get('design')),
     transparency: overlayTransparency(params.get('backgroundTransparency')),
+    // Null keeps the overlay sized by its window.
+    layout: overlayLayout(params.get('layout')),
   };
 }
 
@@ -145,7 +156,50 @@ function TempReading({ icon, label, current, target, sizes }: TempReadingProps) 
   );
 }
 
-function getSizeClasses(size: OverlaySize) {
+// Classic on the portrait canvas (`layout=portrait`): the canvas is 1080 wide
+// and usually shown small — a phone-shaped stream — so the text is larger, and
+// a long file name wraps instead of being cut after a few characters.
+function getPortraitSizeClasses(size: OverlaySize) {
+  switch (size) {
+    case 'small':
+      return {
+        container: 'p-6',
+        text: 'text-2xl',
+        textLarge: 'text-3xl',
+        progressHeight: 'h-3',
+        icon: 'w-6 h-6 shrink-0',
+        gap: 'gap-3',
+        logoHeight: 'h-24',
+        filename: 'break-words',
+      };
+    case 'large':
+      return {
+        container: 'p-8',
+        text: 'text-4xl',
+        textLarge: 'text-5xl',
+        progressHeight: 'h-5',
+        icon: 'w-9 h-9 shrink-0',
+        gap: 'gap-5',
+        logoHeight: 'h-32',
+        filename: 'break-words',
+      };
+    case 'medium':
+    default:
+      return {
+        container: 'p-8',
+        text: 'text-3xl',
+        textLarge: 'text-4xl',
+        progressHeight: 'h-4',
+        icon: 'w-8 h-8 shrink-0',
+        gap: 'gap-4',
+        logoHeight: 'h-28',
+        filename: 'break-words',
+      };
+  }
+}
+
+function getSizeClasses(size: OverlaySize, portrait = false) {
+  if (portrait) return getPortraitSizeClasses(size);
   switch (size) {
     case 'small':
       return {
@@ -156,6 +210,7 @@ function getSizeClasses(size: OverlaySize) {
         icon: 'w-3 h-3',
         gap: 'gap-2',
         logoHeight: 'h-12',
+        filename: 'truncate',
       };
     case 'large':
       return {
@@ -166,6 +221,7 @@ function getSizeClasses(size: OverlaySize) {
         icon: 'w-6 h-6',
         gap: 'gap-4',
         logoHeight: 'h-24',
+        filename: 'truncate',
       };
     case 'medium':
     default:
@@ -177,6 +233,7 @@ function getSizeClasses(size: OverlaySize) {
         icon: 'w-4 h-4',
         gap: 'gap-3',
         logoHeight: 'h-16',
+        filename: 'truncate',
       };
   }
 }
@@ -189,7 +246,7 @@ export function StreamOverlayPage() {
   const id = parseInt(printerId || '0', 10);
 
   const config = useMemo(() => parseConfig(searchParams), [searchParams]);
-  const sizes = getSizeClasses(config.size);
+  const sizes = getSizeClasses(config.size, config.layout === 'portrait');
 
   // Kiosk mode (upstream #2613): OBS and other embeds have no login session, so
   // they pass an `overlay`-scoped token in the URL. When present, every data
@@ -455,6 +512,11 @@ export function StreamOverlayPage() {
   const isPrinting = online && (status.state === 'RUNNING' || status.state === 'PAUSE');
   const progress = status.progress || 0;
 
+  // `layout=` draws the overlay on a fixed canvas scaled to the browser
+  // source; without it the overlay is sized by its window, as it always was.
+  const framed = (body: React.ReactElement, ground: string) =>
+    config.layout ? <OverlayCanvas layout={config.layout} ground={ground}>{body}</OverlayCanvas> : body;
+
   if (config.design === 'v2') {
     // The same facts as Classic below, handed over as values: what must not be
     // shown (an offline printer's frozen figures) is null, and Version 2 only
@@ -463,8 +525,12 @@ export function StreamOverlayPage() {
     const remaining = isPrinting && config.showEta && status.remaining_time != null && status.remaining_time > 0
       ? status.remaining_time
       : null;
-    return (
+    // Around a canvas in a source of another shape: the same ground the
+    // design itself has, see-through when the URL asks for it.
+    const alpha = 1 - config.transparency / 100;
+    return framed(
       <StreamOverlayV2
+        layout={config.layout}
         size={config.size}
         transparency={config.transparency}
         progressFill={config.progressFill}
@@ -490,12 +556,13 @@ export function StreamOverlayPage() {
         remaining={remaining != null ? formatDuration(remaining * 60) : null}
         finish={remaining != null ? formatETA(remaining, timeFormat, t) : null}
         temperatures={online ? tempReadings : []}
-      />
+      />,
+      alpha === 0 ? 'transparent' : `rgba(0, 0, 0, ${alpha})`,
     );
   }
 
-  return (
-    <div ref={sceneRef} className="min-h-screen bg-black relative overflow-hidden">
+  return framed(
+    <div ref={sceneRef} className={`${config.layout ? 'h-full' : 'min-h-screen'} bg-black relative overflow-hidden`}>
       {/* Camera feed - fullscreen background (optional) */}
       {showsCamera && streamPhase === 'live' && (
         <img
@@ -545,7 +612,7 @@ export function StreamOverlayPage() {
 
           {/* Filename */}
           {config.showFilename && status.current_print && (
-            <div className={`${sizes.textLarge} text-white font-semibold mb-2 truncate drop-shadow-md`}>
+            <div className={`${sizes.textLarge} text-white font-semibold mb-2 ${sizes.filename} drop-shadow-md`}>
               {formatPrintName(status.current_print.replace(/\.gcode\.3mf$|\.3mf$|\.gcode$/i, ''), status.gcode_file, t)}
             </div>
           )}
@@ -641,6 +708,7 @@ export function StreamOverlayPage() {
           )}
         </div>
       </div>
-    </div>
+    </div>,
+    '#000',
   );
 }
