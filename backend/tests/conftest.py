@@ -405,12 +405,14 @@ def _clean_print_lifecycle_registries():
 
 
 @pytest.fixture(autouse=True)
-def _fresh_vp_restore_generation(monkeypatch, data_dir_isolation):
+def _vp_restore_generation(monkeypatch, data_dir_isolation):
     """Each test models a fresh process, not a retry of another test's restore.
 
     F intentionally keeps its latch and owned root until process exit. Pytest
     instead reuses module singletons across function-scoped event loops/DBs.
     Never reopen these owners in product CRUD just to make tests independent.
+    Sort after _no_dialect_check_leaks so monkeypatch is undone before that
+    guard inspects the modules; moving this fixture earlier reverses teardown.
     """
     from backend.app.services.farm_startup_guard import farm_startup_guard
     from backend.app.services.git_backup import git_backup_service
