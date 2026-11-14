@@ -775,8 +775,7 @@ async def generate_mjpeg_stream(
                 break
 
     elif camera_type == "usb":
-        camera_metrics.current.get().begin_attempt()
-        # Use ffmpeg to stream from USB camera
+        # Use ffmpeg to stream from USB camera; its CameraAttempt counts the attempt, as for RTSP.
         async for frame in _stream_usb(url, fps, on_process=on_process):
             yield _publish(frame)
 
@@ -1167,80 +1166,75 @@ async def _stream_usb(
         "-",
     ]
 
-    process = None
-    stderr_drain: FfmpegStderrDrain | None = None
+    # One attempt owns the process and both its pipes (upstream #2580): the exit is waited for with a bound,
+    # after the kill too, and stdout is drained meanwhile so a full pipe cannot hold ffmpeg in its last write.
+    # The hand-written teardown this replaces awaited ``process.wait()`` after the kill with no bound at all.
     try:
-        logger.info("Starting USB camera stream from %s at %s fps", device, fps)
-        process = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        # Register BEFORE the startup probe below. A previous leak still holding
-        # the device makes this ffmpeg block in open()/ioctl rather than exit
-        # with "busy", so it never reaches the probe — and an unreapable process
-        # fighting over /dev/videoN is exactly the symptom (#2675).
-        if on_process is not None:
-            on_process(process)
-
-        # Give ffmpeg a moment to start and check for immediate failures
-        await asyncio.sleep(0.5)
-        if process.returncode is not None:
-            stderr = await process.stderr.read()
-            logger.error(
-                "ffmpeg USB stream failed immediately: %s", summarize_ffmpeg_stderr(stderr) or NO_FFMPEG_OUTPUT
+        async with CameraAttempt(f"external-usb device={device}") as attempt:
+            logger.info("Starting USB camera stream from %s at %s fps", device, fps)
+            process = attempt.process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
             )
-            return
+            # Register BEFORE the startup probe below. A previous leak still holding
+            # the device makes this ffmpeg block in open()/ioctl rather than exit
+            # with "busy", so it never reaches the probe — and an unreapable process
+            # fighting over /dev/videoN is exactly the symptom (#2675).
+            if on_process is not None:
+                on_process(process)
 
-        # Same as the RTSP path above — see services/ffmpeg_stderr.
-        stderr_drain = FfmpegStderrDrain(process, name=f"ext-usb-{process.pid}").start()
+            # Give ffmpeg a moment to start and check for immediate failures
+            await asyncio.sleep(0.5)
+            if process.returncode is not None:
+                stderr = await process.stderr.read()
+                logger.error(
+                    "ffmpeg USB stream failed immediately: %s", summarize_ffmpeg_stderr(stderr) or NO_FFMPEG_OUTPUT
+                )
+                return
 
-        buffer = b""
-        jpeg_start = b"\xff\xd8"
-        jpeg_end = b"\xff\xd9"
+            # Same as the RTSP path above — see services/ffmpeg_stderr.
+            attempt.stderr = FfmpegStderrDrain(process, name=f"ext-usb-{process.pid}").start()
 
-        while True:
-            try:
-                chunk = await asyncio.wait_for(process.stdout.read(8192), timeout=30.0)
+            buffer = b""
+            jpeg_start = b"\xff\xd8"
+            jpeg_end = b"\xff\xd9"
 
-                if not chunk:
+            while True:
+                try:
+                    chunk = await asyncio.wait_for(process.stdout.read(8192), timeout=30.0)
+
+                    if not chunk:
+                        break
+
+                    buffer += chunk
+
+                    # Extract complete frames
+                    while True:
+                        start_idx = buffer.find(jpeg_start)
+                        if start_idx == -1:
+                            buffer = buffer[-2:] if len(buffer) > 2 else buffer
+                            break
+
+                        if start_idx > 0:
+                            buffer = buffer[start_idx:]
+
+                        end_idx = buffer.find(jpeg_end, 2)
+                        if end_idx == -1:
+                            break
+
+                        frame = buffer[: end_idx + 2]
+                        buffer = buffer[end_idx + 2 :]
+                        yield frame
+
+                except TimeoutError:
+                    logger.warning("USB stream read timeout")
                     break
 
-                buffer += chunk
-
-                # Extract complete frames
-                while True:
-                    start_idx = buffer.find(jpeg_start)
-                    if start_idx == -1:
-                        buffer = buffer[-2:] if len(buffer) > 2 else buffer
-                        break
-
-                    if start_idx > 0:
-                        buffer = buffer[start_idx:]
-
-                    end_idx = buffer.find(jpeg_end, 2)
-                    if end_idx == -1:
-                        break
-
-                    frame = buffer[: end_idx + 2]
-                    buffer = buffer[end_idx + 2 :]
-                    yield frame
-
-            except TimeoutError:
-                logger.warning("USB stream read timeout")
-                break
-
     except asyncio.CancelledError:
+        # Re-raised, as the MJPEG and RTSP readers do: swallowed, a cancelled producer read as an ordinary
+        # end of stream.
         logger.info("USB stream cancelled")
-    except OSError as e:
-        logger.error("USB stream error: %s", e)
-    finally:
-        if stderr_drain is not None:
-            await stderr_drain.aclose()
-        if process and process.returncode is None:
-            process.terminate()
-            try:
-                await asyncio.wait_for(process.wait(), timeout=2.0)
-            except TimeoutError:
-                process.kill()
-                await process.wait()
+        raise
+    except (OSError, CameraCleanupError) as e:
+        logger.error("USB stream error: %s", summarize_ffmpeg_stderr(str(e)))
