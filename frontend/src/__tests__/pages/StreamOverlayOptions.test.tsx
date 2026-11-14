@@ -137,4 +137,44 @@ describe('StreamOverlayPage — optional parameters', () => {
       expect(screen.queryByText('P1S')).not.toBeInTheDocument();
     });
   });
+
+  describe('progress colours (progressFrom / progressTo)', () => {
+    // The filled part of the bar: the one element sized by the progress.
+    const bar = () => document.querySelector<HTMLElement>('[style*="width: 45%"]');
+
+    it('fills the bar with the two colours, left to right', async () => {
+      renderOverlay('?show=progress&progressFrom=ff0000&progressTo=%230000FF');
+
+      await waitFor(() => expect(bar()).not.toBeNull());
+      expect(bar()!.style.backgroundImage).toBe('linear-gradient(to right, #ff0000, #0000ff)');
+    });
+
+    it('keeps its own colour when the URL names none', async () => {
+      renderOverlay('?show=progress');
+
+      await waitFor(() => expect(bar()).not.toBeNull());
+      expect(bar()!.getAttribute('style')).toBe('width: 45%;');
+      expect(bar()!.className).toContain('bg-bambu-green');
+    });
+
+    it.each([
+      'progressFrom=red&progressTo=blue',
+      'progressFrom=%23fff&progressTo=%23000',
+      'progressFrom=ff0000%3Bbackground%3Aurl(%2F%2Fevil)&progressTo=url(x)',
+      'progressFrom=&progressTo=',
+    ])('ignores %s and still draws the bar', async (query) => {
+      renderOverlay(`?show=progress&${query}`);
+
+      await waitFor(() => expect(bar()).not.toBeNull());
+      expect(bar()!.getAttribute('style')).toBe('width: 45%;');
+      expect(screen.getByText('45%')).toBeInTheDocument();
+    });
+
+    it('colours the bar in OBS too', async () => {
+      renderOverlay('?token=obs-tok&show=progress&progressFrom=112233&progressTo=445566');
+
+      await waitFor(() => expect(bar()).not.toBeNull());
+      expect(bar()!.style.backgroundImage).toBe('linear-gradient(to right, #112233, #445566)');
+    });
+  });
 });

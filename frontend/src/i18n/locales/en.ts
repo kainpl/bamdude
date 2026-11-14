@@ -4908,6 +4908,11 @@ export default {
       fieldLayers: 'Layer count',
       fieldEta: 'Time remaining and ETA',
       fieldCamera: 'Camera feed',
+      customColours: 'Custom progress colours',
+      progressFrom: 'Start colour',
+      progressTo: 'End colour',
+      customColoursHint:
+        'The progress bar runs from the start colour on the left to the end colour on the right. Pick the same colour twice for a plain bar.',
       chamberHint:
         'Chamber temperature only appears on models with a real chamber sensor \u2014 P1 and A1 printers report a meaningless value, so it is left out there.',
       urlTitle: 'Overlay URL',

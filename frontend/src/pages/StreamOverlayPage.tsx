@@ -11,6 +11,7 @@ import { useCameraImageRef } from '../hooks/useCameraImageRef';
 import { useCameraStreamRecovery, type CameraStreamHealth } from '../hooks/useCameraStreamRecovery';
 import { printerSource, streamPath } from '../utils/cameraSource';
 import { normalizeModelName } from '../utils/printer';
+import { progressFill } from '../utils/overlayOptions';
 
 type TFunction = (key: string, options?: Record<string, unknown>) => string;
 
@@ -44,6 +45,7 @@ interface OverlayConfig {
   showNozzle: boolean;
   showBed: boolean;
   showChamber: boolean;
+  progressFill: string | undefined;
 }
 
 function parseConfig(params: URLSearchParams): OverlayConfig {
@@ -75,6 +77,8 @@ function parseConfig(params: URLSearchParams): OverlayConfig {
     showNozzle: show.includes('nozzle'),
     showBed: show.includes('bed'),
     showChamber: show.includes('chamber'),
+    // Undefined unless the URL names a valid colour: the bar keeps its own.
+    progressFill: progressFill(params.get('progressFrom'), params.get('progressTo')),
   };
 }
 
@@ -517,7 +521,10 @@ export function StreamOverlayPage() {
               <div className={`w-full bg-white/20 rounded-full ${sizes.progressHeight}`}>
                 <div
                   className={`bg-bambu-green ${sizes.progressHeight} rounded-full transition-all duration-500`}
-                  style={{ width: `${progress}%` }}
+                  style={{
+                    width: `${progress}%`,
+                    ...(config.progressFill ? { backgroundImage: config.progressFill } : {}),
+                  }}
                 />
               </div>
             </div>

@@ -14,6 +14,7 @@ import { Copy, ExternalLink, Eye, EyeOff } from 'lucide-react';
 import { api, type Printer } from '../api/client';
 import { useToast } from '../contexts/ToastContext';
 import { Select } from './Select';
+import { overlayColour } from '../utils/overlayOptions';
 
 type OverlaySize = 'small' | 'medium' | 'large';
 
@@ -38,6 +39,15 @@ const DEFAULT_FIELDS = ['progress', 'layers', 'eta', 'filename', 'status'];
 
 const DEFAULT_FPS = 15;
 
+// What the two pickers start on when custom colours are switched on.
+const DEFAULT_PROGRESS_FROM = '#00ae42';
+const DEFAULT_PROGRESS_TO = '#7ee081';
+
+// How long the URL must stand still before an open preview follows it. A
+// colour picker moves it many times a second, and every new preview address
+// is a new camera stream.
+const PREVIEW_SETTLE_MS = 300;
+
 export function StreamOverlayBuilder() {
   const { t } = useTranslation();
   const { showToast } = useToast();
@@ -48,6 +58,9 @@ export function StreamOverlayBuilder() {
   const [size, setSize] = useState<OverlaySize>('medium');
   const [fps, setFps] = useState(DEFAULT_FPS);
   const [showCamera, setShowCamera] = useState(true);
+  const [customColours, setCustomColours] = useState(false);
+  const [progressFrom, setProgressFrom] = useState(DEFAULT_PROGRESS_FROM);
+  const [progressTo, setProgressTo] = useState(DEFAULT_PROGRESS_TO);
   const [token, setToken] = useState('');
   const [preview, setPreview] = useState(false);
 
@@ -81,9 +94,24 @@ export function StreamOverlayBuilder() {
     if (size !== 'medium') params.set('size', size);
     if (fps !== DEFAULT_FPS) params.set('fps', String(fps));
     if (!showCamera) params.set('camera', 'false');
+    // Without the hash: in an address a bare `#` starts the fragment, and a
+    // URL somebody shortens by hand should not lose its colours to that.
+    const from = customColours ? overlayColour(progressFrom) : null;
+    const to = customColours ? overlayColour(progressTo) : null;
+    if (from && to) {
+      params.set('progressFrom', from.slice(1));
+      params.set('progressTo', to.slice(1));
+    }
     if (token.trim()) params.set('token', token.trim());
     return `${window.location.origin}/overlay/${id}?${params.toString()}`;
-  }, [printerId, fields, size, fps, showCamera, token]);
+  }, [printerId, fields, size, fps, showCamera, customColours, progressFrom, progressTo, token]);
+
+  // The address the open preview shows: the URL once it has stood still.
+  const [previewUrl, setPreviewUrl] = useState(url);
+  useEffect(() => {
+    const timer = setTimeout(() => setPreviewUrl(url), PREVIEW_SETTLE_MS);
+    return () => clearTimeout(timer);
+  }, [url]);
 
   const toggleField = (key: string) => {
     setFields((prev) => (prev.includes(key) ? prev.filter((f) => f !== key) : [...prev, key]));
@@ -241,6 +269,51 @@ export function StreamOverlayBuilder() {
       </fieldset>
 
       <div className="mt-4">
+        <label className="flex items-center gap-2 text-sm text-bambu-gray">
+          <input
+            type="checkbox"
+            checked={customColours}
+            onChange={(e) => setCustomColours(e.target.checked)}
+            className="accent-bambu-green"
+          />
+          {t('streamOverlay.builder.customColours', 'Custom progress colours')}
+        </label>
+        {customColours && (
+          <div className="mt-2 flex flex-wrap items-center gap-4">
+            {[
+              { id: 'overlay-builder-progress-from', label: t('streamOverlay.builder.progressFrom', 'Start colour'), value: progressFrom, set: setProgressFrom },
+              { id: 'overlay-builder-progress-to', label: t('streamOverlay.builder.progressTo', 'End colour'), value: progressTo, set: setProgressTo },
+            ].map((picker) => (
+              <div key={picker.id} className="flex items-center gap-2">
+                <label htmlFor={picker.id} className="text-sm text-white">
+                  {picker.label}
+                </label>
+                <input
+                  id={picker.id}
+                  type="color"
+                  value={picker.value}
+                  onChange={(e) => picker.set(e.target.value)}
+                  className="h-8 w-10 cursor-pointer rounded border border-bambu-dark-tertiary bg-bambu-dark p-0.5"
+                />
+                <span className="font-mono text-xs text-bambu-gray">{picker.value}</span>
+              </div>
+            ))}
+            <div
+              aria-hidden="true"
+              className="h-3 min-w-24 flex-1 rounded-full"
+              style={{ backgroundImage: `linear-gradient(to right, ${progressFrom}, ${progressTo})` }}
+            />
+          </div>
+        )}
+        <p className="text-xs text-bambu-gray mt-2">
+          {t(
+            'streamOverlay.builder.customColoursHint',
+            'The progress bar runs from the start colour on the left to the end colour on the right. Pick the same colour twice for a plain bar.',
+          )}
+        </p>
+      </div>
+
+      <div className="mt-4">
         <p className="text-sm font-medium text-white mb-1">
           {t('streamOverlay.builder.urlTitle', 'Overlay URL')}
         </p>
@@ -293,8 +366,8 @@ export function StreamOverlayBuilder() {
         </button>
         {preview && (
           <iframe
-            key={url}
-            src={url}
+            key={previewUrl}
+            src={previewUrl}
             title={t('streamOverlay.builder.previewTitle', 'Overlay preview')}
             className="mt-3 w-full aspect-video rounded-md border border-bambu-dark-tertiary bg-black"
           />

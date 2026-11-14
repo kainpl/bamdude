@@ -7,7 +7,7 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { screen, waitFor } from '@testing-library/react';
+import { fireEvent, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { render } from '../utils';
@@ -164,5 +164,51 @@ describe('StreamOverlayBuilder', () => {
     // Falls back to printer 1 rather than rendering /overlay/null — the number
     // is the one thing the user can fix by hand in the URL.
     await waitFor(() => expect(shownUrl()).toContain('/overlay/1'));
+  });
+
+  describe('progress colours', () => {
+    it('emits no colour until custom colours are switched on', async () => {
+      const user = userEvent.setup();
+      render(<StreamOverlayBuilder />);
+
+      await waitFor(() => expect(screen.getByLabelText('Custom progress colours')).toBeInTheDocument());
+      expect(shownUrl()).not.toContain('progressFrom');
+      expect(screen.queryByLabelText('Start colour')).not.toBeInTheDocument();
+
+      await user.click(screen.getByLabelText('Custom progress colours'));
+      await waitFor(() => expect(shownUrl()).toContain('progressFrom=00ae42&progressTo=7ee081'));
+
+      fireEvent.change(screen.getByLabelText('Start colour'), { target: { value: '#ff8800' } });
+      fireEvent.change(screen.getByLabelText('End colour'), { target: { value: '#0088ff' } });
+      await waitFor(() => expect(shownUrl()).toContain('progressFrom=ff8800&progressTo=0088ff'));
+
+      await user.click(screen.getByLabelText('Custom progress colours'));
+      await waitFor(() => expect(shownUrl()).not.toContain('progressFrom'));
+      expect(shownUrl()).not.toContain('progressTo');
+    });
+
+    // Dragging a colour picker changes the URL many times a second; a preview
+    // keyed on the URL would open a camera stream per step.
+    it('reloads an open preview once after a burst of colour changes', async () => {
+      const user = userEvent.setup();
+      render(<StreamOverlayBuilder />);
+
+      await waitFor(() => expect(screen.getByLabelText('Custom progress colours')).toBeInTheDocument());
+      await user.click(screen.getByLabelText('Custom progress colours'));
+      await user.click(screen.getByText('Show preview'));
+      await waitFor(() => expect(document.querySelector('iframe')?.getAttribute('src')).toContain('progressFrom=00ae42'));
+      const first = document.querySelector('iframe');
+
+      fireEvent.change(screen.getByLabelText('Start colour'), { target: { value: '#110000' } });
+      fireEvent.change(screen.getByLabelText('Start colour'), { target: { value: '#220000' } });
+      fireEvent.change(screen.getByLabelText('Start colour'), { target: { value: '#330000' } });
+      // The URL to copy follows at once; the preview has not moved yet.
+      expect(shownUrl()).toContain('progressFrom=330000');
+      expect(document.querySelector('iframe')).toBe(first);
+      expect(first?.getAttribute('src')).toContain('progressFrom=00ae42');
+
+      await waitFor(() => expect(document.querySelector('iframe')?.getAttribute('src')).toContain('progressFrom=330000'));
+      expect(document.querySelector('iframe')?.getAttribute('src')).not.toContain('110000');
+    });
   });
 });
