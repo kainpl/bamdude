@@ -39,3 +39,17 @@ overwriting an existing value. A rerun retains proofs, markers and counters.
 Full backups retain these facts; migration/restore never infer new readiness
 from a failed status or an old completion timestamp. Reconciliation-only
 failures without live settlement proof will remain failed.
+# Live settlement publication
+
+The live completion freezes scalar identities only after its exact job/archive
+terminal commit. A separate archive-writer success and reaching the normal body
+tail are required; early return, swallowed critical failure and cancellation do
+not publish. The awaited leftovers pass reports failure separately from an empty
+successful pass. Candidate-bearing archive updates preserve the committed end
+time. The final publisher rereads the owner, source, assigned chain and epoch on
+its own guarded connection, and writes a ready receipt without rearming work.
+
+The return runtime owns admitted preparation and SQL through actual completion;
+cancelling its caller does not detach file-reading threads. Until lifecycle
+integration opens admission, publication remains disabled. Historical terminal
+rows and reconciliation scans cannot synthesize a live settlement.
