@@ -472,18 +472,9 @@ async def recalculate_all_costs(
                 total_cost += (untracked_grams / 1000.0) * default_cost_per_kg
             new_cost = round(total_cost, 2)
         else:
-            # Fallback: sum costs for old records by print_name
-            usage_result = await db.execute(
-                select(func.sum(SpoolUsageHistory.cost)).where(
-                    SpoolUsageHistory.print_name == archive.print_name,
-                    SpoolUsageHistory.archive_id.is_(None),
-                    SpoolUsageHistory.print_contribution_filter(),
-                )
-            )
-            fallback_cost = usage_result.scalar()
-            if fallback_cost is not None and fallback_cost > 0:
-                new_cost = round(fallback_cost, 2)
-            elif spoolman_owns and archive.cost is not None:
+            # An unlinked usage row cannot identify this execution by name:
+            # repeated prints, or a deleted archive's history, may share it.
+            if spoolman_owns and archive.cost is not None:
                 new_cost = None
                 preserved += 1
             elif archive.filament_used_grams and default_cost_per_kg > 0:

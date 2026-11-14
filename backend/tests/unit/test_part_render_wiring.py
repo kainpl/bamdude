@@ -21,13 +21,15 @@ def test_the_lifespan_starts_part_render_after_the_library_worker_and_stops_it_f
     )
 
 
-def test_a_restore_asks_the_render_writer_first_and_before_the_database_is_replaced():
+def test_a_restore_proves_vp_then_render_writer_before_the_database_is_replaced():
     from backend.app.api.routes import settings as settings_routes
 
     source = inspect.getsource(settings_routes._restore_backup)
     gate = source.index("await _quiesce_part_render()")
-    # first of the quiesce steps: a refusal leaves every other service running
-    assert gate < source.index("virtual_printer_manager.configure") < source.index("files.apply")
+    # Accepted VP uploads need the other owners to finish. A later refusal
+    # keeps the retired VPs and restore hold until restart; it never reopens them.
+    assert source.index("farm_startup_guard.hold") < source.index("virtual_printer_manager.drain_for_restore")
+    assert source.index("virtual_printer_manager.drain_for_restore") < gate < source.index("files.apply")
 
 
 async def test_the_restore_gate_refuses_an_attempt_whose_end_is_not_proven(monkeypatch):

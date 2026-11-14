@@ -1129,7 +1129,7 @@ async def restore_backup(
 
 async def _quiesce_part_render() -> None:
     """Spec §9.6 and consilium E3-R4: the part render queue is stopped and its last attempt proven over, or the
-    restore ends here -- before any other service is quiesced and before the database is touched."""
+    restore ends here -- before library preview/storage work and database replacement."""
     from backend.app.services import part_render_scheduler
 
     if not await part_render_scheduler.stop_part_render_scheduler("restore"):
@@ -1218,6 +1218,7 @@ async def _restore_backup(file: UploadFile, db: AsyncSession, *, authority=None)
                 from backend.app.services.background_dispatch import background_dispatch
                 from backend.app.services.cloud_credentials import close_admission as close_cloud_admission
                 from backend.app.services.credential_rollout import credential_rollout
+                from backend.app.services.git_backup import git_backup_service
                 from backend.app.services.notification_service import notification_service
                 from backend.app.services.print_scheduler import scheduler as print_scheduler
                 from backend.app.services.slice_dispatch import slice_dispatch
@@ -1227,15 +1228,27 @@ async def _restore_backup(file: UploadFile, db: AsyncSession, *, authority=None)
                 from backend.app.services.zigbee.poller import zigbee_poller
                 from backend.app.services.zigbee.supervisor import zigbee_supervisor
 
-                # Close all C admission before yielding to any shutdown/drain.
+                # Close all admission before yielding to any shutdown/drain.
                 # A failed drain refuses replacement and stays held until restart.
                 auth_runtime.close_admission()
                 close_cloud_admission()
                 slice_dispatch.close_admission()
                 library_scan.close_admission()
+                git_backup_service.close_admission()
                 farm_startup_guard.hold("restore")
-                from backend.app.services.git_backup import git_backup_service
+                from backend.app.services.farm_startup_guard import notify_change
 
+                await notify_change()
+                # Accepted VP workflows still need the owners below to finish
+                # library and queue publication. Keep G01 admission closed, but
+                # prove VP completion before any asynchronous quiesce joins.
+                from backend.app.services.virtual_printer.lifecycle import VPDrainRefused, drain_warning
+
+                await db.rollback()
+                try:
+                    vp_drain = await virtual_printer_manager.drain_for_restore()
+                except VPDrainRefused as exc:
+                    raise HTTPException(409, str(exc)) from exc
                 if not await git_backup_service.quiesce_for_restore():
                     raise HTTPException(409, "Git backup work has not stopped; restart before restoring")
                 if not await slice_dispatch.quiesce_for_restore():
@@ -1246,9 +1259,6 @@ async def _restore_backup(file: UploadFile, db: AsyncSession, *, authority=None)
                     raise HTTPException(409, "Credential rollout work has not stopped; restart before restoring")
                 if not await auth_runtime.quiesce_for_restore():
                     raise HTTPException(409, "Authentication work has not stopped; restart before restoring")
-                from backend.app.services.farm_startup_guard import notify_change
-
-                await notify_change()
                 await _quiesce_part_render()
                 await _quiesce_library_previews()
                 from backend.app.mcp_server.runtime import mcp_runtime
@@ -1269,8 +1279,6 @@ async def _restore_backup(file: UploadFile, db: AsyncSession, *, authority=None)
                     raise HTTPException(
                         409, "Obico readers and writers have not stopped; retry restore after they finish"
                     )
-                if virtual_printer_manager.is_enabled:
-                    await virtual_printer_manager.configure(enabled=False)
                 print_scheduler.stop()
                 await smart_plug_manager.stop_scheduler()
                 # Nothing buffered belongs to the storage that replaces this one, and no
@@ -1348,9 +1356,18 @@ async def _restore_backup(file: UploadFile, db: AsyncSession, *, authority=None)
                 raise HTTPException(503, "Restore finalization is pending; restart BamDude before resuming work")
             await mcp_runtime.reload(after_restore=True)
             logger.info("Restore complete - restart required")
+            from backend.app.i18n.api_errors import current_language, translate_sentence
+
             return {
                 "success": True,
-                "message": "Backup restored successfully. Please restart BamDude for changes to take effect.",
+                "message": (
+                    translate_sentence(
+                        "Backup restored successfully. Please restart BamDude for changes to take effect.",
+                        current_language(),
+                    )
+                    + " "
+                    + drain_warning(vp_drain)
+                ).strip(),
             }
         except HTTPException:
             raise

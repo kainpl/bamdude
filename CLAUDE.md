@@ -108,6 +108,42 @@ Only lifespan startup reopens admission. This owner adds no database or queue
 spool lock and covers the initial raw write, not the whole ingest transaction.
 Vault: `40-invariants/inv-library-upload-write-is-restore-owned.md`.
 
+**Restore owns VP retirement until actual completion.** The canonical restore
+restart latch closes every ordinary VP runtime door; generic crash/operator
+holds do not. FTP and MQTT lease local business before acknowledgement, and a
+timeout/cancel leaves one reachable owner running. Never cancel that business
+between library and queue commits. Only close listeners and publish ownership
+under the manager's non-reentrant sync lock; DB/network/task joins stay outside.
+Close idle writers (short TLS grace, then abort) before joining services.
+Transparent proxies are cut/joined and reported as interruptions, not completed
+uploads. A replacement waits for predecessor proof and the latest configuration.
+Git goes from VP proof to its categories; ZIP retains its other quiesce/fence
+contracts. Both use the existing operation guard; scheduled local busy is a
+retry, not failure. VP drain does not make physical-print writers quiet.
+ZIP closes G01 admission synchronously before yielding, proves VP completion,
+then joins those owners. Keep the later upload-write/connector barriers and
+restore-actor validation under the storage guard before file replacement.
+Exited business errors and completed failed syncs are not pending I/O. Finish
+independent idle teardown before reporting failure; retain an explicit unproven
+owner rather than a failed retirement task that blocks unrelated VPs. Pending
+roots permit retry, completed unproven roots require restart. Delete reserves
+the VP ID through commit and retirement proof, cleaning its uploads before reuse.
+Every retirement outcome wakes deletion-reservation waiters; failure keeps the
+ID reserved. Mark the saved VP pending before joining a busy sync coordinator,
+including target detaches committed by physical-printer deletion.
+Vault: `40-invariants/inv-vp-retirement-is-restore-owned.md`.
+
+**Git metadata restore cannot claim a different physical print.** Archives match
+their execution UUID; legacy keys must be usable and unambiguous, and never
+become a fallback match for a different UUID. Active or uncertain snapshots
+and local prints allow only operator fields. File paths, order links and
+existing execution identity stay local. Energy numbers and provenance form one
+bundle. Usage links recheck the committed archive UUID, not just its integer id,
+and retain spool/printer row lifetimes through their write. Categories commit
+separately; metadata import never replays physical accounting or completion.
+Until restore admission/drain is accepted, the farm must be idle.
+Vault: 40-invariants/inv-git-restore-keeps-execution-identity.md.
+
 **A retained integration credential belongs to its effective destination.** Public reads expose presence, never the value, and save and draft tests share keep/clear/replace resolution. Every pair writer takes the pre-existing installation credential anchor before authoritative adapter rows (existing outer resource guards stay outermost); PostgreSQL locks it and SQLite reserves its writer before reads. Missing anchor fails closed; bootstrap/full restore creates it before admission. Freeze the validated pair and finish the short transaction before network I/O. Partial restore cannot rebind local credential destinations; full private backups retain credentials. Vault: `40-invariants/inv-integration-credential-belongs-to-destination.md`.
 
 **A Git export needs current approval of its saved configuration.** The approving immutable account must remain active, admin and allowed to back up; session/password resets do not revoke that independent approval. Legacy configurations require an explicit admin save. Run admission claims a due slot and advances only its own cadence under the existing credential anchor, then releases SQL locks before network work. The exact configuration and current approver are checked again before capture and before the first snapshot upload. A blocked episode, terminal attempt log, notification marker and eligible admin inbox rows commit together through the existing staged inbox seam; postcommit delivery cannot rewrite a terminal result. Log completion uses the attempt identity, never a reused numeric id. Partial restore validates ordinary editor fields and preserves local destinations; it guards the original browser authority after remote reads and before each publication. Full restore drains the owning Git work before replacing storage. Vault: `40-invariants/inv-git-export-requires-current-config-approval.md`.

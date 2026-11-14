@@ -610,19 +610,24 @@ async def restore_backup(
         raise HTTPException(401, "Authentication required")
     config_id = config.id
     await db.rollback()
-    restore_result = await git_restore_service.run_restore(
-        config_id,
-        ref=request.ref,
-        categories=request.categories,
-        overwrite_existing=request.overwrite_existing,
-        authority=authority,
-        required_permissions=tuple(
-            {Permission.GIT_RESTORE.value}
-            | {
-                permission.value
-                for category, permission in _CATEGORY_WRITE_PERMISSION.items()
-                if category in request.categories
-            }
-        ),
-    )
+    from backend.app.services.virtual_printer.lifecycle import VPDrainRefused
+
+    try:
+        restore_result = await git_restore_service.run_restore(
+            config_id,
+            ref=request.ref,
+            categories=request.categories,
+            overwrite_existing=request.overwrite_existing,
+            authority=authority,
+            required_permissions=tuple(
+                {Permission.GIT_RESTORE.value}
+                | {
+                    permission.value
+                    for category, permission in _CATEGORY_WRITE_PERMISSION.items()
+                    if category in request.categories
+                }
+            ),
+        )
+    except VPDrainRefused as exc:
+        raise HTTPException(409, str(exc)) from exc
     return GitRestoreResponse(**restore_result)

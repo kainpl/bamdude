@@ -2251,8 +2251,17 @@ class TestSlicerProxyManager:
             bind_identity={"serial": "test", "model": "P2S", "name": "spoof", "version": "01.00.00.00"},
             target_model=model,
         )
-        with patch("asyncio.create_task") as create_task, patch("asyncio.gather", new_callable=AsyncMock):
-            create_task.return_value = MagicMock()
+        real_create_task = asyncio.create_task
+
+        def own_camera_only(coro, *args, **kwargs):
+            if coro.cr_code.co_name == "_reconcile_camera_owned":
+                return real_create_task(coro, *args, **kwargs)
+            coro.close()  # Listener coroutines are not run by this configuration test.
+            future = asyncio.get_running_loop().create_future()
+            future.set_result(None)
+            return future
+
+        with patch("asyncio.create_task", side_effect=own_camera_only), patch("asyncio.gather", new_callable=AsyncMock):
             await mgr.start()
         assert (mgr._file_transfer_proxy is not None) is file_tunnel
         assert (mgr._worker_camera_lease is not None) is (camera_port is not None)
