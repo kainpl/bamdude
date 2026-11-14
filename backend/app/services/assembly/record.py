@@ -97,8 +97,10 @@ def load(data: bytes) -> AssemblyRecord:
         parts_raw, printer_raw, layout_raw, plates_raw = raw["parts"], raw["printer"], raw["layout"], raw["plates"]
     except KeyError as error:
         raise _fail(f"{error.args[0]} is missing") from None
-    if not isinstance(set_id, str) or not set_id or not isinstance(base_name, str):
-        raise _fail("set id or name is not text")
+    if not isinstance(base_name, str):
+        raise _fail("the name is not text")
+    if not isinstance(set_id, str) or len(set_id) != 32 or any(c not in "0123456789abcdef" for c in set_id):
+        raise _fail("the set id is not 32 hexadecimal characters")
     if not isinstance(parts_raw, list) or not parts_raw or not isinstance(plates_raw, list):
         raise _fail("parts or plates are not lists")
     if not isinstance(printer_raw, dict) or not isinstance(layout_raw, dict):

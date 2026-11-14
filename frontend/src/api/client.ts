@@ -5916,6 +5916,8 @@ export interface AssemblyProgress {
   printer_count?: number;
   placed?: number;
   total?: number;
+  /** Set while a "fill a plate" part is being laid out: `total` is then only the packer's upper bound. */
+  fill_part?: number | null;
 }
 
 export interface AssemblyJobState extends Omit<SliceJobState, 'result' | 'progress'> {

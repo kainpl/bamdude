@@ -2602,9 +2602,10 @@ export function FileManagerPage() {
     () => (files ?? []).filter((f) => selectedFiles.includes(f.id)),
     [files, selectedFiles],
   );
-  const assemblyBlocked = selectedForAssembly.some(
+  const notAssemblable = selectedForAssembly.filter(
     (f) => !['stl', 'obj'].includes((f.file_type ?? '').toLowerCase()),
   );
+  const assemblyBlocked = notAssemblable.length > 0;
 
   // Schedule one file from its own ⋮ menu — a run over one file, which leaves
   // the selection alone like Move and Tags do from there. Single-plate it looks
@@ -3654,7 +3655,11 @@ export function FileManagerPage() {
                         size="sm"
                         onClick={() => setAssembleMode({ kind: 'new', files: selectedForAssembly })}
                         disabled={assemblyBlocked}
-                        title={assemblyBlocked ? t('fileManager.assemble.onlyMeshes') : t('fileManager.assemble.hint')}
+                        title={
+                          assemblyBlocked
+                            ? `${t('fileManager.assemble.onlyMeshes')}: ${notAssemblable.map((f) => f.filename).join(', ')}`
+                            : t('fileManager.assemble.hint')
+                        }
                       >
                         <LayoutGrid className="w-4 h-4 sm:mr-1" />
                         <span className="sr-only sm:not-sr-only">{t('fileManager.assemble.action')}</span>

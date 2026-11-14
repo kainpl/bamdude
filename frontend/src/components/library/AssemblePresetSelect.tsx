@@ -79,7 +79,7 @@ export function AssemblePresetSelect({
   );
 
   return (
-    <div className="block">
+    <div className="block min-w-0">
       <label htmlFor={selectId} className="block text-xs text-bambu-gray mb-1">
         {label}
       </label>

@@ -16,6 +16,7 @@ Only a cancel (the dispatcher's 499) and a bug end the dispatcher's job as faile
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import logging
 import re
@@ -29,7 +30,7 @@ from typing import Literal
 from fastapi import HTTPException
 
 from backend.app.core.permissions import Permission
-from backend.app.schemas.assembly import AssemblyLayout, AssemblyPrinter
+from backend.app.schemas.assembly import MAX_SOURCE_BYTES, AssemblyLayout, AssemblyPrinter
 from backend.app.services.assembly import record as rec
 from backend.app.services.assembly.presets import PresetUnresolved, flatten
 from backend.app.services.assembly.runtime import AssemblyFailed, assembly_staging, run_assembly
@@ -43,9 +44,14 @@ logger = logging.getLogger(__name__)
 PICTURE_BYTES = 4 * 1024 * 1024  # all plate pictures of one job, inlined into its result
 OUTPUT_BYTES = 512 * 1024 * 1024  # one written 3MF
 JOB_BYTES = 256 * 1024
+MAX_ROW_FILES = 512  # a file per plate: more plates than this is not a layout anybody asked for
 _WORD = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}\Z")
 #: reasons after which no further printer row is published
 _STOPS_PUBLICATION = frozenset({"source_changed", "not_allowed", "restore_in_progress"})
+
+
+class SourceChanged(Exception):
+    """The bytes on disk are not the ones the library row was chosen for."""
 
 
 @dataclass(frozen=True)
@@ -182,12 +188,18 @@ async def _prepare_rows(plan: Plan) -> tuple[list[Row], list]:
             except PresetUnresolved as error:
                 await db.rollback()
                 row.fail("preset_unresolved", f"{error.name} ({error.missing})")
-            except HTTPException as error:
+            except HTTPException:
+                # the resolver's own refusal (unknown id, no right to that cloud preset); its sentence is for an
+                # HTTP answer in the system language, so the row carries the closed reason alone
                 await db.rollback()
-                row.fail("preset_unresolved", str(error.detail) if isinstance(error.detail, str) else "")
+                row.fail("preset_unresolved")
             except GeometryUnknown:
                 await db.rollback()
                 row.fail("geometry_unknown")
+            except Exception as error:  # a malformed preset must fail its own row, by name, not the whole job
+                await db.rollback()
+                logger.warning("Assembly preset unusable: error=%s", type(error).__name__)
+                row.fail("preset_invalid")
     return rows, snapshots
 
 
@@ -197,7 +209,17 @@ def _stage(root: Path, plan: Plan, rows: list[Row]) -> None:
     sources = []
     for index, source in enumerate(plan.sources):
         member = f"src/{index}.{source.fmt}"
-        shutil.copyfile(source.path, root / member)
+        # the row was chosen by its hash; an external file may have changed on its share since the last scan
+        digest, copied = hashlib.sha256(), 0
+        with source.path.open("rb") as reader, (root / member).open("wb") as writer:
+            while block := reader.read(1024 * 1024):
+                copied += len(block)
+                if copied > MAX_SOURCE_BYTES:
+                    raise ValueError("source larger than the request allowed")
+                digest.update(block)
+                writer.write(block)
+        if source.proof[2] and digest.hexdigest() != source.proof[2]:
+            raise SourceChanged(source.name)
         sources.append({"member": member, "format": source.fmt})
     printers = []
     for row in rows:
@@ -242,6 +264,14 @@ def _stage(root: Path, plan: Plan, rows: list[Row]) -> None:
 
 def _read_member(root: Path, member: object, pattern: re.Pattern[str], limit: int) -> bytes | None:
     """One output file of the child, by a name of the expected form, inside the job's directory, under a cap."""
+    path = _member_path(root, member, pattern, limit)
+    try:
+        return path.read_bytes() if path is not None else None
+    except OSError:
+        return None
+
+
+def _member_path(root: Path, member: object, pattern: re.Pattern[str], limit: int) -> Path | None:
     if not isinstance(member, str) or not pattern.fullmatch(member):
         return None
     path = (root / member).resolve()
@@ -249,9 +279,9 @@ def _read_member(root: Path, member: object, pattern: re.Pattern[str], limit: in
         path.relative_to(root.resolve())
         if not path.is_file() or path.stat().st_size > limit:
             return None
-        return path.read_bytes()
     except (OSError, ValueError):
         return None
+    return path
 
 
 def _counts(value: object, parts: int) -> dict[str, int]:
@@ -260,14 +290,26 @@ def _counts(value: object, parts: int) -> dict[str, int]:
     return {
         str(index): copies
         for index, copies in value.items()
-        if str(index).isdigit() and int(index) < parts and type(copies) is int and copies > 0
+        # str.isdigit() also accepts characters int() refuses (a superscript two): ASCII digits only
+        if isinstance(index, str)
+        and index.isascii()
+        and index.isdigit()
+        and int(index) < parts
+        and type(copies) is int
+        and copies > 0
     }
 
 
-def _take_packed(
-    plan: Plan, row: Row, packed: object, root: Path, pictures: list[int]
-) -> list[tuple[bytes, int | None]]:
-    """What the child reports for one row, taken with nothing trusted: the 3MFs to publish as (bytes, plate)."""
+def _output_pattern(row: Row) -> re.Pattern[str]:
+    return re.compile(rf"out/{re.escape(row.key)}(_\d+)?\.3mf")
+
+
+def _take_packed(plan: Plan, row: Row, packed: object, root: Path, pictures: list[int]) -> list[tuple[str, int | None]]:
+    """What the child reports for one row, taken with nothing trusted: the 3MFs to publish as (member, plate).
+
+    Names only — each file is read right before its own publication, so main never holds every output of
+    every printer at once, and a result that lists one file a thousand times reads it not even once.
+    """
     count = len(plan.parts)
     if not isinstance(packed, dict) or packed.get("status") not in ("ok", "failed"):
         row.fail("bad_result")
@@ -287,20 +329,22 @@ def _take_packed(
                 )
         return []
 
-    outputs: list[tuple[bytes, int | None]] = []
+    outputs: list[tuple[str, int | None]] = []
     key = re.escape(row.key)
-    for entry in packed.get("files") if isinstance(packed.get("files"), list) else []:
+    listed = packed.get("files") if isinstance(packed.get("files"), list) else []
+    allowed = MAX_ROW_FILES if plan.layout.split_plates else 1
+    pattern = _output_pattern(row)
+    for entry in listed if 0 < len(listed) <= allowed else []:
         plate = entry.get("plate") if isinstance(entry, dict) else None
-        content = _read_member(
-            root,
-            entry.get("member") if isinstance(entry, dict) else None,
-            re.compile(rf"out/{key}(_\d+)?\.3mf"),
-            OUTPUT_BYTES,
-        )
-        if content is None or not (plate is None or (type(plate) is int and plate >= 0)):
+        member = entry.get("member") if isinstance(entry, dict) else None
+        if (
+            _member_path(root, member, pattern, OUTPUT_BYTES) is None
+            or any(member == taken for taken, _ in outputs)
+            or not (plate is None or (type(plate) is int and plate >= 0))
+        ):
             row.fail("bad_result")
             return []
-        outputs.append((content, plate))
+        outputs.append((member, plate))
     if not outputs:
         row.fail("bad_result")
         return []
@@ -327,10 +371,15 @@ def _take_packed(
     return outputs
 
 
+_PLATE_WORD = {"uk": "стіл"}
+
+
 def _file_name(plan: Plan, row: Row, plate: int | None) -> str:
     base = f"{plan.name} — {row.model or row.label}"
     if plate is not None:
-        base += f" — plate {plate + 1}"
+        from backend.app.i18n import current_language
+
+        base += f" — {_PLATE_WORD.get(current_language(), 'plate')} {plate + 1}"
     return safe_path_component(base, fallback="assembly", max_bytes=200) + ".3mf"
 
 
@@ -349,9 +398,32 @@ async def _check_sources(db, plan: Plan) -> None:
         access.ensure(row)
 
 
-async def _publish(plan: Plan, row: Row, outputs: list[tuple[bytes, int | None]], snapshots: list) -> None:
-    """Step 4 for one row: each output through the library ingest. A failure leaves what was already published
-    and says so on the row ("partial")."""
+async def _withdraw(row: Row) -> None:
+    """Take back what a row published before it failed: a printer gets all its files or none. Half a
+    "file per plate" set would look like a project and could never be laid out again."""
+    from backend.app.core.database import async_session
+    from backend.app.models.library import LibraryFile
+    from backend.app.services.library_trash import library_trash_service
+
+    try:
+        async with async_session() as db:
+            for entry in row.files:
+                file = await db.scalar(LibraryFile.active().where(LibraryFile.id == entry["library_file_id"]))
+                if file is None:
+                    continue
+                if await library_trash_service.trash_or_purge(db, file):
+                    await library_trash_service.hard_delete_now(db, file)
+            await db.commit()
+    except Exception as error:  # what could not be taken back stays, and the row says "partial"
+        logger.warning("Assembly withdrawal failed: error=%s", type(error).__name__)
+        return
+    row.files.clear()
+    row.status = "failed"
+
+
+async def _publish(plan: Plan, row: Row, outputs: list[tuple[str, int | None]], root: Path, snapshots: list) -> None:
+    """Step 4 for one row: each output through the library ingest, read from the job's directory right before
+    it is saved. A failure takes the row's earlier files back (``_withdraw``)."""
     from sqlalchemy import select
     from sqlalchemy.orm import selectinload
 
@@ -363,7 +435,12 @@ async def _publish(plan: Plan, row: Row, outputs: list[tuple[bytes, int | None]]
     async def check(db, _principal):
         await _check_sources(db, plan)
 
-    for content, plate in outputs:
+    for member, plate in outputs:
+        content = await disk(_read_member, root, member, _output_pattern(row), OUTPUT_BYTES)
+        if content is None:
+            row.fail("bad_result")
+            await _withdraw(row)
+            return
         try:
             async with async_session() as db:
                 folder = None
@@ -397,10 +474,12 @@ async def _publish(plan: Plan, row: Row, outputs: list[tuple[bytes, int | None]]
                 }
         except HTTPException as error:
             row.fail(_reason_of(error))
+            await _withdraw(row)
             return
         except Exception as error:  # the disk, the database: the type only
             logger.warning("Assembly publication failed: error=%s", type(error).__name__)
             row.fail("publish_failed")
+            await _withdraw(row)
             return
         row.files.append(entry)
         try:
@@ -443,6 +522,21 @@ async def _trash_previous(plan: Plan) -> tuple[list[int], list[int]]:
 
 async def run(job_id: int, plan: Plan) -> dict:
     """The job's body for the slice dispatcher. Returns the result the dialog shows (see the module docstring)."""
+    result = await _run(job_id, plan)
+    rows = result["printers"]
+    logger.info(
+        "Assembly job=%s result outcome=%s reason=%s files=%d rows_ok=%d rows_other=%d",
+        job_id,
+        result["outcome"],
+        result["reason"],
+        sum(len(row["files"]) for row in rows),
+        sum(row["status"] == "ok" for row in rows),
+        sum(row["status"] != "ok" for row in rows),
+    )
+    return result
+
+
+async def _run(job_id: int, plan: Plan) -> dict:
     from backend.app.core.database import async_session
     from backend.app.services.slice_dispatch import slice_dispatch
 
@@ -464,6 +558,8 @@ async def run(job_id: int, plan: Plan) -> dict:
             await disk(_stage, root, plan, good)
         except FileNotFoundError:
             return _result(rows, outcome="failed", reason="source_missing")
+        except SourceChanged:
+            return _result(rows, outcome="failed", reason="source_changed")
         except (OSError, ValueError) as error:
             logger.warning("Assembly job=%s staging failed: error=%s", job_id, type(error).__name__)
             return _result(rows, outcome="failed", reason="staging_failed")
@@ -485,6 +581,8 @@ async def run(job_id: int, plan: Plan) -> dict:
             ]
             return _result(rows, outcome="failed", reason=reason, parts=parts)
 
+        # From here the job cannot be stopped by its owner (the route refuses once it reads this stage): a
+        # stop that lands mid-publication would leave files behind a message saying nothing was saved.
         slice_dispatch.set_progress(job_id, {"stage": "publishing"})
         by_key = {
             entry.get("key"): entry
@@ -505,7 +603,7 @@ async def run(job_id: int, plan: Plan) -> dict:
             if stopped:
                 row.fail(stopped)
                 continue
-            await _publish(plan, row, outputs, snapshots)
+            await _publish(plan, row, outputs, root, snapshots)
             if row.reason in _STOPS_PUBLICATION:
                 stopped = row.reason
     finally:
@@ -518,15 +616,9 @@ async def run(job_id: int, plan: Plan) -> dict:
     elif plan.trash_ids and all(row.status == "ok" for row in rows):
         try:
             result["trashed"], result["kept"] = await _trash_previous(plan)
-        except HTTPException:
+        except Exception as error:  # the new files are saved: a failure here keeps the old ones, nothing more
+            logger.warning("Assembly job=%s could not trash the previous files: error=%s", job_id, type(error).__name__)
             result["kept"] = list(plan.trash_ids)
     elif plan.trash_ids:
         result["kept"] = list(plan.trash_ids)  # not every row made it: the previous files stay
-    logger.info(
-        "Assembly job=%s published files=%d rows_ok=%d rows_other=%d",
-        job_id,
-        published,
-        sum(row.status == "ok" for row in rows),
-        sum(row.status != "ok" for row in rows),
-    )
     return result

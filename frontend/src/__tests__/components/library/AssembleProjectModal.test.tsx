@@ -180,7 +180,7 @@ describe('AssembleProjectModal', () => {
     });
     expect(within(summary).getByText('The project is assembled.')).toBeInTheDocument();
     expect(within(summary).getAllByRole('img')).toHaveLength(2);
-    expect(within(summary).getByText(/lid\.stl × 14 \(14 per plate\)/)).toBeInTheDocument();
+    expect(within(summary).getByText('lid.stl — 14 per plate')).toBeInTheDocument();
     fireEvent.click(within(summary).getByRole('button', { name: 'jar +1 — X1C.3mf' }));
     expect(onOpenFile).toHaveBeenCalledWith(77);
   });
@@ -208,6 +208,8 @@ describe('AssembleProjectModal', () => {
     expect(rows).toHaveLength(2);
     expect(within(rows[1]).getByText('Some parts do not fit this printer')).toBeInTheDocument();
     expect(within(rows[1]).getByText('jar.stl — larger than the print area')).toBeInTheDocument();
+    expect(screen.getByText(/assembled, but not for every printer/)).toBeInTheDocument();
+    expect(screen.queryByText('The project is assembled.')).not.toBeInTheDocument();
   });
 
   it('says why a job that saved nothing failed', async () => {
@@ -237,6 +239,49 @@ describe('AssembleProjectModal', () => {
     fireEvent.click(within(dialog).getAllByRole('button', { name: 'Close' })[0]);
     expect(onClose).toHaveBeenCalled();
     expect(cancelled).toBe(1);
+  });
+
+  it('counts what is placed while a plate is being filled, without a made-up total', async () => {
+    jobState = {
+      job_id: 31,
+      status: 'running',
+      kind: 'assembly',
+      progress: { stage: 'packing', printer_index: 1, printer_count: 2, placed: 41, total: 1000, fill_part: 1 },
+    };
+    open();
+    const dialog = await screen.findByRole('dialog', { name: 'Assemble project' });
+    await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Assemble' })).toBeEnabled());
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Assemble' }));
+    expect(await screen.findByText('Printer 2 of 2 — filling a plate, 41 placed')).toBeInTheDocument();
+    expect(screen.queryByText(/1000/)).not.toBeInTheDocument();
+  });
+
+  it('says it is laying out before the first count arrives', async () => {
+    jobState = { job_id: 31, status: 'running', kind: 'assembly', progress: { stage: 'packing' } };
+    open();
+    const dialog = await screen.findByRole('dialog', { name: 'Assemble project' });
+    await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Assemble' })).toBeEnabled());
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Assemble' }));
+    expect(await screen.findByText('Laying out…')).toBeInTheDocument();
+  });
+
+  it('says so when the state of the job can no longer be read', async () => {
+    server.use(http.get('/api/v1/slice-jobs/31', () => HttpResponse.json({ detail: 'Slice job not found or expired' }, { status: 404 })));
+    open();
+    const dialog = await screen.findByRole('dialog', { name: 'Assemble project' });
+    await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Assemble' })).toBeEnabled());
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Assemble' }));
+    expect(await screen.findByText(/The state of the assembly can no longer be read/)).toBeInTheDocument();
+  });
+
+  it('does not offer to stop a job that is already saving its files', async () => {
+    jobState = { job_id: 31, status: 'running', kind: 'assembly', progress: { stage: 'publishing' } };
+    open();
+    const dialog = await screen.findByRole('dialog', { name: 'Assemble project' });
+    await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Assemble' })).toBeEnabled());
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Assemble' }));
+    expect(await screen.findByText('Saving to the library…')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Stop' })).toBeDisabled();
   });
 
   it('shows the server’s refusal beside the button and stays on the form', async () => {
@@ -299,6 +344,42 @@ describe('AssembleProjectModal', () => {
       layout: { spacing: 4, rotation_step: 45, centre: false, split_plates: false },
     });
     expect((posted[0].body.targets as { nozzle: number }[])[0].nozzle).toBe(2);
+  });
+
+  it('starts on a machine preset, not on a model card that has no print area', async () => {
+    server.use(
+      http.get('/api/v1/slicer/presets', () =>
+        HttpResponse.json({
+          ...PRESETS,
+          local: EMPTY,
+          standard: {
+            printer: [
+              { id: 'Bambu Lab A1', name: 'Bambu Lab A1', source: 'standard' },
+              { id: 'Bambu Lab A1 0.4 nozzle', name: 'Bambu Lab A1 0.4 nozzle', source: 'standard' },
+            ],
+            process: [{ id: 'p', name: '0.20mm Standard @BBL A1', source: 'standard' }],
+            filament: [{ id: 'f', name: 'Bambu PLA Basic @BBL A1', source: 'standard', filament_type: 'PLA' }],
+          },
+        }),
+      ),
+      http.get('/api/v1/library/assemble/printer-info', ({ request }) =>
+        new URL(request.url).searchParams.get('id') === 'Bambu Lab A1'
+          ? HttpResponse.json(
+              { detail: { error: 'geometry_unknown', message: 'The printer preset does not describe its print area' } },
+              { status: 422 },
+            )
+          : HttpResponse.json(INFO['1']),
+      ),
+    );
+    open();
+    const dialog = await screen.findByRole('dialog', { name: 'Assemble project' });
+    const printer = await within(dialog).findByRole('combobox', { name: 'Printer' });
+    await waitFor(() => expect(printer).toHaveValue('standard:Bambu Lab A1 0.4 nozzle'));
+    await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Assemble' })).toBeEnabled());
+
+    fireEvent.change(printer, { target: { value: 'standard:Bambu Lab A1' } });
+    expect(await within(dialog).findByText('The printer preset does not describe its print area')).toBeInTheDocument();
+    expect(within(dialog).getByRole('button', { name: 'Assemble' })).toBeDisabled();
   });
 
   it('says so when the file carries no record', async () => {

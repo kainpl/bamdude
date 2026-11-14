@@ -114,3 +114,27 @@ async def test_resolve_preset_default_is_still_lenient(db_session):
     with pytest.raises(MissingBaseProfile) as error:
         await resolve_preset(dict(data), "filament", db_session, strict=True)
     assert error.value.name == "Nope"
+
+
+@pytest.mark.asyncio
+async def test_an_expired_cached_parent_still_serves_a_farm_without_internet(db_session):
+    """The cache's age says when to look for a newer copy, not when to forget the one we have."""
+    from datetime import timedelta
+
+    old = datetime.now(timezone.utc) - timedelta(days=orca_profiles.CACHE_TTL_DAYS + 30)
+    for name, content in (
+        ("fdm_machine_common", {"printable_height": "250"}),
+        ("P1", {"inherits": "fdm_machine_common"}),
+    ):
+        db_session.add(
+            OrcaBaseProfile(
+                name=name, profile_type="machine", setting=json.dumps({"name": name, **content}), fetched_at=old
+            )
+        )
+    await db_session.flush()
+    preset = await flatten(db_session, None, PresetRef(source="standard", id="P1"), "printer", credential_snapshots=[])
+    assert preset.flat["printable_height"] == "250"
+    with pytest.raises(PresetUnresolved):
+        await flatten(
+            db_session, None, PresetRef(source="standard", id="Never seen"), "printer", credential_snapshots=[]
+        )

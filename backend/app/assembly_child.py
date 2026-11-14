@@ -72,7 +72,9 @@ def _load_mesh(path: Path, fmt: str):
     import numpy as np
     import trimesh
 
-    mesh = trimesh.load(str(path), file_type=fmt, force="mesh", process=False)
+    # an OBJ may name material and texture files beside it: only the geometry of this one file is read
+    extra = {"skip_materials": True} if fmt == "obj" else {}
+    mesh = trimesh.load(str(path), file_type=fmt, force="mesh", process=False, **extra)
     vertices = np.asarray(getattr(mesh, "vertices", ()), dtype=np.float64)
     triangles = np.asarray(getattr(mesh, "faces", ()), dtype=np.int64)
     if vertices.ndim != 2 or triangles.ndim != 2 or len(vertices) == 0 or len(triangles) == 0:

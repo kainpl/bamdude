@@ -27,8 +27,8 @@ CACHE_TTL_DAYS = 7
 MAX_INHERITANCE_DEPTH = 10
 
 
-async def get_cached_base_profile(name: str, db: AsyncSession) -> dict | None:
-    """Get a base profile from cache if still fresh."""
+async def get_cached_base_profile(name: str, db: AsyncSession, *, allow_stale: bool = False) -> dict | None:
+    """Get a base profile from cache if still fresh — or, with ``allow_stale``, whatever its age."""
     result = await db.execute(select(OrcaBaseProfile).where(OrcaBaseProfile.name == name))
     profile = result.scalar_one_or_none()
     if not profile:
@@ -39,7 +39,7 @@ async def get_cached_base_profile(name: str, db: AsyncSession) -> dict | None:
     fetched = profile.fetched_at
     if fetched.tzinfo is None:
         fetched = fetched.replace(tzinfo=timezone.utc)
-    if fetched < cutoff:
+    if fetched < cutoff and not allow_stale:
         return None
 
     try:
@@ -84,6 +84,12 @@ async def fetch_and_cache_base_profile(name: str, profile_type: str, db: AsyncSe
                 logger.debug("Failed to fetch %s: %s", url, e)
 
     if data is None:
+        # An expired copy is still the profile: a farm without internet must not lose its presets a week
+        # after it last reached GitHub. The TTL says when to look for a newer one, not when to forget.
+        stale = await get_cached_base_profile(name, db, allow_stale=True)
+        if stale is not None:
+            logger.info("Using the cached copy of base profile '%s': GitHub could not be reached", name)
+            return stale
         logger.warning("Could not fetch base profile '%s' from GitHub", name)
         return None
 

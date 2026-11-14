@@ -923,6 +923,7 @@
   "The file could not be stored.": "Файл не вдалося зберегти.",
   "The file is larger than this server accepts from the slicer connector.": "Файл більший, ніж цей сервер приймає від конектора слайсера.",
   "The job has already finished": "Завдання вже завершилося",
+  "The job is saving its files and can no longer be stopped": "Завдання вже зберігає файли, його більше не можна зупинити",
   "The library already holds this file under a different plate-swap declaration than this archive's, so it was not saved again. The library's file was left as it is.": "Бібліотека вже містить цей файл з іншою декларацією зміни столу, ніж у цього архіву, тож його не збережено вдруге. Файл у бібліотеці лишився без змін.",
   "The library file has changed since it was uploaded.": "Файл бібліотеки змінився після вивантаження.",
   "The library file is not available.": "Файл бібліотеки недоступний.",

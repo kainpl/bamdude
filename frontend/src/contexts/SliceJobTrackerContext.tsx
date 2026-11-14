@@ -183,8 +183,26 @@ export function SliceJobTrackerProvider({ children }: { children: ReactNode }) {
       if (job.kind === 'assembly') {
         // An assembly job always completes with its own verdict; "failed" here is a stop or a bug.
         const result = state.result as unknown as AssemblyJobResult | undefined;
-        if (state.status === 'completed' && result?.outcome === 'ok') {
+        const missed = result?.printers.filter((row) => row.status !== 'ok') ?? [];
+        const clean = missed.length === 0 && (result?.kept.length ?? 0) === 0;
+        if (state.status === 'completed' && result?.outcome === 'ok' && clean) {
           showToast(t('fileManager.assemble.toast.done', { name: job.sourceName }), 'success');
+        } else if (state.status === 'completed' && result?.outcome === 'ok') {
+          // Saved for some printers only, or the previous files stayed. The dialog that would have shown the
+          // summary is closed, so this is acknowledged — never a green toast over a missing project.
+          const lines = missed.map(
+            (row) =>
+              `${row.model ? `${row.model} — ${row.label}` : row.label}: ${t(
+                `fileManager.assemble.reason.${row.reason}`,
+                { defaultValue: t('fileManager.assemble.reason.unknown', { reason: row.reason }) },
+              )}`,
+          );
+          if (result.kept.length > 0) lines.push(t('fileManager.assemble.kept', { count: result.kept.length }));
+          setSliceError({
+            title: t('fileManager.assemble.partialTitle'),
+            name: job.sourceName,
+            detail: lines.join('\n'),
+          });
         } else if (state.status === 'failed' && state.error_status === 499) {
           showToast(t('fileManager.assemble.toast.stopped', { name: job.sourceName }), 'warning');
         } else {

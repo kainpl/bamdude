@@ -195,7 +195,7 @@ async def _assembled(db: AsyncSession, request: Request, user: User | None, file
         raise refusal from None
     # the set id is 32 hex characters: a text match narrows the rows, the metadata itself decides
     candidates = await db.scalars(
-        LibraryFile.active().where(cast(LibraryFile.file_metadata, String).contains(record.set_id))
+        LibraryFile.active().where(cast(LibraryFile.file_metadata, String).contains(record.set_id, autoescape=True))
     )
     members = [
         row

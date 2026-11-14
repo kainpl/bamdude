@@ -28,6 +28,7 @@ logger = logging.getLogger(__name__)
 OUTCOMES = ("failed", "timeout", "canceled", "resource_limit", "busy", "unavailable")
 RESULT_BYTES = 256 * 1024
 _POLL_SECONDS = 1.0
+_POLL_FAILURES = 5  # status requests that may go unanswered in a row before the job is given up
 _BOOTSTRAP_ATTEMPTS = 3
 _BOOTSTRAP_REQUEST_SECONDS = 10
 _BOOTSTRAP_RETRY_SECONDS = 0.5
@@ -361,7 +362,10 @@ class AssemblyRuntime:
                 if state == "done":
                     break
                 if state == "queued":
-                    progress = {"stage": "waiting", "position": reply.get("position")}
+                    # position 0 is next in line: nothing to wait for but the service picking it up
+                    position = reply.get("position")
+                    waiting = type(position) is int and position > 0
+                    progress = {"stage": "waiting", "position": position} if waiting else {"stage": "preparing"}
                 elif state == "running":
                     progress = {"stage": "packing", **(reply.get("progress") or {})}
                 else:
@@ -370,7 +374,21 @@ class AssemblyRuntime:
                     shown = progress
                     on_progress(dict(progress))
                 await asyncio.sleep(_POLL_SECONDS)
-                reply = await self.rpc(self.command("status", attempt))
+                # One unanswered status is not a lost job: main's loop may stall, and the service shares a
+                # core with a child at full load. The service itself watches the child; the monitor here
+                # interrupts this task if the service's process is really gone.
+                missed = 0
+                while True:
+                    try:
+                        reply = await self.rpc(self.command("status", attempt))
+                        break
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        missed += 1
+                        if missed >= _POLL_FAILURES:
+                            raise
+                        await asyncio.sleep(_POLL_SECONDS)
                 if reply.get("outcome") != "ok":
                     raise AssemblyFailed("unavailable", "status_refused")
             finished = True

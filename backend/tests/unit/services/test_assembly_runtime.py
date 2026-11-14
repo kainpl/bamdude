@@ -94,6 +94,8 @@ async def test_progress_reaches_the_callback(runtime):
     await runtime.run(_slow(runtime, "a"), job_id=1, on_progress=seen.append)
     packing = [p for p in seen if p["stage"] == "packing"]
     assert packing and any(p.get("placed", 0) > 0 and p.get("printer_count") == 1 for p in packing)
+    assert not any(p["stage"] == "waiting" for p in seen), "next in line is not waiting behind anyone"
+    assert any(p.get("fill_part") == 0 for p in packing), "a filled plate says which part it is filling"
 
 
 @pytest.mark.asyncio
@@ -229,3 +231,36 @@ async def test_stop_drains_a_running_job(tmp_path, monkeypatch):
     finally:
         await runtime.stop()
         await broker.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_few_unanswered_status_requests_do_not_lose_the_job(runtime, monkeypatch):
+    real, failed = runtime.rpc, []
+
+    async def flaky(command, timeout=2):
+        if command["operation"] == "status" and len(failed) < 3:
+            failed.append(command["attempt_id"])
+            raise TimeoutError
+        return await real(command, timeout)
+
+    monkeypatch.setattr(runtime, "rpc", flaky)
+    result = await runtime.run(_slow(runtime, "a"), job_id=21)
+    assert result["outcome"] == "ok" and len(failed) == 3 and runtime.ready
+
+
+@pytest.mark.asyncio
+async def test_a_service_that_stops_answering_is_given_up_after_the_limit(runtime, monkeypatch):
+    monkeypatch.setattr(assembly_runtime, "_POLL_FAILURES", 2)
+    real, asked = runtime.rpc, []
+
+    async def silent(command, timeout=2):
+        if command["operation"] == "status":
+            asked.append(1)
+            raise TimeoutError
+        return await real(command, timeout)
+
+    monkeypatch.setattr(runtime, "rpc", silent)
+    with pytest.raises(AssemblyFailed) as failed:
+        await runtime.run(_slow(runtime, "a"), job_id=22)
+    assert failed.value.outcome == "unavailable" and len(asked) == 2
+    assert await _until(lambda: not _packing_children(runtime))

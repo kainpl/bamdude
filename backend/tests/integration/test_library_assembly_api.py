@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 import pytest
 import pytest_asyncio
 from httpx import AsyncClient
+from sqlalchemy import select
 
 from backend.app.core.config import settings as app_settings
 from backend.app.models.library import LibraryFile, LibraryFolder
@@ -420,6 +421,10 @@ async def test_cancel_stops_the_job_and_leaves_no_file(async_client, db_session,
     job = await _finish(async_client, response)
     assert job["status"] == "failed" and job["error_status"] == 499
     assert not await _assembled_files(db_session)
+    for _ in range(200):  # the job is marked stopped at once; its child's end is proven a moment later
+        if farm["runtime"].quiesced() and not list(farm["runtime"].staging.iterdir()):
+            break
+        await asyncio.sleep(0.05)
     assert farm["runtime"].quiesced() and not list(farm["runtime"].staging.iterdir())
     assert (await async_client.delete(f"{API}/slice-jobs/{job_id}")).status_code == 409
     assert (await async_client.delete(f"{API}/slice-jobs/999999")).status_code == 404
@@ -471,3 +476,62 @@ async def test_an_unauthenticated_request_never_reaches_the_handler(async_client
     assert (await async_client.post(f"{API}/library/assemble", json=body, headers=anonymous)).status_code == 401
     assert (await async_client.delete(f"{API}/slice-jobs/1", headers=anonymous)).status_code == 401
     assert not slice_dispatch._tasks
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_a_row_that_fails_between_two_files_takes_the_first_one_back(async_client, db_session, farm, monkeypatch):
+    """A printer gets all its files or none: half a "file per plate" set could never be laid out again."""
+    from fastapi import HTTPException
+
+    from backend.app.api.routes import library as library_routes
+
+    real, calls = library_routes.save_3mf_bytes_to_library, []
+
+    async def second_file_is_refused(db, **kwargs):
+        calls.append(kwargs["filename"])
+        if len(calls) == 2:
+            raise HTTPException(409, {"code": "destination_changed"})
+        return await real(db, **kwargs)
+
+    monkeypatch.setattr(library_routes, "save_3mf_bytes_to_library", second_file_is_refused)
+    body = _body(farm, [("frame", {}), ("big", {"fill": True})], split_plates=True)
+    job = await _finish(async_client, await async_client.post(f"{API}/library/assemble", json=body))
+    row = job["result"]["printers"][0]
+    assert len(calls) == 2 and "plate 1" in calls[0]
+    assert (row["status"], row["reason"], row["files"]) == ("failed", "destination_changed", [])
+    assert job["result"]["outcome"] == "failed"
+    assert not await _assembled_files(db_session)
+    leftovers = (await db_session.scalars(select(LibraryFile).where(LibraryFile.source_type == "assembled"))).all()
+    assert not leftovers, "taken back for good, not left in the trash"
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_a_job_that_is_saving_its_files_can_no_longer_be_stopped(async_client, farm):
+    started = asyncio.Event()
+
+    async def run(job_id):
+        slice_dispatch.set_progress(job_id, {"stage": "publishing"})
+        started.set()
+        await asyncio.sleep(30)
+        return {}
+
+    job = await slice_dispatch.enqueue(kind="assembly", source_id=1, source_name="x", run=run)
+    await started.wait()
+    response = await async_client.delete(f"{API}/slice-jobs/{job.id}")
+    assert response.status_code == 409 and job.status == "running"
+    slice_dispatch.set_progress(job.id, {"stage": "packing"})
+    assert (await async_client.delete(f"{API}/slice-jobs/{job.id}")).status_code == 204
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_a_source_whose_bytes_changed_on_disk_is_caught_before_packing(async_client, db_session, farm):
+    row = await db_session.get(LibraryFile, farm["files"]["lid"])
+    (farm["tmp"] / row.file_path).write_bytes(_stl(SHAPES["frame"]))  # the share changed; no scan has seen it yet
+    job = await _finish(
+        async_client, await async_client.post(f"{API}/library/assemble", json=_body(farm, [("lid", {})]))
+    )
+    assert job["result"]["outcome"] == "failed" and job["result"]["reason"] == "source_changed"
+    assert not await _assembled_files(db_session)

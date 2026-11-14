@@ -86,6 +86,9 @@ async def cancel_slice_job(
     job = _visible_job(job_id, auth)
     if job.kind != "assembly":
         raise HTTPException(status_code=409, detail="This job cannot be stopped")
+    if (job.progress or {}).get("stage") == "publishing":
+        # its files are being saved: stopping now would leave some of them behind a "stopped" message
+        raise HTTPException(status_code=409, detail="The job is saving its files and can no longer be stopped")
     if not slice_dispatch.cancel(job_id):
         raise HTTPException(status_code=409, detail="The job has already finished")
     return Response(status_code=204)

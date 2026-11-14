@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { AlertTriangle, CheckCircle2, LayoutGrid, Loader2, Minus, Plus, Trash2, XCircle } from 'lucide-react';
 
@@ -15,7 +15,7 @@ import {
   type UnifiedPresetsResponse,
 } from '../../api/client';
 import { useSliceJobTracker } from '../../contexts/SliceJobTrackerContext';
-import { resolvePresetName } from '../../utils/presetPickerUtils';
+import { TIER_ORDER, resolvePresetName } from '../../utils/presetPickerUtils';
 import { pickDefault, pickFilamentForSlot, pickProcessDefault } from '../../utils/slicePresetPicker';
 import { buildCompatibilityIndex, type PrinterCompatibilityIndex } from '../../utils/slicerPrinterMatch';
 import { Button } from '../Button';
@@ -54,13 +54,33 @@ const POLL_MS = 1500;
 const INPUT =
   'px-3 py-2 rounded-md bg-bambu-dark border border-bambu-dark-tertiary text-white text-sm focus:outline-none focus:border-bambu-gray';
 
+/**
+ * The listing's first printer entry may be a model card ("Bambu Lab A1") rather than a machine preset
+ * ("Bambu Lab A1 0.4 nozzle"); only the latter says where the printer can print.
+ */
+function firstMachinePreset(data: UnifiedPresetsResponse): PresetRef | null {
+  for (const tier of TIER_ORDER) {
+    const found = data[tier].printer.find((preset) => /nozzle/i.test(preset.name));
+    if (found) return { source: found.source, id: found.id };
+  }
+  return null;
+}
+
+const printerInfoQuery = (printer: PresetRef | null) => ({
+  queryKey: ['assemblyPrinterInfo', printer?.source, printer?.id],
+  queryFn: () => api.getAssemblyPrinterInfo(printer as PresetRef),
+  enabled: printer !== null,
+  retry: false,
+  staleTime: 5 * 60_000,
+});
+
 /** The presets a new target row starts with: the first printer, then what suits it. */
 function defaultsFor(
   data: UnifiedPresetsResponse,
   printer: PresetRef | null,
   compatIndex: PrinterCompatibilityIndex,
 ): Pick<TargetRow, 'printer' | 'process' | 'filament'> {
-  const chosen = printer ?? pickDefault(data, 'printer');
+  const chosen = printer ?? firstMachinePreset(data) ?? pickDefault(data, 'printer');
   const printerName = resolvePresetName(data, chosen, 'printer');
   return {
     printer: chosen,
@@ -89,13 +109,7 @@ function TargetEditor({
 }) {
   const { t } = useTranslation();
   const printerName = resolvePresetName(data, target.printer, 'printer');
-  const info = useQuery({
-    queryKey: ['assemblyPrinterInfo', target.printer?.source, target.printer?.id],
-    queryFn: () => api.getAssemblyPrinterInfo(target.printer as PresetRef),
-    enabled: target.printer !== null,
-    retry: false,
-    staleTime: 5 * 60_000,
-  });
+  const info = useQuery(printerInfoQuery(target.printer));
   const nozzles = info.data?.nozzles ?? [];
 
   // A printer with one nozzle has nothing to choose; one that lost the chosen nozzle falls back to the first.
@@ -250,13 +264,13 @@ function progressLine(t: ReturnType<typeof useTranslation>['t'], progress: Assem
   if (progress.stage === 'waiting') {
     return t('fileManager.assemble.progress.waiting', { position: progress.position ?? 1 });
   }
-  if (progress.stage === 'packing' && progress.printer_count) {
-    return t('fileManager.assemble.progress.packing', {
-      printer: (progress.printer_index ?? 0) + 1,
-      printers: progress.printer_count,
-      placed: progress.placed ?? 0,
-      total: progress.total ?? 0,
-    });
+  if (progress.stage === 'packing') {
+    if (!progress.printer_count) return t('fileManager.assemble.progress.starting');
+    const where = { printer: (progress.printer_index ?? 0) + 1, printers: progress.printer_count };
+    // a filled plate has no number to reach: the packer's own ceiling is not a total to show
+    return progress.fill_part != null
+      ? t('fileManager.assemble.progress.filling', { ...where, placed: progress.placed ?? 0 })
+      : t('fileManager.assemble.progress.packing', { ...where, placed: progress.placed ?? 0, total: progress.total ?? 0 });
   }
   return t(`fileManager.assemble.progress.${progress.stage}`);
 }
@@ -346,8 +360,9 @@ function PrinterSummary({
                 <span className="text-white">{t('fileManager.assemble.plate', { number: plate.plate + 1 })}</span>
                 {Object.entries(plate.counts).map(([part, copies]) => (
                   <span key={part} className="block">
-                    {partNames[Number(part)] ?? part} × {copies}
-                    {plate.fill ? ` (${t('fileManager.assemble.perPlate', { count: copies })})` : ''}
+                    {plate.fill
+                      ? `${partNames[Number(part)] ?? part} — ${t('fileManager.assemble.perPlate', { count: copies })}`
+                      : `${partNames[Number(part)] ?? part} × ${copies}`}
                   </span>
                 ))}
               </figcaption>
@@ -385,20 +400,34 @@ export function AssembleProjectModal({ mode, onClose, onOpenFile }: AssembleProj
   useEffect(() => {
     if (relayout && record.data && form === null) setForm(formFromRecord(record.data));
   }, [relayout, record.data, form]);
+  // Every change goes through the current form, never the one a handler closed over: two rows may report in
+  // one commit (each printer's nozzle answer), and the second must not undo the first.
+  const update = (change: (current: AssembleForm) => AssembleForm) =>
+    setForm((current) => (current ? change(current) : current));
+  const data = presets.data;
+  const modelsSettled = printerModels.isFetched || printerModels.isError;
   useEffect(() => {
-    if (seeded || !presets.data || !form) return;
+    // wait for the printer-model registry too: without it nothing is known to suit the printer
+    if (seeded || !data || !form || !modelsSettled) return;
     setSeeded(true);
     if (!relayout) {
-      setForm({
-        ...form,
-        targets: form.targets.map((target) =>
-          target.printer ? target : { ...target, ...defaultsFor(presets.data, null, compatIndex) },
-        ),
-      });
+      setForm((current) =>
+        current
+          ? {
+              ...current,
+              targets: current.targets.map((target) =>
+                target.printer ? target : { ...target, ...defaultsFor(data, null, compatIndex) },
+              ),
+            }
+          : current,
+      );
     }
-  }, [seeded, presets.data, form, relayout, compatIndex]);
+  }, [seeded, data, form, relayout, compatIndex, modelsSettled]);
 
   const issues = form ? validate(form) : [];
+  // the same queries the rows show their warning from: a printer preset that cannot be used blocks the button
+  const printerInfos = useQueries({ queries: (form?.targets ?? []).map((target) => printerInfoQuery(target.printer)) });
+  const printerUnusable = printerInfos.some((info) => info.isError);
   const submit = useMutation({
     mutationFn: () =>
       relayout
@@ -435,9 +464,12 @@ export function AssembleProjectModal({ mode, onClose, onOpenFile }: AssembleProj
   };
 
   const setPart = (index: number, next: PartRow) =>
-    form && setForm({ ...form, parts: form.parts.map((part, i) => (i === index ? next : part)) });
+    update((current) => ({ ...current, parts: current.parts.map((part, i) => (i === index ? next : part)) }));
   const setTarget = (index: number, next: TargetRow) =>
-    form && setForm({ ...form, targets: form.targets.map((target, i) => (i === index ? next : target)) });
+    update((current) => ({
+      ...current,
+      targets: current.targets.map((target, i) => (i === index ? next : target)),
+    }));
 
   const title = relayout ? t('fileManager.assemble.relayoutTitle') : t('fileManager.assemble.title');
   const result: AssemblyJobResult | undefined = finished?.result;
@@ -467,8 +499,11 @@ export function AssembleProjectModal({ mode, onClose, onOpenFile }: AssembleProj
             )}
           </div>
         )}
-        {result && result.outcome === 'ok' && (
+        {result && result.outcome === 'ok' && result.printers.every((row) => row.status === 'ok') && (
           <p className="text-sm text-bambu-green">{t('fileManager.assemble.done')}</p>
+        )}
+        {result && result.outcome === 'ok' && result.printers.some((row) => row.status !== 'ok') && (
+          <p className="text-sm text-amber-400">{t('fileManager.assemble.doneInPart')}</p>
         )}
         {result?.printers.map((row, index) => (
           <PrinterSummary key={index} row={row} partNames={partNames} onOpenFile={onOpenFile} />
@@ -493,7 +528,18 @@ export function AssembleProjectModal({ mode, onClose, onOpenFile }: AssembleProj
         <p className="text-sm text-white" role="status">
           {progressLine(t, job.data?.progress ?? null)}
         </p>
-        <p className="text-xs text-bambu-gray">{t('fileManager.assemble.runsInBackground')}</p>
+        {job.isError ? (
+          <p className="text-sm text-red-300" role="alert">
+            {t('fileManager.assemble.pollFailed')}
+          </p>
+        ) : (
+          <p className="text-xs text-bambu-gray">{t('fileManager.assemble.runsInBackground')}</p>
+        )}
+        {stop.error instanceof ApiError && (
+          <p className="text-sm text-amber-400" role="alert">
+            {stop.error.message}
+          </p>
+        )}
       </div>
     );
     footer = (
@@ -501,7 +547,11 @@ export function AssembleProjectModal({ mode, onClose, onOpenFile }: AssembleProj
         <Button variant="secondary" onClick={close}>
           {t('common.close')}
         </Button>
-        <Button variant="danger" onClick={() => stop.mutate()} disabled={stop.isPending || stop.isSuccess}>
+        <Button
+          variant="danger"
+          onClick={() => stop.mutate()}
+          disabled={stop.isPending || stop.isSuccess || job.data?.progress?.stage === 'publishing'}
+        >
           {t('fileManager.assemble.stop')}
         </Button>
       </>
@@ -517,7 +567,7 @@ export function AssembleProjectModal({ mode, onClose, onOpenFile }: AssembleProj
         {t('common.close')}
       </Button>
     );
-  } else if (!form || !presets.data) {
+  } else if (!form || !data) {
     body = (
       <div className="flex justify-center py-8">
         <Loader2 className="w-6 h-6 animate-spin text-bambu-gray" />
@@ -529,7 +579,6 @@ export function AssembleProjectModal({ mode, onClose, onOpenFile }: AssembleProj
       </Button>
     );
   } else {
-    const data = presets.data;
     body = (
       <div className="space-y-5">
         <section>
@@ -561,10 +610,10 @@ export function AssembleProjectModal({ mode, onClose, onOpenFile }: AssembleProj
               variant="secondary"
               size="sm"
               onClick={() =>
-                setForm({
-                  ...form,
-                  targets: [...form.targets, { ...emptyTarget(), ...defaultsFor(data, null, compatIndex) }],
-                })
+                update((current) => ({
+                  ...current,
+                  targets: [...current.targets, { ...emptyTarget(), ...defaultsFor(data, null, compatIndex) }],
+                }))
               }
               disabled={form.targets.length >= MAX_TARGETS}
             >
@@ -582,7 +631,9 @@ export function AssembleProjectModal({ mode, onClose, onOpenFile }: AssembleProj
               compatIndex={compatIndex}
               removable={form.targets.length > 1}
               onChange={(next) => setTarget(index, next)}
-              onRemove={() => setForm({ ...form, targets: form.targets.filter((_, i) => i !== index) })}
+              onRemove={() =>
+                update((current) => ({ ...current, targets: current.targets.filter((_, i) => i !== index) }))
+              }
             />
           ))}
         </section>
@@ -595,7 +646,7 @@ export function AssembleProjectModal({ mode, onClose, onOpenFile }: AssembleProj
               inputMode="decimal"
               className={`${INPUT} w-full mt-1`}
               value={form.spacing}
-              onChange={(event) => setForm({ ...form, spacing: event.target.value })}
+              onChange={(event) => update((current) => ({ ...current, spacing: event.target.value }))}
               aria-invalid={issues.includes('spacing')}
             />
           </label>
@@ -605,7 +656,7 @@ export function AssembleProjectModal({ mode, onClose, onOpenFile }: AssembleProj
               className="w-full mt-1"
               value={String(form.rotationStep)}
               onChange={(event) =>
-                setForm({ ...form, rotationStep: Number(event.target.value) as AssembleForm['rotationStep'] })
+                update((current) => ({ ...current, rotationStep: Number(event.target.value) as AssembleForm['rotationStep'] }))
               }
             >
               {ROTATION_STEPS.map((step) => (
@@ -619,7 +670,7 @@ export function AssembleProjectModal({ mode, onClose, onOpenFile }: AssembleProj
             <span>{t('fileManager.assemble.centre')}</span>
             <Toggle
               checked={form.centre}
-              onChange={(centre) => setForm({ ...form, centre })}
+              onChange={(centre) => update((current) => ({ ...current, centre }))}
               label={t('fileManager.assemble.centre')}
             />
           </div>
@@ -627,7 +678,7 @@ export function AssembleProjectModal({ mode, onClose, onOpenFile }: AssembleProj
             <span>{t('fileManager.assemble.splitPlates')}</span>
             <Toggle
               checked={form.splitPlates}
-              onChange={(splitPlates) => setForm({ ...form, splitPlates })}
+              onChange={(splitPlates) => update((current) => ({ ...current, splitPlates }))}
               label={t('fileManager.assemble.splitPlates')}
             />
           </div>
@@ -641,7 +692,7 @@ export function AssembleProjectModal({ mode, onClose, onOpenFile }: AssembleProj
               maxLength={120}
               className={`${INPUT} w-full mt-1`}
               value={form.name}
-              onChange={(event) => setForm({ ...form, name: event.target.value })}
+              onChange={(event) => update((current) => ({ ...current, name: event.target.value }))}
               aria-invalid={issues.includes('name')}
             />
           </label>
@@ -650,7 +701,7 @@ export function AssembleProjectModal({ mode, onClose, onOpenFile }: AssembleProj
               <input
                 type="checkbox"
                 checked={form.trashPrevious}
-                onChange={(event) => setForm({ ...form, trashPrevious: event.target.checked })}
+                onChange={(event) => update((current) => ({ ...current, trashPrevious: event.target.checked }))}
               />
               {t('fileManager.assemble.trashPrevious')}
             </label>
@@ -660,10 +711,10 @@ export function AssembleProjectModal({ mode, onClose, onOpenFile }: AssembleProj
     );
     footer = (
       <>
-        <Button variant="secondary" onClick={onClose}>
+        <Button variant="secondary" onClick={onClose} disabled={submit.isPending}>
           {t('common.cancel')}
         </Button>
-        <Button variant="primary" onClick={() => submit.mutate()} disabled={issues.length > 0 || submit.isPending}>
+        <Button variant="primary" onClick={() => submit.mutate()} disabled={issues.length > 0 || printerUnusable || submit.isPending}>
           {submit.isPending && <Loader2 className="w-4 h-4 mr-1 animate-spin" />}
           {relayout ? t('fileManager.assemble.relayoutSubmit') : t('fileManager.assemble.submit')}
         </Button>
@@ -674,9 +725,11 @@ export function AssembleProjectModal({ mode, onClose, onOpenFile }: AssembleProj
   return (
     <Modal
       onClose={close}
+      closeDisabled={submit.isPending}
       title={title}
       icon={<LayoutGrid className="w-5 h-5" />}
       size="3xl"
+      bodyClassName="p-4"
       subheader={
         relayout ? <p className="px-4 pb-2 text-xs text-bambu-gray break-all">{mode.filename}</p> : undefined
       }
