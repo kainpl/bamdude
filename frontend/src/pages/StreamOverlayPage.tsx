@@ -256,11 +256,21 @@ export function StreamOverlayPage() {
   const token = searchParams.get('token');
   const kiosk = token != null && token !== '';
 
+  // The id of the stream this page has open (set below, once the recovery
+  // hook has named it), and the id the feed's latest answer was asked about.
+  const streamViewer = useRef<string | undefined>(undefined);
+  const feedAskedAbout = useRef<string | undefined>(undefined);
+
   // Kiosk path: one token-authenticated call for name + live status + the one
   // setting the overlay reads. No JWT, so this is the only feed available.
   const { data: overlay, error: overlayError, dataUpdatedAt: overlayReadAt } = useQuery({
     queryKey: ['overlayStatus', id, token],
-    queryFn: () => api.getOverlayStatus(id, token!),
+    queryFn: async () => {
+      const viewer = streamViewer.current;
+      const answer = await (viewer ? api.getOverlayStatus(id, token!, viewer) : api.getOverlayStatus(id, token!));
+      feedAskedAbout.current = viewer;
+      return answer;
+    },
     enabled: id > 0 && kiosk,
     retry: (attempt, error) => !(error instanceof ApiError && (error.status === 401 || error.status === 403)) && attempt < 3,
     retryDelay: attempt => Math.min(30_000, 1000 * 2 ** attempt),
@@ -444,17 +454,23 @@ export function StreamOverlayPage() {
   //   last one must not count as a second bad read. A server that does not
   //   send the field leaves only the image's own `error`.
   // - signed in: the ordinary camera status route.
-  const feedCamera = useRef<{ health: CameraStreamHealth | undefined; at: number }>({ health: undefined, at: 0 });
+  // Either way the read names the stream this page has open, because the
+  // upstream is shared: another overlay of the same printer, or its owner's
+  // camera wall, keeps it "alive" after the server has ended THIS viewer.
+  const feedCamera = useRef<{ health: CameraStreamHealth | undefined; at: number; viewer: string | undefined }>(
+    { health: undefined, at: 0, viewer: undefined },
+  );
   const feedCameraRead = useRef(0);
   useEffect(() => {
-    feedCamera.current = { health: overlay?.camera, at: overlayReadAt };
+    feedCamera.current = { health: overlay?.camera, at: overlayReadAt, viewer: feedAskedAbout.current };
   }, [overlay, overlayReadAt]);
-  const readStreamHealth = useCallback(async (): Promise<CameraStreamHealth | null> => {
-    if (!kiosk) return api.getCameraSourceStatus(printerSource(id));
-    const { health, at } = feedCamera.current;
+  const readStreamHealth = useCallback(async (viewerId: string): Promise<CameraStreamHealth | null> => {
+    if (!kiosk) return api.getCameraSourceStatus(printerSource(id), viewerId);
+    const { health, at, viewer } = feedCamera.current;
     if (!health || at === feedCameraRead.current) return null;
     feedCameraRead.current = at;
-    return health;
+    // An answer asked about the stream before this one says nothing of this one.
+    return viewer === viewerId ? health : { active: health.active, stalled: health.stalled };
   }, [kiosk, id]);
 
   // A refused token ends it: nothing is retried once the feed says 401/403.
@@ -464,14 +480,18 @@ export function StreamOverlayPage() {
   const {
     phase: streamPhase,
     generation: streamGeneration,
+    viewerId: streamViewerId,
     onError: handleStreamError,
     onLoad: handleStreamLoad,
   } = useCameraStreamRecovery({ enabled: showsCamera, readHealth: readStreamHealth, slowRetryMs: 60_000 });
+  useEffect(() => {
+    streamViewer.current = config.showCamera ? streamViewerId : undefined;
+  }, [config.showCamera, streamViewerId]);
 
   // Append the kiosk token directly rather than leaning on withStreamToken's
   // module cache — the cache is populated by an effect and would miss the first
   // render (a 401 flash before the retry). The logged-in path keeps the cache.
-  const camPath = streamPath(printerSource(id), config.fps, streamGeneration);
+  const camPath = streamPath(printerSource(id), config.fps, streamGeneration, streamViewerId);
   const streamUrl = kiosk && token
     ? `${camPath}&token=${encodeURIComponent(token)}`
     : withStreamToken(camPath);

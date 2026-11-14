@@ -325,6 +325,29 @@ describe('CameraPage', () => {
       expect(screen.getByText('Connection lost')).toBeInTheDocument();
     });
 
+    // The page shares its camera's upstream with every other view of it: the
+    // server can end THIS viewer while the upstream stays healthy.
+    it('asks about the stream it opened, and reconnects when the server says that one is gone', async () => {
+      const asked: (string | null)[] = [];
+      server.use(
+        http.get('/api/v1/printers/:id/camera/status', ({ request }) => {
+          asked.push(new URL(request.url).searchParams.get('viewer'));
+          return HttpResponse.json({ active: true, stalled: false, viewer_attached: false });
+        }),
+      );
+      renderCameraPage(1);
+      const img = await streamImage();
+      const viewer = new URL(img.src).searchParams.get('viewer');
+      expect(viewer).toMatch(/^[A-Za-z0-9_-]{8,32}$/);
+      expect(img.src.indexOf('viewer=')).toBeLessThan(img.src.indexOf('token='));
+      fireEvent.load(img);
+
+      // Two reads in a row, five seconds apart.
+      await waitFor(() => expect(screen.getByText('Connection lost')).toBeInTheDocument(), { timeout: 14_000 });
+      expect(asked.length).toBeGreaterThanOrEqual(2);
+      for (const id of asked) expect(id).toBe(viewer);
+    }, 20_000);
+
     it('closes the stream of the image it shows now, not only the first one', async () => {
       const view = renderCameraPage(1);
       const first = await streamImage();

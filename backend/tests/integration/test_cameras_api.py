@@ -381,3 +381,31 @@ class TestSharedViewLifecycle:
     @pytest.mark.integration
     async def test_status_of_an_unknown_camera_is_a_404(self, async_client: AsyncClient):
         assert (await async_client.get("/api/v1/cameras/999999/status")).status_code == 404
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_status_tells_a_view_whether_its_own_stream_is_attached(self, async_client: AsyncClient):
+        """Every viewer shares the upstream: one the server ended reads `active` and keeps a frozen frame."""
+        from backend.app.services import camera_viewers
+
+        camera_id = (await async_client.post("/api/v1/cameras/", json=MJPEG)).json()["id"]
+        other_id = (await async_client.post("/api/v1/cameras/", json={**MJPEG, "name": "Other"})).json()["id"]
+        release = camera_viewers.attach(f"camera-{camera_id}", "windowView_00001")
+        try:
+            url = f"/api/v1/cameras/{camera_id}/status"
+            assert (await async_client.get(url, params={"viewer": "windowView_00001"})).json()[
+                "viewer_attached"
+            ] is True
+            assert (await async_client.get(url, params={"viewer": "someoneElse_0002"})).json()[
+                "viewer_attached"
+            ] is False
+            # The id answers for its own camera only.
+            other = await async_client.get(f"/api/v1/cameras/{other_id}/status", params={"viewer": "windowView_00001"})
+            assert other.json()["viewer_attached"] is False
+            # No id, or one that is not an id: the answer it always gave, and never an error.
+            assert "viewer_attached" not in (await async_client.get(url)).json()
+            malformed = await async_client.get(url, params={"viewer": "../../etc/passwd"})
+            assert malformed.status_code == 200 and "viewer_attached" not in malformed.json()
+        finally:
+            release()
+        assert (await async_client.get(url, params={"viewer": "windowView_00001"})).json()["viewer_attached"] is False

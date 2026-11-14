@@ -7,6 +7,14 @@
  * was before those parameters (commit f5ef94224), not from the page under
  * test. Do not refresh it to make a change pass: a difference here is a
  * visible change to somebody's running broadcast, and is the owner's call.
+ *
+ * Re-derived 2026-11-14: this test and its snapshot were run against a copy of
+ * the tree at f5ef94224 (`git archive`), and passed there byte for byte.
+ *
+ * One thing is taken out of the markup before it is compared: the `viewer=`
+ * correlation id in the camera stream's address. It is random per stream,
+ * draws nothing, and did not exist at f5ef94224 — with it removed the markup
+ * is what that commit drew.
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -52,6 +60,15 @@ const printing = {
 };
 
 const idle = { ...printing, state: 'IDLE', progress: 0, current_print: null, gcode_file: null, remaining_time: null };
+
+/** The markup, without the stream's random correlation id (see the note above). */
+function drawn(container: HTMLElement): string {
+  const html = container.innerHTML;
+  const viewers = html.match(/&amp;viewer=[A-Za-z0-9_-]{8,32}(?=&amp;|")/g) ?? [];
+  // At most the one camera stream carries one, and nothing else is touched.
+  expect(viewers.length).toBeLessThanOrEqual(1);
+  return viewers.reduce((text, viewer) => text.replace(viewer, ''), html);
+}
 
 function renderOverlay(query: string) {
   const queryClient = new QueryClient({
@@ -108,7 +125,7 @@ describe('StreamOverlayPage — addresses from before the optional parameters', 
     const { container } = renderOverlay(query);
 
     await waitFor(() => expect(screen.getByText('45%')).toBeInTheDocument());
-    expect(container.innerHTML).toMatchSnapshot();
+    expect(drawn(container)).toMatchSnapshot();
   });
 
   it('an idle printer', async () => {
@@ -116,6 +133,6 @@ describe('StreamOverlayPage — addresses from before the optional parameters', 
     const { container } = renderOverlay('?show=printer,filename,status,progress,layers,eta,nozzle');
 
     await waitFor(() => expect(screen.getByText('Printer is idle')).toBeInTheDocument());
-    expect(container.innerHTML).toMatchSnapshot();
+    expect(drawn(container)).toMatchSnapshot();
   });
 });

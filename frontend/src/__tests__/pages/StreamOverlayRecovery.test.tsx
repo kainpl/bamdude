@@ -18,6 +18,9 @@ const overlay: OverlayStatus = {
 };
 const ALIVE = { active: true, stalled: false };
 const ENDED = { active: false, stalled: false };
+const VIEWER_ID = /^[A-Za-z0-9_-]{8,32}$/;
+/** The id the image put on its stream request. */
+const viewerOf = (img: HTMLImageElement) => new URL(img.src).searchParams.get('viewer');
 
 const advance = (ms: number) => act(async () => { await vi.advanceTimersByTimeAsync(ms); });
 const image = () => screen.getByAltText('Camera stream') as HTMLImageElement;
@@ -68,7 +71,67 @@ describe('the stream overlay in OBS (token in the URL)', () => {
     expect(image().src).not.toBe(firstUrl);
     // The token cannot read the session-only status route, and never tries.
     expect(sessionStatus).not.toHaveBeenCalled();
-    for (const args of feed.mock.calls) expect(args).toEqual([1, 'kiosk-token']);
+    // The feed is asked with the token and — once a stream is open — its id; nothing else.
+    for (const args of feed.mock.calls) {
+      expect(args.slice(0, 2)).toEqual([1, 'kiosk-token']);
+      if (args.length > 2) expect(args).toEqual([1, 'kiosk-token', expect.stringMatching(VIEWER_ID)]);
+    }
+  });
+
+  // Two overlays of one printer (or an overlay and its owner's camera wall)
+  // share one upstream: when the server ends THIS one, the camera stays "alive".
+  it('re-opens its own stream when the server ended it and another viewer keeps the camera alive', async () => {
+    const feed = vi.spyOn(api, 'getOverlayStatus').mockImplementation(async (_id, _token, viewer) => ({
+      ...overlay,
+      camera: viewer ? { ...ALIVE, viewer_attached: false } : ALIVE,
+    }));
+    mount('?token=kiosk-token');
+    await advance(100);
+    const first = image();
+    const firstViewer = viewerOf(first);
+    expect(firstViewer).toMatch(VIEWER_ID);
+    expect(first.src.indexOf('viewer=')).toBeLessThan(first.src.indexOf('token='));
+
+    await advance(5000);
+    expect(image()).toBe(first); // one bad read is a blip
+    await advance(5000);
+    expect(screen.queryByAltText('Camera stream')).toBeNull();
+    expect(first.src).toMatch(/^data:image\/gif;/);
+    expect(feed).toHaveBeenCalledWith(1, 'kiosk-token', firstViewer);
+
+    // The re-opened stream is attached; the feed says so about ITS id.
+    feed.mockImplementation(async (_id, _token, viewer) => ({
+      ...overlay,
+      camera: viewer ? { ...ALIVE, viewer_attached: viewer !== firstViewer } : ALIVE,
+    }));
+    await advance(2000);
+    const second = image();
+    expect(viewerOf(second)).not.toBe(firstViewer);
+    await advance(120_000);
+    expect(image()).toBe(second);
+    expect(feed).toHaveBeenLastCalledWith(1, 'kiosk-token', viewerOf(second));
+  });
+
+  it('does not hold an answer about the previous stream against the one just opened', async () => {
+    // The feed stops answering right after it reported the FIRST stream gone:
+    // that answer is about another viewer, and must not take the second down.
+    const feed = vi.spyOn(api, 'getOverlayStatus').mockImplementation(async (_id, _token, viewer) => ({
+      ...overlay,
+      camera: viewer ? { ...ALIVE, viewer_attached: false } : ALIVE,
+    }));
+    mount('?token=kiosk-token');
+    await advance(100);
+    const first = image();
+    await advance(10_000);
+    expect(screen.queryByAltText('Camera stream')).toBeNull();
+    feed.mockRejectedValue(new Error('network'));
+
+    await advance(2000);
+    const second = image();
+    expect(second).not.toBe(first);
+    await advance(120_000);
+
+    expect(image()).toBe(second);
   });
 
   it('keeps a stream its feed says is alive', async () => {
@@ -151,9 +214,11 @@ describe('the stream overlay in a signed-in browser', () => {
     mount('');
     await advance(100);
     const first = image();
+    const firstViewer = viewerOf(first);
+    expect(firstViewer).toMatch(VIEWER_ID);
 
     await advance(10_000);
-    expect(status).toHaveBeenCalledWith(printerSource(1));
+    expect(status).toHaveBeenCalledWith(printerSource(1), firstViewer);
     expect(screen.queryByAltText('Camera stream')).toBeNull();
     expect(first.src).toMatch(/^data:image\/gif;/);
     await advance(2000);

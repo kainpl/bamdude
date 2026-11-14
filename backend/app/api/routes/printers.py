@@ -1788,6 +1788,7 @@ async def _build_printer_status(
 @router.get("/{printer_id}/overlay-status")
 async def get_overlay_status(
     printer_id: int,
+    viewer: str | None = None,
     _: None = RequireOverlayToken,
     db: AsyncSession = Depends(get_db),
 ) -> dict:
@@ -1821,10 +1822,13 @@ async def get_overlay_status(
     # fires nothing on the browser's <img>, and the token cannot read the
     # session's /camera/status — so the same two flags ride this feed. Within
     # the grant: the token already opens this printer's stream. Flags only —
-    # no source type, telemetry or viewer count.
+    # no source type, telemetry or viewer count. Given the overlay's own
+    # correlation id (``viewer``), a third flag: whether THAT stream is still
+    # attached — two overlays of one printer share the upstream, and the one
+    # the server ended would otherwise read "alive" and keep its last frame.
     from backend.app.api.routes.camera import stream_liveness
 
-    camera = stream_liveness(printer_id)
+    camera = stream_liveness(printer_id, viewer)
 
     if not state:
         # Never connected this run — mirror get_printer_status()'s disconnected

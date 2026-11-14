@@ -28,7 +28,7 @@ from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.models.printer import Printer
 from backend.app.models.user import User
-from backend.app.services import camera_metrics
+from backend.app.services import camera_metrics, camera_viewers
 from backend.app.services.camera import (
     is_chamber_image_model,
     test_camera_connection,
@@ -422,6 +422,7 @@ async def _worker_stream_response(
     runtime,
     builtin: bool = False,
     access_guard=None,
+    viewer_id: str | None = None,
 ) -> Response:
     """Serve worker-owned live video through the existing HTTP fan-out.
 
@@ -578,6 +579,9 @@ async def _worker_stream_response(
             logger.info("Camera worker viewer detached from %s (subscribers=%d)", fanout_key, remaining)
 
         viewer.releases.append(unsubscribe)
+        # THIS viewer, by the correlation id its view sent: removed with it, whatever ends it, so the
+        # view's status read can tell its own ended stream from a healthy shared upstream.
+        viewer.releases.append(camera_viewers.attach(fanout_key, viewer_id))
         logger.info("Camera worker viewer attached to %s (subscribers=%d)", fanout_key, broadcaster.subscriber_count)
         from backend.app.services import camera_light
 
@@ -621,6 +625,7 @@ async def camera_stream(
     printer_id: int,
     request: Request,
     fps: int = 10,
+    viewer: str | None = None,
     access: CameraAccess = Depends(require_camera_token_or_headers()),
 ):
     """Stream live video from printer camera as MJPEG.
@@ -639,6 +644,8 @@ async def camera_stream(
     Args:
         printer_id: Printer ID
         fps: Target frames per second (default: 10, max: 30)
+        viewer: The view's correlation id for this stream (not a secret, not authority); its
+            status read asks whether THIS viewer is still attached. A malformed one is ignored.
     """
 
     # Fetch the printer in a short-lived session so the pooled DB connection is
@@ -690,6 +697,7 @@ async def camera_stream(
             fps=fps,
             runtime=get_camera_runtime(),
             access_guard=access_guard,
+            viewer_id=viewer,
         )
 
     # Validate FPS - A1/P1 models max out at ~5 FPS
@@ -708,6 +716,7 @@ async def camera_stream(
         runtime=get_camera_runtime(),
         builtin=True,
         access_guard=access_guard,
+        viewer_id=viewer,
     )
 
 
@@ -1002,13 +1011,18 @@ async def diagnose_camera_route(
     return result.to_dict()
 
 
-def stream_liveness(printer_id: int) -> dict[str, bool]:
+def stream_liveness(printer_id: int, viewer: str | None = None) -> dict[str, bool]:
     """Whether this printer's live stream is registered, and whether it has stopped delivering.
 
     The ONE rule behind ``/camera/status`` and the ``camera`` field of the token-authenticated overlay
     feed (``/printers/{id}/overlay-status``): a view re-opens its stream on this answer, so the two
     must not drift apart. Stalled = registered for more than the 5 s start-up grace and no frame for
     more than 10 s.
+
+    ``active`` / ``stalled`` answer for the SHARED upstream. Given the view's correlation id, the
+    answer also carries ``viewer_attached`` — whether that one viewer is still on the fan-out — because
+    a viewer the server ended while another keeps watching sees a healthy upstream and a frozen frame.
+    The field is absent when it cannot be said (no id, a malformed one).
     """
     import time
 
@@ -1019,13 +1033,18 @@ def stream_liveness(printer_id: int) -> dict[str, bool]:
     since_frame = None if last_frame_time is None else now - last_frame_time
     uptime = None if stream_start_time is None else now - stream_start_time
     stalled = active and uptime is not None and uptime > 5 and (since_frame is None or since_frame > 10)
-    return {"active": active, "stalled": stalled}
+    liveness = {"active": active, "stalled": stalled}
+    viewer_attached = camera_viewers.attached(f"printer-{printer_id}", viewer)
+    if viewer_attached is not None:
+        liveness["viewer_attached"] = viewer_attached
+    return liveness
 
 
 @router.get("/{printer_id}/camera/status")
 async def camera_status(
     printer_id: int,
     _: User | None = RequirePermission(Permission.CAMERA_VIEW),
+    viewer: str | None = None,
 ):
     """Get the status of an active camera stream.
 
@@ -1067,7 +1086,10 @@ async def camera_status(
     if stream_start_time is not None:
         stream_uptime = current_time - stream_start_time
 
+    liveness = stream_liveness(printer_id, viewer)
     return {
+        # Whether the stream of the view that asks (by its correlation id) is still attached.
+        **({"viewer_attached": liveness["viewer_attached"]} if "viewer_attached" in liveness else {}),
         "active": has_active_stream,
         "has_frames": printer_id in _last_frames,
         "seconds_since_frame": seconds_since_frame,
@@ -1082,7 +1104,7 @@ async def camera_status(
         # built-in and the external camera share the ``printer-{id}`` broadcaster.
         "subscribers": get_subscriber_count(f"printer-{printer_id}"),
         # Consider stalled if no frame for more than 10 seconds after stream started
-        "stalled": stream_liveness(printer_id)["stalled"],
+        "stalled": liveness["stalled"],
     }
 
 

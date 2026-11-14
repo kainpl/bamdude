@@ -89,3 +89,25 @@ async def test_a_connected_printer_reports_it_too_and_nothing_more(live, db_sess
     assert overlay["connected"] is True
     # Two flags: no source type, no telemetry, no viewer count for a URL token.
     assert overlay["camera"] == {"active": True, "stalled": False}
+
+
+async def test_an_overlay_that_names_its_stream_learns_whether_that_one_is_attached(
+    db_session, printer_factory, stream
+):
+    """Two overlays of one printer share the upstream: the one the server ended must not read "alive"."""
+    from backend.app.services import camera_viewers
+
+    printer = await printer_factory()
+    stream(printer.id, uptime=120.0, since_frame=0.2)
+    release = camera_viewers.attach(f"printer-{printer.id}", "obsScene_one_0001")
+    try:
+        mine = await printers.get_overlay_status(printer.id, viewer="obsScene_one_0001", db=db_session)
+        ended = await printers.get_overlay_status(printer.id, viewer="obsScene_two_0002", db=db_session)
+        malformed = await printers.get_overlay_status(printer.id, viewer="not an id", db=db_session)
+    finally:
+        release()
+
+    assert mine["camera"] == {"active": True, "stalled": False, "viewer_attached": True}
+    assert ended["camera"] == {"active": True, "stalled": False, "viewer_attached": False}
+    # A malformed id is ignored: the two flags, as for a feed that names no stream.
+    assert malformed["camera"] == {"active": True, "stalled": False}

@@ -9,7 +9,7 @@ import { ChamberLight } from './icons/ChamberLight';
 import { SkipObjectsModal, SkipObjectsIcon } from './SkipObjectsModal';
 import { CameraDiagnoseModal } from './CameraDiagnoseModal';
 import { CameraSnapshotImage } from './CameraSnapshotImage';
-import { sourceKey, stopPath, streamPath, type CameraSource } from '../utils/cameraSource';
+import { newViewerId, sourceKey, stopPath, streamPath, type CameraSource } from '../utils/cameraSource';
 import { useCameraLiveBudget } from '../hooks/useCameraLiveBudget';
 import { useCameraImageRef } from '../hooks/useCameraImageRef';
 import { containLimits, fillStyle, useRotatedBox } from '../hooks/useRotatedFit';
@@ -93,7 +93,10 @@ export function EmbeddedCameraViewer({ source: sourceProp, name, onClose }: Embe
   const containerRef = useRef<HTMLDivElement>(null);
   const { granted, ready, protocol, limit } = useCameraLiveBudget(isMinimized ? 0 : 1);
   const isLive = granted > 0;
-  const streamUrl = withStreamToken(streamPath(source, 15, imageKey));
+  // One id per stream opened: the status read below asks about THIS viewer,
+  // because the upstream is shared with every other view of the camera.
+  const viewerId = useMemo(newViewerId, [imageKey]);
+  const streamUrl = withStreamToken(streamPath(source, 15, imageKey, viewerId));
   const { imageRef: imgRef, attachImage } = useCameraImageRef(streamUrl);
   const reconnectTimerRef = useRef<NodeJS.Timeout | null>(null);
   const countdownIntervalRef = useRef<NodeJS.Timeout | null>(null);
@@ -252,9 +255,9 @@ export function EmbeddedCameraViewer({ source: sourceProp, name, onClose }: Embe
     let cancelled = false;
     stallCheckIntervalRef.current = setInterval(async () => {
       try {
-        const status = await api.getCameraSourceStatus(source);
+        const status = await api.getCameraSourceStatus(source, viewerId);
         if (cancelled) return;
-        if (status.stalled || (!status.active && !streamError)) {
+        if (status.stalled || (!status.active && !streamError) || status.viewer_attached === false) {
           if (stallCheckIntervalRef.current) {
             clearInterval(stallCheckIntervalRef.current);
             stallCheckIntervalRef.current = null;
@@ -274,7 +277,7 @@ export function EmbeddedCameraViewer({ source: sourceProp, name, onClose }: Embe
         stallCheckIntervalRef.current = null;
       }
     };
-  }, [streamLoading, streamError, isReconnecting, isLive, printerId, attemptReconnect]);
+  }, [streamLoading, streamError, isReconnecting, isLive, printerId, viewerId, attemptReconnect]);
 
   // Fullscreen change listener
   useEffect(() => {

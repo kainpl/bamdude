@@ -1,9 +1,22 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { newViewerId } from '../utils/cameraSource';
 
 /** What the server says about one source's stream. */
 export interface CameraStreamHealth {
+  /** The upstream every viewer of the source shares is registered… */
   active: boolean;
+  /** …and has stopped delivering. */
   stalled: boolean;
+  /** Whether THIS view's stream (by the id it sent) is still attached.
+   *  `false` is a bad read; absent or `null` is "cannot say" and decides
+   *  nothing — an older server does not send it. */
+  viewer_attached?: boolean | null;
+}
+
+/** A read the rule acts on: the upstream is gone or silent, or it is fine and
+ *  this view is no longer on it. */
+export function isBadStreamRead(health: CameraStreamHealth): boolean {
+  return !health.active || health.stalled || health.viewer_attached === false;
 }
 
 export type CameraStreamPhase = 'live' | 'waiting' | 'failed';
@@ -11,10 +24,11 @@ export type CameraStreamPhase = 'live' | 'waiting' | 'failed';
 interface Options {
   /** The view is showing — or wants to show — a live stream. */
   enabled: boolean;
-  /** The server's status for this source. `null` (and a rejected read) is "no
-   *  answer": it neither clears nor adds a strike. Omitted where the view may
-   *  not ask — then only the image's own `error` starts a recovery. */
-  readHealth?: () => Promise<CameraStreamHealth | null>;
+  /** The server's status for this source, asked with the id of the stream
+   *  now open. `null` (and a rejected read) is "no answer": it neither clears
+   *  nor adds a strike. Omitted where the view may not ask — then only the
+   *  image's own `error` starts a recovery. */
+  readHealth?: (viewerId: string) => Promise<CameraStreamHealth | null>;
   /** A view nobody can press Retry on (a broadcast overlay) keeps trying this
    *  often after it has given up. */
   slowRetryMs?: number;
@@ -23,7 +37,8 @@ interface Options {
 export const HEALTH_CHECK_MS = 5000;
 /** One bad read is a blip while the shared upstream starts or changes hands
  *  (upstream #2521); two in a row is a dead stream. */
-const STRIKES = 2;
+export const STREAM_STRIKES = 2;
+const STRIKES = STREAM_STRIKES;
 const MAX_ATTEMPTS = 5;
 const FIRST_DELAY_MS = 2000;
 const MAX_DELAY_MS = 30_000;
@@ -32,14 +47,24 @@ const MAX_DELAY_MS = 30_000;
  * The one liveness rule of a view that draws an MJPEG stream and has no
  * controls of its own: the Cam Wall's live tile and the stream overlay.
  *
- * A stream the server ends cleanly (the camera worker's budget ran out, the
- * viewer's authority was retired, a token expired) fires nothing on the
- * `<img>` — the browser keeps the last frame. So the view asks the SERVER
- * about its source every few seconds; two bad answers in a row, or an `error`
- * on the image, take the image down (`phase` leaves `live`, the view unmounts
- * it and `useCameraImageRef` clears its `src`, which aborts the request) and
- * re-open it under a new `generation` after a growing wait: 2 s, 4 s, … 30 s.
- * After five attempts without a frame it gives up (`failed`) until `restart`.
+ * A stream the server ends cleanly fires nothing on the `<img>` — the browser
+ * keeps the last frame. So the view asks the SERVER every few seconds, and
+ * what it can detect is exactly what that answer says:
+ *
+ * - the source's shared upstream is gone or silent (`active` / `stalled`: the
+ *   camera worker's budget ran out, the camera stopped sending) — true for
+ *   every viewer of that camera at once;
+ * - THIS view's own stream is no longer attached (`viewer_attached`, asked by
+ *   the `viewerId` the view put on its stream request): its authority was
+ *   retired or its token expired while somebody else keeps the upstream alive.
+ *   A server that does not send the field leaves this case undetected — it is
+ *   read as "cannot say", never as a dead stream.
+ *
+ * Two bad answers in a row, or an `error` on the image, take the image down
+ * (`phase` leaves `live`, the view unmounts it and `useCameraImageRef` clears
+ * its `src`, which aborts the request) and re-open it under a new `generation`
+ * — and a new `viewerId` — after a growing wait: 2 s, 4 s, … 30 s. After five
+ * attempts in a row it gives up (`failed`) until `restart`.
  *
  * There is never a second stream beside a live one: a re-open is scheduled
  * only from `live`, and the old image is gone for the whole wait.
@@ -51,6 +76,8 @@ const MAX_DELAY_MS = 30_000;
 export function useCameraStreamRecovery({ enabled, readHealth, slowRetryMs }: Options) {
   const [phase, setPhase] = useState<CameraStreamPhase>('live');
   const [generation, setGeneration] = useState(0);
+  // One id per stream opened: a re-opened stream is another viewer.
+  const viewerId = useMemo(newViewerId, [generation]);
   const phaseRef = useRef<CameraStreamPhase>('live');
   const attemptsRef = useRef(0);
   const strikesRef = useRef(0);
@@ -146,12 +173,12 @@ export function useCameraStreamRecovery({ enabled, readHealth, slowRetryMs }: Op
       if (!read || document.hidden) return;
       let health: CameraStreamHealth | null;
       try {
-        health = await read();
+        health = await read(viewerId);
       } catch {
         return; // the server may be away for a moment; that is not the camera's answer
       }
       if (cancelled || health === null) return;
-      if (health.active && !health.stalled) {
+      if (!isBadStreamRead(health)) {
         strikesRef.current = 0;
         return;
       }
@@ -162,7 +189,7 @@ export function useCameraStreamRecovery({ enabled, readHealth, slowRetryMs }: Op
       cancelled = true;
       clearInterval(timer);
     };
-  }, [enabled, phase, generation, lost]);
+  }, [enabled, phase, generation, viewerId, lost]);
 
-  return { phase, generation, onError: lost, onLoad, restart };
+  return { phase, generation, viewerId, onError: lost, onLoad, restart };
 }

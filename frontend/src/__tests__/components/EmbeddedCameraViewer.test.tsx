@@ -58,6 +58,44 @@ describe('floating camera lifecycle', () => {
   });
 });
 
+// The window shares its camera's upstream with every other view of it. When the
+// server ends the window's own viewer (its authority retired, its token
+// expired) the upstream's status stays healthy, and the picture froze.
+describe('floating camera whose own stream the server ended', () => {
+  let statusReads: string[] = [];
+  beforeEach(() => {
+    vi.useFakeTimers();
+    statusReads = [];
+    vi.spyOn(global, 'fetch').mockImplementation(async (input) => {
+      const url = String(input instanceof Request ? input.url : input);
+      if (!/\/camera\/status/.test(url)) return new Response('{}');
+      statusReads.push(url);
+      return new Response(JSON.stringify({ active: true, stalled: false, viewer_attached: false }));
+    });
+  });
+  afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
+  const advance = (ms: number) => act(async () => { await vi.advanceTimersByTimeAsync(ms); });
+
+  it('asks about the stream it opened, and reconnects when that one is gone', async () => {
+    render(<EmbeddedCameraViewer source={printerSource(42)} name="H2C" onClose={() => {}} />);
+    await advance(0);
+    const first = screen.getByAltText('Camera stream') as HTMLImageElement;
+    const viewer = new URL(first.src).searchParams.get('viewer');
+    expect(viewer).toMatch(/^[A-Za-z0-9_-]{8,32}$/);
+    fireEvent.load(first);
+
+    let reconnecting = false;
+    for (let read = 0; read < 2 && !reconnecting; read += 1) {
+      await advance(5000);
+      reconnecting = screen.queryByText(/Reconnecting in/) !== null;
+    }
+
+    expect(reconnecting).toBe(true);
+    expect(statusReads.length).toBeGreaterThan(0);
+    for (const url of statusReads) expect(new URL(url, 'http://x').searchParams.get('viewer')).toBe(viewer);
+  });
+});
+
 // The default was the desktop one everywhere: wider than a phone and starting
 // left of its screen, with the title bar inside the compact header's band.
 describe('floating camera placement', () => {

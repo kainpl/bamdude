@@ -46,6 +46,7 @@ from backend.app.schemas.camera import (
     CameraUpdate,
     _validated_source,
 )
+from backend.app.services import camera_viewers
 from backend.app.services.camera_credentials import resolve_standalone_camera_credentials
 from backend.app.services.camera_fanout import (
     MjpegBroadcaster,
@@ -354,12 +355,14 @@ async def camera_stream(
     camera_id: int,
     request: Request,
     fps: int = 10,
+    viewer: str | None = None,
     _token: None = RequireCameraStreamToken,
 ):
     """MJPEG multipart, one upstream shared by every viewer.
 
     Gated by ``?token=…`` like the printers' streams, because an ``<img>`` tag
-    cannot send an Authorization header.
+    cannot send an Authorization header. ``viewer`` is the view's correlation id for this stream
+    (not a secret, not authority): its status read asks whether THIS viewer is still attached.
     """
     # Short-lived session: a stream stays open for as long as the tab does, and
     # holding a pooled connection across it is #2572 all over again.
@@ -387,6 +390,7 @@ async def camera_stream(
         )
 
     key = _fanout_key(camera_id)
+    viewer_id = viewer
 
     async def _prepare(viewer):
         broadcaster: MjpegBroadcaster = await get_or_create_broadcaster(key, _factory)
@@ -403,6 +407,7 @@ async def camera_stream(
                 _forget_frames(camera_id)
 
         viewer.releases.append(unsubscribe)
+        viewer.releases.append(camera_viewers.attach(key, viewer_id))
         _stream_started.setdefault(camera_id, time.monotonic())
         logger.info("Camera viewer attached to %s (subscribers=%d)", key, broadcaster.subscriber_count)
 
@@ -444,6 +449,7 @@ async def stop_camera_stream(
 @router.get("/{camera_id}/status")
 async def camera_stream_status(
     camera_id: int,
+    viewer: str | None = None,
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.CAMERA_VIEW),
 ):
@@ -460,7 +466,11 @@ async def camera_stream_status(
     started = _stream_started.get(camera_id)
     since_frame = None if last is None else now - last
     uptime = None if started is None else now - started
+    # Whether the stream of the view that asks (by its correlation id) is still attached: the flags
+    # below answer for the upstream every viewer shares. Absent when it cannot be said.
+    viewer_attached = camera_viewers.attached(_fanout_key(camera_id), viewer)
     return {
+        **({} if viewer_attached is None else {"viewer_attached": viewer_attached}),
         "active": active,
         "has_frames": camera_id in _last_frames,
         "seconds_since_frame": since_frame,

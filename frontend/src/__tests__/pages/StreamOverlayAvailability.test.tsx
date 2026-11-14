@@ -32,7 +32,12 @@ describe('G01 overlay auth availability', () => {
     read.mockResolvedValue(overlay);
     await act(() => vi.advanceTimersByTimeAsync(30_000));
     expect(screen.getByText('Printer is idle')).toBeInTheDocument();
-    for (const args of read.mock.calls) expect(args).toEqual([1, 'kiosk-token']);
+    // The token is kept as it is; the only other thing the feed is ever given
+    // is the id of the stream the page has open.
+    for (const args of read.mock.calls) {
+      expect(args.slice(0, 2)).toEqual([1, 'kiosk-token']);
+      expect(args.length).toBeLessThanOrEqual(3);
+    }
     unmount();
   });
 

@@ -4622,6 +4622,10 @@ export interface CameraDiagnoseResult {
 export interface CameraStreamStatus {
   active: boolean;
   stalled: boolean;
+  /** Whether the stream of the view that asked (by the id it sent) is still
+   *  attached. `active` / `stalled` answer for the upstream every viewer
+   *  shares. Absent when the read named no stream, or on an older server. */
+  viewer_attached?: boolean | null;
   has_frames: boolean;
   seconds_since_frame: number | null;
   stream_uptime: number | null;
@@ -5128,7 +5132,7 @@ export interface OverlayStatus {
   /** Whether this printer's camera stream is alive — the overlay's token
    *  cannot read the session's camera status route, and a stream the server
    *  ends cleanly fires nothing on the image. Absent on an older server. */
-  camera?: { active: boolean; stalled: boolean };
+  camera?: { active: boolean; stalled: boolean; viewer_attached?: boolean | null };
 }
 
 export interface CloudAuthStatus {
@@ -11722,9 +11726,11 @@ export const api = {
   // Token-authenticated streaming-overlay feed (upstream #2613). OBS — or any
   // embed with no login session — loads /overlay/{id}?token=... and this backs
   // it. Auth is always on here, so the token is always required.
-  getOverlayStatus: (printerId: number, token: string) =>
+  // `viewer` is the id the overlay gave the stream it draws: with it the
+  // feed's `camera` also says whether THAT stream is still attached.
+  getOverlayStatus: (printerId: number, token: string, viewer?: string) =>
     request<OverlayStatus>(
-      `/printers/${printerId}/overlay-status?token=${encodeURIComponent(token)}`,
+      `/printers/${printerId}/overlay-status?${viewer ? `viewer=${encodeURIComponent(viewer)}&` : ''}token=${encodeURIComponent(token)}`,
     ),
   cloudLogin: (email: string, password: string, region = 'global') =>
     request<CloudLoginResponse>('/cloud/login', {
@@ -13392,7 +13398,8 @@ export const api = {
   getCameraStatus: (printerId: number) =>
     request<CameraStreamStatus>(`/printers/${printerId}/camera/status`),
   /** The stream status of whatever a view shows — a printer's camera or a camera of its own. */
-  getCameraSourceStatus: (source: CameraSource) => request<CameraStreamStatus>(statusApiPath(source)),
+  getCameraSourceStatus: (source: CameraSource, viewer?: string) =>
+    request<CameraStreamStatus>(statusApiPath(source, viewer)),
   // Camera diagnostic (#1395 follow-up) — staged check the operator
   // can run inline to self-diagnose "connection lost" before opening a
   // ticket. The modal renders one row per stage and looks up the

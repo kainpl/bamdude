@@ -28,9 +28,30 @@ export const sourceKey = (source: CameraSource): string => `${source.kind}-${sou
 const base = (source: CameraSource): string =>
   source.kind === 'printer' ? `/api/v1/printers/${source.id}/camera` : `/api/v1/cameras/${source.id}`;
 
-export function streamPath(source: CameraSource, fps: number, bust?: number | string): string {
+/**
+ * A name for ONE stream a view opens — random, not a secret and not authority.
+ *
+ * Every viewer of a camera shares one upstream, so the server's `active` /
+ * `stalled` cannot tell a view that ITS stream was ended (its authority
+ * retired, its token expired) while somebody else still watches: nothing fires
+ * on the `<img>`, and the last frame stays. The view sends this id on the
+ * stream request and on its status read, and the status answers for it.
+ */
+export function newViewerId(): string {
+  const bytes = new Uint8Array(12);
+  if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') {
+    crypto.getRandomValues(bytes);
+  } else {
+    for (let index = 0; index < bytes.length; index += 1) bytes[index] = Math.floor(Math.random() * 256);
+  }
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+/** `viewer` goes in HERE, before any token is appended to the address. */
+export function streamPath(source: CameraSource, fps: number, bust?: number | string, viewer?: string): string {
   const cacheBust = bust === undefined ? '' : `&t=${bust}`;
-  return `${base(source)}/stream?fps=${fps}${cacheBust}`;
+  const viewerId = viewer ? `&viewer=${encodeURIComponent(viewer)}` : '';
+  return `${base(source)}/stream?fps=${fps}${cacheBust}${viewerId}`;
 }
 
 /**
@@ -49,10 +70,13 @@ export function snapshotPath(source: CameraSource, options: { bust?: number | st
 
 /**
  * Where a view asks whether its stream is alive, relative to the API base. Each kind answers for itself:
- * the printers' route knows printer ids only.
+ * the printers' route knows printer ids only. With `viewer` — the id the view gave its stream — the answer
+ * also says whether THAT stream is still attached.
  */
-export const statusApiPath = (source: CameraSource): string =>
-  source.kind === 'printer' ? `/printers/${source.id}/camera/status` : `/cameras/${source.id}/status`;
+export const statusApiPath = (source: CameraSource, viewer?: string): string =>
+  `${source.kind === 'printer' ? `/printers/${source.id}/camera/status` : `/cameras/${source.id}/status`}${
+    viewer ? `?viewer=${encodeURIComponent(viewer)}` : ''
+  }`;
 
 export const stopPath = (source: CameraSource): string => `${base(source)}/stop`;
 

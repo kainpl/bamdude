@@ -169,6 +169,54 @@ describe('useCameraStreamRecovery', () => {
     expect(result.current.generation).toBe(1);
   });
 
+  // Every viewer of a camera shares one upstream. When the server ends ONE of
+  // them (its authority retired, its token expired) while another still
+  // watches, the upstream's answer stays healthy and the ended viewer would
+  // show its last frame for good.
+  describe('this viewer, not only the shared upstream', () => {
+    it('names each stream it opens and asks the server about that one', async () => {
+      const read = vi.fn().mockResolvedValue({ ...ALIVE, viewer_attached: true });
+      const { result } = mount(read);
+      const first = result.current.viewerId;
+      expect(first).toMatch(/^[A-Za-z0-9_-]{8,32}$/);
+
+      await advance(5000);
+      expect(read).toHaveBeenLastCalledWith(first);
+
+      act(() => result.current.restart());
+      expect(result.current.viewerId).not.toBe(first);
+      expect(result.current.viewerId).toMatch(/^[A-Za-z0-9_-]{8,32}$/);
+      await advance(5000);
+      expect(read).toHaveBeenLastCalledWith(result.current.viewerId);
+    });
+
+    it('re-opens a viewer the server ended while the upstream stays alive for somebody else', async () => {
+      const read = vi.fn().mockResolvedValue({ ...ALIVE, viewer_attached: false });
+      const { result } = mount(read);
+
+      await advance(5000);
+      expect(result.current.phase).toBe('live'); // one such read is a blip, like any other
+      await advance(5000);
+      expect(result.current.phase).toBe('waiting');
+      await advance(2000);
+      expect(result.current.phase).toBe('live');
+      expect(result.current.generation).toBe(1);
+    });
+
+    it.each([
+      ['does not send the field', ALIVE],
+      ['cannot say', { ...ALIVE, viewer_attached: null }],
+    ])('leaves the stream alone when the server %s', async (_name, health) => {
+      const read = vi.fn().mockResolvedValue(health);
+      const { result } = mount(read);
+
+      await advance(60_000);
+
+      expect(result.current.phase).toBe('live');
+      expect(result.current.generation).toBe(0);
+    });
+  });
+
   it('forgets everything when the view stops showing a stream', async () => {
     const { result, rerender } = mount();
     act(() => result.current.onError());

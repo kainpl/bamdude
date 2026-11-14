@@ -106,12 +106,13 @@ export function CameraTile({
   const {
     phase: livePhase,
     generation,
+    viewerId,
     onError: onLiveError,
     onLoad: onLiveLoad,
     restart: restartLive,
   } = useCameraStreamRecovery({
     enabled: mode === 'live' && connected,
-    readHealth: streamToken ? undefined : () => api.getCameraSourceStatus(source),
+    readHealth: streamToken ? undefined : (viewer) => api.getCameraSourceStatus(source, viewer),
   });
 
   useEffect(() => {
@@ -182,7 +183,7 @@ export function CameraTile({
   // short-lived one that only a signed-in browser holds (upstream #2531).
   const withToken = (path: string) =>
     streamToken ? `${path}&token=${encodeURIComponent(streamToken)}` : withStreamToken(path);
-  const liveUrl = withToken(streamPath(source, LIVE_FPS, generation));
+  const liveUrl = withToken(streamPath(source, LIVE_FPS, generation, viewerId));
   const { attachImage: attachLiveImage } = useCameraImageRef(liveUrl);
 
   // A sideways camera is laid out in the tile's sides swapped and centred, or

@@ -12,7 +12,7 @@ import { useStreamTokenSync } from '../hooks/useCameraStreamToken';
 import { ChamberLight } from '../components/icons/ChamberLight';
 import { SkipObjectsModal, SkipObjectsIcon } from '../components/SkipObjectsModal';
 import { CameraDiagnoseModal } from '../components/CameraDiagnoseModal';
-import { snapshotPath, stopPath, streamPath, type CameraSource } from '../utils/cameraSource';
+import { newViewerId, snapshotPath, stopPath, streamPath, type CameraSource } from '../utils/cameraSource';
 import { isHomeScreenApp } from '../utils/standaloneApp';
 
 const MAX_RECONNECT_ATTEMPTS = 5;
@@ -63,6 +63,9 @@ export function CameraPage() {
   const [streamError, setStreamError] = useState(false);
   const [streamLoading, setStreamLoading] = useState(true);
   const [imageKey, setImageKey] = useState(Date.now());
+  // One id per stream opened: the status read asks about THIS viewer, because
+  // the upstream is shared with every other view of the camera.
+  const viewerId = useMemo(newViewerId, [imageKey]);
   const [transitioning, setTransitioning] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [reconnectAttempts, setReconnectAttempts] = useState(0);
@@ -315,10 +318,11 @@ export function CameraPage() {
     stallStrikesRef.current = 0;
     stallCheckIntervalRef.current = setInterval(async () => {
       try {
-        const status = await api.getCameraSourceStatus(source);
+        const status = await api.getCameraSourceStatus(source, viewerId);
         // A "bad" read is: backend reports stall (no frames for 10+ seconds),
-        // OR the stream is no longer active (process died).
-        const bad = status.stalled || (!status.active && !streamError);
+        // OR the stream is no longer active (process died), OR the upstream is
+        // fine for somebody else and the server has ended THIS viewer.
+        const bad = status.stalled || (!status.active && !streamError) || status.viewer_attached === false;
         if (!bad) {
           stallStrikesRef.current = 0;
           return;
@@ -348,7 +352,7 @@ export function CameraPage() {
         stallCheckIntervalRef.current = null;
       }
     };
-  }, [streamMode, streamLoading, streamError, isReconnecting, transitioning, id, attemptReconnect]);
+  }, [streamMode, streamLoading, streamError, isReconnecting, transitioning, id, viewerId, attemptReconnect]);
 
   const handleStreamError = () => {
     setStreamLoading(false);
@@ -641,7 +645,7 @@ export function CameraPage() {
   const currentUrl = transitioning || waitingForStreamToken
     ? ''
     : streamMode === 'stream'
-      ? appendToken(streamPath(source, fps, imageKey))
+      ? appendToken(streamPath(source, fps, imageKey, viewerId))
       : appendToken(snapshotPath(source, { bust: imageKey }));
 
   const { attachImage } = useCameraImageRef(currentUrl);

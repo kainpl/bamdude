@@ -11,6 +11,9 @@ import { printerSource, standaloneSource } from '../../utils/cameraSource';
 
 const ALIVE = { active: true, stalled: false };
 const ENDED = { active: false, stalled: false };
+const VIEWER_ID = /^[A-Za-z0-9_-]{8,32}$/;
+/** The id the image put on its stream request. */
+const viewerOf = (img: HTMLImageElement) => new URL(img.src).searchParams.get('viewer');
 
 const advance = (ms: number) => act(async () => { await vi.advanceTimersByTimeAsync(ms); });
 const image = () => screen.getByAltText('Live') as HTMLImageElement;
@@ -56,7 +59,7 @@ describe('a live Cam Wall tile whose stream ends', () => {
     expect(image()).not.toBe(first);
     expect(image().src).toContain('/api/v1/printers/42/camera/stream');
     expect(image().src).not.toBe(firstUrl);
-    expect(status).toHaveBeenCalledWith(printerSource(42));
+    expect(status).toHaveBeenCalledWith(printerSource(42), expect.stringMatching(VIEWER_ID));
     // A re-open is this tile's own business: the others watching keep their stream.
     expect(stopCalls()).toEqual([]);
   });
@@ -65,7 +68,51 @@ describe('a live Cam Wall tile whose stream ends', () => {
     const status = vi.spyOn(api, 'getCameraSourceStatus').mockResolvedValue(ALIVE as never);
     render(tile(standaloneSource(3)));
     await advance(5000);
-    expect(status).toHaveBeenCalledWith(standaloneSource(3));
+    expect(status).toHaveBeenCalledWith(standaloneSource(3), expect.stringMatching(VIEWER_ID));
+  });
+
+  // The wall's tile and an OBS overlay of the same printer share one upstream.
+  // When the server ends the tile's viewer alone, the upstream stays healthy.
+  it('re-opens its own stream when the server ended it and somebody else keeps the camera alive', async () => {
+    const status = vi.spyOn(api, 'getCameraSourceStatus')
+      .mockResolvedValue({ ...ALIVE, viewer_attached: false } as never);
+    render(tile());
+    await advance(0);
+    const first = image();
+    const firstViewer = viewerOf(first);
+    expect(firstViewer).toMatch(VIEWER_ID);
+    // The id is part of the address before the token is added to it.
+    expect(first.src.indexOf('viewer=')).toBeGreaterThan(0);
+    expect(first.src.includes('token=') ? first.src.indexOf('viewer=') < first.src.indexOf('token=') : true).toBe(true);
+
+    await advance(5000);
+    expect(status).toHaveBeenLastCalledWith(printerSource(42), firstViewer);
+    expect(image()).toBe(first); // one bad read is a blip
+    await advance(5000);
+    expect(screen.queryByAltText('Live')).toBeNull();
+    expect(first.src).toMatch(/^data:image\/gif;/);
+
+    status.mockResolvedValue({ ...ALIVE, viewer_attached: true } as never);
+    await advance(2000);
+    const second = image();
+    // A re-opened stream is another viewer, and is asked about by its own id.
+    expect(viewerOf(second)).toMatch(VIEWER_ID);
+    expect(viewerOf(second)).not.toBe(firstViewer);
+    await advance(5000);
+    expect(status).toHaveBeenLastCalledWith(printerSource(42), viewerOf(second));
+    await advance(60_000);
+    expect(image()).toBe(second);
+  });
+
+  it('keeps a stream on a server that does not say whether this viewer is attached', async () => {
+    vi.spyOn(api, 'getCameraSourceStatus').mockResolvedValue(ALIVE as never);
+    render(tile());
+    await advance(0);
+    const first = image();
+
+    await advance(120_000);
+
+    expect(image()).toBe(first);
   });
 
   it('leaves a healthy stream alone', async () => {
