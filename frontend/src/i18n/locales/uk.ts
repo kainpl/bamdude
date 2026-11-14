@@ -5001,6 +5001,8 @@ export default {
     eta: 'Залишилось',
     printerIdle: 'Принтер простоює',
     printerOffline: 'Принтер офлайн',
+    tokenRefused: 'Токен цього оверлея не прийнято',
+    noAnswer: 'Сервер не відповідає',
     v2: {
       layers: 'Шари',
       remaining: 'Залишилось',

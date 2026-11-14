@@ -4973,6 +4973,8 @@ export default {
     eta: 'ETA',
     printerIdle: 'Printer is idle',
     printerOffline: 'Printer offline',
+    tokenRefused: 'This overlay\u2019s token is not accepted',
+    noAnswer: 'No answer from the server',
     v2: {
       layers: 'Layers',
       remaining: 'Remaining',

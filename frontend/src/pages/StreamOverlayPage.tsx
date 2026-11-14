@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useSearchParams } from 'react-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
@@ -39,6 +39,11 @@ function formatPrintName(
 }
 
 type OverlaySize = 'small' | 'medium' | 'large';
+
+/** How old the last answer of the status feed may be before its figures stop
+ *  being shown as live. Longer than the feed's slowest retry (30 s apart), so
+ *  one missed poll never blanks a broadcast. */
+const FEED_STALE_MS = 30_000;
 
 interface OverlayConfig {
   size: OverlaySize;
@@ -286,7 +291,7 @@ export function StreamOverlayPage() {
     enabled: id > 0 && !kiosk,
   });
 
-  const { data: statusData } = useQuery({
+  const { data: statusData, error: statusError, dataUpdatedAt: statusReadAt } = useQuery({
     queryKey: ['printerStatus', id],
     queryFn: () => api.getPrinterStatus(id),
     enabled: id > 0 && !kiosk,
@@ -445,6 +450,29 @@ export function StreamOverlayPage() {
 
   const kioskRefused = kiosk && overlayError instanceof ApiError && (overlayError.status === 401 || overlayError.status === 403);
 
+  // ⚠️ React Query keeps the last answer for as long as the page lives, and
+  // nobody watches this page: it is composited into a broadcast. Figures the
+  // page can no longer refresh are therefore taken down —
+  // - a refused token (above) shows one quiet line and nothing of the print;
+  // - a feed whose last answer is older than FEED_STALE_MS is drawn like a
+  //   printer that went offline (below), until it answers again.
+  // The moment is a timer, not a comparison made while rendering: nothing
+  // re-renders an overlay whose feed has gone quiet.
+  const feedReadAt = kiosk ? overlayReadAt : statusReadAt;
+  const feedError = kiosk ? overlayError : statusError;
+  const [staleSince, setStaleSince] = useState(0);
+  useEffect(() => {
+    if (!feedReadAt) return;
+    const timer = setTimeout(() => setStaleSince(feedReadAt), Math.max(0, feedReadAt + FEED_STALE_MS - Date.now()));
+    return () => clearTimeout(timer);
+  }, [feedReadAt]);
+  const feedStale = feedReadAt > 0 && staleSince === feedReadAt;
+  // Never answered at all: remembered here, because a query without data
+  // forgets its error each time it tries again.
+  const [unanswered, setUnanswered] = useState(false);
+  if (!feedReadAt && feedError && !unanswered) setUnanswered(true);
+  if (feedReadAt && unanswered) setUnanswered(false);
+
   // Is the stream this page draws still alive? Asked of the SERVER, because a
   // stream it ends cleanly fires nothing on the image and the broadcast would
   // show a frozen frame until somebody reloaded the source.
@@ -512,6 +540,19 @@ export function StreamOverlayPage() {
     );
   }
 
+  if (kioskRefused || (!status && unanswered)) {
+    // One quiet line, whatever was on screen before: the token this address
+    // carries is not accepted (never valid, expired or revoked), or the server
+    // has not answered at all. The second keeps trying; the first does not.
+    return (
+      <div className="min-h-screen bg-black flex items-center justify-center">
+        <p className={`${sizes.text} text-white/60`}>
+          {kioskRefused ? t('streamOverlay.tokenRefused') : t('streamOverlay.noAnswer')}
+        </p>
+      </div>
+    );
+  }
+
   if (!status) {
     return (
       <div className="min-h-screen bg-black flex items-center justify-center">
@@ -527,8 +568,9 @@ export function StreamOverlayPage() {
   // with the last state, progress, layers, ETA and temperatures it cached. On a
   // broadcast those would sit frozen and look live, so an offline printer shows
   // the offline line and none of them. The file name stays — it names the job
-  // that was running, which is still true.
-  const online = status.connected;
+  // that was running, which is still true. A feed that stopped answering is
+  // the same case seen from here: what it last said is no longer known to hold.
+  const online = status.connected && !feedStale;
   const isPrinting = online && (status.state === 'RUNNING' || status.state === 'PAUSE');
   const progress = status.progress || 0;
 
@@ -723,7 +765,7 @@ export function StreamOverlayPage() {
           {/* Idle state */}
           {!isPrinting && (
             <div className={`${sizes.text} text-white/70 py-2`}>
-              {status.connected ? t('streamOverlay.printerIdle') : t('streamOverlay.printerOffline')}
+              {online ? t('streamOverlay.printerIdle') : t('streamOverlay.printerOffline')}
             </div>
           )}
         </div>
