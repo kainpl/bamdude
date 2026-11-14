@@ -11,7 +11,9 @@ its arrival). The REAL ``camera_runtime.capture`` runs over a fake worker that c
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import time
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -85,6 +87,7 @@ def _quiet_surroundings(monkeypatch):
     for registry in registries:
         registry.clear()
     camera_fanout._broadcasters.pop(f"camera-{CAMERA}", None)
+    getattr(camera_runtime, "_failed_stills", {}).clear()
     yield
     for registry in registries:
         registry.clear()
@@ -539,4 +542,133 @@ async def test_a_camera_test_beside_a_starting_view_is_busy_not_a_second_reader(
     answer = await camera_runtime.test_on_live_view(_request(view_printer_id=PRINTER))
 
     assert answer is not None and answer["success"] is False and answer["live_view"] is True
+    assert worker.requests == []
+
+
+# ---------------------------------------------------------------- a still that is dead or slow (review I2)
+
+
+@pytest.mark.asyncio
+class TestADeadOrSlowStill:
+    """go2rtc's frame endpoint down while its stream is fine: the view already has a frame, so a one-shot does
+    not wait the request's whole timeout for the still, and does not ask again for a while."""
+
+    @pytest.fixture(autouse=True)
+    def _short_times(self, monkeypatch):
+        monkeypatch.setattr(camera_runtime, "STILL_BESIDE_VIEW_WAIT", 0.1, raising=False)
+        monkeypatch.setattr(camera_runtime, "STILL_FAILURE_MEMORY", 0.4, raising=False)
+
+    @staticmethod
+    def _slow(worker, seconds: float) -> None:
+        real = worker.capture
+
+        async def slow(request):
+            await asyncio.sleep(seconds)
+            return await real(request)
+
+        worker.capture = slow
+
+    async def test_a_slow_still_beside_a_frame_answers_from_the_view_within_the_short_bound(self, worker) -> None:
+        self._slow(worker, 5.0)
+        _watch_printer()
+        began = time.monotonic()
+
+        result = await capture(_request(printer_id=PRINTER, timeout=15))
+
+        assert result.frame == LIVE and result.source == "live_view"
+        assert time.monotonic() - began < 2.0
+
+    async def test_a_view_without_a_frame_gives_the_still_its_whole_timeout(self, worker) -> None:
+        self._slow(worker, 0.3)
+        _watch_printer(None)
+
+        result = await capture(_request(printer_id=PRINTER))
+
+        assert result.frame == STILL and result.source == "fresh"
+
+    async def test_a_failure_is_remembered_and_retried_once_after_the_window(self, worker) -> None:
+        worker.fails()
+        _watch_printer()
+
+        for _ in range(3):
+            result = await capture(_request(printer_id=PRINTER))
+            assert result.frame == LIVE and result.source == "live_view"
+        assert len(worker.requests) == 1, "inside the window the view answers at once, the worker is not asked"
+
+        await asyncio.sleep(0.45)
+        for _ in range(2):
+            await capture(_request(printer_id=PRINTER))
+        assert len(worker.requests) == 2, "one retry after the window, and it is remembered again"
+
+    async def test_a_timed_out_still_is_remembered_too(self, worker) -> None:
+        self._slow(worker, 5.0)
+        _watch_printer()
+
+        await capture(_request(printer_id=PRINTER))
+        began = time.monotonic()
+        result = await capture(_request(printer_id=PRINTER))
+
+        assert result.frame == LIVE and time.monotonic() - began < 0.09
+
+    async def test_a_success_clears_the_memory(self, worker) -> None:
+        worker.fails()
+        _watch_printer()
+        await capture(_request(printer_id=PRINTER))
+        await asyncio.sleep(0.45)
+        worker.frame = STILL
+
+        assert (await capture(_request(printer_id=PRINTER))).frame == STILL
+        assert (await capture(_request(printer_id=PRINTER))).frame == STILL
+        assert len(worker.requests) == 3
+
+    async def test_another_snapshot_url_is_not_blocked(self, worker) -> None:
+        worker.fails()
+        _watch_printer()
+        await capture(_request(printer_id=PRINTER))
+        worker.frame = STILL
+        other = CameraCaptureRequest.external(
+            url=STREAM_URL, camera_type="mjpeg", snapshot_url="http://192.0.2.50/other.jpg", printer_id=PRINTER
+        )
+
+        assert (await capture(other)).frame == STILL
+        assert len(worker.requests) == 2
+
+    async def test_another_camera_is_not_blocked(self, worker) -> None:
+        worker.fails()
+        _watch_printer()
+        _watch_camera()
+        await capture(_request(printer_id=PRINTER))
+        worker.frame = STILL
+
+        assert (await capture(_request(camera_id=CAMERA))).frame == STILL
+
+    async def test_an_unwatched_camera_is_neither_bounded_nor_remembered(self, worker) -> None:
+        worker.fails()
+        for _ in range(2):
+            assert (await capture(_request(printer_id=PRINTER))).frame is None
+        assert len(worker.requests) == 2
+
+        worker.frame = STILL
+        self._slow(worker, 0.3)
+        assert (await capture(_request(printer_id=PRINTER))).frame == STILL
+
+    async def test_a_failure_while_unwatched_does_not_block_the_watched_camera(self, worker) -> None:
+        worker.fails()
+        await capture(_request(printer_id=PRINTER))
+        worker.frame = STILL
+        _watch_printer()
+
+        assert (await capture(_request(printer_id=PRINTER))).frame == STILL
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("same", [STREAM_URL, "  HTTP://192.0.2.50/stream ", STREAM_URL + "#x"])
+async def test_a_snapshot_url_that_is_the_stream_url_is_no_still(worker, same) -> None:
+    """Fetching the stream's own address beside the view is a second reader of a single-client source (M7)."""
+    _watch_printer()
+    request = CameraCaptureRequest.external(url=STREAM_URL, camera_type="mjpeg", snapshot_url=same, printer_id=PRINTER)
+
+    result = await capture(request)
+
+    assert result.frame == LIVE and result.source == "live_view"
     assert worker.requests == []

@@ -537,7 +537,7 @@ async def capture(request: CameraCaptureRequest) -> CameraCaptureResult:
 
     from backend.app.services import camera_capability, camera_light
 
-    if request.snapshot_url and _is_watched(request):
+    if _has_own_still(request) and _is_watched(request) and not _still_failed_lately(request):
         return await _still_beside_live_view(request)
     watched, live_frame = await frame_from_live_view(request)
     if watched:
@@ -561,26 +561,78 @@ def _is_watched(request: CameraCaptureRequest) -> bool:
     return probe is not None and probe()[0]
 
 
+def _has_own_still(request: CameraCaptureRequest) -> bool:
+    """A snapshot URL that is the stream's own address is no still: fetching it beside the view would be a
+    second reader of a source that may serve one client (saves refuse the pair; this is the backstop)."""
+    from backend.app.services.camera_credentials import same_camera_address
+
+    return bool(request.snapshot_url) and not same_camera_address(request.snapshot_url, request.url)
+
+
+#: How long a WATCHED camera's still may take when its view already has a frame to answer with. A dead or
+#: slow frame endpoint beside a healthy stream must not cost every snapshot tile, notification photo and
+#: timelapse layer the request's whole timeout.
+STILL_BESIDE_VIEW_WAIT = 4.0
+#: How long a still that failed or ran out of that time is not asked again while the camera is watched; the
+#: view answers at once meanwhile. One retry after it; the first success, or another snapshot URL, clears it.
+STILL_FAILURE_MEMORY = 45.0
+# camera -> (the snapshot URL that failed, monotonic time until which it is not asked). In memory only.
+_failed_stills: dict[tuple[str, int], tuple[str, float]] = {}
+
+
+def _still_key(request: CameraCaptureRequest) -> tuple[str, int] | None:
+    if request.camera_id is not None:
+        return "camera", request.camera_id
+    printer_id = request.view_printer_id if request.view_printer_id is not None else request.printer_id
+    return None if printer_id is None else ("printer", printer_id)
+
+
+def _still_failed_lately(request: CameraCaptureRequest) -> bool:
+    key = _still_key(request)
+    remembered = _failed_stills.get(key) if key is not None else None
+    if remembered is None:
+        return False
+    if remembered[0] != request.snapshot_url or time.monotonic() >= remembered[1]:
+        del _failed_stills[key]
+        return False
+    return True
+
+
 async def _still_beside_live_view(request: CameraCaptureRequest) -> CameraCaptureResult:
     """The still of a watched camera that has its own snapshot URL; the view's frame when it cannot be had.
 
     The request carries the snapshot URL, so the worker fetches that and opens no stream reader
     (``external_camera._capture_frame_uncoalesced``). The light is taken as for any capture: a view lights
     the chamber only when the farm asks it to, and a picture somebody keeps is taken in light either way.
+
+    The still is bounded and its failure remembered (review I2): beside a view that already has a frame it
+    gets :data:`STILL_BESIDE_VIEW_WAIT`, and a failed or late one is not asked again for
+    :data:`STILL_FAILURE_MEMORY` (see :func:`capture`, which then answers from the view at once).
     """
     from backend.app.services import camera_light
 
     result: CameraCaptureResult | None = None
     failure: Exception | None = None
+    key = _still_key(request)
+    probe = _live_view_probe(request)
     try:
         async with camera_light.held(request.printer_id, request.purpose, hold=request.hold) as lease:
             if lease is not None:
                 await lease.settle()
-            result = await get_camera_runtime().capture(request)
+            if probe is not None and probe()[1] is not None:
+                # The view has a frame to answer with: the still gets a short time of its own (the light's
+                # settling is not counted against it).
+                result = await asyncio.wait_for(get_camera_runtime().capture(request), STILL_BESIDE_VIEW_WAIT)
+            else:
+                result = await get_camera_runtime().capture(request)
     except Exception as exc:
         failure = exc
     if result is not None and result.frame:
+        if key is not None:
+            _failed_stills.pop(key, None)
         return result
+    if key is not None and request.snapshot_url:
+        _failed_stills[key] = (request.snapshot_url, time.monotonic() + STILL_FAILURE_MEMORY)
     watched, live_frame = await frame_from_live_view(request)
     if watched:
         logger.info(
