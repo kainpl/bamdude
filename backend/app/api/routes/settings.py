@@ -483,8 +483,15 @@ async def resolve_settings_credentials(db: AsyncSession, changes: dict, actions:
         and not code
     ):
         raise HTTPException(400, "virtual_printer_access_code: enabled integration requires a credential")
+    # These three legacy nullable toggles already have explicit stored-"None" semantics
+    # in _load_settings and their consumers. Validate that effective value, without
+    # relaxing credential nulls or accepting None for unrelated non-nullable fields.
+    effective = dict(merged)
+    for key in ("runout_archive_spool_enabled", "runout_zero_point_enabled", "ams_sync_bidirectional"):
+        if effective.get(key) is None:
+            effective[key] = getattr(DEFAULT_SETTINGS, key)
     try:
-        AppSettings(**merged)
+        AppSettings(**effective)
     except ValidationError:
         raise HTTPException(422, "Invalid effective settings configuration") from None
     return merged

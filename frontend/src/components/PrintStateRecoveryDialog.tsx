@@ -92,7 +92,7 @@ export function PrintStateRecoveryDialog({ issue, action, onClose, onApplied }: 
       onApplied();
       // The in-memory repair answers with its outcome, which the operator must read before leaving:
       // the queue is paused whatever it was, and an unrecorded result needs the history.
-      if (runtime) setResult(answer);
+      if (runtime || closePrint) setResult(answer);
       else onClose();
     } catch (e) {
       if (e instanceof ApiError && e.status === 409) {
@@ -130,7 +130,11 @@ export function PrintStateRecoveryDialog({ issue, action, onClose, onApplied }: 
         <p>{t('printStateRecovery.runtime.willPause')}</p>
         <p>{t('printStateRecovery.runtime.notPlate')}</p>
       </div>}
-      {result && <RuntimeOutcome result={result} />}
+      {result && (closePrint ? <div role="status" className="space-y-1">
+        <p className="font-medium">{t('printStateRecovery.closePrintApplied')}</p>
+        <p>{t(`printStateRecovery.closePrintContext.${result.context_released === true ? 'released' : result.context_released === false ? 'retained' : 'unconfirmed'}`)}</p>
+        <p>{t('printStateRecovery.runtime.pausedNow')}</p>
+      </div> : <RuntimeOutcome result={result} />)}
       {!preview && !result && <>
         {(group || settlement || closePrint) && <label className="flex gap-2 items-start"><input type="checkbox" checked={idle} onChange={e => setIdle(e.target.checked)} /><span>{t('printStateRecovery.idleAssertion')}</span></label>}
         {closePrint && <fieldset className="space-y-2">

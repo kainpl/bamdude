@@ -409,7 +409,10 @@ async def test_close_stopped_print_after_explicit_confirmation(
     payload = tokens.verify(answer["preview_token"])
     factory = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
     result = await store.apply_preview(factory, payload, "user:1", "Operator")
-    assert await store.apply_preview(factory, payload, "user:1", "Operator") == result
+    assert result["context_released"] is True
+    assert await store.apply_preview(factory, payload, "user:1", "Operator") == {
+        key: value for key, value in result.items() if key != "context_released"
+    }
     assert result["operator_outcome"] == outcome
     assert result["note"] == "Checked printer"
     assert result["members"][0]["after_status"] == status
