@@ -61,6 +61,14 @@ export function canReadStock(hasPermission: HasPermission) {
 }
 
 /**
+ * The product's own facts — its catalog, its detail, whether a choice of its variant values can be
+ * ordered (`POST /products/{id}/combination`, owner 2026-11-14) — are the products' read.
+ */
+export function canReadProducts(hasPermission: HasPermission) {
+  return hasPermission('products:read');
+}
+
+/**
  * Issuing an order's goods, receiving its prints, banking its surplus: `orders:update` +
  * `stock:move` (O06). Completing an order whose goods are out is neither — a consequence of the
  * order's own right (O23).

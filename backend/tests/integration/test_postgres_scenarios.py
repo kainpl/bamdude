@@ -964,7 +964,7 @@ class TestLockProtocol:
         assert r["which"] == "waiting", r
         assert r["a"] == "ok", r
         assert r["b"].startswith("http:409:") and "bound to this option" in r["b"], r
-        assert r["option_exists"] and r["part"]["variant_option_id"] is not None, r
+        assert r["option_exists"] and r["part"]["variant_option_ids"], r
 
     def test_deleting_an_option_first_refuses_the_part_born_bound_to_it(self, tmp_path_factory):
         """WS-13 E10 R10: the delete holds the gate; the create WAITS, then reads the

@@ -20,11 +20,11 @@ const product = {
   id: 7,
   name: 'Pipe',
   parts: [
-    { id: 5, kind: 'printed', name: 'Колба', qty_per_unit: 1, sort_order: 0, variant_option_id: null },
-    { id: 6, kind: 'printed', name: 'straight tail', qty_per_unit: 1, sort_order: 1, variant_option_id: 11 },
-    { id: 8, kind: 'printed', name: 'angled tail', qty_per_unit: 1, sort_order: 2, variant_option_id: 12 },
-    { id: 10, kind: 'purchased', name: 'screw', qty_per_unit: 2, sort_order: 3, variant_option_id: null },
-    { id: 9, kind: 'printed', name: 'test cube', qty_per_unit: 0, sort_order: 4, variant_option_id: null, ignored: true },
+    { id: 5, kind: 'printed', name: 'Колба', qty_per_unit: 1, sort_order: 0, variant_option_ids: [] },
+    { id: 6, kind: 'printed', name: 'straight tail', qty_per_unit: 1, sort_order: 1, variant_option_ids: [11] },
+    { id: 8, kind: 'printed', name: 'angled tail', qty_per_unit: 1, sort_order: 2, variant_option_ids: [12] },
+    { id: 10, kind: 'purchased', name: 'screw', qty_per_unit: 2, sort_order: 3, variant_option_ids: [] },
+    { id: 9, kind: 'printed', name: 'test cube', qty_per_unit: 0, sort_order: 4, variant_option_ids: [], ignored: true },
   ],
   variant_groups: [
     {
@@ -344,8 +344,8 @@ describe('LineConfigDialog — a group without a standard option (WS-13 E5 R11)'
     id: 8,
     name: 'Case',
     parts: [
-      { id: 31, kind: 'printed', name: 'wall mount', qty_per_unit: 1, sort_order: 0, variant_option_id: 21 },
-      { id: 32, kind: 'printed', name: 'DIN clip', qty_per_unit: 1, sort_order: 1, variant_option_id: 22 },
+      { id: 31, kind: 'printed', name: 'wall mount', qty_per_unit: 1, sort_order: 0, variant_option_ids: [21] },
+      { id: 32, kind: 'printed', name: 'DIN clip', qty_per_unit: 1, sort_order: 1, variant_option_ids: [22] },
     ],
     variant_groups: [
       { id: 4, name: 'Кріплення', position: 0, default_option_id: null, options: [{ id: 21, name: 'стіна', position: 0 }, { id: 22, name: 'DIN', position: 1 }] },

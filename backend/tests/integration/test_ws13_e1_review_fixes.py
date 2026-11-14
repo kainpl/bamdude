@@ -11,9 +11,11 @@ from sqlalchemy import delete, insert, select, update
 from backend.app.api.routes import projects as project_routes
 from backend.app.models.library import LibraryFile
 from backend.app.models.product import Product, ProductPart
+from backend.app.models.product_variant import ProductPartOption
 from backend.app.models.project import Project
 from backend.app.models.project_line import ProjectLine
 from backend.app.services import finished_stock, line_intake, order_fulfilment, product_delete, product_gate
+from backend.tests.fixtures.part_bindings import bind
 
 pytestmark = pytest.mark.integration
 
@@ -243,8 +245,9 @@ async def shade_lamp(db_session):
     await db_session.flush()
     group = await product_variants.create_group(db_session, lamp.id, "Colour", ["red", "blue"], record_lines=False)
     red, blue = [o.id for o in group.options]
-    shade = ProductPart(
-        product_id=lamp.id, kind="printed", name="shade", name_key="shade", qty_per_unit=1, variant_option_id=red
+    shade = bind(
+        ProductPart(product_id=lamp.id, kind="printed", name="shade", name_key="shade", qty_per_unit=1),
+        group.options[0],
     )
     base = ProductPart(product_id=lamp.id, kind="printed", name="base", name_key="base", qty_per_unit=1)
     db_session.add_all([shade, base])
@@ -344,26 +347,27 @@ async def test_a_rebinding_reads_the_part_again_behind_the_gate(committing_clien
     real = gate_module.product_gate
 
     async def meanwhile(db, ids):
+        await db.execute(delete(ProductPartOption.__table__).where(ProductPartOption.part_id == shade_lamp["shade"]))
         await db.execute(
-            update(ProductPart.__table__)
-            .where(ProductPart.id == shade_lamp["shade"])
-            .values(variant_option_id=shade_lamp["blue"])
+            insert(ProductPartOption.__table__).values(
+                part_id=shade_lamp["shade"], option_id=shade_lamp["blue"], group_id=shade_lamp["group"]
+            )
         )
         await real(db, ids)
 
     monkeypatch.setattr(gate_module, "product_gate", meanwhile)
     r = await committing_client.patch(
         f"/api/v1/products/{shade_lamp['lamp']}/parts/{shade_lamp['shade']}",
-        json={"variant_option_id": shade_lamp["red"]},
+        json={"variant_option_ids": [shade_lamp["red"]]},
     )
     assert r.status_code == 200, r.text
-    assert r.json()["variant_option_id"] == shade_lamp["red"]
-    stored = await db_session.scalar(
-        select(ProductPart.variant_option_id)
-        .where(ProductPart.id == shade_lamp["shade"])
-        .execution_options(populate_existing=True)
-    )
-    assert stored == shade_lamp["red"]
+    assert r.json()["variant_option_ids"] == [shade_lamp["red"]]
+    stored = (
+        await db_session.scalars(
+            select(ProductPartOption.option_id).where(ProductPartOption.part_id == shade_lamp["shade"])
+        )
+    ).all()
+    assert stored == [shade_lamp["red"]]
 
 
 @pytest.mark.asyncio

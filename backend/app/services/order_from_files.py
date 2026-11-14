@@ -235,9 +235,11 @@ async def _new_order(db: AsyncSession, *, name: str, lines: list[tuple[int, int]
     project.lines.extend(rows)
     db.add(project)
     await db.flush()
-    # Every line records its product's standard choices (spec workshop-product-variants, rule 5).
+    # Every line records its product's standard choices (spec workshop-product-variants, rule 5);
+    # the products' sliced sets are read once per product for all of them.
+    sliced_memo: dict[int, set[int]] = {}
     for row in rows:
-        await line_config.seed_line(db, row, choices=None, counts=None)
+        await line_config.seed_line(db, row, choices=None, counts=None, sliced_memo=sliced_memo)
     return project
 
 

@@ -23,6 +23,7 @@ import { Select } from '../Select';
 import { WorkshopDialog } from '../workshop/WorkshopDialog';
 import { WorkshopField, WorkshopFormGrid } from '../workshop/WorkshopFormGrid';
 import { PartImageSection } from './PartImageSection';
+import { bindingByGroup } from './partBinding';
 import {
   draftFromChoice,
   needsPhotoFile,
@@ -49,6 +50,13 @@ function normaliseAlias(raw: string): string {
 
 function sameList(a: string[], b: string[]): boolean {
   return a.length === b.length && a.every((value, index) => value === b[index]);
+}
+
+/** A binding is a set: the same options in another order are no change. */
+function sameSet(a: readonly number[], b: readonly number[]): boolean {
+  const left = new Set(a);
+  const right = new Set(b);
+  return left.size === right.size && [...left].every((id) => right.has(id));
 }
 
 /** The saved picture as the server says it now (plan E5 r2, D15) — not the editing base. */
@@ -94,8 +102,12 @@ interface ProductPartDialogProps {
  * compares it with the LIVE saved choice — an untouched draft never reverts another client's pin.
  *
  * ⚠️ **One session, one base (J).** Only this dialog's own writes move the base; a background refresh
- * of the product changes the variant list (the dictionary) but never what was typed. A bound option
- * the product lost is named so and blocks the save until another is chosen.
+ * of the product changes the variant list (the dictionary) but never what was ticked. A bound option
+ * the product lost is named so and blocks the save until it is unticked.
+ *
+ * The binding is a row per variant group — «any» (nothing ticked) or the ticked options of that
+ * group (spec product-part-variant-combinations п. 22): «and» between groups, «or» within one. It
+ * is a set, sent whole as `variant_option_ids` — on an edit only when the set differs from the base.
  *
  * The kind is chosen at creation only (K2): the server has no `kind` on a PATCH.
  * «Not counted» belongs to a printed part with nothing per unit (K4); a count typed on a
@@ -113,8 +125,9 @@ export function ProductPartDialog({ product, part, onClose }: ProductPartDialogP
 
   // The session's base — the part as it was at the opening, then as this dialog's writes answered.
   const [base, setBase] = useState<ProductPart | null>(part ?? null);
-  const [baseOptionLabel] = useState(() =>
-    part?.variant_option_id != null ? optionLabel.get(part.variant_option_id) : undefined,
+  // The bound options' names as the opening saw them: one the product loses later is still named.
+  const [baseOptionLabels] = useState(
+    () => new Map((part?.variant_option_ids ?? []).map((id) => [id, optionLabel.get(id)] as const)),
   );
   const isEdit = base != null;
   const ownKey = base?.kind === 'printed' ? base.name_key : null;
@@ -146,7 +159,7 @@ export function ProductPartDialog({ product, part, onClose }: ProductPartDialogP
   const [qty, setQty] = useState(String(base?.qty_per_unit ?? 1));
   const [extra, setExtra] = useState(String(base?.extra_percent ?? 0));
   const [ignored, setIgnored] = useState(base?.ignored ?? false);
-  const [variant, setVariant] = useState(base?.variant_option_id != null ? String(base.variant_option_id) : '');
+  const [bound, setBound] = useState<number[]>(base?.variant_option_ids ?? []);
   const [price, setPrice] = useState(base?.unit_price != null ? String(base.unit_price) : '');
   const [url, setUrl] = useState(base?.sourcing_url ?? '');
   const [remarks, setRemarks] = useState(base?.remarks ?? '');
@@ -188,7 +201,19 @@ export function ProductPartDialog({ product, part, onClose }: ProductPartDialogP
   // «Not counted» only at zero (C04): a count > 0 takes the mark off.
   const canIgnore = printed && qtyValid && qtyNumber === 0;
   const ignoredNow = canIgnore && ignored;
-  const variantGone = variant !== '' && !optionLabel.has(Number(variant));
+  const goneOptions = bound.filter((id) => !optionLabel.has(id));
+  const variantGone = goneOptions.length > 0;
+  // What is sent: the ticked options the product has, in its groups' order.
+  const boundIds = [...bindingByGroup(groups, bound).values()].flat();
+
+  function tick(optionId: number, on: boolean) {
+    setBound((prev) => (on ? (prev.includes(optionId) ? prev : [...prev, optionId]) : prev.filter((id) => id !== optionId)));
+  }
+
+  /** «Any» in a group: none of its options is a condition any more. */
+  function clearGroup(optionIds: number[]) {
+    setBound((prev) => prev.filter((id) => !optionIds.includes(id)));
+  }
 
   /** The alias field's text as tokens — a pasted comma list is a token per name (a comma is
    *  the field's separator); `false` (with the note) when one of them is already in the list. */
@@ -212,7 +237,7 @@ export function ProductPartDialog({ product, part, onClose }: ProductPartDialogP
     setName(saved.name);
     setQty(String(saved.qty_per_unit));
     setIgnored(saved.ignored);
-    setVariant(saved.variant_option_id != null ? String(saved.variant_option_id) : '');
+    setBound(saved.variant_option_ids);
     setPrice(saved.unit_price != null ? String(saved.unit_price) : '');
     setUrl(saved.sourcing_url ?? '');
     setRemarks(saved.remarks ?? '');
@@ -259,7 +284,7 @@ export function ProductPartDialog({ product, part, onClose }: ProductPartDialogP
   }
 
   /** What «Save part» sends for the part itself; `null` when an edit changed nothing (C07). */
-  function fieldsBody(tokens: string[], variantId: number | null, unitPrice: number | null) {
+  function fieldsBody(tokens: string[], optionIds: number[], unitPrice: number | null) {
     if (!base) {
       return printed
         ? {
@@ -269,23 +294,24 @@ export function ProductPartDialog({ product, part, onClose }: ProductPartDialogP
             ...(extraNumber > 0 ? { extra_percent: extraNumber } : {}),
             ignored: ignoredNow,
             aliases: tokens,
-            variant_option_id: variantId,
+            variant_option_ids: optionIds,
           }
         : {
             kind,
             name: name.trim(),
             qty_per_unit: qtyNumber,
-            variant_option_id: variantId,
+            variant_option_ids: optionIds,
             unit_price: unitPrice,
             sourcing_url: url.trim() || null,
             remarks: remarks.trim() || null,
           };
     }
-    // An edit sends what differs from the session's base (C07); the aliases only if the list moved.
+    // An edit sends what differs from the session's base (C07); the aliases only if the list moved,
+    // the binding only if the SET moved.
     const data: ProductPartUpdate = {};
     if (name.trim() !== base.name) data.name = name.trim();
     if (qtyNumber !== base.qty_per_unit) data.qty_per_unit = qtyNumber;
-    if (variantId !== base.variant_option_id) data.variant_option_id = variantId;
+    if (!sameSet(optionIds, base.variant_option_ids)) data.variant_option_ids = optionIds;
     if (printed) {
       if (extraNumber !== (base.extra_percent ?? 0)) data.extra_percent = extraNumber;
       if (ignoredNow !== base.ignored) data.ignored = ignoredNow;
@@ -320,8 +346,7 @@ export function ProductPartDialog({ product, part, onClose }: ProductPartDialogP
       tokens = taken;
     }
     if (needsPhotoFile(imageDraft, facts.choice)) return refuse(t('products.partImage.photoRequired'), ids.photo);
-    const variantId = variant ? Number(variant) : null;
-    const body = fieldsBody(tokens, variantId, unitPrice);
+    const body = fieldsBody(tokens, boundIds, unitPrice);
     const request = pendingImageRequest(imageDraft, facts.choice); // the LIVE saved choice (D16)
     if (body === null && request === null) {
       // a partial success earlier in this dialog IS a saved part: say so on the way out (final review 4)
@@ -475,40 +500,70 @@ export function ProductPartDialog({ product, part, onClose }: ProductPartDialogP
             </WorkshopField>
           )}
 
-          <WorkshopField
-            label={t('products.partDialog.variant')}
-            htmlFor={ids.variant}
-            hint={variantGone ? t('products.partDialog.variantGoneHint') : t('products.partDialog.variantHint')}
-          >
-            <Select
-              id={ids.variant}
-              value={variant}
-              onChange={(e) => setVariant(e.target.value)}
-              disabled={pending}
+          {(groups.length > 0 || variantGone) && (
+            <fieldset
               aria-describedby={`${ids.variant}-hint`}
-              aria-invalid={variantGone || undefined}
-              className="w-full"
+              className="col-span-full m-0 flex min-w-0 flex-col gap-1.5 border-0 p-0"
             >
-              <option value="">{t('products.partDialog.variantAlways')}</option>
-              {groups.map((g) =>
-                g.options.map((o) => (
-                  <option key={o.id} value={String(o.id)}>
-                    {optionLabel.get(o.id)}
-                  </option>
-                )),
-              )}
+              <legend className="mb-1 p-0 text-sm text-bambu-gray-light">{t('products.partDialog.variant')}</legend>
+              {groups.map((group) => {
+                const optionIds = group.options.map((o) => o.id);
+                const any = !optionIds.some((id) => bound.includes(id));
+                return (
+                  <fieldset
+                    key={group.id}
+                    className="m-0 flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1 rounded-lg border border-bambu-dark-tertiary bg-bambu-dark px-3 py-2"
+                  >
+                    <legend className="float-left mr-2 p-0 text-sm font-semibold text-white">{group.name}</legend>
+                    <label className="inline-flex items-center gap-1.5 text-sm text-bambu-gray-light">
+                      <input
+                        type="checkbox"
+                        checked={any}
+                        onChange={() => clearGroup(optionIds)}
+                        disabled={pending}
+                        className="accent-bambu-green"
+                      />
+                      {t('products.partDialog.variantAny')}
+                    </label>
+                    {group.options.map((option) => (
+                      <label key={option.id} className="inline-flex min-w-0 items-center gap-1.5 text-sm text-white">
+                        <input
+                          type="checkbox"
+                          checked={bound.includes(option.id)}
+                          onChange={(e) => tick(option.id, e.target.checked)}
+                          disabled={pending}
+                          className="accent-bambu-green"
+                        />
+                        <span className="wrap-anywhere">{option.name}</span>
+                      </label>
+                    ))}
+                  </fieldset>
+                );
+              })}
               {variantGone && (
-                <option value={variant}>
-                  {t('products.partDialog.variantGone', {
-                    name:
-                      base?.variant_option_id === Number(variant) && baseOptionLabel
-                        ? baseOptionLabel
-                        : `#${variant}`,
-                  })}
-                </option>
+                <div className="flex flex-wrap items-center gap-x-4 gap-y-1 px-3">
+                  {goneOptions.map((id) => (
+                    <label key={id} className="inline-flex min-w-0 items-center gap-1.5 text-sm text-amber-700 dark:text-amber-400">
+                      <input
+                        type="checkbox"
+                        checked
+                        onChange={() => tick(id, false)}
+                        disabled={pending}
+                        aria-invalid
+                        className="accent-bambu-green"
+                      />
+                      <span className="wrap-anywhere">
+                        {t('products.partDialog.variantGone', { name: baseOptionLabels.get(id) ?? `#${id}` })}
+                      </span>
+                    </label>
+                  ))}
+                </div>
               )}
-            </Select>
-          </WorkshopField>
+              <p id={`${ids.variant}-hint`} className="text-xs leading-[18px] text-bambu-gray">
+                {variantGone ? t('products.partDialog.variantGoneHint') : t('products.partDialog.variantHint')}
+              </p>
+            </fieldset>
+          )}
 
           {printed ? (
             <>

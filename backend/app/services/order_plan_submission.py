@@ -196,6 +196,9 @@ async def register(db, plan_id, request, access):
     if data.ctx.project.status != "active":
         raise working.refusal("order_closed")
     entries = {e["entry_id"]: e for e in plan.entries}
+    from backend.app.services.print_color_defaults import default_force_color_match
+
+    color_default = await default_force_color_match(db)
     parts = []
     overrides = OrderPrintOptions(overrides=data.ctx.project.order_print_options or {}).model_dump()["overrides"]
     for requested in request.parts:
@@ -225,6 +228,7 @@ async def register(db, plan_id, request, access):
         options = profile.for_printer_queue() if profile and printer else profile.for_auto_queue() if profile else {}
         try:
             options.update(override_options(overrides, selected.printer_model, model if printer else None))
+            options.setdefault("force_color_match", color_default)
         except ValueError as exc:
             raise HTTPException(422, "Order print options do not fit the target printer") from exc
         file = next(

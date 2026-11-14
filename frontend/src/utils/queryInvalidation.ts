@@ -375,22 +375,36 @@ export function invalidatePartImageViews(qc: QueryClient): void {
 }
 
 /**
+ * The product page's combinations table (spec product-part-variant-combinations п. 24), keyed
+ * `[PRODUCT_COMBINATIONS_KEY, productId, page]`. Which combinations an order can take moves with
+ * the parts' bindings, the variants and whether the parts' files are sliced — so the part, variant
+ * and file-link writes refresh it (`invalidateProductFiles`, `invalidateProductVariants`). It is not
+ * one of `PRODUCT_FILE_KEYS` on purpose: those feed the picture refreshes, and a picture moves no
+ * combination.
+ */
+export const PRODUCT_COMBINATIONS_KEY = 'product-combinations';
+
+/**
  * Mark what a product prints from stale — after a composition, alias or merge edit,
  * a file linked or unlinked, a card re-read, a purchased part's price. Without a
  * product id every product's: a file trashed or restored in the file manager moves
  * the plates of whichever products it belongs to, and the page does not know which.
+ * The combinations table goes with them: a part, a link or a slice opens or closes one.
  */
 export function invalidateProductFiles(qc: QueryClient, productId?: number): void {
   for (const key of PRODUCT_FILE_KEYS) {
     qc.invalidateQueries({ queryKey: productId == null ? [key] : [key, productId] });
   }
+  qc.invalidateQueries({
+    queryKey: productId == null ? [PRODUCT_COMBINATIONS_KEY] : [PRODUCT_COMBINATIONS_KEY, productId],
+  });
 }
 
 /**
  * After a product's variants changed (WS-13 E1 CL4): the product and the catalog's
  * figures, and — because a new group writes a choice into every order line and
- * stock position of the product — every order view and every stock view, and the
- * estimate of one standard unit.
+ * stock position of the product — every order view and every stock view, the
+ * estimate of one standard unit, and the table of its combinations.
  */
 export function invalidateProductVariants(qc: QueryClient, productId: number): void {
   qc.invalidateQueries({ queryKey: ['product', productId] });
@@ -398,6 +412,7 @@ export function invalidateProductVariants(qc: QueryClient, productId: number): v
   invalidateOrderViews(qc);
   invalidateStock(qc);
   qc.invalidateQueries({ queryKey: ['product-estimate', productId] });
+  qc.invalidateQueries({ queryKey: [PRODUCT_COMBINATIONS_KEY, productId] });
 }
 
 /** The DETAIL key of one deleted row — an order's page is `['project', id]`. */

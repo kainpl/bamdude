@@ -151,6 +151,12 @@ export class ApiError extends Error {
    * `jobs_changed`). A dialog marks those rows; the sentence stays prose.
    */
   jobs?: { kind: string; id: number; reason?: string }[];
+  /**
+   * Why a combination of variant options cannot be ordered, when the refusal says
+   * (`combination_unavailable`: `{error, message, reasons}`) — name snapshots the dialog
+   * composes into sentences (`partBinding.reasonText`); only well-formed entries.
+   */
+  reasons?: CombinationReason[];
   constructor(message: string, status: number, code?: string, retryAfterMs?: number) {
     super(message);
     this.name = 'ApiError';
@@ -691,7 +697,24 @@ async function handleErrorResponse(response: Response, __isRetry: boolean, signa
   if (refs) refusal.refs = refs;
   const jobs = refusalJobs(error.detail);
   if (jobs) refusal.jobs = jobs;
+  const reasons = refusalReasons(error.detail);
+  if (reasons) refusal.reasons = reasons;
   throw refusal;
+}
+
+/** The `reasons` a closed-combination refusal names -- only well-formed entries, never guessed. */
+function refusalReasons(detail: unknown): ApiError['reasons'] {
+  if (!detail || typeof detail !== 'object' || Array.isArray(detail)) return undefined;
+  const raw = (detail as Record<string, unknown>).reasons;
+  if (!Array.isArray(raw)) return undefined;
+  const text = (value: unknown) => (typeof value === 'string' ? value : null);
+  const reasons = raw.flatMap((entry): CombinationReason[] => {
+    if (!entry || typeof entry !== 'object') return [];
+    const { code, group, option, part } = entry as Record<string, unknown>;
+    if (code !== 'option_without_part' && code !== 'part_not_sliced') return [];
+    return [{ code, group: text(group), option: text(option), part: text(part) }];
+  });
+  return reasons.length ? reasons : undefined;
 }
 
 /** The `jobs` list a refusal names -- only well-formed entries, never guessed. */
@@ -3214,9 +3237,11 @@ export interface ProductPart {
    *  Rendering a product's shelf out of these would be a second reading of the
    *  same ledger, one part at a time. */
   stock_balance: number | null;
-  /** The option this part belongs to, or `null` for a part in every
-   *  configuration (spec workshop-product-variants, rule 3). */
-  variant_option_id: number | null;
+  /** The options this part is bound to, across the product's variant groups, ascending;
+   *  `[]` for a part in every configuration. The part is in a kit when, in every group it
+   *  has options in, the choice is one of them — «and» between groups, «or» within one
+   *  (spec product-part-variant-combinations, п. 5). Name it with `partBinding.ts`. */
+  variant_option_ids: number[];
   /** The part's picture (spec part-thumbnails §11.3); always sent, optional until a surface reads it. */
   image?: PartImageRef | null;
   /** The editor's state (spec part-thumbnails §10.4) — on the product page and the part's doors only. */
@@ -3242,6 +3267,9 @@ export interface VariantGroup {
   name: string;
   position: number;
   default_option_id: number | null;
+  /** «Every value needs its own part»: only then does a chosen value no part of the kit names
+   *  make a combination unorderable (spec product-part-variant-combinations, п. 10). */
+  requires_part: boolean;
   options: VariantOption[];
   /** WS-13 E1 VR9 — what would refuse the group's delete, counted as the delete guard counts. */
   lines_count: number | null;
@@ -3263,6 +3291,8 @@ export interface VariantGroupDraft {
   name: string;
   /** `null` only for an existing group whose stored standard is already `null` (WS-13 E10 A06). */
   default: number | string | null;
+  /** «Every value needs its own part». Left out, an existing group keeps its mark and a new one is off. */
+  requires_part?: boolean;
   options: VariantOptionDraft[];
 }
 
@@ -3277,12 +3307,14 @@ export interface VariantGroupCreate {
   name: string;
   /** The first one is the standard. */
   options: string[];
+  requires_part?: boolean;
 }
 
 export interface VariantGroupUpdate {
   name?: string;
   default_option_id?: number;
   position?: number;
+  requires_part?: boolean;
 }
 
 export interface VariantOptionUpdate {
@@ -3295,6 +3327,75 @@ export interface VariantOptionUpdate {
 export interface KitsConfiguration {
   options?: number[];
   counts?: Record<number, number>;
+}
+
+/** One group a part is bound in and its options there, as name snapshots in the groups'
+ *  order — «Weight: 400, 600» (spec product-part-variant-combinations, п. 19). */
+export interface ProductPartVariant {
+  group: string;
+  options: string[];
+}
+
+/**
+ * Why a combination cannot be ordered, as name snapshots — the same reason the 409
+ * `combination_unavailable` refusal carries; the sentence is composed by
+ * `partBinding.reasonText`. `option_without_part` names its `group` and `option`
+ * (`option: null` — nothing is chosen in a group without a standard option);
+ * `part_not_sliced` names its `part`.
+ */
+export interface CombinationReason {
+  code: 'option_without_part' | 'part_not_sliced';
+  group: string | null;
+  option: string | null;
+  part: string | null;
+}
+
+/** One group's value in a combination. */
+export interface CombinationChoice {
+  group_id: number;
+  group: string;
+  option_id: number;
+  option: string;
+}
+
+/** One combination of the table: a value of every group, in the groups' order. */
+export interface CombinationRow {
+  choices: CombinationChoice[];
+  available: boolean;
+  reasons: CombinationReason[];
+}
+
+/** Which combinations the table's page holds. */
+export type CombinationsState = 'all' | 'available' | 'unavailable';
+
+/** `GET /products/{id}/combinations` — one page; `total` counts the combinations the
+ *  `state` filter keeps (0 for a product without groups), groups by position, the last
+ *  group fastest. `available_total` / `unavailable_total` count both kinds whatever the
+ *  filter; `null` for a product too large to count, which the server answers unfiltered. */
+export interface ProductCombinationsPage {
+  total: number;
+  page: number;
+  items: CombinationRow[];
+  available_total: number | null;
+  unavailable_total: number | null;
+}
+
+/** One value of one group beside a choice: `here` — with the other groups as chosen;
+ *  `anywhere` — in at least one available combination, `null` (unknown) past the server's
+ *  enumeration cap. */
+export interface CombinationOptionState {
+  group_id: number;
+  option_id: number;
+  available_here: boolean;
+  available_anywhere: boolean | null;
+}
+
+/** `POST /products/{id}/combination` — is the choice available, why not, and every value
+ *  of every group in the table's order. A product without groups: available, no options. */
+export interface CombinationState {
+  available: boolean;
+  reasons: CombinationReason[];
+  options: CombinationOptionState[];
 }
 
 export interface ProductPartCreate {
@@ -3310,8 +3411,8 @@ export interface ProductPartCreate {
   remarks?: string | null;
   /** A printed part's whole alias list — its own key always stays (WS-13 E10 A05). */
   aliases?: string[] | null;
-  /** Created already bound to this option (A05). */
-  variant_option_id?: number | null;
+  /** Created already bound to these options (A05); `[]` — always in the kit. */
+  variant_option_ids?: number[];
 }
 
 export interface ProductPartUpdate {
@@ -3323,7 +3424,8 @@ export interface ProductPartUpdate {
   sourcing_url?: string | null;
   remarks?: string | null;
   sort_order?: number;
-  variant_option_id?: number | null;
+  /** Absent — unchanged; a list — the whole binding (`[]` — always in the kit). */
+  variant_option_ids?: number[];
   /** «Не рахувати» — 422 on a part in the kit, 409 while it holds stock or is ordered. */
   ignored?: boolean;
   /** Absent or `null` — unchanged; a list — the whole list, own key kept (A05). */
@@ -3684,9 +3786,9 @@ export interface StockBalance {
   /** Held by orders' parts lines — neither free nor reserved (followups, rule 49).
    *  Sent by `GET /products/{id}/stock`; the stock tab's rows leave it null. */
   held_for_orders?: number | null;
-  /** WS-13 E1 ST4 — the option the part is bound to; null when it is none (or the
-   *  row came from the flat stock answer, which does not read options). */
-  variant?: { group: string; option: string } | null;
+  /** WS-13 E1 ST4 — the groups the part is bound in and its options there, in the groups'
+   *  order; `[]` (or absent) for a part in every configuration. */
+  variants?: ProductPartVariant[];
   /** The part's picture (spec part-thumbnails §11.3); always sent, optional until a surface reads it. */
   image?: PartImageRef | null;
 }
@@ -4150,7 +4252,8 @@ export const WAYBILL_MAX = 24;
 export interface ProductPartRow extends PartSourcesSummary {
   part_id: number;
   name: string;
-  variant: { group: string; option: string } | null;
+  /** The groups the part is bound in and its options there; `[]` — every configuration. */
+  variants: ProductPartVariant[];
   product: { id: number; code: string; name: string; sku: string | null };
   /** WS-13 E1 K3 — the models THIS part's sliced sources are sliced for. */
   models: string[];
@@ -4851,6 +4954,7 @@ export interface AppSettings {
   queue_shortest_first: boolean;  // SJF + been_jumped guard for the auto-queue scheduler
   auto_queue_rebalance_models: boolean;  // Move an order line's pending prints to idle printers of another model when that finishes sooner (spec 2026-09-10)
   auto_queue_compatible_models: boolean;
+  default_force_color_match: boolean;
   auto_order_for_batches: boolean;  // A multi-print batch from the print dialog proposes a new order when nothing open needs the plate
   prefer_lowest_filament: boolean;  // Drain the emptiest compatible spool first — honoured by AutoQueue AND by the Print dialog's auto-match
   // Preheat & heat-soak before queued prints (#1468)
@@ -13850,6 +13954,20 @@ export const api = {
     const qs = search.toString();
     return request<{ kits_available: number }>(`/products/${id}/kits${qs ? `?${qs}` : ''}`);
   },
+  /** One page of the combinations of the product's variant options, each available or with
+   *  its reasons (spec product-part-variant-combinations, п. 17); `pageSize` ≤ 500. `state`
+   *  keeps one kind — the server filters, counts both kinds and pages. */
+  getProductCombinations: (productId: number, page: number, pageSize: number, state: CombinationsState) =>
+    request<ProductCombinationsPage>(
+      `/products/${productId}/combinations?page=${page}&page_size=${pageSize}&state=${state}`,
+    ),
+  /** Is this choice (`group_id → option_id`; a group left out takes its standard) available,
+   *  and how each value of each group would leave it (п. 18). Writes nothing. */
+  describeCombination: (productId: number, choices: Record<number, number>) =>
+    request<CombinationState>(`/products/${productId}/combination`, {
+      method: 'POST',
+      body: JSON.stringify({ choices }),
+    }),
   /** A hand correction. 409 when it would take a balance below zero, 422 for a
    *  part that holds no stock — the server's own sentence is in `detail`, which
    *  is what `ApiError.message` carries. */

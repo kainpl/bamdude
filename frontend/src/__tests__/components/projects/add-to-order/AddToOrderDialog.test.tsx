@@ -3,7 +3,7 @@ import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { render } from '../../../utils';
 import { api, ApiError } from '../../../../api/client';
 import { AddToOrderDialog } from '../../../../components/projects/add-to-order/AddToOrderDialog';
-import { filesPage, lamp, libraryFile, pageOf, part, partsPage, pipe, pipeDetail, plate, suggestion } from './fixtures';
+import { enabledButton, filesPage, lamp, libraryFile, pageOf, part, partsPage, pipe, pipeDetail, plate, suggestion } from './fixtures';
 
 const orders = {
   items: [
@@ -67,7 +67,7 @@ describe('AddToOrderDialog', () => {
     fireEvent.change(within(lampRow).getByLabelText('Kits'), { target: { value: '0' } });
     fireEvent.change(within(lampRow).getByLabelText('Material'), { target: { value: 'PLA' } });
     expect(screen.getByText('Selected: 2 products · 7 pcs')).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Add lines (2)' }));
+    fireEvent.click(await enabledButton('Add lines (2)'));
     await waitFor(() =>
       expect(add).toHaveBeenCalledWith(5, [
         { kind: 'product', product_id: 1, quantity: 6, choices: { 10: 101 }, material: null, color: null, stock: 'auto' },
@@ -94,7 +94,7 @@ describe('AddToOrderDialog', () => {
     const row = await tick(1);
     fireEvent.change(within(row).getByLabelText('Quantity'), { target: { value: '6' } });
     await waitFor(() => expect(within(row).getByLabelText('Ready units')).toHaveValue(2));
-    fireEvent.click(screen.getByRole('button', { name: 'Add lines (1)' }));
+    fireEvent.click(await enabledButton('Add lines (1)'));
     expect(await screen.findByText(/Pipe: ready 1 of 2/)).toBeInTheDocument();
   });
 
@@ -103,7 +103,7 @@ describe('AddToOrderDialog', () => {
     const onClose = vi.fn();
     render(<AddToOrderDialog order={ORDER} onClose={onClose} />);
     await tick(1);
-    fireEvent.click(screen.getByRole('button', { name: 'Add lines (1)' }));
+    fireEvent.click(await enabledButton('Add lines (1)'));
     expect(await screen.findByText('Product not found')).toBeInTheDocument();
     expect(screen.getByRole('dialog')).toBeInTheDocument();
     expect(onClose).not.toHaveBeenCalled();
@@ -111,6 +111,9 @@ describe('AddToOrderDialog', () => {
 
   it('from a product page: the product is ticked and an active order is chosen first', async () => {
     const getOrders = vi.spyOn(api, 'getOrdersPaged').mockResolvedValue(orders as never);
+    const describeCombination = vi
+      .spyOn(api, 'describeCombination')
+      .mockResolvedValue({ available: true, reasons: [], options: [] });
     render(<AddToOrderDialog preselectProduct={{ id: 1, code: 'PR-0001' }} onClose={() => {}} />);
     expect(within(await screen.findByTestId('add-product-1')).getByRole('checkbox')).toBeChecked();
     // Final review I4: the product is found, not merely ticked somewhere off the page.
@@ -118,11 +121,51 @@ describe('AddToOrderDialog', () => {
     expect(screen.getByLabelText('Product, SKU, category, material or part name…')).toHaveValue('PR-0001');
     expect(getOrders).toHaveBeenLastCalledWith({ status: 'active', page: 1, per_page: 20 });
     const submit = screen.getByRole('button', { name: 'Add lines (1)' });
+    // The product's combination has answered: what keeps «Add» off now is the missing order alone.
+    await waitFor(() => expect(describeCombination).toHaveBeenCalledWith(1, {}));
+    await waitFor(() => expect(screen.queryByText('Checking the products’ combinations…')).not.toBeInTheDocument());
     expect(submit).toBeDisabled();
     fireEvent.change(screen.getByLabelText('Order'), { target: { value: '6' } });
     expect(submit).toBeEnabled();
     fireEvent.click(submit);
     await waitFor(() => expect(add).toHaveBeenCalledWith(6, expect.any(Array)));
+  });
+
+  it('from a product page whose catalog page never loads: the pick is asked at once, «Add» is not held', async () => {
+    // Review M-h: the product page says whether its product has groups, so the dialog does
+    // not wait on «Checking…» for a list that failed — the list says so with its own retry.
+    vi.spyOn(api, 'getProductsPaged').mockRejectedValue(new Error('offline'));
+    vi.spyOn(api, 'getOrdersPaged').mockResolvedValue(orders as never);
+    const describeCombination = vi
+      .spyOn(api, 'describeCombination')
+      .mockResolvedValue({ available: true, reasons: [], options: [] });
+    render(
+      <AddToOrderDialog preselectProduct={{ id: 1, code: 'PR-0001', name: 'Pipe', hasGroups: true }} onClose={() => {}} />,
+    );
+    await waitFor(() => expect(describeCombination).toHaveBeenCalledWith(1, {}));
+    expect(await screen.findByText('Could not load the products')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByText('Checking the products’ combinations…')).not.toBeInTheDocument());
+    await screen.findByRole('option', { name: /OR-0006/ });
+    fireEvent.change(screen.getByLabelText('Order'), { target: { value: '6' } });
+    const submit = screen.getByRole('button', { name: 'Add lines (1)' });
+    await waitFor(() => expect(submit).toBeEnabled());
+    fireEvent.click(submit);
+    await waitFor(() => expect(add).toHaveBeenCalledWith(6, [expect.objectContaining({ product_id: 1 })]));
+  });
+
+  it('from a product without groups: nothing is asked, even before its page is listed', async () => {
+    vi.spyOn(api, 'getProductsPaged').mockImplementation(() => new Promise(() => {}));
+    vi.spyOn(api, 'getOrdersPaged').mockResolvedValue(orders as never);
+    const describeCombination = vi.spyOn(api, 'describeCombination');
+    render(
+      <AddToOrderDialog preselectProduct={{ id: 2, code: 'PR-0002', name: 'Lamp', hasGroups: false }} onClose={() => {}} />,
+    );
+    await screen.findByRole('option', { name: /OR-0006/ });
+    fireEvent.change(screen.getByLabelText('Order'), { target: { value: '6' } });
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Add lines (1)' })).toBeEnabled());
+    expect(screen.queryByText('Checking the products’ combinations…')).not.toBeInTheDocument();
+    expect(describeCombination).not.toHaveBeenCalled();
   });
   it('three kinds of lines, picked on three tabs, go in one batch', async () => {
     vi.spyOn(api, 'getProductParts').mockResolvedValue(partsPage([part({})]));
@@ -138,7 +181,7 @@ describe('AddToOrderDialog', () => {
     // WS-13 E5 B03: one line over the whole selection — the first part in its own form,
     // the next ones continue it («…· parts: N · M pcs · one-off from plate …»).
     expect(screen.getByText('Selected: 1 product · 1 pcs · parts: 1 · 1 pcs · one-off from plate 1 × 1')).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Add lines (3)' }));
+    fireEvent.click(await enabledButton('Add lines (3)'));
     await waitFor(() =>
       expect(add).toHaveBeenCalledWith(5, [
         expect.objectContaining({ kind: 'product', product_id: 1 }),
@@ -159,7 +202,7 @@ describe('AddToOrderDialog', () => {
     const row = await tick(1);
     fireEvent.change(within(row).getByLabelText('Quantity'), { target: { value: '6' } });
     await waitFor(() => expect(within(row).getByLabelText('Ready units')).toHaveValue(2));
-    fireEvent.click(screen.getByRole('button', { name: 'Add lines (1)' }));
+    fireEvent.click(await enabledButton('Add lines (1)'));
     expect(await screen.findByText(/Pipe: ready 0 of 2/)).toBeInTheDocument();
     expect(screen.queryByText(/kits 5 of/)).not.toBeInTheDocument();
   });

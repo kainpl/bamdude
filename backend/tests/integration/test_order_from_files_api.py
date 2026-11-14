@@ -371,6 +371,7 @@ async def test_preview_lists_the_catalogue_products_standard_kit(committing_clie
     """spec workshop-product-variants, rule 22: the offered kit is the product's
     standard one — a part of a non-standard option is not in it."""
     from backend.app.models.product_variant import ProductVariantGroup, ProductVariantOption
+    from backend.tests.fixtures.part_bindings import bind
 
     p1s = await _file(db_session, "tail-p1s.gcode.3mf", P1S)
     product = Product(name="Pipe")
@@ -387,13 +388,9 @@ async def test_preview_lists_the_catalogue_products_standard_kit(committing_clie
     db_session.add_all(
         [
             ProductPart(product_id=product.id, kind="printed", name="flask", name_key="flask", qty_per_unit=1),
-            ProductPart(
-                product_id=product.id,
-                kind="printed",
-                name="angled",
-                name_key="angled",
-                qty_per_unit=1,
-                variant_option_id=angled.id,
+            bind(
+                ProductPart(product_id=product.id, kind="printed", name="angled", name_key="angled", qty_per_unit=1),
+                angled,
             ),
         ]
     )

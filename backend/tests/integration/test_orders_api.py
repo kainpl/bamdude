@@ -35,6 +35,8 @@ from backend.app.services.product_composition import recipes_for_product
 from backend.tests.auth_helpers import mint_test_authority
 from backend.tests.fixtures.filament_routing_cases import write_routing_3mf
 from backend.tests.fixtures.order_fulfilment import complete_order
+from backend.tests.fixtures.part_bindings import bind
+from backend.tests.fixtures.sliced_sources import slice_parts
 from backend.tests.unit.services.test_order_metrics import build_parity_fixture
 from backend.tests.unit.services.test_product_composition import counting_statements
 
@@ -3911,26 +3913,20 @@ async def _mount_group(db, product_id):
     db.add_all([wall, din])
     await db.flush()
     group.default_option_id = wall.id
-    db.add_all(
-        [
-            ProductPart(
-                product_id=product_id,
-                kind="printed",
-                name="bracket",
-                name_key="bracket",
-                qty_per_unit=1,
-                variant_option_id=wall.id,
-            ),
-            ProductPart(
-                product_id=product_id,
-                kind="printed",
-                name="clip",
-                name_key="clip",
-                qty_per_unit=1,
-                variant_option_id=din.id,
-            ),
-        ]
-    )
+    mounts = [
+        bind(
+            ProductPart(product_id=product_id, kind="printed", name="bracket", name_key="bracket", qty_per_unit=1),
+            wall,
+        ),
+        bind(
+            ProductPart(product_id=product_id, kind="printed", name="clip", name_key="clip", qty_per_unit=1),
+            din,
+        ),
+    ]
+    db.add_all(mounts)
+    await db.flush()
+    # A variant product's line needs its kit sliced (spec product-part-variant-combinations, п. 10).
+    await slice_parts(db, product_id, mounts)
     await db.commit()
     return group.id, wall.id, din.id
 
@@ -3964,14 +3960,12 @@ async def test_a_line_lists_its_purchased_parts_and_they_add_up_to_procurement(c
     its DTO quantity is the sum of its printed parts (2), the stored one is 1."""
     lamp = catalog["product"].id
     screw = catalog["screw"].id
-    _group_id, wall, _din = await _mount_group(db_session, lamp)
-    magnet = ProductPart(
-        product_id=lamp,
-        kind="purchased",
-        name="Magnet",
-        name_key="purchased:magnet",
-        qty_per_unit=2,
-        variant_option_id=wall,
+    from backend.app.models.product_variant import ProductVariantOption
+
+    group_id, wall, _din = await _mount_group(db_session, lamp)
+    magnet = bind(
+        ProductPart(product_id=lamp, kind="purchased", name="Magnet", name_key="purchased:magnet", qty_per_unit=2),
+        ProductVariantOption(id=wall, group_id=group_id),
     )
     db_session.add(magnet)
     await db_session.commit()

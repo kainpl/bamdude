@@ -34,7 +34,7 @@ function part(over: Partial<ProductPart> & Pick<ProductPart, 'id' | 'name'>): Pr
     sort_order: over.id,
     ignored: false,
     stock_balance: 0,
-    variant_option_id: null,
+    variant_option_ids: [],
     ...over,
   };
 }
@@ -171,20 +171,100 @@ describe('ProductPartDialog', () => {
     });
   });
 
-  describe('the variant (C05)', () => {
-    it('«Always» or «Group: Option»; a change goes in the same PATCH', async () => {
+  describe('the variant (C05; spec product-part-variant-combinations п. 22)', () => {
+    const groupBox = (name: string) => screen.getByRole('group', { name });
+    const tick = (groupName: string, option: string) =>
+      fireEvent.click(within(groupBox(groupName)).getByRole('checkbox', { name: option }));
+
+    /** A jar: Weight 400 / 600 (ids 21, 22) and Kind solid / mesh (31, 32). */
+    const jar = {
+      ...product,
+      variant_groups: [
+        {
+          id: 2,
+          name: 'Weight',
+          position: 0,
+          default_option_id: 21,
+          lines_count: 0,
+          stock_count: 0,
+          parts_count: 0,
+          options: [
+            { id: 21, name: '400', position: 0, lines_count: 0, parts_count: 0, stock_count: 0 },
+            { id: 22, name: '600', position: 1, lines_count: 0, parts_count: 0, stock_count: 0 },
+          ],
+        },
+        {
+          id: 3,
+          name: 'Kind',
+          position: 1,
+          default_option_id: 31,
+          lines_count: 0,
+          stock_count: 0,
+          parts_count: 0,
+          options: [
+            { id: 31, name: 'solid', position: 0, lines_count: 0, parts_count: 0, stock_count: 0 },
+            { id: 32, name: 'mesh', position: 1, lines_count: 0, parts_count: 0, stock_count: 0 },
+          ],
+        },
+      ],
+    } as unknown as Product;
+
+    it('a row per group: «any» or its ticked options; a tick goes in the same PATCH', async () => {
       const update = vi.spyOn(api, 'updateProductPart').mockResolvedValue(body as never);
       render(<ProductPartDialog product={product} part={body} onClose={noop} />);
-      const variant = screen.getByLabelText('Variant');
-      expect(within(variant).getAllByRole('option').map((o) => o.textContent)).toEqual([
-        'Always (no variant)',
-        'Lid type: Glass',
-        'Lid type: Cork',
-      ]);
-      expect(variant).toHaveAccessibleDescription('The part is taken only when an order chooses this option');
-      fireEvent.change(variant, { target: { value: '11' } });
+      expect(groupBox('Variant')).toHaveAccessibleDescription(
+        'Taken when the order picks a ticked option in every group with ticks',
+      );
+      const lid = groupBox('Lid type');
+      expect(within(lid).getAllByRole('checkbox').map((c) => c.parentElement?.textContent)).toEqual(['any', 'Glass', 'Cork']);
+      expect(within(lid).getByRole('checkbox', { name: 'any' })).toBeChecked();
+      tick('Lid type', 'Cork');
+      expect(within(lid).getByRole('checkbox', { name: 'any' })).not.toBeChecked();
       fireEvent.click(save());
-      await waitFor(() => expect(update).toHaveBeenCalledWith(7, 1, { variant_option_id: 11 }));
+      await waitFor(() => expect(update).toHaveBeenCalledWith(7, 1, { variant_option_ids: [11] }));
+    });
+
+    it('ticking 400 and «solid» sends both, in the groups’ order', async () => {
+      const update = vi.spyOn(api, 'updateProductPart').mockResolvedValue(body as never);
+      render(<ProductPartDialog product={jar} part={body} onClose={noop} />);
+      tick('Kind', 'solid');
+      tick('Weight', '400');
+      fireEvent.click(save());
+      await waitFor(() => expect(update).toHaveBeenCalledWith(7, 1, { variant_option_ids: [21, 31] }));
+    });
+
+    it('two options of one group are «either»; «any» clears its group alone', async () => {
+      const update = vi.spyOn(api, 'updateProductPart').mockResolvedValue(body as never);
+      render(<ProductPartDialog product={jar} part={{ ...body, variant_option_ids: [21, 31] }} onClose={noop} />);
+      tick('Weight', '600');
+      tick('Kind', 'any');
+      expect(within(groupBox('Weight')).getByRole('checkbox', { name: '400' })).toBeChecked();
+      expect(within(groupBox('Kind')).getByRole('checkbox', { name: 'solid' })).not.toBeChecked();
+      fireEvent.click(save());
+      await waitFor(() => expect(update).toHaveBeenCalledWith(7, 1, { variant_option_ids: [21, 22] }));
+    });
+
+    it('clearing every tick sends an empty binding — always in the kit', async () => {
+      const update = vi.spyOn(api, 'updateProductPart').mockResolvedValue(body as never);
+      render(<ProductPartDialog product={jar} part={{ ...body, variant_option_ids: [21, 31] }} onClose={noop} />);
+      tick('Weight', 'any');
+      tick('Kind', 'solid');
+      fireEvent.click(save());
+      await waitFor(() => expect(update).toHaveBeenCalledWith(7, 1, { variant_option_ids: [] }));
+    });
+
+    it('the same set, in whatever order, is no change: nothing is sent', () => {
+      const update = vi.spyOn(api, 'updateProductPart');
+      const onClose = vi.fn();
+      // The base lists the ids in another order than the groups': the comparison is of sets.
+      render(<ProductPartDialog product={jar} part={{ ...body, variant_option_ids: [31, 21] }} onClose={onClose} />);
+      tick('Kind', 'solid');
+      tick('Weight', '600');
+      tick('Weight', '600');
+      tick('Kind', 'solid');
+      fireEvent.click(save());
+      expect(onClose).toHaveBeenCalledTimes(1);
+      expect(update).not.toHaveBeenCalled();
     });
 
     it('a busy product is said in the slot, and the same press may be sent again', async () => {
@@ -194,22 +274,41 @@ describe('ProductPartDialog', () => {
         .mockResolvedValueOnce(body as never);
       const onClose = vi.fn();
       render(<ProductPartDialog product={product} part={body} onClose={onClose} />);
-      fireEvent.change(screen.getByLabelText('Variant'), { target: { value: '10' } });
+      tick('Lid type', 'Glass');
       fireEvent.click(save());
       expect(await screen.findByRole('alert')).toHaveTextContent('The product is being changed by another request');
       fireEvent.click(save());
       await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
       expect(update).toHaveBeenCalledTimes(2);
+      expect(update).toHaveBeenLastCalledWith(7, 1, { variant_option_ids: [10] });
     });
 
-    it('a bound option the product lost is named so and blocks the save', () => {
-      render(<ProductPartDialog product={product} part={{ ...body, variant_option_id: 99 }} onClose={noop} />);
-      expect(screen.getByLabelText('Variant')).toHaveValue('99');
-      expect(screen.getByRole('option', { name: '#99 (no longer exists)' })).toBeInTheDocument();
-      expect(screen.getByLabelText('Variant')).toHaveAccessibleDescription(
-        'This option no longer exists — choose another one.',
-      );
+    it('a bound option the product lost is named so and blocks the save until it is unticked', async () => {
+      const update = vi.spyOn(api, 'updateProductPart').mockResolvedValue(body as never);
+      render(<ProductPartDialog product={product} part={{ ...body, variant_option_ids: [10, 99] }} onClose={noop} />);
+      const gone = screen.getByRole('checkbox', { name: '#99 (no longer exists)' });
+      expect(gone).toBeChecked();
+      expect(groupBox('Variant')).toHaveAccessibleDescription('A ticked option no longer exists — untick it.');
       expect(save()).toBeDisabled();
+      fireEvent.click(gone);
+      expect(screen.queryByRole('checkbox', { name: '#99 (no longer exists)' })).not.toBeInTheDocument();
+      expect(save()).toBeEnabled();
+      fireEvent.click(save());
+      await waitFor(() => expect(update).toHaveBeenCalledWith(7, 1, { variant_option_ids: [10] }));
+    });
+
+    it('an option lost after the opening keeps the name it had then', () => {
+      const corked = { ...body, variant_option_ids: [11] };
+      const { rerender } = render(<ProductPartDialog product={product} part={corked} onClose={noop} />);
+      const groups = product.variant_groups.map((g) => ({ ...g, options: g.options.filter((o) => o.id !== 11) }));
+      rerender(<ProductPartDialog product={{ ...product, variant_groups: groups } as Product} part={corked} onClose={noop} />);
+      expect(screen.getByRole('checkbox', { name: 'Lid type: Cork (no longer exists)' })).toBeChecked();
+      expect(save()).toBeDisabled();
+    });
+
+    it('a product without variants shows no variant block', () => {
+      render(<ProductPartDialog product={{ ...product, variant_groups: [] } as Product} part={body} onClose={noop} />);
+      expect(screen.queryByRole('group', { name: 'Variant' })).not.toBeInTheDocument();
     });
   });
 
@@ -322,7 +421,7 @@ describe('ProductPartDialog', () => {
       const create = vi.spyOn(api, 'createProductPart').mockResolvedValue(body as never);
       render(<ProductPartDialog product={product} onClose={noop} />);
       fireEvent.change(screen.getByLabelText('Name'), { target: { value: ' Tail A ' } });
-      fireEvent.change(screen.getByLabelText('Variant'), { target: { value: '10' } });
+      fireEvent.click(within(screen.getByRole('group', { name: 'Lid type' })).getByRole('checkbox', { name: 'Glass' }));
       const input = screen.getByLabelText('Also known as');
       fireEvent.change(input, { target: { value: 'tail_a_v2' } });
       fireEvent.keyDown(input, { key: 'Enter' });
@@ -334,7 +433,7 @@ describe('ProductPartDialog', () => {
         qty_per_unit: 1,
         ignored: false,
         aliases: ['tail_a_v2'],
-        variant_option_id: 10,
+        variant_option_ids: [10],
       });
     });
 
@@ -352,7 +451,7 @@ describe('ProductPartDialog', () => {
           kind: 'purchased',
           name: 'Nut',
           qty_per_unit: 4,
-          variant_option_id: null,
+          variant_option_ids: [],
           unit_price: null,
           sourcing_url: 'https://shop.example/n',
           remarks: 'M3',

@@ -47,6 +47,7 @@ const product = {
       name: 'Size',
       position: 1,
       default_option_id: null,
+      requires_part: true,
       lines_count: 3,
       stock_count: 0,
       parts_count: 0,
@@ -186,6 +187,7 @@ describe('ProductVariantsDialog', () => {
         id: 2,
         name: 'Stand',
         default: null,
+        requires_part: true,
         options: [
           { id: 20, name: 'S' },
           { id: 21, name: 'M' },
@@ -209,6 +211,7 @@ describe('ProductVariantsDialog', () => {
         id: 1,
         name: 'Lid type',
         default: 10,
+        requires_part: false,
         options: [
           { id: 10, name: 'Glass' },
           { id: 11, name: 'Cork lid' },
@@ -216,6 +219,40 @@ describe('ProductVariantsDialog', () => {
       });
       expect(invalidateProductVariants).toHaveBeenCalledWith(expect.anything(), 7);
       expect(await screen.findByText('Variants saved')).toBeInTheDocument();
+    });
+
+    it('«Every value needs its own part» shows the server’s mark with its hint; the mark alone is a save', async () => {
+      const apply = vi.spyOn(api, 'applyProductVariants').mockResolvedValue(product as never);
+      const onClose = vi.fn();
+      render(<ProductVariantsDialog product={product} onClose={onClose} />);
+      const lidMark = within(group('g1')).getByRole('checkbox', { name: 'Every value needs its own part' });
+      const sizeMark = within(group('g2')).getByRole('checkbox', { name: 'Every value needs its own part' });
+      expect(lidMark).not.toBeChecked();
+      expect(sizeMark).toBeChecked();
+      expect(lidMark).toHaveAccessibleDescription(/can’t be added to an order\. Leave it off for optional add-ons\./);
+      fireEvent.click(lidMark);
+      fireEvent.click(save());
+      await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+      expect(apply).toHaveBeenCalledTimes(1);
+      const body = apply.mock.calls[0][1];
+      expect(body.groups.map((g) => [g.id, g.requires_part])).toEqual([
+        [1, true],
+        [2, true],
+        [3, false],
+      ]);
+      // Nothing else of the group moved.
+      expect(body.groups[0]).toEqual(expect.objectContaining({ id: 1, name: 'Lid type', default: 10 }));
+    });
+
+    it('a new group starts without the mark', async () => {
+      const apply = vi.spyOn(api, 'applyProductVariants').mockResolvedValue(product as never);
+      render(<ProductVariantsDialog product={product} onClose={noop} />);
+      fireEvent.click(screen.getByRole('button', { name: 'Add group' }));
+      fireEvent.click(save());
+      await waitFor(() => expect(apply).toHaveBeenCalledTimes(1));
+      const added = apply.mock.calls[0][1].groups[3];
+      expect(added.temp_id).toEqual(expect.any(String));
+      expect(added.requires_part).toBe(false);
     });
 
     it('nothing changed: closes without a request; «Cancel» sends nothing', () => {

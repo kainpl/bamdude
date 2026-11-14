@@ -314,6 +314,19 @@ async def recipes_for_product(
     return (await recipes_for_products(db, [product]))[product.id]
 
 
+def sliced_part_ids(rows: Iterable[tuple[ProductPlate, LibraryFile, PlateRecipe]]) -> set[int]:
+    """The parts some sliced plate yields — over :func:`recipes_for_products` rows, which
+    already leave a trashed file's plates out; pure. The same «has a sliced source» that
+    :func:`source_summary` answers per part (spec product-part-variant-combinations, п. 10)."""
+    return {
+        part_id
+        for _plate, _file, recipe in rows
+        if recipe.sliced
+        for part_id, n in recipe.yield_by_part.items()
+        if n > 0
+    }
+
+
 @dataclass
 class PartSource:
     """One plate a part can be printed from (WS-13 E1 PS1). A file the caller may not

@@ -10,7 +10,7 @@ import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { useRef, type ReactElement } from 'react';
 import { render } from '../../../utils';
 import { api } from '../../../../api/client';
-import type { Permission, Product, ProductPart, ProductSources } from '../../../../api/client';
+import type { Permission, Product, ProductCombinationsPage, ProductPart, ProductSources } from '../../../../api/client';
 import { CompositionTab } from '../../../../components/products/detail/CompositionTab';
 
 const auth = vi.hoisted(() => ({ granted: null as Set<string> | null }));
@@ -38,14 +38,14 @@ function part(over: Partial<ProductPart> & Pick<ProductPart, 'id' | 'name'>): Pr
     sort_order: over.id,
     ignored: false,
     stock_balance: 0,
-    variant_option_id: null,
+    variant_option_ids: [],
     ...over,
   };
 }
 
 const parts: ProductPart[] = [
   part({ id: 1, name: 'Body', auto: true, aliases: ['body_v2'] }),
-  part({ id: 2, name: 'Lid', qty_per_unit: 0, variant_option_id: 11 }),
+  part({ id: 2, name: 'Lid', qty_per_unit: 0, variant_option_ids: [11] }),
   part({ id: 3, name: 'Cube', qty_per_unit: 0, ignored: true }),
   part({ id: 4, name: 'Magnet', kind: 'purchased', qty_per_unit: 4, unit_price: 0.5, sourcing_url: 'https://shop.example/m', remarks: 'N52' }),
   part({ id: 5, name: 'Screw', kind: 'purchased', qty_per_unit: 2 }),
@@ -143,6 +143,21 @@ const sources: ProductSources = {
   ],
 };
 
+const combinations: ProductCombinationsPage = {
+  total: 2,
+  page: 1,
+  available_total: 1,
+  unavailable_total: 1,
+  items: [
+    {
+      choices: [{ group_id: 1, group: 'Lid type', option_id: 10, option: 'Glass' }],
+      available: false,
+      reasons: [{ code: 'option_without_part', group: 'Lid type', option: 'Glass', part: null }],
+    },
+    { choices: [{ group_id: 1, group: 'Lid type', option_id: 11, option: 'Cork' }], available: true, reasons: [] },
+  ],
+};
+
 function Host({ product: p = product }: { product?: Product }) {
   const heading = useRef<HTMLHeadingElement>(null);
   return (
@@ -164,6 +179,7 @@ describe('CompositionTab', () => {
     auth.granted = new Set(['orders:read', 'products:read', 'customers:read', 'stock:read', 'orders:update', 'products:update', 'customers:update', 'stock:move', 'stock:adjust']);
     vi.spyOn(api, 'getProductSources').mockResolvedValue(sources);
     vi.spyOn(api, 'getUiPreferences').mockResolvedValue({ currency: 'EUR' } as never);
+    vi.spyOn(api, 'getProductCombinations').mockResolvedValue(combinations);
   });
 
   describe('D01 the variants card', () => {
@@ -176,9 +192,40 @@ describe('CompositionTab', () => {
       expect(chips[0]).toHaveAttribute('data-standard', 'true');
     });
 
-    it('no groups: every order takes every part', () => {
+    it('a group marked «every value needs its own part» says so beside its name; an unmarked one says nothing', () => {
+      const [lid] = product.variant_groups;
+      const marked = { ...product, variant_groups: [{ ...lid, requires_part: true }] };
+      const { unmount } = render(<Host product={marked} />);
+      expect(screen.getByTestId('variant-requires-part-1')).toHaveTextContent('Every value needs its own part');
+      unmount();
+      render(<Host />);
+      expect(screen.queryByTestId('variant-requires-part-1')).not.toBeInTheDocument();
+    });
+
+    it('a part bound to two options lists under each of them', () => {
+      const either = { ...product, parts: [...parts, part({ id: 6, name: 'Seal', variant_option_ids: [10, 11] })] };
+      render(<Host product={either} />);
+      const card = screen.getByTestId('composition-variants');
+      expect(within(card).getAllByTestId(/^variant-chip-/).map((c) => c.textContent)).toEqual([
+        'Glass · standard Seal',
+        'Cork Lid, Seal',
+      ]);
+    });
+
+    it('the server’s combinations table sits in the card', async () => {
+      render(<Host />);
+      const card = screen.getByTestId('composition-variants');
+      const table = await within(card).findByTestId('product-combinations');
+      expect(api.getProductCombinations).toHaveBeenCalledWith(7, 1, expect.any(Number), 'available');
+      expect(await within(table).findAllByTestId('combination-row')).toHaveLength(2);
+      expect(within(table).getByText('no part for «Glass» in «Lid type»')).toBeInTheDocument();
+    });
+
+    it('no groups: every order takes every part, and no combinations table', () => {
       render(<Host product={{ ...product, variant_groups: [] }} />);
       expect(screen.getByText('No variants — every order takes all parts.')).toBeInTheDocument();
+      expect(screen.queryByTestId('product-combinations')).not.toBeInTheDocument();
+      expect(api.getProductCombinations).not.toHaveBeenCalled();
     });
   });
 
@@ -193,8 +240,31 @@ describe('CompositionTab', () => {
       expect(within(row(1)).getByText('body_v2')).toBeInTheDocument();
       // A zero: out of the kit (a shelf) or not counted (marked) — never an empty cell.
       expect(within(row(2)).getByText('out of kit')).toBeInTheDocument();
-      expect(within(row(2)).getByText('Lid type: Cork')).toBeInTheDocument();
+      expect(within(row(2)).getByText('Cork')).toHaveAttribute('title', 'Lid type: Cork');
       expect(within(row(3)).getByText('not counted')).toBeInTheDocument();
+    });
+
+    it('the variant column says the condition in short: values by a comma, groups by a dot (п. 23)', () => {
+      const weight = {
+        id: 2,
+        name: 'Weight',
+        position: 1,
+        default_option_id: 21,
+        lines_count: 0,
+        stock_count: 0,
+        parts_count: 1,
+        options: [
+          { id: 21, name: '400', position: 0, lines_count: 0, parts_count: 1, stock_count: 0 },
+          { id: 22, name: '600', position: 1, lines_count: 0, parts_count: 1, stock_count: 0 },
+        ],
+      };
+      const twoGroups = {
+        ...product,
+        variant_groups: [...product.variant_groups, weight],
+        parts: [part({ id: 1, name: 'Cap', variant_option_ids: [11, 21, 22] })],
+      } as unknown as Product;
+      render(<Host product={twoGroups} />);
+      expect(within(row(1)).getByText('Cork · 400, 600')).toHaveAttribute('title', 'Lid type: Cork · Weight: 400, 600');
     });
 
     it('the sources: a model chip and «pl. N · ×Y» each, in the server’s order; a hidden file says so', async () => {

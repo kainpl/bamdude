@@ -25,6 +25,7 @@ from backend.app.models.product_variant import ProductVariantGroup, ProductVaria
 from backend.app.models.project import Project
 from backend.app.models.project_line import ProjectLine
 from backend.app.services import finished_stock, line_config, product_variants
+from backend.tests.fixtures.sliced_sources import slice_parts
 
 pytestmark = pytest.mark.integration
 
@@ -36,8 +37,11 @@ async def lamp(db_session):
     product = Product(name="Lamp")
     db_session.add(product)
     await db_session.flush()
-    db_session.add(ProductPart(product_id=product.id, kind="printed", name="shade", name_key="shade", qty_per_unit=1))
+    shade = ProductPart(product_id=product.id, kind="printed", name="shade", name_key="shade", qty_per_unit=1)
+    db_session.add(shade)
     await db_session.flush()
+    # A variant product's line needs its kit sliced (spec product-part-variant-combinations, п. 10).
+    await slice_parts(db_session, product.id, [shade])
     tail = await product_variants.create_group(db_session, product.id, "Tail", ["A", "B"], record_lines=False)
     base = ProductVariantGroup(product_id=product.id, name="Base", position=1, default_option_id=None)
     extra = ProductVariantGroup(product_id=product.id, name="Extra", position=2, default_option_id=None)

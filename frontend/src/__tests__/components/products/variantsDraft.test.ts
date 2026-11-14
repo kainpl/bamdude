@@ -26,6 +26,7 @@ const product = {
       name: 'Base',
       position: 1,
       default_option_id: null,
+      requires_part: true,
       ...usage,
       options: [
         { id: 21, name: 'X', position: 0, ...usage },
@@ -37,6 +38,7 @@ const product = {
       name: 'Tail',
       position: 0,
       default_option_id: 12,
+      requires_part: false,
       ...usage,
       options: [
         { id: 12, name: 'B', position: 1, ...usage },
@@ -68,6 +70,7 @@ describe('variantsDraft', () => {
       id: 1,
       name: 'Tail',
       default: 12,
+      requires_part: false,
       options: [
         { id: 11, name: 'A wide' },
         { id: 12, name: 'B' },
@@ -90,6 +93,17 @@ describe('variantsDraft', () => {
     const renamed = draftFromProduct(product);
     renamed.groups[1].name = 'Stand';
     expect(sameDraft(renamed, draftFromProduct(product))).toBe(false);
+  });
+
+  it('carries «every value needs its own part» as the server has it; a new group is off; the mark alone is a change', () => {
+    let draft = draftFromProduct(product);
+    expect(draft.groups.map((g) => g.requiresPart)).toEqual([false, true, false]);
+    draft = addGroup(draft, { name: 'Size', options: ['S'] });
+    expect(draftToApply(draft, 'r').groups.map((g) => g.requires_part)).toEqual([false, true, false, false]);
+    const marked = draftFromProduct(product);
+    marked.groups[0].requiresPart = true;
+    expect(sameDraft(marked, draftFromProduct(product))).toBe(false);
+    expect(draftToApply(marked, 'r').groups[0]).toEqual(expect.objectContaining({ id: 1, requires_part: true }));
   });
 
   it('an inherited group without a standard, and an empty one, are not errors', () => {

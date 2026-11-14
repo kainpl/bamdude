@@ -25,7 +25,7 @@ function part(over: Partial<ProductPart> & Pick<ProductPart, 'id' | 'name'>): Pr
     sort_order: over.id,
     ignored: false,
     stock_balance: 0,
-    variant_option_id: null,
+    variant_option_ids: [],
     ...over,
   };
 }
@@ -64,7 +64,7 @@ describe('MergePartDialog', () => {
   });
 
   it('says what the merge does, the free stock by its number', () => {
-    render(<MergePartDialog product={product} source={{ ...body, variant_option_id: 11 }} onClose={noop} />);
+    render(<MergePartDialog product={product} source={{ ...body, variant_option_ids: [11] }} onClose={noop} />);
     const dialog = screen.getByRole('dialog');
     expect(within(dialog).getByText('The names and aliases of “Body” become the target’s aliases.')).toBeInTheDocument();
     expect(within(dialog).getByText('Its free stock — 3 pcs — moves to the target.')).toBeInTheDocument();
@@ -81,8 +81,8 @@ describe('MergePartDialog', () => {
     expect(within(dialog).getByText('The names and aliases of “Lid” become the target’s aliases.')).toBeInTheDocument();
   });
 
-  it('a bound source is told its binding goes', () => {
-    render(<MergePartDialog product={product} source={{ ...lid, variant_option_id: 11 }} onClose={noop} />);
+  it('a bound source is told its binding goes — bound in several groups too', () => {
+    render(<MergePartDialog product={product} source={{ ...lid, variant_option_ids: [11, 21] }} onClose={noop} />);
     expect(within(screen.getByRole('dialog')).getByText('Its variant binding goes.')).toBeInTheDocument();
   });
 

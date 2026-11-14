@@ -23,6 +23,8 @@ export interface DraftGroup {
   name: string;
   options: DraftOption[];
   standard: string | null;
+  /** «Every value needs its own part» — off for a new group; always sent. */
+  requiresPart: boolean;
   /** The stored group as read; absent for a new one. */
   stored?: { hadOptions: boolean; hadStandard: boolean };
 }
@@ -67,6 +69,7 @@ function fromStored(group: VariantGroup): DraftGroup {
     name: group.name,
     options: [...group.options].sort(byPosition).map((o) => ({ key: optionKey(o.id), id: o.id, name: o.name })),
     standard: group.default_option_id != null ? optionKey(group.default_option_id) : null,
+    requiresPart: group.requires_part === true,
     stored: { hadOptions: group.options.length > 0, hadStandard: group.default_option_id != null },
   };
 }
@@ -89,6 +92,7 @@ export function draftToApply(draft: VariantsDraft, revision: string): VariantsAp
         ...(g.id != null ? { id: g.id } : { temp_id: g.tempId }),
         name: g.name.trim(),
         default: ref(g.standard),
+        requires_part: g.requiresPart,
         options: g.options.map((o) => ({
           ...(o.id != null ? { id: o.id } : { temp_id: o.tempId }),
           name: o.name.trim(),
@@ -122,7 +126,10 @@ export function addGroup(draft: VariantsDraft, group: { name: string; options: s
     return { key: id, tempId: id, name };
   });
   return {
-    groups: [...draft.groups, { key: tempId, tempId, name: group.name, options, standard: options[0]?.key ?? null }],
+    groups: [
+      ...draft.groups,
+      { key: tempId, tempId, name: group.name, options, standard: options[0]?.key ?? null, requiresPart: false },
+    ],
   };
 }
 

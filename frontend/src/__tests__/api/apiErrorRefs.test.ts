@@ -76,6 +76,30 @@ describe('ApiError.refs', () => {
     expect(e.refs).toBeUndefined();
   });
 
+  it('a closed combination keeps its reasons — the well-formed ones only (spec product-part-variant-combinations п. 25)', async () => {
+    fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(() =>
+      refusal(409, {
+        error: 'combination_unavailable',
+        message: 'That combination is not available',
+        reasons: [
+          { code: 'option_without_part', group: 'Lid', option: 'snap', part: null },
+          { code: 'part_not_sliced', group: null, option: null, part: 'Body' },
+          { code: 'something_else', group: 'Lid', option: null, part: null },
+          'not a reason',
+        ],
+      }),
+    );
+    const e = await refusalOf(api.addOrderLines(5, []));
+    expect(e.code).toBe('combination_unavailable');
+    expect(e.message).toBe('That combination is not available');
+    expect(e.reasons).toEqual([
+      { code: 'option_without_part', group: 'Lid', option: 'snap', part: null },
+      { code: 'part_not_sliced', group: null, option: null, part: 'Body' },
+    ]);
+    fetchSpy.mockImplementation(() => refusal(409, { error: 'variants_changed', message: 'The variants changed' }));
+    expect((await refusalOf(api.applyProductVariants(7, { revision: 'r', groups: [] }))).reasons).toBeUndefined();
+  });
+
   it('a sentence detail and a validation list carry no references', async () => {
     fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(() => refusal(404, 'Variant group not found'));
     expect((await refusalOf(api.applyProductVariants(7, { revision: 'r', groups: [] }))).refs).toBeUndefined();

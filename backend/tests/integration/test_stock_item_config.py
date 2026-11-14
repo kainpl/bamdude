@@ -9,6 +9,7 @@ from backend.app.models.product import Product, ProductPart
 from backend.app.models.product_variant import ProductVariantGroup, ProductVariantOption
 from backend.app.services import line_config
 from backend.app.services.line_composition import compositions_for_items, load_item_configs
+from backend.tests.fixtures.part_bindings import bind
 
 pytestmark = pytest.mark.integration
 
@@ -35,7 +36,6 @@ async def pipe(db_session):
             name="straight",
             name_key="straight",
             qty_per_unit=1,
-            variant_option_id=straight.id,
             sort_order=1,
         ),
         "angled": ProductPart(
@@ -44,10 +44,12 @@ async def pipe(db_session):
             name="angled",
             name_key="angled",
             qty_per_unit=1,
-            variant_option_id=angled.id,
             sort_order=2,
         ),
     }
+    bind(parts["flask"])
+    bind(parts["straight"], straight)
+    bind(parts["angled"], angled)
     db_session.add_all(parts.values())
     await db_session.commit()
     return {"product": product, "group": group, "straight": straight, "angled": angled, "parts": parts}
@@ -93,7 +95,7 @@ async def test_binding_a_part_freezes_positions(committing_client, db_session, p
     item = await _item(db_session, pipe)
     flask = pipe["parts"]["flask"]
     r = await committing_client.patch(
-        f"/api/v1/products/{pipe['product'].id}/parts/{flask.id}", json={"variant_option_id": pipe["angled"].id}
+        f"/api/v1/products/{pipe['product'].id}/parts/{flask.id}", json={"variant_option_ids": [pipe["angled"].id]}
     )
     assert r.status_code == 200, r.text
     rows = (

@@ -71,7 +71,7 @@ from backend.app.models.product import (
     sku_key,
 )
 from backend.app.models.product_category import ProductCategory
-from backend.app.models.product_variant import ProductVariantGroup, ProductVariantOption
+from backend.app.models.product_variant import ProductPartOption, ProductVariantGroup, ProductVariantOption
 from backend.app.models.project import Project
 from backend.app.models.project_line import ProjectLine, ProjectLinePartStock, ProjectProcurement
 from backend.app.models.user import User
@@ -83,10 +83,11 @@ from backend.app.schemas.listing import (
     ProductPartProductOut,
     ProductPartRow,
     ProductPartsPage,
-    ProductPartVariantOut,
 )
 from backend.app.schemas.product import (
     AttachmentOrderRequest,
+    CombinationIn,
+    CombinationStateOut,
     CoverPickRequest,
     EstimateSurplusOut,
     FileLinkRequest,
@@ -100,6 +101,7 @@ from backend.app.schemas.product import (
     PlateYieldEntry,
     ProductAttachmentOut,
     ProductCategoryRef,
+    ProductCombinationsOut,
     ProductCreate,
     ProductDuplicate,
     ProductEstimateOut,
@@ -132,6 +134,7 @@ from backend.app.schemas.product import (
     VariantsApplyIn,
 )
 from backend.app.services import (
+    combination_gate,
     finished_stock,
     finished_stock_views,
     line_config,
@@ -392,6 +395,7 @@ async def _variant_groups_out(db: AsyncSession, groups: list[ProductVariantGroup
     option_ids = [o.id for g in groups for o in g.options]
     lines: dict[int, int] = {}
     parts: dict[int, int] = {}
+    group_parts: dict[int, int] = {}
     stock: dict[int, int] = {}
     if option_ids:
         stock = dict(
@@ -415,9 +419,20 @@ async def _variant_groups_out(db: AsyncSession, groups: list[ProductVariantGroup
         parts = dict(
             (
                 await db.execute(
-                    select(ProductPart.variant_option_id, func.count())
-                    .where(ProductPart.variant_option_id.in_(option_ids))
-                    .group_by(ProductPart.variant_option_id)
+                    select(ProductPartOption.option_id, func.count())
+                    .where(ProductPartOption.option_id.in_(option_ids))
+                    .group_by(ProductPartOption.option_id)
+                )
+            ).all()
+        )
+        # A part may take several values of one group (a cap for 400 and 600 jars): the
+        # group counts it once, as its delete guard does.
+        group_parts = dict(
+            (
+                await db.execute(
+                    select(ProductPartOption.group_id, func.count(distinct(ProductPartOption.part_id)))
+                    .where(ProductPartOption.group_id.in_([g.id for g in groups]))
+                    .group_by(ProductPartOption.group_id)
                 )
             ).all()
         )
@@ -427,11 +442,12 @@ async def _variant_groups_out(db: AsyncSession, groups: list[ProductVariantGroup
             name=g.name,
             position=g.position,
             default_option_id=g.default_option_id,
-            # A line (and a position) holds exactly one choice per group and a part is
-            # bound to at most one option: the sums ARE the delete guard's distinct counts.
+            requires_part=bool(g.requires_part),
+            # A line (and a position) holds exactly one choice per group: the sums ARE
+            # the delete guard's distinct counts. A part's are counted distinct above.
             lines_count=sum(lines.get(o.id, 0) for o in g.options),
             stock_count=sum(stock.get(o.id, 0) for o in g.options),
-            parts_count=sum(parts.get(o.id, 0) for o in g.options),
+            parts_count=group_parts.get(g.id, 0),
             options=[
                 VariantOptionOut(
                     id=o.id,
@@ -1142,10 +1158,8 @@ async def list_product_parts(
     scope = await library_name_scope(request, db, user)
     name_visible = library_file_name_visible(scope, user.id if user is not None else None)
     query = (
-        select(ProductPart, Product, ProductVariantGroup.name, ProductVariantOption.name)
+        select(ProductPart, Product)
         .join(Product, Product.id == ProductPart.product_id)
-        .outerjoin(ProductVariantOption, ProductVariantOption.id == ProductPart.variant_option_id)
-        .outerjoin(ProductVariantGroup, ProductVariantGroup.id == ProductVariantOption.group_id)
         .where(
             ProductPart.kind == "printed",
             # «Не рахувати» is not a part to order (spec workshop-order-issue-followups, rule 34).
@@ -1162,7 +1176,9 @@ async def list_product_parts(
     key, direction, _computed = resolve_sort(_PART_SORT, sort_by)
     query = apply_sql_sort(query, _PART_SORT, key, direction, ProductPart.id)
     rows = (await db.execute(query.limit(per_page).offset((page - 1) * per_page))).all()
-    product_ids = sorted({product.id for _part, product, _g, _o in rows})
+    product_ids = sorted({product.id for _part, product in rows})
+    # The page's bindings, by name (spec product-part-variant-combinations) — one statement.
+    labels = await stock_views.binding_labels(db, [part for part, _product in rows])
     products = (
         (
             await db.execute(
@@ -1188,14 +1204,14 @@ async def list_product_parts(
             ProductPartRow(
                 part_id=part.id,
                 name=part.name,
-                variant=ProductPartVariantOut(group=group, option=option) if option is not None else None,
+                variants=labels.get(part.id, []),
                 product=ProductPartProductOut(
                     id=product.id, code=code_for("product", product.id), name=product.name, sku=product.sku
                 ),
                 sources=[_source_out(s) for s in sources.get(part.id, [])],
                 **source_summary(sources.get(part.id, [])),
             )
-            for part, product, group, option in rows
+            for part, product in rows
         ],
         meta=page_meta(total, page, per_page, False),
     )
@@ -1538,8 +1554,8 @@ async def duplicate_product(
     )
     db.add(copy)
     await db.flush()
-    # Groups first: the parts' bindings go through the old → new option map.
-    option_map = await product_variants.copy_groups(db, source.id, copy.id)
+    # Groups first: the parts' bindings go through the old → new option and group maps.
+    option_map, group_map = await product_variants.copy_groups(db, source.id, copy.id)
     pairs: list[tuple[ProductPart, ProductPart]] = []
     for part in source.parts:
         new = ProductPart(
@@ -1558,8 +1574,9 @@ async def duplicate_product(
             sourcing_url=part.sourcing_url,
             remarks=part.remarks,
             sort_order=part.sort_order,
-            variant_option_id=option_map.get(part.variant_option_id) if part.variant_option_id else None,
+            option_links=[],
         )
+        product_variants.copy_part_options(part, new, option_map, group_map)
         db.add(new)
         pairs.append((part, new))
     # ⚠️ No hand-copied ``ProductPlate`` rows. The syncs below plant the plates
@@ -1629,16 +1646,6 @@ def _part_key(kind: str, name: str) -> str:
     return key
 
 
-async def _ensure_own_option(db: AsyncSession, product: Product, option_id: int) -> None:
-    owner = await db.scalar(
-        select(ProductVariantGroup.product_id)
-        .join(ProductVariantOption, ProductVariantOption.group_id == ProductVariantGroup.id)
-        .where(ProductVariantOption.id == option_id)
-    )
-    if owner != product.id:
-        raise HTTPException(status_code=422, detail="That option does not belong to this product")
-
-
 def _apply_alias_change(change) -> None:
     """Run one alias write and say its refusal in the route's own sentence (A04)."""
     try:
@@ -1679,17 +1686,15 @@ async def create_part(
         raise HTTPException(status_code=422, detail=_NOT_IN_KIT)
     if data.aliases is not None and data.kind != "printed":
         raise HTTPException(status_code=400, detail="Purchased parts have no aliases")
-    if data.variant_option_id is not None:
+    if data.variant_option_ids:
         # A part born bound (WS-13 E10 A05, R10): the product gate before anything in
         # the session changes — it WAITS, as every writer's does — then, behind it, the
-        # state every check below stands on, read fresh: the option (a concurrent
-        # delete may have won), the parts and their aliases (the duplicate check).
+        # state every check below stands on, read fresh: the options (a concurrent
+        # delete may have won — the binding writer checks them), the parts and their
+        # aliases (the duplicate check).
         await product_gate.product_gate(db, [product.id])
         product = await _get(db, product_id, fresh=True)
-        await _ensure_own_option(db, product, data.variant_option_id)
     key = _part_key(data.kind, data.name)
-    if any(key == p.name_key or key in (p.aliases or []) for p in product.parts):
-        raise HTTPException(status_code=409, detail="A part with this name already exists")
     part = ProductPart(
         product_id=product.id,
         kind=data.kind,
@@ -1703,11 +1708,18 @@ async def create_part(
         unit_price=data.unit_price,
         sourcing_url=data.sourcing_url,
         remarks=data.remarks,
-        # Into the final composition (K22): nothing is frozen — the saved lines that
-        # chose this option take it, the others do not; a parts-only line never does.
-        variant_option_id=data.variant_option_id,
         sort_order=max((p.sort_order for p in product.parts), default=-1) + 1,
+        option_links=[],
     )
+    # Into the final composition (K22): the part is not in the database yet, so nothing
+    # is frozen — the saved lines whose choices fit the binding take it, the others do
+    # not; a parts-only line never does.
+    try:
+        await product_variants.set_part_options(db, part, data.variant_option_ids)
+    except product_variants.VariantError as e:
+        raise _variant_refusal(e) from e
+    if any(key == p.name_key or key in (p.aliases or []) for p in product.parts):
+        raise HTTPException(status_code=409, detail="A part with this name already exists")
     if data.aliases is not None:
         _apply_aliases([*product.parts, part], part, data.aliases)
     db.add(part)
@@ -1727,7 +1739,7 @@ async def update_part(
     _: User | None = RequirePermission(Permission.PRODUCTS_UPDATE),
 ):
     product = await _get(db, product_id)
-    if data.model_fields_set & {"variant_option_id", "qty_per_unit", "ignored"}:
+    if data.model_fields_set & {"variant_option_ids", "qty_per_unit", "ignored"}:
         # Composition edits affect saved lines too. Serialize the snapshot guard
         # with order configuration and stock writers using the existing gate.
         # Rebinding rewrites the configurations of the product's lines and positions:
@@ -1744,16 +1756,19 @@ async def update_part(
     part = await _part(db, product, part_id)
     if data.extra_percent and part.kind != "printed":
         raise HTTPException(status_code=422, detail="Extra percentages apply to printed parts only")
-    if "variant_option_id" in data.model_fields_set and data.variant_option_id is not None:
-        await _ensure_own_option(db, product, data.variant_option_id)
     if data.aliases is not None and part.kind != "printed":
         raise HTTPException(status_code=400, detail="Purchased parts have no aliases")
-    if "variant_option_id" in data.model_fields_set:
-        # Saved order lines keep the kit they had (spec workshop-product-variants).
+    if "variant_option_ids" in data.model_fields_set:
+        # Through the one binding writer: the options checked against the product, then
+        # saved order lines and stock positions keep the kit they had (spec
+        # workshop-product-variants; product-part-variant-combinations, rule 8), then the
+        # new binding is written over the one read behind the gate.
         try:
-            await line_config.freeze_binding(db, part, data.variant_option_id)
+            await product_variants.set_part_options(db, part, data.variant_option_ids)
+        except product_variants.VariantError as e:
+            raise _variant_refusal(e) from e
         except line_config.LineConfigError as e:
-            raise HTTPException(status_code=e.status, detail=str(e)) from e
+            raise HTTPException(status_code=e.status, detail=combination_gate.refusal_detail(e)) from e
     # A PURCHASED part IS its name — ``name_key`` is derived from it (there is no
     # 3MF object to key off), so a rename that left the key behind made the two
     # disagree for good and let a second "M4 screw" be created beside the first.
@@ -1775,7 +1790,7 @@ async def update_part(
         try:
             await line_config.ensure_no_extra_snapshot(db, product.id, [part.id])
         except line_config.LineConfigError as e:
-            raise HTTPException(status_code=e.status, detail=str(e)) from e
+            raise HTTPException(status_code=e.status, detail=combination_gate.refusal_detail(e)) from e
     if ignored_after and not part.ignored and part.kind != "printed":
         raise HTTPException(status_code=422, detail=_PRINTED_ONLY)
     if ignored_after and qty_after > 0:
@@ -1790,7 +1805,7 @@ async def update_part(
             or await line_config.part_in_use(db, part.id)
         ):
             raise HTTPException(status_code=409, detail=_CANNOT_IGNORE)
-    for field_name in data.model_fields_set - {"aliases"}:
+    for field_name in data.model_fields_set - {"aliases", "variant_option_ids"}:
         setattr(part, field_name, getattr(data, field_name))
     if data.aliases is not None:
         # The whole list, through the alias writers — never a bare setattr (A05, R04).
@@ -1831,7 +1846,7 @@ async def delete_part(
     try:
         await line_config.ensure_no_extra_snapshot(db, product.id, [part_id])
     except line_config.LineConfigError as e:
-        raise HTTPException(status_code=e.status, detail=str(e)) from e
+        raise HTTPException(status_code=e.status, detail=combination_gate.refusal_detail(e)) from e
     # What the delete destroys beyond the catalog asks that domain's right too (WS-13 E13
     # O24), behind the locks and before a write: the part's shelf history and balance; an
     # order's acquisitions of it and a parts line's counters.
@@ -1857,7 +1872,7 @@ async def delete_part(
     try:
         await line_config.forget_part(db, part_id)
     except line_config.LineConfigError as e:
-        raise HTTPException(status_code=e.status, detail=str(e)) from e
+        raise HTTPException(status_code=e.status, detail=combination_gate.refusal_detail(e)) from e
     part_images.forget_part(db, part)  # its photo goes after the commit (spec part-thumbnails §10.3)
     await db.delete(part)
     return {"message": "Part deleted"}
@@ -1896,7 +1911,7 @@ async def merge_part(
     try:
         await line_config.ensure_no_extra_snapshot(db, product.id, [target.id, source.id])
     except line_config.LineConfigError as e:
-        raise HTTPException(status_code=e.status, detail=str(e)) from e
+        raise HTTPException(status_code=e.status, detail=combination_gate.refusal_detail(e)) from e
     if (target.extra_percent or 0) != (source.extra_percent or 0):
         raise HTTPException(status_code=409, detail="Parts with different additional percentages cannot be merged")
     merge_parts(target, source)
@@ -1913,7 +1928,7 @@ async def merge_part(
     try:
         await line_config.repoint_part(db, source.id, target.id)
     except line_config.LineConfigError as e:
-        raise HTTPException(status_code=e.status, detail=str(e)) from e
+        raise HTTPException(status_code=e.status, detail=combination_gate.refusal_detail(e)) from e
     # The source row goes away, so its procurement rows go with it — the same
     # FK-cascade reason as ``delete_part``, and deliberately NOT a transfer of
     # the acquired counts onto the target: PostgreSQL's cascade would drop them
@@ -1995,7 +2010,7 @@ async def create_variant_group(
     orders gets the standard recorded on each of its lines (rule 5)."""
     product = await _get(db, product_id)
     try:
-        await product_variants.create_group(db, product.id, data.name, data.options)
+        await product_variants.create_group(db, product.id, data.name, data.options, requires_part=data.requires_part)
     except product_variants.VariantError as e:
         raise _variant_refusal(e) from e
     return await _response(db, product)
@@ -2019,6 +2034,7 @@ async def apply_variants(
             name=g.name,
             options=[product_variants.OptionDraft(id=o.id, temp_id=o.temp_id, name=o.name) for o in g.options],
             default=g.default,
+            requires_part=g.requires_part,
         )
         for g in data.groups
     ]
@@ -2038,8 +2054,8 @@ async def update_variant_group(
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.PRODUCTS_UPDATE),
 ):
-    """Rename, reorder, or pick another standard. A new standard changes no saved
-    line — every line recorded its choice (rule 5)."""
+    """Rename, reorder, pick another standard, or mark «every value needs its own part».
+    A new standard changes no saved line — every line recorded its choice (rule 5)."""
     product = await _get(db, product_id)
     try:
         await product_variants.update_group(
@@ -2153,9 +2169,7 @@ async def get_product_stock(
         if (await workshop_view()).orders
         else {}
     )
-    labels = await stock_views.option_labels(
-        db, {p.variant_option_id for p in product.parts if p.variant_option_id is not None}
-    )
+    labels = await stock_views.binding_labels(db, product.parts)
     return ProductStockOut(
         balances=[
             StockBalanceOut(
@@ -2164,7 +2178,7 @@ async def get_product_stock(
                 qty_per_unit=p.qty_per_unit,
                 balance=part_balances[p.id],
                 held_for_orders=held.get(p.id, 0),
-                variant=labels.get(p.variant_option_id) if p.variant_option_id is not None else None,
+                variants=labels.get(p.id, []),
             )
             for p in sorted(product.parts, key=lambda p: (p.sort_order, p.id))
             if p.id in part_balances
@@ -2211,6 +2225,51 @@ async def get_product_kits(
         raise HTTPException(status_code=422, detail="That part does not belong to this product")
     kit = composition(list(product.parts), "product", set(chosen.values()), count_map)
     return ProductKitsOut(kits_available=part_stock.kits_of(await part_stock.balances(db, product.id), kit))
+
+
+async def _with_variants(db: AsyncSession, product_id: int) -> Product:
+    """The product with its parts and its groups with their values, as the combination
+    rule reads it — or 404."""
+    product = (await line_config.load_products(db, [product_id])).get(product_id)
+    if product is None:
+        raise HTTPException(status_code=404, detail="Product not found")
+    return product
+
+
+@router.get("/{product_id}/combinations", response_model=ProductCombinationsOut)
+async def get_product_combinations(
+    product_id: int,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(100, ge=1, le=500),
+    state: Literal["all", "available", "unavailable"] = Query("all"),
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.PRODUCTS_READ),
+):
+    """The combinations of the product's variant values, a page at a time, each with
+    whether an order may take it and why not (spec product-part-variant-combinations) —
+    the product page's table. ``state`` keeps the available or the unavailable ones; the
+    answer counts both kinds for the page's tabs (a product too large to count is answered
+    unfiltered, its counts ``null``). Writes nothing."""
+    product = await _with_variants(db, product_id)
+    return await combination_gate.table(db, product, page=page, page_size=page_size, state=state)
+
+
+@router.post("/{product_id}/combination", response_model=CombinationStateOut)
+async def describe_product_combination(
+    product_id: int,
+    data: CombinationIn,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.PRODUCTS_READ),
+):
+    """The state of one choice for the order dialogs: whether it is available, why not,
+    and which values are open here and anywhere. Facts about the product's structure, so
+    the product's own read (owner, 2026-11-14) — an order manager without stock rights
+    still sees the marks. A POST only for its body; it writes nothing and takes no gate."""
+    product = await _with_variants(db, product_id)
+    try:
+        return await combination_gate.describe(db, product, data.choices)
+    except line_config.LineConfigError as e:
+        raise HTTPException(status_code=e.status, detail=combination_gate.refusal_detail(e)) from e
 
 
 @router.post("/{product_id}/stock/adjust", response_model=StockMovementOut)

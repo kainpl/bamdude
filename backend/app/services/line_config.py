@@ -46,6 +46,7 @@ from backend.app.services.line_composition import (
     config_key,
     counted,
     default_options,
+    in_kit,
     line_composition,
     load_item_configs,
     load_line_configs,
@@ -322,15 +323,30 @@ async def _dropping(
 
 
 async def seed_line(
-    db: AsyncSession, line: ProjectLine, *, choices: Mapping[int, int] | None, counts: Mapping[int, int] | None
+    db: AsyncSession,
+    line: ProjectLine,
+    *,
+    choices: Mapping[int, int] | None,
+    counts: Mapping[int, int] | None,
+    sliced_memo: dict[int, set[int]] | None = None,
 ) -> None:
     """A new line's configuration: the given choices, the standard for every other group.
 
     Every line constructor passes here, so it is also where the lock ledger learns
-    the line is this transaction's own new row (WS-13 E1 BL0: nobody can wait on it)."""
+    the line is this transaction's own new row (WS-13 E1 BL0: nobody can wait on it),
+    and where a ``product`` line's combination is checked (spec
+    product-part-variant-combinations, п. 13): a closed one is
+    ``combination_gate.CombinationUnavailable``, before anything is written.
+    ``sliced_memo`` — a caller adding several lines in one call keeps the products'
+    sliced sets there, read once per product (``combination_gate.ensure_available``)."""
     ledger(db).note_created("project_lines", line.id)
     product = await _product(db, line.product_id)
     new_choices, new_counts = _validate(product, line.mode, choices or {}, counts or {})
+    if line.mode == "product":
+        # Imported here: the gate's refusal is a LineConfigError, so it imports this module.
+        from backend.app.services import combination_gate
+
+        await combination_gate.ensure_available(db, product, new_choices, sliced_memo=sliced_memo)
     await _write(db, line, new_choices, new_counts)
 
     line.extra_percentages = snapshot_extra_percentages(product.parts) if line.mode == "product" else {}
@@ -362,6 +378,13 @@ async def set_configuration(
     ``choices`` names the groups to change — the others keep the line's current
     choice; ``counts`` is the WHOLE set of changed counts (or, for a parts line,
     of wanted counts): what is not in it goes back to the standard.
+
+    A changed CHOICE must be an available combination — checked before the dry run,
+    so a preview of a closed one is refused too; counts alone are never checked
+    (spec product-part-variant-combinations, п. 11, 13). "Changed" is judged against
+    the saved choices merged over the product's standards — the choices the line's kit
+    reads — so a line saved without a row for a group that took a standard later is
+    not checked on a change of its counts.
     """
     status = await db.scalar(select(Project.status).where(Project.id == line.project_id))
     if status == "completed":
@@ -372,6 +395,11 @@ async def set_configuration(
     product = await _product(db, line.product_id)
     current = (await load_line_configs(db, [line.id])).get(line.id, LineConfig())
     new_choices, new_counts = _validate(product, line.mode, {**current.choices, **choices}, counts)
+    read_choices = {**_defaults(product), **current.choices}
+    if line.mode == "product" and new_choices != read_choices:
+        from backend.app.services import combination_gate
+
+        await combination_gate.ensure_available(db, product, new_choices)
     reserved_before = await part_stock.reserved_units_for_line(db, line)
     reserved_parts = await part_stock.reserved_parts_for_line(db, line)
     if new_choices == current.choices and new_counts == current.counts:
@@ -400,6 +428,10 @@ async def set_configuration(
         after = await part_stock.reserve_for_line(
             db, line, reserved_before, comp=new_comp, created_by=actor.id if actor else None
         )
+    if new_choices == read_choices and new_counts == current.counts:
+        # A line saved without a row for a group got its rows; the kit it reads is the
+        # same, so the order's journal has nothing to say.
+        return ConfigOutcome(reserved_before, after, [], line.config_key)
     await order_journal.record(
         db,
         line.project_id,
@@ -416,18 +448,22 @@ async def set_configuration(
     return ConfigOutcome(reserved_before, after, [], line.config_key)
 
 
-def _per_under(part: ProductPart, option_id: int | None, chosen: set[int]) -> int:
-    """The part's standard count on a line that chose ``chosen``, were it bound to ``option_id``."""
-    return standard_per(part) if option_id is None or option_id in chosen else 0
+def _per_under(part: ProductPart, bound: Mapping[int, frozenset[int]], chosen: set[int]) -> int:
+    """The part's standard count on a line that chose ``chosen``, were it bound to ``bound``."""
+    return standard_per(part) if in_kit(bound, chosen) else 0
 
 
-async def freeze_binding(db: AsyncSession, part: ProductPart, new_option_id: int | None) -> int:
+async def freeze_binding(db: AsyncSession, part: ProductPart, new_bound: Mapping[int, frozenset[int]]) -> int:
     """A part's binding is about to change: every saved product line whose kit
     that would change keeps it, through an explicit count row (the principle
     rule 5 applies to a new group or a new standard — a saved order's kit does
     not move under it). Lines created afterwards follow the new binding.
-    Returns the number of lines frozen."""
-    if part.variant_option_id == new_option_id:
+    ``new_bound`` is the ``group_id → option ids`` about to be written over
+    ``part.bound``; a group with no options in it is no condition («any»), never
+    «none», and is dropped. Returns the number of lines and stock positions frozen."""
+    current = part.bound
+    new_bound = {group_id: frozenset(options) for group_id, options in new_bound.items() if options}
+    if current == new_bound:
         return 0
     defaults = (await default_options(db, [part.product_id])).get(part.product_id, {})
     frozen_items: dict[int, LineConfig] = {}
@@ -435,8 +471,8 @@ async def freeze_binding(db: AsyncSession, part: ProductPart, new_option_id: int
         if part.id in cfg.counts:
             continue
         chosen = set({**defaults, **cfg.choices}.values())
-        before = _per_under(part, part.variant_option_id, chosen)
-        if before != _per_under(part, new_option_id, chosen):
+        before = _per_under(part, current, chosen)
+        if before != _per_under(part, new_bound, chosen):
             frozen_items[item_id] = LineConfig(dict(cfg.choices), {**cfg.counts, part.id: before})
     await _apply_item_configs(db, part.product_id, frozen_items)
     line_ids = (
@@ -457,8 +493,8 @@ async def freeze_binding(db: AsyncSession, part: ProductPart, new_option_id: int
         if part.id in cfg.counts:
             continue  # the line already says how many it wants
         chosen = set({**defaults, **cfg.choices}.values())
-        before = _per_under(part, part.variant_option_id, chosen)
-        if before != _per_under(part, new_option_id, chosen):
+        before = _per_under(part, current, chosen)
+        if before != _per_under(part, new_bound, chosen):
             rows.append({"line_id": line_id, "part_id": part.id, "qty": before})
     if rows:
         await db.execute(insert(ProjectLinePartCount), rows)
@@ -554,11 +590,10 @@ async def repoint_part(db: AsyncSession, source_id: int, target_id: int) -> None
         if source_id not in cfg.counts and target_id not in cfg.counts:
             continue
         chosen = set({**defaults, **cfg.choices}.values())
-        standard = _per_under(target, target.variant_option_id, chosen)
+        standard = _per_under(target, target.bound, chosen)
         merged = min(
             MAX_COUNT,
-            cfg.counts.get(target_id, standard)
-            + cfg.counts.get(source_id, _per_under(source, source.variant_option_id, chosen)),
+            cfg.counts.get(target_id, standard) + cfg.counts.get(source_id, _per_under(source, source.bound, chosen)),
         )
         counts = {pid: n for pid, n in cfg.counts.items() if pid not in (source_id, target_id)}
         if merged != standard:
@@ -592,9 +627,9 @@ async def repoint_part(db: AsyncSession, source_id: int, target_id: int) -> None
             merged, standard = cfg.counts.get(target_id, 0) + cfg.counts.get(source_id, 0), 0
         else:
             chosen = set({**defaults, **cfg.choices}.values())
-            standard = _per_under(target, target.variant_option_id, chosen)
+            standard = _per_under(target, target.bound, chosen)
             merged = cfg.counts.get(target_id, standard) + cfg.counts.get(
-                source_id, _per_under(source, source.variant_option_id, chosen)
+                source_id, _per_under(source, source.bound, chosen)
             )
         merged = min(MAX_COUNT, merged)
         if merged != standard:

@@ -3789,6 +3789,11 @@ export default {
     autoQueueRebalanceDescription: 'Idle printers of another model take an order line’s pending prints when that finishes the line sooner — plates and counts are recalculated for that model’s bed.',
     autoQueueCompatibleModels: 'Use compatible printers in Auto Queue',
     autoQueueCompatibleModelsDescription: 'When no matching model is ready, Auto Queue may use printers that Bambu Studio marks compatible with the file.',
+    defaultForceColorMatch: "Force color match by default",
+    defaultForceColorMatchDescription: "New jobs queued from order plans require exact filament colours. The print dialog starts with this option on. Existing jobs and virtual-printer choices keep their settings.",
+    printDefaultsUnavailable: "Could not load print defaults. Retry or use the choices shown.",
+    retryPrintDefaults: "Retry",
+    useCurrentPrintChoices: "Use current choices",
     autoOrderForBatches: 'A batch from the print dialog becomes an order',
     autoOrderForBatchesDescription: 'When a submission makes two or more prints and no open order needs the plate, the Order field proposes a new order for the batch. You can always pick “Without an order”.',
     queueDrying: 'Queue Auto-Drying',
@@ -6460,6 +6465,9 @@ export default {
         plateNext: 'one-off from plate {{n}} × {{copies}}',
       },
       submit: { products: 'Add lines ({{count}})', parts: 'Add parts', plate: 'Create and add' },
+      // spec product-part-variant-combinations п. 25: why «Add» waits or refuses.
+      combinationChecking: 'Checking the products’ combinations…',
+      combinationClosed: 'Can’t be ordered in the chosen combination: {{names}}',
       stock: {
         title: 'From stock',
         ready: 'ready',
@@ -6610,6 +6618,20 @@ export default {
         none: 'The reserve will not change; there will be no extra surplus.',
       },
       save: 'Save configuration',
+    },
+    // spec product-part-variant-combinations п. 25: whether an order can take a choice — the
+    // server's answer, said in both order dialogs.
+    combination: {
+      checking: 'Checking the combination…',
+      closed: 'This combination can’t be ordered: {{reasons}}',
+      closedKept: 'This combination can no longer be ordered ({{reasons}}). The line keeps it; its counts can still be changed.',
+      failed: 'Could not check the combination — the server checks it anyway.',
+      option: {
+        closes: 'With the other choices as they are, the combination would not be available',
+        never: 'Not in any combination that can be ordered',
+        closesShort: '{{option}} — not with this choice',
+        neverShort: '{{option}} — not available',
+      },
     },
     tiles: {
       active: 'Active',
@@ -8141,10 +8163,10 @@ export default {
       perUnit: 'Per unit',
       perUnitHint: '0 — out of the kit',
       variant: 'Variant',
-      variantAlways: 'Always (no variant)',
-      variantHint: 'The part is taken only when an order chooses this option',
+      variantAny: 'any',
+      variantHint: 'Taken when the order picks a ticked option in every group with ticks',
       variantGone: '{{name}} (no longer exists)',
-      variantGoneHint: 'This option no longer exists — choose another one.',
+      variantGoneHint: 'A ticked option no longer exists — untick it.',
       aliases: 'Also known as',
       aliasesHint: 'Object names on a plate by which a file finds this part',
       aliasPlaceholder: 'Object name — Enter adds it',
@@ -8249,6 +8271,26 @@ export default {
       heldByStock_other: 'Held by {{count}} stock positions',
       isStandard: 'The standard option cannot be deleted — make another one standard first',
     },
+    // Spec product-part-variant-combinations п. 24: which combinations of options an order can take.
+    combinations: {
+      title: 'Combinations',
+      hint: '— which of them an order can take',
+      state: 'State',
+      available: 'available',
+      failed: 'Could not load the combinations',
+      count_one: 'combination',
+      count_other: 'combinations',
+      tab: { available: 'Available', unavailable: 'Unavailable' },
+      none: {
+        available: 'No combination can be ordered yet',
+        unavailable: 'Every combination can be ordered',
+      },
+      reason: {
+        optionWithoutPart: 'no part for «{{option}}» in «{{group}}»',
+        nothingChosen: 'nothing chosen in «{{group}}»',
+        partNotSliced: '«{{part}}» is not sliced',
+      },
+    },
     // WS-13 E10 D01–D05: the variants manager — one draft, one PUT.
     variantsDialog: {
       title: 'Product variants',
@@ -8265,6 +8307,9 @@ export default {
       noOptions: 'No options',
       noOptionsHint: 'Add an option or delete the group',
       deleteGroupLabel: 'Delete group',
+      requiresPart: 'Every value needs its own part',
+      requiresPartHint:
+        'A combination with a value that has no part in the kit can’t be added to an order. Leave it off for optional add-ons.',
       save: 'Save',
       saving: 'Saving…',
       saved: 'Variants saved',

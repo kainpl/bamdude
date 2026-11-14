@@ -9,7 +9,7 @@ predicate, nothing reads ``qty_per_unit`` —
 ``tests/unit/test_line_composition_is_the_one_reader.py`` scans for it.
 """
 
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence, Set as AbstractSet
 from dataclasses import dataclass, field
 from decimal import ROUND_CEILING, Decimal
 
@@ -63,12 +63,19 @@ class LineConfig:
     counts: dict[int, int] = field(default_factory=dict)
 
 
+def in_kit(bound: Mapping[int, frozenset[int]], chosen: set[int]) -> bool:
+    """Is a part bound to ``bound`` (``group_id → option ids``) in the kit of a line that
+    chose ``chosen``? Yes when every group it has options in has one of them chosen —
+    AND across groups, OR within one; an unbound part (``{}``) always is."""
+    return all(not options.isdisjoint(chosen) for options in bound.values())
+
+
 def composition(parts: Sequence[ProductPart], mode: str, chosen: set[int], counts: Mapping[int, int]) -> Composition:
     """The line's parts with their per-unit count; in ``parts`` mode, the wanted count.
 
-    ``product`` mode: every part without an option, and every part of a chosen
-    option, at its standard count — unless the line changed it; a count of 0
-    drops the part, and a count on a part of another option brings it in.
+    ``product`` mode: every part :func:`in_kit` for the chosen options, at its
+    standard count — unless the line changed it; a count of 0 drops the part,
+    and a count on a part outside the kit brings it in.
     """
     ordered = sorted(parts, key=lambda p: (p.sort_order or 0, p.id))
     if mode == "parts":
@@ -77,7 +84,7 @@ def composition(parts: Sequence[ProductPart], mode: str, chosen: set[int], count
     for p in ordered:
         if p.id in counts:
             per = counts[p.id]
-        elif p.variant_option_id is None or p.variant_option_id in chosen:
+        elif in_kit(p.bound, chosen):
             per = p.qty_per_unit
         else:
             continue
@@ -228,3 +235,78 @@ def standard_per(part: ProductPart) -> int:
     """A part's per-unit count in the product's own kit — the named door for a
     reader that shows the product's standard (the stock shelf's row)."""
     return part.qty_per_unit
+
+
+@dataclass(frozen=True)
+class Unavailable:
+    """Why a combination of choices cannot be ordered (spec product-part-variant-combinations,
+    п. 10): ``option_without_part`` names the group and the chosen option no part of the
+    kit names; ``part_not_sliced`` names a printed part of the kit without a sliced source."""
+
+    code: str
+    group_id: int | None
+    option_id: int | None
+    part_id: int | None
+
+
+def availability(
+    parts: Sequence[ProductPart],
+    choices: Mapping[int, int],
+    sliced: AbstractSet[int],
+    strict_groups: AbstractSet[int],
+) -> list[Unavailable]:
+    """Is the combination ``choices`` (``group_id → option_id``, every group) one an order may
+    take? ``[]`` — yes; otherwise the reasons, groups in id order, then the parts in kit
+    order (п. 10–11).
+
+    Judged on the STANDARD kit of the choice — a line's changed counts never open a closed
+    combination. Only parts with a standard count and without «не рахувати» count.
+
+    ``option_without_part`` is asked only in a group marked «every value needs its own
+    part» (``strict_groups``: ``ProductVariantGroup.requires_part``) that some counted part
+    has options in: there the chosen option must be named by a part of the kit. An
+    unmarked group never closes anything by this rule — «Magnet: no / yes» with the magnet
+    bound to «yes» keeps «no» orderable. When a chosen value is named by NO counted part at
+    all (or nothing is chosen), such values are reported, and of the other groups only a
+    value that stays unnamed with those groups' conditions taken as met — the rest merely
+    have no kit left around them.
+
+    ``part_not_sliced``, for every product with variant groups: a printed part of the kit
+    needs a sliced source (``sliced``: part ids); a purchased one needs none. Pure —
+    ``combination_gate`` reads ``sliced`` and the marked groups and asks here."""
+    chosen = set(choices.values())
+    ordered = sorted(parts, key=lambda p: (p.sort_order or 0, p.id))
+    # ``bound`` is rebuilt on every access: read once per part, per call.
+    counted_parts = [(p, p.bound) for p in ordered if not p.ignored and standard_per(p) > 0]
+    kit = [(p, bound) for p, bound in counted_parts if in_kit(bound, chosen)]
+    named: dict[int, set[int]] = {}
+    for _p, bound in counted_parts:
+        for group_id, options in bound.items():
+            named.setdefault(group_id, set()).update(options)
+    missing: list[Unavailable] = []
+    for group_id in sorted(set(named) & set(strict_groups)):
+        option_id = choices.get(group_id)
+        if not any(option_id in bound.get(group_id, ()) for _p, bound in kit):
+            missing.append(Unavailable("option_without_part", group_id, option_id, None))
+    nowhere = [u for u in missing if u.option_id not in named[u.group_id]]
+    out = missing
+    if nowhere:
+        # A value no part names empties the kit around it, so the other groups' values
+        # look unnamed too. Ask again with those groups' conditions taken as met: what is
+        # still unnamed is a reason of its own and is reported beside them.
+        absent = {u.group_id for u in nowhere}
+        around = [
+            bound
+            for _p, bound in counted_parts
+            if in_kit({g: options for g, options in bound.items() if g not in absent}, chosen)
+        ]
+        own = [
+            u
+            for u in missing
+            if u.group_id not in absent and not any(u.option_id in bound.get(u.group_id, ()) for bound in around)
+        ]
+        out = sorted(nowhere + own, key=lambda u: u.group_id or 0)
+    out += [
+        Unavailable("part_not_sliced", None, None, p.id) for p, _b in kit if p.kind == "printed" and p.id not in sliced
+    ]
+    return out

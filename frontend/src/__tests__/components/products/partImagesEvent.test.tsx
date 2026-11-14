@@ -27,7 +27,7 @@ function lid(image: ProductPart['image']): ProductPart {
     sort_order: 2,
     ignored: false,
     stock_balance: 0,
-    variant_option_id: null,
+    variant_option_ids: [],
     image,
   };
 }

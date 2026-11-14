@@ -1,9 +1,16 @@
-"""Variant groups and options — the ONE writer (WS-13 E1, spec VR1).
+"""Variant groups and options — the ONE writer (WS-13 E1, spec VR1) — and of the parts'
+bindings to them.
 
 Only this module writes ``product_variant_groups`` / ``product_variant_options``
 (``tests/unit/test_product_variants_have_one_writer.py``): the six variant routes,
 the atomic ``PUT /products/{id}/variants`` (``apply``), a product copy
 (``copy_groups``) and the ZIP import (``create_group`` with ``record_lines=False``).
+
+It is also the one writer of ``product_part_options`` — which options a part is bound
+to, across groups (spec product-part-variant-combinations, rule 3;
+``tests/unit/test_part_options_have_one_writer.py``): a part's own door
+(``set_part_options`` — create, edit, the ZIP import) and a product copy
+(``copy_part_options``). A part's deletion takes its rows through the ORM cascade.
 
 Every write takes the product gate first (``product_gate``, spec BL1 / BL2) and
 reads the groups fresh behind it; an edit that rewrites line and position
@@ -23,19 +30,25 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, inspect as sqla_inspect, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from backend.app.models.finished_stock import StockItemChoice
 from backend.app.models.line_config import ProjectLineChoice
 from backend.app.models.product import ProductPart
-from backend.app.models.product_variant import ProductVariantGroup, ProductVariantOption, variant_key
+from backend.app.models.product_variant import (
+    ProductPartOption,
+    ProductVariantGroup,
+    ProductVariantOption,
+    variant_key,
+)
 from backend.app.services import line_config
 from backend.app.services.product_gate import PRODUCT_BUSY, ProductBusy, lock_configurations, product_gate
 
 GROUP_TAKEN = "A group with this name already exists"
 OPTION_TAKEN = "An option with this name already exists"
+FOREIGN_OPTION = "That option does not belong to this product"
 
 
 class VariantError(Exception):
@@ -84,9 +97,83 @@ def _option(group: ProductVariantGroup, option_id: int) -> ProductVariantOption:
 
 
 async def _bound_parts(db: AsyncSession, option_ids: Sequence[int]) -> int:
+    """How many DISTINCT parts are bound to any of these options — a part bound to two
+    options of one group is one part (the «N parts» counter and the delete guards)."""
     if not option_ids:
         return 0
-    return await db.scalar(select(func.count(ProductPart.id)).where(ProductPart.variant_option_id.in_(option_ids))) or 0
+    return (
+        await db.scalar(
+            select(func.count(func.distinct(ProductPartOption.part_id))).where(
+                ProductPartOption.option_id.in_(option_ids)
+            )
+        )
+        or 0
+    )
+
+
+# ---------- a part's bindings (spec product-part-variant-combinations, rules 3, 4, 8) ----------
+
+
+async def set_part_options(db: AsyncSession, part: ProductPart, option_ids: Sequence[int]) -> None:
+    """Bind ``part`` to exactly ``option_ids`` — options of any of its product's groups;
+    an empty list puts it in every configuration (rule 4).
+
+    An option that is not one of the product's own is a 422 and nothing changes. A part
+    already in the database freezes first (``line_config.freeze_binding``, rule 8): every
+    saved line and stock position whose kit the new binding would change keeps its old
+    count — a ``LineConfigError`` (409) when two positions would become one
+    configuration, raised before anything is written. A part not yet in the database is
+    new: no saved line knows it, so it enters the final composition with nothing frozen
+    (WS-13 E10 A05, K22). A persisted part must come from a query — its ``option_links``
+    loaded — and this is called BEFORE the links change, or the freeze compares the new
+    binding with itself.
+
+    Never commits; the caller holds the product gate (spec rule 20)."""
+    new = not sqla_inspect(part).has_identity  # transient or pending: never flushed
+    wanted = list(dict.fromkeys(option_ids))
+    group_of: dict[int, int] = {}
+    if wanted:
+        # A pending part must not be flushed by this read before its links are set.
+        with db.no_autoflush:
+            group_of = dict(
+                (
+                    await db.execute(
+                        select(ProductVariantOption.id, ProductVariantOption.group_id)
+                        .join(ProductVariantGroup, ProductVariantGroup.id == ProductVariantOption.group_id)
+                        .where(ProductVariantOption.id.in_(wanted), ProductVariantGroup.product_id == part.product_id)
+                    )
+                ).all()
+            )
+        if len(group_of) != len(wanted):
+            raise VariantError(422, FOREIGN_OPTION)
+    new_bound: dict[int, set[int]] = {}
+    for option_id in wanted:
+        new_bound.setdefault(group_of[option_id], set()).add(option_id)
+    if not new:
+        await line_config.freeze_binding(
+            db, part, {group_id: frozenset(options) for group_id, options in new_bound.items()}
+        )
+    kept = [link for link in part.option_links if link.option_id in group_of]
+    have = {link.option_id for link in kept}
+    added = [
+        ProductPartOption(option_id=option_id, group_id=group_of[option_id])
+        for option_id in wanted
+        if option_id not in have
+    ]
+    if added or len(kept) != len(part.option_links):
+        part.option_links = kept + added
+
+
+def copy_part_options(
+    source: ProductPart, target: ProductPart, option_map: Mapping[int, int], group_map: Mapping[int, int]
+) -> None:
+    """A product copy's part takes the source part's bindings, through the copy's own
+    options and groups (``copy_groups``' maps). The target is new — nothing to freeze."""
+    target.option_links = [
+        ProductPartOption(option_id=option_map[link.option_id], group_id=group_map[link.group_id])
+        for link in source.option_links
+        if link.option_id in option_map and link.group_id in group_map
+    ]
 
 
 async def _gate(db: AsyncSession, product_id: int, *, footprint: bool = False) -> None:
@@ -106,10 +193,12 @@ async def create_group(
     *,
     default_index: int = 0,
     record_lines: bool = True,
+    requires_part: bool = False,
 ) -> ProductVariantGroup:
     """A group with its options, ``options[default_index]`` standard. With
     ``record_lines`` (every door but a brand-new product's import) the standard is
-    recorded on each line and position of the product (rule 5)."""
+    recorded on each line and position of the product (rule 5). ``requires_part`` —
+    «every value needs its own part» (spec product-part-variant-combinations, п. 10)."""
     await _gate(db, product_id, footprint=record_lines)
     existing = await groups(db, product_id)
     if not options:
@@ -126,6 +215,7 @@ async def create_group(
         options,
         default_index=default_index,
         position=max((g.position for g in existing), default=-1) + 1,
+        requires_part=requires_part,
     )
     if record_lines:
         await line_config.add_group_to_lines(db, group)
@@ -133,9 +223,16 @@ async def create_group(
 
 
 async def _insert_group(
-    db: AsyncSession, product_id: int, name: str, options: Sequence[str], *, default_index: int, position: int
+    db: AsyncSession,
+    product_id: int,
+    name: str,
+    options: Sequence[str],
+    *,
+    default_index: int,
+    position: int,
+    requires_part: bool = False,
 ) -> ProductVariantGroup:
-    group = ProductVariantGroup(product_id=product_id, name=name, position=position)
+    group = ProductVariantGroup(product_id=product_id, name=name, position=position, requires_part=requires_part)
     db.add(group)
     await db.flush()
     created = [ProductVariantOption(group_id=group.id, name=n, position=i) for i, n in enumerate(options)]
@@ -148,8 +245,9 @@ async def _insert_group(
 
 
 async def update_group(db: AsyncSession, product_id: int, group_id: int, fields: Mapping[str, Any]) -> None:
-    """Rename, reorder, or pick another standard. A new standard changes no saved
-    line — every line recorded its choice (rule 5)."""
+    """Rename, reorder, pick another standard, or mark «every value needs its own part».
+    A new standard changes no saved line — every line recorded its choice (rule 5); the
+    mark changes no line or position either — it decides only what a new line may take."""
     await _gate(db, product_id)
     group = await _group(db, product_id, group_id)
     if "name" in fields and variant_key(fields["name"]) != variant_key(group.name):
@@ -160,7 +258,7 @@ async def update_group(db: AsyncSession, product_id: int, group_id: int, fields:
             raise VariantError(409, GROUP_TAKEN)
     if "default_option_id" in fields and fields["default_option_id"] not in {o.id for o in group.options}:
         raise VariantError(422, "That option does not belong to this group")
-    for column in ("name", "default_option_id", "position"):
+    for column in ("name", "default_option_id", "position", "requires_part"):
         if column in fields:
             setattr(group, column, fields[column])
     await db.flush()
@@ -232,14 +330,19 @@ async def delete_option(db: AsyncSession, product_id: int, group_id: int, option
     await db.flush()
 
 
-async def copy_groups(db: AsyncSession, source_id: int, target_id: int) -> dict[int, int]:
+async def copy_groups(db: AsyncSession, source_id: int, target_id: int) -> tuple[dict[int, int], dict[int, int]]:
     """A product copy's groups (the target is new — nothing records on it yet).
-    Returns ``old option id → new option id`` for the parts' bindings."""
+    Returns ``old option id → new option id`` and ``old group id → new group id`` for
+    the parts' bindings (``copy_part_options``)."""
     option_map: dict[int, int] = {}
+    group_map: dict[int, int] = {}
     for group in await groups(db, source_id):
-        new_group = ProductVariantGroup(product_id=target_id, name=group.name, position=group.position)
+        new_group = ProductVariantGroup(
+            product_id=target_id, name=group.name, position=group.position, requires_part=group.requires_part
+        )
         db.add(new_group)
         await db.flush()
+        group_map[group.id] = new_group.id
         new_options = [
             ProductVariantOption(group_id=new_group.id, name=o.name, position=o.position) for o in group.options
         ]
@@ -248,7 +351,7 @@ async def copy_groups(db: AsyncSession, source_id: int, target_id: int) -> dict[
         option_map.update({o.id: n.id for o, n in zip(group.options, new_options, strict=True)})
         new_group.default_option_id = option_map.get(group.default_option_id) if group.default_option_id else None
     await db.flush()
-    return option_map
+    return option_map, group_map
 
 
 # ---------- the atomic draft (spec VR4–VR8) ----------
@@ -277,18 +380,23 @@ class GroupDraft:
     #: ``None`` only for an existing group whose stored standard is already ``None``
     #: (WS-13 E10 A06) — checked against the stored group in :func:`apply`.
     default: int | str | None
+    #: «Every value needs its own part»; ``None`` — not sent: an existing group keeps its
+    #: stored mark (a client that does not know the field never clears it), a new one is off.
+    requires_part: bool | None = None
 
 
 def revision(state: Sequence[Any]) -> str:
     """SHA-256 of the product's variants as the client saw them (spec VR4): groups by
-    id with name, position and standard; options by id with name and position. The
-    order rows were loaded in never changes it; ``position`` is a field, not the order."""
+    id with name, position, standard and «every value needs its own part»; options by id
+    with name and position. The order rows were loaded in never changes it; ``position``
+    is a field, not the order."""
     canonical = [
         {
             "id": g.id,
             "name": g.name,
             "position": g.position,
             "default_option_id": g.default_option_id,
+            "requires_part": bool(g.requires_part),
             "options": [
                 {"id": o.id, "name": o.name, "position": o.position} for o in sorted(g.options, key=lambda o: o.id)
             ],
@@ -421,6 +529,7 @@ async def apply(db: AsyncSession, product_id: int, seen_revision: str, draft: Se
         and all(
             by_group[g.id].name == g.name
             and by_group[g.id].default_option_id == g.default
+            and (g.requires_part is None or bool(by_group[g.id].requires_part) == g.requires_part)
             and [o.id for o in g.options] == [o.id for o in _ordered(by_group[g.id])]
             and all(options_by_id[o.id].name == o.name for o in g.options)
             for g in draft
@@ -429,11 +538,14 @@ async def apply(db: AsyncSession, product_id: int, seen_revision: str, draft: Se
     if unchanged:
         return False
 
-    # (a) renames, in place — ids and configuration keys stay (keys are built from ids).
+    # (a) renames and marks, in place — ids and configuration keys stay (keys are built
+    # from ids); the mark moves no line or position (it decides only new lines).
     for group in draft:
         if group.id is None:
             continue
         by_group[group.id].name = group.name
+        if group.requires_part is not None:
+            by_group[group.id].requires_part = group.requires_part
         for option in group.options:
             if option.id is not None:
                 options_by_id[option.id].name = option.name
@@ -446,7 +558,13 @@ async def apply(db: AsyncSession, product_id: int, seen_revision: str, draft: Se
             continue
         default_index = next(i for i, o in enumerate(group.options) if o.temp_id == group.default)
         created = await _insert_group(
-            db, product_id, group.name, [o.name for o in group.options], default_index=default_index, position=position
+            db,
+            product_id,
+            group.name,
+            [o.name for o in group.options],
+            default_index=default_index,
+            position=position,
+            requires_part=bool(group.requires_part),
         )
         made_groups[group.temp_id] = created
         for option, row in zip(group.options, _ordered(created), strict=True):

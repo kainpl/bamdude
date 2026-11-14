@@ -4,12 +4,13 @@ catalog row's ready units and facets, and the printed parts of catalogue product
 from datetime import UTC, datetime
 
 import pytest
-from sqlalchemy import event, update
+from sqlalchemy import event, select, update
 
 from backend.app.models.library import LibraryFile
 from backend.app.models.product import Product, ProductOrigin, ProductPart
 from backend.app.models.product_variant import ProductVariantGroup, ProductVariantOption
 from backend.app.services import finished_stock
+from backend.tests.fixtures.part_bindings import bind
 from backend.tests.integration.test_product_catalog_list import seeded_catalog  # noqa: F401 — shared fixture
 
 pytestmark = pytest.mark.integration
@@ -32,21 +33,25 @@ async def pipe(db_session):
     db_session.add_all(
         [
             ProductPart(product_id=product.id, kind="printed", name="flask", name_key="flask", qty_per_unit=1),
-            ProductPart(
-                product_id=product.id,
-                kind="printed",
-                name="straight tail",
-                name_key="straight tail",
-                qty_per_unit=1,
-                variant_option_id=straight.id,
+            bind(
+                ProductPart(
+                    product_id=product.id,
+                    kind="printed",
+                    name="straight tail",
+                    name_key="straight tail",
+                    qty_per_unit=1,
+                ),
+                straight,
             ),
-            ProductPart(
-                product_id=product.id,
-                kind="printed",
-                name="angled tail",
-                name_key="angled tail",
-                qty_per_unit=1,
-                variant_option_id=angled.id,
+            bind(
+                ProductPart(
+                    product_id=product.id,
+                    kind="printed",
+                    name="angled tail",
+                    name_key="angled tail",
+                    qty_per_unit=1,
+                ),
+                angled,
             ),
             ProductPart(
                 product_id=product.id, kind="purchased", name="screw", name_key="purchased:screw", qty_per_unit=2
@@ -113,12 +118,42 @@ async def test_parts_are_searched_by_their_name_the_product_and_its_sku(committi
     body = await _parts(committing_client, q="tail")
     assert sorted(r["name"] for r in body["items"]) == ["angled tail", "straight tail"]
     angled = next(r for r in body["items"] if r["name"] == "angled tail")
-    assert angled["variant"] == {"group": "Tail", "option": "angled"}
+    assert angled["variants"] == [{"group": "Tail", "options": ["angled"]}]
+    assert "variant" not in angled
     assert angled["product"] == {"id": pipe.id, "code": f"PR-{pipe.id:04d}", "name": "Pipe", "sku": "PP-1"}
     assert [r["name"] for r in (await _parts(committing_client, q="pp-1 flask"))["items"]] == ["flask"]
     shade = (await _parts(committing_client, q="shade"))["items"]
     assert [r["name"] for r in shade] == ["shade.stl"] or [r["name"] for r in shade] == ["shade"]
-    assert shade[0]["variant"] is None and shade[0]["models"] == ["P1S"]
+    assert shade[0]["variants"] == [] and shade[0]["models"] == ["P1S"]
+
+
+@pytest.mark.asyncio
+async def test_a_part_bound_in_two_groups_names_each_group_once(committing_client, db_session, pipe):
+    """The picker's label lists every group the part is bound in, in the groups' order,
+    and each group's values in their order (spec product-part-variant-combinations)."""
+    wall = ProductVariantGroup(product_id=pipe.id, name="Wall", position=1)
+    db_session.add(wall)
+    await db_session.flush()
+    thin = ProductVariantOption(group_id=wall.id, name="thin", position=0)
+    thick = ProductVariantOption(group_id=wall.id, name="thick", position=1)
+    db_session.add_all([thin, thick])
+    await db_session.flush()
+    wall.default_option_id = thin.id
+    tail = (
+        await db_session.execute(
+            select(ProductPart).where(ProductPart.product_id == pipe.id, ProductPart.name == "angled tail")
+        )
+    ).scalar_one()
+    angled = (
+        await db_session.execute(select(ProductVariantOption).where(ProductVariantOption.name == "angled"))
+    ).scalar_one()
+    bind(tail, angled, thick, thin)
+    await db_session.commit()
+    row = next(r for r in (await _parts(committing_client, q="angled"))["items"] if r["name"] == "angled tail")
+    assert row["variants"] == [
+        {"group": "Tail", "options": ["angled"]},
+        {"group": "Wall", "options": ["thin", "thick"]},
+    ]
 
 
 @pytest.mark.asyncio

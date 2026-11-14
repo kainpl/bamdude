@@ -8,7 +8,7 @@ import { render } from '../../../utils';
 import { api, ApiError } from '../../../../api/client';
 import type { BatchLine } from '../../../../api/client';
 import { AddToOrderDialog } from '../../../../components/projects/add-to-order/AddToOrderDialog';
-import { filesPage, lamp, libraryFile, pageOf, part, partsPage, pipe, pipeDetail, plate, suggestion } from './fixtures';
+import { enabledButton, filesPage, lamp, libraryFile, pageOf, part, partsPage, pipe, pipeDetail, plate, suggestion } from './fixtures';
 
 const navigate = vi.fn();
 vi.mock('react-router', async (importOriginal) => ({
@@ -123,7 +123,7 @@ describe('AddToOrderDialog — the frame (WS-13 E5)', () => {
     const onClose = vi.fn();
     render(<AddToOrderDialog order={ORDER} onClose={onClose} />);
     const row = await tick(1);
-    fireEvent.click(screen.getByRole('button', { name: 'Add lines (1)' }));
+    fireEvent.click(await enabledButton('Add lines (1)'));
     const adding = await screen.findByRole('button', { name: 'Adding…' });
     expect(adding).toBeDisabled();
     expect(screen.getByRole('button', { name: 'Cancel' })).toBeDisabled();
@@ -139,7 +139,7 @@ describe('AddToOrderDialog — the frame (WS-13 E5)', () => {
     const onClose = vi.fn();
     render(<AddToOrderDialog order={ORDER} onClose={onClose} />);
     const row = await tick(1);
-    fireEvent.click(screen.getByRole('button', { name: 'Add lines (1)' }));
+    fireEvent.click(await enabledButton('Add lines (1)'));
     expect(await screen.findByRole('alert')).toHaveTextContent('Product not found');
     expect(within(row).getByRole('checkbox')).toBeChecked();
     expect(screen.getByRole('button', { name: 'Add lines (1)' })).toBeEnabled();
@@ -165,7 +165,7 @@ describe('AddToOrderDialog — the frame (WS-13 E5)', () => {
     render(<AddToOrderDialog preselectProduct={{ id: 1, code: 'PR-0001' }} onClose={onClose} />);
     await screen.findByRole('option', { name: /OR-0006/ });
     fireEvent.change(screen.getByLabelText('Order'), { target: { value: '6' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Add lines (1)' }));
+    fireEvent.click(await enabledButton('Add lines (1)'));
     await waitFor(() => expect(add).toHaveBeenCalled());
     release(null);
     await waitFor(() => expect(navigate).toHaveBeenCalledWith('/projects/6'));
@@ -177,7 +177,7 @@ describe('AddToOrderDialog — the frame (WS-13 E5)', () => {
     const onClose = vi.fn();
     render(<AddToOrderDialog order={ORDER} onClose={onClose} />);
     await tick(1);
-    fireEvent.click(screen.getByRole('button', { name: 'Add lines (1)' }));
+    fireEvent.click(await enabledButton('Add lines (1)'));
     await waitFor(() => expect(onClose).toHaveBeenCalled());
     expect(navigate).not.toHaveBeenCalled();
   });

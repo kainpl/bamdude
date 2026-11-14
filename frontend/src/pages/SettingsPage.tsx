@@ -1322,6 +1322,7 @@ export function SettingsPage() {
       (baseline.auto_queue_rebalance_models ?? false) !== (localSettings.auto_queue_rebalance_models ?? false) ||
       (baseline.auto_queue_compatible_models ?? false) !== (localSettings.auto_queue_compatible_models ?? false) ||
       (baseline.auto_order_for_batches ?? false) !== (localSettings.auto_order_for_batches ?? false) ||
+      (baseline.default_force_color_match ?? false) !== (localSettings.default_force_color_match ?? false) ||
       (baseline.queue_drying_block ?? false) !== (localSettings.queue_drying_block ?? false) ||
       (baseline.ambient_drying_enabled ?? false) !== (localSettings.ambient_drying_enabled ?? false) ||
       (baseline.print_drying_enabled ?? false) !== (localSettings.print_drying_enabled ?? false) ||
@@ -1442,6 +1443,7 @@ export function SettingsPage() {
         auto_queue_rebalance_models: localSettings.auto_queue_rebalance_models,
         auto_queue_compatible_models: localSettings.auto_queue_compatible_models,
         auto_order_for_batches: localSettings.auto_order_for_batches,
+        default_force_color_match: localSettings.default_force_color_match,
         queue_drying_block: localSettings.queue_drying_block,
         ambient_drying_enabled: localSettings.ambient_drying_enabled,
         print_drying_enabled: localSettings.print_drying_enabled,
@@ -4118,6 +4120,22 @@ export function SettingsPage() {
                       type="checkbox"
                       checked={localSettings.auto_order_for_batches ?? false}
                       onChange={(e) => updateSetting('auto_order_for_batches', e.target.checked)}
+                      className="sr-only peer"
+                    />
+                    <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
+                  </label>
+                </div>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <label className="block text-sm text-white">{t('settings.defaultForceColorMatch')}</label>
+                    <p className="text-xs text-bambu-gray mt-0.5">{t('settings.defaultForceColorMatchDescription')}</p>
+                  </div>
+                  <label className="relative inline-flex items-center cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={localSettings.default_force_color_match ?? false}
+                      aria-label={t('settings.defaultForceColorMatch')}
+                      onChange={(e) => updateSetting('default_force_color_match', e.target.checked)}
                       className="sr-only peer"
                     />
                     <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>

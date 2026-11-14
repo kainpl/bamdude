@@ -602,18 +602,33 @@ async def _variant_groups(db: AsyncSession, product_id: int) -> list[ProductVari
     )
 
 
-def _variant_manifest(groups: list[ProductVariantGroup]) -> tuple[list[dict], dict[int, list[str]]]:
-    """The groups by NAME — ids mean nothing on another farm — and each
-    option's ``[group, option]`` pair for the parts that bind to it
-    (spec workshop-product-variants, rule 21)."""
+def _variant_manifest(groups: list[ProductVariantGroup]) -> tuple[list[dict], list[tuple[int, list[str]]]]:
+    """The groups by NAME — ids mean nothing on another farm — and every option's
+    ``[group, option]`` pair, in the groups' order and each group's options' order, for
+    the parts that bind to it (spec workshop-product-variants, rule 21)."""
     out: list[dict] = []
-    pair_of: dict[int, list[str]] = {}
+    pairs: list[tuple[int, list[str]]] = []
     for group in groups:
         default = next((o.name for o in group.options if o.id == group.default_option_id), None)
-        out.append({"name": group.name, "options": [o.name for o in group.options], "default": default})
+        out.append(
+            {
+                "name": group.name,
+                "options": [o.name for o in group.options],
+                "default": default,
+                # «Every value needs its own part»; an archive without the key imports it off.
+                "requires_part": bool(group.requires_part),
+            }
+        )
         for option in group.options:
-            pair_of[option.id] = [group.name, option.name]
-    return out, pair_of
+            pairs.append((option.id, [group.name, option.name]))
+    return out, pairs
+
+
+def _part_variants(part: Any, pairs: list[tuple[int, list[str]]]) -> list[list[str]]:
+    """A part's bindings as ``[group, option]`` pairs, in the groups' order (spec
+    product-part-variant-combinations, rule 19)."""
+    bound = {link.option_id for link in part.option_links}
+    return [list(pair) for option_id, pair in pairs if option_id in bound]
 
 
 def imported_mark(raw: dict, kind: str, qty: int) -> bool:
@@ -627,7 +642,9 @@ def imported_mark(raw: dict, kind: str, qty: int) -> bool:
     return bool(raw["ignored"]) if "ignored" in raw else True
 
 
-def _part_manifest(part: Any, variant: list[str] | None = None, exported_photos: frozenset | set = frozenset()) -> dict:
+def _part_manifest(
+    part: Any, variants: list[list[str]] | None = None, exported_photos: frozenset | set = frozenset()
+) -> dict:
     return {
         "kind": part.kind,
         "name": part.name,
@@ -641,7 +658,9 @@ def _part_manifest(part: Any, variant: list[str] | None = None, exported_photos:
         "sourcing_url": part.sourcing_url,
         "remarks": part.remarks,
         "sort_order": part.sort_order,
-        "variant": variant,
+        # Every ``[group, option]`` the part is bound to; an archive written before parts
+        # took several values carried one pair as ``"variant"`` (still read on import).
+        "variants": list(variants or []),
         "image": part_images.manifest_entry(part, exported_photos),  # spec part-thumbnails §10.3
     }
 
@@ -825,7 +844,7 @@ async def export_zip(db: AsyncSession, product: Any, *, visible=None) -> ExportA
             part_photos.append(found)
     exported_photos = {name for name, _path in part_photos}
 
-    variant_groups, pair_of = _variant_manifest(await _variant_groups(db, product.id))
+    variant_groups, option_pairs = _variant_manifest(await _variant_groups(db, product.id))
     path, _manifest_written = await asyncio.to_thread(
         _write_export,
         specs,
@@ -845,7 +864,7 @@ async def export_zip(db: AsyncSession, product: Any, *, visible=None) -> ExportA
             "design_id": product.design_id,
         },
         [
-            _part_manifest(p, pair_of.get(p.variant_option_id), exported_photos)
+            _part_manifest(p, _part_variants(p, option_pairs), exported_photos)
             for p in sorted(product.parts, key=lambda p: (p.sort_order, p.id))
         ],
         variant_groups,
@@ -1254,8 +1273,10 @@ async def import_zip(
                     sourcing_url=_text(raw.get("sourcing_url"), 512),
                     remarks=_text(raw.get("remarks")),
                     sort_order=_whole(raw.get("sort_order"), position),
-                    variant_option_id=_variant_of(raw.get("variant"), option_by_pair),
+                    option_links=[],
                 )
+                # Through the one binding writer; the part is new, so nothing freezes.
+                await product_variants.set_part_options(db, new, _variants_of(raw, option_by_pair))
                 db.add(new)
                 pairs.append((new, raw.get("image")))
             await db.flush()
@@ -1365,7 +1386,14 @@ async def _import_variant_groups(db: AsyncSession, product_id: int, raw_groups: 
         default_index = next((i for i, n in enumerate(names) if default and variant_key(n) == variant_key(default)), 0)
         # Through the one writer (WS-13 E1 VR1). The product is new — nothing to record on.
         group = await product_variants.create_group(
-            db, product_id, name, names, default_index=default_index, record_lines=False
+            db,
+            product_id,
+            name,
+            names,
+            default_index=default_index,
+            record_lines=False,
+            # Only an explicit true marks it — an older archive has no key, anything else is off.
+            requires_part=raw.get("requires_part") is True,
         )
         for option in await _group_options(db, group.id):
             option_by_pair[(variant_key(name), variant_key(option.name))] = option.id
@@ -1386,10 +1414,22 @@ async def _group_options(db: AsyncSession, group_id: int) -> list[ProductVariant
 
 
 def _variant_of(raw: Any, option_by_pair: dict[tuple[str, str], int]) -> int | None:
-    """A part's ``[group, option]`` pair, as an option of the new product — or none."""
+    """One ``[group, option]`` pair, as an option of the new product — or none."""
     if not isinstance(raw, list) or len(raw) != 2 or not all(isinstance(v, str) for v in raw):
         return None
     return option_by_pair.get((variant_key(raw[0]), variant_key(raw[1])))
+
+
+def _variants_of(raw_part: dict, option_by_pair: dict[tuple[str, str], int]) -> list[int]:
+    """A manifest part's bindings as options of the new product (spec
+    product-part-variant-combinations, rule 19): its ``"variants"`` pairs, or — an archive
+    written before parts took several values — its single ``"variant"`` pair. A pair the
+    new product has no option for is dropped, as an import keeps what it can."""
+    pairs = raw_part.get("variants")
+    if not isinstance(pairs, list):
+        pairs = [raw_part.get("variant")]
+    found = (_variant_of(pair, option_by_pair) for pair in pairs)
+    return list(dict.fromkeys(option_id for option_id in found if option_id is not None))
 
 
 async def _ingest_into_library(

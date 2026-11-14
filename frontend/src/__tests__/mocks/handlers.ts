@@ -487,4 +487,16 @@ export const handlers = [
   http.get('/api/v1/library/files/:id/order-candidates', () => {
     return HttpResponse.json([]);
   }),
+
+  // ========================================================================
+  // Products
+  // ========================================================================
+
+  // "This choice can be ordered, and no value is marked" — what the two order
+  // dialogs get for a product with variant groups unless a test says otherwise
+  // (spec product-part-variant-combinations п. 25). Without it the ask would be
+  // bypassed to a network that is not there, which reads as a failed check.
+  http.post('/api/v1/products/:id/combination', () => {
+    return HttpResponse.json({ available: true, reasons: [], options: [] });
+  }),
 ];

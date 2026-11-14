@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useId, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient, type UseQueryResult } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { api } from '../../api/client';
@@ -11,16 +11,28 @@ import type {
   ProductPart,
   ProjectLine,
 } from '../../api/client';
+import { useAuth } from '../../contexts/AuthContext';
 import { useProductDetail } from '../../hooks/useProductDetail';
 import { invalidateOrderViews } from '../../utils/queryInvalidation';
+import { canReadProducts } from '../../utils/workshopRights';
 import { Button } from '../Button';
 import { RefreshFailedNote } from '../workshop/RefreshFailedNote';
 import { WorkshopDialog } from '../workshop/WorkshopDialog';
 import { WorkshopTableScroll } from '../workshop/WorkshopPanel';
 import { MODEL_CHIP, VARIANT_CHIP } from './chips';
 import { LivePartThumb } from '../PartThumb';
+import { bindingByGroup, bindingLabel, type BindingGroup } from '../products/partBinding';
 import { CountInput } from './add-to-order/CountInput';
 import { saveAllowed } from './lineConfigSave';
+import {
+  COMBINATION_STATE_KEY,
+  choicesKey,
+  isCombinationRefusal,
+  optionLabel,
+  optionState,
+  reasonsText,
+  useCombinationState,
+} from './useCombinationState';
 
 const HEAD = 'px-3 py-2 text-left text-xs font-normal text-bambu-gray whitespace-nowrap';
 const CELL = 'px-3 py-2 align-top';
@@ -51,9 +63,17 @@ function defaultsOf(product: Product | undefined): Record<number, number> {
   return out;
 }
 
-/** A part's count per unit under the chosen options, before the line's own changes. */
-function basePer(part: ProductPart, chosen: Set<number>): number {
-  return part.variant_option_id == null || chosen.has(part.variant_option_id) ? part.qty_per_unit : 0;
+/** A part's count per unit under the chosen options, before the line's own changes: in the kit when,
+ *  in every group it is bound in, the chosen option is one of its options («and» across groups, «or»
+ *  within one); a part bound to nothing is always in. An option the product's groups do not hold
+ *  is a group nobody can choose in — never «always in the kit». */
+function basePer(part: ProductPart, chosen: Set<number>, groups: readonly BindingGroup[]): number {
+  const known = new Set(groups.flatMap((group) => group.options.map((option) => option.id)));
+  if (part.variant_option_ids.some((id) => !known.has(id))) return 0;
+  for (const optionIds of bindingByGroup(groups, part.variant_option_ids).values()) {
+    if (!optionIds.some((id) => chosen.has(id))) return 0;
+  }
+  return part.qty_per_unit;
 }
 
 /**
@@ -80,7 +100,7 @@ function bodyOf(
   const changed: Record<number, number> = {};
   for (const [pid, qty] of Object.entries(counts)) {
     const part = parts.get(Number(pid));
-    if (part && qty !== basePer(part, set)) changed[Number(pid)] = qty;
+    if (part && qty !== basePer(part, set, product?.variant_groups ?? [])) changed[Number(pid)] = qty;
   }
   return { choices: chosen, part_counts: changed };
 }
@@ -99,6 +119,16 @@ function bodyOf(
  * ⚠️ «Reset to standard» is the FULL reset — the standard options AND no changed
  * count (E5 R03; the mockup's resets only the counts). A group without a standard
  * option stays unchosen through it (R11).
+ *
+ * Whether the chosen combination can be ordered is the server's answer
+ * (`useCombinationState`, spec product-part-variant-combinations п. 25): a value that
+ * would close it is marked and stays clickable — two groups can be changed one after
+ * the other to leave a closed choice; a value no available combination holds is off,
+ * unless the line has it or it is chosen. Save waits for that answer and refuses a
+ * closed choice — whose dry run is not asked, the server would refuse it as well — but
+ * only when the CHOICES differ from the line's own: a saved line
+ * whose combination closed later keeps it, and its counts can still be changed (the
+ * server checks only a changed choice).
  */
 export function LineConfigDialog({
   orderId,
@@ -113,6 +143,8 @@ export function LineConfigDialog({
 }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
+  const { hasPermission } = useAuth();
+  const markId = useId();
   const productQuery = useProductDetail(line.product_id);
   const product = productQuery.data;
   const isParts = line.mode === 'parts';
@@ -141,11 +173,29 @@ export function LineConfigDialog({
   const initialKey = JSON.stringify(bodyOf(product, isParts, initialChoices, initialCounts));
   const dirty = product != null && bodyKey !== initialKey;
   const debouncedKey = useDebouncedValue(bodyKey, 300);
+  const settled = debouncedKey === bodyKey;
 
+  const defaults = defaultsOf(product);
+  const groups = product?.variant_groups ?? [];
+  // The combination as the server reads it — every group's choice; the line's own beside it.
+  const chosen = { ...defaults, ...choices };
+  const choicesChanged = choicesKey(chosen) !== choicesKey({ ...defaults, ...initialChoices });
+  const combination = useCombinationState(
+    line.product_id,
+    chosen,
+    !isParts && product != null && groups.length > 0 && canReadProducts(hasPermission),
+  );
+  // Only a changed choice is the server's to refuse; while its answer is not in, nothing is sent.
+  const combinationBlocks = choicesChanged && combination.gate !== 'open';
+  // A closed choice is said by the combination note; its dry run would only be refused.
+  const combinationClosed = choicesChanged && combination.gate === 'closed';
+
+  // The dry run asks about the draft on screen only (settled), and a changed choice only once the
+  // combination has answered open — the server refuses a closed one's dry run too.
   const preview = useQuery<LineConfigurationImpact>({
     queryKey: ['line-config-preview', orderId, line.id, debouncedKey],
     queryFn: () => api.previewLineConfiguration(orderId, line.id, JSON.parse(debouncedKey) as LineConfigurationBody),
-    enabled: product != null && debouncedKey !== initialKey,
+    enabled: product != null && debouncedKey !== initialKey && settled && !combinationBlocks,
     retry: false,
     staleTime: 30_000,
   });
@@ -156,19 +206,23 @@ export function LineConfigDialog({
       invalidateOrderViews(queryClient, { orderId });
       onClose();
     },
+    // The combination closed since it was read: read it again, so the marks and reasons say so.
+    onError: (err) => {
+      if (isCombinationRefusal(err)) {
+        void queryClient.invalidateQueries({ queryKey: [COMBINATION_STATE_KEY, line.product_id] });
+      }
+    },
   });
 
-  const defaults = defaultsOf(product);
-  const chosenSet = new Set(Object.values({ ...defaults, ...choices }));
+  const chosenSet = new Set(Object.values(chosen));
   // «Не рахувати» is not a part a line can want (spec workshop-order-issue-followups, rule 34).
   const parts = [...(product?.parts ?? [])].filter((p) => !p.ignored).sort(byOrder);
-  const optionName = new Map((product?.variant_groups ?? []).flatMap((g) => g.options.map((o) => [o.id, o.name] as const)));
 
   /** A count back at what the options give is no longer a change. */
   const setCount = (part: ProductPart, qty: number) =>
     setCounts((prev) => {
       const next = { ...prev };
-      if (!isParts && qty === basePer(part, chosenSet)) delete next[part.id];
+      if (!isParts && qty === basePer(part, chosenSet, groups)) delete next[part.id];
       else next[part.id] = qty;
       return next;
     });
@@ -192,19 +246,44 @@ export function LineConfigDialog({
   // An override is what the body carries — a count the chosen options would not give anyway.
   // A draft key the options have since caught up with is no override (review M2).
   const overrides = isParts ? Object.keys(counts).length : Object.keys(body.part_counts).length;
-  const settled = debouncedKey === bodyKey;
-  const canSave = saveAllowed({
-    productRead: product != null,
-    dirty,
-    settled,
-    fetching: preview.isFetching,
-    status: preview.status,
-  });
+  const canSave =
+    saveAllowed({
+      productRead: product != null,
+      dirty,
+      settled,
+      fetching: preview.isFetching,
+      status: preview.status,
+    }) && !combinationBlocks;
   const pending = save.isPending;
 
   const subtitle = isParts
     ? t('orders.lineConfig.subtitleParts', { order: orderCode, product: line.product_name })
     : t('orders.lineConfig.subtitle', { order: orderCode, product: line.product_name, qty: line.quantity });
+
+  // Beside Save: why it waits or refuses — or that the line keeps a combination closed since.
+  // Save names it as its description (`aria-describedby`), so the reason is read with the button.
+  const noteId = `${markId}-note`;
+  const combinationNote =
+    combination.gate === 'closed' ? (
+      <span id={noteId} data-testid="combination-note" className="text-amber-700 dark:text-amber-400">
+        {t(choicesChanged ? 'orders.combination.closed' : 'orders.combination.closedKept', {
+          reasons: reasonsText(t, combination.reasons),
+        })}
+      </span>
+    ) : combination.gate === 'checking' && choicesChanged ? (
+      <span id={noteId} data-testid="combination-note">
+        {t('orders.combination.checking')}
+      </span>
+    ) : combination.isError && choicesChanged ? (
+      <span data-testid="combination-note" className="inline-flex flex-wrap items-center gap-2">
+        <span id={noteId} className="text-amber-700 dark:text-amber-400">
+          {t('orders.combination.failed')}
+        </span>
+        <Button size="sm" variant="ghost" onClick={() => combination.refetch()}>
+          {t('common.retry')}
+        </Button>
+      </span>
+    ) : undefined;
 
   return (
     <WorkshopDialog
@@ -213,13 +292,27 @@ export function LineConfigDialog({
       subtitle={subtitle}
       size="lg"
       pending={pending}
-      error={save.isError ? save.error.message : undefined}
+      error={
+        save.isError ? (
+          <>
+            {save.error.message}
+            {isCombinationRefusal(save.error) && save.error.reasons && (
+              <span className="block">{reasonsText(t, save.error.reasons)}</span>
+            )}
+          </>
+        ) : undefined
+      }
+      summary={combinationNote}
       footer={
         <>
           <Button variant="secondary" onClick={onClose} disabled={pending}>
             {t('common.cancel')}
           </Button>
-          <Button onClick={() => (dirty ? save.mutate() : onClose())} disabled={!canSave || pending}>
+          <Button
+            onClick={() => (dirty ? save.mutate() : onClose())}
+            disabled={!canSave || pending}
+            aria-describedby={combinationNote ? noteId : undefined}
+          >
             {t('orders.lineConfig.save')}
           </Button>
         </>
@@ -261,27 +354,51 @@ export function LineConfigDialog({
                         {t('orders.lineConfig.noChoice')}
                       </label>
                     )}
-                    {group.options.map((option) => (
-                      <label key={option.id} className="inline-flex items-center gap-1.5 text-sm text-white">
-                        <input
-                          type="radio"
-                          name={`cfg-group-${group.id}`}
-                          checked={current === option.id}
-                          onChange={() => choose(group.id, option.id)}
-                          className="accent-bambu-green"
-                        />
-                        {option.name}
-                        {option.id === group.default_option_id && (
-                          <span className="text-xs text-bambu-gray">{t('orders.lineConfig.standardOption')}</span>
-                        )}
-                      </label>
-                    ))}
+                    {group.options.map((option) => {
+                      // What the line has, and what is chosen, always shows — marked, never off.
+                      const { mark, disabled: off } = optionState(combination, option.id, [
+                        current,
+                        initialChoices[group.id],
+                      ]);
+                      return (
+                        <label
+                          key={option.id}
+                          title={mark ? t(`orders.combination.option.${mark}`) : undefined}
+                          className={`inline-flex items-center gap-1.5 text-sm ${mark ? 'text-amber-700 dark:text-amber-400' : 'text-white'} ${off ? 'cursor-not-allowed opacity-50' : ''}`}
+                        >
+                          <input
+                            type="radio"
+                            name={`cfg-group-${group.id}`}
+                            checked={current === option.id}
+                            disabled={off}
+                            aria-describedby={mark ? `${markId}-${mark}` : undefined}
+                            onChange={() => choose(group.id, option.id)}
+                            className="accent-bambu-green"
+                          />
+                          {optionLabel(t, option.name, mark)}
+                          {option.id === group.default_option_id && (
+                            <span className="text-xs text-bambu-gray">{t('orders.lineConfig.standardOption')}</span>
+                          )}
+                        </label>
+                      );
+                    })}
                   </fieldset>
                 );
               })
             ) : (
               <p className="text-sm text-bambu-gray">{t('orders.lineConfig.noVariants')}</p>
             ))}
+          {/* The two descriptions a marked value points at (`aria-describedby`). */}
+          {!isParts && product.variant_groups.length > 0 && (
+            <>
+              <span id={`${markId}-closes`} className="sr-only">
+                {t('orders.combination.option.closes')}
+              </span>
+              <span id={`${markId}-never`} className="sr-only">
+                {t('orders.combination.option.never')}
+              </span>
+            </>
+          )}
 
           {parts.length === 0 ? (
             <p className="text-sm text-bambu-gray">{t('orders.lineConfig.noParts')}</p>
@@ -304,10 +421,10 @@ export function LineConfigDialog({
                   </thead>
                   <tbody>
                     {parts.map((part) => {
-                      const base = isParts ? 0 : basePer(part, chosenSet);
+                      const base = isParts ? 0 : basePer(part, chosenSet, groups);
                       const shown = counts[part.id] ?? base;
                       const off = !isParts && shown === 0;
-                      const variant = part.variant_option_id != null ? optionName.get(part.variant_option_id) : null;
+                      const variant = bindingLabel(groups, part.variant_option_ids);
                       return (
                         <tr
                           key={part.id}
@@ -404,7 +521,9 @@ export function LineConfigDialog({
             </div>
           )}
 
-          {dirty && <Impact preview={preview} settled={settled} parts={product?.parts ?? []} />}
+          {dirty && (
+            <Impact preview={preview} settled={settled} closed={combinationClosed} parts={product?.parts ?? []} />
+          )}
         </fieldset>
       ) : null}
     </WorkshopDialog>
@@ -461,19 +580,37 @@ function SourceCell({
 }
 
 /** The dry run's answer for this draft, said line by line (E5 F07). A part it drops shows the live
- *  product's picture beside its sentence (plan E6, D5): a picture changing does not re-ask the dry run. */
+ *  product's picture beside its sentence (plan E6, D5): a picture changing does not re-ask the dry run.
+ *
+ *  A closed choice has no dry run (`closed`: the combination note says why). A dry run the server
+ *  refused as `combination_unavailable` — the state said open, failed, or was not asked — is no
+ *  failure to retry: asking again can only be refused again, so it says the refusal's own reasons
+ *  and offers nothing; Save stays off, as for any dry run without an answer. */
 function Impact({
   preview,
   settled,
+  closed,
   parts,
 }: {
   preview: UseQueryResult<LineConfigurationImpact>;
   settled: boolean;
+  closed: boolean;
   parts: ProductPart[];
 }) {
   const { t } = useTranslation();
+  if (closed) return null;
   if (!settled || preview.isFetching || preview.isPending) {
     return <p className="text-sm text-bambu-gray" data-testid="line-config-impact">{t('orders.lineConfig.checking')}</p>;
+  }
+  if (preview.isError && isCombinationRefusal(preview.error)) {
+    const reasons = preview.error.reasons ?? [];
+    return (
+      <p className="text-sm text-amber-700 dark:text-amber-400" data-testid="line-config-impact">
+        {reasons.length > 0
+          ? t('orders.combination.closed', { reasons: reasonsText(t, reasons) })
+          : preview.error.message}
+      </p>
+    );
   }
   if (preview.isError) {
     return (

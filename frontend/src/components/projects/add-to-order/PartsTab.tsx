@@ -11,6 +11,7 @@ import { PaginationBar } from '../../PaginationBar';
 import { Select } from '../../Select';
 import { RefreshFailedNote } from '../../workshop/RefreshFailedNote';
 import { WorkshopTableScroll } from '../../workshop/WorkshopPanel';
+import { variantsLabel, variantsTitle } from '../../products/partBinding';
 import { MODEL_CHIP, VARIANT_CHIP } from '../chips';
 import { MAX_PART_COUNT } from './addToOrderState';
 import type { PartPicks } from './addToOrderState';
@@ -209,9 +210,9 @@ function PartRow({
           <div className="min-w-0">
             <div className="font-semibold [overflow-wrap:break-word]">
               {row.name}
-              {row.variant && (
-                <span className={`ml-1.5 ${VARIANT_CHIP}`} title={`${row.variant.group}: ${row.variant.option}`}>
-                  {row.variant.option}
+              {row.variants.length > 0 && (
+                <span className={`ml-1.5 ${VARIANT_CHIP}`} title={variantsTitle(row.variants) ?? undefined}>
+                  {variantsLabel(row.variants)}
                 </span>
               )}
             </div>

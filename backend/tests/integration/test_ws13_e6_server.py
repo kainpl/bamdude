@@ -20,6 +20,7 @@ from backend.app.models.project import Project
 from backend.app.models.project_line import ProjectLine
 from backend.app.models.stock_issue import StockIssue
 from backend.app.services import finished_stock, line_config
+from backend.tests.fixtures.sliced_sources import slice_parts
 from backend.tests.unit.services.test_product_composition import counting_statements
 
 pytestmark = pytest.mark.integration
@@ -286,6 +287,8 @@ async def _configured_order(db, *, extra_lines: int = 0) -> dict:
     shade = ProductPart(product_id=diffuser.id, kind="printed", name="shade", name_key="shade", qty_per_unit=1)
     db.add(shade)
     await db.flush()
+    # A variant product's line needs its kit sliced (spec product-part-variant-combinations, п. 10).
+    await slice_parts(db, diffuser.id, [shade])
 
     project = Project(name="Diffusers")
     db.add(project)

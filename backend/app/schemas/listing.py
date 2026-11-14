@@ -117,8 +117,9 @@ class ProductPartRow(BaseModel):
 
     part_id: int
     name: str
-    #: The option the part is bound to, when it is — «angled tail» belongs to «Tail: angled».
-    variant: ProductPartVariantOut | None = None
+    #: The groups the part is bound in and its values there, in the groups' order —
+    #: «angled tail» belongs to «Tail: angled»; ``[]`` for a part in every configuration.
+    variants: list[ProductPartVariantOut] = []
     product: ProductPartProductOut
     #: WS-13 E1 K3 — the models THIS part's sliced sources are sliced for.
     models: list[str] = []

@@ -22,6 +22,7 @@ from backend.app.models.product import Product, ProductPart
 from backend.app.models.project import Project
 from backend.app.models.project_line import ProjectLine
 from backend.app.services import finished_stock, line_composition, line_config, product_variants
+from backend.tests.fixtures.sliced_sources import slice_parts
 
 pytestmark = pytest.mark.integration
 
@@ -44,6 +45,8 @@ async def lamp(db_session):
     )
     db_session.add(shade)
     await db_session.flush()
+    # A variant product's line needs its kit sliced (spec product-part-variant-combinations, п. 10).
+    await slice_parts(db_session, product.id, [shade])
     tail = await product_variants.create_group(db_session, product.id, "Tail", ["A", "B"], record_lines=False)
     await db_session.flush()
     groups = await product_variants.groups(db_session, product.id)
@@ -166,11 +169,11 @@ async def test_a_refused_alias_rolls_back_a_binding_change_sent_with_it(committi
     before = await _per(db_session, lamp, lamp["shade"])
     r = await committing_client.patch(
         _url(lamp, f"/parts/{lamp['shade']}"),
-        json={"variant_option_id": lamp["options"]["A"], "aliases": ["cap.stl"]},
+        json={"variant_option_ids": [lamp["options"]["A"]], "aliases": ["cap.stl"]},
     )
     assert r.status_code == 409, r.text
     shade = await db_session.get(ProductPart, lamp["shade"], populate_existing=True)
-    assert shade.variant_option_id is None
+    assert shade.option_links == []
     assert shade.aliases == ["shade.stl", "shade_v2"]
     assert await _per(db_session, lamp, lamp["shade"]) == before
 
@@ -185,11 +188,11 @@ async def test_a_part_created_bound_enters_only_the_lines_and_positions_of_its_o
     before_shade = await _per(db_session, lamp, lamp["shade"])
     r = await committing_client.post(
         _url(lamp, "/parts"),
-        json={"kind": "printed", "name": "Tail A", "qty_per_unit": 1, "variant_option_id": lamp["options"]["A"]},
+        json={"kind": "printed", "name": "Tail A", "qty_per_unit": 1, "variant_option_ids": [lamp["options"]["A"]]},
     )
     assert r.status_code == 200, r.text
     x = r.json()
-    assert x["variant_option_id"] == lamp["options"]["A"]
+    assert x["variant_option_ids"] == [lamp["options"]["A"]]
     assert await _per(db_session, lamp, x["id"]) == {"L_A": 1, "L_B": 0, "L_O": 1, "L_P": 0, "P_A": 1, "P_B": 0}
     # Nothing else moved: L_O keeps its own count of shade, every other count stands.
     assert await _per(db_session, lamp, lamp["shade"]) == before_shade
@@ -199,9 +202,22 @@ async def test_a_part_created_bound_enters_only_the_lines_and_positions_of_its_o
 async def test_a_new_line_takes_a_bound_part_by_its_choice(committing_client, db_session, lamp):
     r = await committing_client.post(
         _url(lamp, "/parts"),
-        json={"kind": "printed", "name": "Tail A", "qty_per_unit": 1, "variant_option_id": lamp["options"]["A"]},
+        json={"kind": "printed", "name": "Tail A", "qty_per_unit": 1, "variant_option_ids": [lamp["options"]["A"]]},
     )
     x = r.json()["id"]
+    # The new lines' combinations must be open (spec product-part-variant-combinations, п. 10):
+    # «B» needs a part that names it, and every printed part of a kit a sliced source.
+    tail_b = await committing_client.post(
+        _url(lamp, "/parts"),
+        json={"kind": "printed", "name": "Tail B", "qty_per_unit": 1, "variant_option_ids": [lamp["options"]["B"]]},
+    )
+    assert tail_b.status_code == 200, tail_b.text
+    new_parts = (
+        (await db_session.execute(select(ProductPart).where(ProductPart.id.in_([x, tail_b.json()["id"]]))))
+        .scalars()
+        .all()
+    )
+    await slice_parts(db_session, lamp["product"], new_parts)
     order = await db_session.get(Project, (await db_session.get(ProjectLine, lamp["lines"]["L_A"])).project_id)
     fresh = {}
     for label, option in (("new_A", "A"), ("new_B", "B")):
@@ -239,7 +255,7 @@ async def test_a_foreign_option_refuses_the_create_and_writes_nothing(committing
     count = len((await committing_client.get(_url(lamp))).json()["parts"])
     r = await committing_client.post(
         _url(lamp, "/parts"),
-        json={"kind": "printed", "name": "Odd", "aliases": ["odd_v2"], "variant_option_id": foreign},
+        json={"kind": "printed", "name": "Odd", "aliases": ["odd_v2"], "variant_option_ids": [foreign]},
     )
     assert r.status_code == 422, r.text
     assert len((await committing_client.get(_url(lamp))).json()["parts"]) == count

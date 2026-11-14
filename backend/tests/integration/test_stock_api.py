@@ -296,7 +296,7 @@ async def _shaded_lamp(client, db):
         assert r.status_code == 200, r.text
         ids[name] = r.json()["id"]
         r = await client.patch(
-            f"/api/v1/products/{pid}/parts/{ids[name]}", json={"variant_option_id": options[name.split()[0]]}
+            f"/api/v1/products/{pid}/parts/{ids[name]}", json={"variant_option_ids": [options[name.split()[0]]]}
         )
         assert r.status_code == 200, r.text
         await move(db, part_id=ids[name], delta=on_hand, reason="unfiled_print")
@@ -342,9 +342,11 @@ async def test_kits_by_option_varies_one_group_at_a_time(committing_client, db_s
     # ST5: the product page asks the same helper.
     product_stock = (await committing_client.get(f"/api/v1/products/{pid}/stock")).json()
     assert product_stock["kits_by_option"] == items[pid]["kits_by_option"]
-    # The bound parts say which option they belong to.
-    variants = {p["name"]: p["variant"] for p in items[pid]["parts"]}
-    assert variants["round shade"] == {"group": "Shade", "option": "round"} and variants["lid"] is None
+    # The bound parts say which option they belong to — the stock page and the product page alike.
+    variants = {p["name"]: p["variants"] for p in items[pid]["parts"]}
+    assert variants["round shade"] == [{"group": "Shade", "options": ["round"]}] and variants["lid"] == []
+    balances = {b["name"]: b["variants"] for b in product_stock["balances"]}
+    assert balances["round shade"] == variants["round shade"] and balances["lid"] == []
 
 
 @pytest.mark.asyncio

@@ -1,13 +1,14 @@
 """A product's variant groups and their options (spec workshop-product-variants, rules 1–3).
 
 A group is a choice an order makes once per unit — «Хвіст: прямий / кутовий».
-A part bound to an option (``ProductPart.variant_option_id``) is in the kit
-only when the line chose that option; an unbound part is always in it. What a
-line chose is ``line_config.ProjectLineChoice``, written by
+A part is bound to a set of options, across groups (``ProductPartOption``,
+spec product-part-variant-combinations): it is in a line's kit when, for every
+group it has options in, the line chose one of them; an unbound part is always
+in it. What a line chose is ``line_config.ProjectLineChoice``, written by
 ``services/line_config.py`` alone.
 """
 
-from sqlalchemy import ForeignKey, Integer, String
+from sqlalchemy import Boolean, ForeignKey, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.app.core.database import Base
@@ -33,6 +34,10 @@ class ProductVariantGroup(Base):
     # the portable backup's DDL keeps out of its checked set, and a fresh
     # install would carry a constraint a migrated one does not.
     default_option_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # «Every value needs its own part» (spec product-part-variant-combinations, п. 10): only
+    # in such a group does a chosen value no part of the kit names close the combination.
+    # Off by default — an optional add-on («Magnet: no / yes») keeps its «no» orderable.
+    requires_part: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="0")
 
     options: Mapped[list["ProductVariantOption"]] = relationship(
         back_populates="group",
@@ -52,3 +57,23 @@ class ProductVariantOption(Base):
     position: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
 
     group: Mapped[ProductVariantGroup] = relationship(back_populates="options", foreign_keys=[group_id])
+
+
+class ProductPartOption(Base):
+    """One option a part is bound to (spec product-part-variant-combinations, m225).
+
+    ``group_id`` is the option's own group, stored so the kit rule needs no join —
+    an option never changes group. ``ProductPart.bound`` is the shape the kit rule
+    reads. SQLite runs no FK actions: deleting a part, option, group or product
+    removes these rows in code.
+    """
+
+    __tablename__ = "product_part_options"
+
+    part_id: Mapped[int] = mapped_column(ForeignKey("product_parts.id", ondelete="CASCADE"), primary_key=True)
+    option_id: Mapped[int] = mapped_column(
+        ForeignKey("product_variant_options.id", ondelete="CASCADE"), primary_key=True
+    )
+    group_id: Mapped[int] = mapped_column(
+        ForeignKey("product_variant_groups.id", ondelete="CASCADE"), nullable=False, index=True
+    )

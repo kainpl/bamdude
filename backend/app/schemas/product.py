@@ -8,7 +8,7 @@ every read from the linked file's ``file_metadata``.
 from datetime import datetime
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import AliasChoices, BaseModel, Field, field_validator, model_validator
 
 from backend.app.schemas.farm_forecast import EstimateReasonOut
 from backend.app.schemas.part_image import ImageChoice, InstanceImageRef, PartImageRef
@@ -145,6 +145,23 @@ class ProductDuplicate(BaseModel):
     name: str | None = Field(default=None, max_length=255)
 
 
+_BOTH_BINDINGS = "Send variant_option_ids or the older variant_option_id, not both"
+
+
+def _legacy_binding(data: Any) -> Any:
+    """The older single ``variant_option_id`` (spec product-part-variant-combinations,
+    rule 16) read as a list of one — an explicit ``null`` as the empty list, «always in
+    the kit». Sent beside ``variant_option_ids`` it is a 422: two answers to one question."""
+    if not isinstance(data, dict) or "variant_option_id" not in data:
+        return data
+    if "variant_option_ids" in data:
+        raise ValueError(_BOTH_BINDINGS)
+    data = dict(data)
+    legacy = data.pop("variant_option_id")
+    data["variant_option_ids"] = [] if legacy is None else [legacy]
+    return data
+
+
 class ProductPartCreate(BaseModel):
     kind: str = Field(pattern="^(printed|purchased)$")
     name: str = Field(min_length=1, max_length=512)
@@ -158,9 +175,17 @@ class ProductPartCreate(BaseModel):
     #: The whole alias list of a printed part, normalised by the route — its own key
     #: always stays (WS-13 E10 A05). A purchased part takes none.
     aliases: list[Annotated[str, Field(max_length=512)]] | None = None
-    #: Created already bound to this option: the new part enters the final composition
-    #: — the lines and positions that chose it — with nothing frozen (A05, K22).
-    variant_option_id: int | None = None
+    #: Created already bound to these options, across the product's groups (spec
+    #: product-part-variant-combinations, rule 16): the new part enters the final
+    #: composition — the lines and positions whose choices it fits — with nothing frozen
+    #: (A05, K22). Empty: in every configuration. The older ``variant_option_id`` is read
+    #: as a list of one.
+    variant_option_ids: list[int] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _legacy_variant_option_id(cls, data: Any) -> Any:
+        return _legacy_binding(data)
 
     @field_validator("name", mode="before")
     @classmethod
@@ -184,20 +209,26 @@ class ProductPartUpdate(BaseModel):
     #: Absent or ``null`` — the aliases stay; a list — the whole list, own key kept
     #: (WS-13 E10 A05). Written beside the other fields, in the same transaction.
     aliases: list[Annotated[str, Field(max_length=512)]] | None = None
-    #: The option this part belongs to, or ``null`` for a part in every
-    #: configuration (spec workshop-product-variants, rule 19). The route
-    #: refuses an option of another product.
-    variant_option_id: int | None = None
+    #: The options this part is bound to, across the product's groups — the WHOLE set;
+    #: ``[]`` for a part in every configuration (spec product-part-variant-combinations,
+    #: rules 4, 16). Absent: unchanged. The route refuses an option of another product.
+    #: The older ``variant_option_id`` is read as a list of one (``null`` as ``[]``).
+    variant_option_ids: list[int] | None = None
     #: «Не рахувати» (spec workshop-order-issue-followups, rule 34). The route refuses it on
     #: a part in the kit (422) and on one that holds stock or is ordered (409).
     ignored: bool | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _legacy_variant_option_id(cls, data: Any) -> Any:
+        return _legacy_binding(data)
 
     @field_validator("name", mode="before")
     @classmethod
     def _name_is_never_null_and_is_clean(cls, v: Any) -> Any:
         return _clean_name(_never_null(v, "name"))
 
-    @field_validator("qty_per_unit", "sort_order", "ignored", "extra_percent")
+    @field_validator("qty_per_unit", "sort_order", "ignored", "extra_percent", "variant_option_ids")
     @classmethod
     def _number_is_never_null(cls, v: int | None) -> int | None:
         return _never_null(v, "value")
@@ -229,7 +260,11 @@ class ProductPartResponse(BaseModel):
     sourcing_url: str | None = None
     remarks: str | None = None
     sort_order: int = 0
-    variant_option_id: int | None = None
+    #: The options the part is bound to, across groups (spec product-part-variant-combinations,
+    #: rule 16) — read off the ORM part's ``option_links``; ``[]`` = in every configuration.
+    variant_option_ids: list[int] = Field(
+        default_factory=list, validation_alias=AliasChoices("variant_option_ids", "option_links")
+    )
     ignored: bool = False
     # How many of this part are on the shelf (pass 8, Decision 6). A SUM over
     # the ledger, never a column — ``models/part_stock`` says why — so every
@@ -251,6 +286,14 @@ class ProductPartResponse(BaseModel):
         printed-only. Reaching the field with ``None`` would fail validation on
         a row that is perfectly valid, so the wire type stays a list either way."""
         return list(v or [])
+
+    @field_validator("variant_option_ids", mode="before")
+    @classmethod
+    def _option_ids(cls, v: Any) -> Any:
+        """A part's ``option_links`` rows become their option ids, ascending."""
+        if v is None:
+            return []
+        return sorted(getattr(link, "option_id", link) for link in v)
 
     class Config:
         from_attributes = True
@@ -478,6 +521,9 @@ class VariantGroupOut(BaseModel):
     name: str
     position: int = 0
     default_option_id: int | None = None
+    #: «Every value needs its own part» (spec product-part-variant-combinations, п. 10): only
+    #: then does a chosen value no part of the kit names close a combination.
+    requires_part: bool = False
     options: list[VariantOptionOut] = []
     #: What would refuse the group's delete, counted by the server exactly as the delete
     #: guard counts (WS-13 E1 VR9): lines and positions with a choice in it, parts bound
@@ -509,11 +555,19 @@ class VariantGroupDraftIn(BaseModel):
     #: The standard option — an ``id`` or a ``temp_id`` of THIS group's options; ``null``
     #: only for an existing group whose stored standard is already ``null`` (WS-13 E10 A06).
     default: int | str | None = None
+    #: «Every value needs its own part». Left out — an existing group keeps its mark, a new
+    #: group is off; an explicit ``null`` is refused.
+    requires_part: bool | None = None
 
     @field_validator("name", mode="before")
     @classmethod
     def _name(cls, v: Any) -> Any:
         return _clean_name(v)
+
+    @field_validator("requires_part")
+    @classmethod
+    def _requires_part(cls, v: bool | None) -> bool | None:
+        return _never_null(v, "requires_part")
 
 
 class VariantsApplyIn(BaseModel):
@@ -535,6 +589,8 @@ class VariantGroupCreate(BaseModel):
     #: The first one is the standard. At least one — checked by the route, so
     #: the refusal is a sentence rather than a validation list.
     options: list[str] = []
+    #: «Every value needs its own part» — off unless asked for.
+    requires_part: bool = False
 
     @field_validator("name", mode="before")
     @classmethod
@@ -558,15 +614,16 @@ class VariantGroupUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=128)
     default_option_id: int | None = None
     position: int | None = None
+    requires_part: bool | None = None
 
     @field_validator("name", mode="before")
     @classmethod
     def _name(cls, v: Any) -> Any:
         return _clean_name(_never_null(v, "name"))
 
-    @field_validator("default_option_id", "position")
+    @field_validator("default_option_id", "position", "requires_part")
     @classmethod
-    def _not_null(cls, v: int | None) -> int | None:
+    def _not_null(cls, v: int | bool | None) -> int | bool | None:
         return _never_null(v, "value")
 
 
@@ -778,10 +835,12 @@ class ProductFromFileResponse(BaseModel):
 
 
 class ProductPartVariantOut(BaseModel):
-    """The option a part is bound to — «angled tail» belongs to «Tail: angled»."""
+    """One group a part is bound in, with the values it takes there — «angled tail»
+    belongs to «Tail: angled»; a cap that fits two jars to «Weight: 400, 600» (spec
+    product-part-variant-combinations). Names, in the group's option order."""
 
     group: str
-    option: str
+    options: list[str]
 
 
 class StockBalanceOut(BaseModel):
@@ -801,8 +860,9 @@ class StockBalanceOut(BaseModel):
     #: workshop-order-issue-followups, rule 49). Only the product page's stock asks it;
     #: the stock tab's rows leave it null rather than claim a zero nobody counted.
     held_for_orders: int | None = None
-    #: WS-13 E1 ST4 — the option the part is bound to, when it is.
-    variant: ProductPartVariantOut | None = None
+    #: WS-13 E1 ST4 — the groups the part is bound in and its values there, in the
+    #: groups' order; ``[]`` for a part in every configuration.
+    variants: list[ProductPartVariantOut] = []
     #: The part's picture (spec part-thumbnails §11.3) -- filled by ``part_images.fill`` after the
     #: answer is built; ``None`` where the route is not one that shows pictures.
     image: PartImageRef | None = None
@@ -826,6 +886,80 @@ class ProductKitsOut(BaseModel):
     options and counts could take off the shelf."""
 
     kits_available: int = 0
+
+
+# ---------- combinations of variant values (spec product-part-variant-combinations) ----------
+
+
+class CombinationReasonOut(BaseModel):
+    """Why a combination cannot be ordered, as name snapshots — the same reason the 409
+    ``combination_unavailable`` refusal carries; the frontend composes the sentence.
+    ``option_without_part`` names ``group`` and ``option`` (``None`` for a group with no
+    standard value left unchosen); ``part_not_sliced`` names ``part``."""
+
+    code: Literal["option_without_part", "part_not_sliced"]
+    group: str | None = None
+    option: str | None = None
+    part: str | None = None
+
+
+class CombinationChoiceOut(BaseModel):
+    """One group's value in a combination."""
+
+    group_id: int
+    group: str
+    option_id: int
+    option: str
+
+
+class CombinationOut(BaseModel):
+    """One combination of the table: a value of every group, in the groups' order."""
+
+    choices: list[CombinationChoiceOut]
+    available: bool
+    reasons: list[CombinationReasonOut] = []
+
+
+class ProductCombinationsOut(BaseModel):
+    """``GET /products/{id}/combinations`` — one page of the combinations, groups by
+    position, values by position, the last group fastest; ``total`` counts the ones the
+    ``state`` filter keeps (0 for a product without groups). ``available_total`` /
+    ``unavailable_total`` count both kinds whatever the filter; ``None`` for a product of
+    more than ``combination_gate.MAX_ENUMERATED`` combinations, which cannot be filtered."""
+
+    total: int
+    page: int
+    items: list[CombinationOut] = []
+    available_total: int | None = None
+    unavailable_total: int | None = None
+
+
+class CombinationIn(BaseModel):
+    """``POST /products/{id}/combination`` — ``group_id → option_id``; a group left out
+    takes its standard value."""
+
+    choices: dict[int, int] = Field(default_factory=dict)
+
+
+class CombinationOptionOut(BaseModel):
+    """One value of one group, beside a choice: ``available_here`` — this value with the
+    other groups as chosen; ``available_anywhere`` — in at least one available
+    combination, ``None`` (unknown) for a product of more than
+    ``combination_gate.MAX_ENUMERATED`` combinations."""
+
+    group_id: int
+    option_id: int
+    available_here: bool
+    available_anywhere: bool | None = None
+
+
+class CombinationStateOut(BaseModel):
+    """``POST /products/{id}/combination`` — is the choice available, why not, and every
+    value of every group in the table's order."""
+
+    available: bool
+    reasons: list[CombinationReasonOut] = []
+    options: list[CombinationOptionOut] = []
 
 
 class StockMovementOut(BaseModel):

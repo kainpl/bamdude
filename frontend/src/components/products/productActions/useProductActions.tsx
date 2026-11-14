@@ -234,8 +234,19 @@ export function useProductActions<P extends ProductRef>({
       />
     );
   } else if (active?.kind === 'toOrder') {
+    // The row or the page already knows the product's groups: the dialog asks its combination
+    // at once instead of waiting for a catalog page to list it (review M-h).
+    const groups = active.ref.variant_groups;
     host = (
-      <AddToOrderDialog preselectProduct={{ id: active.ref.id, code: active.ref.code }} onClose={close} />
+      <AddToOrderDialog
+        preselectProduct={{
+          id: active.ref.id,
+          code: active.ref.code,
+          name: active.ref.name,
+          hasGroups: groups ? groups.length > 0 : undefined,
+        }}
+        onClose={close}
+      />
     );
   }
 

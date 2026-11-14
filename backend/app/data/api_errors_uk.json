@@ -899,6 +899,7 @@
   "That Zigbee device is a sensor, not a plug. Sensors are not bound to printers.": "Цей пристрій Zigbee — датчик, а не розетка. Датчики не привʼязуються до принтерів.",
   "That address is the Zigbee coordinator itself, not a plug.": "Ця адреса належить самому координатору Zigbee, а не розетці.",
   "That change would make two stock positions the same configuration": "Після цієї зміни дві позиції складу стали б однією конфігурацією",
+  "That combination is not available": "Ця комбінація недоступна",
   "That file is larger than {} bytes": "Цей файл більший за {} байтів",
   "That file is not linked to this product": "Цей файл не звʼязано з цим виробом",
   "That option does not belong to this group": "Ця опція не належить цій групі",

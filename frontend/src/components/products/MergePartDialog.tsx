@@ -145,7 +145,7 @@ export function MergePartDialog({ product, source, onClose, beforeSend }: MergeP
         {shelf > 0 && <li>{t('products.mergeDialog.stock', { count: shelf })}</li>}
         <li>{t('products.mergeDialog.orders')}</li>
         <li>{t('products.mergeDialog.procurement')}</li>
-        {source.variant_option_id != null && <li>{t('products.mergeDialog.variant')}</li>}
+        {source.variant_option_ids.length > 0 && <li>{t('products.mergeDialog.variant')}</li>}
         {source.image_choice?.source === 'photo' && <li>{t('products.mergeDialog.photo')}</li>}
       </ul>
     </WorkshopDialog>

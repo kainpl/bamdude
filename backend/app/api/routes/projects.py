@@ -173,6 +173,7 @@ from backend.app.schemas.project import (
 )
 from backend.app.services import (
     archive_parts,
+    combination_gate,
     farm_forecast,
     filament_needs,
     finished_stock,
@@ -351,7 +352,7 @@ def _line_purchased(ctx, line: ProjectLine) -> list[LinePurchasedPartOut]:
             name=part.name,
             per=per,
             need=per * line.quantity,
-            variant=part.variant_option_id is not None,
+            variant=bool(part.bound),
         )
         for part, per in composition_of(ctx, line)
         if part.kind == "purchased" and per > 0
@@ -385,9 +386,7 @@ async def _response(db: AsyncSession, project_id: int) -> ProjectResponse:
         ctx.lines,
         counted_parts_by_line({ctx.project.id: figs}),
     )
-    variant_parts = {
-        part.id for parts in ctx.parts_by_product.values() for part in parts if part.variant_option_id is not None
-    }
+    variant_parts = {part.id for parts in ctx.parts_by_product.values() for part in parts if part.bound}
     project = ctx.project
     customer = await db.get(Customer, project.customer_id) if project.customer_id else None
     contact = await db.get(CustomerContact, project.contact_id) if project.contact_id else None
@@ -1266,6 +1265,10 @@ async def create_project_from_files(
         raise HTTPException(status_code=400, detail="Product is not a catalogue product")
     except order_from_files.FilesNotLinked:
         raise HTTPException(status_code=400, detail="Every file must be linked to the product")
+    except line_config.LineConfigError as e:
+        # A catalog product's standard combination may be closed (spec
+        # product-part-variant-combinations, п. 13): its structured refusal.
+        raise HTTPException(status_code=e.status, detail=combination_gate.refusal_detail(e)) from e
     # Rule 10 of spec workshop-order-stage: the author is responsible.
     project.responsible_id = current_user.id if current_user else None
     await order_journal.record(db, project.id, "order_created", {"source": "files"}, actor=current_user)
@@ -1941,7 +1944,8 @@ async def _intake(
     try:
         return await line_intake.add_lines(db, project, specs, actor=actor, visible=visible)
     except line_intake.LineIntakeError as e:
-        raise HTTPException(status_code=e.status, detail=str(e)) from e
+        # A closed combination answers its structured refusal (spec product-part-variant-combinations, п. 13).
+        raise HTTPException(status_code=e.status, detail=combination_gate.refusal_detail(e)) from e
     except (part_stock.PartStockError, finished_stock.FinishedStockError) as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
 
@@ -2343,7 +2347,7 @@ async def configure_line(
             key = await line_config.target_key(db, line, choices=data.choices, counts=data.part_counts)
             await finished_stock.lock_line(db, line, also_keys=[key])
         except line_config.LineConfigError as e:
-            raise HTTPException(status_code=e.status, detail=str(e)) from e
+            raise HTTPException(status_code=e.status, detail=combination_gate.refusal_detail(e)) from e
         except finished_stock.FinishedStockError as e:
             raise HTTPException(status_code=e.status, detail=str(e)) from e
     old_key = line.config_key
@@ -2355,7 +2359,8 @@ async def configure_line(
             db, line, choices=data.choices, counts=data.part_counts, actor=current_user, dry_run=data.dry_run
         )
     except line_config.LineConfigError as e:
-        raise HTTPException(status_code=e.status, detail=str(e)) from e
+        # A changed choice to a closed combination: the structured refusal, dry run included.
+        raise HTTPException(status_code=e.status, detail=combination_gate.refusal_detail(e)) from e
     except part_stock.PartStockError as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
     if data.dry_run:
@@ -4549,6 +4554,9 @@ async def _enqueue_order_plan(
     except ValueError as exc:
         raise HTTPException(422, "Order print options do not fit the target printer") from exc
 
+    from backend.app.services.print_color_defaults import default_force_color_match
+
+    color_default = await default_force_color_match(db) if frozen_options is None else False
     created: list[PlanEnqueueCreated] = []
 
     def _partial(message: str) -> HTTPException:
@@ -4573,6 +4581,8 @@ async def _enqueue_order_plan(
         options.update(explicit_options[plate.sliced_for_model])
         if frozen_options is not None:
             options = deepcopy(frozen_options["options"])
+        # Old registered submissions have no colour field: retain their original loose policy.
+        options.setdefault("force_color_match", color_default)
         # Explicit order choices win over the profile. Swap macros are NOT decided
         # here from the library row: the printer branch's writer decides them from
         # the declaration its capture confirms and that printer's swap mode, and an
