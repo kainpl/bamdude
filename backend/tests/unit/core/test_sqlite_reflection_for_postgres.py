@@ -7,7 +7,8 @@ did to the importer on 2026-09-09.
 
 import sqlite3
 
-from sqlalchemy import JSON, Boolean, Column, Integer, MetaData, String, Table
+import pytest
+from sqlalchemy import JSON, Boolean, Column, Integer, MetaData, String, Table, create_engine
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.schema import CreateIndex, CreateTable
 
@@ -132,3 +133,31 @@ class TestConstraintAndIndexOfOneName:
         ddl = str(CreateTable(table).compile(dialect=postgresql.dialect()))
         assert "CONSTRAINT uq_notes_dedupe_key UNIQUE (dedupe_key)" in ddl
         assert [i.name for i in table.indexes] == ["ix_notes_owner"]
+
+
+@pytest.mark.parametrize("duplicate_index", [False, True])
+def test_real_failed_return_receipt_reflects_uniques_and_lookup_index(tmp_path, duplicate_index):
+    from backend.app.core.database import Base
+    from backend.app.models.auto_queue_return import AutoQueueReturn
+
+    path = tmp_path / "receipt.db"
+    engine = create_engine(f"sqlite:///{path}")
+    try:
+        AutoQueueReturn.__table__.create(engine)
+    finally:
+        engine.dispose()
+    if duplicate_index:
+        with sqlite3.connect(path) as conn:
+            conn.execute(
+                "CREATE UNIQUE INDEX uq_aq_return_attempt_identity "
+                "ON auto_queue_returns (old_job_identity, execution_archive_identity)"
+            )
+    reflected = _reflect_sqlite_schema(path, Base.metadata).tables["auto_queue_returns"]
+    ddl = str(CreateTable(reflected).compile(dialect=postgresql.dialect()))
+    assert "CONSTRAINT uq_aq_return_attempt_identity UNIQUE (old_job_identity, execution_archive_identity)" in ddl
+    assert "CONSTRAINT uq_aq_return_auto_ordinal UNIQUE (auto_identity, ordinal)" in ddl
+    assert "CONSTRAINT ck_aq_return_publication CHECK" in ddl
+    assert set(reflected.c.keys()) == set(AutoQueueReturn.__table__.c.keys())
+    assert {i.name for i in reflected.indexes} == {"ix_aq_return_ready_time"}
+    index_ddl = str(CreateIndex(next(iter(reflected.indexes))).compile(dialect=postgresql.dialect()))
+    assert "ix_aq_return_ready_time ON auto_queue_returns (returned_at, ready_at, id)" in index_ddl

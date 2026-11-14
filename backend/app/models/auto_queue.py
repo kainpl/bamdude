@@ -23,7 +23,7 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Index, Integer, String, Text, false, func
+from sqlalchemy import JSON, Boolean, CheckConstraint, DateTime, ForeignKey, Index, Integer, String, Text, false, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.app.core.database import Base
@@ -39,6 +39,7 @@ class AutoQueueItem(Base):
     # The order figures and the order's queue section read an order's
     # undistributed rows (spec workshop-order-queue); measured plan in m191.
     __table_args__ = (
+        CheckConstraint("failed_return_count >= 0", name="ck_aq_return_count"),
         Index("ix_auto_queue_items_project_status", "project_id", "status"),
         Index("ix_auto_queue_items_swap_declaration_identity", "swap_declaration_identity", unique=True),
     )
@@ -52,6 +53,10 @@ class AutoQueueItem(Base):
     # Immutable order choices copied at creation. Promotion/rebalance picks the
     # sliced model's entry; NULL retains the existing operator-profile path.
     order_print_options: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # Only the guarded failed-return publication advances these. A manual
+    # never-started transfer keeps this logical job's count and dispatch proof.
+    failed_return_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    failed_return_proof: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     # Source file (mirrors print_queue: archive_id XOR library_file_id)
     #
