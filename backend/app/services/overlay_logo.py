@@ -100,8 +100,44 @@ def _unreadable(exc: OSError) -> None:
         )
 
 
+#: A ``.logo-*.tmp`` this old belongs to no write in progress: a process killed between creating it and the
+#: rename left it. A younger one may be another upload's, and is left alone.
+STALE_TEMPORARY_SECONDS = 60.0
+# Whether this process has looked for such leftovers at a read yet (every write looks).
+_reclaimed = False
+# os.replace onto a file a reader holds open fails with a sharing violation on Windows for as long as it is held.
+_REPLACE_DELAYS = (0.005, 0.02, 0.05, 0.1)  # ~0.2 s in all
+
+
+def _reclaim_temporaries() -> None:
+    """Remove the temporary files a hard kill left beside the logo. Best effort: never fails a read or a write."""
+    global _reclaimed
+    _reclaimed = True
+    try:
+        for leftover in directory().glob(".logo-*.tmp"):
+            try:
+                if time.time() - leftover.stat().st_mtime > STALE_TEMPORARY_SECONDS:
+                    leftover.unlink()
+            except OSError:
+                continue
+    except OSError:
+        return
+
+
+def _replace(source: str, target: Path) -> None:
+    for delay in _REPLACE_DELAYS:
+        try:
+            os.replace(source, target)
+            return
+        except PermissionError:
+            time.sleep(delay)
+    os.replace(source, target)
+
+
 def _read() -> tuple[tuple[int, int] | None, Logo | None]:
     global _unreadable_logged
+    if not _reclaimed:
+        _reclaim_temporaries()
     path = _path()
     try:
         info = path.stat()
@@ -185,6 +221,7 @@ def _write(content: bytes) -> None:
 def _store(png: bytes) -> None:
     target = directory()
     target.mkdir(parents=True, exist_ok=True)
+    _reclaim_temporaries()
     # Replaced atomically, so a reader never sees half a PNG; the temporary file never outlives this call.
     handle, temporary = tempfile.mkstemp(dir=target, prefix=".logo-", suffix=".tmp")
     try:
@@ -192,7 +229,7 @@ def _store(png: bytes) -> None:
             stream.write(png)
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(temporary, target / FILE_NAME)
+        _replace(temporary, target / FILE_NAME)
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)

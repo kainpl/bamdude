@@ -15,7 +15,7 @@ it is opened without a session. It serves this one file: no path parameter, no d
 
 from __future__ import annotations
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import Response
 
 from backend.app.core.auth import RequireAnyPermission, RequireOverlayToken, RequirePermission
@@ -42,6 +42,9 @@ def _unavailable() -> HTTPException:
         507, "The overlay-branding folder in the data directory cannot be written; check its permissions"
     )
 
+
+#: What the multipart framing (boundaries, the part's headers) may add to a logo of the largest size.
+_MULTIPART_OVERHEAD = 64 * 1024
 
 # Whoever may open an overlay signed in (it draws the camera) or read the settings the builder lives in.
 _MAY_SEE = RequireAnyPermission(Permission.SETTINGS_READ, Permission.CAMERA_VIEW)
@@ -85,8 +88,26 @@ async def get_logo(v: str | None = None, _=_MAY_SEE):
 
 
 @router.post("/settings/overlay-logo")
-async def upload_logo(file: UploadFile = File(...), _=RequirePermission(Permission.SETTINGS_UPDATE)):
-    # One byte more than allowed is enough to know, and all that is read of an oversized upload.
+async def upload_logo(request: Request, _=RequirePermission(Permission.SETTINGS_UPDATE)):
+    """Multipart, one part named ``file``.
+
+    The form is read HERE, not declared as a ``File(...)`` parameter: a declared one is spooled whole before
+    the handler runs, whatever its size. An upload that declares too many bytes is refused before any of its
+    body is read; one that declares nothing (chunked) is spooled by the parser and refused on what was read.
+    """
+    declared = request.headers.get("content-length") or ""
+    if declared.isdigit() and int(declared) > overlay_logo.MAX_BYTES + _MULTIPART_OVERHEAD:
+        raise _refuse("too_large")
+    try:
+        form = await request.form(max_files=1, max_fields=1)
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(422, "The logo must be a PNG, JPEG or WebP image") from None
+    file = form.get("file")
+    if file is None or isinstance(file, str):
+        raise HTTPException(422, "The logo must be a PNG, JPEG or WebP image")
+    # One byte more than allowed is enough to know.
     content = await file.read(overlay_logo.MAX_BYTES + 1)
     try:
         logo = await overlay_logo.save(content)

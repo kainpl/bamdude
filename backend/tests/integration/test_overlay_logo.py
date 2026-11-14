@@ -9,6 +9,8 @@ is the installation's branding and not a user's resource.
 from __future__ import annotations
 
 import io
+import os
+import time
 
 import pytest
 from httpx import AsyncClient
@@ -379,6 +381,90 @@ class TestAFolderWeCannotUse:
         answer = await async_client.delete(UPLOAD)
 
         assert answer.status_code == 507, answer.text
+
+
+# ---------------------------------------------------------------- what a hard kill or a busy file leaves (M5, M6)
+
+
+class TestTheFileIsRobust:
+    @staticmethod
+    def _leftover(age_seconds: float):
+        folder = settings.base_dir / "overlay-branding"
+        folder.mkdir(parents=True, exist_ok=True)
+        leftover = folder / ".logo-killed.tmp"
+        leftover.write_bytes(b"half a png")
+        then = time.time() - age_seconds
+        os.utime(leftover, (then, then))
+        return leftover
+
+    async def test_a_temporary_file_a_hard_kill_left_goes_at_the_next_write(self, async_client: AsyncClient):
+        leftover = self._leftover(3600)
+
+        assert (await async_client.post(UPLOAD, files=_file(_image()))).status_code == 200
+
+        assert not leftover.exists()
+
+    async def test_and_at_the_first_read_after_a_start(self, async_client: AsyncClient, monkeypatch):
+        monkeypatch.setattr(overlay_logo, "_reclaimed", False)
+        leftover = self._leftover(3600)
+
+        assert (await async_client.get(INFO)).status_code == 200
+
+        assert not leftover.exists()
+
+    async def test_a_write_in_progress_is_not_reclaimed(self, async_client: AsyncClient, monkeypatch):
+        monkeypatch.setattr(overlay_logo, "_reclaimed", False)
+        being_written = self._leftover(1)
+
+        await async_client.get(INFO)
+        await async_client.post(UPLOAD, files=_file(_image()))
+
+        assert being_written.exists()
+
+    async def test_a_reader_holding_the_file_delays_the_replacement_and_does_not_fail_it(
+        self, async_client: AsyncClient, monkeypatch
+    ):
+        """On Windows a concurrent read of the logo makes ``os.replace`` fail with a sharing violation for as
+        long as the reader holds it."""
+        real, calls = os.replace, []
+
+        def busy_twice(source, target):
+            calls.append(target)
+            if len(calls) <= 2:
+                raise PermissionError(13, "sharing violation")
+            return real(source, target)
+
+        monkeypatch.setattr(overlay_logo.os, "replace", busy_twice)
+
+        answer = await async_client.post(UPLOAD, files=_file(_image()))
+
+        assert answer.status_code == 200, answer.text
+        assert len(calls) == 3
+        assert [path.name for path in (settings.base_dir / "overlay-branding").iterdir()] == ["logo.png"]
+
+    async def test_an_upload_that_declares_too_many_bytes_is_refused_before_it_is_read(
+        self, async_client: AsyncClient, monkeypatch
+    ):
+        from starlette.requests import Request
+
+        read = []
+
+        async def form(self, *args, **kwargs):
+            read.append(True)
+            raise AssertionError("the body of an oversized upload was read")
+
+        monkeypatch.setattr(Request, "form", form)
+        monkeypatch.setattr(Request, "_get_form", form)
+
+        answer = await async_client.post(UPLOAD, files=_file(b"\x00" * (overlay_logo.MAX_BYTES + 200_000)))
+
+        assert answer.status_code == 413, answer.text
+        assert read == []
+
+    async def test_a_request_without_a_file_is_refused(self, async_client: AsyncClient):
+        answer = await async_client.post(UPLOAD, data={"other": "field"})
+
+        assert answer.status_code == 422, answer.text
 
 
 # ---------------------------------------------------------------- backups carry it
