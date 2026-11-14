@@ -428,9 +428,10 @@ async def freeze_binding(db: AsyncSession, part: ProductPart, new_bound: Mapping
     rule 5 applies to a new group or a new standard — a saved order's kit does
     not move under it). Lines created afterwards follow the new binding.
     ``new_bound`` is the ``group_id → option ids`` about to be written over
-    ``part.bound``. Returns the number of lines frozen."""
+    ``part.bound``; a group with no options in it is no condition («any»), never
+    «none», and is dropped. Returns the number of lines and stock positions frozen."""
     current = part.bound
-    new_bound = {group_id: frozenset(options) for group_id, options in new_bound.items()}
+    new_bound = {group_id: frozenset(options) for group_id, options in new_bound.items() if options}
     if current == new_bound:
         return 0
     defaults = (await default_options(db, [part.product_id])).get(part.product_id, {})

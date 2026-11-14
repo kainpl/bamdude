@@ -339,3 +339,63 @@ async def test_a_binding_change_that_would_merge_two_positions_is_refused_and_wr
     assert str(err.value) == "That change would make two stock positions the same configuration"
     assert await _configurations(db_session) == before
     assert await _counts(db_session, saved_after.id) == {}
+
+
+@pytest.mark.asyncio
+async def test_a_change_in_one_group_of_a_two_group_binding_freezes_only_the_kit_it_moves(db_session):
+    """Body is bound to weight {400, 600} AND view {solid}. Narrowing the weight to {400}
+    takes body out of the 600 + solid line's kit — that line keeps its old count. The
+    400 + solid line's kit does not move, and neither does a 600 + mesh line's: body was
+    never in it (the view group still says no), so there is nothing to keep."""
+    product = Product(name="Jar")
+    db_session.add(product)
+    await db_session.flush()
+    weight, (w400, w600, _w1200) = await _group(db_session, product, "Weight", ["400", "600", "1200"])
+    view, (solid, mesh) = await _group(db_session, product, "View", ["solid", "mesh"])
+    body = bind(
+        ProductPart(product_id=product.id, kind="printed", name="body", name_key="body", qty_per_unit=2),
+        w400,
+        w600,
+        solid,
+    )
+    db_session.add(body)
+    project = Project(name="O")
+    db_session.add(project)
+    await db_session.flush()
+    moves = await _line(db_session, project, product, {weight.id: w600.id, view.id: solid.id})
+    stays = await _line(db_session, project, product, {weight.id: w400.id, view.id: solid.id})
+    never = await _line(db_session, project, product, {weight.id: w600.id, view.id: mesh.id})
+    await db_session.commit()
+    narrowed = {weight.id: frozenset({w400.id}), view.id: frozenset({solid.id})}
+    assert await line_config.freeze_binding(db_session, body, narrowed) == 1
+    assert await _counts(db_session, moves.id) == {body.id: 2}
+    assert await _counts(db_session, stays.id) == {}
+    assert await _counts(db_session, never.id) == {}
+
+
+@pytest.mark.asyncio
+async def test_a_line_that_already_counts_the_part_is_left_alone(db_session):
+    """A saved line that says how many bodies it wants keeps saying it: widening the
+    binding freezes the 600 line without a count, and not the one that counts 3."""
+    box = await _box(db_session, bound=("400",))
+    body, lines = box["body"], box["lines"]
+    counted = ProjectLine(project_id=box["project"].id, product_id=box["product"].id, quantity=1)
+    db_session.add(counted)
+    await db_session.flush()
+    await line_config.seed_line(
+        db_session, counted, choices={box["group"].id: box["weight"]["600"].id}, counts={body.id: 3}
+    )
+    await db_session.commit()
+    assert await line_config.freeze_binding(db_session, body, _bound(box, "400", "600")) == 1
+    assert await _counts(db_session, lines["600"].id) == {body.id: 0}
+    assert await _counts(db_session, counted.id) == {body.id: 3}
+
+
+@pytest.mark.asyncio
+async def test_a_group_with_no_options_is_no_condition(db_session):
+    """An empty group in the new binding means «any», never «none»: an unbound body
+    handed ``{weight: ∅}`` is still in every kit, and nothing freezes."""
+    box = await _box(db_session, bound=())
+    before = await _configurations(db_session)
+    assert await line_config.freeze_binding(db_session, box["body"], {box["group"].id: frozenset()}) == 0
+    assert await _configurations(db_session) == before
