@@ -719,69 +719,56 @@ async def generate_mjpeg_stream(
 
     if camera_type == "mjpeg":
         # Proxy MJPEG stream directly, with reconnect on timeout
-        max_retries = 3
-        for attempt in range(max_retries + 1):
+        budget = _ReconnectBudget(_EXTERNAL_RECONNECT_MAX, _EXTERNAL_RECONNECT_STABLE_SECONDS)
+        while True:
             camera_metrics.current.get().begin_attempt()
-            frame_yielded = False
+            first_frame_at: float | None = None
             async for frame in _stream_mjpeg(url):
-                frame_yielded = True
+                first_frame_at = first_frame_at or time.monotonic()
                 camera_metrics.record_frame(frame, output=False)
                 current_time = asyncio.get_event_loop().time()
                 if current_time - last_frame_time >= frame_interval:
                     last_frame_time = current_time
                     yield _publish(frame)
             metric = camera_metrics.current.get()
-            metric.consecutive_failures = 0 if frame_yielded else min(2**53 - 1, metric.consecutive_failures + 1)
-            if not frame_yielded or attempt == max_retries or (stop_event is not None and stop_event.is_set()):
-                if not frame_yielded:
-                    metric.end_reason = metric.end_reason or "connect_failed"
-                elif attempt == max_retries:
-                    metric.end_reason = metric.end_reason or "retry_exhausted"
+            budget.count_session(metric, first_frame_at)
+            if stop_event is not None and stop_event.is_set():
+                break
+            if not budget.allows_redial(metric, first_frame_at):
                 break
             logger.warning(
                 "External MJPEG stream ended, reconnecting (attempt %d/%d)...",
-                attempt + 1,
-                max_retries,
+                budget.attempt,
+                budget.max_retries,
             )
-            await asyncio.sleep(2)
+            if not await _wait_for_rtsp_retry(2.0, stop_event):
+                break
 
     elif camera_type == "rtsp":
-        # External cameras retain their historical three retries.  A Bambu
-        # RTSPS source can opt into its model profile so P2S gets its relaxed
+        # An external camera has three reconnects in a row.  A Bambu RTSPS
+        # source can opt into its model profile so P2S gets its relaxed
         # probe settings and farm-safe reconnect backoff in the worker too.
-        max_retries = 3 if rtsp_profile is None else rtsp_profile.rtsp_reconnect_max
-        attempt = 0
-        while attempt <= max_retries:
-            frame_yielded = False
-            first_frame_at: float | None = None
+        budget = (
+            _ReconnectBudget(_EXTERNAL_RECONNECT_MAX, _EXTERNAL_RECONNECT_STABLE_SECONDS)
+            if rtsp_profile is None
+            else _ReconnectBudget(rtsp_profile.rtsp_reconnect_max, rtsp_profile.rtsp_reconnect_stable_seconds)
+        )
+        while True:
+            first_frame_at = None
             async for frame in _stream_rtsp(url, fps, on_process=on_process, profile=rtsp_profile):
-                frame_yielded = True
                 first_frame_at = first_frame_at or time.monotonic()
                 yield _publish(frame)
             metric = camera_metrics.current.get()
-            metric.consecutive_failures = 0 if frame_yielded else min(2**53 - 1, metric.consecutive_failures + 1)
+            budget.count_session(metric, first_frame_at)
             if stop_event is not None and stop_event.is_set():
                 break
-            if (
-                rtsp_profile is not None
-                and first_frame_at is not None
-                and time.monotonic() - first_frame_at >= rtsp_profile.rtsp_reconnect_stable_seconds
-            ):
-                # A stream that held for a meaningful interval gets a fresh
-                # reconnect budget; a flaky source cannot retry forever.
-                attempt = 0
-            if not frame_yielded or attempt == max_retries:
-                if not frame_yielded:
-                    metric.end_reason = metric.end_reason or "connect_failed"
-                elif attempt == max_retries:
-                    metric.end_reason = metric.end_reason or "retry_exhausted"
+            if not budget.allows_redial(metric, first_frame_at):
                 break
-            attempt += 1
-            delay = 2.0 if rtsp_profile is None else _rtsp_reconnect_delay(attempt, rtsp_profile)
+            delay = 2.0 if rtsp_profile is None else _rtsp_reconnect_delay(budget.attempt, rtsp_profile)
             logger.warning(
                 "External RTSP stream ended, reconnecting (attempt %d/%d, delay=%.3fs)...",
-                attempt,
-                max_retries,
+                budget.attempt,
+                budget.max_retries,
                 delay,
             )
             if not await _wait_for_rtsp_retry(delay, stop_event):
@@ -885,7 +872,10 @@ async def _stream_mjpeg(url: str) -> AsyncGenerator[bytes, None]:
                     yield frame
 
     except asyncio.CancelledError:
+        # Re-raised: swallowed, the reconnect loop saw an ordinary end of session,
+        # waited and dialled the camera again for a producer already cancelled.
         logger.info("MJPEG stream cancelled")
+        raise
     except (aiohttp.ClientError, OSError, ValueError) as e:
         logger.error("MJPEG stream error: %s", e)
 
@@ -1059,6 +1049,54 @@ async def _stream_rtsp(
         raise
     except (OSError, CameraCleanupError) as e:
         logger.error("RTSP stream error: %s", summarize_ffmpeg_stderr(str(e)))
+
+
+# An external camera has no model profile: three reconnects in a row, given
+# back by a session that held as long as the built-in cameras' stable window.
+_EXTERNAL_RECONNECT_MAX = 3
+_EXTERNAL_RECONNECT_STABLE_SECONDS = 30.0
+
+
+class _ReconnectBudget:
+    """Reconnects of one live stream, counted in a row (upstream 2315b8fb5).
+
+    A session that delivered frames for the stable window gives the budget back,
+    so a camera that drops now and then is redialled for as long as somebody
+    watches; one that delivers and drops at once, or refuses, spends it.  A
+    session without a frame is one more failure of a stream that has delivered
+    before, and the end of one that never did: a first connect must not keep
+    its viewers waiting through a whole budget.
+    """
+
+    def __init__(self, max_retries: int, stable_seconds: float) -> None:
+        self.max_retries = max_retries
+        self.stable_seconds = stable_seconds
+        self.attempt = 0
+        self.delivered = False
+
+    def count_session(self, metric, first_frame_at: float | None) -> None:
+        """Record a finished session in the stream's telemetry and in the budget."""
+        if first_frame_at is None:
+            metric.consecutive_failures = min(2**53 - 1, metric.consecutive_failures + 1)
+            return
+        metric.consecutive_failures = 0
+        self.delivered = True
+        if time.monotonic() - first_frame_at >= self.stable_seconds:
+            self.attempt = 0
+
+    def allows_redial(self, metric, first_frame_at: float | None) -> bool:
+        """Take one reconnect of the budget; False ends the stream with its reason."""
+        frameless = first_frame_at is None
+        # A frameless session that already named its end (a cleanup that could
+        # not be proven) is never followed by another process.
+        if frameless and (not self.delivered or metric.end_reason):
+            metric.end_reason = metric.end_reason or "connect_failed"
+            return False
+        if self.attempt >= self.max_retries:
+            metric.end_reason = metric.end_reason or ("connect_failed" if frameless else "retry_exhausted")
+            return False
+        self.attempt += 1
+        return True
 
 
 def _rtsp_reconnect_delay(reconnect_count: int, profile: CameraProfile) -> float:
