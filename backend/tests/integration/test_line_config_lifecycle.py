@@ -9,6 +9,7 @@ from backend.app.models.product import Product, ProductPart
 from backend.app.models.product_variant import ProductVariantGroup, ProductVariantOption
 from backend.app.models.project_line import ProjectLine
 from backend.app.services import line_config
+from backend.tests.fixtures.sliced_sources import slice_parts
 
 pytestmark = pytest.mark.integration
 
@@ -28,6 +29,9 @@ async def order(committing_client, db_session):
     flask = ProductPart(product_id=product.id, kind="printed", name="flask", name_key="flask", qty_per_unit=1)
     cap = ProductPart(product_id=product.id, kind="printed", name="cap", name_key="cap", qty_per_unit=1)
     db_session.add_all([flask, cap])
+    await db_session.flush()
+    # A variant product's line needs its kit sliced (spec product-part-variant-combinations, п. 10).
+    await slice_parts(db_session, product.id, [flask, cap])
     await db_session.commit()
     body = (
         await committing_client.post(

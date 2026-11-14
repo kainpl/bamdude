@@ -251,23 +251,27 @@ async def test_forget_part_and_line_remove_their_rows(db_session, pipe):
 
 async def _box(db, bound):
     """«Box»: body ×2 bound to the weights named in ``bound``; weight 400 (standard) / 600 /
-    1200; one order with a saved line that chose 400 and one that chose 600."""
+    1200; one order with a saved line that chose 400 and one that chose 600.
+
+    The lines are saved while body is still unbound (sliced, so every combination is
+    open), and the binding comes afterwards: a line that chose a weight body does not
+    name is a closed combination no door saves any more (spec
+    product-part-variant-combinations, п. 10, 14) — it stands for one saved before."""
     product = Product(name="Box")
     db.add(product)
     await db.flush()
     group, options = await _group(db, product, "Weight", ["400", "600", "1200"])
     weight = dict(zip(("400", "600", "1200"), options, strict=True))
-    body = bind(
-        ProductPart(product_id=product.id, kind="printed", name="body", name_key="body", qty_per_unit=2),
-        *(weight[w] for w in bound),
-    )
+    body = bind(ProductPart(product_id=product.id, kind="printed", name="body", name_key="body", qty_per_unit=2))
     db.add(body)
     project = Project(name="O")
     db.add(project)
     await db.flush()
+    await slice_parts(db, product.id, [body])
     lines = {}
     for w in ("400", "600"):
         lines[w] = await _line(db, project, product, {group.id: weight[w].id})
+    bind(body, *(weight[w] for w in bound))
     await db.commit()
     return {"product": product, "project": project, "group": group, "weight": weight, "body": body, "lines": lines}
 
@@ -331,10 +335,12 @@ async def test_a_binding_change_that_would_merge_two_positions_is_refused_and_wr
     body, choose_600 = box["body"], {box["group"].id: box["weight"]["600"].id}
     await _position(db_session, box, choose_600, counts={body.id: 0})
     await line_config.freeze_binding(db_session, body, _bound(box, "400"))
+    # Saved after the freeze and before the new binding is written: 600 without body is
+    # a closed combination no door saves (spec product-part-variant-combinations, п. 10).
+    saved_after = await _line(db_session, box["project"], box["product"], choose_600)
     bind(body, box["weight"]["400"])
     await db_session.flush()
     await _position(db_session, box, choose_600)
-    saved_after = await _line(db_session, box["project"], box["product"], choose_600)
     await db_session.commit()
     before = await _configurations(db_session)
     with pytest.raises(line_config.LineConfigError) as err:
@@ -356,19 +362,19 @@ async def test_a_change_in_one_group_of_a_two_group_binding_freezes_only_the_kit
     await db_session.flush()
     weight, (w400, w600, _w1200) = await _group(db_session, product, "Weight", ["400", "600", "1200"])
     view, (solid, mesh) = await _group(db_session, product, "View", ["solid", "mesh"])
-    body = bind(
-        ProductPart(product_id=product.id, kind="printed", name="body", name_key="body", qty_per_unit=2),
-        w400,
-        w600,
-        solid,
-    )
+    body = bind(ProductPart(product_id=product.id, kind="printed", name="body", name_key="body", qty_per_unit=2))
     db_session.add(body)
     project = Project(name="O")
     db_session.add(project)
     await db_session.flush()
+    # The lines are saved while body is unbound (every combination open), the binding comes
+    # after: 600 + mesh names no part and is closed to a new line (spec
+    # product-part-variant-combinations, п. 10, 14).
+    await slice_parts(db_session, product.id, [body])
     moves = await _line(db_session, project, product, {weight.id: w600.id, view.id: solid.id})
     stays = await _line(db_session, project, product, {weight.id: w400.id, view.id: solid.id})
     never = await _line(db_session, project, product, {weight.id: w600.id, view.id: mesh.id})
+    bind(body, w400, w600, solid)
     await db_session.commit()
     narrowed = {weight.id: frozenset({w400.id}), view.id: frozenset({solid.id})}
     assert await line_config.freeze_binding(db_session, body, narrowed) == 1
@@ -381,7 +387,9 @@ async def test_a_change_in_one_group_of_a_two_group_binding_freezes_only_the_kit
 async def test_a_line_that_already_counts_the_part_is_left_alone(db_session):
     """A saved line that says how many bodies it wants keeps saying it: widening the
     binding freezes the 600 line without a count, and not the one that counts 3."""
-    box = await _box(db_session, bound=("400",))
+    # Every line saved while body is unbound, then body bound to 400 (see ``_box``): the
+    # counted line's 600 is a closed combination no door saves now — its count does not open it.
+    box = await _box(db_session, bound=())
     body, lines = box["body"], box["lines"]
     counted = ProjectLine(project_id=box["project"].id, product_id=box["product"].id, quantity=1)
     db_session.add(counted)
@@ -389,6 +397,7 @@ async def test_a_line_that_already_counts_the_part_is_left_alone(db_session):
     await line_config.seed_line(
         db_session, counted, choices={box["group"].id: box["weight"]["600"].id}, counts={body.id: 3}
     )
+    bind(body, box["weight"]["400"])
     await db_session.commit()
     assert await line_config.freeze_binding(db_session, body, _bound(box, "400", "600")) == 1
     assert await _counts(db_session, lines["600"].id) == {body.id: 0}

@@ -22,6 +22,7 @@ from backend.app.models.product import Product, ProductPart
 from backend.app.models.project import Project
 from backend.app.models.project_line import ProjectLine
 from backend.app.services import finished_stock, line_composition, line_config, product_variants
+from backend.tests.fixtures.sliced_sources import slice_parts
 
 pytestmark = pytest.mark.integration
 
@@ -44,6 +45,8 @@ async def lamp(db_session):
     )
     db_session.add(shade)
     await db_session.flush()
+    # A variant product's line needs its kit sliced (spec product-part-variant-combinations, п. 10).
+    await slice_parts(db_session, product.id, [shade])
     tail = await product_variants.create_group(db_session, product.id, "Tail", ["A", "B"], record_lines=False)
     await db_session.flush()
     groups = await product_variants.groups(db_session, product.id)
@@ -202,6 +205,19 @@ async def test_a_new_line_takes_a_bound_part_by_its_choice(committing_client, db
         json={"kind": "printed", "name": "Tail A", "qty_per_unit": 1, "variant_option_ids": [lamp["options"]["A"]]},
     )
     x = r.json()["id"]
+    # The new lines' combinations must be open (spec product-part-variant-combinations, п. 10):
+    # «B» needs a part that names it, and every printed part of a kit a sliced source.
+    tail_b = await committing_client.post(
+        _url(lamp, "/parts"),
+        json={"kind": "printed", "name": "Tail B", "qty_per_unit": 1, "variant_option_ids": [lamp["options"]["B"]]},
+    )
+    assert tail_b.status_code == 200, tail_b.text
+    new_parts = (
+        (await db_session.execute(select(ProductPart).where(ProductPart.id.in_([x, tail_b.json()["id"]]))))
+        .scalars()
+        .all()
+    )
+    await slice_parts(db_session, lamp["product"], new_parts)
     order = await db_session.get(Project, (await db_session.get(ProjectLine, lamp["lines"]["L_A"])).project_id)
     fresh = {}
     for label, option in (("new_A", "A"), ("new_B", "B")):

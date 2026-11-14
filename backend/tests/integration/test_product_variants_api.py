@@ -12,6 +12,7 @@ from sqlalchemy import select
 from backend.app.models.line_config import ProjectLineChoice
 from backend.app.models.product import Product, ProductPart
 from backend.app.models.product_variant import ProductPartOption, ProductVariantGroup, ProductVariantOption
+from backend.tests.fixtures.sliced_sources import slice_parts
 
 pytestmark = pytest.mark.integration
 
@@ -107,6 +108,9 @@ async def test_a_part_binds_to_an_option_of_its_own_product_only(committing_clie
 
 @pytest.mark.asyncio
 async def test_deletes_refused_while_lines_or_parts_use_them(committing_client, db_session, pipe):
+    # The order below needs its kit sliced (spec product-part-variant-combinations, п. 10).
+    await slice_parts(db_session, pipe["product"].id, pipe["parts"].values())
+    await db_session.commit()
     group, options = await _tail(committing_client, pipe)
     angled = options["кутовий"]["id"]
     await committing_client.patch(

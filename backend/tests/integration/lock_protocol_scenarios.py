@@ -150,6 +150,10 @@ async def shop(*, customer: bool = True, group: bool = True, line_quantity: int 
         options: dict[str, int] = {}
         group_id = None
         if group:
+            # A variant product's line needs its kit sliced (spec product-part-variant-combinations, п. 10).
+            from backend.tests.fixtures.sliced_sources import slice_parts
+
+            await slice_parts(db, lamp.id, [shade, base])
             colour = await product_variants.create_group(db, lamp.id, "Colour", ["red", "blue"], record_lines=False)
             group_id = colour.id
             for option in await product_variants.groups(db, lamp.id):

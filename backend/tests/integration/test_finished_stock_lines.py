@@ -10,6 +10,7 @@ from backend.app.models.product_variant import ProductVariantGroup, ProductVaria
 from backend.app.models.project import Project
 from backend.app.models.project_line import ProjectLine
 from backend.app.services import finished_stock, line_config, stock_issues
+from backend.tests.fixtures.sliced_sources import slice_parts
 
 pytestmark = pytest.mark.integration
 
@@ -85,8 +86,11 @@ async def pipe_shelf(db_session):
     db_session.add_all([straight, angled])
     await db_session.flush()
     group.default_option_id = straight.id
-    db_session.add(ProductPart(product_id=pipe.id, kind="printed", name="flask", name_key="flask", qty_per_unit=1))
+    flask = ProductPart(product_id=pipe.id, kind="printed", name="flask", name_key="flask", qty_per_unit=1)
+    db_session.add(flask)
     await db_session.flush()
+    # A variant product's line needs its kit sliced (spec product-part-variant-combinations, п. 10).
+    await slice_parts(db_session, pipe.id, [flask])
     standard = await finished_stock.item_for(db_session, pipe.id, {}, create=True)
     await finished_stock.receive(db_session, standard, 3)
     angled_item = await finished_stock.item_for(db_session, pipe.id, {group.id: angled.id}, create=True)

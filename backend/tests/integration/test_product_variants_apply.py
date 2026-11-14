@@ -15,6 +15,7 @@ from backend.app.models.product import Product, ProductPart
 from backend.app.models.project import Project, ProjectEvent
 from backend.app.models.project_line import ProjectLine
 from backend.app.services import finished_stock, line_config, product_variants
+from backend.tests.fixtures.sliced_sources import slice_parts
 
 pytestmark = pytest.mark.integration
 
@@ -28,6 +29,8 @@ async def lamp(db_session):
     shade = ProductPart(product_id=product.id, kind="printed", name="shade", name_key="shade", qty_per_unit=1)
     db_session.add(shade)
     await db_session.flush()
+    # A variant product's line needs its kit sliced (spec product-part-variant-combinations, п. 10).
+    await slice_parts(db_session, product.id, [shade])
     colour = await product_variants.create_group(db_session, product.id, "Colour", ["red", "blue"], record_lines=False)
     order = Project(name="Order", status="active")
     db_session.add(order)
