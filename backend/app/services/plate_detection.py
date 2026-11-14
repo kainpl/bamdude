@@ -766,6 +766,9 @@ async def _capture_camera_image(
         # light this check has just switched on — the frame it needs is then a different picture.
         live_options["accept_still_scene"] = True
     not_before = time.monotonic() if fresh else lit_since
+    if fresh and lit_since is not None:
+        # The moment our light shows in a frame can lie ahead of now (its margin): the later of the two.
+        not_before = max(not_before, lit_since)
     defer, buffered_live = (
         live_frame_for_capture(printer_id, not_before=not_before, **live_options)
         if awaited

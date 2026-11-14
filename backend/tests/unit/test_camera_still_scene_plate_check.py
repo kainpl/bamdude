@@ -135,7 +135,11 @@ async def test_the_verdict_goes_with_the_stream(live):  # noqa: F811
 
 
 @pytest.mark.asyncio
-async def test_a_still_dark_scene_is_not_evidence_under_a_light_the_check_just_switched_on(live, chamber):  # noqa: F811
+async def test_a_still_dark_scene_is_not_evidence_under_a_light_the_check_just_switched_on(
+    live,  # noqa: F811
+    chamber,  # noqa: F811
+    monkeypatch,
+):
     """The verdict says the camera is alive, not that the picture is lit. A check that lit the chamber
     waits for the picture to CHANGE: a camera relays frames exposed a second or two earlier, and the
     dark picture goes on repeating for that long after the printer reports the light on."""
@@ -143,6 +147,7 @@ async def test_a_still_dark_scene_is_not_evidence_under_a_light_the_check_just_s
 
     pid, start, observer, calls, capture, old = live
     client = chamber(lit=False)
+    monkeypatch.setattr(camera_light, "LIT_FRAME_MARGIN_SECONDS", 0.0)  # the margin has its own test
     await start()
     _relay(calls, observer, bytes(old), still=True)  # dark, still, confirmed alive
 

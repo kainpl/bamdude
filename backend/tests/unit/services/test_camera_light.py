@@ -272,12 +272,14 @@ async def test_a_viewer_joining_a_dark_chamber_still_leaves_it_dark(printer, sle
 async def test_lit_since_is_the_moment_our_light_was_confirmed(printer, monkeypatch):
     now = [100.0]
     monkeypatch.setattr(camera_light, "_clock", lambda: now[0])
+    margin = camera_light.LIT_FRAME_MARGIN_SECONDS
+    assert margin > 0
     lease = await camera_light.acquire(1, "plate_check")
-    assert lease.lit_since() == 100.0, "unconfirmed: nothing older than now shows our light"
+    assert lease.lit_since() == 100.0 + margin, "unconfirmed: nothing older than now shows our light"
     now[0] = 101.0
     await _report(1, True)
     now[0] = 130.0
-    assert lease.lit_since() == 101.0
+    assert lease.lit_since() == 101.0 + margin, "the report is not the exposure: the margin follows it"
     camera_light.release(lease)
 
 

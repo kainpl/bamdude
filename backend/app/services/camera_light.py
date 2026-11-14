@@ -48,6 +48,11 @@ logger = logging.getLogger(__name__)
 GRACE_SECONDS = 10.0
 #: How long ``Lease.settle`` waits for the printer to report the light on.
 CONFIRM_TIMEOUT_SECONDS = 3.0
+#: How long after the printer confirmed OUR "on" a relayed frame may still show the dark chamber. The
+#: report is not the exposure: an RTSP frame is 0.5-2 s old when it is relayed, and a chamber-image camera
+#: sends about one frame a second and needs a few of them for its auto-exposure. ⚠️ A GUESS pending a
+#: measurement on a printer (audit G09, Unsure 3) — applied in ``Lease.lit_since`` and nowhere else.
+LIT_FRAME_MARGIN_SECONDS = 2.0
 #: A ``lights_report`` in the direction we commanded within this window is ours.
 ATTRIBUTION_WINDOW_SECONDS = 5.0
 #: The longest cadence a poller may declare (``?poll=`` on the snapshot route).
@@ -119,14 +124,17 @@ class Lease:
         """From when (monotonic) a frame shows the light WE switched on; None when the light was not ours.
 
         For a consumer that takes its frame from a live view instead of capturing: a frame the view relayed
-        before this moment was taken in the dark and is not evidence. Ask after :meth:`settle`. An "on" the
-        printer never confirmed answers "now" — the next frame is taken as it comes, as a capture would be.
+        before this moment was taken in the dark and is not evidence. Ask after :meth:`settle`. The moment
+        is the printer's confirmation plus :data:`LIT_FRAME_MARGIN_SECONDS` — arrival is not exposure, and
+        the first frames relayed after the report were still taken in the dark. An "on" the printer never
+        confirmed counts from "now". Nothing sleeps here: a consumer that waits for a frame waits past
+        this moment, and one that does not wait is not delayed.
         None means the light was already on (or could not be switched): any frame is as lit as it will get.
         """
         light = self._light
         if not light.owned:
             return None
-        return light.confirmed_at if light.confirmed_at is not None else _clock()
+        return (light.confirmed_at if light.confirmed_at is not None else _clock()) + LIT_FRAME_MARGIN_SECONDS
 
 
 _lights: dict[int, _PrinterLight] = {}

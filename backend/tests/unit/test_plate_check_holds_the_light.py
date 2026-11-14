@@ -50,9 +50,15 @@ def _check(pid: int, fresh: bool) -> asyncio.Task:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("fresh", [False, True])
-async def test_a_watched_dark_chamber_is_lit_and_only_a_frame_from_after_the_light_is_judged(live, chamber, fresh):  # noqa: F811
+async def test_a_watched_dark_chamber_is_lit_and_only_a_frame_from_after_the_light_is_judged(
+    live,  # noqa: F811
+    chamber,
+    fresh,
+    monkeypatch,
+):
     pid, start, observer, calls, capture, old = live
     client = chamber(lit=False)
+    monkeypatch.setattr(camera_light, "LIT_FRAME_MARGIN_SECONDS", 0.3)
     await start()  # the farm toggle is off: the viewer holds no light
     assert client.commands == []
 
@@ -67,6 +73,12 @@ async def test_a_watched_dark_chamber_is_lit_and_only_a_frame_from_after_the_lig
 
     await camera_light.note_light_report(pid, True)
     await asyncio.sleep(0.05)
+    # Relayed after the report but inside the margin: exposed before the light reached the sensor.
+    observer[0](b"\xff\xd8relayed-inside-the-margin\xff\xd9")
+    await asyncio.sleep(0.05)
+    assert not task.done(), "a frame relayed right after the report can still be a dark one"
+
+    await asyncio.sleep(0.3)
     lit = b"\xff\xd8lit-frame\xff\xd9"
     observer[0](lit)
     frame, _source = await asyncio.wait_for(task, FRAME_WAIT_SECONDS)
