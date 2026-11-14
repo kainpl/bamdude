@@ -874,6 +874,76 @@ class ProductKitsOut(BaseModel):
     kits_available: int = 0
 
 
+# ---------- combinations of variant values (spec product-part-variant-combinations) ----------
+
+
+class CombinationReasonOut(BaseModel):
+    """Why a combination cannot be ordered, as name snapshots — the same reason the 409
+    ``combination_unavailable`` refusal carries; the frontend composes the sentence.
+    ``option_without_part`` names ``group`` and ``option`` (``None`` for a group with no
+    standard value left unchosen); ``part_not_sliced`` names ``part``."""
+
+    code: Literal["option_without_part", "part_not_sliced"]
+    group: str | None = None
+    option: str | None = None
+    part: str | None = None
+
+
+class CombinationChoiceOut(BaseModel):
+    """One group's value in a combination."""
+
+    group_id: int
+    group: str
+    option_id: int
+    option: str
+
+
+class CombinationOut(BaseModel):
+    """One combination of the table: a value of every group, in the groups' order."""
+
+    choices: list[CombinationChoiceOut]
+    available: bool
+    reasons: list[CombinationReasonOut] = []
+
+
+class ProductCombinationsOut(BaseModel):
+    """``GET /products/{id}/combinations`` — one page of every combination, groups by
+    position, values by position, the last group fastest; ``total`` counts them all
+    (0 for a product without groups)."""
+
+    total: int
+    page: int
+    items: list[CombinationOut] = []
+
+
+class CombinationIn(BaseModel):
+    """``POST /products/{id}/combination`` — ``group_id → option_id``; a group left out
+    takes its standard value."""
+
+    choices: dict[int, int] = Field(default_factory=dict)
+
+
+class CombinationOptionOut(BaseModel):
+    """One value of one group, beside a choice: ``available_here`` — this value with the
+    other groups as chosen; ``available_anywhere`` — in at least one available
+    combination, ``None`` (unknown) for a product of more than
+    ``combination_gate.MAX_ENUMERATED`` combinations."""
+
+    group_id: int
+    option_id: int
+    available_here: bool
+    available_anywhere: bool | None = None
+
+
+class CombinationStateOut(BaseModel):
+    """``POST /products/{id}/combination`` — is the choice available, why not, and every
+    value of every group in the table's order."""
+
+    available: bool
+    reasons: list[CombinationReasonOut] = []
+    options: list[CombinationOptionOut] = []
+
+
 class StockMovementOut(BaseModel):
     """One row of the ledger, as the product page reads it.
 

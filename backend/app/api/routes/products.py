@@ -86,6 +86,8 @@ from backend.app.schemas.listing import (
 )
 from backend.app.schemas.product import (
     AttachmentOrderRequest,
+    CombinationIn,
+    CombinationStateOut,
     CoverPickRequest,
     EstimateSurplusOut,
     FileLinkRequest,
@@ -99,6 +101,7 @@ from backend.app.schemas.product import (
     PlateYieldEntry,
     ProductAttachmentOut,
     ProductCategoryRef,
+    ProductCombinationsOut,
     ProductCreate,
     ProductDuplicate,
     ProductEstimateOut,
@@ -2220,6 +2223,47 @@ async def get_product_kits(
         raise HTTPException(status_code=422, detail="That part does not belong to this product")
     kit = composition(list(product.parts), "product", set(chosen.values()), count_map)
     return ProductKitsOut(kits_available=part_stock.kits_of(await part_stock.balances(db, product.id), kit))
+
+
+async def _with_variants(db: AsyncSession, product_id: int) -> Product:
+    """The product with its parts and its groups with their values, as the combination
+    rule reads it — or 404."""
+    product = (await line_config.load_products(db, [product_id])).get(product_id)
+    if product is None:
+        raise HTTPException(status_code=404, detail="Product not found")
+    return product
+
+
+@router.get("/{product_id}/combinations", response_model=ProductCombinationsOut)
+async def get_product_combinations(
+    product_id: int,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(100, ge=1, le=500),
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.PRODUCTS_READ),
+):
+    """Every combination of the product's variant values, a page at a time, each with
+    whether an order may take it and why not (spec product-part-variant-combinations) —
+    the product page's table. Writes nothing."""
+    product = await _with_variants(db, product_id)
+    return await combination_gate.table(db, product, page=page, page_size=page_size)
+
+
+@router.post("/{product_id}/combination", response_model=CombinationStateOut)
+async def describe_product_combination(
+    product_id: int,
+    data: CombinationIn,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.STOCK_READ),
+):
+    """The state of one choice for the order dialogs — the gate of ``GET …/kits``, which
+    the same dialogs already call: whether it is available, why not, and which values are
+    open here and anywhere. A POST only for its body; it writes nothing and takes no gate."""
+    product = await _with_variants(db, product_id)
+    try:
+        return await combination_gate.describe(db, product, data.choices)
+    except line_config.LineConfigError as e:
+        raise HTTPException(status_code=e.status, detail=combination_gate.refusal_detail(e)) from e
 
 
 @router.post("/{product_id}/stock/adjust", response_model=StockMovementOut)
