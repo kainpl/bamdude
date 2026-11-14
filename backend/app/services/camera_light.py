@@ -92,6 +92,12 @@ class _PrinterLight:
     last_command_at: float = 0.0
     last_command_on: bool | None = None
     release_task: asyncio.Task | None = None
+    #: Holders whose purpose ALWAYS needs the light (plate checks) and have not released yet.
+    must: int = 0
+    #: The light is on because a must-have purpose switched it on BESIDE other holders, who had it off
+    #: (the operator darkened the chamber under a live view). It goes back off when the last such holder
+    #: releases — the others never asked for it and may never leave (a kiosk wall).
+    lit_beside: bool = False
 
 
 @dataclass(frozen=True)
@@ -203,6 +209,7 @@ def _switch(client, light: _PrinterLight, on: bool) -> bool:
         return False
     light.last_command_at = _clock()
     light.last_command_on = on
+    light.lit_beside = False
     if on:
         light.owned = True
         light.confirmed = asyncio.Event()
@@ -238,15 +245,21 @@ async def acquire(printer_id: int | None, purpose: str, *, hold: float | None = 
         return None
 
     light = _lights.setdefault(printer_id, _PrinterLight())
-    if light.release_task is not None and not light.release_task.done():
-        light.release_task.cancel()
-    light.release_task = None
+    must = purpose in ALWAYS_PURPOSES
+    # A switch-off armed for a light lit beside other holders is not theirs to cancel: a viewer that joins
+    # a chamber its operator darkened leaves it dark. Another plate check does cancel it (it needs the light).
+    if not (light.lit_beside and not must):
+        if light.release_task is not None and not light.release_task.done():
+            light.release_task.cancel()
+        light.release_task = None
     light.refcount += 1
+    if must:
+        light.must += 1
     if hold:
         light.hold_until = max(light.hold_until, _clock() + hold)
-    first_or_must = light.refcount == 1 or purpose in ALWAYS_PURPOSES
-    if first_or_must and not light.owned and not state.chamber_light:
+    if (light.refcount == 1 or must) and not light.owned and not state.chamber_light:
         if _switch(client, light, True):
+            light.lit_beside = light.refcount > 1
             logger.info("camera light: switched on for printer %s (%s)", printer_id, purpose)
     return Lease(printer_id, purpose, light)
 
@@ -257,17 +270,41 @@ def release(lease: Lease | None) -> None:
         return
     light = lease._light
     light.refcount = max(0, light.refcount - 1)
-    if light.refcount > 0 or not light.owned:
+    if lease.purpose in ALWAYS_PURPOSES:
+        light.must = max(0, light.must - 1)
+    if light.refcount > 0:
+        # Other holders remain. A light that was lit BESIDE them goes back to the state their operator
+        # left it in once no plate check needs it; a light they hold on themselves is not touched.
+        pending = light.release_task is not None and not light.release_task.done()
+        if light.owned and light.lit_beside and light.must == 0 and not pending:
+            light.release_task = asyncio.get_running_loop().create_task(
+                _release_later(lease.printer_id, light, GRACE_SECONDS, beside=True),
+                name=f"camera-light-off-{lease.printer_id}",
+            )
         return
+    # Nobody holds it any more: an ordinary light of ours, off after the grace or the hold.
+    light.lit_beside = False
+    if not light.owned:
+        return
+    if light.release_task is not None and not light.release_task.done():
+        light.release_task.cancel()
     delay = max(GRACE_SECONDS, light.hold_until - _clock())
     light.release_task = asyncio.get_running_loop().create_task(
         _release_later(lease.printer_id, light, delay), name=f"camera-light-off-{lease.printer_id}"
     )
 
 
-async def _release_later(printer_id: int, light: _PrinterLight, delay: float) -> None:
+async def _release_later(printer_id: int, light: _PrinterLight, delay: float, *, beside: bool = False) -> None:
     await _sleep(delay)
-    if light.refcount > 0 or not light.owned:
+    if not light.owned:
+        return
+    if beside:
+        # The other holders stay; only a new plate check, or a light that stopped being "lit beside"
+        # (somebody switched it, the last holder left), keeps it on.
+        if light.must > 0 or not light.lit_beside:
+            return
+        light.release_task = None
+    elif light.refcount > 0:
         return
     client = _get_client(printer_id)
     if client is None:
