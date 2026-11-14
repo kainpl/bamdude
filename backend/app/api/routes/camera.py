@@ -51,6 +51,14 @@ _last_frames: dict[int, bytes] = {}
 
 # Track last frame timestamp for each printer (for stall detection)
 _last_frame_times: dict[int, float] = {}
+# When a printer's frame BYTES last arrived, monotonic (a repeat counts): what the age limit of a lent
+# frame is measured from. ``_last_frame_times`` is wall-clock and steps with it.
+_last_frame_arrivals: dict[int, float] = {}
+# A lent frame whose bytes last arrived longer ago than this is not a frame. A stream that delivered
+# before is redialled for its whole reconnect budget — minutes — with its relay still registered, and
+# its buffer would go on answering with the picture from before the camera dropped. The standalone
+# cameras' limit (``routes/cameras._LIVE_FRAME_MAX_AGE_SECONDS``).
+LIVE_FRAME_MAX_AGE_SECONDS = 10.0
 # Admission evidence is separate from wall-clock timestamps used by camera/status.
 # Each frame belongs to one producer generation and its actual camera configuration.
 # Its time is when this PICTURE first arrived: a source can keep delivering the bytes it froze
@@ -78,9 +86,19 @@ _active_worker_streams: dict[int, tuple[str, str]] = {}
 def get_buffered_frame(printer_id: int) -> bytes | None:
     """Get the last buffered frame for a printer from an active stream.
 
-    Returns the JPEG frame data if available, or None if no active stream.
+    Returns the JPEG frame data if available, or None if no active stream — or when the stream has
+    delivered nothing for :data:`LIVE_FRAME_MAX_AGE_SECONDS`: every reader of the buffer comes through
+    here, so none of them is handed the picture a dropped camera left behind. The state itself stays
+    with the relay that owns it. A frame with no recorded arrival is not judged by age (only the relay
+    writes the buffer, and it records both).
     """
-    return _last_frames.get(printer_id)
+    frame = _last_frames.get(printer_id)
+    if frame is None:
+        return None
+    arrived = _last_frame_arrivals.get(printer_id)
+    if arrived is not None and time.monotonic() - arrived > LIVE_FRAME_MAX_AGE_SECONDS:
+        return None
+    return frame
 
 
 def is_stream_active(printer_id: int) -> bool:
@@ -223,6 +241,7 @@ def _release_printer_frame_state(printer_id: int | None) -> None:
         return
     _last_frames.pop(printer_id, None)
     _last_frame_times.pop(printer_id, None)
+    _last_frame_arrivals.pop(printer_id, None)
     _live_frame_metadata.pop(printer_id, None)
     _last_change_times.pop(printer_id, None)
     _stream_start_times.pop(printer_id, None)
@@ -319,7 +338,7 @@ def try_get_active_buffered_frame(printer_id: int) -> bytes | None:
     """
     if not is_stream_active(printer_id):
         return None
-    return _last_frames.get(printer_id)
+    return get_buffered_frame(printer_id)
 
 
 # Independent of the shared current-access freshness proof; never renewed.
@@ -427,6 +446,7 @@ async def _worker_stream_response(
             )
             arrived = time.time()
             _last_frame_times[printer_id] = arrived
+            _last_frame_arrivals[printer_id] = time.monotonic()
             if not repeated:
                 # A repeat of the previous frame keeps the time its picture first arrived, so a
                 # check that waits for a frame from after its own start is never handed a
