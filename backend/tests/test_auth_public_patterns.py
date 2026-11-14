@@ -145,6 +145,9 @@ PUBLIC_ROUTES: dict[str, tuple[str, str]] = {
         "calibration reference picture",
     ),
     "/api/v1/printers/{printer_id}/overlay-status": ("overlay-token", "OBS overlay feed"),
+    # The one picture a long-lived token opens (owner, 2026-11-15): the installation's logo the overlay
+    # draws — branding, not a user's resource, and OBS opens the overlay without a session.
+    "/api/v1/overlay-branding/logo": ("overlay-token", "the installation's logo the overlay draws"),
     "/api/v1/camwall/printers": ("camwall-token", "kiosk wall feed"),
     "/api/v1/camwall/cameras": ("camwall-token", "kiosk wall feed, the cameras beside the printers"),
     "/api/v1/monitor/kiosk/snapshot": ("monitor-token", "read-only fleet projection via scoped Bearer"),

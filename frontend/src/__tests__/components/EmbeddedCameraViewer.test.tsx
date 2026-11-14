@@ -2,7 +2,7 @@ import { StrictMode } from 'react';
 import { act, fireEvent, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render } from '../utils';
-import { EmbeddedCameraViewer } from '../../components/EmbeddedCameraViewer';
+import { CAMERA_HIDDEN_RELEASE_MS, EmbeddedCameraViewer } from '../../components/EmbeddedCameraViewer';
 import { printerSource, standaloneSource } from '../../utils/cameraSource';
 import { holdsImage, stubBoxSize } from '../stubBoxSize';
 
@@ -55,6 +55,59 @@ describe('floating camera lifecycle', () => {
     expect(old.src).toMatch(/^data:image\/gif;/);
     expect(screen.getAllByAltText('Camera stream')).toHaveLength(1);
     expect(image().src).toContain('/printers/2/');
+  });
+
+  // The window follows the user to every page, so a tab left in the background
+  // would hold its stream — and with it the printer's camera connection and
+  // the light — for as long as the browser stays open.
+  describe('on a hidden tab', () => {
+    const setHidden = (hidden: boolean) => {
+      Object.defineProperty(document, 'hidden', { configurable: true, get: () => hidden });
+      act(() => { document.dispatchEvent(new Event('visibilitychange')); });
+    };
+    afterEach(() => { Reflect.deleteProperty(document, 'hidden'); });
+
+    it('lets the stream go once the tab has been hidden for long, and takes it back on return', async () => {
+      const { unmount } = render(viewer());
+      await settle();
+      const first = image();
+      fireEvent.load(first);
+
+      setHidden(true);
+      await act(async () => { await vi.advanceTimersByTimeAsync(CAMERA_HIDDEN_RELEASE_MS - 1000); });
+      // Not yet: a glance at another tab does not restart anybody's stream.
+      expect(image()).toBe(first);
+      expect(first.src).toContain('/camera/stream?');
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+      expect(screen.queryByAltText('Camera stream')).toBeNull();
+      expect(first.src).toMatch(/^data:image\/gif;/);
+      expect(screen.getByText('Paused while this tab is in the background')).toBeInTheDocument();
+      // Released means released: no snapshot polling takes the stream's place.
+      expect(document.querySelectorAll('img')).toHaveLength(0);
+
+      setHidden(false);
+      const resumed = image();
+      expect(resumed.src).toContain('/camera/stream?');
+      expect(screen.queryByText('Paused while this tab is in the background')).toBeNull();
+      unmount();
+      expect(resumed.src).toMatch(/^data:image\/gif;/);
+    });
+
+    it('keeps the stream when the tab comes back before the limit, and counts each absence from zero', async () => {
+      const { unmount } = render(viewer());
+      await settle();
+      const first = image();
+      setHidden(true);
+      await act(async () => { await vi.advanceTimersByTimeAsync(CAMERA_HIDDEN_RELEASE_MS - 1000); });
+      setHidden(false);
+      setHidden(true);
+      await act(async () => { await vi.advanceTimersByTimeAsync(CAMERA_HIDDEN_RELEASE_MS - 1000); });
+      expect(image()).toBe(first);
+      expect(first.src).toContain('/camera/stream?');
+      setHidden(false);
+      unmount();
+    });
   });
 });
 

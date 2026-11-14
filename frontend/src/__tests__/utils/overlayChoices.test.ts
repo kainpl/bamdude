@@ -44,6 +44,7 @@ describe('overlayChoices', () => {
       design: '2',
       transparency: 35,
       layout: 'both',
+      showLogo: true,
     };
     expect(overlayChoices(stored)).toEqual(stored);
   });
@@ -99,6 +100,7 @@ describe('parseOverlayUrl', () => {
         design: '2',
         transparency: 20,
         layout: 'landscape',
+        showLogo: false,
       },
     });
     // The origin is nowhere in what comes back.
@@ -134,5 +136,25 @@ describe('parseOverlayUrl', () => {
     'https://farm.local/overlay/1?token=a&token=b',
   ])('refuses %j', (text) => {
     expect(parseOverlayUrl(text)).toBeNull();
+  });
+});
+
+describe('the logo choice', () => {
+  it('is on only for logo=1', async () => {
+    const { overlayLogo } = await import('../../utils/overlayOptions');
+    expect(overlayLogo('1')).toBe(true);
+    expect(['', null, undefined, '0', 'true', 'yes', '11', ' 1', '1 ', '01'].map(overlayLogo)).toEqual(Array(10).fill(false));
+  });
+
+  it('is remembered only as a plain yes', () => {
+    expect(overlayChoices({ showLogo: true }).showLogo).toBe(true);
+    expect([false, 'true', 1, null, undefined].map((showLogo) => overlayChoices({ showLogo }).showLogo)).toEqual(Array(5).fill(false));
+    expect(DEFAULT_OVERLAY_CHOICES.showLogo).toBe(false);
+  });
+
+  it('is read off an address', () => {
+    expect(parseOverlayUrl('https://farm.example/overlay/3?logo=1')?.choices.showLogo).toBe(true);
+    expect(parseOverlayUrl('https://farm.example/overlay/3?logo=yes')?.choices.showLogo).toBe(false);
+    expect(parseOverlayUrl('https://farm.example/overlay/3')?.choices.showLogo).toBe(false);
   });
 });

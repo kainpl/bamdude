@@ -48,6 +48,8 @@ def directories(settings) -> dict[str, Path]:
         "projects": Path(settings.projects_dir),
         "products": Path(settings.products_dir),
         "certs": base / "certs",
+        # The stream overlay's logo (services/overlay_logo) -- an upload, not derived from anything.
+        "overlay_branding": base / "overlay-branding",
     }
 
 

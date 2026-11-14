@@ -257,7 +257,7 @@
   "credentials_reissue_required": {
     "name": "Integration credentials need reissuing",
     "title_template": "Integration credentials need reissuing",
-    "body_template": "Legacy API keys ({owned_api_key_count} owned, {ownerless_api_key_count} ownerless) and camera/monitor tokens ({long_lived_token_count}) have been retired. Create new credentials in Settings → API Keys, then replace them in HA, scripts/webhooks, bridge, MCP/AI hosts, OrcaBamDude and saved camera/TV/OBS/kiosk links. Browser sign-in alone does not reconnect integrations. Review scopes and test one allowed operation; do not blindly retry a print."
+    "body_template": "Legacy API keys ({owned_api_key_count} owned, {ownerless_api_key_count} ownerless) and camera/monitor tokens ({long_lived_token_count}) have been retired. Create new API keys in Settings → API Keys and new camera, monitor and overlay tokens in Settings → Camera, then replace them in HA, scripts/webhooks, bridge, MCP/AI hosts, OrcaBamDude and saved camera/TV/OBS/kiosk links. Browser sign-in alone does not reconnect integrations. Review scopes and test one allowed operation; do not blindly retry a print."
   },
   "git_backup_not_admitted": {
     "name": "Git backup paused",

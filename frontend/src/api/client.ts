@@ -5250,6 +5250,16 @@ export interface OverlayStatus {
    *  cannot read the session's camera status route, and a stream the server
    *  ends cleanly fires nothing on the image. Absent on an older server. */
   camera?: { active: boolean; stalled: boolean; viewer_attached?: boolean | null };
+  /** The installation's logo for `logo=1`: its revision, or null when none is
+   *  saved. The overlay asks for exactly that revision under its own token
+   *  instead of probing. Absent on an older server. */
+  logo?: { revision: string } | null;
+}
+
+/** Whether the installation has a logo for the stream overlay, and which. */
+export interface OverlayLogoInfo {
+  exists: boolean;
+  revision: string | null;
 }
 
 export interface CloudAuthStatus {
@@ -11849,6 +11859,31 @@ export const api = {
     request<OverlayStatus>(
       `/printers/${printerId}/overlay-status?${viewer ? `viewer=${encodeURIComponent(viewer)}&` : ''}token=${encodeURIComponent(token)}`,
     ),
+  // The installation's logo for the stream overlay (`logo=1`). One per
+  // installation; uploading and removing it needs `settings:update`.
+  getOverlayLogoInfo: () => request<OverlayLogoInfo>('/settings/overlay-logo/info'),
+  uploadOverlayLogo: (file: File) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    return sendForm<OverlayLogoInfo>('/settings/overlay-logo', formData);
+  },
+  deleteOverlayLogo: () => request<OverlayLogoInfo>('/settings/overlay-logo', { method: 'DELETE' }),
+  /** The saved logo for a signed-in page, as a blob (the route needs the session's header). */
+  getOverlayLogo: (revision: string) =>
+    fetchAuthorizedBlob(`${API_BASE}/settings/overlay-logo?v=${encodeURIComponent(revision)}`),
+  /** The logo's address for an overlay opened with a token (OBS has no session).
+   *  ⚠️ The revision goes in BEFORE the token: appended after, a second
+   *  parameter would land inside the token's value. With the current revision
+   *  in the address the server lets the browser keep the picture. */
+  overlayLogoUrl: (revision: string, token: string) =>
+    `${API_BASE}/overlay-branding/logo?v=${encodeURIComponent(revision)}&token=${encodeURIComponent(token)}`,
+  /** The logo's bytes for an overlay opened with a token. No header is sent:
+   *  the token in the address is the whole credential, as on the status feed. */
+  getOverlayLogoWithToken: async (revision: string, token: string): Promise<Blob> => {
+    const response = await fetch(api.overlayLogoUrl(revision, token));
+    if (!response.ok) throw new ApiError(`HTTP ${response.status}`, response.status);
+    return response.blob();
+  },
   cloudLogin: (email: string, password: string, region = 'global') =>
     request<CloudLoginResponse>('/cloud/login', {
       method: 'POST',

@@ -277,3 +277,85 @@ class TestStandaloneCameraTest:
 
         assert answer == {"success": True, "resolution": "320x240"}
         assert len(worker.requests) == 1
+
+
+# ---------------------------------------------------------------- a camera with its own snapshot URL
+
+STILL_URL = "http://192.0.2.50/frame.jpg"
+
+
+class _FailingWorker(_Worker):
+    async def capture(self, request):
+        self.requests.append(request)
+        return CameraCaptureResult(None, None)
+
+
+@pytest.fixture
+def failing_worker():
+    fake = _FailingWorker()
+    with override_camera_runtime(fake):
+        yield fake
+
+
+class TestSnapshotOfACameraWithItsOwnStill:
+    """Owner's decision 2026-11-15 (audit Unsure 1; upstream 7cea7acf0 leg 6): the still URL answers a snapshot
+    even while the camera is watched; the view's frame only when the still cannot be fetched."""
+
+    async def test_a_watched_printer_camera_answers_with_its_still(
+        self, async_client: AsyncClient, printer_factory, worker, token
+    ):
+        printer = await printer_factory(**EXTERNAL, external_camera_snapshot_url=STILL_URL)
+        _watch_printer(printer.id, "external")
+
+        answer = await async_client.get(f"/api/v1/printers/{printer.id}/camera/snapshot", params=token)
+
+        assert answer.status_code == 200 and answer.content == WORKER
+        assert [request.snapshot_url for request in worker.requests] == [STILL_URL]
+
+    async def test_a_wall_of_tiles_costs_the_camera_one_request(
+        self, async_client: AsyncClient, printer_factory, worker, token
+    ):
+        printer = await printer_factory(**EXTERNAL, external_camera_snapshot_url=STILL_URL)
+        _watch_printer(printer.id, "external")
+
+        for _tile in range(4):
+            answer = await async_client.get(f"/api/v1/printers/{printer.id}/camera/snapshot", params=token)
+            assert answer.status_code == 200 and answer.content == WORKER
+
+        assert len(worker.requests) == 1
+
+    async def test_a_failed_still_answers_with_the_views_frame(
+        self, async_client: AsyncClient, printer_factory, failing_worker, token
+    ):
+        printer = await printer_factory(**EXTERNAL, external_camera_snapshot_url=STILL_URL)
+        _watch_printer(printer.id, "external")
+
+        answer = await async_client.get(f"/api/v1/printers/{printer.id}/camera/snapshot", params=token)
+
+        assert answer.status_code == 200 and answer.content == LIVE
+        assert [request.snapshot_url for request in failing_worker.requests] == [STILL_URL]
+
+    async def test_a_watched_standalone_camera_answers_with_its_still(self, async_client: AsyncClient, worker, token):
+        camera_id = (await async_client.post("/api/v1/cameras/", json={**SHELF, "snapshot_url": STILL_URL})).json()[
+            "id"
+        ]
+        _watch_camera(camera_id)
+
+        for _tile in range(3):
+            answer = await async_client.get(f"/api/v1/cameras/{camera_id}/snapshot", params=token)
+            assert answer.status_code == 200 and answer.content == WORKER
+
+        assert [request.snapshot_url for request in worker.requests] == [STILL_URL]
+
+    async def test_a_failed_still_of_a_standalone_camera_answers_with_the_views_frame(
+        self, async_client: AsyncClient, failing_worker, token
+    ):
+        camera_id = (await async_client.post("/api/v1/cameras/", json={**SHELF, "snapshot_url": STILL_URL})).json()[
+            "id"
+        ]
+        _watch_camera(camera_id)
+
+        answer = await async_client.get(f"/api/v1/cameras/{camera_id}/snapshot", params=token)
+
+        assert answer.status_code == 200 and answer.content == LIVE
+        assert len(failing_worker.requests) == 1

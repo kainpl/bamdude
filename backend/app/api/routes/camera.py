@@ -188,6 +188,25 @@ def live_frame_for_capture(
     return True, get_buffered_frame(printer_id)
 
 
+def has_own_still(printer) -> bool:
+    """The printer's camera is an external one with its own snapshot URL (a stream URL plus a still URL)."""
+    return bool(
+        printer.external_camera_enabled and printer.external_camera_url and printer.external_camera_snapshot_url
+    )
+
+
+def live_frame_for_picture(printer_id: int, printer) -> tuple[bool, bytes | None]:
+    """:func:`live_frame_for_capture` for a consumer that wants a PICTURE of ``printer``'s camera to keep.
+
+    A camera with its own snapshot URL is not deferred to its live view: ``camera_runtime.capture`` fetches
+    the still — an HTTP GET beside the stream, never a second reader — and falls back to the view's frame
+    itself when the still cannot be had (owner, 2026-11-15; upstream 7cea7acf0 leg 6).
+    """
+    if has_own_still(printer):
+        return False, None
+    return live_frame_for_capture(printer_id)
+
+
 def still_scene_stands(printer_id: int) -> bool:
     """The worker's verdict "a still scene, alive" stands for the producer now feeding this printer's view."""
     producer = _still_scene_streams.get(printer_id)

@@ -7,6 +7,27 @@ from backend.app.core.credential_config import merge_secret_fields
 CAMERA_SECRET_FIELDS = frozenset({"external_camera_url", "external_camera_snapshot_url"})
 
 
+def _address(url) -> tuple | None:
+    from urllib.parse import urlsplit
+
+    text = (url or "").strip()
+    if not text:
+        return None
+    try:
+        parts = urlsplit(text)
+    except ValueError:
+        return (text,)
+    # Scheme and host compare without case; the fragment never reaches the camera.
+    return parts.scheme.lower(), parts.netloc.lower(), parts.path, parts.query
+
+
+def same_camera_address(first, second) -> bool:
+    """Two URLs that name the same address of a camera. A "snapshot URL" equal to the stream URL is no still
+    of its own: fetched for every one-shot it would be a second reader of the stream (review M7)."""
+    one = _address(first)
+    return one is not None and one == _address(second)
+
+
 def resolve_camera_credentials(stored, changes, actions=None, *, creating=False):
     resolved = merge_secret_fields(
         stored,

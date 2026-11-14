@@ -117,6 +117,28 @@
   max-width: none;
   filter: drop-shadow(0 0.1em 0.3em rgb(0 0 0 / 0.5));
 }
+/* `logo=1`: the installation's logo above the mark, in the same corner. */
+.so2__brands {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  align-items: flex-end;
+  gap: 0.6em;
+  margin-left: auto;
+}
+.so2__logo {
+  display: block;
+  width: auto;
+  height: 3.2em;
+  max-width: 14em;
+  object-fit: contain;
+  filter: drop-shadow(0 0.1em 0.3em rgb(0 0 0 / 0.5));
+}
+/* The portrait header is a bar above the picture: side by side keeps it low. */
+.so2[data-layout='portrait'] .so2__brands {
+  flex-direction: row;
+  align-items: center;
+}
 
 .so2__panel {
   position: relative;

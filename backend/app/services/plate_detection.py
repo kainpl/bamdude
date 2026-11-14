@@ -769,6 +769,17 @@ async def _capture_camera_image(
     if fresh and lit_since is not None:
         # The moment our light shows in a frame can lie ahead of now (its margin): the later of the two.
         not_before = max(not_before, lit_since)
+    if use_external and external_camera_url and external_camera_type and external_camera_snapshot_url:
+        still = await _own_still_beside_live_view(
+            printer_id,
+            url=external_camera_url,
+            camera_type=external_camera_type,
+            snapshot_url=external_camera_snapshot_url,
+            fresh=fresh,
+            lit_since=lit_since,
+        )
+        if still is not None:
+            return still, "external"
     defer, buffered_live = (
         live_frame_for_capture(printer_id, not_before=not_before, **live_options)
         if awaited
@@ -810,7 +821,9 @@ async def _capture_camera_image(
                     printer_id=printer_id,
                 )
             )
-            image_data = captured.frame if not fresh or captured.source == "fresh" else None
+            # ``awaited``: a coalesced capture was begun by somebody else — before this check, or before the
+            # light this check switched on.
+            image_data = captured.frame if not awaited or captured.source == "fresh" else None
             if image_data:
                 camera_source = "external"
                 logger.debug("Captured frame from external camera for printer %s", printer_id)
@@ -851,12 +864,50 @@ async def _capture_camera_image(
                     printer_id=printer_id,
                 )
             )
-            image_data = captured.frame if not fresh or captured.source == "fresh" else None
+            image_data = captured.frame if not awaited or captured.source == "fresh" else None
             if image_data:
                 camera_source = "built-in"
                 logger.debug("Captured frame from built-in camera for printer %s", printer_id)
 
     return image_data, camera_source
+
+
+async def _own_still_beside_live_view(
+    printer_id: int, *, url: str, camera_type: str, snapshot_url: str, fresh: bool, lit_since: float | None
+) -> bytes | None:
+    """The still of a WATCHED external camera that has its own snapshot URL, as evidence for a plate check.
+
+    A plain HTTP GET the worker makes beside the stream, so the check does not wait on the view (owner,
+    2026-11-15). It keeps the guarantees of the live path: fetched only once the light this check switched
+    on can show in a picture (``lit_since`` may lie ahead of now), and a ``fresh`` check — or one judged
+    under a light it switched on — accepts only a still fetched for it: never a capture somebody else began
+    earlier (it may predate the check, or the light), never the view's frame that ``camera_runtime.capture``
+    lends when the still fails. None hands the check to the live path and its own proofs; an unwatched
+    camera is not this function's (the capture below fetches its still under the same rule).
+    """
+    from backend.app.api.routes.camera import live_view_frame
+    from backend.app.services.camera_runtime import CameraCaptureRequest, capture
+
+    if not live_view_frame(printer_id, "external")[0]:
+        return None
+    if lit_since is not None:
+        await asyncio.sleep(max(0.0, lit_since - time.monotonic()))
+    try:
+        captured = await capture(
+            CameraCaptureRequest.external(
+                url=url,
+                camera_type=camera_type,
+                snapshot_url=snapshot_url,
+                purpose="plate_check",
+                printer_id=printer_id,
+            )
+        )
+    except Exception as exc:
+        logger.warning("Plate detection: the external camera's still failed: %s", type(exc).__name__)
+        return None
+    if captured.source == "live_view" or ((fresh or lit_since is not None) and captured.source != "fresh"):
+        return None
+    return captured.frame or None
 
 
 async def check_plate_empty(

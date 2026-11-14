@@ -97,6 +97,8 @@ export const handlers = [
   // Spec part-thumbnails §11.2: the part editor asks for its plate objects; a test that does not
   // care sees none, instead of a request that leaves for the network (`onUnhandledRequest: 'bypass'`).
   http.get('/api/v1/product-parts/:id/image-candidates', () => HttpResponse.json([])),
+  // The overlay builder asks whether the installation has a logo; a test that does not care sees none.
+  http.get('/api/v1/settings/overlay-logo/info', () => HttpResponse.json({ exists: false, revision: null })),
   // Spec procurement-stock-images R5: a `LivePartThumb` asks its picture apart. A test that does not
   // care gets no answer it could take as «no picture», so the view's own picture stays on screen.
   http.get('/api/v1/product-parts/images', () => HttpResponse.json({ detail: 'not mocked' }, { status: 503 })),

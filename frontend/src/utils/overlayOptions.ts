@@ -62,6 +62,15 @@ export function overlayTransparency(raw: string | null | undefined): number {
   return value <= 100 ? value : 0;
 }
 
+/**
+ * `logo=1` draws the installation's logo (Settings → the overlay builder).
+ * Only that exact value: anything else leaves the overlay as it was, and an
+ * installation without a logo draws none whatever the address says.
+ */
+export function overlayLogo(raw: string | null | undefined): boolean {
+  return raw === '1';
+}
+
 export type OverlayLayout = 'landscape' | 'portrait';
 
 /** The size each layout is drawn at before it is scaled to the browser source. */
@@ -123,6 +132,7 @@ export interface OverlayChoices {
   design: BuilderDesign;
   transparency: number;
   layout: BuilderLayout;
+  showLogo: boolean;
 }
 
 export const DEFAULT_OVERLAY_CHOICES: OverlayChoices = {
@@ -137,6 +147,7 @@ export const DEFAULT_OVERLAY_CHOICES: OverlayChoices = {
   design: 'classic',
   transparency: 0,
   layout: 'auto',
+  showLogo: false,
 };
 
 function knownFields(values: unknown[]): string[] {
@@ -169,6 +180,7 @@ export function overlayChoices(raw: unknown): OverlayChoices {
     design: value.design === '2' ? '2' : 'classic',
     transparency: whole(value.transparency, 0, 100, 0),
     layout: value.layout === 'landscape' || value.layout === 'portrait' || value.layout === 'both' ? value.layout : 'auto',
+    showLogo: value.showLogo === true,
   };
 }
 
@@ -220,6 +232,7 @@ export function parseOverlayUrl(text: string): { choices: OverlayChoices; token:
       // Classic has no ground to fade: the builder would not emit it either.
       transparency: design === 'v2' ? overlayTransparency(params.get('backgroundTransparency')) : 0,
       layout: overlayLayout(params.get('layout')) ?? 'auto',
+      showLogo: overlayLogo(params.get('logo')),
     },
     token: tokens[0] ?? '',
   };
