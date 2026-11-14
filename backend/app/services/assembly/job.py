@@ -45,6 +45,7 @@ PICTURE_BYTES = 4 * 1024 * 1024  # all plate pictures of one job, inlined into i
 OUTPUT_BYTES = 512 * 1024 * 1024  # one written 3MF
 JOB_BYTES = 256 * 1024
 MAX_ROW_FILES = 512  # a file per plate: more plates than this is not a layout anybody asked for
+CAD_FORMATS = ("step", "stp")
 _WORD = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}\Z")
 #: reasons after which no further printer row is published
 _STOPS_PUBLICATION = frozenset({"source_changed", "not_allowed", "restore_in_progress"})
@@ -60,7 +61,7 @@ class Source:
 
     proof: tuple  # (id, file_path, file_hash, created_at)
     path: Path
-    fmt: str  # "stl" | "obj" for a new assembly, "3mf" for a re-layout
+    fmt: str  # "stl" | "obj" | "step" | "stp" for a new assembly, "3mf" for a re-layout
     name: str
 
 
@@ -208,7 +209,11 @@ def _stage(root: Path, plan: Plan, rows: list[Row]) -> None:
     (root / "src").mkdir(parents=True)
     sources = []
     for index, source in enumerate(plan.sources):
-        member = f"src/{index}.{source.fmt}"
+        # a STEP file goes to the service's converter, and the packer is told the mesh that will be left there
+        cad = source.fmt in CAD_FORMATS
+        member = f"step/{index}/input.step" if cad else f"src/{index}.{source.fmt}"
+        if cad:
+            (root / "step" / str(index)).mkdir(parents=True)
         # the row was chosen by its hash; an external file may have changed on its share since the last scan
         digest, copied = hashlib.sha256(), 0
         with source.path.open("rb") as reader, (root / member).open("wb") as writer:
@@ -220,7 +225,9 @@ def _stage(root: Path, plan: Plan, rows: list[Row]) -> None:
                 writer.write(block)
         if source.proof[2] and digest.hexdigest() != source.proof[2]:
             raise SourceChanged(source.name)
-        sources.append({"member": member, "format": source.fmt})
+        sources.append(
+            {"member": f"step/{index}/mesh.stl", "format": "stl"} if cad else {"member": member, "format": source.fmt}
+        )
     printers = []
     for row in rows:
         (root / f"{row.key}.settings.json").write_bytes(row.settings)

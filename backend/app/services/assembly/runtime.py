@@ -58,8 +58,9 @@ def _read_result(root: Path) -> dict | None:
 
 
 class AssemblyRuntime:
-    def __init__(self, base: Path, broker):
+    def __init__(self, base: Path, broker, *, app_dir: Path | None = None):
         self.base = base
+        self.app_dir = app_dir  # where the CAD bundle lives; the service's own application by default
         self.root = base / ".cache" / "assembly-service"
         self.generation = uuid.uuid4().hex
         self.staging = self.root / "staging" / self.generation
@@ -220,6 +221,7 @@ class AssemblyRuntime:
                     "epoch": self.epoch,
                     "staging": str(self.staging),
                     "cache": str(self.root / "cache"),
+                    **({"app_dir": str(self.app_dir)} if self.app_dir else {}),
                 },
                 self.root / "cache",
             )
@@ -367,7 +369,9 @@ class AssemblyRuntime:
                     waiting = type(position) is int and position > 0
                     progress = {"stage": "waiting", "position": position} if waiting else {"stage": "preparing"}
                 elif state == "running":
-                    progress = {"stage": "packing", **(reply.get("progress") or {})}
+                    told = reply.get("progress") or {}
+                    # a STEP source is converted before anything is packed; the service says which file it is on
+                    progress = {"stage": "converting" if "convert" in told else "packing", **told}
                 else:
                     raise AssemblyFailed("unavailable", "job_lost")
                 if on_progress is not None and progress != shown:

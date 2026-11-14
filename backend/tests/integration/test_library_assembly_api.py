@@ -277,9 +277,7 @@ async def test_a_missing_or_trashed_source_is_one_404(async_client, db_session, 
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_step_and_3mf_sources_are_refused_with_their_name(async_client, farm):
-    step = await async_client.post(f"{API}/library/assemble", json=_body(farm, [("lid", {}), ("drawing", {})]))
-    assert step.status_code == 400 and "drawing.step" in step.json()["detail"]
+async def test_a_source_that_is_no_model_is_refused_with_its_name(async_client, farm):
     other = await async_client.post(f"{API}/library/assemble", json=_body(farm, [("project", {})]))
     assert other.status_code == 400 and "project.3mf" in other.json()["detail"]
 
@@ -535,3 +533,57 @@ async def test_a_source_whose_bytes_changed_on_disk_is_caught_before_packing(asy
     )
     assert job["result"]["outcome"] == "failed" and job["result"]["reason"] == "source_changed"
     assert not await _assembled_files(db_session)
+
+
+# --- STEP sources (stage C) ---
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_without_the_cad_bundle_a_step_source_is_refused_and_meshes_still_assemble(
+    async_client, db_session, farm, monkeypatch
+):
+    from backend.app.api.routes import library_assembly
+
+    monkeypatch.setattr(library_assembly, "_cad_installed", lambda: False)
+    refused = await async_client.post(f"{API}/library/assemble", json=_body(farm, [("lid", {}), ("drawing", {})]))
+    assert refused.status_code == 409 and "STEP" in refused.json()["detail"]
+    done = await _finish(
+        async_client, await async_client.post(f"{API}/library/assemble", json=_body(farm, [("lid", {})]))
+    )
+    assert done["result"]["outcome"] == "ok"
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_a_step_source_that_cannot_be_converted_fails_the_job_naming_the_part(
+    async_client, db_session, farm, monkeypatch
+):
+    """The fixture's "drawing.step" is no STEP at all (or this checkout has no bundle): either way the job ends
+    with that part named and nothing saved — never a layout without it."""
+    from backend.app.api.routes import library_assembly
+
+    monkeypatch.setattr(library_assembly, "_cad_installed", lambda: True)
+    response = await async_client.post(f"{API}/library/assemble", json=_body(farm, [("lid", {}), ("drawing", {})]))
+    result = (await _finish(async_client, response))["result"]
+    assert result["outcome"] == "failed" and result["reason"] in ("step_failed", "step_unavailable")
+    assert result["parts"] == [{"index": 1, "name": "drawing.step", "reason": result["reason"]}]
+    assert await _assembled_files(db_session) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_a_step_file_larger_than_the_converter_takes_is_refused_by_name(
+    async_client, db_session, farm, monkeypatch
+):
+    from sqlalchemy import update
+
+    from backend.app.api.routes import library_assembly
+
+    monkeypatch.setattr(library_assembly, "_cad_installed", lambda: True)
+    await db_session.execute(
+        update(LibraryFile).where(LibraryFile.filename == "drawing.step").values(file_size=64 * 1024**2 + 1)
+    )
+    await db_session.commit()
+    refused = await async_client.post(f"{API}/library/assemble", json=_body(farm, [("drawing", {})]))
+    assert refused.status_code == 413 and "drawing.step" in refused.json()["detail"]

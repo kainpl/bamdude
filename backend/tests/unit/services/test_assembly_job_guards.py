@@ -160,3 +160,30 @@ def test_staging_refuses_a_source_larger_than_the_request_allowed(tmp_path, monk
     monkeypatch.setattr(job, "MAX_SOURCE_BYTES", 4)
     with pytest.raises(ValueError):
         _stage(tmp_path / "a", _plan(sources=[_source(tmp_path, b"too many bytes")]), [])
+
+
+def test_a_step_source_is_staged_for_the_converter_and_named_as_the_mesh_it_will_leave(tmp_path):
+    """Part order is source order whatever the type: the packer reads part 1 from the converter's output."""
+    import json
+
+    mesh = _source(tmp_path, b"mesh")
+    drawing = tmp_path / "drawing.stp"
+    drawing.write_bytes(b"ISO-10303-21;")
+    step = Source((2, "drawing.stp", hashlib.sha256(b"ISO-10303-21;").hexdigest(), None), drawing, "stp", "drawing.stp")
+    root = tmp_path / "stage"
+    _stage(root, _plan(sources=[mesh, step, mesh]), [])
+    assert (root / "step" / "1" / "input.step").read_bytes() == b"ISO-10303-21;"
+    assert sorted(path.name for path in (root / "src").iterdir()) == ["0.stl", "2.stl"]
+    assert json.loads((root / "job.json").read_text())["sources"] == [
+        {"member": "src/0.stl", "format": "stl"},
+        {"member": "step/1/mesh.stl", "format": "stl"},
+        {"member": "src/2.stl", "format": "stl"},
+    ]
+
+
+def test_a_changed_step_source_is_caught_like_any_other(tmp_path):
+    drawing = tmp_path / "drawing.step"
+    drawing.write_bytes(b"new")
+    step = Source((2, "drawing.step", hashlib.sha256(b"old").hexdigest(), None), drawing, "step", "drawing.step")
+    with pytest.raises(job.SourceChanged):
+        _stage(tmp_path / "stage", _plan(sources=[step]), [])

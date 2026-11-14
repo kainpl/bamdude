@@ -12,6 +12,11 @@ in ``<root>/result.json`` for main to read.
 
 One job runs at a time; the queue lives here, so main never waits on a lock. A job gets a NEW child: it
 parses untrusted meshes and may hold gigabytes, and nothing of it may reach the next job.
+
+A STEP source is converted HERE first: main stages it as ``<root>/step/<part>/input.step`` and the job names
+``step/<part>/mesh.stl``. Each file gets its own disposable converter (``services/step_thumbnail`` in print
+mode — the only importer of OCP), proven gone before the next starts; the packing child sees meshes alone.
+A conversion that fails ends the job with the part named in ``result.json`` — never a layout without it.
 """
 
 from __future__ import annotations
@@ -28,7 +33,15 @@ import nats
 
 from backend.app.services.preview_artifacts import disk, owned
 from backend.app.services.preview_process import PreviewProcess, SpawnUnproven
-from backend.app.services.preview_protocol import CONTROL_SECONDS, PreviewError, closed_why, decode, encode
+from backend.app.services.preview_protocol import (
+    CAD_PRINT_TRIANGLES,
+    CONTROL_SECONDS,
+    JSON_BYTES,
+    PreviewError,
+    closed_why,
+    decode,
+    encode,
+)
 
 QUEUE_LIMIT = 16  # jobs waiting behind the running one
 MEMORY_BYTES = 2 * 1024**3
@@ -42,6 +55,12 @@ _DONE_LIMIT = 256
 _HEX = re.compile(r"[0-9a-f]{32}\Z")
 _KEYS = {"version", "generation", "epoch", "attempt_id", "operation", "root", "budget_ns"}
 _PROGRESS_KEYS = ("printer_index", "printer_count", "run", "runs", "placed", "total", "fill_part")
+PACK_MODULE = "backend.app.assembly_child"
+STEP_MODULE = "backend.app.services.step_thumbnail"
+STEP_PARTS = 100  # the request's own bound on files
+_STEP_DIR = re.compile(r"(0|[1-9]\d{0,2})\Z")
+#: what a converter's refusal is called in the job's result; anything else is ``step_failed``
+_STEP_REASONS = {"resource_limit": "step_too_large", "cad_unavailable": "step_unavailable", "timeout": "timeout"}
 
 
 class _Stop(Exception):
@@ -114,6 +133,66 @@ def _read_result(root: Path) -> tuple[str, str]:
     return data["outcome"], closed_why(data.get("why")) or ""
 
 
+def _step_parts(root: Path) -> list[int]:
+    """The parts main staged as STEP: ``step/<part>/input.step``, in part order."""
+    parts = []
+    try:
+        entries = list((root / "step").iterdir())
+    except OSError:
+        return []
+    for entry in entries:
+        if _STEP_DIR.fullmatch(entry.name) and not entry.is_symlink() and (entry / "input.step").is_file():
+            parts.append(int(entry.name))
+    return sorted(parts)
+
+
+def _cad_site(app_dir: Path) -> str | None:
+    """The installed CAD bundle of this application, located by the service itself; None when there is none."""
+    from backend.app import step_runtime  # stdlib-only: it never imports OCP
+
+    try:
+        found = step_runtime.locate(app_dir)
+    except Exception:
+        return None
+    return str(found.site) if found.ok and found.site is not None else None
+
+
+def _read_conversion(directory: Path) -> str:
+    """ "" when the converter left the mesh its result names; else the reason. The files are the child's: read
+    with a cap, and believed only as far as the mesh's own size agrees. Its input and notes are removed."""
+    reason = "step_failed"
+    try:
+        path = directory / "result.json"
+        data = json.loads(path.read_bytes()) if path.stat().st_size <= JSON_BYTES else None
+    except (OSError, ValueError, RecursionError):
+        data = None
+    if isinstance(data, dict):
+        outcome, triangles = data.get("outcome"), data.get("triangles")
+        if outcome == "ok":
+            try:
+                mesh = directory / "mesh.stl"
+                if (
+                    type(triangles) is int
+                    and 0 < triangles <= CAD_PRINT_TRIANGLES
+                    and mesh.is_file()
+                    and not mesh.is_symlink()
+                    and mesh.stat().st_size == 84 + 50 * triangles
+                ):
+                    reason = ""
+            except OSError:
+                pass
+        elif isinstance(outcome, str):
+            reason = _STEP_REASONS.get(outcome, reason)
+    for name in ("input.step", "result.json", "result.json.part", "stage", "stage.part", "mesh.stl.part"):
+        (directory / name).unlink(missing_ok=True)
+    return reason
+
+
+def _write_step_failure(root: Path, part: int, reason: str) -> None:
+    payload = {"outcome": "failed", "why": reason, "parts": [{"index": part, "reason": reason}]}
+    (root / "result.json").write_text(json.dumps(payload), encoding="utf-8")
+
+
 async def _proven_stop(child) -> bool:
     """Stop the child and say whether its tree is proven gone. A cancelled caller still waits for the answer."""
     stopper = asyncio.ensure_future(asyncio.to_thread(child.stop))
@@ -133,6 +212,7 @@ class Service:
         self.subject = f"bamdude.assembly.{config['generation']}.{config['epoch']}"
         self.staging = Path(config["staging"])
         self.cache = Path(config["cache"])
+        self.app_dir = Path(config.get("app_dir") or Path(__file__).resolve().parents[2])
         self.queue: deque[Job] = deque()
         self.jobs: dict[str, Job] = {}
         self.done: dict[str, Job] = {}
@@ -276,22 +356,14 @@ class Service:
             await asyncio.gather(job.task, return_exceptions=True)
             self.running = None
 
-    async def execute(self, job: Job):
-        started = time.monotonic()
-        deadline = time.monotonic_ns() + job.budget_ns
-        outcome, why = "failed", "unknown"
+    async def _child(self, job: Job, module: str, payload: dict, deadline: int, *, progress: bool) -> None:
+        """One disposable child to its end, watched; its tree is proven gone before this returns."""
         child = None
         try:
 
             async def spawn():
                 nonlocal child
-                child = await disk(
-                    PreviewProcess,
-                    "backend.app.assembly_child",
-                    {"root": str(job.root), "deadline": deadline},
-                    self.cache,
-                    job_memory_limit=MEMORY_BYTES,
-                )
+                child = await disk(PreviewProcess, module, payload, self.cache, job_memory_limit=MEMORY_BYTES)
 
             await owned(spawn())
             watched = 0.0
@@ -304,8 +376,45 @@ class Service:
                         raise _Stop("resource_limit", "memory")
                     if await disk(_tree_bytes, job.root) > STAGING_BYTES:
                         raise _Stop("resource_limit", "staging")
-                    job.progress = await disk(_read_progress, job.root) or job.progress
+                    if progress:
+                        job.progress = await disk(_read_progress, job.root) or job.progress
                 await asyncio.sleep(0.05)
+        finally:
+            if child is not None and not await _proven_stop(child):
+                # no proof that the child is gone: nothing else starts here
+                self.uncertain = True
+                raise _Stop("unavailable", "ownership_uncertain")
+
+    async def _convert(self, job: Job, deadline: int) -> None:
+        """Every STEP source to its mesh, in part order. Raises ``_Stop`` with the part named in result.json."""
+        parts = await disk(_step_parts, job.root)
+        if not parts:
+            return
+        if len(parts) > STEP_PARTS:
+            raise _Stop("failed", "bad_job")
+        site = await disk(_cad_site, self.app_dir)
+        for number, part in enumerate(parts, start=1):
+            job.progress = {"convert": number, "convert_count": len(parts)}
+            reason = "step_unavailable"
+            if site is not None:
+                directory = job.root / "step" / str(part)
+                payload = {"root": str(directory), "deadline": deadline, "site": site, "mode": "print"}
+                await self._child(job, STEP_MODULE, payload, deadline, progress=False)
+                reason = await disk(_read_conversion, directory)
+            if reason == "timeout":
+                raise _Stop("timeout", "deadline")
+            if reason:
+                await disk(_write_step_failure, job.root, part, reason)
+                raise _Stop("failed", reason)
+        job.progress = None
+
+    async def execute(self, job: Job):
+        started = time.monotonic()
+        deadline = time.monotonic_ns() + job.budget_ns
+        outcome, why = "failed", "unknown"
+        try:
+            await self._convert(job, deadline)
+            await self._child(job, PACK_MODULE, {"root": str(job.root), "deadline": deadline}, deadline, progress=True)
             outcome, why = await disk(_read_result, job.root)
         except asyncio.CancelledError:
             outcome, why = "canceled", "cancel"
@@ -317,10 +426,6 @@ class Service:
         except Exception as error:
             outcome, why = "failed", closed_why(type(error).__name__) or "unknown"
         finally:
-            if child is not None and not await _proven_stop(child):
-                # no proof that the child is gone: nothing else starts here
-                self.uncertain = True
-                outcome, why = "unavailable", "ownership_uncertain"
             self.finish(job, outcome, why, time.monotonic() - started)
 
     async def stop(self):

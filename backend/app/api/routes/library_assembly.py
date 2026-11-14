@@ -43,10 +43,12 @@ from backend.app.services.assembly import job as assembly_job
 from backend.app.services.assembly.presets import PresetUnresolved, flatten
 from backend.app.services.assembly.zone import GeometryUnknown, printer_geometry
 from backend.app.services.preview_artifacts import disk as preview_disk
+from backend.app.services.preview_protocol import STEP_PRINT_INPUT_BYTES
 
 router = APIRouter(prefix="/library", tags=["library"])
 
 _MESH_TYPES = ("stl", "obj")
+_CAD_TYPES = assembly_job.CAD_FORMATS
 _DELETE_GATE = require_ownership_permission(Permission.LIBRARY_DELETE_ALL, Permission.LIBRARY_DELETE_OWN)
 
 
@@ -67,6 +69,17 @@ async def _visible_files(db: AsyncSession, request: Request, user: User | None, 
     if set(ids) - set(files):
         raise HTTPException(404, "File not found")
     return actor, scope, files
+
+
+def _cad_installed() -> bool:
+    """Whether this server can convert a STEP file at all (the bundle of the STEP thumbnails). Blocking."""
+    from backend.app import step_runtime  # stdlib-only: it never imports OCP
+    from backend.app.core.config import settings
+
+    try:
+        return bool(step_runtime.locate(settings.app_dir).ok)
+    except Exception:
+        return False
 
 
 async def _on_disk(file: LibraryFile) -> Path:
@@ -106,20 +119,22 @@ async def assemble_project(
     current_user: User | None = Depends(require_permission(Permission.LIBRARY_UPLOAD)),
     api_key_cloud_owner: User | None = Depends(resolve_api_key_cloud_owner),
 ):
-    """Enqueue an assembly of the chosen STL / OBJ files. Returns 202 + job id; poll ``GET /slice-jobs/{id}``."""
+    """Enqueue an assembly of the chosen STL / OBJ / STEP files. Returns 202 + job id; poll ``GET /slice-jobs/{id}``."""
     if any(part.file_id is None for part in body.parts):
         raise HTTPException(422, "Every part of a new assembly names its file")
     actor, _scope, files = await _visible_files(db, http_request, current_user, [part.file_id for part in body.parts])
     ordered = [files[part.file_id] for part in body.parts]
     for file in ordered:
         kind = _suffix(file.filename)
-        if kind in ("step", "stp"):
-            raise HTTPException(400, f"STEP files cannot be assembled yet: {file.filename}")
-        if kind not in _MESH_TYPES:
-            raise HTTPException(400, f"Only STL and OBJ files can be assembled: {file.filename}")
+        if kind not in _MESH_TYPES + _CAD_TYPES:
+            raise HTTPException(400, f"Only STL, OBJ and STEP files can be assembled: {file.filename}")
+        if kind in _CAD_TYPES and (file.file_size or 0) > STEP_PRINT_INPUT_BYTES:
+            raise HTTPException(413, f"A STEP file larger than 64 MB cannot be assembled: {file.filename}")
     if sum(file.file_size or 0 for file in files.values()) > MAX_SOURCE_BYTES:
         raise HTTPException(413, "The selected files are larger than 200 MB in total")
     _check_copies(body.parts)
+    if any(_suffix(file.filename) in _CAD_TYPES for file in ordered) and not await preview_disk(_cad_installed):
+        raise HTTPException(409, "STEP files cannot be assembled: STEP support is not installed on this server")
     authority = await request_authority(http_request, current_user)
     sources = [
         assembly_job.Source(_proof(file), await _on_disk(file), _suffix(file.filename), file.filename)

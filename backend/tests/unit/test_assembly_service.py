@@ -145,3 +145,152 @@ def test_the_guardian_allows_both_assembly_modules():
     from backend.app.worker_guardian import _PREVIEW_MODULES
 
     assert {"backend.app.assembly_service", "backend.app.assembly_child"} <= _PREVIEW_MODULES
+
+
+# --- STEP sources: converted here, one disposable converter per file, before the packing child ---
+
+
+def _step_job(service, parts=(0,), name="s"):
+    root = service.staging / name
+    for part in parts:
+        (root / "step" / str(part)).mkdir(parents=True)
+        (root / "step" / str(part) / "input.step").write_bytes(b"ISO-10303-21;")
+    return assembly_service.Job(uuid.uuid4().hex, root, 60 * 10**9)
+
+
+def _fake_children(monkeypatch, behave):
+    """Replace the process class: ``behave(module, payload)`` plays the child; spawns and stops are recorded."""
+    from types import SimpleNamespace
+
+    events = []
+
+    class Child:
+        def __init__(self, module, payload, cache, job_memory_limit=None):
+            events.append(("spawn", module))
+            self.module = module
+            behave(module, payload)
+            self.process = SimpleNamespace(poll=lambda: 0)
+
+        def rss(self):
+            return 0
+
+        def stop(self):
+            events.append(("stop", self.module))
+
+    monkeypatch.setattr(assembly_service, "PreviewProcess", Child)
+    monkeypatch.setattr(assembly_service, "_cad_site", lambda app_dir: "site")
+    return events
+
+
+def _converted(payload, triangles=2, **changes):
+    from pathlib import Path
+
+    root = Path(payload["root"])
+    (root / "mesh.stl").write_bytes(b"\0" * (84 + 50 * triangles))
+    (root / "result.json").write_text(json.dumps({"outcome": "ok", "triangles": triangles, **changes}))
+
+
+def test_step_sources_are_the_numbered_directories_that_hold_an_input(service):
+    job = _step_job(service, parts=(2, 0, 10))
+    (job.root / "step" / "x").mkdir()
+    (job.root / "step" / "01").mkdir()
+    (job.root / "step" / "5").mkdir()  # no input: not a source
+    assert assembly_service._step_parts(job.root) == [0, 2, 10]
+    assert assembly_service._step_parts(service.staging) == []
+
+
+@pytest.mark.parametrize(
+    ("result", "size", "expected"),
+    [
+        ({"outcome": "ok", "triangles": 2}, 184, ""),
+        ({"outcome": "ok", "triangles": 2}, 134, "step_failed"),  # the mesh is not the one the result names
+        ({"outcome": "ok", "triangles": 2}, None, "step_failed"),
+        ({"outcome": "ok", "triangles": 3_000_000}, 84 + 150_000_000, "step_failed"),
+        ({"outcome": "ok", "triangles": True}, 134, "step_failed"),
+        ({"outcome": "resource_limit", "why": "triangle_cap"}, None, "step_too_large"),
+        ({"outcome": "cad_unavailable", "why": "bundle_import"}, None, "step_unavailable"),
+        ({"outcome": "render_failed", "why": "not_solid"}, None, "step_failed"),
+        ({"outcome": "whatever"}, None, "step_failed"),
+        (None, None, "step_failed"),
+    ],
+)
+def test_a_conversion_is_taken_only_when_its_mesh_is_the_one_it_names(tmp_path, result, size, expected):
+    if result is not None:
+        (tmp_path / "result.json").write_text(json.dumps(result))
+    if size is not None:
+        with (tmp_path / "mesh.stl").open("wb") as mesh:
+            mesh.truncate(size)
+    assert assembly_service._read_conversion(tmp_path) == expected
+
+
+@pytest.mark.asyncio
+async def test_step_files_are_converted_one_by_one_before_the_packer_starts(service, monkeypatch):
+    def behave(module, payload):
+        if module == assembly_service.STEP_MODULE:
+            assert payload["mode"] == "print" and payload["site"] == "site"
+            _converted(payload)
+        else:
+            (job.root / "result.json").write_text(json.dumps({"outcome": "ok", "why": ""}))
+
+    events = _fake_children(monkeypatch, behave)
+    job = _step_job(service, parts=(0, 3))
+    await service.execute(job)
+    converter, packer = assembly_service.STEP_MODULE, "backend.app.assembly_child"
+    assert events == [
+        ("spawn", converter), ("stop", converter), ("spawn", converter), ("stop", converter),
+        ("spawn", packer), ("stop", packer),
+    ]  # fmt: skip
+    assert job.result["outcome"] == "ok"
+    for part in (0, 3):
+        left = sorted(path.name for path in (job.root / "step" / str(part)).iterdir())
+        assert left == ["mesh.stl"], "the packer gets the mesh alone"
+
+
+@pytest.mark.asyncio
+async def test_a_failed_conversion_names_its_part_and_nothing_is_packed(service, monkeypatch):
+    def behave(module, payload):
+        root = payload["root"]
+        if root.endswith("0"):
+            _converted(payload)
+        else:
+            with open(f"{root}/result.json", "w") as out:
+                json.dump({"outcome": "resource_limit", "why": "triangle_cap"}, out)
+
+    events = _fake_children(monkeypatch, behave)
+    job = _step_job(service, parts=(0, 4, 7))
+    await service.execute(job)
+    assert [module for kind, module in events if kind == "spawn"] == [assembly_service.STEP_MODULE] * 2
+    assert (job.result["outcome"], job.result["why"]) == ("failed", "step_too_large")
+    written = json.loads((job.root / "result.json").read_text())
+    assert written == {
+        "outcome": "failed",
+        "why": "step_too_large",
+        "parts": [{"index": 4, "reason": "step_too_large"}],
+    }
+
+
+@pytest.mark.asyncio
+async def test_without_the_cad_bundle_a_step_job_fails_by_name_and_starts_nothing(service, monkeypatch):
+    events = _fake_children(monkeypatch, lambda module, payload: None)
+    monkeypatch.setattr(assembly_service, "_cad_site", lambda app_dir: None)
+    job = _step_job(service)
+    await service.execute(job)
+    assert events == [] and job.result["why"] == "step_unavailable"
+    assert json.loads((job.root / "result.json").read_text())["parts"] == [{"index": 0, "reason": "step_unavailable"}]
+
+
+@pytest.mark.asyncio
+async def test_the_conversion_tells_which_file_it_is_on(service, monkeypatch):
+    seen = []
+
+    def behave(module, payload):
+        seen.append(dict(job.progress or {}))
+        if module == assembly_service.STEP_MODULE:
+            _converted(payload)
+        else:
+            (job.root / "result.json").write_text(json.dumps({"outcome": "ok", "why": ""}))
+
+    _fake_children(monkeypatch, behave)
+    job = _step_job(service, parts=(1, 2))
+    await service.execute(job)
+    assert seen == [{"convert": 1, "convert_count": 2}, {"convert": 2, "convert_count": 2}, {}]

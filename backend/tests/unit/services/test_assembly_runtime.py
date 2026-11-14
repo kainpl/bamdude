@@ -264,3 +264,47 @@ async def test_a_service_that_stops_answering_is_given_up_after_the_limit(runtim
         await runtime.run(_slow(runtime, "a"), job_id=22)
     assert failed.value.outcome == "unavailable" and len(asked) == 2
     assert await _until(lambda: not _packing_children(runtime))
+
+
+@pytest.mark.requires_cad
+@pytest.mark.asyncio
+async def test_a_step_part_is_converted_at_print_precision_and_packed(tmp_path, monkeypatch):
+    """Real broker, service, converter and packer: a STEP source becomes an object of the project."""
+    import json
+    import shutil
+    from pathlib import Path
+
+    from platenest.bambu3mf import read_project
+
+    from backend.tests.cad_lane import cad_app_dir
+
+    fixture = Path(__file__).resolve().parents[2] / "fixtures" / "step" / "occt" / "plate_holes.step"
+    monkeypatch.setattr(assembly_runtime, "_POLL_SECONDS", 0.1)
+    broker = LocalWorkerBroker(tmp_path / ".cache" / "preview-service")
+    await broker.start()
+    runtime = AssemblyRuntime(tmp_path, broker, app_dir=cad_app_dir())
+    seen = []
+    try:
+        await runtime.start()
+        root = _job(runtime, "a", [("lid", 2), ("lid", 1)])
+        # part 1 is a STEP file: staged for the converter, named to the packer as the mesh it will leave
+        (root / "src" / "1.stl").unlink()
+        (root / "step" / "1").mkdir(parents=True)
+        shutil.copyfile(fixture, root / "step" / "1" / "input.step")
+        job = json.loads((root / "job.json").read_text(encoding="utf-8"))
+        job["sources"][1] = {"member": "step/1/mesh.stl", "format": "stl"}
+        job["parts"][1]["name"] = "plate_holes.step"
+        (root / "job.json").write_text(json.dumps(job), encoding="utf-8")
+
+        result = await runtime.run(root, job_id=3, on_progress=seen.append)
+        assert result["outcome"] == "ok" and result["printers"][0]["status"] == "ok"
+        project = read_project((root / result["printers"][0]["files"][0]["member"]).read_bytes())
+        assert [obj.name for obj in project.objects] == ["lid", "plate_holes.step"]
+        assert len(project.objects[1].triangles) > 500, "the holes are round at the slicer's precision"
+        assert not (root / "step" / "1" / "input.step").exists()
+        left = [" ".join(process.cmdline()) for process in _children(runtime)]
+        assert not [line for line in left if "step_thumbnail" in line or "assembly_child" in line]
+    finally:
+        await runtime.stop()
+        await broker.stop()
+    assert {"stage": "converting", "convert": 1, "convert_count": 1} in seen
