@@ -200,37 +200,64 @@ def _choices_of(
     return {group.id: option.id for (group, _values), option in zip(axes, combination, strict=True)}
 
 
-async def table(db: AsyncSession, product: Product, *, page: int, page_size: int) -> dict:
-    """``GET /products/{id}/combinations`` — one page of every combination of the product's
-    values, in table order (:func:`_axes`, the last group fastest), each with its
-    availability and its reasons — the very reasons the 409 refusal names.
+async def table(db: AsyncSession, product: Product, *, page: int, page_size: int, state: str = "all") -> dict:
+    """``GET /products/{id}/combinations`` — one page of the product's combinations, in
+    table order (:func:`_axes`, the last group fastest), each with its availability and
+    its reasons — the very reasons the 409 refusal names.
+
+    ``state`` keeps only the available or only the unavailable ones; ``total`` then counts
+    the kept ones. ``available_total`` / ``unavailable_total`` count both kinds whatever the
+    filter — the page's two tabs — for a product of at most :data:`MAX_ENUMERATED`
+    combinations; above it they are ``None`` and ``state`` is not applied: the table is
+    then read a page at a time, never whole, and the answer is every combination.
 
     ``product`` as ``line_config.load_products`` loads it. The sliced set is read once,
-    and only when the page holds anything: a page past the end is empty, and so is the
-    table of a product without groups (п. 12), with nothing read."""
+    and only when there is a combination to judge: the table of a product without groups
+    (п. 12) is empty with nothing read, and so is a page past the end of an unfiltered
+    table too large to count."""
     axes = _axes(product)
-    total = _total(axes)
+    every = _total(axes)
+    counted = every <= MAX_ENUMERATED
     start = (page - 1) * page_size
-    if start >= total:
-        return {"total": total, "page": page, "items": []}
+    if not every or (not counted and start >= every):
+        zero = 0 if counted else None
+        return {"total": every, "page": page, "items": [], "available_total": zero, "unavailable_total": zero}
     parts = list(product.parts)
     sliced = await sliced_for(db, product.id)
     strict = strict_groups(product)
     reasons_of = _reasons_of(product)
-    items = []
-    for combination in itertools.islice(_from_index([values for _g, values in axes], start), page_size):
-        reasons = reasons_of(availability(parts, _choices_of(axes, combination), sliced, strict))
-        items.append(
-            {
-                "choices": [
-                    {"group_id": group.id, "group": group.name, "option_id": option.id, "option": option.name}
-                    for (group, _values), option in zip(axes, combination, strict=True)
-                ],
-                "available": not reasons,
-                "reasons": reasons,
-            }
-        )
-    return {"total": total, "page": page, "items": items}
+
+    def row(combination: Sequence[ProductVariantOption], unavailable: list[Unavailable]) -> dict:
+        return {
+            "choices": [
+                {"group_id": group.id, "group": group.name, "option_id": option.id, "option": option.name}
+                for (group, _values), option in zip(axes, combination, strict=True)
+            ],
+            "available": not unavailable,
+            "reasons": reasons_of(unavailable),
+        }
+
+    values = [options for _group, options in axes]
+    if not counted:
+        items = [
+            row(combination, availability(parts, _choices_of(axes, combination), sliced, strict))
+            for combination in itertools.islice(_from_index(values, start), page_size)
+        ]
+        return {"total": every, "page": page, "items": items, "available_total": None, "unavailable_total": None}
+    judged = [
+        (combination, availability(parts, _choices_of(axes, combination), sliced, strict))
+        for combination in itertools.product(*values)
+    ]
+    open_total = sum(1 for _combination, unavailable in judged if not unavailable)
+    if state != "all":
+        judged = [pair for pair in judged if (not pair[1]) == (state == "available")]
+    return {
+        "total": len(judged),
+        "page": page,
+        "items": [row(combination, unavailable) for combination, unavailable in judged[start : start + page_size]],
+        "available_total": open_total,
+        "unavailable_total": every - open_total,
+    }
 
 
 async def describe(db: AsyncSession, product: Product, choices: Mapping[int, int]) -> dict:

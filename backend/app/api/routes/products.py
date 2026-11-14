@@ -2241,14 +2241,17 @@ async def get_product_combinations(
     product_id: int,
     page: int = Query(1, ge=1),
     page_size: int = Query(100, ge=1, le=500),
+    state: Literal["all", "available", "unavailable"] = Query("all"),
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.PRODUCTS_READ),
 ):
-    """Every combination of the product's variant values, a page at a time, each with
+    """The combinations of the product's variant values, a page at a time, each with
     whether an order may take it and why not (spec product-part-variant-combinations) —
-    the product page's table. Writes nothing."""
+    the product page's table. ``state`` keeps the available or the unavailable ones; the
+    answer counts both kinds for the page's tabs (a product too large to count is answered
+    unfiltered, its counts ``null``). Writes nothing."""
     product = await _with_variants(db, product_id)
-    return await combination_gate.table(db, product, page=page, page_size=page_size)
+    return await combination_gate.table(db, product, page=page, page_size=page_size, state=state)
 
 
 @router.post("/{product_id}/combination", response_model=CombinationStateOut)

@@ -8404,6 +8404,11 @@ export default {
       count_few: 'комбінації',
       count_many: 'комбінацій',
       count_other: 'комбінації',
+      tab: { available: 'Доступні', unavailable: 'Недоступні' },
+      none: {
+        available: 'Поки що жодну комбінацію не можна замовити',
+        unavailable: 'Усі комбінації можна замовити',
+      },
       reason: {
         optionWithoutPart: 'немає деталі для «{{option}}» у групі «{{group}}»',
         nothingChosen: 'у групі «{{group}}» нічого не обрано',

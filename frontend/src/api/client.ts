@@ -3351,12 +3351,19 @@ export interface CombinationRow {
   reasons: CombinationReason[];
 }
 
-/** `GET /products/{id}/combinations` — one page; `total` counts every combination
- *  (0 for a product without groups), groups by position, the last group fastest. */
+/** Which combinations the table's page holds. */
+export type CombinationsState = 'all' | 'available' | 'unavailable';
+
+/** `GET /products/{id}/combinations` — one page; `total` counts the combinations the
+ *  `state` filter keeps (0 for a product without groups), groups by position, the last
+ *  group fastest. `available_total` / `unavailable_total` count both kinds whatever the
+ *  filter; `null` for a product too large to count, which the server answers unfiltered. */
 export interface ProductCombinationsPage {
   total: number;
   page: number;
   items: CombinationRow[];
+  available_total: number | null;
+  unavailable_total: number | null;
 }
 
 /** One value of one group beside a choice: `here` — with the other groups as chosen;
@@ -13918,10 +13925,13 @@ export const api = {
     const qs = search.toString();
     return request<{ kits_available: number }>(`/products/${id}/kits${qs ? `?${qs}` : ''}`);
   },
-  /** One page of every combination of the product's variant options, each available or with
-   *  its reasons (spec product-part-variant-combinations, п. 17); `pageSize` ≤ 500. */
-  getProductCombinations: (productId: number, page: number, pageSize: number) =>
-    request<ProductCombinationsPage>(`/products/${productId}/combinations?page=${page}&page_size=${pageSize}`),
+  /** One page of the combinations of the product's variant options, each available or with
+   *  its reasons (spec product-part-variant-combinations, п. 17); `pageSize` ≤ 500. `state`
+   *  keeps one kind — the server filters, counts both kinds and pages. */
+  getProductCombinations: (productId: number, page: number, pageSize: number, state: CombinationsState) =>
+    request<ProductCombinationsPage>(
+      `/products/${productId}/combinations?page=${page}&page_size=${pageSize}&state=${state}`,
+    ),
   /** Is this choice (`group_id → option_id`; a group left out takes its standard) available,
    *  and how each value of each group would leave it (п. 18). Writes nothing. */
   describeCombination: (productId: number, choices: Record<number, number>) =>

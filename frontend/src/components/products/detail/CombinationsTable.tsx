@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { api } from '../../../api/client';
-import type { Product } from '../../../api/client';
+import type { CombinationsState, Product } from '../../../api/client';
 import { listState } from '../../../utils/listState';
 import { PRODUCT_COMBINATIONS_KEY } from '../../../utils/queryInvalidation';
 import { PaginationBar } from '../../PaginationBar';
@@ -16,6 +16,12 @@ export const COMBINATIONS_PER_PAGE = 50;
 const HEAD = 'px-3 py-2 text-left text-xs font-normal text-bambu-gray whitespace-nowrap';
 const CELL = 'px-3 py-2 align-top';
 const AMBER = 'text-amber-700 dark:text-amber-400';
+const TAB = 'rounded-md border px-2.5 py-1 text-xs';
+const TAB_ON = 'border-bambu-green text-white';
+const TAB_OFF = 'border-bambu-dark-tertiary text-bambu-gray hover:text-white';
+
+type Tab = Exclude<CombinationsState, 'all'>;
+const TABS: Tab[] = ['available', 'unavailable'];
 
 /**
  * Every combination of the product's variant options, and whether an order can take it (spec
@@ -26,8 +32,12 @@ const AMBER = 'text-amber-700 dark:text-amber-400';
  * composes the sentences (`partBinding.reasonText`). The columns are read off the answer itself, so
  * a row and its header always come from the same snapshot.
  *
+ * Two tabs, the available combinations first (owner, 2026-11-14): the tab is the request's `state`,
+ * and each tab's count is the server's, whatever tab is open. A product with too many combinations
+ * to count is answered unfiltered with its counts `null` — then there are no tabs, one table.
+ *
  * A product without groups has no combination to list: nothing is rendered and nothing asked.
- * The key `[PRODUCT_COMBINATIONS_KEY, productId, page]` is refreshed by the part, variant and
+ * The key `[PRODUCT_COMBINATIONS_KEY, productId, tab, page]` is refreshed by the part, variant and
  * file-link writes (`invalidateProductFiles`, `invalidateProductVariants`); a file sliced elsewhere
  * shows on the next read.
  */
@@ -36,19 +46,30 @@ export function CombinationsTable({ product }: { product: Pick<Product, 'id' | '
   const hasGroups = (product.variant_groups ?? []).length > 0;
   // The page belongs to its product: another product opens on its first page, and never shows
   // this one's rows while its own are read.
-  const [paged, setPaged] = useState({ productId: product.id, page: 1 });
-  const page = paged.productId === product.id ? paged.page : 1;
-  const setPage = (next: number) => setPaged({ productId: product.id, page: next });
+  const [paged, setPaged] = useState<{ productId: number; tab: Tab; page: number }>({
+    productId: product.id,
+    tab: 'available',
+    page: 1,
+  });
+  const own = paged.productId === product.id;
+  const tab = own ? paged.tab : 'available';
+  const page = own ? paged.page : 1;
+  const setPage = (next: number) => setPaged({ productId: product.id, tab, page: next });
   const query = useQuery({
-    queryKey: [PRODUCT_COMBINATIONS_KEY, product.id, page],
-    queryFn: () => api.getProductCombinations(product.id, page, COMBINATIONS_PER_PAGE),
+    queryKey: [PRODUCT_COMBINATIONS_KEY, product.id, tab, page],
+    queryFn: () => api.getProductCombinations(product.id, page, COMBINATIONS_PER_PAGE, tab),
     enabled: hasGroups,
     placeholderData: (previous, previousQuery) => (previousQuery?.queryKey[1] === product.id ? previous : undefined),
     retry: false,
   });
   const data = query.data;
+  // Counted: the tabs' two figures; the table has rows when either kind has any.
+  const counts =
+    data && data.available_total !== null && data.unavailable_total !== null
+      ? { available: data.available_total, unavailable: data.unavailable_total }
+      : null;
   const state = listState({
-    data: data ? { meta: { total: data.total } } : undefined,
+    data: data ? { meta: { total: counts ? counts.available + counts.unavailable : data.total } } : undefined,
     isError: query.isError,
     isPlaceholderData: query.isPlaceholderData,
   });
@@ -57,8 +78,8 @@ export function CombinationsTable({ product }: { product: Pick<Product, 'id' | '
   // The table shrank under the page (a group or an option went): back to its last page, decided
   // only by an answer of the page's own key.
   useEffect(() => {
-    if (data && !query.isPlaceholderData && page > lastPage) setPaged({ productId: product.id, page: lastPage });
-  }, [data, query.isPlaceholderData, page, lastPage, product.id]);
+    if (data && !query.isPlaceholderData && page > lastPage) setPaged({ productId: product.id, tab, page: lastPage });
+  }, [data, query.isPlaceholderData, page, lastPage, product.id, tab]);
 
   if (!hasGroups || state === 'empty') return null;
 
@@ -77,6 +98,27 @@ export function CombinationsTable({ product }: { product: Pick<Product, 'id' | '
     body = (
       <div className={state === 'transition' ? 'opacity-60' : undefined} aria-busy={state === 'transition' || undefined}>
         {state === 'refresh-failed' && <RefreshFailedNote onRetry={() => query.refetch()} />}
+        {counts && (
+          <div role="tablist" aria-label={t('products.combinations.title')} className="mb-2 flex gap-2">
+            {TABS.map((kind) => (
+              <button
+                key={kind}
+                type="button"
+                role="tab"
+                aria-selected={tab === kind}
+                className={`${TAB} ${tab === kind ? TAB_ON : TAB_OFF}`}
+                onClick={() => setPaged({ productId: product.id, tab: kind, page: 1 })}
+              >
+                {t(`products.combinations.tab.${kind}`)} <span className="tabular-nums">{counts[kind]}</span>
+              </button>
+            ))}
+          </div>
+        )}
+        {counts && items.length === 0 && !query.isPlaceholderData && (
+          <p role="status" className="text-sm text-bambu-gray">
+            {t(`products.combinations.none.${tab}`)}
+          </p>
+        )}
         {items.length > 0 && (
           <div className="overflow-x-auto rounded-lg border border-bambu-dark-tertiary">
             <table className="w-full text-sm">
@@ -120,7 +162,7 @@ export function CombinationsTable({ product }: { product: Pick<Product, 'id' | '
             </table>
           </div>
         )}
-        {data && (
+        {data && data.total > 0 && (
           <PaginationBar
             page={data.page}
             totalPages={lastPage}

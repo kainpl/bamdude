@@ -140,6 +140,35 @@ async def test_table_lists_every_combination_with_its_reason(async_client, jar):
 
 
 @pytest.mark.asyncio
+async def test_table_filters_by_state_and_counts_both_kinds(async_client, jar):  # noqa: F811
+    """The page's two tabs: the filter keeps one kind, ``total`` and the pages follow it, and
+    both counts are answered whatever the filter."""
+    everything = (await async_client.get(_table_url(jar.id))).json()
+    assert (everything["available_total"], everything["unavailable_total"]) == (4, 8)
+    open_ = (await async_client.get(f"{_table_url(jar.id)}?state=available")).json()
+    assert (open_["total"], open_["available_total"], open_["unavailable_total"]) == (4, 4, 8)
+    assert [_names(i) for i in open_["items"]] == [
+        ("400", "solid", "screw"),
+        ("400", "solid", "snap"),
+        ("600", "solid", "screw"),
+        ("600", "solid", "snap"),
+    ]
+    closed = (await async_client.get(f"{_table_url(jar.id)}?state=unavailable&page=2&page_size=5")).json()
+    assert (closed["total"], closed["page"], len(closed["items"])) == (8, 2, 3)
+    assert all(not i["available"] and i["reasons"] for i in closed["items"])
+    past = (await async_client.get(f"{_table_url(jar.id)}?state=available&page=2")).json()
+    assert (past["total"], past["items"], past["available_total"]) == (4, [], 4)
+    assert (await async_client.get(f"{_table_url(jar.id)}?state=some")).status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_a_table_too_large_to_count_is_answered_unfiltered(async_client, six_by_five):
+    body = (await async_client.get(f"{_table_url(six_by_five.id)}?state=unavailable&page_size=10")).json()
+    assert (body["total"], len(body["items"])) == (15625, 10)
+    assert (body["available_total"], body["unavailable_total"]) == (None, None)
+
+
+@pytest.mark.asyncio
 async def test_table_reads_a_trashed_source_as_unsliced(async_client, db_session, jar):  # noqa: F811
     f = await db_session.get(LibraryFile, jar.files["body_400"])
     f.deleted_at = datetime.now()
@@ -290,7 +319,7 @@ async def test_product_without_groups_is_not_computed(async_client, db_session, 
     await db_session.commit()
     table = await async_client.get(_table_url(product.id))
     assert table.status_code == 200, table.text
-    assert table.json() == {"total": 0, "page": 1, "items": []}
+    assert table.json() == {"total": 0, "page": 1, "items": [], "available_total": 0, "unavailable_total": 0}
     state = await async_client.post(_state_url(product.id), json={"choices": {}})
     assert state.status_code == 200, state.text
     assert state.json() == {"available": True, "reasons": [], "options": []}

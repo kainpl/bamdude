@@ -8211,6 +8211,11 @@ export default {
       failed: 'Could not load the combinations',
       count_one: 'combination',
       count_other: 'combinations',
+      tab: { available: 'Available', unavailable: 'Unavailable' },
+      none: {
+        available: 'No combination can be ordered yet',
+        unavailable: 'Every combination can be ordered',
+      },
       reason: {
         optionWithoutPart: 'no part for «{{option}}» in «{{group}}»',
         nothingChosen: 'nothing chosen in «{{group}}»',

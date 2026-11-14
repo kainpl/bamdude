@@ -146,6 +146,8 @@ const sources: ProductSources = {
 const combinations: ProductCombinationsPage = {
   total: 2,
   page: 1,
+  available_total: 1,
+  unavailable_total: 1,
   items: [
     {
       choices: [{ group_id: 1, group: 'Lid type', option_id: 10, option: 'Glass' }],
@@ -214,7 +216,7 @@ describe('CompositionTab', () => {
       render(<Host />);
       const card = screen.getByTestId('composition-variants');
       const table = await within(card).findByTestId('product-combinations');
-      expect(api.getProductCombinations).toHaveBeenCalledWith(7, 1, expect.any(Number));
+      expect(api.getProductCombinations).toHaveBeenCalledWith(7, 1, expect.any(Number), 'available');
       expect(await within(table).findAllByTestId('combination-row')).toHaveLength(2);
       expect(within(table).getByText('no part for «Glass» in «Lid type»')).toBeInTheDocument();
     });

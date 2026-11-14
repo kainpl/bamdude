@@ -921,13 +921,17 @@ class CombinationOut(BaseModel):
 
 
 class ProductCombinationsOut(BaseModel):
-    """``GET /products/{id}/combinations`` — one page of every combination, groups by
-    position, values by position, the last group fastest; ``total`` counts them all
-    (0 for a product without groups)."""
+    """``GET /products/{id}/combinations`` — one page of the combinations, groups by
+    position, values by position, the last group fastest; ``total`` counts the ones the
+    ``state`` filter keeps (0 for a product without groups). ``available_total`` /
+    ``unavailable_total`` count both kinds whatever the filter; ``None`` for a product of
+    more than ``combination_gate.MAX_ENUMERATED`` combinations, which cannot be filtered."""
 
     total: int
     page: int
     items: list[CombinationOut] = []
+    available_total: int | None = None
+    unavailable_total: int | None = None
 
 
 class CombinationIn(BaseModel):

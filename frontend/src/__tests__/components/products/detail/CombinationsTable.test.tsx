@@ -41,8 +41,19 @@ const closed = row([12, 'mesh'], [23, '1200'], {
   ],
 });
 
-function page(items: CombinationRow[], total = items.length, current = 1): ProductCombinationsPage {
-  return { total, page: current, items };
+function page(
+  items: CombinationRow[],
+  total = items.length,
+  current = 1,
+  counts: [number, number] | null = [total, 3],
+): ProductCombinationsPage {
+  return {
+    total,
+    page: current,
+    items,
+    available_total: counts ? counts[0] : null,
+    unavailable_total: counts ? counts[1] : null,
+  };
 }
 
 const rows = () => screen.getAllByTestId('combination-row');
@@ -56,7 +67,7 @@ describe('CombinationsTable', () => {
     const get = vi.spyOn(api, 'getProductCombinations').mockResolvedValue(page([row([11, 'solid'], [21, '400'])]));
     render(<CombinationsTable product={product} />);
     await screen.findByTestId('combination-row');
-    expect(get).toHaveBeenCalledWith(7, 1, COMBINATIONS_PER_PAGE);
+    expect(get).toHaveBeenCalledWith(7, 1, COMBINATIONS_PER_PAGE, 'available');
     expect(screen.getAllByRole('columnheader').map((h) => h.textContent)).toEqual(['Kind', 'Weight', 'State']);
     expect(within(rows()[0]).getAllByRole('cell').map((c) => c.textContent)).toEqual(['solid', '400', 'available']);
   });
@@ -89,7 +100,7 @@ describe('CombinationsTable', () => {
     await screen.findByTestId('combination-row');
     expect(screen.getByText(`Showing 1-${COMBINATIONS_PER_PAGE} of 120 combinations`)).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Next page' }));
-    await waitFor(() => expect(get).toHaveBeenLastCalledWith(7, 2, COMBINATIONS_PER_PAGE));
+    await waitFor(() => expect(get).toHaveBeenLastCalledWith(7, 2, COMBINATIONS_PER_PAGE, 'available'));
     await waitFor(() => expect(rows()[0]).toHaveAttribute('data-available', 'false'));
   });
 
@@ -109,7 +120,7 @@ describe('CombinationsTable', () => {
     await waitFor(() => expect(rows()[0]).toHaveAttribute('data-available', 'false'));
 
     view.rerender(inClient(<CombinationsTable product={{ ...product, id: 8 }} />));
-    await waitFor(() => expect(get).toHaveBeenLastCalledWith(8, 1, COMBINATIONS_PER_PAGE));
+    await waitFor(() => expect(get).toHaveBeenLastCalledWith(8, 1, COMBINATIONS_PER_PAGE, 'available'));
     // While its own page is read, nothing of product 7 stays on screen.
     expect(screen.queryByTestId('combination-row')).not.toBeInTheDocument();
     await act(async () => releaseOther(page([row([31, 'glass'], [41, '200'])], 1, 1)));
@@ -128,5 +139,41 @@ describe('CombinationsTable', () => {
     expect(screen.queryByTestId('combination-row')).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
     expect(await screen.findByTestId('combination-row')).toBeInTheDocument();
+  });
+
+  it('opens on the available ones; the other tab asks the server for the unavailable, from page 1', async () => {
+    const get = vi
+      .spyOn(api, 'getProductCombinations')
+      .mockImplementation(async (_id, p, _size, state) =>
+        state === 'available' ? page([row([11, 'solid'], [21, '400'])], 120, p, [120, 8]) : page([closed], 8, p, [120, 8]),
+      );
+    render(<CombinationsTable product={product} />);
+    await screen.findByTestId('combination-row');
+    const tabs = screen.getAllByRole('tab');
+    expect(tabs.map((tab) => tab.textContent)).toEqual(['Available 120', 'Unavailable 8']);
+    expect(tabs[0]).toHaveAttribute('aria-selected', 'true');
+    fireEvent.click(screen.getByRole('button', { name: 'Next page' }));
+    await waitFor(() => expect(get).toHaveBeenLastCalledWith(7, 2, COMBINATIONS_PER_PAGE, 'available'));
+    fireEvent.click(tabs[1]);
+    await waitFor(() => expect(get).toHaveBeenLastCalledWith(7, 1, COMBINATIONS_PER_PAGE, 'unavailable'));
+    await waitFor(() => expect(rows()[0]).toHaveAttribute('data-available', 'false'));
+    expect(screen.getAllByRole('tab')[1]).toHaveAttribute('aria-selected', 'true');
+  });
+
+  it('a tab with nothing in it says so and keeps the tabs', async () => {
+    vi.spyOn(api, 'getProductCombinations').mockResolvedValue(page([], 0, 1, [0, 12]));
+    render(<CombinationsTable product={product} />);
+    expect(await screen.findByText('No combination can be ordered yet')).toBeInTheDocument();
+    expect(screen.getAllByRole('tab').map((tab) => tab.textContent)).toEqual(['Available 0', 'Unavailable 12']);
+    expect(screen.queryByTestId('combination-row')).not.toBeInTheDocument();
+  });
+
+  it('a product too large to count has no tabs: one table of everything', async () => {
+    vi.spyOn(api, 'getProductCombinations').mockResolvedValue(
+      page([row([11, 'solid'], [21, '400']), closed], 15625, 1, null),
+    );
+    render(<CombinationsTable product={product} />);
+    expect(await screen.findAllByTestId('combination-row')).toHaveLength(2);
+    expect(screen.queryByRole('tab')).not.toBeInTheDocument();
   });
 });
