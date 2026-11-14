@@ -668,11 +668,54 @@ async def capture_camera_image(
     is forwarded to ``capture_frame`` so plate-detect / calibration captures
     use the dedicated single-frame endpoint when configured.
 
+    The chamber light is held for the whole acquisition, whatever the frame comes from (upstream cf0ba31f1):
+    the reference was calibrated in light, and a live view lends its frame without lighting anything when the
+    farm's "light while the camera is in use" is off. A frame the view relayed before our light was confirmed
+    is not evidence and is waited past, exactly as a ``fresh`` check waits past the frames from before it.
+
     Returns:
         Tuple of (image_data, camera_source) or (None, error_message)
     """
+    from backend.app.services import camera_light
+
+    async with camera_light.held(printer_id, "plate_check") as lease:
+        lit_since: float | None = None
+        if lease is not None:
+            await lease.settle()
+            lit_since = lease.lit_since()
+        return await _capture_camera_image(
+            printer_id,
+            ip_address,
+            access_code,
+            model,
+            external_camera_url=external_camera_url,
+            external_camera_type=external_camera_type,
+            use_external=use_external,
+            external_camera_snapshot_url=external_camera_snapshot_url,
+            fresh=fresh,
+            lit_since=lit_since,
+        )
+
+
+async def _capture_camera_image(
+    printer_id: int,
+    ip_address: str,
+    access_code: str,
+    model: str,
+    *,
+    external_camera_url: str | None,
+    external_camera_type: str | None,
+    use_external: bool,
+    external_camera_snapshot_url: str | None,
+    fresh: bool,
+    lit_since: float | None,
+) -> tuple[bytes | None, str]:
+    """:func:`capture_camera_image` under its light. ``lit_since``: no live frame older than this is judged."""
     image_data: bytes | None = None
     camera_source = "unknown"
+    # A frame must be awaited — never taken from the buffer as it stands — when the check asked for a fresh
+    # one or when the light it is judged in has only just come on.
+    awaited = fresh or lit_since is not None
 
     if fresh and use_external and not (external_camera_url and external_camera_type):
         return None, "Configured external camera is incomplete"
@@ -704,13 +747,13 @@ async def capture_camera_image(
     )
     generation = live_stream_generation(printer_id) if fresh else None
     live_options = {"expected_source": expected_source, "generation": generation} if fresh else {}
-    not_before = time.monotonic() if fresh else None
+    not_before = time.monotonic() if fresh else lit_since
     defer, buffered_live = (
         live_frame_for_capture(printer_id, not_before=not_before, **live_options)
-        if fresh
+        if awaited
         else live_frame_for_capture(printer_id)
     )
-    if fresh and defer:
+    if awaited and defer:
         # A viewer owns the camera socket. Wait for its next frame, never open
         # a second reader or accept a frame from before this check.
         deadline = time.monotonic() + 10
@@ -763,7 +806,7 @@ async def capture_camera_image(
         try:
             from backend.app.api.routes.camera import get_buffered_frame
 
-            buffered = None if fresh else get_buffered_frame(printer_id)
+            buffered = None if awaited else get_buffered_frame(printer_id)
             if buffered:
                 image_data = buffered
                 camera_source = "built-in (buffered)"

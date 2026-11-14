@@ -231,6 +231,65 @@ async def test_a_foreign_switch_while_we_wait_for_confirmation_releases_the_wait
 
 
 @pytest.mark.asyncio
+async def test_the_plate_check_lights_a_chamber_the_operator_darkened_under_a_viewer(printer, sleeper):
+    """Upstream cf0ba31f1: the check's reference was calibrated in light, so it lights the plate even when it
+    is not the first holder — and giving it back leaves the viewer's light alone."""
+    viewer = await camera_light.acquire(1, "stream")
+    await _report(1, True)
+    camera_light._lights[1].last_command_at -= camera_light.ATTRIBUTION_WINDOW_SECONDS + 1
+    printer.state.chamber_light = False
+    await _report(1, False)  # the operator switched it off while watching
+    assert printer.commands == [True]
+
+    check = await camera_light.acquire(1, "plate_check")
+    assert printer.commands == [True, True], "the plate check lights the plate whoever else holds the lease"
+
+    camera_light.release(check)
+    await asyncio.sleep(0)
+    assert sleeper.delays == [], "the viewer still holds the light: nothing is armed to switch it off"
+    assert printer.commands == [True, True]
+    camera_light.release(viewer)
+    await asyncio.sleep(0)
+    await sleeper.elapse()
+    assert printer.commands == [True, True, False]
+
+
+@pytest.mark.asyncio
+async def test_a_viewer_joining_a_dark_chamber_still_leaves_it_dark(printer, sleeper):
+    """Only the plate check overrides the operator: a second viewer does not switch the light back on."""
+    viewer = await camera_light.acquire(1, "stream")
+    await _report(1, True)
+    camera_light._lights[1].last_command_at -= camera_light.ATTRIBUTION_WINDOW_SECONDS + 1
+    printer.state.chamber_light = False
+    await _report(1, False)
+    second = await camera_light.acquire(1, "stream")
+    assert printer.commands == [True]
+    camera_light.release(second)
+    camera_light.release(viewer)
+
+
+@pytest.mark.asyncio
+async def test_lit_since_is_the_moment_our_light_was_confirmed(printer, monkeypatch):
+    now = [100.0]
+    monkeypatch.setattr(camera_light, "_clock", lambda: now[0])
+    lease = await camera_light.acquire(1, "plate_check")
+    assert lease.lit_since() == 100.0, "unconfirmed: nothing older than now shows our light"
+    now[0] = 101.0
+    await _report(1, True)
+    now[0] = 130.0
+    assert lease.lit_since() == 101.0
+    camera_light.release(lease)
+
+
+@pytest.mark.asyncio
+async def test_lit_since_is_none_for_a_light_that_was_not_ours_to_switch(printer):
+    printer.state.chamber_light = True
+    lease = await camera_light.acquire(1, "plate_check")
+    assert lease.lit_since() is None
+    camera_light.release(lease)
+
+
+@pytest.mark.asyncio
 async def test_a_report_for_a_printer_nobody_leased_is_ignored():
     camera_light._lights.clear()
     await camera_light.note_light_report(42, True)

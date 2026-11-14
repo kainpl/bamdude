@@ -82,6 +82,8 @@ class _PrinterLight:
     hold_until: float = 0.0
     #: Set when the printer reports the light on after our own "on".
     confirmed: asyncio.Event | None = None
+    #: When the printer reported OUR "on" (``_clock`` time); None until it does.
+    confirmed_at: float | None = None
     last_command_at: float = 0.0
     last_command_on: bool | None = None
     release_task: asyncio.Task | None = None
@@ -112,6 +114,19 @@ class Lease:
                 self.printer_id,
                 CONFIRM_TIMEOUT_SECONDS,
             )
+
+    def lit_since(self) -> float | None:
+        """From when (monotonic) a frame shows the light WE switched on; None when the light was not ours.
+
+        For a consumer that takes its frame from a live view instead of capturing: a frame the view relayed
+        before this moment was taken in the dark and is not evidence. Ask after :meth:`settle`. An "on" the
+        printer never confirmed answers "now" — the next frame is taken as it comes, as a capture would be.
+        None means the light was already on (or could not be switched): any frame is as lit as it will get.
+        """
+        light = self._light
+        if not light.owned:
+            return None
+        return light.confirmed_at if light.confirmed_at is not None else _clock()
 
 
 _lights: dict[int, _PrinterLight] = {}
@@ -183,6 +198,7 @@ def _switch(client, light: _PrinterLight, on: bool) -> bool:
     if on:
         light.owned = True
         light.confirmed = asyncio.Event()
+        light.confirmed_at = None
     else:
         light.owned = False
         light.confirmed = None
@@ -195,7 +211,10 @@ async def acquire(printer_id: int | None, purpose: str, *, hold: float | None = 
     Nothing happens when the feature is off for this printer and purpose,
     when the printer has no client or is not connected, or when it has never
     reported a controllable chamber light. The first holder switches the light
-    on if it is off; every holder after that only counts.
+    on if it is off; every holder after that only counts — except a purpose
+    that ALWAYS needs the light (the plate check), which switches a dark
+    chamber on even beside other holders: the operator who darkened it under a
+    live view did not ask for a print paused over a frame nobody could judge.
     """
     if printer_id is None:
         return None
@@ -217,7 +236,8 @@ async def acquire(printer_id: int | None, purpose: str, *, hold: float | None = 
     light.refcount += 1
     if hold:
         light.hold_until = max(light.hold_until, _clock() + hold)
-    if light.refcount == 1 and not light.owned and not state.chamber_light:
+    first_or_must = light.refcount == 1 or purpose in ALWAYS_PURPOSES
+    if first_or_must and not light.owned and not state.chamber_light:
         if _switch(client, light, True):
             logger.info("camera light: switched on for printer %s (%s)", printer_id, purpose)
     return Lease(printer_id, purpose, light)
@@ -257,6 +277,8 @@ async def note_light_report(printer_id: int, on: bool) -> None:
     ours = light.last_command_on is on and (_clock() - light.last_command_at) <= ATTRIBUTION_WINDOW_SECONDS
     if ours:
         if on and light.confirmed is not None:
+            if light.confirmed_at is None:
+                light.confirmed_at = _clock()
             light.confirmed.set()
         return
     if light.owned:
