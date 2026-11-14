@@ -44,7 +44,7 @@ function piece(over: Partial<ProductPart> & Pick<ProductPart, 'id' | 'name'>): P
     sort_order: over.id,
     ignored: false,
     stock_balance: 0,
-    variant_option_id: null,
+    variant_option_ids: [],
     image: PENDING,
     image_choice: AUTO,
     ...over,

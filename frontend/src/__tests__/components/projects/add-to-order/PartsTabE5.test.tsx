@@ -34,7 +34,7 @@ const source = (over: Partial<PartSource>): PartSource => ({
 const sliced = part({
   part_id: 11,
   name: 'Lid',
-  variant: { group: 'Mount', option: 'DIN' },
+  variants: [{ group: 'Mount', options: ['DIN'] }],
   models: ['X1C', 'P1S'],
   sources: [source({ recommended: true }), source({ plate_id: 2, filename: 'clm01_p1s.gcode.3mf', printer_model: 'P1S', yield: 6 })],
   has_sliced_source: true,

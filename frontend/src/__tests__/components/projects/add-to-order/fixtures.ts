@@ -108,7 +108,7 @@ export const part = (over: Partial<ProductPartRow>): ProductPartRow => ({
   ...PART_SOURCES_DEFAULTS,
   part_id: 11,
   name: 'Tail',
-  variant: null,
+  variants: [],
   product: { id: 1, code: 'PR-0001', name: 'Pipe', sku: 'PP-1' },
   models: ['P1S'],
   ...over,

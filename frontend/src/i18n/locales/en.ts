@@ -7925,10 +7925,10 @@ export default {
       perUnit: 'Per unit',
       perUnitHint: '0 — out of the kit',
       variant: 'Variant',
-      variantAlways: 'Always (no variant)',
-      variantHint: 'The part is taken only when an order chooses this option',
+      variantAny: 'any',
+      variantHint: 'Taken when the order picks a ticked option in every group with ticks',
       variantGone: '{{name}} (no longer exists)',
-      variantGoneHint: 'This option no longer exists — choose another one.',
+      variantGoneHint: 'A ticked option no longer exists — untick it.',
       aliases: 'Also known as',
       aliasesHint: 'Object names on a plate by which a file finds this part',
       aliasPlaceholder: 'Object name — Enter adds it',
@@ -8032,6 +8032,21 @@ export default {
       heldByStock_one: 'Held by {{count}} stock position',
       heldByStock_other: 'Held by {{count}} stock positions',
       isStandard: 'The standard option cannot be deleted — make another one standard first',
+    },
+    // Spec product-part-variant-combinations п. 24: which combinations of options an order can take.
+    combinations: {
+      title: 'Combinations',
+      hint: '— which of them an order can take',
+      state: 'State',
+      available: 'available',
+      failed: 'Could not load the combinations',
+      count_one: 'combination',
+      count_other: 'combinations',
+      reason: {
+        optionWithoutPart: 'no part for «{{option}}» in «{{group}}»',
+        nothingChosen: 'nothing chosen in «{{group}}»',
+        partNotSliced: '«{{part}}» is not sliced',
+      },
     },
     // WS-13 E10 D01–D05: the variants manager — one draft, one PUT.
     variantsDialog: {

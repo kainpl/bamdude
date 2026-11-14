@@ -90,18 +90,18 @@ const product = {
   id: 7,
   name: 'Pipe',
   parts: [
-    { id: 5, kind: 'printed', name: 'Колба', qty_per_unit: 1, sort_order: 0, variant_option_id: null, image: ready('k5') },
-    { id: 6, kind: 'printed', name: 'straight tail', qty_per_unit: 1, sort_order: 1, variant_option_id: 11, image: ready('t6') },
+    { id: 5, kind: 'printed', name: 'Колба', qty_per_unit: 1, sort_order: 0, variant_option_ids: [], image: ready('k5') },
+    { id: 6, kind: 'printed', name: 'straight tail', qty_per_unit: 1, sort_order: 1, variant_option_ids: [11], image: ready('t6') },
     {
       id: 8,
       kind: 'printed',
       name: 'angled tail',
       qty_per_unit: 1,
       sort_order: 2,
-      variant_option_id: 12,
+      variant_option_ids: [12],
       image: { kind: 'render', status: 'pending', v: null },
     },
-    { id: 10, kind: 'purchased', name: 'screw', qty_per_unit: 2, sort_order: 3, variant_option_id: null, image: null },
+    { id: 10, kind: 'purchased', name: 'screw', qty_per_unit: 2, sort_order: 3, variant_option_ids: [], image: null },
   ],
   variant_groups: [
     {
@@ -209,7 +209,7 @@ describe('the line’s configuration dialog', () => {
   it('two dropped parts of one name are two lines, each its own part — keyed by the part, not the sentence (final review)', async () => {
     const twins = {
       ...product,
-      parts: [...product.parts, { id: 11, kind: 'printed', name: 'straight tail', qty_per_unit: 1, sort_order: 5, variant_option_id: 11, image: ready('s11') }],
+      parts: [...product.parts, { id: 11, kind: 'printed', name: 'straight tail', qty_per_unit: 1, sort_order: 5, variant_option_ids: [11], image: ready('s11') }],
     } as Product;
     vi.spyOn(api, 'getProduct').mockResolvedValue(twins);
     vi.spyOn(api, 'previewLineConfiguration').mockResolvedValue({

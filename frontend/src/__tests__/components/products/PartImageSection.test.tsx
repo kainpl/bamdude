@@ -27,7 +27,7 @@ function savedPart(over: Partial<ProductPart> = {}): ProductPart {
     sort_order: 3,
     ignored: false,
     stock_balance: 0,
-    variant_option_id: null,
+    variant_option_ids: [],
     image: { kind: 'render', status: 'ready', v: 'r3' },
     image_choice: { source: 'auto', instance: null, pin: null, photo: null },
     ...over,

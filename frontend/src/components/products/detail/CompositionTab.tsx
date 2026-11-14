@@ -17,7 +17,9 @@ import { MergePartDialog } from '../MergePartDialog';
 import { ProductPartDialog } from '../ProductPartDialog';
 import { ProductVariantsDialog } from '../ProductVariantsDialog';
 import { deleteProductPart } from '../partMutations';
+import { bindingLabel, bindingVariants, variantsTitle } from '../partBinding';
 import { PartThumb } from '../../PartThumb';
+import { CombinationsTable } from './CombinationsTable';
 import { ModelChip } from './ModelChip';
 import { useUiPreferences } from '../../../hooks/useUiPreferences';
 
@@ -97,7 +99,8 @@ function SourcesCell({ state, partId }: { state: SourcesState; partId: number })
  *   of its movements (a purchased one with its purchases), and the number on the shelf is
  *   said — no write-off movement is recorded;
  * - «Manage variants…» opens `ProductVariantsDialog` — the whole set as one draft, one
- *   request; the card above stays a read summary.
+ *   request; the card above stays a read summary, with the server's table of which
+ *   combinations of the options an order can take (`CombinationsTable`).
  */
 export function CompositionTab({
   product,
@@ -133,7 +136,6 @@ export function CompositionTab({
       : { kind: 'loading' };
 
   const groups = product.variant_groups ?? [];
-  const optionLabel = new Map(groups.flatMap((g) => g.options.map((o) => [o.id, `${g.name}: ${o.name}`] as const)));
   const printed = product.parts.filter((p) => p.kind === 'printed').sort(byOrder);
   const purchased = product.parts.filter((p) => p.kind === 'purchased').sort(byOrder);
 
@@ -147,10 +149,16 @@ export function CompositionTab({
         {t(part.ignored ? 'products.composition.notCounted' : 'products.composition.outOfKit')}
       </small>
     );
+  // The binding's condition in short — «400 · сплошна», «закрутка · 400, 600» — or «always» (п. 23).
   const variantOf = (part: ProductPart) => {
-    const label = part.variant_option_id != null ? optionLabel.get(part.variant_option_id) : undefined;
+    const label = bindingLabel(groups, part.variant_option_ids);
     return label ? (
-      <span className={`${CHIP} bg-amber-500/15 ${AMBER}`}>{label}</span>
+      <span
+        className={`${CHIP} bg-amber-500/15 ${AMBER}`}
+        title={variantsTitle(bindingVariants(groups, part.variant_option_ids)) ?? undefined}
+      >
+        {label}
+      </span>
     ) : (
       <small className="text-xs text-bambu-gray">{t('products.detail.composition.always')}</small>
     );
@@ -218,7 +226,7 @@ export function CompositionTab({
               <b className="font-semibold text-white">{group.name}</b>
               {group.options.map((option) => {
                 const standard = option.id === group.default_option_id;
-                const names = product.parts.filter((p) => p.variant_option_id === option.id).map((p) => p.name);
+                const names = product.parts.filter((p) => p.variant_option_ids.includes(option.id)).map((p) => p.name);
                 return (
                   <span
                     key={option.id}
@@ -239,6 +247,8 @@ export function CompositionTab({
             </div>
           ))
         )}
+        {/* п. 24 — which combinations of the options an order can take, and what the others lack. */}
+        <CombinationsTable product={product} />
       </div>
 
       {/* D02 / D04 — the printed parts, with the doors on the heading's right. */}

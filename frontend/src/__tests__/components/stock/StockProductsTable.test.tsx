@@ -22,9 +22,18 @@ const row: StockListItem = {
   reserved_kits: 2,
   parts_on_shelf: 9,
   parts: [
-    { part_id: 11, name: 'lid', qty_per_unit: 1, balance: 5, variant: null },
-    { part_id: 12, name: 'shade', qty_per_unit: 2, balance: 3, variant: { group: 'Shade', option: 'Large' } },
-    { part_id: 13, name: 'spare clip', qty_per_unit: 0, balance: 1, variant: null },
+    { part_id: 11, name: 'lid', qty_per_unit: 1, balance: 5, variants: [] },
+    {
+      part_id: 12,
+      name: 'shade',
+      qty_per_unit: 2,
+      balance: 3,
+      variants: [
+        { group: 'Shade', options: ['Large', 'Huge'] },
+        { group: 'Mount', options: ['wall'] },
+      ],
+    },
+    { part_id: 13, name: 'spare clip', qty_per_unit: 0, balance: 1, variants: [] },
   ],
   reservations: [
     { line_id: 7, order_id: 42, order_code: 'OR-0042', order_name: 'Order for Ivan', kits: 2 },
@@ -174,6 +183,8 @@ describe('StockProductsTable', () => {
     const details = screen.getByTestId('stock-details-1');
     const rows = within(details).getAllByRole('row').slice(1);
     expect(rows.map((r) => r.querySelector('td')?.textContent)).toEqual(['lid', 'shadevariant', 'spare clip']);
+    // Bound in two groups: the chip names both, values by a comma (spec product-part-variant-combinations).
+    expect(within(rows[1]).getByText('variant')).toHaveAttribute('title', 'Shade: Large, Huge · Mount: wall');
     expect(within(rows[0]).getByText('× 1')).toBeInTheDocument();
     expect(within(rows[1]).getByText('× 2')).toBeInTheDocument();
     expect(within(rows[2]).getByText('Out of kit')).toBeInTheDocument();

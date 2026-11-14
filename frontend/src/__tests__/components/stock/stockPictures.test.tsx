@@ -43,7 +43,7 @@ describe('a product’s free parts', () => {
       kits_available: 3,
       reserved_kits: 0,
       parts_on_shelf: 5,
-      parts: [{ part_id: 11, name: 'lid', qty_per_unit: 1, balance: 5, variant: null, image: ready('l11') }],
+      parts: [{ part_id: 11, name: 'lid', qty_per_unit: 1, balance: 5, variants: [], image: ready('l11') }],
       reservations: [],
     };
     render(

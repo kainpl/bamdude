@@ -19,6 +19,7 @@ import { WorkshopDialog } from '../workshop/WorkshopDialog';
 import { WorkshopTableScroll } from '../workshop/WorkshopPanel';
 import { MODEL_CHIP, VARIANT_CHIP } from './chips';
 import { LivePartThumb } from '../PartThumb';
+import { bindingByGroup, bindingLabel, type BindingGroup } from '../products/partBinding';
 import { CountInput } from './add-to-order/CountInput';
 import { saveAllowed } from './lineConfigSave';
 
@@ -51,9 +52,13 @@ function defaultsOf(product: Product | undefined): Record<number, number> {
   return out;
 }
 
-/** A part's count per unit under the chosen options, before the line's own changes. */
-function basePer(part: ProductPart, chosen: Set<number>): number {
-  return part.variant_option_id == null || chosen.has(part.variant_option_id) ? part.qty_per_unit : 0;
+/** A part's count per unit under the chosen options, before the line's own changes: in the kit when,
+ *  in every group it is bound in, the chosen option is one of its options. */
+function basePer(part: ProductPart, chosen: Set<number>, groups: readonly BindingGroup[]): number {
+  for (const optionIds of bindingByGroup(groups, part.variant_option_ids).values()) {
+    if (!optionIds.some((id) => chosen.has(id))) return 0;
+  }
+  return part.qty_per_unit;
 }
 
 /**
@@ -80,7 +85,7 @@ function bodyOf(
   const changed: Record<number, number> = {};
   for (const [pid, qty] of Object.entries(counts)) {
     const part = parts.get(Number(pid));
-    if (part && qty !== basePer(part, set)) changed[Number(pid)] = qty;
+    if (part && qty !== basePer(part, set, product?.variant_groups ?? [])) changed[Number(pid)] = qty;
   }
   return { choices: chosen, part_counts: changed };
 }
@@ -162,13 +167,13 @@ export function LineConfigDialog({
   const chosenSet = new Set(Object.values({ ...defaults, ...choices }));
   // «Не рахувати» is not a part a line can want (spec workshop-order-issue-followups, rule 34).
   const parts = [...(product?.parts ?? [])].filter((p) => !p.ignored).sort(byOrder);
-  const optionName = new Map((product?.variant_groups ?? []).flatMap((g) => g.options.map((o) => [o.id, o.name] as const)));
+  const groups = product?.variant_groups ?? [];
 
   /** A count back at what the options give is no longer a change. */
   const setCount = (part: ProductPart, qty: number) =>
     setCounts((prev) => {
       const next = { ...prev };
-      if (!isParts && qty === basePer(part, chosenSet)) delete next[part.id];
+      if (!isParts && qty === basePer(part, chosenSet, groups)) delete next[part.id];
       else next[part.id] = qty;
       return next;
     });
@@ -304,10 +309,10 @@ export function LineConfigDialog({
                   </thead>
                   <tbody>
                     {parts.map((part) => {
-                      const base = isParts ? 0 : basePer(part, chosenSet);
+                      const base = isParts ? 0 : basePer(part, chosenSet, groups);
                       const shown = counts[part.id] ?? base;
                       const off = !isParts && shown === 0;
-                      const variant = part.variant_option_id != null ? optionName.get(part.variant_option_id) : null;
+                      const variant = bindingLabel(groups, part.variant_option_ids);
                       return (
                         <tr
                           key={part.id}

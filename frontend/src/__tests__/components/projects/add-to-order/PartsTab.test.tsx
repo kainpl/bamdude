@@ -21,7 +21,7 @@ describe('the parts tab of «Add to order»', () => {
     getParts = vi.spyOn(api, 'getProductParts').mockResolvedValue(
       partsPage([
         part({}),
-        part({ part_id: 12, name: 'Elbow', variant: { group: 'Tail', option: 'angled' } }),
+        part({ part_id: 12, name: 'Elbow', variants: [{ group: 'Tail', options: ['angled'] }] }),
         part({ part_id: 21, name: 'Shade', product: { id: 2, code: 'PR-0002', name: 'Lamp', sku: null }, models: [] }),
       ]),
     );

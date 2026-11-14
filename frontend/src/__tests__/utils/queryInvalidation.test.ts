@@ -20,7 +20,10 @@ import { describe, it, expect, vi } from 'vitest';
 import { QueryClient } from '@tanstack/react-query';
 import {
   ORDER_VIEW_KEYS,
+  PART_IMAGE_PURE_KEYS,
+  PART_IMAGE_VIEW_KEYS,
   PRODUCT_CATALOG_KEYS,
+  PRODUCT_COMBINATIONS_KEY,
   PRODUCT_FILE_KEYS,
   STOCK_KEYS,
   invalidateAfterDelete,
@@ -426,6 +429,28 @@ describe('invalidateProductFiles (WS-13 E1 CL3 / CL4)', () => {
     expect(stale(qc, ['product-plates', 7])).toBe(true);
     expect(stale(qc, ['product-estimate', 8])).toBe(true);
   });
+
+  it('takes the combinations table with it — a part, a link or a slice opens or closes one', () => {
+    const qc = new QueryClient();
+    seed(qc, [
+      [PRODUCT_COMBINATIONS_KEY, 7, 1],
+      [PRODUCT_COMBINATIONS_KEY, 7, 2],
+      [PRODUCT_COMBINATIONS_KEY, 8, 1],
+    ]);
+    invalidateProductFiles(qc, 7);
+    expect(stale(qc, [PRODUCT_COMBINATIONS_KEY, 7, 1])).toBe(true);
+    expect(stale(qc, [PRODUCT_COMBINATIONS_KEY, 7, 2])).toBe(true);
+    expect(stale(qc, [PRODUCT_COMBINATIONS_KEY, 8, 1])).toBe(false);
+    invalidateProductFiles(qc);
+    expect(stale(qc, [PRODUCT_COMBINATIONS_KEY, 8, 1])).toBe(true);
+  });
+
+  it('the combinations table is no picture view and no catalog figure', () => {
+    for (const list of [PART_IMAGE_VIEW_KEYS, PART_IMAGE_PURE_KEYS, PRODUCT_CATALOG_KEYS]) {
+      expect(list.some((key) => key[0] === PRODUCT_COMBINATIONS_KEY)).toBe(false);
+    }
+    expect((ORDER_VIEW_KEYS as readonly string[]).includes(PRODUCT_COMBINATIONS_KEY)).toBe(false);
+  });
 });
 
 describe('invalidateProductVariants (WS-13 E1 CL4)', () => {
@@ -437,6 +462,19 @@ describe('invalidateProductVariants (WS-13 E1 CL4)', () => {
     for (const key of [['product', 7], ['products'], ['projects'], ['project', 3], ['stock-items'], ['product-estimate', 7]]) {
       expect(stale(qc, key)).toBe(true);
     }
+  });
+
+  it('moves the product’s combinations table, every page of it, and no other product’s', () => {
+    const qc = new QueryClient();
+    seed(qc, [
+      [PRODUCT_COMBINATIONS_KEY, 7, 1],
+      [PRODUCT_COMBINATIONS_KEY, 7, 3],
+      [PRODUCT_COMBINATIONS_KEY, 8, 1],
+    ]);
+    invalidateProductVariants(qc, 7);
+    expect(stale(qc, [PRODUCT_COMBINATIONS_KEY, 7, 1])).toBe(true);
+    expect(stale(qc, [PRODUCT_COMBINATIONS_KEY, 7, 3])).toBe(true);
+    expect(stale(qc, [PRODUCT_COMBINATIONS_KEY, 8, 1])).toBe(false);
   });
 });
 

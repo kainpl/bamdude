@@ -8102,10 +8102,10 @@ export default {
       perUnit: 'На один виріб',
       perUnitHint: '0 — поза комплектом',
       variant: 'Варіант',
-      variantAlways: 'Завжди (без варіанта)',
-      variantHint: 'Деталь береться, лише коли в замовленні обрано цю опцію',
+      variantAny: 'будь-яка',
+      variantHint: 'Деталь береться, коли замовлення в кожній групі з позначками обирає одну з позначених опцій',
       variantGone: '{{name}} (більше немає)',
-      variantGoneHint: 'Цієї опції більше немає — оберіть іншу.',
+      variantGoneHint: 'Позначеної опції більше немає — зніміть позначку.',
       aliases: 'Також відома як',
       aliasesHint: 'Назви об’єктів на плиті, за якими файл знаходить цю деталь',
       aliasPlaceholder: 'Назва об’єкта — Enter додає',
@@ -8215,6 +8215,23 @@ export default {
       heldByStock_many: 'Її тримають {{count}} позицій складу',
       heldByStock_other: 'Її тримають {{count}} позиції складу',
       isStandard: 'Стандартну опцію не можна видалити — спершу зробіть стандартною іншу',
+    },
+    // Спека product-part-variant-combinations п. 24: які комбінації опцій можна замовити.
+    combinations: {
+      title: 'Комбінації',
+      hint: '— які з них можна замовити',
+      state: 'Стан',
+      available: 'доступна',
+      failed: 'Не вдалося завантажити комбінації',
+      count_one: 'комбінація',
+      count_few: 'комбінації',
+      count_many: 'комбінацій',
+      count_other: 'комбінації',
+      reason: {
+        optionWithoutPart: 'немає деталі для «{{option}}» у групі «{{group}}»',
+        nothingChosen: 'у групі «{{group}}» нічого не обрано',
+        partNotSliced: '«{{part}}» не нарізано',
+      },
     },
     // WS-13 E10 D01–D05: менеджер варіантів — одна чернетка, один PUT.
     variantsDialog: {

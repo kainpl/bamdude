@@ -62,7 +62,7 @@ const partsRow: StockListItem = {
   kits_available: 3,
   reserved_kits: 0,
   parts_on_shelf: 5,
-  parts: [{ part_id: 11, name: 'lid', qty_per_unit: 1, balance: 5, variant: null }],
+  parts: [{ part_id: 11, name: 'lid', qty_per_unit: 1, balance: 5, variants: [] }],
   reservations: [],
 };
 

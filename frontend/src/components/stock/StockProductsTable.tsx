@@ -5,6 +5,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { ChevronDown, ChevronRight } from 'lucide-react';
 import type { StockListItem } from '../../api/client';
 import { LivePartThumb } from '../PartThumb';
+import { variantsTitle } from '../products/partBinding';
 import { Button } from '../Button';
 import { SortableHeader } from '../SortableHeader';
 import { WorkshopPanel, WorkshopTableScroll } from '../workshop/WorkshopPanel';
@@ -179,9 +180,9 @@ export function StockProductsTable({ products, canEdit, onAdjust, onAssemble, so
                                     <LivePartThumb partId={b.part_id} image={b.image} name={b.name} size="sm" />
                                     <span className="min-w-0">
                                       {b.name}
-                                      {b.variant && (
+                                      {(b.variants ?? []).length > 0 && (
                                         <span
-                                          title={`${b.variant.group}: ${b.variant.option}`}
+                                          title={variantsTitle(b.variants ?? []) ?? undefined}
                                           className="ml-1.5 px-1.5 py-0.5 rounded text-[10px] bg-bambu-dark-tertiary text-bambu-gray"
                                         >
                                           {t('stock.page.variant')}
