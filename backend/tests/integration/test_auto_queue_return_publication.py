@@ -108,6 +108,9 @@ async def test_two_connections_publish_once_and_retain_failed_owner(failed_auto_
         "swap_attempted",
         "swap_owed",
         "future_clock",
+        "direct",
+        "calibration",
+        "malformed_claim",
     ],
 )
 async def test_refusal_is_atomic_and_does_not_consume_budget(failed_auto_run, mode):
@@ -131,12 +134,18 @@ async def test_refusal_is_atomic_and_does_not_consume_budget(failed_auto_run, mo
             auto.status = "cancelled"
         elif mode == "reassign":
             auto.assigned_to_item_id = job_id + 100
+        elif mode == "direct":
+            (await db.get(PrintQueueItem, job_id)).origin = "direct"
+        elif mode == "calibration":
+            (await db.get(PrintQueueItem, job_id)).is_calibration = True
         else:
             archive = await db.get(PrintArchive, archive_id)
             archive.extra_data = {
                 **archive.extra_data,
                 "bamdude_terminal_effects": {"swap_change_table": {"stage": mode.removeprefix("swap_")}},
             }
+            if mode == "malformed_claim":
+                archive.extra_data = {**archive.extra_data, "bamdude_terminal_effects": {"swap_change_table": []}}
         await db.commit()
     with pytest.raises(returns.ReturnRefused):
         await returns.return_ready(receipt_id, now=at)

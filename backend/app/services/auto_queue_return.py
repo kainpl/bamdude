@@ -336,6 +336,9 @@ async def _locked_rows(db, candidate):
         or job.recovery_identity != candidate.job_identity
         or job.status != "failed"
         or job.archive_id != archive.id
+        or job.origin != "queue"
+        or job.is_calibration
+        or job.calibration_session_id is not None
         or job.queue_id != candidate.queue_id
         or job.returned_receipt_identity is not None
         or job.error_code in STALE_CLAIM_CODES
@@ -510,6 +513,9 @@ async def return_ready(receipt_id, *, now=None):
             if at < candidate.completed_at + timedelta(seconds=COOLDOWN_SECONDS) or at < utc(receipt.ready_at):
                 raise ReturnRefused("cooldown")
             stage = swap_terminal.claim_stage(archive.extra_data)
+            effects = (archive.extra_data or {}).get(swap_terminal.EFFECTS_KEY, {})
+            if not isinstance(effects, dict) or (swap_terminal.CHANGE_TABLE_EFFECT in effects and stage is None):
+                raise ReturnRefused("physical_claim_unsettled")
             if stage not in {None, *swap_terminal.ANSWERED, swap_terminal.SETTLED_BY_OPERATOR} or swap_terminal.sending(
                 archive.id
             ):
