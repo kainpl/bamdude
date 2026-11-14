@@ -27,6 +27,8 @@ function shownUrl(): string {
 
 describe('StreamOverlayBuilder', () => {
   beforeEach(() => {
+    // The builder remembers its choices in the browser; every test starts fresh.
+    window.localStorage.removeItem('streamOverlayBuilder');
     server.use(http.get('/api/v1/printers', () => HttpResponse.json(printers)));
   });
 
@@ -133,12 +135,19 @@ describe('StreamOverlayBuilder', () => {
     const user = userEvent.setup();
     render(<StreamOverlayBuilder />);
 
-    await waitFor(() => expect(screen.getByLabelText(/token/i)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByLabelText(/Streaming Overlay token/)).toBeInTheDocument());
     expect(screen.queryByText(/This URL contains a token/)).not.toBeInTheDocument();
 
-    await user.type(screen.getByLabelText(/token/i), 'bblt_abc');
+    await user.type(screen.getByLabelText(/Streaming Overlay token/), 'bblt_abc');
 
-    await waitFor(() => expect(shownUrl()).toContain('token=bblt_abc'));
+    // The address that is copied and opened carries the token. The one on
+    // screen hides it until asked (StreamOverlayBuilderToken.test.tsx).
+    await waitFor(() =>
+      expect(screen.getByRole('link', { name: 'Open' }).getAttribute('href')).toContain('token=bblt_abc'),
+    );
+    expect(shownUrl()).toContain('token=****');
+    await user.click(screen.getByRole('button', { name: 'Show token' }));
+    expect(shownUrl()).toContain('token=bblt_abc');
     expect(screen.getByText(/This URL contains a token/)).toBeInTheDocument();
   });
 

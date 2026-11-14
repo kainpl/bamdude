@@ -4,25 +4,41 @@
  * The overlay at /overlay/{printerId} has been configurable by query string
  * since the kiosk-token work, but only for people who found the parameters in the wiki. The
  * issue asked for the field set to be selectable "through the web UI"; this is
- * that surface. It composes a URL, it does not persist anything — the URL *is*
- * the configuration, which keeps a scene in OBS reproducible by copy-paste and
- * means two displays can show different fields off one token.
+ * that surface. It composes a URL — the URL *is* the configuration, which
+ * keeps a scene in OBS reproducible by copy-paste and means two displays can
+ * show different fields off one token.
+ *
+ * The choices that shape the URL are remembered in this browser, so the
+ * builder reopens as it was left, and an address already in a scene can be
+ * pasted back in to edit it.
+ *
+ * ⚠️ THE TOKEN IS NEVER ONE OF THOSE CHOICES. Typed, imported or created
+ * here, it lives in this component's memory and in the address it builds, and
+ * nowhere else: not in browser storage, not in a request of the builder's
+ * own, and not on the screen until asked for. A token created here is the
+ * ordinary long-lived token of the signed-in user, with the overlay scope —
+ * the server shows it once and keeps only its hash, so leaving the page loses
+ * it for good (`StreamOverlayBuilderToken.test.tsx`).
  */
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Copy, ExternalLink, Eye, EyeOff } from 'lucide-react';
+import { Copy, ExternalLink, Eye, EyeOff, Import, Plus, RotateCcw } from 'lucide-react';
 import { api, type Printer } from '../api/client';
 import { useToast } from '../contexts/ToastContext';
+import { useAuth } from '../contexts/AuthContext';
 import { Select } from './Select';
-import { OVERLAY_CANVAS, overlayColour, type OverlayLayout } from '../utils/overlayOptions';
-
-type OverlaySize = 'small' | 'medium' | 'large';
-// The value the URL carries: `design=2`; Classic is the absence of it.
-type BuilderDesign = 'classic' | '2';
-// `auto` emits no `layout` at all — the overlay is sized by its window, which
-// is what every address built before the choice existed does. `both` builds
-// one address per fixed layout.
-type BuilderLayout = 'auto' | OverlayLayout | 'both';
+import {
+  DEFAULT_OVERLAY_CHOICES,
+  OVERLAY_CANVAS,
+  overlayChoices,
+  overlayColour,
+  parseOverlayUrl,
+  type BuilderDesign,
+  type BuilderLayout,
+  type OverlayChoices,
+  type OverlayLayout,
+  type OverlaySize,
+} from '../utils/overlayOptions';
 
 // Order matters: it is the order the fields appear in the overlay, so the
 // checkbox list reads as a preview of the result.
@@ -39,39 +55,113 @@ const FIELDS = [
   { key: 'chamber', labelKey: 'printers.heaterHistory.chamber', fallback: 'Chamber' },
 ] as const;
 
-// Matches parseConfig() in StreamOverlayPage: the fields an overlay shows when
-// the URL carries no ?show= at all.
-const DEFAULT_FIELDS = ['progress', 'layers', 'eta', 'filename', 'status'];
+const DEFAULT_FPS = DEFAULT_OVERLAY_CHOICES.fps;
 
-const DEFAULT_FPS = 15;
+// Where the choices are remembered. The token is not a choice.
+const STORAGE_KEY = 'streamOverlayBuilder';
 
-// What the two pickers start on when custom colours are switched on.
-const DEFAULT_PROGRESS_FROM = '#00ae42';
-const DEFAULT_PROGRESS_TO = '#7ee081';
+// What stands in for the token in the address on screen.
+const MASKED_TOKEN = '****';
+
+const DEFAULT_TOKEN_DAYS = 90;
+const MAX_TOKEN_DAYS = 365;
+
+/** The remembered choices, each checked as the overlay itself would check it. */
+function loadChoices(): OverlayChoices {
+  try {
+    return overlayChoices(JSON.parse(window.localStorage.getItem(STORAGE_KEY) ?? 'null'));
+  } catch {
+    // Unreadable, or a browser that refuses storage: start from the defaults.
+    return DEFAULT_OVERLAY_CHOICES;
+  }
+}
+
+function saveChoices(choices: OverlayChoices): void {
+  try {
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(choices));
+  } catch {
+    // A private window, or storage that is full or blocked: the builder still
+    // works, it only starts from the defaults next time.
+  }
+}
 
 // How long the URL must stand still before an open preview follows it. A
 // colour picker moves it many times a second, and every new preview address
 // is a new camera stream.
 const PREVIEW_SETTLE_MS = 300;
 
-export function StreamOverlayBuilder() {
+interface StreamOverlayBuilderProps {
+  /** A token was created here: whoever lists the tokens should read them again. */
+  onTokenCreated?: () => void;
+}
+
+export function StreamOverlayBuilder({ onTokenCreated }: StreamOverlayBuilderProps = {}) {
   const { t } = useTranslation();
   const { showToast } = useToast();
+  const { hasPermission } = useAuth();
 
+  const [remembered] = useState(loadChoices);
   const [printers, setPrinters] = useState<Printer[]>([]);
-  const [printerId, setPrinterId] = useState<number | null>(null);
-  const [fields, setFields] = useState<string[]>(DEFAULT_FIELDS);
-  const [size, setSize] = useState<OverlaySize>('medium');
-  const [fps, setFps] = useState(DEFAULT_FPS);
-  const [showCamera, setShowCamera] = useState(true);
-  const [customColours, setCustomColours] = useState(false);
-  const [progressFrom, setProgressFrom] = useState(DEFAULT_PROGRESS_FROM);
-  const [progressTo, setProgressTo] = useState(DEFAULT_PROGRESS_TO);
-  const [design, setDesign] = useState<BuilderDesign>('classic');
-  const [transparency, setTransparency] = useState(0);
-  const [layout, setLayout] = useState<BuilderLayout>('auto');
-  const [token, setToken] = useState('');
+  const [printerId, setPrinterId] = useState<number | null>(remembered.printerId);
+  const [fields, setFields] = useState<string[]>(remembered.fields);
+  const [size, setSize] = useState<OverlaySize>(remembered.size);
+  const [fps, setFps] = useState(remembered.fps);
+  const [showCamera, setShowCamera] = useState(remembered.showCamera);
+  const [customColours, setCustomColours] = useState(remembered.customColours);
+  const [progressFrom, setProgressFrom] = useState(remembered.progressFrom);
+  const [progressTo, setProgressTo] = useState(remembered.progressTo);
+  const [design, setDesign] = useState<BuilderDesign>(remembered.design);
+  const [transparency, setTransparency] = useState(remembered.transparency);
+  const [layout, setLayout] = useState<BuilderLayout>(remembered.layout);
+  // Memory only — see the note at the top of the file.
+  const [token, setTokenValue] = useState('');
+  const [revealToken, setRevealToken] = useState(false);
+  const [tokenCreatedHere, setTokenCreatedHere] = useState(false);
   const [preview, setPreview] = useState(false);
+
+  const [importText, setImportText] = useState('');
+  const [importFailed, setImportFailed] = useState(false);
+
+  const [creating, setCreating] = useState(false);
+  const [tokenName, setTokenName] = useState('');
+  const [tokenDays, setTokenDays] = useState(DEFAULT_TOKEN_DAYS);
+  const [submitting, setSubmitting] = useState(false);
+
+  // A new token closes the preview: opening one sends the token to the
+  // server, and that is the user's step to take, not a side effect of typing.
+  const setToken = (next: string, createdHere = false) => {
+    setTokenValue(next);
+    setTokenCreatedHere(createdHere);
+    setPreview(false);
+  };
+
+  const applyChoices = (choices: OverlayChoices) => {
+    setPrinterId(choices.printerId);
+    setFields(choices.fields);
+    setSize(choices.size);
+    setFps(choices.fps);
+    setShowCamera(choices.showCamera);
+    setCustomColours(choices.customColours);
+    setProgressFrom(choices.progressFrom);
+    setProgressTo(choices.progressTo);
+    setDesign(choices.design);
+    setTransparency(choices.transparency);
+    setLayout(choices.layout);
+  };
+
+  // Every choice, and only the choices: this is what is remembered.
+  const choices = useMemo<OverlayChoices>(
+    () => ({ printerId, fields, size, fps, showCamera, customColours, progressFrom, progressTo, design, transparency, layout }),
+    [printerId, fields, size, fps, showCamera, customColours, progressFrom, progressTo, design, transparency, layout],
+  );
+  const lastSaved = useRef(JSON.stringify(remembered));
+  useEffect(() => {
+    const serialized = JSON.stringify(choices);
+    // Nothing is written until something differs from what was read.
+    if (serialized === lastSaved.current) return;
+    lastSaved.current = serialized;
+    saveChoices(choices);
+  }, [choices]);
 
   useEffect(() => {
     let cancelled = false;
@@ -80,7 +170,12 @@ export function StreamOverlayBuilder() {
         const list = await api.getPrinters();
         if (cancelled) return;
         setPrinters(list);
-        if (list.length > 0) setPrinterId(list[0].id);
+        // The remembered printer, unless it is gone: then the first one. (An
+        // imported address may name a printer this server does not have; that
+        // happens later and is kept as it is.)
+        if (list.length > 0) {
+          setPrinterId((current) => (current != null && list.some((p) => p.id === current) ? current : list[0].id));
+        }
       } catch {
         // A failed printer list only costs the picker its options — the builder
         // still works if the user types a printer number into the URL by hand,
@@ -93,7 +188,7 @@ export function StreamOverlayBuilder() {
     };
   }, []);
 
-  const buildUrl = useCallback((target: OverlayLayout | null) => {
+  const buildUrl = useCallback((target: OverlayLayout | null, tokenText: string) => {
     const id = printerId ?? 1;
     const params = new URLSearchParams();
     // Emit ?show= in the canonical field order rather than click order, so the
@@ -117,17 +212,25 @@ export function StreamOverlayBuilder() {
       if (transparency > 0) params.set('backgroundTransparency', String(transparency));
     }
     if (target) params.set('layout', target);
-    if (token.trim()) params.set('token', token.trim());
+    if (tokenText) params.set('token', tokenText);
+    // Always this server: an imported address contributes its parameters only.
     return `${window.location.origin}/overlay/${id}?${params.toString()}`;
-  }, [printerId, fields, size, fps, showCamera, customColours, progressFrom, progressTo, design, transparency, token]);
+  }, [printerId, fields, size, fps, showCamera, customColours, progressFrom, progressTo, design, transparency]);
 
   // One address per output: one, or a landscape and a portrait one for "both".
+  // `url` is the real one (copied, opened, previewed); `shown` is what the
+  // screen reads, with the token hidden unless it was asked for.
   const outputs = useMemo(() => {
     const targets: (OverlayLayout | null)[] = layout === 'both'
       ? ['landscape', 'portrait']
       : [layout === 'auto' ? null : layout];
-    return targets.map((target) => ({ layout: target, url: buildUrl(target) }));
-  }, [layout, buildUrl]);
+    const real = token.trim();
+    return targets.map((target) => ({
+      layout: target,
+      url: buildUrl(target, real),
+      shown: buildUrl(target, real && !revealToken ? MASKED_TOKEN : real),
+    }));
+  }, [layout, buildUrl, token, revealToken]);
 
   // What the open preview shows: the outputs once they have stood still.
   const [settled, setSettled] = useState(outputs);
@@ -143,6 +246,49 @@ export function StreamOverlayBuilder() {
 
   const toggleField = (key: string) => {
     setFields((prev) => (prev.includes(key) ? prev.filter((f) => f !== key) : [...prev, key]));
+  };
+
+  const importAddress = () => {
+    const parsed = parseOverlayUrl(importText);
+    if (!parsed) {
+      setImportFailed(true);
+      return;
+    }
+    applyChoices(parsed.choices);
+    // The token is taken as the text it is — not checked, not looked up, not
+    // sent anywhere. An address without one leaves the token already here.
+    if (parsed.token) setToken(parsed.token);
+    else setPreview(false);
+    setImportText('');
+    setImportFailed(false);
+    showToast(t('streamOverlay.builder.imported', 'Address imported'));
+  };
+
+  const resetChoices = () => {
+    applyChoices({ ...DEFAULT_OVERLAY_CHOICES, printerId: printers[0]?.id ?? null });
+  };
+
+  const createToken = async () => {
+    const name = tokenName.trim();
+    if (!name || submitting) return;
+    setSubmitting(true);
+    try {
+      // The ordinary long-lived token of the signed-in user; the scope is
+      // fixed, so this button can never mint anything wider than an overlay.
+      const created = await api.createLongLivedToken({ name, expires_in_days: tokenDays, scope: 'overlay' });
+      if (!created.token) throw new Error(t('cameraTokens.toast.createFailed'));
+      setToken(created.token, true);
+      setRevealToken(false);
+      setCreating(false);
+      setTokenName('');
+      setTokenDays(DEFAULT_TOKEN_DAYS);
+      showToast(t('cameraTokens.toast.created'));
+      onTokenCreated?.();
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : t('cameraTokens.toast.createFailed'), 'error');
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   const copyUrl = async (url: string) => {
@@ -195,7 +341,12 @@ export function StreamOverlayBuilder() {
             value={printerId ?? ''}
             onChange={(e) => setPrinterId(Number(e.target.value))}
           >
-            {printers.length === 0 && <option value="">{t('common.loading', 'Loading…')}</option>}
+            {printers.length === 0 && printerId == null && <option value="">{t('common.loading', 'Loading…')}</option>}
+            {/* A printer this server does not list — an imported address may
+                name one — is shown by its number rather than silently replaced. */}
+            {printerId != null && !printers.some((p) => p.id === printerId) && (
+              <option value={printerId}>#{printerId}</option>
+            )}
             {printers.map((p) => (
               <option key={p.id} value={p.id}>
                 {p.name}
@@ -317,18 +468,110 @@ export function StreamOverlayBuilder() {
           <label htmlFor="overlay-builder-token" className="block text-sm font-medium text-white mb-1">
             {t('streamOverlay.builder.token', 'Streaming Overlay token (optional)')}
           </label>
-          <input
-            id="overlay-builder-token"
-            type="text"
-            value={token}
-            onChange={(e) => setToken(e.target.value)}
-            placeholder="bblt_…"
-            className="w-full px-3 py-2 bg-bambu-dark rounded-md text-white border border-bambu-dark-tertiary focus:border-bambu-green focus:outline-none font-mono text-xs"
-          />
+          <div className="flex items-center gap-2">
+            <input
+              id="overlay-builder-token"
+              type={revealToken ? 'text' : 'password'}
+              autoComplete="off"
+              spellCheck={false}
+              value={token}
+              onChange={(e) => setToken(e.target.value)}
+              placeholder="bblt_…"
+              className="min-w-0 flex-1 px-3 py-2 bg-bambu-dark rounded-md text-white border border-bambu-dark-tertiary focus:border-bambu-green focus:outline-none font-mono text-xs"
+            />
+            <button
+              type="button"
+              onClick={() => setRevealToken((shown) => !shown)}
+              aria-label={revealToken
+                ? t('streamOverlay.builder.hideToken', 'Hide token')
+                : t('streamOverlay.builder.showToken', 'Show token')}
+              title={revealToken
+                ? t('streamOverlay.builder.hideToken', 'Hide token')
+                : t('streamOverlay.builder.showToken', 'Show token')}
+              className="shrink-0 rounded-md bg-bambu-dark-tertiary p-2 text-white hover:bg-bambu-dark-tertiary/80"
+            >
+              {revealToken ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+            </button>
+            {hasPermission('camera:view') && !creating && (
+              <button
+                type="button"
+                onClick={() => setCreating(true)}
+                className="flex shrink-0 items-center gap-1 rounded-md bg-bambu-dark-tertiary px-3 py-2 text-sm text-white hover:bg-bambu-dark-tertiary/80"
+              >
+                <Plus className="w-4 h-4" />
+                {t('streamOverlay.builder.createToken', 'Create token')}
+              </button>
+            )}
+          </div>
+          {creating && (
+            <div className="mt-2 rounded-md border border-bambu-dark-tertiary bg-bambu-dark-secondary p-3">
+              <div className="grid gap-2 sm:grid-cols-[1fr_7rem]">
+                <div>
+                  <label htmlFor="overlay-builder-token-name" className="block text-xs text-bambu-gray mb-1">
+                    {t('streamOverlay.builder.tokenName', 'Token name')}
+                  </label>
+                  <input
+                    id="overlay-builder-token-name"
+                    type="text"
+                    maxLength={100}
+                    value={tokenName}
+                    onChange={(e) => setTokenName(e.target.value)}
+                    className="w-full px-3 py-2 bg-bambu-dark rounded-md text-white border border-bambu-dark-tertiary focus:border-bambu-green focus:outline-none"
+                  />
+                </div>
+                <div>
+                  <label htmlFor="overlay-builder-token-days" className="block text-xs text-bambu-gray mb-1">
+                    {t('streamOverlay.builder.tokenDays', 'Valid for (days)')}
+                  </label>
+                  <input
+                    id="overlay-builder-token-days"
+                    type="number"
+                    min={1}
+                    max={MAX_TOKEN_DAYS}
+                    value={tokenDays}
+                    onChange={(e) => setTokenDays(Math.min(Math.max(Math.round(Number(e.target.value)) || 1, 1), MAX_TOKEN_DAYS))}
+                    className="w-full px-3 py-2 bg-bambu-dark rounded-md text-white border border-bambu-dark-tertiary focus:border-bambu-green focus:outline-none"
+                  />
+                </div>
+              </div>
+              <div className="mt-2 flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => void createToken()}
+                  disabled={submitting || !tokenName.trim()}
+                  className="rounded-md bg-bambu-green px-3 py-1.5 text-sm text-white hover:bg-bambu-green/90 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {t('streamOverlay.builder.createTokenSubmit', 'Create')}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setCreating(false)}
+                  disabled={submitting}
+                  className="rounded-md bg-bambu-dark-tertiary px-3 py-1.5 text-sm text-white hover:bg-bambu-dark-tertiary/80"
+                >
+                  {t('common.cancel', 'Cancel')}
+                </button>
+              </div>
+              <p className="text-xs text-bambu-gray mt-2">
+                {t(
+                  'streamOverlay.builder.createTokenHint',
+                  'Creates a Streaming Overlay token for your account and puts it in the address. It is listed with your other tokens above, where you can revoke it.',
+                )}
+              </p>
+            </div>
+          )}
+          {tokenCreatedHere && token && (
+            <p className="text-xs text-yellow-600 dark:text-yellow-400 mt-1">
+              {t(
+                'streamOverlay.builder.tokenCreatedHint',
+                'The new token is in the address below. Copy the address now: once you leave this page the token cannot be shown again.',
+              )}
+            </p>
+          )}
           <p className="text-xs text-bambu-gray mt-1">
             {t(
               'streamOverlay.builder.tokenHint',
-              'Only needed when login is enabled: OBS has no session of its own. Create one above with the Streaming Overlay scope.',
+              'Only needed when login is enabled: OBS has no session of its own. Paste a Streaming Overlay token or create one here. It is kept in this page only — never saved in the browser — and it opens the overlay of every printer its owner may view, not only the one chosen here.',
             )}
           </p>
         </div>
@@ -414,9 +657,20 @@ export function StreamOverlayBuilder() {
       </div>
 
       <div className="mt-4">
-        <p className="text-sm font-medium text-white mb-1">
-          {t('streamOverlay.builder.urlTitle', 'Overlay URL')}
-        </p>
+        <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
+          <p className="text-sm font-medium text-white">
+            {t('streamOverlay.builder.urlTitle', 'Overlay URL')}
+          </p>
+          <button
+            type="button"
+            onClick={resetChoices}
+            title={t('streamOverlay.builder.resetChoicesHint', 'Back to the defaults. The token stays.')}
+            className="flex items-center gap-1 text-xs text-bambu-gray hover:text-white"
+          >
+            <RotateCcw className="w-3 h-3" />
+            {t('streamOverlay.builder.resetChoices', 'Reset choices')}
+          </button>
+        </div>
         {outputs.map((output) => (
           <div key={output.layout ?? 'auto'} className="mb-3 last:mb-0">
             {output.layout && (
@@ -430,7 +684,7 @@ export function StreamOverlayBuilder() {
             )}
             <div className="flex items-center gap-2">
               <code className="flex-1 px-3 py-2 bg-bambu-dark rounded-md text-bambu-green text-xs break-all font-mono select-all">
-                {output.url}
+                {output.shown}
               </code>
               <button
                 type="button"
@@ -460,6 +714,58 @@ export function StreamOverlayBuilder() {
             )}
           </p>
         )}
+        <p className="text-xs text-bambu-gray mt-2">
+          {t(
+            'streamOverlay.builder.rememberedHint',
+            'Your choices are remembered in this browser. The token never is.',
+          )}
+        </p>
+      </div>
+
+      <div className="mt-4">
+        <label htmlFor="overlay-builder-import" className="block text-sm font-medium text-white mb-1">
+          {t('streamOverlay.builder.importLabel', 'Import an overlay address')}
+        </label>
+        <div className="flex items-center gap-2">
+          {/* Masked like the token field: an address from a scene usually
+              carries a token. */}
+          <input
+            id="overlay-builder-import"
+            type="password"
+            autoComplete="off"
+            spellCheck={false}
+            value={importText}
+            onChange={(e) => {
+              setImportText(e.target.value);
+              setImportFailed(false);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') importAddress();
+            }}
+            placeholder="https://…/overlay/1?show=…"
+            aria-invalid={importFailed}
+            className="min-w-0 flex-1 px-3 py-2 bg-bambu-dark rounded-md text-white border border-bambu-dark-tertiary focus:border-bambu-green focus:outline-none font-mono text-xs"
+          />
+          <button
+            type="button"
+            onClick={importAddress}
+            className="flex shrink-0 items-center gap-2 px-3 py-2 bg-bambu-dark-tertiary text-white rounded-md hover:bg-bambu-dark-tertiary/80 text-sm"
+          >
+            <Import className="w-4 h-4" />
+            {t('streamOverlay.builder.importAction', 'Import')}
+          </button>
+        </div>
+        {importFailed && (
+          <p role="alert" className="text-xs text-red-600 dark:text-red-400 mt-1">
+            {t('streamOverlay.builder.importFailed', 'That is not a stream overlay address.')}
+          </p>
+        )}
+        <p className="text-xs text-bambu-gray mt-1">
+          {t(
+            'streamOverlay.builder.importHint',
+            'Paste an address from an existing scene to edit it. Only its settings are read: the address built here always points at this server, and a token in it is used as it is — it is not checked, saved or sent anywhere.',
+          )}
+        </p>
       </div>
 
       {/* The preview opens a real camera stream, so it stays off until asked

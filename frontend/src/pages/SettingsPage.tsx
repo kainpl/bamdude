@@ -286,6 +286,9 @@ export function SettingsPage() {
   const releaseNotesHeadingId = useId();
   const macroHeadingId = useId();
   const [localSettings, setLocalSettings] = useState<AppSettings | null>(null);
+  // Moves when the streaming-overlay builder created a token, so the token
+  // list above it reads the tokens again.
+  const [overlayTokensCreated, setOverlayTokensCreated] = useState(0);
   const [secretActions, setSecretActions] = useState<Record<string, SecretAction>>({});
   // Transient typed strings for the per-filament humidity threshold inputs
   // (#1605). Committed back to localSettings.ams_humidity_thresholds on blur so
@@ -5746,7 +5749,7 @@ export function SettingsPage() {
                 </h3>
               </CardHeader>
               <CardContent>
-                <CameraTokensPanel />
+                <CameraTokensPanel refreshKey={overlayTokensCreated} />
               </CardContent>
             </Card>
 
@@ -5761,7 +5764,7 @@ export function SettingsPage() {
                 </h3>
               </CardHeader>
               <CardContent>
-                <StreamOverlayBuilder />
+                <StreamOverlayBuilder onTokenCreated={() => setOverlayTokensCreated((count) => count + 1)} />
               </CardContent>
             </Card>
           </div>

@@ -78,3 +78,149 @@ export const OVERLAY_CANVAS: Record<OverlayLayout, { width: number; height: numb
 export function overlayLayout(raw: string | null | undefined): OverlayLayout | null {
   return raw === 'landscape' || raw === 'portrait' ? raw : null;
 }
+
+// ---------------------------------------------------------------------------
+// The builder's choices: everything that shapes an overlay address EXCEPT the
+// token. They are what the builder remembers in the browser and what it reads
+// off a pasted address; both go through `overlayChoices`, which checks every
+// value the way the overlay page itself would.
+// ---------------------------------------------------------------------------
+
+export type OverlaySize = 'small' | 'medium' | 'large';
+export type BuilderDesign = 'classic' | '2';
+export type BuilderLayout = 'auto' | OverlayLayout | 'both';
+
+/** Every `?show=` item, in the overlay's own top-to-bottom order. */
+export const OVERLAY_FIELDS = [
+  'printer',
+  'model',
+  'filename',
+  'status',
+  'progress',
+  'layers',
+  'eta',
+  'nozzle',
+  'bed',
+  'chamber',
+] as const;
+
+/** What an overlay shows when its address carries no `show` at all. */
+export const DEFAULT_OVERLAY_FIELDS: string[] = ['progress', 'layers', 'eta', 'filename', 'status'];
+
+export const DEFAULT_OVERLAY_FPS = 15;
+export const DEFAULT_PROGRESS_FROM = '#00ae42';
+export const DEFAULT_PROGRESS_TO = '#7ee081';
+
+export interface OverlayChoices {
+  printerId: number | null;
+  fields: string[];
+  size: OverlaySize;
+  fps: number;
+  showCamera: boolean;
+  customColours: boolean;
+  progressFrom: string;
+  progressTo: string;
+  design: BuilderDesign;
+  transparency: number;
+  layout: BuilderLayout;
+}
+
+export const DEFAULT_OVERLAY_CHOICES: OverlayChoices = {
+  printerId: null,
+  fields: DEFAULT_OVERLAY_FIELDS,
+  size: 'medium',
+  fps: DEFAULT_OVERLAY_FPS,
+  showCamera: true,
+  customColours: false,
+  progressFrom: DEFAULT_PROGRESS_FROM,
+  progressTo: DEFAULT_PROGRESS_TO,
+  design: 'classic',
+  transparency: 0,
+  layout: 'auto',
+};
+
+function knownFields(values: unknown[]): string[] {
+  return OVERLAY_FIELDS.filter((field) => values.includes(field));
+}
+
+/**
+ * Choices read back from storage (or from anywhere else untrusted): each value
+ * is kept only if it is one the builder could have produced, else it falls
+ * back to its default. Never throws.
+ */
+export function overlayChoices(raw: unknown): OverlayChoices {
+  if (!raw || typeof raw !== 'object') return DEFAULT_OVERLAY_CHOICES;
+  const value = raw as Record<string, unknown>;
+  const whole = (candidate: unknown, min: number, max: number, fallback: number) =>
+    typeof candidate === 'number' && Number.isInteger(candidate) && candidate >= min && candidate <= max
+      ? candidate
+      : fallback;
+  const from = typeof value.progressFrom === 'string' ? overlayColour(value.progressFrom) : null;
+  const to = typeof value.progressTo === 'string' ? overlayColour(value.progressTo) : null;
+  return {
+    printerId: whole(value.printerId, 1, 999_999_999, 0) || null,
+    fields: Array.isArray(value.fields) ? knownFields(value.fields) : DEFAULT_OVERLAY_FIELDS,
+    size: value.size === 'small' || value.size === 'large' ? value.size : 'medium',
+    fps: whole(value.fps, 1, 30, DEFAULT_OVERLAY_FPS),
+    showCamera: value.showCamera !== false,
+    customColours: value.customColours === true && from != null && to != null,
+    progressFrom: from ?? DEFAULT_PROGRESS_FROM,
+    progressTo: to ?? DEFAULT_PROGRESS_TO,
+    design: value.design === '2' ? '2' : 'classic',
+    transparency: whole(value.transparency, 0, 100, 0),
+    layout: value.layout === 'landscape' || value.layout === 'portrait' || value.layout === 'both' ? value.layout : 'auto',
+  };
+}
+
+/**
+ * An overlay address somebody pasted → the choices it stands for and the token
+ * it carries. Null when the text is not an overlay address.
+ *
+ * ⚠️ Only the path and the parameters are read. The ORIGIN IS DISCARDED: the
+ * address may come from another server, and the builder must never fetch,
+ * frame or link to it — whatever it builds points at this server. The token is
+ * returned as the text it is; nothing here checks, stores or sends it.
+ */
+export function parseOverlayUrl(text: string): { choices: OverlayChoices; token: string } | null {
+  let url: URL;
+  try {
+    // The base only lets a bare "/overlay/3?…" through; a pasted absolute
+    // address ignores it.
+    url = new URL(text.trim(), 'http://overlay.invalid');
+  } catch {
+    return null;
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
+  if (url.username || url.password) return null;
+  const path = /^\/overlay\/([1-9][0-9]{0,8})\/?$/.exec(url.pathname);
+  if (!path) return null;
+  const params = url.searchParams;
+  const tokens = params.getAll('token');
+  if (tokens.length > 1) return null;
+
+  const show = params.get('show');
+  const fpsParam = parseInt(params.get('fps') || '', 10);
+  const camera = params.get('camera');
+  const from = overlayColour(params.get('progressFrom'));
+  const to = overlayColour(params.get('progressTo'));
+  const size = params.get('size');
+  const design = overlayDesign(params.get('design'));
+  return {
+    choices: {
+      printerId: Number(path[1]),
+      // As the page reads it: no `show` is the default set, an empty one is nothing.
+      fields: show == null ? DEFAULT_OVERLAY_FIELDS : knownFields(show.split(',')),
+      size: size === 'small' || size === 'large' ? size : 'medium',
+      fps: Number.isNaN(fpsParam) ? DEFAULT_OVERLAY_FPS : Math.min(Math.max(fpsParam, 1), 30),
+      showCamera: camera !== 'false' && camera !== '0',
+      customColours: from != null || to != null,
+      progressFrom: from ?? to ?? DEFAULT_PROGRESS_FROM,
+      progressTo: to ?? from ?? DEFAULT_PROGRESS_TO,
+      design: design === 'v2' ? '2' : 'classic',
+      // Classic has no ground to fade: the builder would not emit it either.
+      transparency: design === 'v2' ? overlayTransparency(params.get('backgroundTransparency')) : 0,
+      layout: overlayLayout(params.get('layout')) ?? 'auto',
+    },
+    token: tokens[0] ?? '',
+  };
+}

@@ -4896,7 +4896,26 @@ export default {
       fpsHint: 'A1 and P1 cameras top out around 5 fps whatever you ask for.',
       token: 'Streaming Overlay token (optional)',
       tokenHint:
-        'Only needed when login is enabled: OBS has no session of its own. Create one above with the Streaming Overlay scope.',
+        'Only needed when login is enabled: OBS has no session of its own. Paste a Streaming Overlay token or create one here. It is kept in this page only \u2014 never saved in the browser \u2014 and it opens the overlay of every printer its owner may view, not only the one chosen here.',
+      showToken: 'Show token',
+      hideToken: 'Hide token',
+      createToken: 'Create token',
+      tokenName: 'Token name',
+      tokenDays: 'Valid for (days)',
+      createTokenSubmit: 'Create',
+      createTokenHint:
+        'Creates a Streaming Overlay token for your account and puts it in the address. It is listed with your other tokens above, where you can revoke it.',
+      tokenCreatedHint:
+        'The new token is in the address below. Copy the address now: once you leave this page the token cannot be shown again.',
+      rememberedHint: 'Your choices are remembered in this browser. The token never is.',
+      resetChoices: 'Reset choices',
+      resetChoicesHint: 'Back to the defaults. The token stays.',
+      importLabel: 'Import an overlay address',
+      importAction: 'Import',
+      imported: 'Address imported',
+      importFailed: 'That is not a stream overlay address.',
+      importHint:
+        'Paste an address from an existing scene to edit it. Only its settings are read: the address built here always points at this server, and a token in it is used as it is \u2014 it is not checked, saved or sent anywhere.',
       tokenWarning:
         'This URL contains a token \u2014 anyone who can read it can watch the stream and see the file name. Revoke the token to cut it off.',
       fields: 'Fields to show',
