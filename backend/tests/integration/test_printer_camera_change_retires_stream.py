@@ -97,3 +97,68 @@ async def test_deleting_a_printer_retires_its_upstream_and_forgets_its_light(
         assert printer_id not in camera_light._lights
     finally:
         camera_light._lights.pop(printer_id, None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_a_saved_camera_change_holds_no_session_while_the_upstream_retires(
+    async_client: AsyncClient, printer_factory
+):
+    """G09 review M3. Retiring waits for the worker to let the camera go — seconds; the request's session,
+    in a transaction again since the post-commit refresh, must not pin a pooled connection for that wait."""
+    from sqlalchemy.orm.session import _sessions
+
+    def in_transaction() -> set[int]:
+        return {key for key, session in list(_sessions.items()) if session.in_transaction()}
+
+    printer = await printer_factory(**EXTERNAL)
+    before = in_transaction()  # the fixture's own session, mid-transaction after its refresh
+    open_at_retire: list[set[int]] = []
+
+    async def retire(_printer_id):
+        open_at_retire.append(in_transaction() - before)
+        return True
+
+    with patch(RETIRE, side_effect=retire):
+        response = await async_client.patch(
+            f"/api/v1/printers/{printer.id}", json={"external_camera_url": "http://cam-b.invalid/stream"}
+        )
+    assert response.status_code == 200, response.text
+    assert response.json()["external_camera_url_configured"] is True
+    assert open_at_retire == [set()]
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_deleting_a_printer_forgets_its_id_keyed_memory_before_it_waits_for_the_camera(
+    async_client: AsyncClient, printer_factory
+):
+    """G09 review M2. Retiring the upstream is the one AWAIT among the post-commit forgets. SQLite hands the
+    id to the next printer created; one created during that wait must not have the state it has just
+    registered wiped by a synchronous forget that ran after it."""
+    printer = await printer_factory()
+    order: list[str] = []
+
+    async def retire(_printer_id):
+        order.append("retire")
+        return True
+
+    with (
+        patch(RETIRE, side_effect=retire),
+        patch(
+            "backend.app.api.routes.printers.ams_advertised_overlay.forget_printer",
+            side_effect=lambda _pid: order.append("overlay"),
+        ),
+        patch(
+            "backend.app.api.routes.printers.forget_printer_rebuild",
+            side_effect=lambda _pid: order.append("rebuild"),
+        ),
+        patch(
+            "backend.app.services.camera_light.forget_printer",
+            side_effect=lambda _pid: order.append("light"),
+        ),
+    ):
+        response = await async_client.delete(f"/api/v1/printers/{printer.id}")
+    assert response.status_code == 200, response.text
+    assert order.index("retire") == len(order) - 1, order
+    assert set(order) == {"light", "overlay", "rebuild", "retire"}

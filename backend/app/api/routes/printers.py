@@ -656,6 +656,10 @@ async def update_printer(
     # (and lent to captures) as the new one. After the commit, so a viewer that reconnects reads the saved
     # row — and never able to fail a change that is already saved.
     if camera_source_of(printer) != camera_before:
+        # The refresh above put the session back in a transaction. Retiring waits for the worker to let
+        # the camera go — seconds — and no pooled connection is held across a camera wait (#2572): end
+        # the transaction first. ``expire_on_commit=False`` keeps the refreshed row readable below.
+        await db.commit()
         await _retire_camera_stream(printer_id)
 
     # A name-only edit does not reconnect MQTT, but callbacks, notifications,
@@ -975,13 +979,16 @@ async def _delete_printer(
     from backend.app.services import camera_light
 
     camera_light.forget_printer(printer_id)
-    await _retire_camera_stream(printer_id)
     # Both halves of the advertised-profile memory: the entries themselves and
     # the "this process already rebuilt it" mark. An id is reused by the next
     # printer created, which would otherwise inherit a stranger's masked slots
     # and never get a rebuild of its own.
     ams_advertised_overlay.forget_printer(printer_id)
     forget_printer_rebuild(printer_id)
+    # The first await after the commit, so AFTER every synchronous forget above: a printer created with
+    # the reused id during this wait keeps what it registers. The stopped broadcaster stays in the
+    # registry meanwhile, so that printer's first viewer is chained behind it and never joins it.
+    await _retire_camera_stream(printer_id)
     from backend.app.services.virtual_printer import virtual_printer_manager
 
     try:
