@@ -119,6 +119,9 @@ describe('StockMoveDialog', () => {
 
     it('a receipt for a configuration without a position will create one', async () => {
       vi.spyOn(api, 'lookupStockItem').mockResolvedValue(none);
+      // Stock takes any configuration (spec product-part-variant-combinations п. 14): whether an
+      // order could take it is never asked here.
+      const describeCombination = vi.spyOn(api, 'describeCombination');
       render(<StockMoveDialog kind="receipt" onClose={() => {}} />);
       fireEvent.click(await screen.findByRole('button', { name: 'PR-0001 · Pipe' }));
       expect(await screen.findByText('A new position will be created.')).toBeInTheDocument();
@@ -126,6 +129,7 @@ describe('StockMoveDialog', () => {
       await waitFor(() => expect(submit()).toBeEnabled());
       fireEvent.click(submit());
       await waitFor(() => expect(move).toHaveBeenCalledWith({ kind: 'receipt', product_id: 1, options: [], qty: 2 }));
+      expect(describeCombination).not.toHaveBeenCalled();
     });
 
     it('any other move of a configuration without a position is refused before it is sent, and says why', async () => {

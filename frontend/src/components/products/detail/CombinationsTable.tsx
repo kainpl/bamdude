@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { keepPreviousData, useQuery } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { api } from '../../../api/client';
 import type { Product } from '../../../api/client';
@@ -34,12 +34,16 @@ const AMBER = 'text-amber-700 dark:text-amber-400';
 export function CombinationsTable({ product }: { product: Pick<Product, 'id' | 'variant_groups'> }) {
   const { t } = useTranslation();
   const hasGroups = (product.variant_groups ?? []).length > 0;
-  const [page, setPage] = useState(1);
+  // The page belongs to its product: another product opens on its first page, and never shows
+  // this one's rows while its own are read.
+  const [paged, setPaged] = useState({ productId: product.id, page: 1 });
+  const page = paged.productId === product.id ? paged.page : 1;
+  const setPage = (next: number) => setPaged({ productId: product.id, page: next });
   const query = useQuery({
     queryKey: [PRODUCT_COMBINATIONS_KEY, product.id, page],
     queryFn: () => api.getProductCombinations(product.id, page, COMBINATIONS_PER_PAGE),
     enabled: hasGroups,
-    placeholderData: keepPreviousData,
+    placeholderData: (previous, previousQuery) => (previousQuery?.queryKey[1] === product.id ? previous : undefined),
     retry: false,
   });
   const data = query.data;
@@ -53,8 +57,8 @@ export function CombinationsTable({ product }: { product: Pick<Product, 'id' | '
   // The table shrank under the page (a group or an option went): back to its last page, decided
   // only by an answer of the page's own key.
   useEffect(() => {
-    if (data && !query.isPlaceholderData && page > lastPage) setPage(lastPage);
-  }, [data, query.isPlaceholderData, page, lastPage]);
+    if (data && !query.isPlaceholderData && page > lastPage) setPaged({ productId: product.id, page: lastPage });
+  }, [data, query.isPlaceholderData, page, lastPage, product.id]);
 
   if (!hasGroups || state === 'empty') return null;
 

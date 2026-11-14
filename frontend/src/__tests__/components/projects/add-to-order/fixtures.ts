@@ -1,3 +1,5 @@
+import { expect } from 'vitest';
+import { screen, waitFor } from '@testing-library/react';
 import type {
   LibraryFileListItem,
   ProductListItem,
@@ -6,6 +8,17 @@ import type {
   StockSuggestion,
 } from '../../../../api/client';
 import { PART_SOURCES_DEFAULTS, PRODUCT_ROW_DEFAULTS } from '../../../wireDefaults';
+
+/**
+ * The dialog's «Add» once it may be pressed: a picked product with variant groups waits for the
+ * server's word on its combination (spec product-part-variant-combinations п. 25) — a click before
+ * it lands on a disabled button and sends nothing.
+ */
+export async function enabledButton(name: string): Promise<HTMLElement> {
+  const button = screen.getByRole('button', { name });
+  await waitFor(() => expect(button).toBeEnabled());
+  return button;
+}
 
 const row = (over: Partial<ProductListItem>): ProductListItem => ({
   ...PRODUCT_ROW_DEFAULTS,

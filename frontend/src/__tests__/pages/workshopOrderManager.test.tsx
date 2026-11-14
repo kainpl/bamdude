@@ -86,6 +86,8 @@ describe('an order manager — orders:*, products:read, customers:read + create,
     vi.spyOn(api, 'getLibraryFilesPaged').mockResolvedValue(filesPage([libraryFile(31, 'flask.gcode.3mf')]) as never);
     vi.spyOn(api, 'getLibraryFilePlates').mockResolvedValue({ file_id: 31, filename: 'flask.gcode.3mf', plates: [plate(1)], is_multi_plate: false });
     const suggest = vi.spyOn(api, 'suggestStock');
+    // The combination's state is the stock's read too (its route's gate): not asked, the server decides.
+    const describeCombination = vi.spyOn(api, 'describeCombination');
     const add = vi.spyOn(api, 'addOrderLines').mockImplementation(async (_order, lines) => ({
       order: { id: 5 } as never,
       results: lines.map((_line, i) => ({ line_id: 40 + i, asked_finished: 0, got_finished: 0, asked_kits: 0, got_kits: 0 })),
@@ -105,6 +107,7 @@ describe('an order manager — orders:*, products:read, customers:read + create,
       ]),
     );
     expect(suggest).not.toHaveBeenCalled();
+    expect(describeCombination).not.toHaveBeenCalled();
   });
 
   it('is offered no «take from stock» and asks no offers', async () => {

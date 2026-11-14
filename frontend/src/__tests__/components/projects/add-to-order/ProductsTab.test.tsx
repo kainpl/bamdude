@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { render } from '../../../utils';
-import { api } from '../../../../api/client';
+import { api, ApiError } from '../../../../api/client';
+import type { CombinationState, ProductListItem } from '../../../../api/client';
 import { AddToOrderDialog } from '../../../../components/projects/add-to-order/AddToOrderDialog';
 import { lamp, pageOf, pipe, pipeDetail, suggestion, vase } from './fixtures';
 
@@ -115,5 +116,153 @@ describe('the products tab of «Add to order»', () => {
     const row = await screen.findByTestId('add-product-1');
     fireEvent.click(within(row).getByRole('checkbox'));
     expect(await within(row).findByText('Could not read the stock')).toBeInTheDocument();
+  });
+});
+
+/**
+ * Which combinations an order can take (spec product-part-variant-combinations п. 25): the jar —
+ * Weight (20): 400 (standard) / 600; Lid (21): screw (standard) / snap.
+ */
+const jar: ProductListItem = {
+  ...pipe,
+  id: 4,
+  code: 'PR-0004',
+  name: 'Jar',
+  variant_group_names: ['Weight', 'Lid'],
+  variant_groups: [
+    { id: 20, name: 'Weight', default_option_id: 200, options: [{ id: 200, name: '400' }, { id: 201, name: '600' }] },
+    { id: 21, name: 'Lid', default_option_id: 210, options: [{ id: 210, name: 'screw' }, { id: 211, name: 'snap' }] },
+  ],
+};
+const JAR_NAMES: Record<number, string> = { 200: '400', 201: '600', 210: 'screw', 211: 'snap' };
+
+/** The server's answer for a choice of the jar, when only the combinations in `open` can be ordered. */
+function jarAnswer(open: string[], choices: Record<number, number>): CombinationState {
+  const full = { 20: 200, 21: 210, ...choices };
+  const isOpen = (c: Record<number, number>) => open.includes(`${c[20]},${c[21]}`);
+  const axes: [number, number[]][] = [
+    [20, [200, 201]],
+    [21, [210, 211]],
+  ];
+  return {
+    available: isOpen(full),
+    reasons: isOpen(full) ? [] : [{ code: 'option_without_part', group: 'Lid', option: JAR_NAMES[full[21]], part: null }],
+    options: axes.flatMap(([group, values]) =>
+      values.map((value) => ({
+        group_id: group,
+        option_id: value,
+        available_here: isOpen({ ...full, [group]: value }),
+        available_anywhere: open.some((k) => k.split(',')[group === 20 ? 0 : 1] === String(value)),
+      })),
+    ),
+  };
+}
+
+describe('the products tab of «Add to order» — which combinations an order can take', () => {
+  let describeCombination: ReturnType<typeof vi.spyOn>;
+  let add: ReturnType<typeof vi.spyOn>;
+  const openOnly = (...open: string[]) =>
+    describeCombination.mockImplementation(async (_id: number, choices: Record<number, number>) => jarAnswer(open, choices));
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.spyOn(api, 'getProductsPaged').mockImplementation(async (params) =>
+      params.page === 2 ? pageOf([vase], 30, 2) : pageOf([jar, lamp], 30),
+    );
+    vi.spyOn(api, 'getProductCategories').mockResolvedValue([]);
+    vi.spyOn(api, 'getProductFacets').mockResolvedValue({ materials: [], colors: [], models: [] });
+    vi.spyOn(api, 'suggestStock').mockImplementation(async (items) => ({
+      items: items.map((item) => suggestion({ product_id: item.product_id })),
+    }));
+    add = vi.spyOn(api, 'addOrderLines').mockImplementation(async (_order, lines) => ({
+      order: { id: 5 } as never,
+      results: lines.map((_line, i) => ({ line_id: 40 + i, asked_finished: 0, got_finished: 0, asked_kits: 0, got_kits: 0 })),
+    }));
+    describeCombination = vi.spyOn(api, 'describeCombination');
+    openOnly('200,210', '201,211');
+  });
+
+  const tickJar = async () => {
+    const row = await screen.findByTestId('add-product-4');
+    fireEvent.click(within(row).getByRole('checkbox'));
+    return row;
+  };
+  const addButton = () => screen.getByRole('button', { name: 'Add lines (1)' });
+
+  it('marks a value that closes the combination and keeps it clickable', async () => {
+    render(<AddToOrderDialog order={ORDER} onClose={() => {}} />);
+    const row = await tickJar();
+    // 600 + screw is closed; 600 + snap is open.
+    const marked = await within(row).findByRole('option', { name: '600 — not with this choice' });
+    expect(marked).toBeEnabled();
+    expect(within(row).getByRole('option', { name: '400' })).toBeEnabled();
+    await waitFor(() => expect(addButton()).toBeEnabled());
+    fireEvent.change(within(row).getByLabelText('Weight'), { target: { value: '201' } });
+    expect(within(row).getByLabelText('Weight')).toHaveValue('201');
+    await waitFor(() => expect(describeCombination).toHaveBeenLastCalledWith(4, { 20: 201 }));
+  });
+
+  it('disables a value no available combination contains', async () => {
+    openOnly('200,210');
+    render(<AddToOrderDialog order={ORDER} onClose={() => {}} />);
+    const row = await tickJar();
+    expect(await within(row).findByRole('option', { name: '600 — not available' })).toBeDisabled();
+    expect(within(row).getByRole('option', { name: 'snap — not available' })).toBeDisabled();
+    // What is chosen is never off.
+    expect(within(row).getByRole('option', { name: 'screw' })).toBeEnabled();
+  });
+
+  it('disables Add on a closed choice and says why, then lets two groups leave it', async () => {
+    render(<AddToOrderDialog order={ORDER} onClose={() => {}} />);
+    const row = await tickJar();
+    await waitFor(() => expect(addButton()).toBeEnabled());
+    fireEvent.change(within(row).getByLabelText('Weight'), { target: { value: '201' } });
+    expect(await within(row).findByText('This combination can’t be ordered: no part for «screw» in «Lid»')).toBeInTheDocument();
+    expect(screen.getByText('Can’t be ordered in the chosen combination: Jar')).toBeInTheDocument();
+    expect(addButton()).toBeDisabled();
+    // A pick on another page still counts.
+    fireEvent.click(screen.getByRole('button', { name: /next page/i }));
+    expect(await screen.findByTestId('add-product-3')).toBeInTheDocument();
+    expect(addButton()).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: /previous page/i }));
+    const back = await screen.findByTestId('add-product-4');
+    fireEvent.change(within(back).getByLabelText('Lid'), { target: { value: '211' } });
+    await waitFor(() => expect(addButton()).toBeEnabled());
+    expect(within(back).queryByTestId('combination-note')).not.toBeInTheDocument();
+    fireEvent.click(addButton());
+    await waitFor(() =>
+      expect(add).toHaveBeenCalledWith(5, [expect.objectContaining({ product_id: 4, choices: { 20: 201, 21: 211 } })]),
+    );
+  });
+
+  it('keeps Add off while a combination is being asked', async () => {
+    describeCombination.mockImplementation(() => new Promise(() => {}));
+    render(<AddToOrderDialog order={ORDER} onClose={() => {}} />);
+    await tickJar();
+    expect(await screen.findByText('Checking the products’ combinations…')).toBeInTheDocument();
+    expect(addButton()).toBeDisabled();
+  });
+
+  it('asks nothing for a product without groups', async () => {
+    render(<AddToOrderDialog order={ORDER} onClose={() => {}} />);
+    const row = await screen.findByTestId('add-product-2');
+    fireEvent.click(within(row).getByRole('checkbox'));
+    await waitFor(() => expect(addButton()).toBeEnabled());
+    expect(describeCombination).not.toHaveBeenCalled();
+  });
+
+  it('shows the 409 combination_unavailable sentence from the server, and asks again', async () => {
+    const refusal = new ApiError('That combination is not available', 409, 'combination_unavailable');
+    refusal.reasons = [{ code: 'part_not_sliced', group: null, option: null, part: 'jar body 400' }];
+    add.mockRejectedValue(refusal);
+    render(<AddToOrderDialog order={ORDER} onClose={() => {}} />);
+    await tickJar();
+    await waitFor(() => expect(addButton()).toBeEnabled());
+    const asked = describeCombination.mock.calls.length;
+    fireEvent.click(addButton());
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('That combination is not available');
+    expect(alert).toHaveTextContent('«jar body 400» is not sliced');
+    await waitFor(() => expect(describeCombination.mock.calls.length).toBeGreaterThan(asked));
   });
 });

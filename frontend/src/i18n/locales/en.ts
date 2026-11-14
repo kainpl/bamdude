@@ -6244,6 +6244,9 @@ export default {
         plateNext: 'one-off from plate {{n}} × {{copies}}',
       },
       submit: { products: 'Add lines ({{count}})', parts: 'Add parts', plate: 'Create and add' },
+      // spec product-part-variant-combinations п. 25: why «Add» waits or refuses.
+      combinationChecking: 'Checking the products’ combinations…',
+      combinationClosed: 'Can’t be ordered in the chosen combination: {{names}}',
       stock: {
         title: 'From stock',
         ready: 'ready',
@@ -6394,6 +6397,20 @@ export default {
         none: 'The reserve will not change; there will be no extra surplus.',
       },
       save: 'Save configuration',
+    },
+    // spec product-part-variant-combinations п. 25: whether an order can take a choice — the
+    // server's answer, said in both order dialogs.
+    combination: {
+      checking: 'Checking the combination…',
+      closed: 'This combination can’t be ordered: {{reasons}}',
+      closedKept: 'This combination can no longer be ordered ({{reasons}}). The line keeps it; its counts can still be changed.',
+      failed: 'Could not check the combination — the server checks it anyway.',
+      option: {
+        closes: 'With the other choices as they are, the combination would not be available',
+        never: 'Not in any combination that can be ordered',
+        closesShort: '{{option}} — not with this choice',
+        neverShort: '{{option}} — not available',
+      },
     },
     tiles: {
       active: 'Active',

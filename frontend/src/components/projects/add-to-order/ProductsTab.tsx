@@ -1,9 +1,11 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Package } from 'lucide-react';
 import { api } from '../../../api/client';
 import type { ListVariantGroup, ProductListItem, StockSuggestion } from '../../../api/client';
+import { reasonsText } from '../useCombinationState';
+import type { CombinationView } from '../useCombinationState';
 import type { SuggestStatus } from '../../../hooks/useStockSuggest';
 import { useSearchBox } from '../../../hooks/useSearchBox';
 import { getColorName } from '../../../utils/colors';
@@ -41,6 +43,13 @@ export interface RowStock {
  * groups come with the catalog row (H01) — no product is read per row. Stock
  * numbers are the server's proposal; a changed number makes the row the
  * operator's until «pick» hands it back.
+ *
+ * Whether a picked row's combination can be ordered is the dialog's question, asked
+ * of the server (`combinationOf`, spec product-part-variant-combinations п. 25): a
+ * value that would close it is marked and stays choosable, a value no available
+ * combination holds is off (unless chosen), and a closed choice says why. The tab
+ * tells the dialog which products it has listed (`onProductsSeen`) — their names and
+ * whether they have groups at all, which is what decides whether one is asked.
  */
 export function ProductsTab({
   picks,
@@ -48,6 +57,8 @@ export function ProductsTab({
   takesStock,
   stockOf,
   onRetryStock,
+  combinationOf,
+  onProductsSeen,
   initialQuery = '',
 }: {
   picks: ProductPicks;
@@ -56,6 +67,10 @@ export function ProductsTab({
   takesStock: boolean;
   stockOf: (productId: number) => RowStock;
   onRetryStock: () => void;
+  /** A picked product's combination, as the server answers it. */
+  combinationOf: (productId: number) => CombinationView;
+  /** Every product a page listed — stable, it runs on every answer. */
+  onProductsSeen: (products: ProductListItem[]) => void;
   /** Opens already searched — the product page opens on its own product. */
   initialQuery?: string;
 }) {
@@ -97,6 +112,9 @@ export function ProductsTab({
   });
   const rows = data?.items ?? [];
   const columns = takesStock ? 6 : 5;
+  useEffect(() => {
+    if (data) onProductsSeen(data.items);
+  }, [data, onProductsSeen]);
 
   const update = (id: number, pick: ProductPick | null) => {
     const next = new Map(picks);
@@ -170,6 +188,7 @@ export function ProductsTab({
                   product={product}
                   pick={picks.get(product.id)}
                   stock={picks.has(product.id) ? stockOf(product.id) : undefined}
+                  combination={picks.has(product.id) ? combinationOf(product.id) : undefined}
                   onRetryStock={onRetryStock}
                   takesStock={takesStock}
                   onChange={(pick) => update(product.id, pick)}
@@ -223,6 +242,7 @@ function ProductRow({
   product,
   pick,
   stock,
+  combination,
   onRetryStock,
   takesStock,
   onChange,
@@ -230,6 +250,7 @@ function ProductRow({
   product: ProductListItem;
   pick: ProductPick | undefined;
   stock: RowStock | undefined;
+  combination: CombinationView | undefined;
   onRetryStock: () => void;
   takesStock: boolean;
   onChange: (pick: ProductPick | null) => void;
@@ -298,7 +319,7 @@ function ProductRow({
         {groups.length === 0 ? (
           <span className="text-xs text-bambu-gray">{t('orders.add.noVariants')}</span>
         ) : pick ? (
-          <PickedConfiguration groups={groups} pick={pick} onChange={onChange} />
+          <PickedConfiguration groups={groups} pick={pick} combination={combination} onChange={onChange} />
         ) : (
           <span className="text-xs text-bambu-gray">{groupsText(groups)}</span>
         )}
@@ -374,14 +395,20 @@ function ProductRow({
  * the server leaves it so (`line_config._defaults`, E5 R11): the field shows «no
  * choice», and the proposal and the batch carry nothing for it. Clearing it again
  * drops the group from the draft, never sends 0.
+ *
+ * A value that would close the combination says so in its own text and stays
+ * choosable; a value no available combination holds is off, unless it is the one
+ * chosen (the field must show what it has). A closed choice says why under the fields.
  */
 function PickedConfiguration({
   groups,
   pick,
+  combination,
   onChange,
 }: {
   groups: ListVariantGroup[];
   pick: ProductPick;
+  combination: CombinationView | undefined;
   onChange: (pick: ProductPick) => void;
 }) {
   const { t } = useTranslation();
@@ -392,25 +419,52 @@ function PickedConfiguration({
     onChange({ ...pick, choices });
   };
   return (
-    <div className="flex flex-wrap gap-x-2 gap-y-1">
-      {groups.map((group) => (
-        <span key={group.id} className="inline-flex items-center gap-1.5 whitespace-nowrap text-xs text-bambu-gray">
-          {group.name}
-          <Select
-            size="sm"
-            aria-label={group.name}
-            value={String(pick.choices[group.id] ?? group.default_option_id ?? '')}
-            onChange={(e) => choose(group.id, e.target.value)}
-          >
-            {group.default_option_id == null && <option value="">{t('orders.add.noChoice')}</option>}
-            {group.options.map((option) => (
-              <option key={option.id} value={String(option.id)}>
-                {option.name}
-              </option>
-            ))}
-          </Select>
-        </span>
-      ))}
+    <div className="flex flex-col gap-1">
+      <div className="flex flex-wrap gap-x-2 gap-y-1">
+        {groups.map((group) => {
+          const current = pick.choices[group.id] ?? group.default_option_id ?? null;
+          return (
+            <span key={group.id} className="inline-flex items-center gap-1.5 whitespace-nowrap text-xs text-bambu-gray">
+              {group.name}
+              <Select
+                size="sm"
+                aria-label={group.name}
+                value={String(current ?? '')}
+                onChange={(e) => choose(group.id, e.target.value)}
+              >
+                {group.default_option_id == null && <option value="">{t('orders.add.noChoice')}</option>}
+                {group.options.map((option) => {
+                  const flags = combination?.optionFlags.get(option.id);
+                  const never = flags?.anywhere === false;
+                  const closes = flags !== undefined && !flags.here;
+                  return (
+                    <option key={option.id} value={String(option.id)} disabled={never && option.id !== current}>
+                      {never
+                        ? t('orders.combination.option.neverShort', { option: option.name })
+                        : closes
+                          ? t('orders.combination.option.closesShort', { option: option.name })
+                          : option.name}
+                    </option>
+                  );
+                })}
+              </Select>
+            </span>
+          );
+        })}
+      </div>
+      {combination?.gate === 'closed' && (
+        <p data-testid="combination-note" className="text-xs text-amber-700 dark:text-amber-400">
+          {t('orders.combination.closed', { reasons: reasonsText(t, combination.reasons) })}
+        </p>
+      )}
+      {combination?.isError && (
+        <p data-testid="combination-note" className="flex flex-wrap items-center gap-1 text-xs">
+          <span className="text-amber-700 dark:text-amber-400">{t('orders.combination.failed')}</span>
+          <Button size="sm" variant="ghost" onClick={() => combination.refetch()}>
+            {t('common.retry')}
+          </Button>
+        </p>
+      )}
     </div>
   );
 }

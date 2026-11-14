@@ -4,8 +4,10 @@
  * what is missing, one sentence per reason. The server pages, counts and decides; the table
  * only composes the sentences.
  */
+import type { ReactElement } from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render as renderBare, screen, waitFor, within } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render } from '../../../utils';
 import { api } from '../../../../api/client';
 import type { CombinationRow, Product, ProductCombinationsPage } from '../../../../api/client';
@@ -89,6 +91,30 @@ describe('CombinationsTable', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Next page' }));
     await waitFor(() => expect(get).toHaveBeenLastCalledWith(7, 2, COMBINATIONS_PER_PAGE));
     await waitFor(() => expect(rows()[0]).toHaveAttribute('data-available', 'false'));
+  });
+
+  it('another product opens on its own first page and never shows the previous product’s rows', async () => {
+    let releaseOther: (p: ProductCombinationsPage) => void = () => {};
+    const get = vi.spyOn(api, 'getProductCombinations').mockImplementation(async (id, p) => {
+      if (id === 8) return new Promise<ProductCombinationsPage>((resolve) => (releaseOther = resolve));
+      return p === 1 ? page([row([11, 'solid'], [21, '400'])], 120, 1) : page([closed], 120, p);
+    });
+    // One client across the rerender (the shared wrapper makes a new one on every render, which
+    // would forget the previous answer this test is about).
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    const inClient = (ui: ReactElement) => <QueryClientProvider client={client}>{ui}</QueryClientProvider>;
+    const view = renderBare(inClient(<CombinationsTable product={product} />));
+    await screen.findByTestId('combination-row');
+    fireEvent.click(screen.getByRole('button', { name: 'Next page' }));
+    await waitFor(() => expect(rows()[0]).toHaveAttribute('data-available', 'false'));
+
+    view.rerender(inClient(<CombinationsTable product={{ ...product, id: 8 }} />));
+    await waitFor(() => expect(get).toHaveBeenLastCalledWith(8, 1, COMBINATIONS_PER_PAGE));
+    // While its own page is read, nothing of product 7 stays on screen.
+    expect(screen.queryByTestId('combination-row')).not.toBeInTheDocument();
+    await act(async () => releaseOther(page([row([31, 'glass'], [41, '200'])], 1, 1)));
+    const [first] = await screen.findAllByTestId('combination-row');
+    expect(within(first).getAllByRole('cell').map((c) => c.textContent)).toEqual(['glass', '200', 'available']);
   });
 
   it('a failed read says so with a retry, never an empty table', async () => {

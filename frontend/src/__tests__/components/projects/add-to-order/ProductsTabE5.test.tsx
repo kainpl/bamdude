@@ -11,7 +11,7 @@ import { render } from '../../../utils';
 import { api, ApiError } from '../../../../api/client';
 import type { StockSuggestItem } from '../../../../api/client';
 import { AddToOrderDialog } from '../../../../components/projects/add-to-order/AddToOrderDialog';
-import { lamp, pageOf, pipe, suggestion, vase } from './fixtures';
+import { enabledButton, lamp, pageOf, pipe, suggestion, vase } from './fixtures';
 
 const ORDER = { id: 5, code: 'OR-0005', name: 'Flasks for Acme', active: true };
 
@@ -102,7 +102,7 @@ describe('the products tab of «Add to order» (WS-13 E5 C)', () => {
 
     fireEvent.change(mount, { target: { value: '' } });
     await waitFor(() => expect(suggest.mock.calls.at(-1)?.[0]).toEqual([{ product_id: 3, options: [], quantity: 1 }]));
-    fireEvent.click(screen.getByRole('button', { name: 'Add lines (1)' }));
+    fireEvent.click(await enabledButton('Add lines (1)'));
     await waitFor(() => expect(add).toHaveBeenCalled());
     expect(add.mock.calls[0][1][0]).toEqual(expect.objectContaining({ product_id: 3, choices: {} }));
   });
@@ -204,7 +204,7 @@ describe('the products tab of «Add to order» (WS-13 E5 C)', () => {
     const row = await tick(1);
     await within(row).findByText('of 2');
     fireEvent.change(within(row).getByLabelText('Quantity'), { target: { value: '6' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Add lines (1)' }));
+    fireEvent.click(await enabledButton('Add lines (1)'));
     await waitFor(() => expect(add).toHaveBeenCalled());
     expect(add.mock.calls[0][1][0]).toEqual(expect.objectContaining({ quantity: 6, stock: 'auto' }));
     await waitFor(() => expect(screen.queryByText(/less was taken/)).not.toBeInTheDocument());

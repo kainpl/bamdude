@@ -149,6 +149,12 @@ export class ApiError extends Error {
    * `jobs_changed`). A dialog marks those rows; the sentence stays prose.
    */
   jobs?: { kind: string; id: number; reason?: string }[];
+  /**
+   * Why a combination of variant options cannot be ordered, when the refusal says
+   * (`combination_unavailable`: `{error, message, reasons}`) — name snapshots the dialog
+   * composes into sentences (`partBinding.reasonText`); only well-formed entries.
+   */
+  reasons?: CombinationReason[];
   constructor(message: string, status: number, code?: string, retryAfterMs?: number) {
     super(message);
     this.name = 'ApiError';
@@ -675,7 +681,24 @@ async function handleErrorResponse(response: Response, __isRetry: boolean, signa
   if (refs) refusal.refs = refs;
   const jobs = refusalJobs(error.detail);
   if (jobs) refusal.jobs = jobs;
+  const reasons = refusalReasons(error.detail);
+  if (reasons) refusal.reasons = reasons;
   throw refusal;
+}
+
+/** The `reasons` a closed-combination refusal names -- only well-formed entries, never guessed. */
+function refusalReasons(detail: unknown): ApiError['reasons'] {
+  if (!detail || typeof detail !== 'object' || Array.isArray(detail)) return undefined;
+  const raw = (detail as Record<string, unknown>).reasons;
+  if (!Array.isArray(raw)) return undefined;
+  const text = (value: unknown) => (typeof value === 'string' ? value : null);
+  const reasons = raw.flatMap((entry): CombinationReason[] => {
+    if (!entry || typeof entry !== 'object') return [];
+    const { code, group, option, part } = entry as Record<string, unknown>;
+    if (code !== 'option_without_part' && code !== 'part_not_sliced') return [];
+    return [{ code, group: text(group), option: text(option), part: text(part) }];
+  });
+  return reasons.length ? reasons : undefined;
 }
 
 /** The `jobs` list a refusal names -- only well-formed entries, never guessed. */
