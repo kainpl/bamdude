@@ -321,13 +321,15 @@ class TestCostCalculationScenarios:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_archive_cost_with_archive_id_and_print_name(
+    async def test_archive_cost_requires_archive_id_not_print_name(
         self, async_client, archive_factory, printer_factory, db_session
     ):
-        """Test archive cost recalculation using both archive_id and print_name fallback."""
+        """Linked usage prices its archive; unlinked same-name usage is ignored."""
+        from backend.app.api.routes.settings import set_setting
         from backend.app.models.spool import Spool
         from backend.app.models.spool_usage_history import SpoolUsageHistory
 
+        await set_setting(db_session, "default_filament_cost", "20")
         printer = await printer_factory()
 
         # Create spools and commit
@@ -408,9 +410,9 @@ class TestCostCalculationScenarios:
         assert response_new.status_code == 200
         assert response_new.json()["cost"] == 0.50
 
-        # Verify archive_old cost from legacy print_name fallback
+        # Unlinked usage is not evidence; use the configured estimate (30g at 20/kg).
         response_old = await async_client.get(f"/api/v1/archives/{archive_old.id}")
         assert response_old.status_code == 200
-        assert response_old.json()["cost"] == 0.45
+        assert response_old.json()["cost"] == 0.60
 
         await db_session.rollback()

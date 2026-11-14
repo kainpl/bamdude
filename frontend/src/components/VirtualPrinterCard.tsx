@@ -301,6 +301,7 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
   };
 
   const isRunning = printer.status?.running || false;
+  const isStopping = printer.status?.runtime_state === 'stopping';
   // For status badge: collapse auto_queue → queue (UI shows them as one mode + toggle).
   const displayMode: DisplayMode = localMode === 'auto_queue' ? 'print_queue' : (localMode as DisplayMode);
   const modeLabel = t(`virtualPrinter.mode.${MODE_LABELS[displayMode] || 'archive'}`);
@@ -335,6 +336,7 @@ export function VirtualPrinterCard({ printer, models }: VirtualPrinterCardProps)
             }
           </button>
           <span className={`w-2 h-2 rounded-full flex-shrink-0 ${isRunning ? 'bg-green-400 animate-pulse' : 'bg-gray-500'}`} />
+          {isStopping && <span className="text-xs text-amber-400">{t('virtualPrinter.stoppingUnproven')}</span>}
           {/*
             ⚠️ Metadata WRAPS rather than overflowing. Every item in this row
             used to be `flex-shrink-0`, so nothing could give and the row was as

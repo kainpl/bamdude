@@ -65,7 +65,7 @@ async def test_obico_drain_refusal_precedes_any_live_database_or_file_swap(tmp_p
 async def test_corrupt_backup_is_rejected_before_service_or_database_changes(tmp_path, monkeypatch):
     stop = AsyncMock()
     monkeypatch.setattr(
-        "backend.app.services.virtual_printer.virtual_printer_manager", SimpleNamespace(is_enabled=True, configure=stop)
+        "backend.app.services.virtual_printer.virtual_printer_manager", SimpleNamespace(drain_for_restore=stop)
     )
     close = AsyncMock()
     monkeypatch.setattr("backend.app.core.database.close_all_connections", close)
@@ -74,6 +74,54 @@ async def test_corrupt_backup_is_rejected_before_service_or_database_changes(tmp
     assert caught.value.status_code == 400
     stop.assert_not_awaited()
     close.assert_not_awaited()
+
+
+async def test_part_render_refusal_keeps_vps_retired_until_restart(tmp_path, monkeypatch):
+    from backend.app.core.auth_runtime import auth_runtime
+    from backend.app.services import library_scan, part_render_scheduler, virtual_printer
+    from backend.app.services.backup_files import FileRestore
+    from backend.app.services.credential_rollout import credential_rollout
+    from backend.app.services.farm_startup_guard import farm_startup_guard
+    from backend.app.services.git_backup import git_backup_service
+    from backend.app.services.slice_dispatch import slice_dispatch
+    from backend.app.services.virtual_printer.manager import VirtualPrinterInstance, VirtualPrinterManager
+
+    manager = VirtualPrinterManager()
+    vp = VirtualPrinterInstance(
+        vp_id=7,
+        name="Owned",
+        mode="file_manager",
+        model="N2S",
+        access_code="12345678",
+        serial_suffix="12345678",
+        base_dir=tmp_path,
+    )
+    manager._instances[vp.id] = vp
+    monkeypatch.setattr(virtual_printer, "virtual_printer_manager", manager)
+    monkeypatch.setattr(farm_startup_guard, "active", False)
+    for owner in (git_backup_service, slice_dispatch, library_scan, credential_rollout, auth_runtime):
+        monkeypatch.setattr(owner, "quiesce_for_restore", AsyncMock(return_value=True))
+    render_stop = AsyncMock(return_value=False)
+    monkeypatch.setattr(part_render_scheduler, "stop_part_render_scheduler", render_stop)
+    prepare, apply = Mock(), Mock()
+    monkeypatch.setattr(FileRestore, "prepare", prepare)
+    monkeypatch.setattr(FileRestore, "apply", apply)
+
+    with pytest.raises(HTTPException) as refused:
+        await route.restore_backup(file=upload(tmp_path), db=AsyncMock(), _=None)
+
+    assert refused.value.status_code == 409
+    render_stop.assert_awaited_once_with("restore")
+    assert farm_startup_guard.restart_required
+    assert manager._drain_task.done() and not manager._instances
+    assert vp.activities.closed
+    prepare.assert_not_called()
+    apply.assert_not_called()
+    sync = AsyncMock()
+    monkeypatch.setattr(manager, "_sync_from_db_locked", sync)
+    manager.set_session_factory(Mock(name="session_factory"))
+    await manager.sync_from_db()
+    sync.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -96,7 +144,12 @@ async def test_failed_database_swap_restores_previous_key_and_keeps_identity(tmp
     monkeypatch.setattr(route.app_settings, "archive_dir", live / "custom-archive")
     monkeypatch.setattr("backend.app.core.db_dialect.is_sqlite", lambda: False)
     monkeypatch.setattr(
-        "backend.app.services.virtual_printer.virtual_printer_manager", SimpleNamespace(is_enabled=False)
+        "backend.app.services.virtual_printer.virtual_printer_manager",
+        SimpleNamespace(
+            drain_for_restore=AsyncMock(
+                return_value={"proxy_connections_cut": {}, "camera_leases_released": 0, "uploads_without_options": 0}
+            )
+        ),
     )
     monkeypatch.setattr("backend.app.services.print_scheduler.scheduler", SimpleNamespace(stop=Mock()))
     stop_plug_scheduler = AsyncMock()

@@ -17,6 +17,16 @@ import zipfile
 from collections.abc import Callable
 from pathlib import Path
 
+from .lifecycle import (
+    TLS_CLOSE_GRACE,
+    TLS_HANDSHAKE_TIMEOUT,
+    Activities,
+    AdmissionClosed,
+    Connections,
+    PeerDisconnected,
+    close_writer,
+)
+
 logger = logging.getLogger(__name__)
 
 # Hard cap on a single FTP upload (upstream Bambuddy v0.2.4.5). Server-internal
@@ -49,6 +59,7 @@ class FTPSession:
         vp_name: str = "",
         on_upload_start: Callable[[], None] | None = None,
         on_upload_end: Callable[[], None] | None = None,
+        activities: Activities | None = None,
     ):
         self.reader = reader
         self.writer = writer
@@ -61,12 +72,14 @@ class FTPSession:
         # avoid advertising a stale PREPARE ("busy with another print job").
         self.on_upload_start = on_upload_start
         self.on_upload_end = on_upload_end
+        self.activities = activities or Activities()
         self.passive_port_range = passive_port_range
         self.pasv_address = pasv_address
         self.bind_address = bind_address
         self.vp_name = vp_name
         self._log_prefix = f"[{vp_name}] " if vp_name else ""
 
+        self.data_connections = Connections()
         self.authenticated = False
         self.username: str | None = None
         self.current_dir = upload_dir
@@ -87,8 +100,11 @@ class FTPSession:
         """Send an FTP response."""
         response = f"{code} {message}\r\n"
         logger.debug("%sFTP -> %s: %s", self._log_prefix, self.remote_ip, response.strip())
-        self.writer.write(response.encode("utf-8"))
-        await self.writer.drain()
+        try:
+            self.writer.write(response.encode("utf-8"))
+            await self.writer.drain()
+        except OSError as exc:
+            raise PeerDisconnected(type(exc).__name__) from exc
 
     async def handle(self) -> None:
         """Handle the FTP session."""
@@ -138,32 +154,18 @@ class FTPSession:
 
         except asyncio.CancelledError:
             logger.info("%sFTP session cancelled from %s", self._log_prefix, self.remote_ip)
+        except PeerDisconnected as exc:
+            logger.info("%sFTP peer disconnected from %s: %s", self._log_prefix, self.remote_ip, exc)
         except Exception as e:
             logger.error("%sFTP session error from %s: %s", self._log_prefix, self.remote_ip, e)
         finally:
             logger.info("%sFTP session ended from %s", self._log_prefix, self.remote_ip)
             await self._cleanup()
 
-    async def _cleanup(self) -> None:
-        """Clean up session resources."""
-        # Release any waiting data connection callback
-        self._transfer_done.set()
-
-        if self.data_server:
-            self.data_server.close()
-            try:
-                await self.data_server.wait_closed()
-            except OSError:
-                pass  # Best-effort data server cleanup; may already be closed
-            self.data_server = None
-
-        try:
-            self.writer.close()
-            await self.writer.wait_closed()
-        except OSError:
-            pass  # Best-effort control connection cleanup; client may have disconnected
-
-    # FTP Commands
+    async def _cleanup(self):
+        await self._close_data_connection()
+        await self.data_connections.disconnect()
+        await close_writer(self.writer)
 
     async def cmd_USER(self, arg: str) -> None:
         """Handle USER command."""
@@ -249,6 +251,8 @@ class FTPSession:
                     self.bind_address,
                     port,
                     ssl=self.ssl_context,
+                    ssl_handshake_timeout=TLS_HANDSHAKE_TIMEOUT,
+                    ssl_shutdown_timeout=TLS_CLOSE_GRACE,
                 )
                 self.data_port = port
                 return True
@@ -321,7 +325,11 @@ class FTPSession:
             logger.error("Failed to bind any passive port for PASV")
             await self.send(425, "Cannot open data connection")
 
-    async def _handle_data_connection(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+    async def _handle_data_connection(self, reader, writer):
+        with self.data_connections.track(writer):
+            await self._owned_handle_data_connection(reader, writer)
+
+    async def _owned_handle_data_connection(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         """Handle incoming data connection (used by PASV/EPSV).
 
         This callback stays alive until the transfer completes to ensure the
@@ -335,7 +343,7 @@ class FTPSession:
             logger.warning("FTP rejecting duplicate data connection from %s", self.remote_ip)
             try:
                 writer.close()
-                await writer.wait_closed()
+                await close_writer(writer)
             except OSError:
                 pass
             return
@@ -376,7 +384,7 @@ class FTPSession:
         if self._data_writer:
             try:
                 self._data_writer.close()
-                await self._data_writer.wait_closed()
+                await close_writer(self._data_writer)
             except OSError:
                 pass  # Best-effort data writer cleanup; peer may have closed already
             self._data_writer = None
@@ -417,6 +425,13 @@ class FTPSession:
             logger.debug("%supload-end callback error: %s", self._log_prefix, e)
 
     async def cmd_STOR(self, arg: str) -> None:
+        try:
+            with self.activities.business():
+                await self._receive_file(arg)
+        except AdmissionClosed:
+            await self.send(421, "Virtual printer is stopping")
+
+    async def _receive_file(self, arg: str) -> None:
         """Handle STOR command - receive file upload."""
         if not self.authenticated:
             await self.send(530, "Not logged in")
@@ -658,6 +673,7 @@ class VirtualPrinterFTPServer:
         vp_name: str = "",
         on_upload_start: Callable[[], None] | None = None,
         on_upload_end: Callable[[], None] | None = None,
+        activities: Activities | None = None,
         passive_port_min: int = PASSIVE_PORT_BASE,
         passive_port_max: int = PASSIVE_PORT_BASE + PASSIVE_SLICE_SIZE - 1,
     ):
@@ -690,11 +706,15 @@ class VirtualPrinterFTPServer:
         self.vp_name = vp_name
         self.on_upload_start = on_upload_start
         self.on_upload_end = on_upload_end
+        self.activities = activities or Activities()
         self.passive_port_min = passive_port_min
         self.passive_port_max = passive_port_max
         self._server: asyncio.Server | None = None
         self._running = False
         self._ssl_context: ssl.SSLContext | None = None
+        self.connections = Connections()
+        self._sessions = set()
+        self._stop_task = None
         self._active_sessions: list[asyncio.Task] = []
         # Set once the listening socket is bound (V6 readiness barrier).
         self.ready = asyncio.Event()
@@ -703,7 +723,7 @@ class VirtualPrinterFTPServer:
 
     async def start(self) -> None:
         """Start the implicit FTPS server."""
-        if self._running:
+        if self.activities.closed or self._running:
             return
 
         logger.info("[%s] Starting virtual printer implicit FTPS on %s:%s", self.vp_name, self.bind_address, self.port)
@@ -734,8 +754,14 @@ class VirtualPrinterFTPServer:
                 self._handle_client,
                 self.bind_address,
                 self.port,
-                ssl=self._ssl_context,  # This makes it implicit FTPS!
+                ssl=self._ssl_context,
+                ssl_handshake_timeout=TLS_HANDSHAKE_TIMEOUT,
+                ssl_shutdown_timeout=TLS_CLOSE_GRACE,
             )
+            if self.activities.closed:
+                self._server.close()
+                await self._server.wait_closed()
+                return
             self._running = True
             self.ready.set()
 
@@ -763,7 +789,14 @@ class VirtualPrinterFTPServer:
         finally:
             await self.stop()
 
-    async def _handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+    async def _handle_client(self, reader, writer):
+        with self.connections.track(writer):
+            if self.activities.closed:
+                await close_writer(writer)
+                return
+            await self._owned_handle_client(reader, writer)
+
+    async def _owned_handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         """Handle a new FTP client connection."""
         peername = writer.get_extra_info("peername")
         log_prefix = f"[{self.vp_name}] " if self.vp_name else ""
@@ -776,6 +809,7 @@ class VirtualPrinterFTPServer:
             access_code=self.access_code,
             ssl_context=self._ssl_context,
             on_file_received=self.on_file_received,
+            activities=self.activities,
             passive_port_range=(self.passive_port_min, self.passive_port_max),
             pasv_address=self._pasv_address,
             bind_address=self.bind_address,
@@ -785,6 +819,7 @@ class VirtualPrinterFTPServer:
         )
 
         # Track the session task so we can cancel it on stop
+        self._sessions.add(session)
         task = asyncio.current_task()
         if task:
             self._active_sessions.append(task)
@@ -793,31 +828,25 @@ class VirtualPrinterFTPServer:
         finally:
             if task and task in self._active_sessions:
                 self._active_sessions.remove(task)
+            self._sessions.discard(session)
 
-    async def stop(self) -> None:
-        """Stop the FTPS server."""
-        logger.info("Stopping FTP server")
-        self._running = False
+    def close_admission(self):
+        self.activities.closing = True
         self.ready.clear()
-
-        # Cancel all active sessions and await their teardown (bounded) rather
-        # than a fixed sleep — a slow session could otherwise outlive stop() and
-        # keep a data socket bound (upstream Bambuddy v0.2.4.5).
-        sessions = self._active_sessions[:]  # copy: tasks remove themselves on exit
-        for task in sessions:
-            task.cancel()
-        if sessions:
-            try:
-                await asyncio.wait_for(asyncio.gather(*sessions, return_exceptions=True), timeout=5.0)
-            except TimeoutError:
-                logger.warning("FTP server: %d session(s) didn't tear down within 5s", len(sessions))
-
-        self._active_sessions.clear()
-
         if self._server:
-            try:
-                self._server.close()
-                await self._server.wait_closed()
-            except OSError as e:
-                logger.debug("Error closing FTP server: %s", e)
+            self._server.close()
+
+    async def stop(self):
+        if self._stop_task is None:
+            self.close_admission()
+            self._stop_task = asyncio.create_task(self._stop_owned())
+        await asyncio.shield(self._stop_task)
+
+    async def _stop_owned(self):
+        await self.activities.join()
+        self._running = False
+        await asyncio.gather(*(s._cleanup() for s in tuple(self._sessions)))
+        await self.connections.disconnect()
+        if self._server:
+            await self._server.wait_closed()
             self._server = None

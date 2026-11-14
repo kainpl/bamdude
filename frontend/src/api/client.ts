@@ -15957,6 +15957,8 @@ export interface VirtualPrinterProxyStatus {
 export interface VirtualPrinterStatus {
   enabled: boolean;
   running: boolean;
+  runtime_state?: 'running' | 'stopping' | 'stopped';
+  runtime_proven?: boolean;
   mode: VirtualPrinterMode;
   name: string;
   serial: string;
@@ -16084,6 +16086,8 @@ export interface VirtualPrinterConfig {
   position: number;
   status: {
     running: boolean;
+    runtime_state?: 'running' | 'stopping' | 'stopped';
+    runtime_proven?: boolean;
     pending_files: number;
     tailscale_disabled?: boolean;
     proxy?: VirtualPrinterProxyStatus;

@@ -295,7 +295,12 @@ async def test_revoke_one_viewer_preserves_shared_upstream(async_client, db_sess
         await change_authority(db_session, key, owner, group, printer, "disable")
         await asyncio.wait_for(asyncio.shield(first), 2)
         count = len(bodies)
-        await asyncio.sleep(0.05)
+
+        async def next_peer_frame():
+            while len(bodies) == count and not second.done():
+                await asyncio.sleep(0.01)
+
+        await asyncio.wait_for(next_peer_frame(), 2)
         assert len(bodies) > count and not second.done()
         assert camera_fanout._broadcasters[f"printer-{printer.id}"] is bc
         assert bc.subscriber_count == 1 and not bc.stopped

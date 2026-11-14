@@ -30,8 +30,8 @@ ADDED_PRINTER_FIELDS = {
 async def _info(printer_factory, test_engine, monkeypatch):
     """Collect against the TEST database, without touching a printer.
 
-    ⚠️ All three patches are required, and the first two were missing when this
-    file was written. ``_collect_support_info`` opens its OWN ``async_session``,
+    ⚠️ The database, diagnostics and port patches are required. The first two
+    were missing when this file was written. ``_collect_support_info`` opens its OWN ``async_session``,
     so without redirecting it the test reads the operator's real database; its
     ``diagnostics`` section then runs ``run_connection_diagnostic`` against
     those real printers over the network, and ``_check_port`` opens a TCP
@@ -51,6 +51,10 @@ async def _info(printer_factory, test_engine, monkeypatch):
         "backend.app.services.diagnostic_snapshot.collect_diagnostic_snapshot",
         AsyncMock(return_value={}),
     )
+    # These assertions concern queue/printer fields, not a census of pytest's
+    # heap. Process diagnostics have their own tests; walking every object in
+    # a full-suite worker can also entangle the capture/timeout threads.
+    monkeypatch.setattr(support, "_collect_process_info", lambda: {})
     with patch.object(support, "_check_port", AsyncMock(return_value=False)):
         return await support._collect_support_info()
 
