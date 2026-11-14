@@ -79,9 +79,12 @@ async def _warm(raw: dict, walker_type: str) -> None:
     name, seen = raw.get("inherits"), set()
     while isinstance(name, str) and name and name not in seen and len(seen) < _MAX_PARENTS:
         seen.add(name)
-        async with database.async_session() as own:
-            parent = await fetch_and_cache_base_profile(name, walker_type, own)
-            await own.commit()
+        try:
+            async with database.async_session() as own:
+                parent = await fetch_and_cache_base_profile(name, walker_type, own)
+                await own.commit()
+        except Exception:
+            return  # e.g. another request cached the same parent first: the walk reads what is there
         if not isinstance(parent, dict):
             return
         name = parent.get("inherits")

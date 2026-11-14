@@ -176,8 +176,8 @@ class AssemblyRuntime:
                 alive = abs(psutil.Process(pid).create_time() - started) < 1.0
             except psutil.NoSuchProcess:
                 alive = False
-            except psutil.Error:
-                alive = True  # not ours to read: not proven gone
+            except (psutil.Error, ValueError, OverflowError):
+                alive = True  # not ours to read, or no pid at all: not proven gone
             if alive:
                 left += 1
                 continue

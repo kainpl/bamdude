@@ -265,7 +265,7 @@ describe('AssembleProjectModal', () => {
     open({ kind: 'relayout', fileId: 57, filename: 'jars.3mf' });
     const dialog = await screen.findByRole('dialog', { name: 'Re-layout project' });
     expect(
-      await within(dialog).findByText('A preset this project was assembled with is no longer available — choose another one'),
+      await within(dialog).findByText('A chosen preset is no longer available — choose another one'),
     ).toBeInTheDocument();
     const start = within(dialog).getByRole('button', { name: 'Re-layout' });
     expect(start).toBeDisabled();

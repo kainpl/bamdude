@@ -6006,7 +6006,7 @@ export default {
       trashed_other: '{{count}} previous files were moved to the trash.',
       removed_one: '{{count}} previous file was removed from the library; the file itself stays on its share.',
       removed_other: '{{count}} previous files were removed from the library; the files themselves stay on their share.',
-      presetGone: 'A preset this project was assembled with is no longer available — choose another one',
+      presetGone: 'A chosen preset is no longer available — choose another one',
       kept_one: '{{count}} previous file was kept.',
       kept_other: '{{count}} previous files were kept.',
       reason: {

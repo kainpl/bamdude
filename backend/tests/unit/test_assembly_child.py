@@ -271,3 +271,16 @@ def test_a_progress_file_that_cannot_be_replaced_does_not_fail_the_job(tmp_path,
     monkeypatch.setattr(assembly_child, "_PROGRESS_SECONDS", 0.0)
     result = run(stage(tmp_path, [("frame", 1), ("lid", 3)], [_printer("p0", 256)]))
     assert refused and result["outcome"] == "ok" and result["printers"][0]["status"] == "ok"
+
+
+def test_two_plates_that_hold_the_same_parts_are_still_two_different_files(tmp_path):
+    """The library reuses a row for bytes it already holds: two full plates of one part, written alike, would
+    become ONE file, and the set would then look incomplete for good."""
+    import hashlib
+
+    root = stage(tmp_path, [("big200", 2)], [_printer("p0", 256)], layout={"split_plates": True})
+    result = run(root)
+    files = result["printers"][0]["files"]
+    assert len(files) == 2
+    digests = {hashlib.sha256((root / entry["member"]).read_bytes()).hexdigest() for entry in files}
+    assert len(digests) == 2

@@ -384,6 +384,10 @@ class Service:
                 # no proof that the child is gone: nothing else starts here
                 self.uncertain = True
                 raise _Stop("unavailable", "ownership_uncertain")
+            # the reaping waits through a cancellation on purpose; a stop that landed meanwhile still ends the job
+            task = asyncio.current_task()
+            if task is not None and task.cancelling():
+                raise asyncio.CancelledError
 
     async def _convert(self, job: Job, deadline: int) -> None:
         """Every STEP source to its mesh, in part order. Raises ``_Stop`` with the part named in result.json."""
@@ -399,8 +403,16 @@ class Service:
             if site is not None:
                 directory = job.root / "step" / str(part)
                 payload = {"root": str(directory), "deadline": deadline, "site": site, "mode": "print"}
-                await self._child(job, STEP_MODULE, payload, deadline, progress=False)
-                reason = await disk(_read_conversion, directory)
+                try:
+                    await self._child(job, STEP_MODULE, payload, deadline, progress=False)
+                except _Stop as stop:
+                    if stop.outcome != "resource_limit":
+                        raise
+                    # stopped by this service's own watch: the model is too much for the job, and it has a name
+                    await disk(_read_conversion, directory)
+                    reason = "step_too_large"
+                else:
+                    reason = await disk(_read_conversion, directory)
             if reason == "timeout":
                 raise _Stop("timeout", "deadline")
             if reason:

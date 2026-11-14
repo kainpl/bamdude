@@ -378,8 +378,19 @@ def convert(cfg: dict, result: dict) -> None:
     if face_count > caps["face_cap"]:
         raise Refusal("resource_limit", "face_cap")
     diagonal = math.sqrt(sum(x * x for x in extent))
-    if for_print and diagonal > PRINT_MAX_EXTENT_MM:
-        raise Refusal("resource_limit", "extent_cap")
+    if for_print:
+        if diagonal > PRINT_MAX_EXTENT_MM:
+            raise Refusal("resource_limit", "extent_cap")
+        # topology alone says whether every face belongs to a body: asked before minutes of fine meshing
+        bodies = in_bodies = 0
+        body_explorer = TopExp_Explorer(compound, TopAbs_SOLID)
+        while body_explorer.More():
+            bodies += 1
+            in_bodies += sum(1 for _ in faces(body_explorer.Current()))
+            body_explorer.Next()
+        early = print_refusal(faces=face_count, solid_faces=in_bodies, solids=bodies, negative=0)
+        if early:
+            raise Refusal("render_failed", early)
 
     _stage(result, "mesh")
     deflection = PRINT_DEFLECTION_MM if for_print else max(0.1, diagonal / 1000.0)

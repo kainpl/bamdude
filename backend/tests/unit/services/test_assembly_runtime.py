@@ -344,3 +344,16 @@ async def test_a_started_runtime_records_who_owns_its_staging(runtime):
     record = json.loads((runtime.staging.parent / f"{runtime.generation}.owner").read_text())
     assert record["pid"] == os.getpid() and abs(record["started"] - psutil.Process().create_time()) < 1.0
     assert not list(runtime.staging.iterdir())
+
+
+def test_an_owner_record_that_names_no_process_never_stops_the_service_from_starting(tmp_path):
+    import json
+
+    runtime = AssemblyRuntime(tmp_path, None)
+    parent = runtime.staging.parent
+    for name, pid in (("negative", -1), ("huge", 2**70)):
+        (parent / name).mkdir(parents=True)
+        (parent / f"{name}.owner").write_text(json.dumps({"pid": pid, "started": 0}))
+    runtime._sweep_retained()
+    # a pid no system can hold names a process that is gone; one that is no pid at all proves nothing
+    assert (parent / "negative").is_dir() and not (parent / "huge").exists()

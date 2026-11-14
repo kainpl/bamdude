@@ -217,9 +217,9 @@ def _pack_printer(root: Path, job: dict, printer: dict, index: int, meshes: list
     out = root / "out"
     out.mkdir(exist_ok=True)
 
-    def write(member: str, instances: list) -> None:
+    def write(member: str, instances: list, title: str) -> None:
         data = write_project(
-            objects, instances, bed_size=bed_size, project_settings=settings, title=job["base_name"], extra_files=extra
+            objects, instances, bed_size=bed_size, project_settings=settings, title=title, extra_files=extra
         )
         (out / member).write_bytes(data)
 
@@ -227,11 +227,16 @@ def _pack_printer(root: Path, job: dict, printer: dict, index: int, meshes: list
     if layout["split_plates"]:
         for plate in range(result.plate_count):
             member = f"{printer['key']}_{plate + 1}.3mf"
-            write(member, [Instance(p.part, 0, p.x, p.y, p.angle) for p in result.placements if p.plate == plate])
+            # The plate's number is in the title so that no two files of a set are the same bytes: the library
+            # reuses a row for content it already holds, and two full plates of one part are laid out alike.
+            title = f"{job['base_name']} ({plate + 1})"
+            write(
+                member, [Instance(p.part, 0, p.x, p.y, p.angle) for p in result.placements if p.plate == plate], title
+            )
             files.append({"member": f"out/{member}", "plate": plate})
     else:
         member = f"{printer['key']}.3mf"
-        write(member, [Instance(p.part, p.plate, p.x, p.y, p.angle) for p in result.placements])
+        write(member, [Instance(p.part, p.plate, p.x, p.y, p.angle) for p in result.placements], job["base_name"])
         files.append({"member": f"out/{member}", "plate": None})
 
     for plate in plates:

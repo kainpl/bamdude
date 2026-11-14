@@ -1,5 +1,6 @@
 """The assembly service's own rules, without a broker or a child: the wire, the queue, the files it reads."""
 
+import asyncio
 import json
 import uuid
 
@@ -294,3 +295,104 @@ async def test_the_conversion_tells_which_file_it_is_on(service, monkeypatch):
     job = _step_job(service, parts=(1, 2))
     await service.execute(job)
     assert seen == [{"convert": 1, "convert_count": 2}, {"convert": 2, "convert_count": 2}, {}]
+
+
+def _live_children(monkeypatch, on_stop=None):
+    """Children that run until they are stopped — what a real converter or packer looks like to the watch loop."""
+    from types import SimpleNamespace
+
+    events = []
+
+    class Child:
+        def __init__(self, module, payload, cache, job_memory_limit=None):
+            events.append(("spawn", module))
+            self.module, self.code = module, None
+            self.process = SimpleNamespace(poll=lambda: self.code)
+
+        def rss(self):
+            return 0
+
+        def stop(self):
+            if on_stop:
+                on_stop(self)
+            self.code = 1
+            events.append(("stop", self.module))
+
+    monkeypatch.setattr(assembly_service, "PreviewProcess", Child)
+    monkeypatch.setattr(assembly_service, "_cad_site", lambda app_dir: "site")
+    return events
+
+
+async def _spawned(events, count=1):
+    for _ in range(400):
+        if sum(kind == "spawn" for kind, _ in events) >= count:
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError("no child was started")
+
+
+@pytest.mark.asyncio
+async def test_a_stop_during_a_conversion_ends_the_job_and_starts_nothing_else(service, monkeypatch):
+    events = _live_children(monkeypatch)
+    job = _step_job(service, parts=(0, 1))
+    job.task = asyncio.create_task(service.execute(job))
+    await _spawned(events)
+    job.task.cancel()
+    await asyncio.gather(job.task, return_exceptions=True)
+    assert events == [("spawn", assembly_service.STEP_MODULE), ("stop", assembly_service.STEP_MODULE)]
+    assert (job.result["outcome"], job.result["why"]) == ("canceled", "cancel")
+    assert not service.uncertain
+
+
+@pytest.mark.asyncio
+async def test_a_stop_that_lands_while_a_finished_converter_is_being_reaped_is_not_lost(service, monkeypatch):
+    """The reaping waits through a cancellation on purpose; the stop must still end the job afterwards."""
+    import threading
+
+    reaping, release = threading.Event(), threading.Event()
+
+    def on_stop(child):
+        reaping.set()
+        release.wait(5)
+
+    events = _fake_children(monkeypatch, lambda module, payload: _converted(payload))
+    original = assembly_service.PreviewProcess
+
+    class Slow(original):
+        def stop(self):
+            on_stop(self)
+            super().stop()
+
+    monkeypatch.setattr(assembly_service, "PreviewProcess", Slow)
+    job = _step_job(service, parts=(0, 1))
+    job.task = asyncio.create_task(service.execute(job))
+    assert await asyncio.to_thread(reaping.wait, 5)
+    job.task.cancel()
+    await asyncio.sleep(0.05)
+    release.set()
+    await asyncio.gather(job.task, return_exceptions=True)
+    assert [kind for kind, _ in events] == ["spawn", "stop"], "the second file and the packer never start"
+    assert (job.result["outcome"], job.result["why"]) == ("canceled", "cancel")
+
+
+@pytest.mark.asyncio
+async def test_a_conversion_past_the_deadline_is_stopped_as_a_timeout(service, monkeypatch):
+    events = _live_children(monkeypatch)
+    monkeypatch.setattr(assembly_service, "_GRACE_NS", 0)
+    job = _step_job(service)
+    job.budget_ns = 10**8
+    await service.execute(job)
+    assert events == [("spawn", assembly_service.STEP_MODULE), ("stop", assembly_service.STEP_MODULE)]
+    assert (job.result["outcome"], job.result["why"]) == ("timeout", "deadline")
+
+
+@pytest.mark.asyncio
+async def test_a_converter_stopped_for_memory_names_its_part_as_too_large(service, monkeypatch):
+    events = _live_children(monkeypatch)
+    monkeypatch.setattr(assembly_service, "_WATCH_SECONDS", 0.0)
+    monkeypatch.setattr(assembly_service, "MEMORY_BYTES", -1)
+    job = _step_job(service, parts=(3,))
+    await service.execute(job)
+    assert [kind for kind, _ in events] == ["spawn", "stop"]
+    assert (job.result["outcome"], job.result["why"]) == ("failed", "step_too_large")
+    assert json.loads((job.root / "result.json").read_text())["parts"] == [{"index": 3, "reason": "step_too_large"}]

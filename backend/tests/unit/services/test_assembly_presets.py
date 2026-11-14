@@ -181,3 +181,27 @@ async def test_parents_are_downloaded_in_transactions_of_their_own(monkeypatch):
     flat = await presets.flatten(caller, None, PresetRef(source="local", id="1"), "process", credential_snapshots=[])
     assert flat.flat == {"x": 1, "y": 2}
     assert fetched == [("A", False, True), ("B", False, True)] and len(committed) == 2
+
+
+@pytest.mark.asyncio
+async def test_a_parent_that_cannot_be_cached_is_left_for_the_walk_to_report(monkeypatch):
+    """Two requests may cache the same parent at once; the loser's failed commit is not the caller's error."""
+    from backend.app.core import database
+    from backend.app.services.assembly import presets
+
+    class Own:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def commit(self):
+            raise RuntimeError("UNIQUE constraint failed")
+
+    async def fetch(name, profile_type, db):
+        return {"inherits": "B"}
+
+    monkeypatch.setattr(database, "async_session", Own)
+    monkeypatch.setattr(presets, "fetch_and_cache_base_profile", fetch)
+    await presets._warm({"inherits": "A"}, "process")
