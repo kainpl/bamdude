@@ -16,6 +16,7 @@ from backend.app.models.project import ProjectEvent
 from backend.app.models.project_line import ProjectLine
 from backend.app.services import line_config, part_stock
 from backend.tests.fixtures.order_fulfilment import complete_order
+from backend.tests.fixtures.part_bindings import bind
 
 pytestmark = pytest.mark.integration
 
@@ -42,7 +43,6 @@ async def pipe(db_session):
             name="straight",
             name_key="straight",
             qty_per_unit=1,
-            variant_option_id=straight.id,
             sort_order=1,
         ),
         "angled": ProductPart(
@@ -51,13 +51,16 @@ async def pipe(db_session):
             name="angled",
             name_key="angled",
             qty_per_unit=1,
-            variant_option_id=angled.id,
             sort_order=2,
         ),
         "clip": ProductPart(
             product_id=product.id, kind="printed", name="clip", name_key="clip", qty_per_unit=0, sort_order=3
         ),
     }
+    bind(parts["flask"])
+    bind(parts["straight"], straight)
+    bind(parts["angled"], angled)
+    bind(parts["clip"])
     db_session.add_all(parts.values())
     await db_session.commit()
     return {"product": product, "group": group, "straight": straight, "angled": angled, "parts": parts}
@@ -194,7 +197,7 @@ async def test_binding_a_part_keeps_the_kit_of_saved_lines(committing_client, db
     body = await _order(committing_client, [{"product_id": pipe["product"].id, "quantity": 2}])
     line_id = body["lines"][0]["id"]
     r = await committing_client.patch(
-        f"/api/v1/products/{pipe['product'].id}/parts/{flask.id}", json={"variant_option_id": pipe["angled"].id}
+        f"/api/v1/products/{pipe['product'].id}/parts/{flask.id}", json={"variant_option_ids": [pipe["angled"].id]}
     )
     assert r.status_code == 200, r.text
     line = (await committing_client.get(f"/api/v1/projects/{body['id']}")).json()["lines"][0]
@@ -215,7 +218,7 @@ async def test_unbinding_a_part_keeps_it_out_of_saved_lines_that_did_not_choose_
     body = await _order(committing_client, [{"product_id": pipe["product"].id, "quantity": 1}])
     line_id = body["lines"][0]["id"]
     r = await committing_client.patch(
-        f"/api/v1/products/{pipe['product'].id}/parts/{angled.id}", json={"variant_option_id": None}
+        f"/api/v1/products/{pipe['product'].id}/parts/{angled.id}", json={"variant_option_ids": []}
     )
     assert r.status_code == 200, r.text
     line = (await committing_client.get(f"/api/v1/projects/{body['id']}")).json()["lines"][0]

@@ -7,13 +7,13 @@ writer wrote (the frontend translates it). Nothing here writes: the ledger's
 single writer is ``services/part_stock.py``.
 """
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.models.part_stock import ProductPartStockMovement
-from backend.app.models.product import Product
+from backend.app.models.product import Product, ProductPart
 from backend.app.models.product_variant import ProductVariantGroup, ProductVariantOption
 from backend.app.models.project import Project
 from backend.app.models.project_line import ProjectLine
@@ -76,16 +76,41 @@ async def kits_by_option(
     return out
 
 
-async def option_labels(db: AsyncSession, option_ids: set[int]) -> dict[int, ProductPartVariantOut]:
-    """``option_id → {group, option}`` for the parts a page shows — one statement."""
+async def binding_labels(db: AsyncSession, parts: Iterable[ProductPart]) -> dict[int, list[ProductPartVariantOut]]:
+    """``part_id → [{group, options}]`` for the parts a page shows — one statement.
+
+    A part bound across several groups names each group once, with the values it takes
+    there (spec product-part-variant-combinations): groups in their position order, the
+    values in their group's. A part with no binding is absent (the caller's ``[]``). The
+    parts' ``option_links`` must be loaded (any query of ``ProductPart`` loads them)."""
+    bound = {part.id: {link.option_id for link in part.option_links} for part in parts}
+    option_ids = set().union(*bound.values()) if bound else set()
     if not option_ids:
         return {}
-    rows = await db.execute(
-        select(ProductVariantOption.id, ProductVariantGroup.name, ProductVariantOption.name)
-        .join(ProductVariantGroup, ProductVariantGroup.id == ProductVariantOption.group_id)
-        .where(ProductVariantOption.id.in_(option_ids))
-    )
-    return {oid: ProductPartVariantOut(group=group, option=option) for oid, group, option in rows.all()}
+    rows = (
+        await db.execute(
+            select(ProductVariantOption.id, ProductVariantGroup.id, ProductVariantGroup.name, ProductVariantOption.name)
+            .join(ProductVariantGroup, ProductVariantGroup.id == ProductVariantOption.group_id)
+            .where(ProductVariantOption.id.in_(option_ids))
+            .order_by(
+                ProductVariantGroup.position,
+                ProductVariantGroup.id,
+                ProductVariantOption.position,
+                ProductVariantOption.id,
+            )
+        )
+    ).all()
+    out: dict[int, list[ProductPartVariantOut]] = {}
+    for part_id, options in bound.items():
+        names: dict[tuple[int, str], list[str]] = {}  # insertion order = the groups' order
+        for option_id, group_id, group_name, option_name in rows:
+            if option_id in options:
+                names.setdefault((group_id, group_name), []).append(option_name)
+        if names:
+            out[part_id] = [
+                ProductPartVariantOut(group=group, options=values) for (_gid, group), values in names.items()
+            ]
+    return out
 
 
 async def orders_of_lines(db: AsyncSession, line_ids: set[int]) -> dict[int, tuple[int, str]]:

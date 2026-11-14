@@ -252,15 +252,11 @@ async def stock_summary(
     if page_items:
         products = [loaded["products"][row.id] for row in page_items]
         by_option = await stock_views.kits_by_option(db, products, loaded["balances"])
-        labels = await stock_views.option_labels(
-            db, {pt.variant_option_id for p in products for pt in p.parts if pt.variant_option_id is not None}
-        )
-        option_of = {pt.id: pt.variant_option_id for p in products for pt in p.parts}
+        labels = await stock_views.binding_labels(db, [pt for p in products for pt in p.parts])
         for row in page_items:
             row.kits_by_option = by_option.get(row.id, [])
             for part in row.parts:
-                option = option_of.get(part.part_id)
-                part.variant = labels.get(option) if option is not None else None
+                part.variants = labels.get(part.part_id, [])
     return StockListPage(items=page_items, meta=page_meta(len(items), page, per_page, all))
 
 

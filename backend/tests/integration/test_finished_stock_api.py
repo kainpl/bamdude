@@ -13,6 +13,7 @@ from backend.app.models.product_variant import ProductVariantGroup, ProductVaria
 from backend.app.models.user import User
 from backend.app.services import part_stock
 from backend.tests.auth_helpers import bind_test_key, mint_test_access
+from backend.tests.fixtures.part_bindings import bind
 
 pytestmark = pytest.mark.integration
 
@@ -36,21 +37,13 @@ async def farm(db_session):
     group.default_option_id = straight.id
     parts = {
         "flask": ProductPart(product_id=pipe.id, kind="printed", name="flask", name_key="flask", qty_per_unit=1),
-        "straight": ProductPart(
-            product_id=pipe.id,
-            kind="printed",
-            name="straight",
-            name_key="straight",
-            qty_per_unit=1,
-            variant_option_id=straight.id,
+        "straight": bind(
+            ProductPart(product_id=pipe.id, kind="printed", name="straight", name_key="straight", qty_per_unit=1),
+            straight,
         ),
-        "angled": ProductPart(
-            product_id=pipe.id,
-            kind="printed",
-            name="angled",
-            name_key="angled",
-            qty_per_unit=1,
-            variant_option_id=angled.id,
+        "angled": bind(
+            ProductPart(product_id=pipe.id, kind="printed", name="angled", name_key="angled", qty_per_unit=1),
+            angled,
         ),
         "shade": ProductPart(product_id=lamp.id, kind="printed", name="shade", name_key="shade", qty_per_unit=1),
     }

@@ -14,6 +14,7 @@ from sqlalchemy import event
 
 from backend.app.models.product import Product, ProductPart
 from backend.app.models.product_variant import ProductVariantGroup, ProductVariantOption
+from backend.tests.fixtures.part_bindings import bind
 
 pytestmark = pytest.mark.integration
 
@@ -40,7 +41,6 @@ async def pipe(db_session):
         name="straight tail",
         name_key="straight tail",
         qty_per_unit=1,
-        variant_option_id=straight.id,
         sort_order=1,
     )
     a_tail = ProductPart(
@@ -49,10 +49,11 @@ async def pipe(db_session):
         name="angled tail",
         name_key="angled tail",
         qty_per_unit=1,
-        variant_option_id=angled.id,
         sort_order=2,
     )
     x = ProductPart(product_id=other.id, kind="printed", name="x", name_key="x", qty_per_unit=1)
+    bind(s_tail, straight)
+    bind(a_tail, angled)
     db_session.add_all([flask, s_tail, a_tail, x])
     await db_session.commit()
     return {"product": product.id, "other": other.id, "group": group.id, "angled": angled.id, "flask": flask.id}

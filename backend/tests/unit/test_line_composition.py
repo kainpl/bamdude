@@ -1,13 +1,16 @@
 """The one reader of a line's composition (spec workshop-product-variants, rules 8, 12, 15)."""
 
 from backend.app.models.product import ProductPart
+from backend.app.models.product_variant import ProductVariantOption
 from backend.app.services.line_composition import composition, config_key, counted, standard_composition
+from backend.tests.fixtures.part_bindings import bind
+
+TAIL = 1  # the one group the options 10 (straight) and 11 (angled) belong to
 
 
 def _p(pid, qty=1, option=None, kind="printed"):
-    return ProductPart(
-        id=pid, name=f"p{pid}", name_key=f"p{pid}", kind=kind, qty_per_unit=qty, variant_option_id=option, sort_order=0
-    )
+    part = ProductPart(id=pid, name=f"p{pid}", name_key=f"p{pid}", kind=kind, qty_per_unit=qty, sort_order=0)
+    return bind(part, *([ProductVariantOption(id=option, group_id=TAIL)] if option is not None else []))
 
 
 FLASK, STRAIGHT, ANGLED, SCREW = _p(1, 1), _p(2, 1, option=10), _p(3, 1, option=11), _p(4, 2, kind="purchased")

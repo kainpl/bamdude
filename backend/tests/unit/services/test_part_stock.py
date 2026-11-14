@@ -50,6 +50,7 @@ from backend.app.services.part_stock import (
     reverse_unfiled_print,
     unfiled_credit_net,
 )
+from backend.tests.fixtures.part_bindings import bind
 from backend.tests.unit.services.test_product_composition import counting_statements
 
 
@@ -68,7 +69,7 @@ async def _make_product(db_session, *parts: tuple[str, str, int]) -> tuple[Produ
             qty_per_unit=qty,
             sort_order=sort_order,
         )
-        db_session.add(part)
+        db_session.add(bind(part))  # unbound, with its (empty) bindings loaded for the kit readers
         made[name] = part
     await db_session.flush()
     return product, made

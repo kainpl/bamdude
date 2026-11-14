@@ -276,7 +276,7 @@ async def scenario_b() -> dict:
     result = await duel(
         lambda db: project_routes.fulfil_order(s["order"], data, _req(), db, None, creds=_allow()),
         lambda db: product_routes.update_part(
-            s["product"], s["base"], ProductPartUpdate(variant_option_id=s["options"]["blue"]), db, None
+            s["product"], s["base"], ProductPartUpdate(variant_option_ids=[s["options"]["blue"]]), db, None
         ),
         a_on="lock_line",
     )
@@ -612,7 +612,7 @@ async def scenario_g() -> dict:
         s["product"], VariantGroupCreate(name="Size", options=["S", "L"]), db, None
     )
     rebind = lambda db: product_routes.update_part(  # noqa: E731
-        s["product"], s["shade"], ProductPartUpdate(variant_option_id=s["options"]["blue"]), db, None
+        s["product"], s["shade"], ProductPartUpdate(variant_option_ids=[s["options"]["blue"]]), db, None
     )
     delete_base = lambda db: product_routes.delete_part(s["product"], s["base"], db, None, creds=_allow())  # noqa: E731
     merge_base_into_shade = lambda db: product_routes.merge_part(  # noqa: E731
@@ -1046,9 +1046,12 @@ async def _stale_revision() -> dict:
 
 
 async def _stale_binding() -> dict:
+    from sqlalchemy import insert
+
     from backend.app.api.routes import products as product_routes
     from backend.app.core.database import async_session
     from backend.app.models.product import ProductPart
+    from backend.app.models.product_variant import ProductPartOption
     from backend.app.models.project_line import ProjectLine
     from backend.app.schemas.product import ProductPartUpdate
     from backend.app.services import line_composition, product_gate as gate_module
@@ -1056,8 +1059,9 @@ async def _stale_binding() -> dict:
     s = await shop(customer=False)
     red, blue = s["options"]["red"], s["options"]["blue"]
     async with async_session() as db:
-        shade = await db.get(ProductPart, s["shade"])
-        shade.variant_option_id = red
+        await db.execute(
+            insert(ProductPartOption.__table__).values(part_id=s["shade"], option_id=red, group_id=s["group"])
+        )
         await db.commit()
 
     async def kit_of_line() -> dict[int, int]:
@@ -1076,7 +1080,7 @@ async def _stale_binding() -> dict:
             injected.append(True)
             async with async_session() as other:
                 await product_routes.update_part(
-                    s["product"], s["shade"], ProductPartUpdate(variant_option_id=blue), db=other, _=None
+                    s["product"], s["shade"], ProductPartUpdate(variant_option_ids=[blue]), db=other, _=None
                 )
                 await other.commit()
         return await real(db, ids)
@@ -1085,16 +1089,18 @@ async def _stale_binding() -> dict:
     try:
         async with async_session() as db:
             result = await product_routes.update_part(
-                s["product"], s["shade"], ProductPartUpdate(variant_option_id=red), db=db, _=None
+                s["product"], s["shade"], ProductPartUpdate(variant_option_ids=[red]), db=db, _=None
             )
             await db.commit()
     finally:
         gate_module.product_gate = real
     async with async_session() as db:
-        stored = await db.scalar(select(ProductPart.variant_option_id).where(ProductPart.id == s["shade"]))
+        stored = list(
+            await db.scalars(select(ProductPartOption.option_id).where(ProductPartOption.part_id == s["shade"]))
+        )
     return {
-        "requested": red,
-        "answered": result.variant_option_id,
+        "requested": [red],
+        "answered": result.variant_option_ids,
         "stored": stored,
         "kit_before": before,
         "kit_after": await kit_of_line(),
@@ -1206,7 +1212,10 @@ async def _part_named(product_id: int, name: str) -> dict | None:
         )
         if part is None:
             return None
-        return {"variant_option_id": part.variant_option_id, "aliases": list(part.aliases or [])}
+        return {
+            "variant_option_ids": [link.option_id for link in part.option_links],
+            "aliases": list(part.aliases or []),
+        }
 
 
 async def _option_exists(option_id: int) -> bool:
@@ -1223,7 +1232,7 @@ async def scenario_bound_part_first() -> dict:
 
     s = await shop()
     blue = s["options"]["blue"]
-    data = ProductPartCreate(kind="printed", name="Blue shade", aliases=["blue_shade_v2"], variant_option_id=blue)
+    data = ProductPartCreate(kind="printed", name="Blue shade", aliases=["blue_shade_v2"], variant_option_ids=[blue])
     result = await duel(
         lambda db: product_routes.create_part(s["product"], data, db, None),
         lambda db: product_routes.delete_variant_option(s["product"], s["group"], blue, db, None),
@@ -1245,7 +1254,7 @@ async def scenario_option_delete_first() -> dict:
 
     s = await shop()
     blue = s["options"]["blue"]
-    data = ProductPartCreate(kind="printed", name="Blue shade", aliases=["blue_shade_v2"], variant_option_id=blue)
+    data = ProductPartCreate(kind="printed", name="Blue shade", aliases=["blue_shade_v2"], variant_option_ids=[blue])
     result = await duel(
         lambda db: product_routes.delete_variant_option(s["product"], s["group"], blue, db, None),
         lambda db: product_routes.create_part(s["product"], data, db, None),

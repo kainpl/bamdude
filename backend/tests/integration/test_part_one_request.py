@@ -166,11 +166,11 @@ async def test_a_refused_alias_rolls_back_a_binding_change_sent_with_it(committi
     before = await _per(db_session, lamp, lamp["shade"])
     r = await committing_client.patch(
         _url(lamp, f"/parts/{lamp['shade']}"),
-        json={"variant_option_id": lamp["options"]["A"], "aliases": ["cap.stl"]},
+        json={"variant_option_ids": [lamp["options"]["A"]], "aliases": ["cap.stl"]},
     )
     assert r.status_code == 409, r.text
     shade = await db_session.get(ProductPart, lamp["shade"], populate_existing=True)
-    assert shade.variant_option_id is None
+    assert shade.option_links == []
     assert shade.aliases == ["shade.stl", "shade_v2"]
     assert await _per(db_session, lamp, lamp["shade"]) == before
 
@@ -185,11 +185,11 @@ async def test_a_part_created_bound_enters_only_the_lines_and_positions_of_its_o
     before_shade = await _per(db_session, lamp, lamp["shade"])
     r = await committing_client.post(
         _url(lamp, "/parts"),
-        json={"kind": "printed", "name": "Tail A", "qty_per_unit": 1, "variant_option_id": lamp["options"]["A"]},
+        json={"kind": "printed", "name": "Tail A", "qty_per_unit": 1, "variant_option_ids": [lamp["options"]["A"]]},
     )
     assert r.status_code == 200, r.text
     x = r.json()
-    assert x["variant_option_id"] == lamp["options"]["A"]
+    assert x["variant_option_ids"] == [lamp["options"]["A"]]
     assert await _per(db_session, lamp, x["id"]) == {"L_A": 1, "L_B": 0, "L_O": 1, "L_P": 0, "P_A": 1, "P_B": 0}
     # Nothing else moved: L_O keeps its own count of shade, every other count stands.
     assert await _per(db_session, lamp, lamp["shade"]) == before_shade
@@ -199,7 +199,7 @@ async def test_a_part_created_bound_enters_only_the_lines_and_positions_of_its_o
 async def test_a_new_line_takes_a_bound_part_by_its_choice(committing_client, db_session, lamp):
     r = await committing_client.post(
         _url(lamp, "/parts"),
-        json={"kind": "printed", "name": "Tail A", "qty_per_unit": 1, "variant_option_id": lamp["options"]["A"]},
+        json={"kind": "printed", "name": "Tail A", "qty_per_unit": 1, "variant_option_ids": [lamp["options"]["A"]]},
     )
     x = r.json()["id"]
     order = await db_session.get(Project, (await db_session.get(ProjectLine, lamp["lines"]["L_A"])).project_id)
@@ -239,7 +239,7 @@ async def test_a_foreign_option_refuses_the_create_and_writes_nothing(committing
     count = len((await committing_client.get(_url(lamp))).json()["parts"])
     r = await committing_client.post(
         _url(lamp, "/parts"),
-        json={"kind": "printed", "name": "Odd", "aliases": ["odd_v2"], "variant_option_id": foreign},
+        json={"kind": "printed", "name": "Odd", "aliases": ["odd_v2"], "variant_option_ids": [foreign]},
     )
     assert r.status_code == 422, r.text
     assert len((await committing_client.get(_url(lamp))).json()["parts"]) == count

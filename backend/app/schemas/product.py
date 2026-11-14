@@ -8,7 +8,7 @@ every read from the linked file's ``file_metadata``.
 from datetime import datetime
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import AliasChoices, BaseModel, Field, field_validator, model_validator
 
 from backend.app.schemas.farm_forecast import EstimateReasonOut
 from backend.app.schemas.part_image import ImageChoice, InstanceImageRef, PartImageRef
@@ -145,6 +145,23 @@ class ProductDuplicate(BaseModel):
     name: str | None = Field(default=None, max_length=255)
 
 
+_BOTH_BINDINGS = "Send variant_option_ids or the older variant_option_id, not both"
+
+
+def _legacy_binding(data: Any) -> Any:
+    """The older single ``variant_option_id`` (spec product-part-variant-combinations,
+    rule 16) read as a list of one — an explicit ``null`` as the empty list, «always in
+    the kit». Sent beside ``variant_option_ids`` it is a 422: two answers to one question."""
+    if not isinstance(data, dict) or "variant_option_id" not in data:
+        return data
+    if "variant_option_ids" in data:
+        raise ValueError(_BOTH_BINDINGS)
+    data = dict(data)
+    legacy = data.pop("variant_option_id")
+    data["variant_option_ids"] = [] if legacy is None else [legacy]
+    return data
+
+
 class ProductPartCreate(BaseModel):
     kind: str = Field(pattern="^(printed|purchased)$")
     name: str = Field(min_length=1, max_length=512)
@@ -158,9 +175,17 @@ class ProductPartCreate(BaseModel):
     #: The whole alias list of a printed part, normalised by the route — its own key
     #: always stays (WS-13 E10 A05). A purchased part takes none.
     aliases: list[Annotated[str, Field(max_length=512)]] | None = None
-    #: Created already bound to this option: the new part enters the final composition
-    #: — the lines and positions that chose it — with nothing frozen (A05, K22).
-    variant_option_id: int | None = None
+    #: Created already bound to these options, across the product's groups (spec
+    #: product-part-variant-combinations, rule 16): the new part enters the final
+    #: composition — the lines and positions whose choices it fits — with nothing frozen
+    #: (A05, K22). Empty: in every configuration. The older ``variant_option_id`` is read
+    #: as a list of one.
+    variant_option_ids: list[int] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _legacy_variant_option_id(cls, data: Any) -> Any:
+        return _legacy_binding(data)
 
     @field_validator("name", mode="before")
     @classmethod
@@ -184,20 +209,26 @@ class ProductPartUpdate(BaseModel):
     #: Absent or ``null`` — the aliases stay; a list — the whole list, own key kept
     #: (WS-13 E10 A05). Written beside the other fields, in the same transaction.
     aliases: list[Annotated[str, Field(max_length=512)]] | None = None
-    #: The option this part belongs to, or ``null`` for a part in every
-    #: configuration (spec workshop-product-variants, rule 19). The route
-    #: refuses an option of another product.
-    variant_option_id: int | None = None
+    #: The options this part is bound to, across the product's groups — the WHOLE set;
+    #: ``[]`` for a part in every configuration (spec product-part-variant-combinations,
+    #: rules 4, 16). Absent: unchanged. The route refuses an option of another product.
+    #: The older ``variant_option_id`` is read as a list of one (``null`` as ``[]``).
+    variant_option_ids: list[int] | None = None
     #: «Не рахувати» (spec workshop-order-issue-followups, rule 34). The route refuses it on
     #: a part in the kit (422) and on one that holds stock or is ordered (409).
     ignored: bool | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _legacy_variant_option_id(cls, data: Any) -> Any:
+        return _legacy_binding(data)
 
     @field_validator("name", mode="before")
     @classmethod
     def _name_is_never_null_and_is_clean(cls, v: Any) -> Any:
         return _clean_name(_never_null(v, "name"))
 
-    @field_validator("qty_per_unit", "sort_order", "ignored", "extra_percent")
+    @field_validator("qty_per_unit", "sort_order", "ignored", "extra_percent", "variant_option_ids")
     @classmethod
     def _number_is_never_null(cls, v: int | None) -> int | None:
         return _never_null(v, "value")
@@ -229,7 +260,11 @@ class ProductPartResponse(BaseModel):
     sourcing_url: str | None = None
     remarks: str | None = None
     sort_order: int = 0
-    variant_option_id: int | None = None
+    #: The options the part is bound to, across groups (spec product-part-variant-combinations,
+    #: rule 16) — read off the ORM part's ``option_links``; ``[]`` = in every configuration.
+    variant_option_ids: list[int] = Field(
+        default_factory=list, validation_alias=AliasChoices("variant_option_ids", "option_links")
+    )
     ignored: bool = False
     # How many of this part are on the shelf (pass 8, Decision 6). A SUM over
     # the ledger, never a column — ``models/part_stock`` says why — so every
@@ -251,6 +286,14 @@ class ProductPartResponse(BaseModel):
         printed-only. Reaching the field with ``None`` would fail validation on
         a row that is perfectly valid, so the wire type stays a list either way."""
         return list(v or [])
+
+    @field_validator("variant_option_ids", mode="before")
+    @classmethod
+    def _option_ids(cls, v: Any) -> Any:
+        """A part's ``option_links`` rows become their option ids, ascending."""
+        if v is None:
+            return []
+        return sorted(getattr(link, "option_id", link) for link in v)
 
     class Config:
         from_attributes = True
@@ -778,10 +821,12 @@ class ProductFromFileResponse(BaseModel):
 
 
 class ProductPartVariantOut(BaseModel):
-    """The option a part is bound to — «angled tail» belongs to «Tail: angled»."""
+    """One group a part is bound in, with the values it takes there — «angled tail»
+    belongs to «Tail: angled»; a cap that fits two jars to «Weight: 400, 600» (spec
+    product-part-variant-combinations). Names, in the group's option order."""
 
     group: str
-    option: str
+    options: list[str]
 
 
 class StockBalanceOut(BaseModel):
@@ -801,8 +846,9 @@ class StockBalanceOut(BaseModel):
     #: workshop-order-issue-followups, rule 49). Only the product page's stock asks it;
     #: the stock tab's rows leave it null rather than claim a zero nobody counted.
     held_for_orders: int | None = None
-    #: WS-13 E1 ST4 — the option the part is bound to, when it is.
-    variant: ProductPartVariantOut | None = None
+    #: WS-13 E1 ST4 — the groups the part is bound in and its values there, in the
+    #: groups' order; ``[]`` for a part in every configuration.
+    variants: list[ProductPartVariantOut] = []
     #: The part's picture (spec part-thumbnails §11.3) -- filled by ``part_images.fill`` after the
     #: answer is built; ``None`` where the route is not one that shows pictures.
     image: PartImageRef | None = None

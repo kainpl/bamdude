@@ -351,7 +351,7 @@ def _line_purchased(ctx, line: ProjectLine) -> list[LinePurchasedPartOut]:
             name=part.name,
             per=per,
             need=per * line.quantity,
-            variant=part.variant_option_id is not None,
+            variant=bool(part.bound),
         )
         for part, per in composition_of(ctx, line)
         if part.kind == "purchased" and per > 0
@@ -385,9 +385,7 @@ async def _response(db: AsyncSession, project_id: int) -> ProjectResponse:
         ctx.lines,
         counted_parts_by_line({ctx.project.id: figs}),
     )
-    variant_parts = {
-        part.id for parts in ctx.parts_by_product.values() for part in parts if part.variant_option_id is not None
-    }
+    variant_parts = {part.id for parts in ctx.parts_by_product.values() for part in parts if part.bound}
     project = ctx.project
     customer = await db.get(Customer, project.customer_id) if project.customer_id else None
     contact = await db.get(CustomerContact, project.contact_id) if project.contact_id else None

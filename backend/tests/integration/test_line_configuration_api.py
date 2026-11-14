@@ -9,6 +9,7 @@ from backend.app.models.product_variant import ProductVariantGroup, ProductVaria
 from backend.app.models.project import ProjectEvent
 from backend.app.models.project_line import ProjectLine
 from backend.app.services import part_stock
+from backend.tests.fixtures.part_bindings import bind
 
 pytestmark = pytest.mark.integration
 
@@ -34,7 +35,6 @@ async def pipe(db_session):
         name="straight tail",
         name_key="straight tail",
         qty_per_unit=1,
-        variant_option_id=straight.id,
         sort_order=1,
     )
     a_tail = ProductPart(
@@ -43,9 +43,11 @@ async def pipe(db_session):
         name="angled tail",
         name_key="angled tail",
         qty_per_unit=1,
-        variant_option_id=angled.id,
         sort_order=2,
     )
+    bind(flask)
+    bind(s_tail, straight)
+    bind(a_tail, angled)
     db_session.add_all([flask, s_tail, a_tail])
     await db_session.commit()
     return {

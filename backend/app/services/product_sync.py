@@ -105,6 +105,9 @@ async def seed_parts_for_product(
                 aliases=[key],
                 auto=True,
                 sort_order=next_sort,
+                # A seeded part is in every configuration; built with its (empty) bindings
+                # so a reader of ``bound`` in this session needs no load.
+                option_links=[],
             )
             db.add(part)
             # ⚠️ Indexed before it is flushed. Within one product a key belongs
