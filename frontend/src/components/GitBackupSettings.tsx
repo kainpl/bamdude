@@ -1416,7 +1416,7 @@ function GitBackupSettingsContent() {
       {scheduledRestoreFile && (
         <ConfirmModal
           title={t('backup.restoreConfirmTitle')}
-          message={t('backup.restoreConfirmMessage', { filename: scheduledRestoreFile })}
+          message={`${t('backup.restoreConfirmMessage', { filename: scheduledRestoreFile })}\n\n${t('backup.restoreFromGit.vpDrainWarning')}`}
           confirmText={t('backup.restoreConfirmButton')}
           variant="danger"
           onConfirm={async () => {
@@ -1427,7 +1427,7 @@ function GitBackupSettingsContent() {
             try {
               const result = await api.restoreLocalBackup(filename);
               if (result.success !== false) {
-                showToast(t('backup.backupRestoredRestart'), 'success');
+                showToast(result.message || t('backup.backupRestoredRestart'), 'success');
               } else {
                 showToast(result.message ?? t('backup.failedToRestore'), 'error');
               }
@@ -1472,7 +1472,7 @@ function GitBackupSettingsContent() {
       {showRestoreConfirm && restoreFile && (
         <ConfirmModal
           title={t('backup.restoreConfirmTitle')}
-          message={t('backup.restoreConfirmMessage', { filename: restoreFile.name })}
+          message={`${t('backup.restoreConfirmMessage', { filename: restoreFile.name })}\n\n${t('backup.restoreFromGit.vpDrainWarning')}`}
           confirmText={t('backup.restoreConfirmButton')}
           variant="danger"
           onConfirm={async () => {
@@ -1484,7 +1484,7 @@ function GitBackupSettingsContent() {
               const result = await api.importBackup(restoreFile);
               setRestoreResult(result);
               if (result.success) {
-                showToast(t('backup.backupRestoredRestart'), 'success');
+                showToast(result.message || t('backup.backupRestoredRestart'), 'success');
               } else {
                 const message = restoreFailureText(result, t);
                 setRestoreResult({ success: false, message });

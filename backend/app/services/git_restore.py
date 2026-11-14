@@ -11,9 +11,11 @@ Design notes worth knowing before editing:
 * **A restore never reuses the backup's primary keys.** ``spool.id`` and
   ``print_archives.id`` are bare autoincrement columns, so the ids in a backup
   taken weeks ago very likely belong to unrelated rows today. Rows are matched
-  on natural keys instead, inserted without an explicit id, and an
+  on execution UUID (narrow natural keys for legacy rows), inserted without an explicit id, and an
   ``old_id -> new_id`` map is threaded through so foreign keys in dependent
   tables (spool usage history) still line up.
+  Archive links are revalidated by UUID after the archive category commits;
+  a deleted/reused integer id cannot name a different print's usage.
 
   The printer-side ``cali_idx`` behaves the same way and gets the same
   treatment. Editing a K-profile in BamDude is a delete-then-add on a
@@ -37,6 +39,7 @@ import logging
 import math
 import os
 import re
+from collections import Counter
 from dataclasses import dataclass, field as dataclasses_field
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -44,21 +47,55 @@ from types import SimpleNamespace
 import httpx
 from fastapi import HTTPException
 from pydantic import TypeAdapter, ValidationError
-from sqlalchemy import select
+from sqlalchemy import select, text as sql_text
+from sqlalchemy.exc import MultipleResultsFound
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.database import async_session
 from backend.app.models.archive import PrintArchive
 from backend.app.models.git_backup import GitBackupConfig, GitBackupLog
 from backend.app.models.printer import Printer
-from backend.app.models.project import Project
 from backend.app.models.settings import Settings
 from backend.app.models.spool import Spool
 from backend.app.models.spool_usage_history import SpoolUsageHistory
-from backend.app.models.user import User
 from backend.app.schemas.git_backup import RestoreCategory
 from backend.app.services import meter_watch, swap_compatibility
 from backend.app.services.git_providers.factory import get_provider_backend
+from backend.app.services.git_restore_fields import (
+    INVALID,
+    MISSING,
+    NUMERIC_FIELDS,
+    SPOOL_FIELDS,
+    read_field,
+    source_id,
+)
+from backend.app.services.git_restore_identity import (
+    ArchiveIdentityConflict,
+    candidates as archive_candidates,
+    lock_printers as lock_restore_printers,
+    parse_archive,
+    prepare as prepare_archive_restore,
+    printer_for,
+    resolve as resolve_archive_identity,
+    usage_basis,
+)
+from backend.app.services.git_restore_records import (
+    ARCHIVE_FIELDS,
+    INSERT_ONLY,
+    OPERATOR_FIELDS,
+    UNKNOWN_ENERGY,
+    USAGE_FIELDS,
+    ArchiveProof,
+    PayloadShapeError,
+    archive_rows,
+    energy_bundle,
+    operator_only,
+    owner_value,
+    parsed_fields,
+    spool_rows,
+    uuid_value,
+    write_fields,
+)
 from backend.app.services.printer_manager import printer_manager
 
 logger = logging.getLogger(__name__)
@@ -177,6 +214,17 @@ def _parse_dt(value) -> datetime | None:
     if parsed.tzinfo is not None:
         parsed = parsed.astimezone(timezone.utc).replace(tzinfo=None)
     return parsed
+
+
+def _spool_composite_key(parsed: dict) -> tuple | None:
+    """A parsed backup row's descriptive identity, not its current tag holder's."""
+    keys = ("material", "brand", "subtype", "color_name")
+    if not isinstance(parsed["created_at"], datetime) or any(parsed[key] is INVALID for key in keys):
+        return None
+    return (
+        *(SPOOL_FIELDS[key].default if parsed[key] is MISSING else parsed[key] for key in keys),
+        parsed["created_at"],
+    )
 
 
 def _created_at_matches(row, created_at: datetime | None) -> bool:
@@ -866,7 +914,13 @@ class GitRestoreService:
                 )
                 continue
             count, detail = await self._count_items(db, category, parsed)
-            categories.append(self._category_entry(category, True, count, detail))
+            valid_shape = detail is None or detail.code not in {
+                "archivesInvalidPayload",
+                "spoolsInvalidPayload",
+                "spoolUsageInvalidPayload",
+                "spoolUsageAliasConflict",
+            }
+            categories.append(self._category_entry(category, valid_shape, count, detail))
 
         if commit_info is None:
             commit_info = await self._describe_commit(config, resolved)
@@ -948,10 +1002,10 @@ class GitRestoreService:
             return len(values) - plan.refused_count, detail
 
         if category == RestoreCategory.SPOOLS:
-            payload = parsed.get(SPOOLS_PATH)
-            spools = payload.get("spools") if isinstance(payload, dict) else None
-            usage_payload = parsed.get(SPOOL_USAGE_PATH)
-            usage = usage_payload.get("usage_history") if isinstance(usage_payload, dict) else None
+            try:
+                spools, usage = spool_rows(parsed.get(SPOOLS_PATH, MISSING), parsed.get(SPOOL_USAGE_PATH, MISSING))
+            except PayloadShapeError as exc:
+                return 0, _Detail(exc.code, "Spool metadata has an invalid shape or conflicting history lists")
             # Usage records are counted here, not just described in the detail:
             # _restore_spool_usage increments this category's tally, so counting
             # only the spools broke restored + skipped + failed == item_count —
@@ -965,8 +1019,10 @@ class GitRestoreService:
             return count, detail
 
         if category == RestoreCategory.ARCHIVES:
-            payload = parsed.get(ARCHIVES_PATH)
-            archives = payload.get("archives") if isinstance(payload, dict) else None
+            try:
+                archives = archive_rows(parsed.get(ARCHIVES_PATH, MISSING))
+            except PayloadShapeError as exc:
+                return 0, _Detail(exc.code, "Archive metadata must contain an archives list")
             count = len(archives) if isinstance(archives, list) else 0
             return count, _Detail(
                 "archivesMetadataOnly", "Metadata only — 3MF files and thumbnails are not in a Git backup"
@@ -993,6 +1049,31 @@ class GitRestoreService:
     # --- Restore -----------------------------------------------------------
 
     async def run_restore(
+        self, config_id, ref, categories, overwrite_existing=False, *, authority=None, required_permissions=()
+    ):
+        from backend.app.services.backup_files import BackupBusyError, exclusive_operation
+        from backend.app.services.git_backup import git_backup_service
+
+        if git_backup_service.is_running:
+            return {
+                "success": False,
+                "message": "A backup is currently running. Wait for it to finish before restoring.",
+                "results": {},
+            }
+        try:
+            async with exclusive_operation():
+                return await self._run_restore_owned(
+                    config_id,
+                    ref,
+                    categories,
+                    overwrite_existing,
+                    authority=authority,
+                    required_permissions=required_permissions,
+                )
+        except BackupBusyError:
+            return {"success": False, "message": "A restore is already running", "results": {}}
+
+    async def _run_restore_owned(
         self,
         config_id: int,
         ref: str,
@@ -1055,14 +1136,11 @@ class GitRestoreService:
         # the mirror-image lock against us.
         from backend.app.services.farm_startup_guard import farm_startup_guard
         from backend.app.services.git_backup import git_backup_service
+        from backend.app.services.virtual_printer import virtual_printer_manager
+        from backend.app.services.virtual_printer.lifecycle import VPDrainRefused, drain_warning
 
-        # The lock serialises two concurrent restores; the backup side has no
-        # lock of its own, and relies on this region staying await-free after the
-        # acquisition. Both flags are plain bools on one event loop, so with no
-        # suspension point between the two reads and the write, the loop cannot
-        # slip git_backup.run_backup's mirror-image check in between. Adding an
-        # `await` below the acquisition and above `self._running_restore = True`
-        # would let a backup and a restore run at once.
+        # The outer shared operation guard excludes ZIP/Git backups and restores.
+        # Keep this service's state transition await-free under its own lock too.
         async with self._lock:
             if self._running_restore:
                 return {"success": False, "message": "A restore is already running", "results": {}}
@@ -1117,11 +1195,13 @@ class GitRestoreService:
                         # The operational hold is itself a privileged effect;
                         # a revoked download must not stop an untouched farm.
                         await self._guard_restore_actor(db, authority, required_permissions)
-                        await db.rollback()
+                    # Release the read snapshot even for trusted internal calls.
+                    await db.rollback()
                     farm_startup_guard.hold("restore")
                     from backend.app.services.farm_startup_guard import notify_change
 
                     await notify_change()
+                    drain = await virtual_printer_manager.drain_for_restore()
                     await self._apply(
                         db,
                         payload,
@@ -1151,14 +1231,32 @@ class GitRestoreService:
                         log.error_message = "Some items could not be restored — see the restore result for detail"
                     await db.commit()
 
+                    from backend.app.i18n.api_errors import current_language, translate_sentence
+
                     return {
                         "success": True,
-                        "message": f"Restored {total_restored} item(s) from {resolved[:7]}",
+                        "message": (
+                            translate_sentence("Restored {} item(s) from {}", current_language()).format(
+                                total_restored, resolved[:7]
+                            )
+                            + " "
+                            + drain_warning(drain, git=True)
+                        ).strip(),
                         "log_id": log_id,
                         "ref": resolved,
                         "results": {name: tally.as_dict() for name, tally in results.items()},
                     }
 
+                except VPDrainRefused as exc:
+                    await db.rollback()
+                    refused_log = await db.get(GitBackupLog, log_id)
+                    if refused_log:
+                        refused_log.status = "failed"
+                        refused_log.completed_at = datetime.now(timezone.utc)
+                        refused_log.files_changed = 0
+                        refused_log.error_message = str(exc)
+                        await db.commit()
+                    raise
                 except Exception as e:
                     # Rolls back the category that was mid-flight. Every category
                     # already in ``results`` committed as it finished (see
@@ -1253,6 +1351,7 @@ class GitRestoreService:
         """
         results = {} if results is None else results
         archive_id_map: dict[int, int] = {}
+        archive_proofs: dict[int, ArchiveProof] = {}
 
         # Every database category commits before the next one starts, and only
         # then is its tally recorded. Two reasons:
@@ -1280,7 +1379,11 @@ class GitRestoreService:
             await self._guard_restore_actor(db, authority, required_permissions)
             self._progress = "Restoring print archives..."
             tally = _CategoryTally()
-            await self._restore_archives(db, payload.get(ARCHIVES_PATH), overwrite, tally, archive_id_map)
+            archive_rows(payload.get(ARCHIVES_PATH, MISSING))  # Shape refusal before category writes.
+            await self._begin_record_category(db)
+            await self._restore_archives(
+                db, payload.get(ARCHIVES_PATH, MISSING), overwrite, tally, archive_id_map, identity_map=archive_proofs
+            )
             await db.commit()
             results[RestoreCategory.ARCHIVES.value] = tally
 
@@ -1288,13 +1391,16 @@ class GitRestoreService:
             await self._guard_restore_actor(db, authority, required_permissions)
             self._progress = "Restoring spool inventory..."
             tally = _CategoryTally()
+            spool_rows(payload.get(SPOOLS_PATH, MISSING), payload.get(SPOOL_USAGE_PATH, MISSING))
+            await self._begin_record_category(db)
             await self._restore_spools(
                 db,
-                payload.get(SPOOLS_PATH),
-                payload.get(SPOOL_USAGE_PATH),
+                payload.get(SPOOLS_PATH, MISSING),
+                payload.get(SPOOL_USAGE_PATH, MISSING),
                 overwrite,
                 tally,
                 archive_id_map,
+                archive_proofs=archive_proofs,
             )
             await db.commit()
             results[RestoreCategory.SPOOLS.value] = tally
@@ -1366,6 +1472,17 @@ class GitRestoreService:
 
     # --- Per-category appliers --------------------------------------------
 
+    @staticmethod
+    async def _begin_record_category(db: AsyncSession) -> None:
+        # Only this category owner ends a caller's earlier read transaction.
+        # Never commit unrelated pending writes merely to acquire SQLite's writer.
+        if db.in_transaction():
+            if db.new or db.dirty or db.deleted:
+                raise RuntimeError("Metadata restore requires a clean category transaction")
+            await db.commit()
+        if db.get_bind().dialect.name == "sqlite":
+            await db.execute(sql_text("BEGIN IMMEDIATE"))
+
     async def _restore_archives(
         self,
         db: AsyncSession,
@@ -1373,235 +1490,231 @@ class GitRestoreService:
         overwrite: bool,
         tally: _CategoryTally,
         id_map: dict[int, int],
+        *,
+        identity_map: dict[int, ArchiveProof] | None = None,
     ) -> None:
-        archives = payload.get("archives") if isinstance(payload, dict) else None
-        if not isinstance(archives, list):
+        # Direct legacy callers use None for no file. The category owner checks
+        # present JSON null strictly, before calling any writer.
+        archives = archive_rows(MISSING if payload is None else payload)
+        if archives is None:
             tally.note("noData", "No data of this kind in this backup")
             return
-
-        valid_printers = set((await db.execute(select(Printer.id))).scalars().all())
-        valid_projects = set((await db.execute(select(Project.id))).scalars().all())
-        # Ownership decides visibility, not just attribution: an archive with a
-        # NULL created_by_id is a 404 to every caller without archives:read_all
-        # (_ensure_archive_visible fails closed on it) and never appears in the
-        # ownership-scoped list queries. Hoisted like the two above.
-        #
-        # username is the natural key and wins, per the module's rule at the top
-        # of the file; created_by_id is the fallback for a pre-the restore feature commit that
-        # carries no username. That ordering is what makes restoring onto a
-        # rebuilt instance safe: the users table renumbers there, so a live id
-        # can land on a different person, and the id path alone cannot tell that
-        # from a correct match. Resolving on the name instead means the one case
-        # it cannot resolve — a user renamed since the backup — falls through to
-        # ownerless-with-a-note below rather than misattributing in silence.
-        users = (await db.execute(select(User.id, User.username))).all()
-        valid_users = {user_id for user_id, _ in users}
-        users_by_name = {username: user_id for user_id, username in users}
-
-        # Only metadata is backed up, never the 3MF/thumbnail bytes, and
-        # print_archives.file_path is NOT NULL — so inserted rows get an empty
-        # path and are history-only. Say so once rather than per row.
-        warned_files = False
-
+        old_ids = Counter(e["id"] for e in archives if isinstance(e, dict) and source_id(e.get("id")) is not INVALID)
+        uuids = Counter(
+            v
+            for e in archives
+            if isinstance(e, dict) and isinstance(v := uuid_value(e.get("recovery_identity", MISSING)), str)
+        )
+        identity_skipped = legacy_artifacts = invalid_fields = energy_kept = energy_unknown = 0
+        failed_before, skipped_before = tally.failed, tally.skipped
+        records = []
         for entry in archives:
             if not isinstance(entry, dict):
                 tally.failed += 1
                 continue
-
-            old_id = entry.get("id") if isinstance(entry.get("id"), int) else None
-            started_at = _parse_dt(entry.get("started_at"))
-            existing = await self._find_archive(db, entry, started_at)
-
-            fields = {
-                "print_name": entry.get("print_name"),
-                "print_time_seconds": entry.get("print_time_seconds"),
-                "filament_used_grams": entry.get("filament_used_grams"),
-                "filament_type": entry.get("filament_type"),
-                "filament_color": entry.get("filament_color"),
-                "layer_height": entry.get("layer_height"),
-                "total_layers": entry.get("total_layers"),
-                "nozzle_diameter": entry.get("nozzle_diameter"),
-                "bed_temperature": entry.get("bed_temperature"),
-                "nozzle_temperature": entry.get("nozzle_temperature"),
-                "sliced_for_model": entry.get("sliced_for_model"),
-                "status": entry.get("status") or "completed",
-                "started_at": started_at,
-                "completed_at": _parse_dt(entry.get("completed_at")),
-                "makerworld_url": entry.get("makerworld_url"),
-                "designer": entry.get("designer"),
-                "external_url": entry.get("external_url"),
-                "is_favorite": bool(entry.get("is_favorite")),
-                "tags": entry.get("tags"),
-                "notes": entry.get("notes"),
-                "cost": entry.get("cost"),
-                "failure_reason": entry.get("failure_reason"),
-                "quantity": entry.get("quantity") or 1,
-                "energy_kwh": entry.get("energy_kwh"),
-                "energy_cost": entry.get("energy_cost"),
-            }
-
-            printer_id = entry.get("printer_id")
-            if printer_id is not None and printer_id not in valid_printers:
-                tally.note(
-                    "archivesPrinterMissing", "Some archives referenced printers that no longer exist — link cleared"
+            old_id = entry.get("id")
+            if old_id is not None and (source_id(old_id) is INVALID or old_ids[old_id] > 1):
+                tally.failed += 1
+                continue
+            record = parse_archive(entry, _parse_dt)
+            if record.identity is INVALID or (record.identity is not None and uuids[record.identity] > 1):
+                tally.skipped += 1
+                identity_skipped += 1
+                continue
+            if (
+                record.identity is None
+                and record.values["started_at"] is None
+                and not isinstance(record.content_hash, str)
+                and not record.unknown
+            ):
+                legacy_artifacts += 1
+                identity_skipped += 1
+                tally.skipped += 1
+                continue
+            if record.identity is None and record.unknown:
+                identity_skipped += 1
+                tally.skipped += 1
+                continue
+            records.append(record)
+        planned, printers, (users_by_name, valid_users) = await prepare_archive_restore(db, records)
+        for record in records:
+            entry, values = record.entry, record.values
+            try:
+                existing = await self._find_archive(
+                    db, entry, record.started_at, record=record, printers=printers, allowed_ids=planned
                 )
-                printer_id = None
-            project_id = entry.get("project_id")
-            if project_id is not None and project_id not in valid_projects:
-                tally.note(
-                    "archivesProjectMissing", "Some archives referenced projects that no longer exist — link cleared"
+            except ArchiveIdentityConflict:
+                tally.skipped += 1
+                identity_skipped += 1
+                continue
+            if (
+                existing is not None
+                and record.identity is not None
+                and (
+                    record.started_at is not None
+                    and record.started_at != existing.started_at
+                    or entry.get("printer_id") is not None
+                    and printer_for(entry, printers) != existing.printer_id
                 )
-                project_id = None
-            fields["printer_id"] = printer_id
-            fields["project_id"] = project_id
-
-            # The ownership pair and deleted_at are the late arrivals — a backup
-            # commit taken before the collector wrote them carries neither key.
-            # Absent is NOT the same as null here, because the overwrite branch
-            # below is a blanket setattr: treating a missing key as None would
-            # write NULL over a live owner (_ensure_archive_visible then 404s the
-            # archive for the very user who owns it — the failure carrying the
-            # column was added to fix) and silently un-delete a row the user
-            # deleted. So only carry a column the backup actually knows about;
-            # on insert, an absent key just takes the model default.
-            # An owner the backup names but this instance cannot resolve is the
-            # same epistemic state as an absent key — we do not know who owns
-            # this archive — so it takes the same action: the column is left out
-            # of ``fields`` entirely rather than set to None. Writing NULL there
-            # would take the owner away from a local archive that has a perfectly
-            # good one, which is the 404-for-its-own-owner failure this column is
-            # carried across to fix, and it would do it on the overwrite path
-            # where there is a local answer to keep. On insert there is nothing
-            # to keep, so the row takes the model default and lands ownerless,
-            # which is what the note says.
-            owner_cleared = False
-            backup_username = entry.get("created_by_username")
-            if isinstance(backup_username, str) and backup_username:
-                # The natural-key path. A miss here is a user renamed or deleted
-                # since the backup, and there is nothing else to resolve on: the
-                # id alongside it is from the source instance's numbering, so
-                # trusting it is exactly the misattribution the name is here to
-                # prevent. Not a reason to fail the row — the archive is still
-                # worth having, and an admin can reassign it — but said out loud
-                # on insert, because an ownerless archive is not silent-safe.
-                created_by_id = users_by_name.get(backup_username)
-                if created_by_id is None:
-                    if existing is None:
-                        tally.note(
-                            "archivesOwnerUnmatched",
-                            "Some archives name an owner this instance does not have — owner cleared rather than "
-                            "guessed from the backup's user id, so they are visible only to users with the "
-                            "archives:read_all permission until an admin reassigns them",
-                        )
-                        owner_cleared = True
-                else:
-                    fields["created_by_id"] = created_by_id
-            elif "created_by_id" in entry:
-                # Fallback for a commit taken before the collector recorded the
-                # username. Validated rather than trusted, so a *stale* id is
-                # dropped instead of pointing somewhere wrong; a live id
-                # belonging to a different person on a rebuilt instance is the
-                # case this path cannot see, and is why the branch above exists.
-                # An explicit null is not a miss — the backup is saying the
-                # archive had no owner — so it is written, and overwrite keeps
-                # meaning "make the local row match the backup".
-                created_by_id = entry.get("created_by_id")
-                if created_by_id is not None and created_by_id not in valid_users:
-                    if existing is None:
-                        tally.note(
-                            "archivesOwnerCleared",
-                            "Some archives referenced users that no longer exist — owner cleared, so they are "
-                            "visible only to users with the archives:read_all permission until an admin "
-                            "reassigns them",
-                        )
-                        owner_cleared = True
-                else:
-                    fields["created_by_id"] = created_by_id
-            if "deleted_at" in entry:
-                # A soft-deleted archive is still in the backup (its row is kept
-                # so stats keep counting it), so carry the flag across or the
-                # restore turns something the user deleted back into a visible
-                # archive.
-                fields["deleted_at"] = _parse_dt(entry.get("deleted_at"))
-            if "source_content_hash" in entry:
-                # Absent is not null, as for the owner: an older backup has no
-                # identity to give, and the local one is kept.
-                fields["source_content_hash"] = entry.get("source_content_hash")
-
-            if existing is not None:
+            ):
+                tally.note(
+                    "archivesIdentityKept",
+                    "Some UUID-matched archives had different start or printer metadata — the local execution identity was kept",
+                )
+            if record.unknown:
+                tally.note(
+                    "archivesOutcomeUncertain",
+                    "Snapshots without a proven outcome cannot replace local print results; any new execution is marked uncertain",
+                )
+            old_id = entry.get("id")
+            if existing is not None and not overwrite:
                 if old_id is not None:
                     id_map[old_id] = existing.id
-                if not overwrite:
-                    tally.skipped += 1
-                    continue
-                # Overwrite means "make the local row match the backup", which
-                # includes un-deleting one the user deleted after the backup was
-                # taken. Legitimate, but not obvious from a restored/skipped
-                # count, so say it.
-                if existing.deleted_at is not None and "deleted_at" in fields and fields["deleted_at"] is None:
-                    tally.note(
-                        "archivesUndeleted",
-                        "Archive(s) deleted since the backup are visible again — overwrite was on",
-                    )
-                for key, value in fields.items():
-                    setattr(existing, key, value)
-                # The swap declaration, through its one writer and never with an
-                # authority the backup cannot prove (swap-source-lifecycle spec r4 §11).
-                write, declared = swap_compatibility.restored_declaration(entry, existing)
-                if write:
-                    swap_compatibility.write_archive_fact(existing, declared)
-                if "energy_record" in entry:
-                    existing.extra_data = meter_watch.with_energy_record(existing.extra_data, entry["energy_record"])
-                await self._restore_source_declaration(db, entry, existing, tally)
-                tally.restored += 1
+                    if identity_map is not None:
+                        identity_map[old_id] = ArchiveProof(
+                            existing.id, uuid_value(existing.recovery_identity), existing.printer_id
+                        )
+                tally.skipped += 1
                 continue
-
-            if not warned_files:
+            insert = existing is None
+            protected = not insert and operator_only(existing, record.unknown)
+            fields = write_fields(values, ARCHIVE_FIELDS, insert=insert, allowed=OPERATOR_FIELDS if protected else None)
+            if not insert:
+                for key in INSERT_ONLY:
+                    fields.pop(key, None)
+            if protected and not fields:
+                if old_id is not None:
+                    id_map[old_id] = existing.id
+                    if identity_map is not None:
+                        identity_map[old_id] = ArchiveProof(
+                            existing.id, uuid_value(existing.recovery_identity), existing.printer_id
+                        )
+                tally.skipped += 1
+                continue
+            eligible = OPERATOR_FIELDS if protected else ARCHIVE_FIELDS.keys() - (INSERT_ONLY if not insert else set())
+            corrected = {key for key in eligible if values[key] is INVALID}
+            if not protected:
+                # The energy writer owns these three together, never setattr
+                # the numbers while retaining somebody else's provenance.
+                fields.pop("energy_kwh", None)
+                fields.pop("energy_cost", None)
+                corrected.difference_update(("energy_kwh", "energy_cost"))
+                owner, owner_note, owner_invalid = owner_value(entry, users_by_name, valid_users, _parse_dt)
+                if owner is not MISSING:
+                    fields["created_by_id"] = owner
+                if insert and owner in (MISSING, None):
+                    code = owner_note or "archivesOwnerUnknown"
+                    messages = {
+                        "archivesOwnerUnknown": "Some archives were restored without an owner — they are visible only to users with archives:read_all until an admin reassigns them",
+                        "archivesOwnerCleared": "Some archives referenced an unresolved owner — owner cleared; visible only to users with archives:read_all until an admin reassigns them",
+                        "archivesOwnerUnmatched": "Some archives name an owner this instance does not have — owner cleared rather than guessed from the backup user id; visible only to users with archives:read_all until an admin reassigns them",
+                    }
+                    tally.note(code, messages[code])
+                if owner_invalid:
+                    corrected.add("created_by_username" if "created_by_username" in entry else "created_by_id")
+            if insert:
+                fields["file_path"] = ""  # Every JSON value, including null, is ignored.
+                fields["printer_id"] = printer_for(entry, printers)
+                if entry.get("printer_id") is not None and fields["printer_id"] is None:
+                    tally.note(
+                        "archivesPrinterUnproven",
+                        "Some archive printer references could not be proven by ID and serial — left unlinked",
+                    )
+                if record.identity is not None:
+                    fields["recovery_identity"] = record.identity
+                for key, value in (("content_hash", record.content_hash), ("source_content_hash", record.source_hash)):
+                    if value is not MISSING and value is not INVALID:
+                        fields[key] = value
+                    elif value is INVALID:
+                        corrected.add(key)
+                if entry.get("project_id") is not None or entry.get("project_line_id") is not None:
+                    tally.note(
+                        "archivesOrderLinksIgnored",
+                        "Order links in metadata backups are not portable — restored archives remain outside orders",
+                    )
+                if record.unknown:
+                    fields.update(
+                        status="cancelled",
+                        failure_reason="noStatusUpdate",
+                        completed_at=None,
+                        print_time_seconds=None,
+                        filament_used_grams=None,
+                        cost=None,
+                    )
+                row = PrintArchive(**fields)
                 tally.note(
                     "archivesMetadataOnly",
                     "Restored archives carry metadata only — the 3MF and thumbnail files are not in a Git backup",
                 )
-                warned_files = True
-
-            # Insert-only, and the mirror of the rule above: an owner the backup
-            # cannot tell us is never written, so on overwrite the local one
-            # survives — but there is no local row here to fall back on, so the
-            # archive lands ownerless, a 404 for everyone without
-            # archives:read_all. Three ways to get here: a commit taken before
-            # the collector recorded the column (every pre-the restore feature backup), an
-            # archive that genuinely had no owner on the source instance, or one
-            # whose owner this instance cannot resolve. All restore fine and all
-            # were silent, so the tally said "N archives restored" while the user
-            # who asked for them saw none. The unresolved cases above already
-            # said their piece; don't say it twice for the same row.
-            if fields.get("created_by_id") is None and not owner_cleared:
-                tally.note(
-                    "archivesOwnerUnknown",
-                    "Some archives were restored without an owner — this backup does not record one, so they "
-                    "are visible only to users with the archives:read_all permission until an admin reassigns "
-                    "them",
-                )
-
-            row = PrintArchive(
-                filename=entry.get("filename") or "restored-from-backup",
-                file_path="",
-                file_size=entry.get("file_size") or 0,
-                content_hash=entry.get("content_hash"),
-                **fields,
-            )
-            _write, declared = swap_compatibility.restored_declaration(entry)
-            swap_compatibility.write_archive_fact(row, declared)
-            if "energy_record" in entry:
-                row.extra_data = meter_watch.with_energy_record(row.extra_data, entry["energy_record"])
-            created_at = _parse_dt(entry.get("created_at"))
-            if created_at is not None:
-                row.created_at = created_at
-            db.add(row)
+            else:
+                row = existing
+                if existing.deleted_at is not None and fields.get("deleted_at", MISSING) is None:
+                    tally.note(
+                        "archivesUndeleted", "Archive(s) deleted since the backup are visible again — overwrite was on"
+                    )
+                for key, value in fields.items():
+                    setattr(row, key, value)
+            if not protected:
+                bundle = energy_bundle(entry, _parse_dt)
+                if insert and record.unknown:
+                    row.energy_kwh, row.energy_cost = None, None
+                    row.extra_data = meter_watch.with_energy_record(
+                        row.extra_data, {"energy_provenance": dict(UNKNOWN_ENERGY["energy_provenance"])}
+                    )
+                    row.extra_data = {**row.extra_data, "recovered_outcome_uncertain": True}
+                    energy_unknown += 1
+                elif bundle.invalid_fields:
+                    corrected.update(bundle.invalid_fields)
+                    if insert:
+                        row.energy_kwh, row.energy_cost = None, None
+                        row.extra_data = meter_watch.with_energy_record(
+                            row.extra_data, {"energy_provenance": dict(UNKNOWN_ENERGY["energy_provenance"])}
+                        )
+                        energy_unknown += 1
+                    else:
+                        energy_kept += 1
+                elif insert or (bundle.complete and not bundle.no_energy):
+                    row.energy_kwh, row.energy_cost = bundle.kwh, bundle.cost
+                    row.extra_data = meter_watch.with_energy_record(row.extra_data, bundle.record)
+                    if bundle.clear:
+                        tally.note(
+                            "archivesEnergyCleared", "Some archive energy bundles were explicitly cleared by the backup"
+                        )
+                elif any(key in entry for key in ("energy_kwh", "energy_cost", "energy_record")):
+                    energy_kept += 1
+                write, declared = swap_compatibility.restored_declaration(entry, None if insert else row)
+                if insert or write:
+                    swap_compatibility.write_archive_fact(row, declared)
+            if insert:
+                db.add(row)
             await db.flush()
-            await self._restore_source_declaration(db, entry, row, tally)
+            planned.add(row.id)  # Rows inserted by this category are already owned.
+            if not protected:
+                await self._restore_source_declaration(db, entry, row, tally)
+                await db.flush()
             if old_id is not None:
                 id_map[old_id] = row.id
+                if identity_map is not None:
+                    identity_map[old_id] = ArchiveProof(row.id, uuid_value(row.recovery_identity), row.printer_id)
             tally.restored += 1
+            invalid_fields += len(corrected)
+        if invalid_fields or identity_skipped or tally.failed > failed_before or energy_kept or energy_unknown:
+            previous, tally.notes = tally.notes, []
+            tally.note(
+                "archivesInputSummary",
+                "Archive restore: invalid fields kept or defaulted: "
+                f"{invalid_fields}; failed rows: {tally.failed - failed_before}; skipped rows: {tally.skipped - skipped_before}; "
+                f"identity conflicts: {identity_skipped}; legacy source-only rows skipped: {legacy_artifacts}; "
+                f"energy bundles kept: {energy_kept}; unknown energy: {energy_unknown}.",
+                invalid_fields=invalid_fields,
+                failed_rows=tally.failed - failed_before,
+                skipped_rows=tally.skipped - skipped_before,
+                identity_skipped=identity_skipped,
+                legacy_source_artifacts_skipped=legacy_artifacts,
+                energy_kept=energy_kept,
+                energy_unknown=energy_unknown,
+            )
+            tally.notes.extend(previous[:19])
 
     async def _restore_source_declaration(self, db: AsyncSession, entry: dict, archive, tally) -> None:
         """The source's declaration for a future reprint (swap-source-declaration spec r3 §9): a restored record
@@ -1623,43 +1736,25 @@ class GitRestoreService:
         await db.flush()
         db.add(restored_audit("archive", archive.id, record))
 
-    async def _find_archive(self, db: AsyncSession, entry: dict, started_at: datetime | None) -> PrintArchive | None:
-        """Match a backed-up archive to a local row by natural key.
-
-        ``started_at`` is nullable and genuinely NULL for a whole class of rows —
-        the re-slice path in ``library.py`` constructs ``PrintArchive`` without
-        one — so it cannot be *required* by the key. It narrows the match instead:
-        a backed-up row with no ``started_at`` matches a local row that has none
-        either. Requiring it meant those archives never matched, so each restore
-        re-inserted them as duplicates and overwrite mode could never update them.
-
-        ``content_hash`` identifies the sliced file on its own, which is why it is
-        the branch allowed to run without a ``started_at``; ``filename`` is too
-        weak for that (re-slices share it) and still requires one. Two backed-up
-        rows sharing a hash *and* having no ``started_at`` are indistinguishable
-        in the backup, so they collapse onto one local row — better than
-        duplicating both on every restore.
-
-        Soft-deleted rows are matched deliberately: there is no ``deleted_at``
-        filter here because the row still exists, and matching it is what stops a
-        restore inserting a live duplicate of an archive the user has deleted.
-        """
-        started_predicate = PrintArchive.started_at == started_at if started_at else PrintArchive.started_at.is_(None)
-
-        content_hash = entry.get("content_hash")
-        if content_hash:
-            result = await db.execute(
-                select(PrintArchive).where(PrintArchive.content_hash == content_hash, started_predicate)
-            )
-            row = result.scalars().first()
-            if row is not None:
-                return row
-
-        filename = entry.get("filename")
-        if filename and started_at:
-            result = await db.execute(select(PrintArchive).where(PrintArchive.filename == filename, started_predicate))
-            return result.scalars().first()
-        return None
+    async def _find_archive(
+        self,
+        db: AsyncSession,
+        entry: dict,
+        started_at: datetime | None,
+        *,
+        record=None,
+        printers=None,
+        allowed_ids=None,
+    ) -> PrintArchive | None:
+        """Identity lookup; the category owner plans, locks and rereads before writes."""
+        record = record or parse_archive(entry, _parse_dt)
+        record.values["started_at"] = started_at
+        rows = await archive_candidates(db, record)
+        if allowed_ids is not None and any(row.id not in allowed_ids for row in rows):
+            raise RuntimeError("Archive identity changed during restore planning")
+        if printers is None:
+            printers = await lock_restore_printers(db, [entry.get("printer_id"), *(row.printer_id for row in rows)])
+        return resolve_archive_identity(record, rows, printers)
 
     async def _restore_spools(
         self,
@@ -1669,71 +1764,170 @@ class GitRestoreService:
         overwrite: bool,
         tally: _CategoryTally,
         archive_id_map: dict[int, int],
+        *,
+        archive_proofs=None,
     ) -> None:
-        spools = inventory.get("spools") if isinstance(inventory, dict) else None
-        if not isinstance(spools, list):
+        spools, usage = spool_rows(
+            MISSING if inventory is None else inventory, MISSING if usage_payload is None else usage_payload
+        )
+        if spools is None:
             tally.note("noData", "No data of this kind in this backup")
             return
 
-        spool_id_map: dict[int, int] = {}
-        tags_kept = 0
+        printers, accepted_archive_proofs = await usage_basis(db, usage, archive_id_map, archive_proofs)
 
+        spool_id_map: dict[int, int] = {}
+        claimed_by: dict[int, tuple | None] = {}
+        tags_kept = 0
+        invalid_fields = reactivated = baseline_above_used = identity_unavailable = 0
+        failed_before, skipped_before = tally.failed, tally.skipped
+        source_ids = Counter(
+            entry["id"] for entry in spools if isinstance(entry, dict) and source_id(entry.get("id")) is not INVALID
+        )
+        tag_counts = {column: Counter() for column in ("tag_uid", "tray_uuid")}
         for entry in spools:
+            if not isinstance(entry, dict):
+                continue
+            for column, counts in tag_counts.items():
+                tag = read_field(entry, column, SPOOL_FIELDS[column], _parse_dt)
+                if isinstance(tag, str) and tag:
+                    counts[tag] += 1
+
+        def carries_tag(entry):
+            return isinstance(entry, dict) and any(
+                isinstance(tag := read_field(entry, column, SPOOL_FIELDS[column], _parse_dt), str) and tag
+                for column in ("tag_uid", "tray_uuid")
+            )
+
+        # Claim physical tags before an untagged composite can consume their row.
+        for entry in sorted(spools, key=carries_tag, reverse=True):
             if not isinstance(entry, dict):
                 tally.failed += 1
                 continue
 
-            old_id = entry.get("id") if isinstance(entry.get("id"), int) else None
-            existing, matched_on = await self._find_spool(db, entry)
+            old_id = entry.get("id")
+            if old_id is not None and (source_id(old_id) is INVALID or source_ids[old_id] > 1):
+                tally.failed += 1
+                continue
 
-            fields = {
-                "material": entry.get("material") or "PLA",
-                "subtype": entry.get("subtype"),
-                "color_name": entry.get("color_name"),
-                "rgba": entry.get("rgba"),
-                "brand": entry.get("brand"),
-                "label_weight": entry.get("label_weight") or 1000,
-                "core_weight": entry.get("core_weight") or 250,
-                "weight_used": entry.get("weight_used") or 0,
-                "weight_locked": bool(entry.get("weight_locked")),
-                "slicer_filament": entry.get("slicer_filament"),
-                "slicer_filament_name": entry.get("slicer_filament_name"),
-                "nozzle_temp_min": entry.get("nozzle_temp_min"),
-                "nozzle_temp_max": entry.get("nozzle_temp_max"),
-                "note": entry.get("note"),
-                "cost_per_kg": entry.get("cost_per_kg"),
-                "tag_uid": entry.get("tag_uid"),
-                "tray_uuid": entry.get("tray_uuid"),
-                "data_origin": entry.get("data_origin"),
-                "tag_type": entry.get("tag_type"),
-                "archived_at": _parse_dt(entry.get("archived_at")),
-            }
+            parsed = {key: read_field(entry, key, rule, _parse_dt) for key, rule in SPOOL_FIELDS.items()}
+            if any(
+                isinstance(parsed[column], str) and parsed[column] and counts[parsed[column]] > 1
+                for column, counts in tag_counts.items()
+            ):
+                identity_unavailable += 1
+                tally.skipped += 1
+                continue
+            tagged = any(isinstance(parsed[key], str) and parsed[key] for key in ("tag_uid", "tray_uuid"))
+            composite_valid = isinstance(parsed["created_at"], datetime) and all(
+                parsed[key] is not INVALID for key in ("material", "brand", "subtype", "color_name")
+            )
+            if not tagged and not composite_valid:
+                identity_unavailable += 1
+                tally.skipped += 1
+                continue
+            try:
+                existing, matched_on = await self._find_spool(db, entry, claimed=claimed_by)
+            except MultipleResultsFound:
+                identity_unavailable += 1
+                tally.skipped += 1
+                continue
+            if existing is not None and existing.id in claimed_by:
+                identity_unavailable += 1
+                tally.skipped += 1
+                continue
+
+            fields = {}
+            for key, value in parsed.items():
+                if key == "created_at":
+                    continue  # Natural-key input and insert-only, never overwrite.
+                if value is MISSING or value is INVALID:
+                    if existing is None:
+                        fields[key] = SPOOL_FIELDS[key].default
+                else:
+                    fields[key] = value
 
             if existing is not None:
-                if old_id is not None:
-                    spool_id_map[old_id] = existing.id
                 if not overwrite:
+                    claimed_by[existing.id] = _spool_composite_key(parsed)
+                    if old_id is not None:
+                        spool_id_map[old_id] = existing.id
                     tally.skipped += 1
                     continue
                 tags_kept += await self._guard_tag_overwrite(db, existing, fields, matched_on)
+                made_active = (
+                    existing.archived_at is not None and "archived_at" in fields and fields["archived_at"] is None
+                )
                 for key, value in fields.items():
                     setattr(existing, key, value)
-                tally.restored += 1
-                continue
-
-            row = Spool(**fields)
-            # Carry the original created_at across. Without it the row would be
-            # stamped "now", and the composite fallback in _find_spool (which
-            # keys on created_at) would miss on a second restore and insert a
-            # duplicate instead of matching.
-            created_at = _parse_dt(entry.get("created_at"))
-            if created_at is not None:
-                row.created_at = created_at
-            db.add(row)
+                row = existing
+            else:
+                made_active = False
+                row = Spool(**fields)
+                if isinstance(parsed["created_at"], datetime):
+                    row.created_at = parsed["created_at"]
+                db.add(row)
             await db.flush()
+            claimed_by[row.id] = _spool_composite_key(parsed)
             if old_id is not None:
                 spool_id_map[old_id] = row.id
             tally.restored += 1
+            invalid_fields += sum(value is INVALID for value in parsed.values())
+            reactivated += made_active
+            baseline = read_field(
+                {"weight_used_baseline": row.weight_used_baseline},
+                "weight_used_baseline",
+                NUMERIC_FIELDS["spools", "weight_used_baseline"],
+                _parse_dt,
+            )
+            used = read_field(
+                {"weight_used": row.weight_used},
+                "weight_used",
+                NUMERIC_FIELDS["spools", "weight_used"],
+                _parse_dt,
+            )
+            if baseline is not INVALID and used is not INVALID and baseline > used:
+                baseline_above_used += 1
+
+        usage_invalid, usage_anomaly = await self._restore_spool_usage(
+            db,
+            {"history": usage},
+            tally,
+            spool_id_map,
+            archive_id_map,
+            archive_proofs=accepted_archive_proofs,
+            printers=printers,
+        )
+        invalid_fields += usage_invalid
+        if (
+            invalid_fields
+            or tally.failed > failed_before
+            or identity_unavailable
+            or reactivated
+            or baseline_above_used
+            or usage_anomaly
+        ):
+            # Reserve a slot for exact aggregate counts even with a pre-filled tally.
+            previous_notes, tally.notes = tally.notes, []
+            tally.note(
+                "spoolInputSummary",
+                "Spool restore: invalid fields kept or defaulted: "
+                f"{invalid_fields}; failed rows: {tally.failed - failed_before}; "
+                f"skipped rows: {tally.skipped - skipped_before}; reactivated spools: {reactivated}; "
+                f"reset points above used weight retained: {baseline_above_used}.",
+                invalid_fields=invalid_fields,
+                failed_rows=tally.failed - failed_before,
+                skipped_rows=tally.skipped - skipped_before,
+                reactivated=reactivated,
+                baseline_above_used=baseline_above_used,
+            )
+            tally.notes.extend(previous_notes[:19])
+        if identity_unavailable:
+            tally.note(
+                "spoolIdentityUnavailable",
+                f"{identity_unavailable} spool row(s) skipped: their identity was missing or ambiguous.",
+                count=identity_unavailable,
+            )
 
         if tags_kept:
             tally.note(
@@ -1743,50 +1937,64 @@ class GitRestoreService:
                 count=tags_kept,
             )
 
-        await self._restore_spool_usage(db, usage_payload, tally, spool_id_map, archive_id_map)
-
-    async def _find_spool(self, db: AsyncSession, entry: dict) -> tuple[Spool | None, str | None]:
+    async def _find_spool(
+        self, db: AsyncSession, entry: dict, *, claimed: dict[int, tuple | None] | None = None
+    ) -> tuple[Spool | None, str | None]:
         """Match a backed-up spool to a local row, and say which key matched.
 
         Physical identity first (an RFID/Bambu tag is the spool), then a
         descriptive composite including ``created_at`` so two otherwise
         identical spools added at different times stay distinct.
 
+        Claimed rows stay visible to tag lookups so a second tag alias is
+        refused. Composite lookup excludes only claims by a row with the same
+        valid composite: distinct bulk siblings may share every field, but a
+        recycled tag can claim a differently described spool that still exists.
+
         The second element names the column that matched — ``"tag_uid"``,
         ``"tray_uuid"`` or ``None`` for the composite. ``_guard_tag_overwrite``
         needs it: the matched column holds the incoming value by definition, so
         it is the *other* one that overwrite can corrupt.
         """
-        tag_uid = entry.get("tag_uid")
-        if tag_uid:
-            result = await db.execute(select(Spool).where(Spool.tag_uid == tag_uid))
-            row = result.scalars().first()
-            if row is not None:
-                return row, "tag_uid"
+        parsed = {key: read_field(entry, key, rule, _parse_dt) for key, rule in SPOOL_FIELDS.items()}
+        for column in ("tag_uid", "tray_uuid"):
+            value = parsed[column]
+            if isinstance(value, str) and value:
+                result = await db.execute(
+                    select(Spool)
+                    .where(getattr(Spool, column) == value)
+                    .order_by(Spool.id)
+                    .with_for_update(read=True, key_share=True)
+                )
+                row = result.scalars().one_or_none()
+                if row is not None:
+                    return row, column
 
-        tray_uuid = entry.get("tray_uuid")
-        if tray_uuid:
-            result = await db.execute(select(Spool).where(Spool.tray_uuid == tray_uuid))
-            row = result.scalars().first()
-            if row is not None:
-                return row, "tray_uuid"
-
-        created_at = _parse_dt(entry.get("created_at"))
-        if created_at is None:
+        created_at = parsed["created_at"]
+        if not isinstance(created_at, datetime) or any(
+            parsed[key] is INVALID for key in ("material", "brand", "subtype", "color_name")
+        ):
             return None, None
         # created_at is filtered in Python, not here — see _created_at_matches.
         result = await db.execute(
-            select(Spool).where(
-                Spool.material == (entry.get("material") or "PLA"),
-                Spool.brand == entry.get("brand"),
-                Spool.subtype == entry.get("subtype"),
-                Spool.color_name == entry.get("color_name"),
+            select(Spool)
+            .where(
+                *(
+                    getattr(Spool, key) == (SPOOL_FIELDS[key].default if parsed[key] is MISSING else parsed[key])
+                    for key in ("material", "brand", "subtype", "color_name")
+                ),
             )
+            .order_by(Spool.id)
+            .with_for_update(read=True, key_share=True)
         )
-        for row in result.scalars():
-            if _created_at_matches(row, created_at):
-                return row, None
-        return None, None
+        key = _spool_composite_key(parsed)
+        sibling_claims = {local for local, owner in (claimed or {}).items() if owner is not None and owner == key}
+        candidates = [
+            row for row in result.scalars() if row.id not in sibling_claims and _created_at_matches(row, created_at)
+        ]
+        if len(candidates) > 1:
+            raise MultipleResultsFound("Ambiguous spool composite")
+        return (candidates[0], None) if candidates else (None, None)
 
     @staticmethod
     async def _guard_tag_overwrite(db: AsyncSession, existing: Spool, fields: dict, matched_on: str | None) -> int:
@@ -1814,6 +2022,8 @@ class GitRestoreService:
         """
         kept = 0
         for column in ("tag_uid", "tray_uuid"):
+            if column not in fields:
+                continue
             # The column we matched on already holds the incoming value.
             if column == matched_on:
                 continue
@@ -1844,97 +2054,107 @@ class GitRestoreService:
         tally: _CategoryTally,
         spool_id_map: dict[int, int],
         archive_id_map: dict[int, int],
-    ) -> None:
-        usage = usage_payload.get("usage_history") if isinstance(usage_payload, dict) else None
-        if not isinstance(usage, list) or not usage:
-            return
-
-        valid_printers = set((await db.execute(select(Printer.id))).scalars().all())
-        unresolved = 0
-        unlinked_archives = 0
-
+        *,
+        archive_proofs=None,
+        printers=None,
+    ) -> tuple[int, bool]:
+        if usage_payload is None or usage_payload is MISSING:
+            return 0, False
+        _, usage = spool_rows({"spools": []}, usage_payload)
+        if not usage:
+            return 0, False
+        if printers is None:
+            printers, archive_proofs = await usage_basis(db, usage, archive_id_map, archive_proofs)
+        invalid_fields = unresolved = unlinked = no_time = unproven_printer = unknown_status = 0
+        failed_before = tally.failed
         for entry in usage:
             if not isinstance(entry, dict):
                 tally.failed += 1
                 continue
-
-            old_spool_id = entry.get("spool_id")
-            spool_id = spool_id_map.get(old_spool_id) if isinstance(old_spool_id, int) else None
+            old_spool = source_id(entry.get("spool_id"))
+            spool_id = spool_id_map.get(old_spool) if old_spool is not INVALID else None
             if spool_id is None:
-                # The parent spool never made it into the map: the backup's spool
-                # list didn't include it, or its entry carried no integer id. A
-                # spool that was merely *skipped* (matched locally, overwrite off)
-                # is mapped a few lines up in _restore_spools, so it never lands
-                # here — which is why the note below offers no remedy.
                 unresolved += 1
                 tally.skipped += 1
                 continue
-
-            created_at = _parse_dt(entry.get("created_at"))
-            # Usage history has no natural key of its own, so dedupe on the
-            # tuple that makes a consumption event unique in practice. As in
-            # _find_spool, created_at is compared in Python — see
-            # _created_at_matches. An entry carrying no created_at at all
-            # cannot be recognised and is re-inserted, which is what the
-            # IS NULL comparison this replaced did too: the column is
-            # non-nullable, so it never matched either.
-            existing = await db.execute(
-                select(SpoolUsageHistory).where(
-                    SpoolUsageHistory.spool_id == spool_id,
-                    SpoolUsageHistory.weight_used == (entry.get("weight_used") or 0),
-                    SpoolUsageHistory.print_name == entry.get("print_name"),
-                )
-            )
-            if any(_created_at_matches(row, created_at) for row in existing.scalars()):
+            values = parsed_fields(entry, USAGE_FIELDS, _parse_dt)
+            created = values["created_at"]
+            if not isinstance(created, datetime):
+                no_time += 1
                 tally.skipped += 1
                 continue
-
-            printer_id = entry.get("printer_id")
-            if printer_id is not None and printer_id not in valid_printers:
-                printer_id = None
-
-            old_archive_id = entry.get("archive_id")
-            archive_id = archive_id_map.get(old_archive_id) if isinstance(old_archive_id, int) else None
-            if archive_id is None and isinstance(old_archive_id, int):
-                # Restoring spools without archives leaves archive_id_map empty,
-                # so every "this print consumed that spool" link is dropped — the
-                # local archive may well exist, but its payload wasn't fetched,
-                # so there is no natural key here to match it on. Nor is it
-                # repairable by a later archives-only restore: the dedupe key
-                # above doesn't include archive_id, so these rows are recognised
-                # as already-present and skipped. Worth telling the user while
-                # they can still redo the run with both categories ticked.
-                unlinked_archives += 1
-
-            row = SpoolUsageHistory(
-                spool_id=spool_id,
-                printer_id=printer_id,
-                print_name=entry.get("print_name"),
-                archive_id=archive_id,
-                weight_used=entry.get("weight_used") or 0,
-                percent_used=entry.get("percent_used") or 0,
-                status=entry.get("status") or "completed",
-                cost=entry.get("cost"),
+            fields = write_fields(values, USAGE_FIELDS, insert=True)
+            existing = await db.scalars(
+                select(SpoolUsageHistory).where(
+                    SpoolUsageHistory.spool_id == spool_id,
+                    SpoolUsageHistory.weight_used == fields["weight_used"],
+                    SpoolUsageHistory.print_name == fields["print_name"],
+                )
             )
-            if created_at is not None:
-                row.created_at = created_at
-            db.add(row)
+            if any(_created_at_matches(row, created) for row in existing):
+                tally.skipped += 1
+                continue  # Existing links, including NULL, are never retrofitted.
+            old_archive = source_id(entry.get("archive_id"))
+            proof = (archive_proofs or {}).get(old_archive) if old_archive is not INVALID else None
+            archive_id = (
+                proof.local_id if proof is not None and archive_id_map.get(old_archive) == proof.local_id else None
+            )
+            if archive_id is None and entry.get("archive_id") is not None:
+                unlinked += 1
+            printer = printer_for(entry, printers)
+            if (
+                printer is not None
+                and proof is not None
+                and proof.printer_id is not None
+                and printer != proof.printer_id
+            ):
+                printer = None
+            if printer is None and entry.get("printer_id") is not None:
+                unproven_printer += 1
+            db.add(SpoolUsageHistory(spool_id=spool_id, archive_id=archive_id, printer_id=printer, **fields))
+            await db.flush()
             tally.restored += 1
-
+            invalid_fields += sum(value is INVALID for value in values.values())
+            unknown_status += int(values["status"] is MISSING or values["status"] is INVALID)
         if unresolved:
             tally.note(
                 "spoolUsageUnresolved",
-                f"{unresolved} usage record(s) skipped — their spool is not in this backup's "
-                "spool list, so there is nothing to attach them to.",
+                f"{unresolved} usage record(s) skipped — no accepted spool identity map was available.",
                 count=unresolved,
             )
-        if unlinked_archives:
+        if unlinked:
             tally.note(
                 "spoolUsageUnlinked",
-                f"{unlinked_archives} usage record(s) restored without their print-history link — "
-                "select Print archives alongside Spool inventory to keep it.",
-                count=unlinked_archives,
+                f"{unlinked} usage record(s) restored without a proven print-history link — select both categories and retain the same execution identity.",
+                count=unlinked,
             )
+        if no_time:
+            tally.note(
+                "spoolUsageTimeUnknown",
+                f"{no_time} usage record(s) skipped — their event time was missing or invalid.",
+                count=no_time,
+            )
+        if unproven_printer:
+            tally.note(
+                "spoolUsagePrinterUnproven",
+                f"{unproven_printer} usage printer reference(s) were not proven by ID and serial — left unlinked.",
+                count=unproven_printer,
+            )
+        if unknown_status:
+            tally.note(
+                "spoolUsageOutcomeUnknown",
+                f"{unknown_status} usage record(s) have an unknown outcome — no successful print was inferred.",
+                count=unknown_status,
+            )
+        return invalid_fields, bool(
+            unresolved
+            or unlinked
+            or no_time
+            or unproven_printer
+            or unknown_status
+            or tally.failed > failed_before
+            or invalid_fields
+        )
 
     async def _restore_settings(
         self,

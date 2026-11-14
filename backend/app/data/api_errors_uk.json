@@ -1274,5 +1274,14 @@
   "«{}»: only {} can be written off": "«{}»: списати можна лише {}",
   "An active administrator must approve Git backup configuration": "Конфігурацію Git-бекапу має погодити активний адміністратор",
   "Git backup is temporarily unavailable.": "Git-бекап тимчасово недоступний.",
-  "Git backup work has not stopped; restart before restoring": "Робота Git-бекапу ще не завершилася; перезапустіть застосунок перед відновленням"
+  "Git backup work has not stopped; restart before restoring": "Робота Git-бекапу ще не завершилася; перезапустіть застосунок перед відновленням",
+  "Accepted uploads without slicer options: {count}.": "Прийнятих завантажень без параметрів слайсера: {count}.",
+  "Backup restored successfully. Please restart BamDude for changes to take effect.": "Резервну копію відновлено. Перезапустіть BamDude, щоб застосувати зміни.",
+  "Camera proxy leases released: {count}.": "Звільнено проксі камери: {count}.",
+  "Inspect pending jobs and their options before restarting and resuming. Resending can duplicate a job.": "Перед перезапуском і відновленням роботи перевірте завдання в черзі та їхні параметри. Повторне надсилання може створити дубль.",
+  "Restored {} item(s) from {}": "Відновлено {} записів із {}",
+  "Virtual printer access is paused for restore; restart after restoring.": "Доступ до віртуальних принтерів призупинено для відновлення; перезапустіть після його завершення.",
+  "Virtual printer cleanup could not be confirmed. Restart BamDude before restoring.": "Не вдалося підтвердити зупинку віртуального принтера. Перезапустіть BamDude перед відновленням.",
+  "Virtual printer connections interrupted: {count}.": "Перервано з’єднань віртуальних принтерів: {count}.",
+  "Virtual printer work has not stopped. Wait for accepted uploads to finish, then retry in this process. Restart after restoring, or to abandon this attempt.": "Робота віртуальних принтерів ще не завершилася. Дочекайтеся прийнятих завантажень і повторіть у цьому процесі. Перезапустіть після відновлення або щоб відмовитися від цієї спроби."
 }

@@ -100,6 +100,8 @@ describe('GitRestoreModal', () => {
       expect(screen.getByText('Restore from Git Backup')).toBeInTheDocument();
     });
     expect(screen.getByLabelText('Backup commit')).toBeInTheDocument();
+    expect(screen.getByRole('note')).toHaveTextContent('Restore only while the farm is idle');
+    expect(screen.getByRole('note')).toHaveTextContent('saving a print completion');
   });
 
   it('defaults to the latest commit and lists recent commits', async () => {
@@ -243,6 +245,11 @@ describe('GitRestoreModal', () => {
                   params: { count: 1 },
                   message: 'raw server English, should not be rendered',
                 },
+                {
+                  code: 'spoolInputSummary',
+                  params: { invalid_fields: 1, failed_rows: 0, skipped_rows: 1, reactivated: 2, baseline_above_used: 0 },
+                  message: 'raw spool summary must be translated',
+                },
               ],
             },
           },
@@ -274,9 +281,11 @@ describe('GitRestoreModal', () => {
     // The locale string with {{count}} filled in, not the server's English —
     // which is what makes the note translatable for a non-English user.
     expect(
-      screen.getByText(/^1 usage record\(s\) skipped - their spool is not in this backup's spool list/)
+      screen.getByText(/^1 usage record\(s\) skipped - no accepted spool identity was available/)
     ).toBeInTheDocument();
     expect(screen.queryByText('raw server English, should not be rendered')).not.toBeInTheDocument();
+    expect(screen.getByText(/reactivated spools: 2/)).toBeInTheDocument();
+    expect(screen.queryByText('raw spool summary must be translated')).not.toBeInTheDocument();
   });
 
   it('drops the selection while a newly-picked commit is still being inspected', async () => {
@@ -471,6 +480,25 @@ describe('GitRestoreModal', () => {
     expect(screen.queryByRole('button', { name: /Reload now/ })).not.toBeInTheDocument();
     expect(screen.getByLabelText('Backup commit')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Restore$/ })).toBeEnabled();
+  });
+
+  it('shows a VP drain 409 message without a success panel', async () => {
+    const message = 'Virtual printer work has not stopped. Retry in this process.';
+    server.use(http.post('/api/v1/git-backup/restore', () =>
+      HttpResponse.json({ detail: message }, { status: 409 })
+    ));
+    render(<GitRestoreModal onClose={vi.fn()} />);
+    const checkboxes = await waitFor(() => screen.getAllByRole('checkbox') as HTMLInputElement[]);
+    await userEvent.click(checkboxes[1]);
+    await userEvent.click(screen.getByRole('button', { name: /Restore$/ }));
+    await waitFor(() => screen.getByText('Restore from backup?'));
+    expect(screen.getAllByText(/Resending can duplicate|resending can duplicate/).length).toBeGreaterThan(0);
+    const buttons = screen.getAllByRole('button', { name: /Restore$/ });
+    await userEvent.click(buttons[buttons.length - 1]);
+    await waitFor(() => expect(screen.getByText(message)).toBeInTheDocument());
+    expect(screen.queryByText('Restore from backup?')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Reload now/ })).not.toBeInTheDocument();
+    expect(screen.getByLabelText('Backup commit')).toBeInTheDocument();
   });
 
   it('does not refresh the data caches when a restore was refused', async () => {

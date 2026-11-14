@@ -405,6 +405,32 @@ def _clean_print_lifecycle_registries():
 
 
 @pytest.fixture(autouse=True)
+def _vp_restore_generation(monkeypatch, data_dir_isolation):
+    """Each test models a fresh process, not a retry of another test's restore.
+
+    F intentionally keeps its latch and owned root until process exit. Pytest
+    instead reuses module singletons across function-scoped event loops/DBs.
+    Never reopen these owners in product CRUD just to make tests independent.
+    Sort after _no_dialect_check_leaks so monkeypatch is undone before that
+    guard inspects the modules; moving this fixture earlier reverses teardown.
+    """
+    from backend.app.services.farm_startup_guard import farm_startup_guard
+    from backend.app.services.git_backup import git_backup_service
+    from backend.app.services.virtual_printer import virtual_printer_manager as manager
+
+    monkeypatch.setattr(farm_startup_guard, "restart_required", False)
+    monkeypatch.setattr(git_backup_service, "_closed", False)
+    for attr in ("_sync_task", "_drain_task"):
+        monkeypatch.setattr(manager, attr, None)
+    for attr in ("_instances", "_retiring", "_starts", "_unproven", "_deletions"):
+        monkeypatch.setattr(manager, attr, {})
+    for attr in ("_camera_tasks", "_drain_instances"):
+        monkeypatch.setattr(manager, attr, set())
+    monkeypatch.setattr(manager, "_sync_revision", 0)
+    monkeypatch.setattr(manager, "_sync_lock", asyncio.Lock())
+
+
+@pytest.fixture(autouse=True)
 def _fresh_archive_process_locks():
     """A contended asyncio lock belongs to the test's function-scoped loop.
 
@@ -489,14 +515,17 @@ async def _library_preview_jobs_isolation():
     previous_writes = library_file_runtime.upload_writes
     jobs_module.jobs = None
     library_preview.publication = library_preview.PublicationGate()  # a restore test closes it for good
-    library_file_runtime.upload_writes = library_file_runtime.UploadWriteOwner()
+    isolated_writes = library_file_runtime.UploadWriteOwner()
+    library_file_runtime.upload_writes = isolated_writes
     yield
     started = jobs_module.jobs
     if started is not None and started is not previous:
         await started.stop("shutdown")
     jobs_module.jobs = previous
     library_preview.publication = previous_gate
-    assert await library_file_runtime.upload_writes.quiesce(2), "upload syscall still running after test cleanup"
+    # Clean this fixture's real owner, not a scenario's deliberately refusing
+    # replacement or short-deadline stub (which that test owns and joins).
+    assert await isolated_writes.quiesce(2), "upload syscall still running after test cleanup"
     library_file_runtime.upload_writes = previous_writes
 
 
