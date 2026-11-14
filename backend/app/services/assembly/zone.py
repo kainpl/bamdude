@@ -25,6 +25,11 @@ class GeometryUnknown(Exception):
     """The preset does not say where the printer can print."""
 
 
+class OriginUnsupported(GeometryUnknown):
+    """The preset's origin lies inside the bed. Parts are laid out from the bed's corner, as every Bambu
+    printer counts; a machine that counts from its centre would read the same numbers as half off the bed."""
+
+
 @dataclass(frozen=True)
 class NozzleInfo:
     index: int  # 1-based extruder number, as the slicer's ``filament_map`` counts
@@ -91,6 +96,8 @@ def printer_geometry(flat: dict) -> PrinterGeometry:
             raise ValueError("printable_height must be positive")
     except (KeyError, ValueError, TypeError, IndexError) as error:
         raise GeometryUnknown(f"the printer preset does not describe its print area ({error})") from None
+    if x0 < 0 or y0 < 0:
+        raise OriginUnsupported("the printer preset places its origin inside the bed")
 
     areas: list[tuple[float, float, float, float]] = []
     for entry in flat.get("extruder_printable_area") or []:

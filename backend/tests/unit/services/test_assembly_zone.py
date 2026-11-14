@@ -83,3 +83,14 @@ def test_missing_or_unreadable_geometry_is_geometry_unknown(flat):
 def test_unknown_nozzle_is_a_value_error(nozzle):
     with pytest.raises(ValueError):
         work_zone(printer_geometry(H2C), nozzle)
+
+
+def test_a_bed_whose_origin_lies_inside_it_is_refused_by_name():
+    """A centred origin (a delta, some custom machines): parts are laid out from the corner, and such a
+    printer's slicer would read the same coordinates as half off the bed."""
+    from backend.app.services.assembly.zone import OriginUnsupported
+
+    centred = {"printable_area": ["-110x-110", "110x-110", "110x110", "-110x110"], "printable_height": "200"}
+    with pytest.raises(OriginUnsupported):
+        printer_geometry(centred)
+    assert issubclass(OriginUnsupported, GeometryUnknown)

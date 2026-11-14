@@ -949,6 +949,7 @@
   "The printer is waiting for a plate answer about this print. Answer on the printer card: Repeat print runs it again": "Принтер чекає відповіді про стіл щодо цього друку. Дайте відповідь на картці принтера: «Повторити друк» запустить його знову",
   "The printer job is no longer available.": "Завдання принтера більше недоступне.",
   "The printer preset could not be resolved: {}": "Не вдалося отримати профіль принтера: {}",
+  "The printer preset counts from inside its bed; projects cannot be assembled for it": "Профіль принтера відлічує координати зсередини столу; для такого принтера проєкти зібрати не можна",
   "The printer preset does not describe its print area": "Профіль принтера не описує зону друку",
   "The product has finished goods in stock": "Цей виріб є на складі готових",
   "The proposal is no longer valid. Read a new proposal before moving the job.": "Пропозиція більше не чинна. Прочитайте нову пропозицію перед перенесенням завдання.",

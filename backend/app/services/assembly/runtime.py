@@ -13,6 +13,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+import shutil
 import time
 import uuid
 from collections.abc import Callable
@@ -108,8 +110,9 @@ class AssemblyRuntime:
         try:
             if self.broker is None:
                 raise RuntimeError("local broker unavailable")
-            await disk(self._report_retained_staging)
             await disk(self.staging.mkdir, parents=True, exist_ok=True, mode=0o700)
+            await disk(self._record_owner)
+            await disk(self._sweep_retained)
             await self._connect()
             await self.launch()
             logger.info(
@@ -137,17 +140,60 @@ class AssemblyRuntime:
                 if not self.uncertain:
                     self.monitor = asyncio.create_task(self._monitor(), name="assembly-service-monitor")
 
-    def _report_retained_staging(self) -> None:
-        """Staging a dead run left behind is reported, never removed: its owner is not proven gone."""
+    def _record_owner(self) -> None:
+        """Who owns this run's staging: this process, by pid and start time (a pid alone is reused)."""
+        import psutil
+
+        record = {"pid": os.getpid(), "started": psutil.Process().create_time()}
+        (self.staging.parent / f"{self.generation}.owner").write_text(json.dumps(record), encoding="utf-8")
+
+    def _sweep_retained(self) -> None:
+        """Staging an earlier run left behind (a power cut, a killed process).
+
+        What a main staged is of use to that main alone — only it would have published the result — so once
+        the process its record names is gone, the directory is removed, whatever a stray child may still be
+        doing in it. A directory without a readable record, or whose main still runs, is only reported.
+        """
+        import psutil
+
         parent = self.staging.parent
         try:
-            left = [path.name for path in parent.iterdir() if path != self.staging]
+            entries = [path for path in parent.iterdir() if path != self.staging]
         except OSError:
             return
+        removed, left = 0, 0
+        for path in entries:
+            if not path.is_dir() or path.is_symlink():
+                continue
+            record = parent / f"{path.name}.owner"
+            try:
+                owner = json.loads(record.read_bytes()[:4096])
+                pid, started = int(owner["pid"]), float(owner["started"])
+            except (OSError, ValueError, KeyError, TypeError):
+                left += 1
+                continue
+            try:
+                alive = abs(psutil.Process(pid).create_time() - started) < 1.0
+            except psutil.NoSuchProcess:
+                alive = False
+            except psutil.Error:
+                alive = True  # not ours to read: not proven gone
+            if alive:
+                left += 1
+                continue
+            shutil.rmtree(path, ignore_errors=True)
+            if path.exists():
+                left += 1  # something still holds a file there; the next start tries again
+                continue
+            record.unlink(missing_ok=True)
+            removed += 1
+        for record in parent.glob("*.owner"):
+            if not (parent / record.stem).exists():
+                record.unlink(missing_ok=True)
+        if removed:
+            logger.info("Assembly staging of earlier runs: removed=%d", removed)
         if left:
-            logger.warning(
-                "Retained assembly staging: count=%d under %s; verify owners before manual cleanup", len(left), parent
-            )
+            logger.warning("Retained assembly staging: count=%d under %s; its owner is not proven gone", left, parent)
 
     async def _connect(self) -> None:
         from nats.aio.client import Client

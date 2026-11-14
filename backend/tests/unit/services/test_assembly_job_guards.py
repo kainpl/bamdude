@@ -187,3 +187,52 @@ def test_a_changed_step_source_is_caught_like_any_other(tmp_path):
     step = Source((2, "drawing.step", hashlib.sha256(b"old").hexdigest(), None), drawing, "step", "drawing.step")
     with pytest.raises(job.SourceChanged):
         _stage(tmp_path / "stage", _plan(sources=[step]), [])
+
+
+@pytest.mark.asyncio
+async def test_the_delete_right_is_read_again_before_the_previous_files_go(monkeypatch):
+    from types import SimpleNamespace
+
+    from fastapi import HTTPException
+
+    from backend.app.core.permissions import Permission
+    from backend.app.services import domain_authority
+
+    holds: set = set()
+
+    async def fresh(db, authority, *, permissions=(), printer_id=None, proof=None):
+        if not set(permissions) <= holds:
+            raise HTTPException(403, "no")
+        return SimpleNamespace(user=SimpleNamespace(id=7))
+
+    monkeypatch.setattr(domain_authority, "fresh", fresh)
+    assert await job._delete_rights(None, object(), None) == (False, None)
+    holds.add(Permission.LIBRARY_DELETE_OWN.value)
+    assert await job._delete_rights(None, object(), None) == (False, 7)
+    holds.add(Permission.LIBRARY_DELETE_ALL.value)
+    assert await job._delete_rights(None, object(), None) == (True, 7)
+    assert job._may_delete(SimpleNamespace(created_by_id=3), (True, 7))
+    assert job._may_delete(SimpleNamespace(created_by_id=7), (False, 7))
+    assert not job._may_delete(SimpleNamespace(created_by_id=3), (False, 7))
+    assert not job._may_delete(SimpleNamespace(created_by_id=None), (False, None))
+
+
+@pytest.mark.asyncio
+async def test_two_assemblies_never_choose_a_free_name_at_the_same_moment(tmp_path, monkeypatch):
+    """The name is chosen and the row written under one lock: two jobs saving "jar.3mf" get two names."""
+    from fastapi import HTTPException
+
+    from backend.app.api.routes import library
+
+    held = []
+
+    async def save(db, **kwargs):
+        held.append(job._PUBLISH_LOCK.locked())
+        raise HTTPException(403, "stop here")
+
+    monkeypatch.setattr(library, "save_3mf_bytes_to_library", save)
+    (tmp_path / "out").mkdir()
+    (tmp_path / "out" / "p0.3mf").write_bytes(b"PK")
+    row = Row(key="p0", request=TARGET, label="X")
+    await job._publish(_plan(), row, [("out/p0.3mf", None)], tmp_path, [])
+    assert held == [True] and not job._PUBLISH_LOCK.locked() and row.status == "failed"

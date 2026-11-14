@@ -15,6 +15,7 @@ Only a cancel (the dispatcher's 499) and a bug end the dispatcher's job as faile
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import json
@@ -35,7 +36,7 @@ from backend.app.services.assembly import record as rec
 from backend.app.services.assembly.presets import PresetUnresolved, flatten
 from backend.app.services.assembly.runtime import AssemblyFailed, assembly_staging, run_assembly
 from backend.app.services.assembly.settings import compose_project_settings
-from backend.app.services.assembly.zone import GeometryUnknown, printer_geometry, work_zone
+from backend.app.services.assembly.zone import GeometryUnknown, OriginUnsupported, printer_geometry, work_zone
 from backend.app.services.preview_artifacts import disk
 from backend.app.utils.filename import safe_path_component
 
@@ -46,6 +47,9 @@ OUTPUT_BYTES = 512 * 1024 * 1024  # one written 3MF
 JOB_BYTES = 256 * 1024
 MAX_ROW_FILES = 512  # a file per plate: more plates than this is not a layout anybody asked for
 CAD_FORMATS = ("step", "stp")
+#: A free name is chosen and its row written under this lock: the ingest's own choice is check-then-write, and
+#: two assemblies saving "jar.3mf" into one folder at the same moment would both find the name free.
+_PUBLISH_LOCK = asyncio.Lock()
 _WORD = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}\Z")
 #: reasons after which no further printer row is published
 _STOPS_PUBLICATION = frozenset({"source_changed", "not_allowed", "restore_in_progress"})
@@ -137,6 +141,7 @@ def _result(rows: list[Row], *, outcome: str = "ok", reason: str = "", parts: li
         "parts": parts or [],
         "printers": [row.result() for row in rows],
         "trashed": [],
+        "removed": [],
         "kept": [],
     }
 
@@ -194,9 +199,9 @@ async def _prepare_rows(plan: Plan) -> tuple[list[Row], list]:
                 # HTTP answer in the system language, so the row carries the closed reason alone
                 await db.rollback()
                 row.fail("preset_unresolved")
-            except GeometryUnknown:
+            except GeometryUnknown as error:
                 await db.rollback()
-                row.fail("geometry_unknown")
+                row.fail("origin_unsupported" if isinstance(error, OriginUnsupported) else "geometry_unknown")
             except Exception as error:  # a malformed preset must fail its own row, by name, not the whole job
                 await db.rollback()
                 logger.warning("Assembly preset unusable: error=%s", type(error).__name__)
@@ -449,7 +454,7 @@ async def _publish(plan: Plan, row: Row, outputs: list[tuple[str, int | None]], 
             await _withdraw(row)
             return
         try:
-            async with async_session() as db:
+            async with _PUBLISH_LOCK, async_session() as db:
                 folder = None
                 fallback = None
                 if plan.folder_id is not None:
@@ -495,8 +500,36 @@ async def _publish(plan: Plan, row: Row, outputs: list[tuple[str, int | None]], 
             pass
 
 
-async def _trash_previous(plan: Plan) -> tuple[list[int], list[int]]:
-    """A re-layout's last step: the previous files go to the trash. One a printing job uses is kept."""
+async def _delete_rights(db, authority, proof) -> tuple[bool, int | None]:
+    """What the caller may delete NOW: (every file, the user whose own files). The route asked when the job
+    was queued; minutes later the answer may have changed."""
+    from backend.app.services import domain_authority
+
+    held = []
+    for permission in (Permission.LIBRARY_DELETE_ALL, Permission.LIBRARY_DELETE_OWN):
+        try:
+            principal = await domain_authority.fresh(db, authority, permissions=(permission.value,), proof=proof)
+        except HTTPException as error:
+            if error.status_code != 403:
+                raise
+            held.append(None)
+            continue
+        user = getattr(principal, "user", None)
+        held.append((True, user.id if user is not None else None))
+        if permission is Permission.LIBRARY_DELETE_ALL:
+            return held[0]
+    return (False, held[1][1]) if held[1] else (False, None)
+
+
+def _may_delete(file, rights: tuple[bool, int | None]) -> bool:
+    every, own = rights
+    return every or (own is not None and file.created_by_id == own)
+
+
+async def _trash_previous(plan: Plan) -> tuple[list[int], list[int], list[int]]:
+    """A re-layout's last step: the previous files leave the library — (trashed, removed, kept). A managed
+    file goes to the trash; an external one has no trash (its row goes, its bytes stay on the share). One a
+    printing job uses, or one the caller may no longer delete, is kept."""
     from sqlalchemy import select
 
     from backend.app.core.database import async_session
@@ -506,12 +539,17 @@ async def _trash_previous(plan: Plan) -> tuple[list[int], list[int]]:
     from backend.app.services.library_trash import library_trash_service
 
     trashed: list[int] = []
+    removed: list[int] = []
     kept: list[int] = []
     async with async_session() as db:
-        await guard(db, plan.authority, permissions=(Permission.LIBRARY_UPLOAD.value,))
+        proof, _principal = await guard(db, plan.authority, permissions=(Permission.LIBRARY_UPLOAD.value,))
+        rights = (True, None) if plan.authority is None else await _delete_rights(db, plan.authority, proof)
         for file_id in plan.trash_ids:
             file = await db.scalar(LibraryFile.active().where(LibraryFile.id == file_id))
             if file is None:
+                continue
+            if not _may_delete(file, rights):
+                kept.append(file_id)
                 continue
             printing = await db.scalar(
                 select(PrintQueueItem.id)
@@ -521,10 +559,10 @@ async def _trash_previous(plan: Plan) -> tuple[list[int], list[int]]:
             if printing is not None:
                 kept.append(file_id)
                 continue
-            await library_trash_service.trash_or_purge(db, file)
-            trashed.append(file_id)
+            in_trash = await library_trash_service.trash_or_purge(db, file)
+            (trashed if in_trash else removed).append(file_id)
         await db.commit()
-    return trashed, kept
+    return trashed, removed, kept
 
 
 async def run(job_id: int, plan: Plan) -> dict:
@@ -622,7 +660,7 @@ async def _run(job_id: int, plan: Plan) -> dict:
         result.update(outcome="failed", reason=stopped or "nothing_published")
     elif plan.trash_ids and all(row.status == "ok" for row in rows):
         try:
-            result["trashed"], result["kept"] = await _trash_previous(plan)
+            result["trashed"], result["removed"], result["kept"] = await _trash_previous(plan)
         except Exception as error:  # the new files are saved: a failure here keeps the old ones, nothing more
             logger.warning("Assembly job=%s could not trash the previous files: error=%s", job_id, type(error).__name__)
             result["kept"] = list(plan.trash_ids)

@@ -93,6 +93,15 @@ async def farm(db_session, tmp_path, monkeypatch):
             },
         ),
         ("ghost", "printer", {"inherits": "A parent nobody has", "printable_height": "250"}),
+        (
+            "centred",
+            "printer",
+            {
+                "printable_area": ["-110x-110", "110x-110", "110x110", "-110x110"],
+                "printable_height": "200",
+                "printer_model": "Custom Delta",
+            },
+        ),
         ("process", "process", {"layer_height": "0.2"}),
         ("filament", "filament", {"filament_type": ["PLA"], "filament_id": "GFL99"}),
     ]:
@@ -587,3 +596,73 @@ async def test_a_step_file_larger_than_the_converter_takes_is_refused_by_name(
     await db_session.commit()
     refused = await async_client.post(f"{API}/library/assemble", json=_body(farm, [("drawing", {})]))
     assert refused.status_code == 413 and "drawing.step" in refused.json()["detail"]
+
+
+# --- the deferred minors of the first review ---
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_a_printer_with_its_origin_inside_the_bed_is_refused_by_name(async_client, db_session, farm):
+    ref = _row(farm, "centred")["printer_preset"]
+    info = await async_client.get(f"{API}/library/assemble/printer-info", params=ref)
+    assert info.status_code == 422 and info.json()["detail"]["error"] == "origin_unsupported"
+    body = _body(farm, [("lid", {})], printers=("centred", "x1"))
+    result = (await _finish(async_client, await async_client.post(f"{API}/library/assemble", json=body)))["result"]
+    assert [row["reason"] for row in result["printers"]] == ["origin_unsupported", ""]
+
+
+async def _relayout_with_trash(async_client, farm, old_id):
+    body = {"parts": [{"quantity": 1}, {"quantity": 1}], "targets": [_row(farm)], "name": "jar", "trash_previous": True}
+    return (await _finish(async_client, await async_client.post(f"{API}/library/files/{old_id}/relayout", json=body)))[
+        "result"
+    ]
+
+
+async def _first(async_client, farm):
+    body = _body(farm, [("frame", {}), ("lid", {})])
+    first = await _finish(async_client, await async_client.post(f"{API}/library/assemble", json=body))
+    return first["result"]["printers"][0]["files"][0]["library_file_id"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_a_delete_right_lost_while_the_job_ran_keeps_the_previous_file(
+    async_client, db_session, farm, monkeypatch
+):
+    old_id = await _first(async_client, farm)
+
+    async def lost(db, authority, proof):
+        return False, None
+
+    monkeypatch.setattr(assembly_job, "_delete_rights", lost)
+    result = await _relayout_with_trash(async_client, farm, old_id)
+    assert result["outcome"] == "ok" and result["trashed"] == [] and result["kept"] == [old_id]
+    assert (await db_session.get(LibraryFile, old_id, populate_existing=True)).deleted_at is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_a_previous_file_on_an_external_share_is_reported_as_removed_not_trashed(async_client, db_session, farm):
+    """An external file has no trash: its row goes and its bytes stay on the share — the result says so."""
+    old_id = await _first(async_client, farm)
+    row = await db_session.get(LibraryFile, old_id)
+    row.is_external = True
+    await db_session.commit()
+    result = await _relayout_with_trash(async_client, farm, old_id)
+    assert result["trashed"] == [] and result["removed"] == [old_id] and result["kept"] == []
+    assert await db_session.get(LibraryFile, old_id, populate_existing=True) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_two_copies_of_one_plate_are_not_a_whole_set(async_client, db_session, farm):
+    body = _body(farm, [("frame", {}), ("big", {"fill": True})], split_plates=True)
+    first = await _finish(async_client, await async_client.post(f"{API}/library/assemble", json=body))
+    one, two = (entry["library_file_id"] for entry in first["result"]["printers"][0]["files"])
+    first_row, second_row = await db_session.get(LibraryFile, one), await db_session.get(LibraryFile, two)
+    second_row.file_hash = first_row.file_hash  # the second file is a copy of the first
+    await db_session.commit()
+    again = {"parts": [{"quantity": 1}, {"quantity": 1}], "targets": [_row(farm)], "name": "jar"}
+    response = await async_client.post(f"{API}/library/files/{one}/relayout", json=again)
+    assert response.status_code == 409 and response.json()["detail"]["error"] == "assembly_set_incomplete"

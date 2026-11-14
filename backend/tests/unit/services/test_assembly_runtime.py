@@ -308,3 +308,39 @@ async def test_a_step_part_is_converted_at_print_precision_and_packed(tmp_path, 
         await runtime.stop()
         await broker.stop()
     assert {"stage": "converting", "convert": 1, "convert_count": 1} in seen
+
+
+def test_staging_of_a_main_that_is_gone_is_removed_and_anything_else_is_only_reported(tmp_path, caplog):
+    """What a dead main staged is of no use to anyone: only that main would have published it."""
+    import json
+    import os
+
+    runtime = AssemblyRuntime(tmp_path, None)
+    parent = runtime.staging.parent
+    parent.mkdir(parents=True)
+    me = psutil.Process(os.getpid())
+    owners = {
+        "dead": {"pid": 2**22 + 12345, "started": 1.0},
+        "reused": {"pid": me.pid, "started": me.create_time() - 5000.0},  # the pid lives on as another process
+        "alive": {"pid": me.pid, "started": me.create_time()},
+    }
+    for name, owner in owners.items():
+        (parent / name / "job").mkdir(parents=True)
+        (parent / f"{name}.owner").write_text(json.dumps(owner))
+    (parent / "unknown" / "job").mkdir(parents=True)
+    (parent / "orphan.owner").write_text("{}")
+    caplog.set_level(logging.INFO, logger=assembly_runtime.__name__)
+    runtime._sweep_retained()
+    assert sorted(path.name for path in parent.iterdir()) == ["alive", "alive.owner", "unknown"]
+    text = "\n".join(record.getMessage() for record in caplog.records)
+    assert "removed=2" in text and "count=2" in text
+
+
+@pytest.mark.asyncio
+async def test_a_started_runtime_records_who_owns_its_staging(runtime):
+    import json
+    import os
+
+    record = json.loads((runtime.staging.parent / f"{runtime.generation}.owner").read_text())
+    assert record["pid"] == os.getpid() and abs(record["started"] - psutil.Process().create_time()) < 1.0
+    assert not list(runtime.staging.iterdir())

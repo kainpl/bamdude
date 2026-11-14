@@ -41,7 +41,7 @@ from backend.app.schemas.assembly import (
 from backend.app.schemas.slicer import PresetRef
 from backend.app.services.assembly import job as assembly_job
 from backend.app.services.assembly.presets import PresetUnresolved, flatten
-from backend.app.services.assembly.zone import GeometryUnknown, printer_geometry
+from backend.app.services.assembly.zone import GeometryUnknown, OriginUnsupported, printer_geometry
 from backend.app.services.preview_artifacts import disk as preview_disk
 from backend.app.services.preview_protocol import STEP_PRINT_INPUT_BYTES
 
@@ -183,6 +183,14 @@ async def assembly_printer_info(
             422,
             {"error": "preset_unresolved", "message": f"The printer preset could not be resolved: {error.name}"},
         ) from None
+    except OriginUnsupported:
+        raise HTTPException(
+            422,
+            {
+                "error": "origin_unsupported",
+                "message": "The printer preset counts from inside its bed; projects cannot be assembled for it",
+            },
+        ) from None
     except GeometryUnknown:
         raise HTTPException(
             422,
@@ -258,12 +266,14 @@ async def relayout_file(
         raise HTTPException(422, "The parts do not match the assembled project")
     _check_copies(body.parts)
     expected = len(record.plates) if record.layout.split_plates else 1
-    if len(members) < expected:
+    # every file of a set is another plate, so other bytes: two copies of one plate are not two plates
+    distinct = len({row.file_hash or f"row:{row.id}" for row in members})
+    if distinct < expected:
         raise HTTPException(
             409,
             {
                 "error": "assembly_set_incomplete",
-                "message": f"This project was assembled as {expected} files and only {len(members)} of them are in "
+                "message": f"This project was assembled as {expected} files and only {distinct} of them are in "
                 "the library",
             },
         )

@@ -7,7 +7,8 @@ bootstrap line ``{"root", "deadline"}`` and then works only inside ``root``:
     src/…               the source files, copied there by main
     <key>.settings.json the project settings of each printer row, composed by main
     progress.json       rewritten while packing
-    cancel              created by the service to ask for a stop
+    cancel              when present, the packing stops at its next step (an in-process run; the service
+                        stops the whole process instead and never writes it)
     out/…               results: 3MF files and plate pictures
     result.json         written last
 

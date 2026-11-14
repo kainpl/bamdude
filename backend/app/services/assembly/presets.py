@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.models.user import User
 from backend.app.schemas.slicer import PresetRef
-from backend.app.services.orca_profiles import MissingBaseProfile, resolve_preset
+from backend.app.services.orca_profiles import MissingBaseProfile, fetch_and_cache_base_profile, resolve_preset
 from backend.app.services.preset_resolver import resolve_preset_ref
 
 Slot = Literal["printer", "process", "filament"]
@@ -63,6 +63,30 @@ class FlatPreset:
     changed: tuple[str, ...]  # setting keys whose value differs from the flattened parent, sorted
 
 
+_MAX_PARENTS = 16
+
+
+async def _warm(raw: dict, walker_type: str) -> None:
+    """Download the parents nobody cached yet, each in a transaction of its own.
+
+    The walker caches what it fetches on the session it is given; done on the caller's session, the first
+    cached parent would be held — on SQLite, with the database's one write lock — across every later
+    download. Here each parent is fetched and committed alone, so the caller's walk finds them all cached.
+    A parent that cannot be fetched is left for the walk to report.
+    """
+    from backend.app.core import database  # read at call time: the session factory is replaced under test
+
+    name, seen = raw.get("inherits"), set()
+    while isinstance(name, str) and name and name not in seen and len(seen) < _MAX_PARENTS:
+        seen.add(name)
+        async with database.async_session() as own:
+            parent = await fetch_and_cache_base_profile(name, walker_type, own)
+            await own.commit()
+        if not isinstance(parent, dict):
+            return
+        name = parent.get("inherits")
+
+
 async def flatten(
     db: AsyncSession,
     user: User | None,
@@ -81,6 +105,7 @@ async def flatten(
         raise PresetUnresolved(slot, str(ref.id), str(ref.id))
     name = str(raw.get("name") or ref.id)
     walker_type = _WALKER_TYPE[slot]
+    await _warm(raw, walker_type)
     try:
         flat = await resolve_preset(raw, walker_type, db, strict=True)
         if ref.source == "standard":

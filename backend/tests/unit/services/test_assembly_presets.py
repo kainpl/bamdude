@@ -138,3 +138,46 @@ async def test_an_expired_cached_parent_still_serves_a_farm_without_internet(db_
         await flatten(
             db_session, None, PresetRef(source="standard", id="Never seen"), "printer", credential_snapshots=[]
         )
+
+
+@pytest.mark.asyncio
+async def test_parents_are_downloaded_in_transactions_of_their_own(monkeypatch):
+    """SQLite has one writer: the caller's session must never hold a cached parent across the next download."""
+    import json
+
+    from backend.app.schemas.slicer import PresetRef
+    from backend.app.services.assembly import presets
+
+    chain = {"A": {"inherits": "B", "x": 1}, "B": {"y": 2}}
+    caller, fetched, committed = object(), [], []
+
+    class Own:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def commit(self):
+            committed.append(self)
+
+    async def fetch(name, profile_type, db):
+        fetched.append((name, db is caller, isinstance(db, Own)))
+        return chain.get(name)
+
+    async def resolve_ref(db, user, ref, slot, credential_snapshots):
+        return json.dumps({"name": "mine", "inherits": "A"})
+
+    async def resolve(raw, profile_type, db, depth=0, *, strict=False):
+        assert db is caller
+        return {"x": 1, "y": 2}
+
+    from backend.app.core import database
+
+    monkeypatch.setattr(database, "async_session", Own)
+    monkeypatch.setattr(presets, "fetch_and_cache_base_profile", fetch)
+    monkeypatch.setattr(presets, "resolve_preset_ref", resolve_ref)
+    monkeypatch.setattr(presets, "resolve_preset", resolve)
+    flat = await presets.flatten(caller, None, PresetRef(source="local", id="1"), "process", credential_snapshots=[])
+    assert flat.flat == {"x": 1, "y": 2}
+    assert fetched == [("A", False, True), ("B", False, True)] and len(committed) == 2
