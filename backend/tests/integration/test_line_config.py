@@ -5,6 +5,7 @@ from sqlalchemy import select
 
 from backend.app.models.archive import PrintArchive
 from backend.app.models.archive_part import PrintArchivePart
+from backend.app.models.finished_stock import StockItem, StockItemPartCount
 from backend.app.models.library import LibraryFile
 from backend.app.models.line_config import ProjectLineChoice, ProjectLinePartCount
 from backend.app.models.print_queue import PrintQueueItem
@@ -14,6 +15,7 @@ from backend.app.models.product_variant import ProductVariantGroup, ProductVaria
 from backend.app.models.project import Project, ProjectEvent
 from backend.app.models.project_line import ProjectLine
 from backend.app.services import line_config, part_stock
+from backend.tests.fixtures.part_bindings import bind
 
 pytestmark = pytest.mark.integration
 
@@ -38,17 +40,19 @@ async def pipe(db_session):
     await db_session.flush()
     group, (straight, angled) = await _group(db_session, product, "Tail", ["straight", "angled"])
     parts = {
-        name: ProductPart(
-            product_id=product.id,
-            kind="printed",
-            name=name,
-            name_key=name,
-            qty_per_unit=1,
-            aliases=[name],
-            variant_option_id=option,
-            sort_order=i,
+        name: bind(
+            ProductPart(
+                product_id=product.id,
+                kind="printed",
+                name=name,
+                name_key=name,
+                qty_per_unit=1,
+                aliases=[name],
+                sort_order=i,
+            ),
+            *options,
         )
-        for i, (name, option) in enumerate((("flask", None), ("straight", straight.id), ("angled", angled.id)))
+        for i, (name, options) in enumerate((("flask", ()), ("straight", (straight,)), ("angled", (angled,))))
     }
     db_session.add_all(parts.values())
     project = Project(name="O")
@@ -239,3 +243,99 @@ async def test_forget_part_and_line_remove_their_rows(db_session, pipe):
     assert "|" not in line.config_key
     await line_config.forget_line(db_session, line.id)
     assert await _choices(db_session, line.id) == {}
+
+
+async def _box(db, bound):
+    """«Box»: body ×2 bound to the weights named in ``bound``; weight 400 (standard) / 600 /
+    1200; one order with a saved line that chose 400 and one that chose 600."""
+    product = Product(name="Box")
+    db.add(product)
+    await db.flush()
+    group, options = await _group(db, product, "Weight", ["400", "600", "1200"])
+    weight = dict(zip(("400", "600", "1200"), options, strict=True))
+    body = bind(
+        ProductPart(product_id=product.id, kind="printed", name="body", name_key="body", qty_per_unit=2),
+        *(weight[w] for w in bound),
+    )
+    db.add(body)
+    project = Project(name="O")
+    db.add(project)
+    await db.flush()
+    lines = {}
+    for w in ("400", "600"):
+        lines[w] = await _line(db, project, product, {group.id: weight[w].id})
+    await db.commit()
+    return {"product": product, "project": project, "group": group, "weight": weight, "body": body, "lines": lines}
+
+
+async def _line(db, project, product, choices):
+    line = ProjectLine(project_id=project.id, product_id=product.id, quantity=1)
+    db.add(line)
+    await db.flush()
+    await line_config.seed_line(db, line, choices=choices, counts=None)
+    return line
+
+
+async def _position(db, box, choices, counts=None):
+    key, choices, counts = await line_config.resolve(db, box["product"].id, choices, counts or {})
+    item = StockItem(product_id=box["product"].id, config_key=key)
+    db.add(item)
+    await db.flush()
+    await line_config.seed_item(db, item, choices, counts)
+    return item
+
+
+def _bound(box, *weights):
+    return {box["group"].id: frozenset(box["weight"][w].id for w in weights)}
+
+
+async def _configurations(db):
+    """Every stored key and count of lines and stock positions."""
+    statements = (
+        select(StockItem.id, StockItem.config_key),
+        select(StockItemPartCount.item_id, StockItemPartCount.part_id, StockItemPartCount.qty),
+        select(ProjectLine.id, ProjectLine.config_key),
+        select(ProjectLinePartCount.line_id, ProjectLinePartCount.part_id, ProjectLinePartCount.qty),
+    )
+    return [sorted((await db.execute(statement)).all()) for statement in statements]
+
+
+@pytest.mark.asyncio
+async def test_widening_a_binding_freezes_only_the_line_it_would_bring_the_part_into(db_session):
+    box = await _box(db_session, bound=("400",))
+    body, lines = box["body"], box["lines"]
+    assert await line_config.freeze_binding(db_session, body, _bound(box, "400", "600")) == 1
+    assert await _counts(db_session, lines["600"].id) == {body.id: 0}
+    assert lines["600"].config_key == f"{box['group'].id}={box['weight']['600'].id}|{body.id}=0"
+    assert await _counts(db_session, lines["400"].id) == {}
+
+
+@pytest.mark.asyncio
+async def test_narrowing_a_binding_freezes_the_old_standard_count(db_session):
+    box = await _box(db_session, bound=("400", "600"))
+    body, lines = box["body"], box["lines"]
+    assert await line_config.freeze_binding(db_session, body, _bound(box, "400")) == 1
+    assert await _counts(db_session, lines["600"].id) == {body.id: 2}
+    assert await _counts(db_session, lines["400"].id) == {}
+
+
+@pytest.mark.asyncio
+async def test_a_binding_change_that_would_merge_two_positions_is_refused_and_writes_nothing(db_session):
+    """A position saved without a body while body came with 600, and one saved after body
+    left 600: bringing body back to 600 would freeze the second into the first's key."""
+    box = await _box(db_session, bound=("400", "600"))
+    body, choose_600 = box["body"], {box["group"].id: box["weight"]["600"].id}
+    await _position(db_session, box, choose_600, counts={body.id: 0})
+    await line_config.freeze_binding(db_session, body, _bound(box, "400"))
+    bind(body, box["weight"]["400"])
+    await db_session.flush()
+    await _position(db_session, box, choose_600)
+    saved_after = await _line(db_session, box["project"], box["product"], choose_600)
+    await db_session.commit()
+    before = await _configurations(db_session)
+    with pytest.raises(line_config.LineConfigError) as err:
+        await line_config.freeze_binding(db_session, body, _bound(box, "400", "600"))
+    assert err.value.status == 409
+    assert str(err.value) == "That change would make two stock positions the same configuration"
+    assert await _configurations(db_session) == before
+    assert await _counts(db_session, saved_after.id) == {}

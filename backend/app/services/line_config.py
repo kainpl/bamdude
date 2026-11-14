@@ -46,6 +46,7 @@ from backend.app.services.line_composition import (
     config_key,
     counted,
     default_options,
+    in_kit,
     line_composition,
     load_item_configs,
     load_line_configs,
@@ -416,18 +417,21 @@ async def set_configuration(
     return ConfigOutcome(reserved_before, after, [], line.config_key)
 
 
-def _per_under(part: ProductPart, option_id: int | None, chosen: set[int]) -> int:
-    """The part's standard count on a line that chose ``chosen``, were it bound to ``option_id``."""
-    return standard_per(part) if option_id is None or option_id in chosen else 0
+def _per_under(part: ProductPart, bound: Mapping[int, frozenset[int]], chosen: set[int]) -> int:
+    """The part's standard count on a line that chose ``chosen``, were it bound to ``bound``."""
+    return standard_per(part) if in_kit(bound, chosen) else 0
 
 
-async def freeze_binding(db: AsyncSession, part: ProductPart, new_option_id: int | None) -> int:
+async def freeze_binding(db: AsyncSession, part: ProductPart, new_bound: Mapping[int, frozenset[int]]) -> int:
     """A part's binding is about to change: every saved product line whose kit
     that would change keeps it, through an explicit count row (the principle
     rule 5 applies to a new group or a new standard — a saved order's kit does
     not move under it). Lines created afterwards follow the new binding.
-    Returns the number of lines frozen."""
-    if part.variant_option_id == new_option_id:
+    ``new_bound`` is the ``group_id → option ids`` about to be written over
+    ``part.bound``. Returns the number of lines frozen."""
+    current = part.bound
+    new_bound = {group_id: frozenset(options) for group_id, options in new_bound.items()}
+    if current == new_bound:
         return 0
     defaults = (await default_options(db, [part.product_id])).get(part.product_id, {})
     frozen_items: dict[int, LineConfig] = {}
@@ -435,8 +439,8 @@ async def freeze_binding(db: AsyncSession, part: ProductPart, new_option_id: int
         if part.id in cfg.counts:
             continue
         chosen = set({**defaults, **cfg.choices}.values())
-        before = _per_under(part, part.variant_option_id, chosen)
-        if before != _per_under(part, new_option_id, chosen):
+        before = _per_under(part, current, chosen)
+        if before != _per_under(part, new_bound, chosen):
             frozen_items[item_id] = LineConfig(dict(cfg.choices), {**cfg.counts, part.id: before})
     await _apply_item_configs(db, part.product_id, frozen_items)
     line_ids = (
@@ -457,8 +461,8 @@ async def freeze_binding(db: AsyncSession, part: ProductPart, new_option_id: int
         if part.id in cfg.counts:
             continue  # the line already says how many it wants
         chosen = set({**defaults, **cfg.choices}.values())
-        before = _per_under(part, part.variant_option_id, chosen)
-        if before != _per_under(part, new_option_id, chosen):
+        before = _per_under(part, current, chosen)
+        if before != _per_under(part, new_bound, chosen):
             rows.append({"line_id": line_id, "part_id": part.id, "qty": before})
     if rows:
         await db.execute(insert(ProjectLinePartCount), rows)
@@ -554,11 +558,10 @@ async def repoint_part(db: AsyncSession, source_id: int, target_id: int) -> None
         if source_id not in cfg.counts and target_id not in cfg.counts:
             continue
         chosen = set({**defaults, **cfg.choices}.values())
-        standard = _per_under(target, target.variant_option_id, chosen)
+        standard = _per_under(target, target.bound, chosen)
         merged = min(
             MAX_COUNT,
-            cfg.counts.get(target_id, standard)
-            + cfg.counts.get(source_id, _per_under(source, source.variant_option_id, chosen)),
+            cfg.counts.get(target_id, standard) + cfg.counts.get(source_id, _per_under(source, source.bound, chosen)),
         )
         counts = {pid: n for pid, n in cfg.counts.items() if pid not in (source_id, target_id)}
         if merged != standard:
@@ -592,9 +595,9 @@ async def repoint_part(db: AsyncSession, source_id: int, target_id: int) -> None
             merged, standard = cfg.counts.get(target_id, 0) + cfg.counts.get(source_id, 0), 0
         else:
             chosen = set({**defaults, **cfg.choices}.values())
-            standard = _per_under(target, target.variant_option_id, chosen)
+            standard = _per_under(target, target.bound, chosen)
             merged = cfg.counts.get(target_id, standard) + cfg.counts.get(
-                source_id, _per_under(source, source.variant_option_id, chosen)
+                source_id, _per_under(source, source.bound, chosen)
             )
         merged = min(MAX_COUNT, merged)
         if merged != standard:

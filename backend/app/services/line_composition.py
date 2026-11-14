@@ -63,12 +63,19 @@ class LineConfig:
     counts: dict[int, int] = field(default_factory=dict)
 
 
+def in_kit(bound: Mapping[int, frozenset[int]], chosen: set[int]) -> bool:
+    """Is a part bound to ``bound`` (``group_id → option ids``) in the kit of a line that
+    chose ``chosen``? Yes when every group it has options in has one of them chosen —
+    AND across groups, OR within one; an unbound part (``{}``) always is."""
+    return all(not options.isdisjoint(chosen) for options in bound.values())
+
+
 def composition(parts: Sequence[ProductPart], mode: str, chosen: set[int], counts: Mapping[int, int]) -> Composition:
     """The line's parts with their per-unit count; in ``parts`` mode, the wanted count.
 
-    ``product`` mode: every part without an option, and every part of a chosen
-    option, at its standard count — unless the line changed it; a count of 0
-    drops the part, and a count on a part of another option brings it in.
+    ``product`` mode: every part :func:`in_kit` for the chosen options, at its
+    standard count — unless the line changed it; a count of 0 drops the part,
+    and a count on a part outside the kit brings it in.
     """
     ordered = sorted(parts, key=lambda p: (p.sort_order or 0, p.id))
     if mode == "parts":
@@ -77,7 +84,7 @@ def composition(parts: Sequence[ProductPart], mode: str, chosen: set[int], count
     for p in ordered:
         if p.id in counts:
             per = counts[p.id]
-        elif p.variant_option_id is None or p.variant_option_id in chosen:
+        elif in_kit(p.bound, chosen):
             per = p.qty_per_unit
         else:
             continue
