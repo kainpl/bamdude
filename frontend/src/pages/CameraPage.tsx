@@ -125,7 +125,7 @@ export function CameraPage() {
       return { previousStatus };
     },
     onSuccess: (_, on) => {
-      showToast(`Chamber light ${on ? 'on' : 'off'}`);
+      showToast(t(on ? 'camera.chamberLightTurnedOn' : 'camera.chamberLightTurnedOff'));
     },
     onError: (error: Error, _, context) => {
       if (context?.previousStatus) {
@@ -350,7 +350,7 @@ export function CameraPage() {
         stallCheckIntervalRef.current = null;
       }
     };
-  }, [streamMode, streamLoading, streamError, isReconnecting, transitioning, id, viewerId, attemptReconnect]);
+  }, [streamMode, streamLoading, streamError, isReconnecting, transitioning, source, viewerId, attemptReconnect]);
 
   const handleStreamError = () => {
     setStreamLoading(false);
@@ -700,7 +700,7 @@ export function CameraPage() {
           ))}
           <h1 className="text-sm font-medium text-white flex items-center gap-2 min-w-0">
             <Camera className="w-4 h-4" />
-            {printer?.name || camera?.name || (isPrinter ? `Printer ${id}` : `Camera ${id}`)}
+            {printer?.name || camera?.name || t(isPrinter ? 'camera.printerNumber' : 'camera.cameraNumber', { id })}
           </h1>
         </div>
         <div className="flex items-center gap-2">

@@ -56,6 +56,22 @@ export interface EmbeddedCameraFacts {
 }
 
 /**
+ * What the window is called: the name its list gives the source NOW. The one
+ * the browser remembered is from whenever the window was opened — the printer
+ * or camera may have been renamed since — and stands only until a list knows.
+ */
+export function embeddedCameraName(
+  selection: EmbeddedCameraSelection,
+  lists: {
+    printers: readonly { id: number; name: string }[] | undefined;
+    cameras: readonly { id: number; name: string }[] | undefined;
+  },
+): string {
+  const list = selection.kind === 'printer' ? lists.printers : lists.cameras;
+  return list?.find((entry) => entry.id === selection.id)?.name || selection.name;
+}
+
+/**
  * `show` — the source is there and may be watched; `wait` — its list has not
  * answered yet, so nothing is shown and nothing is forgotten; `drop` — forget
  * the selection.

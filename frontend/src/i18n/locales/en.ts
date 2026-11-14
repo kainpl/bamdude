@@ -4765,6 +4765,10 @@ export default {
     cameraUnavailableDesc: 'Make sure the printer is powered on and connected.',
     retry: 'Retry',
     cameraStream: 'Camera stream',
+    chamberLightTurnedOn: 'Chamber light on',
+    chamberLightTurnedOff: 'Chamber light off',
+    printerNumber: 'Printer {{id}}',
+    cameraNumber: 'Camera {{id}}',
     zoomOut: 'Zoom out',
     zoomIn: 'Zoom in',
     resetZoom: 'Reset zoom',
@@ -11918,7 +11922,8 @@ export default {
     zoomOut: 'Zoom out',
     resetZoom: 'Reset zoom',
     zoomIn: 'Zoom in',
-    dragToResize: 'Drag to resize'
+    dragToResize: 'Drag to resize',
+    reconnectingIn: 'Reconnecting in {{countdown}}s...'
   },
 
   // Timelapse Viewer

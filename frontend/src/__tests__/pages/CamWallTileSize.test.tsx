@@ -4,7 +4,7 @@
  * whose storage nobody can reach. A kiosk never writes its size back.
  */
 
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter } from 'react-router';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -63,6 +63,20 @@ describe('CamWallPage tile size', () => {
     renderWall();
 
     await waitFor(() => expect(screen.getByText('tile size 2')).toBeInTheDocument());
+  });
+
+  // A private window, or storage that is full or blocked, throws on a write.
+  // The wall wrote from effects and from the size handler, unguarded.
+  it('keeps working in a browser that refuses to store anything', async () => {
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new DOMException('The quota has been exceeded.', 'QuotaExceededError');
+    });
+    renderWall();
+    await waitFor(() => expect(screen.getByText('tile size 2')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: 'pick XL' }));
+
+    await waitFor(() => expect(screen.getByText('tile size 4')).toBeInTheDocument());
   });
 
   it('follows the size last picked in this browser', async () => {

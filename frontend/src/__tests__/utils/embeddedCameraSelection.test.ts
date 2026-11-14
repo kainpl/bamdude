@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { checkEmbeddedCamera, readStoredEmbeddedCamera } from '../../utils/embeddedCameraSelection';
+import { checkEmbeddedCamera, embeddedCameraName, readStoredEmbeddedCamera } from '../../utils/embeddedCameraSelection';
 
 const printers = [{ id: 1, name: 'X1 Carbon' }, { id: 2, name: 'P1S Backup' }];
 const cameras = [{ id: 2, name: 'Door', enabled: true }, { id: 5, name: 'Retired', enabled: false }];
@@ -23,6 +23,18 @@ describe('readStoredEmbeddedCamera', () => {
     expect(readStoredEmbeddedCamera()).toBeNull();
     localStorage.setItem('openEmbeddedCameras', '"text"');
     expect(readStoredEmbeddedCamera()).toBeNull();
+  });
+});
+
+describe('embeddedCameraName', () => {
+  it('is the name the list gives the source now', () => {
+    expect(embeddedCameraName({ kind: 'printer', id: 2, name: 'Old' }, { printers, cameras })).toBe('P1S Backup');
+    expect(embeddedCameraName({ kind: 'camera', id: 2, name: 'Old' }, { printers, cameras })).toBe('Door');
+  });
+
+  it('is the remembered one until a list knows better', () => {
+    expect(embeddedCameraName({ kind: 'printer', id: 2, name: 'Old' }, { printers: undefined, cameras })).toBe('Old');
+    expect(embeddedCameraName({ kind: 'camera', id: 9, name: 'Old' }, { printers, cameras })).toBe('Old');
   });
 });
 

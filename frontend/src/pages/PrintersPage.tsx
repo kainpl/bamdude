@@ -17,7 +17,7 @@ import { CardSizeSwitch } from '../components/CardSizeSwitch';
 import { ListViewToggle } from '../components/ListViewToggle';
 import { parsePrintersPageView, type PrintersPageView } from '../hooks/usePersistedState';
 import { shownView } from '../utils/viewModes';
-import { readStoredCardSize } from '../utils/cardSize';
+import { readStoredCardSize, storeCardSize } from '../utils/cardSize';
 import { LoadingBlock } from '../components/LoadingBlock';
 import { formatFileSize } from '../utils/file';
 import { compareLocationNames } from '../utils/locationOrder';
@@ -236,7 +236,8 @@ import {
   cameraViewModes, rememberCameraViewMode, resolveCameraViewMode, storedCameraViewMode, type CameraViewMode,
 } from '../utils/cameraViewMode';
 import {
-  checkEmbeddedCamera, readStoredEmbeddedCamera, storeEmbeddedCamera, type EmbeddedCameraSelection,
+  checkEmbeddedCamera, embeddedCameraName, readStoredEmbeddedCamera, storeEmbeddedCamera,
+  type EmbeddedCameraSelection,
 } from '../utils/embeddedCameraSelection';
 import { PrinterConditions } from '../components/zigbee/PrinterConditions';
 import { PrinterHASensorRow } from '../components/PrinterHASensorRow';
@@ -9402,22 +9403,36 @@ export function PrintersPage() {
   });
 
   // A list still being fetched cannot vouch for a remembered camera: the copy
-  // in the cache may predate the printer's deletion.
-  const restoreCheck = !restoreUnchecked || !embeddedCamera
+  // in the cache may predate the printer's deletion. An OPEN window is checked
+  // against every answer the lists give after that — its printer deleted, its
+  // camera switched off or `camera:view` taken away while it is on screen
+  // closes and forgets it — but is never hidden while a list is merely being
+  // read again (that would restart its stream on every refetch). A list that
+  // fails leaves a remembered window unshown and unforgotten until it answers:
+  // nothing else waits on it, and neither showing it unvouched nor forgetting
+  // it over a network blip is better.
+  const embeddedVerdict = !embeddedCamera
     ? 'show'
     : authLoading
       ? 'wait'
       : checkEmbeddedCamera(embeddedCamera, {
           canView: hasPermission('camera:view'),
-          printers: printersFetching ? undefined : printers,
-          cameras: camerasFetching ? undefined : allCameras,
+          printers: restoreUnchecked && printersFetching ? undefined : printers,
+          cameras: restoreUnchecked && camerasFetching ? undefined : allCameras,
         });
+  const restoreCheck = restoreUnchecked || embeddedVerdict === 'drop' ? embeddedVerdict : 'show';
+  // The name the list gives the source now, not the one the browser kept.
+  const embeddedName = embeddedCamera && embeddedCameraName(embeddedCamera, { printers, cameras: allCameras });
   useEffect(() => {
-    if (!restoreUnchecked || restoreCheck === 'wait') return;
+    if (!embeddedCamera || embeddedVerdict === 'wait') return;
     // Dropped silently: the stored entry goes with the selection.
-    if (restoreCheck === 'drop') setEmbeddedCamera(null);
-    setRestoreUnchecked(false);
-  }, [restoreUnchecked, restoreCheck]);
+    if (embeddedVerdict === 'drop') {
+      setEmbeddedCamera(null);
+    } else if (embeddedName && embeddedName !== embeddedCamera.name) {
+      setEmbeddedCamera({ ...embeddedCamera, name: embeddedName });
+    }
+    if (restoreUnchecked) setRestoreUnchecked(false);
+  }, [embeddedCamera, embeddedVerdict, embeddedName, restoreUnchecked]);
   const wallCameras = useMemo(
     () => (allCameras ?? []).filter((camera) => camera.enabled),
     [allCameras],
@@ -10331,7 +10346,7 @@ export function PrintersPage() {
           value={camWallTileSize}
           onChange={(size) => {
             setCamWallTileSize(size);
-            localStorage.setItem(CAM_WALL_TILE_SIZE_KEY, String(size));
+            storeCardSize(CAM_WALL_TILE_SIZE_KEY, size);
           }}
           fullWidth={inMenu}
         />
@@ -10681,7 +10696,7 @@ export function PrintersPage() {
         <EmbeddedCameraViewer
           key={`${embeddedCamera.kind}-${embeddedCamera.id}`}
           source={{ kind: embeddedCamera.kind, id: embeddedCamera.id }}
-          name={embeddedCamera.name}
+          name={embeddedName || embeddedCamera.name}
           onClose={() => setEmbeddedCamera(null)}
         />
       )}

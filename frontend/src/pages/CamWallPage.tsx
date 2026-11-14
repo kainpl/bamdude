@@ -24,7 +24,7 @@ import { useTranslation } from 'react-i18next';
 import { ApiError, api, type CamWallPrinter } from '../api/client';
 import { CameraWall, type CameraWallStatus } from '../components/CameraWall';
 import type { CameraTileStatusMode } from '../components/CameraTile';
-import { readStoredCardSize } from '../utils/cardSize';
+import { readStoredCardSize, storeCardSize } from '../utils/cardSize';
 import { CAM_WALL_TILE_SIZE_KEY, DEFAULT_CAM_WALL_TILE_SIZE, camWallTileSizeFromParam } from '../utils/camWallTileSize';
 
 // Same localStorage keys the in-app wall uses, so a kiosk started from a
@@ -101,17 +101,29 @@ export function CamWallPage() {
   // remembers, and a kiosk writes nothing at all.
   const pickTileSize = (size: number) => {
     setTileSize(size);
-    localStorage.setItem(CAM_WALL_TILE_SIZE_KEY, String(size));
+    storeCardSize(CAM_WALL_TILE_SIZE_KEY, size);
   };
 
   // Persist only on the signed-in wall. A kiosk's settings come from its URL, and
   // writing them back would let opening a kiosk link once silently overwrite the
   // wall preferences of whoever's browser it was opened in.
+  // A write throws in a private window or when storage is full or blocked —
+  // from an effect that would take the whole wall down with it.
   useEffect(() => {
-    if (!kiosk) localStorage.setItem(SNAPSHOT_SEC_KEY, String(snapshotSec));
+    if (kiosk) return;
+    try {
+      localStorage.setItem(SNAPSHOT_SEC_KEY, String(snapshotSec));
+    } catch {
+      // Not remembered; the wall keeps the value for this visit.
+    }
   }, [kiosk, snapshotSec]);
   useEffect(() => {
-    if (!kiosk) localStorage.setItem(STATUS_MODE_KEY, statusMode);
+    if (kiosk) return;
+    try {
+      localStorage.setItem(STATUS_MODE_KEY, statusMode);
+    } catch {
+      // Not remembered; the wall keeps the value for this visit.
+    }
   }, [kiosk, statusMode]);
 
   // Kiosk path: one token-authenticated call for the whole wall.

@@ -4793,6 +4793,10 @@ export default {
     cameraUnavailableDesc: 'Переконайтеся, що принтер увімкнений та підключений.',
     retry: 'Повторити',
     cameraStream: 'Потік камери',
+    chamberLightTurnedOn: 'Світло в камері ввімкнено',
+    chamberLightTurnedOff: 'Світло в камері вимкнено',
+    printerNumber: 'Принтер {{id}}',
+    cameraNumber: 'Камера {{id}}',
     zoomOut: 'Зменшити',
     zoomIn: 'Збільшити',
     resetZoom: 'Скинути масштаб',
@@ -12119,7 +12123,8 @@ export default {
     zoomOut: 'Зменшити',
     resetZoom: 'Скинути масштаб',
     zoomIn: 'Збільшити',
-    dragToResize: 'Перетягніть для зміни розміру'
+    dragToResize: 'Перетягніть для зміни розміру',
+    reconnectingIn: 'Перепідключення через {{countdown}} с…'
   },
 
   // Timelapse Viewer

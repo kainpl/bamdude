@@ -10,3 +10,13 @@ export function readStoredCardSize(key: string, fallback = 2): number {
   const saved = parseInt(localStorage.getItem(key) ?? '', 10);
   return saved >= 1 && saved <= 4 ? saved : fallback;
 }
+
+/** Remembers a size the user picked. A private window, or storage that is
+ *  full or blocked, throws on a write: the size still holds for this page. */
+export function storeCardSize(key: string, size: number): void {
+  try {
+    localStorage.setItem(key, String(size));
+  } catch {
+    // Not remembered; nothing else depends on it.
+  }
+}

@@ -150,7 +150,7 @@ export function EmbeddedCameraViewer({ source: sourceProp, name, onClose }: Embe
       return { previousStatus };
     },
     onSuccess: (_, on) => {
-      showToast(`Chamber light ${on ? 'on' : 'off'}`);
+      showToast(t(on ? 'camera.chamberLightTurnedOn' : 'camera.chamberLightTurnedOff'));
     },
     onError: (error: Error, _, context) => {
       if (context?.previousStatus) {
@@ -723,7 +723,7 @@ export function EmbeddedCameraViewer({ source: sourceProp, name, onClose }: Embe
               <div className="text-center p-2">
                 <WifiOff className="w-6 h-6 text-orange-600 dark:text-orange-400 mx-auto mb-2" />
                 <p className="text-xs text-bambu-gray">
-                  Reconnecting in {reconnectCountdown}s...
+                  {t('embeddedCameraViewer.reconnectingIn', { countdown: reconnectCountdown })}
                 </p>
               </div>
             </div>
@@ -753,7 +753,7 @@ export function EmbeddedCameraViewer({ source: sourceProp, name, onClose }: Embe
           {isLive ? <img
             ref={attachImage}
             key={imageKey}
-            alt="Camera stream"
+            alt={t('camera.cameraStream')}
             className="max-w-full max-h-full object-contain select-none"
             style={{
               transform: `scale(${zoomLevel}) translate(${panOffset.x / zoomLevel}px, ${panOffset.y / zoomLevel}px) rotate(${rotation}deg)`,

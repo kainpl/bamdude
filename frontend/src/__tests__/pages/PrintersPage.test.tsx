@@ -199,6 +199,29 @@ describe('PrintersPage', () => {
     }
   });
 
+  it('sizes the wall tiles in a browser that refuses to store the choice', async () => {
+    localStorage.setItem('printerPageView', 'camwall');
+    localStorage.removeItem('camWallTileSize');
+    const view = render(<PrintersPage />);
+    const refuse = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new DOMException('The quota has been exceeded.', 'QuotaExceededError');
+    });
+    try {
+      await userEvent.click(screen.getByRole('button', { name: 'View' }));
+      const sizes = await screen.findByRole('group', { name: 'Tile size' });
+      const xl = Array.from(sizes.querySelectorAll('button')).find((candidate) => candidate.textContent === 'XL')!;
+
+      await userEvent.click(xl);
+
+      await waitFor(() => expect(xl).toHaveAttribute('aria-pressed', 'true'));
+    } finally {
+      refuse.mockRestore();
+      view.unmount();
+      localStorage.removeItem('printerPageView');
+      localStorage.removeItem('camWallTileSize');
+    }
+  });
+
   it('restores only the last saved camera and switches the single popup to another card', async () => {
     // Seeded WITHOUT `kind`: that is what an install saved before a camera could
     // stand on its own, and such a row must still read as a printer's camera.
@@ -253,6 +276,74 @@ describe('PrintersPage', () => {
         await waitFor(() => expect(document.getElementById('printer-1')).not.toBeNull());
         await waitFor(() => expect(localStorage.getItem('openEmbeddedCameras')).toBeNull());
         expect(screen.queryByAltText('Camera stream')).not.toBeInTheDocument();
+      } finally {
+        view.unmount();
+      }
+    });
+
+    it('takes its name from the list, not from what the browser remembered', async () => {
+      localStorage.setItem('openEmbeddedCameras', JSON.stringify([{ kind: 'camera', id: 4, name: 'Old shelf name' }]));
+      server.use(http.get('/api/v1/cameras/', () => HttpResponse.json([
+        { id: 4, name: 'Drying rack', camera_type: 'mjpeg', rotation: 0, enabled: true, location_id: null, location_name: null },
+      ])));
+      const view = render(<PrintersPage />);
+      try {
+        const stream = await screen.findByAltText('Camera stream') as HTMLImageElement;
+        expect(stream.src).toContain('/cameras/4/');
+        const windowFrame = stream.closest('.fixed') as HTMLElement;
+        expect(within(windowFrame).getByText('Drying rack')).toBeInTheDocument();
+        expect(screen.queryByText('Old shelf name')).not.toBeInTheDocument();
+        await waitFor(() => expect(JSON.parse(localStorage.getItem('openEmbeddedCameras')!)).toEqual([
+          { kind: 'camera', id: 4, name: 'Drying rack' },
+        ]));
+      } finally {
+        view.unmount();
+      }
+    });
+
+    it('is closed and forgotten when its printer is deleted while it is open', async () => {
+      localStorage.setItem('openEmbeddedCameras', JSON.stringify([{ kind: 'printer', id: 2, name: 'P1S Backup' }]));
+      let cache!: QueryClient;
+      function CaptureCache() {
+        const client = useQueryClient();
+        useEffect(() => { cache = client; }, [client]);
+        return null;
+      }
+      const view = render(<><CaptureCache /><PrintersPage /></>);
+      try {
+        const stream = await screen.findByAltText('Camera stream') as HTMLImageElement;
+        expect(stream.src).toContain('/printers/2/');
+
+        // Somebody deletes the printer; the list is read again (a socket event, a focus).
+        server.use(http.get('/api/v1/printers/', () => HttpResponse.json(mockPrinters.filter((p) => p.id !== 2))));
+        await act(async () => { await cache.invalidateQueries({ queryKey: ['printers'] }); });
+
+        await waitFor(() => expect(screen.queryByAltText('Camera stream')).not.toBeInTheDocument());
+        expect(stream.src).toMatch(/^data:image\/gif;/);
+        await waitFor(() => expect(localStorage.getItem('openEmbeddedCameras')).toBeNull());
+      } finally {
+        view.unmount();
+      }
+    });
+
+    it('stays open while its list is merely being read again', async () => {
+      localStorage.setItem('openEmbeddedCameras', JSON.stringify([{ kind: 'printer', id: 2, name: 'P1S Backup' }]));
+      let cache!: QueryClient;
+      function CaptureCache() {
+        const client = useQueryClient();
+        useEffect(() => { cache = client; }, [client]);
+        return null;
+      }
+      const view = render(<><CaptureCache /><PrintersPage /></>);
+      try {
+        const stream = await screen.findByAltText('Camera stream') as HTMLImageElement;
+        const address = stream.src;
+
+        await act(async () => { await cache.invalidateQueries({ queryKey: ['printers'] }); });
+        await act(async () => { await cache.invalidateQueries({ queryKey: ['cameras'] }); });
+
+        expect(screen.getByAltText('Camera stream')).toBe(stream);
+        expect(stream.src).toBe(address);
       } finally {
         view.unmount();
       }
