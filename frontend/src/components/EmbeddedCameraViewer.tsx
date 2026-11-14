@@ -722,7 +722,6 @@ export function EmbeddedCameraViewer({ source: sourceProp, name, onClose }: Embe
           {isLive ? <img
             ref={attachImage}
             key={imageKey}
-            src={streamUrl}
             alt="Camera stream"
             className="max-w-full max-h-full object-contain select-none"
             style={{

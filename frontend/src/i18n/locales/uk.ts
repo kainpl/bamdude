@@ -4945,6 +4945,7 @@ export default {
     title: 'Накладання потоку',
     invalidPrinterId: 'Невірний ID принтера',
     cameraStream: 'Потік камери',
+    noSignal: 'Немає сигналу',
     progress: 'Прогрес',
     eta: 'Залишилось',
     printerIdle: 'Принтер простоює',

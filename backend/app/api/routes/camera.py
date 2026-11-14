@@ -827,6 +827,26 @@ async def diagnose_camera_route(
     return result.to_dict()
 
 
+def stream_liveness(printer_id: int) -> dict[str, bool]:
+    """Whether this printer's live stream is registered, and whether it has stopped delivering.
+
+    The ONE rule behind ``/camera/status`` and the ``camera`` field of the token-authenticated overlay
+    feed (``/printers/{id}/overlay-status``): a view re-opens its stream on this answer, so the two
+    must not drift apart. Stalled = registered for more than the 5 s start-up grace and no frame for
+    more than 10 s.
+    """
+    import time
+
+    active = printer_id in _active_worker_streams
+    now = time.time()
+    last_frame_time = _last_frame_times.get(printer_id)
+    stream_start_time = _stream_start_times.get(printer_id)
+    since_frame = None if last_frame_time is None else now - last_frame_time
+    uptime = None if stream_start_time is None else now - stream_start_time
+    stalled = active and uptime is not None and uptime > 5 and (since_frame is None or since_frame > 10)
+    return {"active": active, "stalled": stalled}
+
+
 @router.get("/{printer_id}/camera/status")
 async def camera_status(
     printer_id: int,
@@ -878,12 +898,7 @@ async def camera_status(
         # their viewer count only when the built-in fan-out path is active.
         "subscribers": get_subscriber_count(f"printer-{printer_id}"),
         # Consider stalled if no frame for more than 10 seconds after stream started
-        "stalled": (
-            has_active_stream
-            and stream_uptime is not None
-            and stream_uptime > 5  # Give 5 seconds for stream to start
-            and (seconds_since_frame is None or seconds_since_frame > 10)
-        ),
+        "stalled": stream_liveness(printer_id)["stalled"],
     }
 
 

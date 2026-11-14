@@ -1779,6 +1779,14 @@ async def get_overlay_status(
 
     time_format = await get_setting(db, "time_format") or "system"
     state = printer_manager.get_status(printer_id)
+    # Is the stream this token watches alive? A stream the server ends cleanly
+    # fires nothing on the browser's <img>, and the token cannot read the
+    # session's /camera/status — so the same two flags ride this feed. Within
+    # the grant: the token already opens this printer's stream. Flags only —
+    # no source type, telemetry or viewer count.
+    from backend.app.api.routes.camera import stream_liveness
+
+    camera = stream_liveness(printer_id)
 
     if not state:
         # Never connected this run — mirror get_printer_status()'s disconnected
@@ -1799,6 +1807,7 @@ async def get_overlay_status(
             "stg_cur_name": None,
             "temperatures": {},
             "time_format": time_format,
+            "camera": camera,
         }
 
     from backend.app.services.layer_projection import resolve_layer_pair
@@ -1822,6 +1831,7 @@ async def get_overlay_status(
         # Filtered rather than passed through — see display_temperatures.
         "temperatures": display_temperatures(state.temperatures, printer.model),
         "time_format": time_format,
+        "camera": camera,
     }
 
 

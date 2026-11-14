@@ -1,4 +1,4 @@
-import { useCameraImageRef } from '../hooks/useCameraImageRef';
+import { isIdleCameraImage, useCameraImageRef } from '../hooks/useCameraImageRef';
 import { containLimits, useRotatedBox } from '../hooks/useRotatedFit';
 import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router';
@@ -846,7 +846,6 @@ export function CameraPage() {
           <img
             ref={attachStreamImage}
             key={imageKey}
-            src={currentUrl}
             alt={t('camera.cameraStream')}
             className="max-w-full max-h-full object-contain select-none"
             style={{
@@ -854,8 +853,15 @@ export function CameraPage() {
               ...containLimits(videoArea, rotation),
               cursor: zoomLevel > 1 ? (isPanning ? 'grabbing' : 'grab') : 'default',
             }}
-            onError={currentUrl ? handleStreamError : undefined}
-            onLoad={currentUrl ? handleStreamLoad : undefined}
+            // An image this page has just emptied (`src = ''` before a refresh,
+            // a mode switch, a reconnect or a fullscreen change) fires `error`,
+            // and the placeholder fires `load`: neither is the camera's answer.
+            onError={(event) => {
+              if (currentUrl && !isIdleCameraImage(event.currentTarget)) handleStreamError();
+            }}
+            onLoad={(event) => {
+              if (currentUrl && !isIdleCameraImage(event.currentTarget)) handleStreamLoad();
+            }}
             onMouseDown={handleImageMouseDown}
             draggable={false}
           />

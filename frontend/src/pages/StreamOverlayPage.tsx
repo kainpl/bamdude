@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { useParams, useSearchParams } from 'react-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
@@ -7,6 +7,9 @@ import { LoadingBlock } from '../components/LoadingBlock';
 import { api, ApiError, withStreamToken } from '../api/client';
 import { formatDuration, formatETA, type TimeFormat } from '../utils/date';
 import { fillStyle, useRotatedBox } from '../hooks/useRotatedFit';
+import { useCameraImageRef } from '../hooks/useCameraImageRef';
+import { useCameraStreamRecovery, type CameraStreamHealth } from '../hooks/useCameraStreamRecovery';
+import { printerSource, streamPath } from '../utils/cameraSource';
 
 type TFunction = (key: string, options?: Record<string, unknown>) => string;
 
@@ -169,9 +172,6 @@ export function StreamOverlayPage() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const id = parseInt(printerId || '0', 10);
-  const [imageKey, setImageKey] = useState(Date.now());
-  const [streamFailures, setStreamFailures] = useState(0);
-  const [retryStream, setRetryStream] = useState(false);
 
   const config = useMemo(() => parseConfig(searchParams), [searchParams]);
   const sizes = getSizeClasses(config.size);
@@ -186,7 +186,7 @@ export function StreamOverlayPage() {
 
   // Kiosk path: one token-authenticated call for name + live status + the one
   // setting the overlay reads. No JWT, so this is the only feed available.
-  const { data: overlay, error: overlayError } = useQuery({
+  const { data: overlay, error: overlayError, dataUpdatedAt: overlayReadAt } = useQuery({
     queryKey: ['overlayStatus', id, token],
     queryFn: () => api.getOverlayStatus(id, token!),
     enabled: id > 0 && kiosk,
@@ -357,21 +357,50 @@ export function StreamOverlayPage() {
   }, [printer, t]);
 
   const kioskRefused = kiosk && overlayError instanceof ApiError && (overlayError.status === 401 || overlayError.status === 403);
-  // Cancel any pending image retry when the feed definitively refuses the
-  // token. An image error itself has no HTTP status, so transient errors back off.
-  useEffect(() => {
-    if (!retryStream || kioskRefused) return;
-    const timer = setTimeout(() => {
-      setImageKey(Date.now());
-      setRetryStream(false);
-    }, Math.min(30_000, 3000 * 2 ** Math.min(Math.max(streamFailures - 1, 0), 4)));
-    return () => clearTimeout(timer);
-  }, [retryStream, kioskRefused, streamFailures]);
 
-  const handleStreamError = () => {
-    setStreamFailures(value => value + 1);
-    setRetryStream(true);
-  };
+  // Is the stream this page draws still alive? Asked of the SERVER, because a
+  // stream it ends cleanly fires nothing on the image and the broadcast would
+  // show a frozen frame until somebody reloaded the source.
+  // - OBS (token in the URL): the token cannot read the session's camera status
+  //   route, so the answer rides the feed this page already polls with that
+  //   token (`camera`). Each answer is read once: while the feed is away, the
+  //   last one must not count as a second bad read. A server that does not
+  //   send the field leaves only the image's own `error`.
+  // - signed in: the ordinary camera status route.
+  const feedCamera = useRef<{ health: CameraStreamHealth | undefined; at: number }>({ health: undefined, at: 0 });
+  const feedCameraRead = useRef(0);
+  useEffect(() => {
+    feedCamera.current = { health: overlay?.camera, at: overlayReadAt };
+  }, [overlay, overlayReadAt]);
+  const readStreamHealth = useCallback(async (): Promise<CameraStreamHealth | null> => {
+    if (!kiosk) return api.getCameraSourceStatus(printerSource(id));
+    const { health, at } = feedCamera.current;
+    if (!health || at === feedCameraRead.current) return null;
+    feedCameraRead.current = at;
+    return health;
+  }, [kiosk, id]);
+
+  // A refused token ends it: nothing is retried once the feed says 401/403.
+  // Nobody can press Retry on a broadcast, so after its bounded attempts the
+  // overlay shows "No signal" and tries again once a minute.
+  const showsCamera = id > 0 && config.showCamera && !kioskRefused && !!status;
+  const {
+    phase: streamPhase,
+    generation: streamGeneration,
+    onError: handleStreamError,
+    onLoad: handleStreamLoad,
+  } = useCameraStreamRecovery({ enabled: showsCamera, readHealth: readStreamHealth, slowRetryMs: 60_000 });
+
+  // Append the kiosk token directly rather than leaning on withStreamToken's
+  // module cache — the cache is populated by an effect and would miss the first
+  // render (a 401 flash before the retry). The logged-in path keeps the cache.
+  const camPath = streamPath(printerSource(id), config.fps, streamGeneration);
+  const streamUrl = kiosk && token
+    ? `${camPath}&token=${encodeURIComponent(token)}`
+    : withStreamToken(camPath);
+  // The mounted image gets its URL from the hook, never as a prop, and loses
+  // it when it goes: OBS is Chromium, and a dropped <img> keeps its request.
+  const { attachImage: attachStreamImage } = useCameraImageRef(streamUrl);
 
   // The picture fills the browser source: a sideways camera is laid out in
   // the source's sides swapped, or it is cropped. The box appears once the
@@ -405,26 +434,25 @@ export function StreamOverlayPage() {
   const online = status.connected;
   const isPrinting = online && (status.state === 'RUNNING' || status.state === 'PAUSE');
   const progress = status.progress || 0;
-  // Append the kiosk token directly rather than leaning on withStreamToken's
-  // module cache — the cache is populated by an effect and would miss the first
-  // render (a 401 flash before the retry). The logged-in path keeps the cache.
-  const camPath = `/api/v1/printers/${id}/camera/stream?fps=${config.fps}&t=${imageKey}`;
-  const streamUrl = kiosk && token
-    ? `${camPath}&token=${encodeURIComponent(token)}`
-    : withStreamToken(camPath);
 
   return (
     <div ref={sceneRef} className="min-h-screen bg-black relative overflow-hidden">
       {/* Camera feed - fullscreen background (optional) */}
-      {config.showCamera && !kioskRefused && (
+      {showsCamera && streamPhase === 'live' && (
         <img
-          key={imageKey}
-          src={streamUrl}
+          ref={attachStreamImage}
+          key={streamGeneration}
           alt={t('streamOverlay.cameraStream')}
           className="absolute inset-0 w-full h-full object-contain"
           style={fillStyle(scene, printer?.camera_rotation)}
           onError={handleStreamError}
+          onLoad={handleStreamLoad}
         />
+      )}
+      {showsCamera && streamPhase === 'failed' && (
+        <div className="absolute inset-0 flex items-center justify-center">
+          <p className={`${sizes.text} text-white/60`}>{t('streamOverlay.noSignal')}</p>
+        </div>
       )}
 
       {/* BamDude logo - top right */}

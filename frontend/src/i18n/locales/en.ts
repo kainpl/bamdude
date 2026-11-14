@@ -4917,6 +4917,7 @@ export default {
     },
     invalidPrinterId: 'Invalid printer ID',
     cameraStream: 'Camera stream',
+    noSignal: 'No signal',
     progress: 'Progress',
     eta: 'ETA',
     printerIdle: 'Printer is idle',

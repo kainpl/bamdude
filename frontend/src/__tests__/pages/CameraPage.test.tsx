@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { screen, waitFor, render as rtlRender } from '@testing-library/react';
+import { fireEvent, screen, waitFor, render as rtlRender } from '@testing-library/react';
 import { CameraPage } from '../../pages/CameraPage';
 import { http, HttpResponse } from 'msw';
 import { server } from '../mocks/server';
@@ -275,6 +275,68 @@ describe('CameraPage', () => {
         const src = (document.querySelector('img') as HTMLImageElement | null)?.getAttribute('src') || '';
         expect(src).toContain('fps=15');
       });
+    });
+  });
+
+  // The page empties its own image before it re-opens the stream. An emptied
+  // image fires `error`, and the page read that as the camera failing: its own
+  // refresh started a "Connection lost" countdown.
+  describe('the page emptying its own image', () => {
+    // Signed in: the page fetches its stream token itself and keeps it. (A token
+    // set by hand lasts one render — the page's own token sync replaces it.)
+    beforeEach(async () => {
+      const { setAuthToken } = await import('../../api/client');
+      setAuthToken('test-admin-token');
+    });
+    afterEach(async () => {
+      const { setAuthToken } = await import('../../api/client');
+      setAuthToken(null);
+    });
+
+    const streamImage = async () => {
+      await waitFor(() => {
+        expect(screen.getByAltText('Camera stream').getAttribute('src')).toContain('/camera/stream');
+      });
+      return screen.getByAltText('Camera stream') as HTMLImageElement;
+    };
+
+    it('does not start a reconnect countdown when the view goes fullscreen', async () => {
+      renderCameraPage(1);
+      const img = await streamImage();
+      fireEvent.load(img);
+
+      fireEvent(document, new Event('fullscreenchange'));
+      // What the browser fires for the `src = ''` the page has just written.
+      expect(img.getAttribute('src')).toBe('');
+      fireEvent.error(img);
+
+      expect(screen.queryByText('Connection lost')).not.toBeInTheDocument();
+      // The stream is opened again, on a new image.
+      await waitFor(() => expect(screen.getByAltText('Camera stream')).not.toBe(img));
+      expect((await streamImage()).getAttribute('src')).toContain('/camera/stream');
+    });
+
+    it('still reconnects when the camera itself fails', async () => {
+      renderCameraPage(1);
+      const img = await streamImage();
+
+      fireEvent.error(img);
+
+      expect(screen.getByText('Connection lost')).toBeInTheDocument();
+    });
+
+    it('closes the stream of the image it shows now, not only the first one', async () => {
+      const view = renderCameraPage(1);
+      const first = await streamImage();
+      fireEvent.load(first);
+
+      fireEvent.click(screen.getByTitle('Restart stream'));
+      await waitFor(() => expect(screen.getByAltText('Camera stream')).not.toBe(first));
+      const second = await streamImage();
+      expect(first.src).toMatch(/^data:image\/gif;/);
+
+      view.unmount();
+      expect(second.src).toMatch(/^data:image\/gif;/);
     });
   });
 
