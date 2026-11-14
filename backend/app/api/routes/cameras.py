@@ -507,7 +507,10 @@ async def camera_snapshot(
         url, camera_type, snapshot_url = camera.url, camera.camera_type, camera.snapshot_url
         bind_camera(request, camera)
 
-    frame = _live_frame(camera_id) or _cached_snapshot(camera_id)
+    # A camera with its own snapshot URL answers with that still even while it is watched — ``capture`` fetches
+    # it beside the stream and falls back to the view's frame itself (owner, 2026-11-15). The short cache
+    # stays in front, so a wall of tiles costs the camera one request per window.
+    frame = _cached_snapshot(camera_id) if snapshot_url else _live_frame(camera_id) or _cached_snapshot(camera_id)
     if frame is None:
         from backend.app.services.camera_runtime import CameraCaptureRequest, CameraWorkerUnavailable, capture
 

@@ -589,7 +589,11 @@ async def test_with_no_viewer_attached_the_products_one_shot_capture_is_used(
 
 async def test_an_external_camera_is_captured_through_the_external_path(session_factory, upload_portal, monkeypatch):
     """A USB or RTSP camera is not the printer's, and reaching it is not the same
-    call. Same branch the product's own snapshot endpoint takes."""
+    call. Same branch the product's own snapshot endpoint takes.
+
+    This camera has its own snapshot URL, so the capture is the ONLY call (owner, 2026-11-15): the agent
+    no longer asks the live view first — ``camera_runtime.capture`` fetches the still beside the stream and
+    falls back to the view's frame itself. Until then this test read the capture at ``calls[1]``."""
     portal, url = await upload_portal()
     uplink = await set_up(
         session_factory,
@@ -609,12 +613,14 @@ async def test_an_external_camera_is_captured_through_the_external_path(session_
         audit=budget(session_factory),
     )
 
-    assert calls[1] == (
-        "capture_external_frame",
-        "rtsp://192.168.1.99/live",
-        "rtsp",
-        "http://192.168.1.99/snap.jpg",
-    )
+    assert calls == [
+        (
+            "capture_external_frame",
+            "rtsp://192.168.1.99/live",
+            "rtsp",
+            "http://192.168.1.99/snap.jpg",
+        )
+    ]
     assert portal.requests[0]["body"] == FRAME
 
 

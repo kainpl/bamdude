@@ -389,7 +389,10 @@ async def _capture(printer_id: int, camera: _Camera) -> bytes | None:
     from backend.app.api.routes.camera import live_frame_for_capture
     from backend.app.services.camera_runtime import CameraCaptureRequest, capture
 
-    defer, buffered = live_frame_for_capture(printer_id)
+    # A camera with its own snapshot URL sends that still, watched or not: ``capture`` fetches it beside the
+    # stream — no socket to the stream — and falls back to the view's frame itself (owner, 2026-11-15).
+    own_still = bool(camera.external_enabled and camera.external_url and camera.external_snapshot_url)
+    defer, buffered = (False, None) if own_still else live_frame_for_capture(printer_id)
     if defer:
         if buffered is None:
             logger.info(

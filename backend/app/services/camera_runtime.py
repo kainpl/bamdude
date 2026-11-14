@@ -491,9 +491,9 @@ async def frame_from_live_view(request: CameraCaptureRequest) -> tuple[bool, byt
     delivered none within :data:`LIVE_VIEW_FIRST_FRAME_WAIT` — "busy", for the caller to report as its
     contract says. A view that leaves during the wait hands the camera back, and the caller captures.
 
-    A request that carries a snapshot URL takes the view's frame when there is one and is otherwise NOT held
-    back: that URL is a plain HTTP GET beside the stream, not a second reader of it (audit G09 Unsure 1 —
-    which of the two such a camera should answer with is the owner's to decide; this keeps what it did).
+    A request that carries a snapshot URL is not this function's to hold back — :func:`capture` fetches the
+    still first and asks here only when that failed; a camera TEST of such a camera is of its stream and is
+    answered here like any other.
     """
     probe = _live_view_probe(request)
     if probe is None:
@@ -505,8 +505,6 @@ async def frame_from_live_view(request: CameraCaptureRequest) -> tuple[bool, byt
             return False, None
         if frame is not None:
             return True, frame
-        if request.snapshot_url:
-            return False, None
         if time.monotonic() >= deadline:
             logger.info(
                 "Camera capture (%s) stood down: a live view holds the camera and has no frame yet", request.purpose
@@ -523,6 +521,11 @@ async def capture(request: CameraCaptureRequest) -> CameraCaptureResult:
     the live view — see :func:`frame_from_live_view`. The result then says ``source="live_view"``, with no
     frame when the view had none to give. This is the one place the rule lives; a caller does not repeat it.
 
+    A camera with its own snapshot URL answers with that still even while it is watched (owner, 2026-11-15;
+    upstream 7cea7acf0 / cf0ba31f1): a plain HTTP GET the worker makes beside the stream — full quality, and
+    no second reader of the stream. Only when the still cannot be fetched does the view's frame answer; the
+    worker is never asked for anything but the still while the view holds the camera.
+
     The chamber light is taken here, in the main process, whichever runtime
     does the capture: a request that names its printer holds the light for
     the frame and waits for the printer to confirm it before the capture
@@ -534,6 +537,8 @@ async def capture(request: CameraCaptureRequest) -> CameraCaptureResult:
 
     from backend.app.services import camera_capability, camera_light
 
+    if request.snapshot_url and _is_watched(request):
+        return await _still_beside_live_view(request)
     watched, live_frame = await frame_from_live_view(request)
     if watched:
         # No light of our own either: the view that holds the camera holds its light.
@@ -549,6 +554,44 @@ async def capture(request: CameraCaptureRequest) -> CameraCaptureResult:
         if lease is not None:
             await lease.settle()
         return await get_camera_runtime().capture(request)
+
+
+def _is_watched(request: CameraCaptureRequest) -> bool:
+    probe = _live_view_probe(request)
+    return probe is not None and probe()[0]
+
+
+async def _still_beside_live_view(request: CameraCaptureRequest) -> CameraCaptureResult:
+    """The still of a watched camera that has its own snapshot URL; the view's frame when it cannot be had.
+
+    The request carries the snapshot URL, so the worker fetches that and opens no stream reader
+    (``external_camera._capture_frame_uncoalesced``). The light is taken as for any capture: a view lights
+    the chamber only when the farm asks it to, and a picture somebody keeps is taken in light either way.
+    """
+    from backend.app.services import camera_light
+
+    result: CameraCaptureResult | None = None
+    failure: Exception | None = None
+    try:
+        async with camera_light.held(request.printer_id, request.purpose, hold=request.hold) as lease:
+            if lease is not None:
+                await lease.settle()
+            result = await get_camera_runtime().capture(request)
+    except Exception as exc:
+        failure = exc
+    if result is not None and result.frame:
+        return result
+    watched, live_frame = await frame_from_live_view(request)
+    if watched:
+        logger.info(
+            "Camera capture (%s): the camera's own still could not be fetched (%s); answered from its live view",
+            request.purpose,
+            type(failure).__name__ if failure is not None else "no frame",
+        )
+        return CameraCaptureResult(frame=live_frame, source="live_view")
+    if failure is not None:
+        raise failure
+    return result
 
 
 #: What a camera test answers when a live view holds the camera and has not delivered a frame yet.
