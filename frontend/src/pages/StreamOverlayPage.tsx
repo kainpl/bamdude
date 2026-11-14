@@ -317,12 +317,17 @@ export function StreamOverlayPage() {
 
   // The installation's logo (`logo=1`). OBS learns from the feed it already
   // polls whether there is one, and which; a signed-in page asks the session's
-  // route — and neither asks anything unless the address wants the logo.
+  // route — and neither asks anything unless the address wants the logo. That
+  // route is asked again every minute (hidden tab or not: an overlay is a
+  // capture source): the page stays open for a whole broadcast, and a logo
+  // replaced or removed meanwhile must not stay as it was.
   const { data: logoInfo } = useQuery({
     queryKey: ['overlayLogoInfo'],
     queryFn: api.getOverlayLogoInfo,
     enabled: config.showLogo && !kiosk,
     retry: false,
+    refetchInterval: 60_000,
+    refetchIntervalInBackground: true,
   });
   const logoRevision = config.showLogo ? (kiosk ? overlay?.logo?.revision : logoInfo?.revision) ?? null : null;
   const logo = useOverlayLogo(logoRevision, kiosk ? token : null);

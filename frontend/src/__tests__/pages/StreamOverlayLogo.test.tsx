@@ -8,7 +8,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { fireEvent, screen, waitFor, render as rtlRender } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor, render as rtlRender } from '@testing-library/react';
 import { http, HttpResponse } from 'msw';
 import { MemoryRouter, Route, Routes } from 'react-router';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -70,9 +70,11 @@ describe('StreamOverlayPage — the installation logo', () => {
   let asked: string[];
   let feedLogo: { revision: string } | null;
   let refused: boolean;
+  let sessionLogo: string | null;
 
   beforeEach(() => {
     asked = [];
+    sessionLogo = 'rev1';
     feedLogo = { revision: 'rev1' };
     refused = false;
     vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:overlay-logo');
@@ -93,7 +95,7 @@ describe('StreamOverlayPage — the installation logo', () => {
       ),
       http.get('/api/v1/settings/overlay-logo/info', () => {
         asked.push('info');
-        return HttpResponse.json({ exists: true, revision: 'rev1' });
+        return HttpResponse.json({ exists: sessionLogo !== null, revision: sessionLogo });
       }),
       http.get('/api/v1/settings/overlay-logo', () => {
         asked.push('picture');
@@ -203,6 +205,30 @@ describe('StreamOverlayPage — the installation logo', () => {
       expect(logo()!.getAttribute('src')).toBe('blob:overlay-logo');
       expect(asked).toEqual(['info', 'picture']);
     });
+
+    // A signed-in overlay has no feed that names the logo: it asks the
+    // session's route, and must keep asking — the page stays open for hours.
+    it('notices a logo that was replaced, and one that was removed', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      try {
+        renderOverlay('?logo=1&camera=false');
+        await drawn();
+        await waitFor(() => expect(logo()).not.toBeNull());
+        expect(asked).toEqual(['info', 'picture']);
+
+        sessionLogo = 'rev2';
+        await act(async () => { await vi.advanceTimersByTimeAsync(61_000); });
+        await waitFor(() => expect(asked.filter((what) => what === 'picture')).toHaveLength(2));
+        await waitFor(() => expect(logo()).not.toBeNull());
+
+        sessionLogo = null;
+        await act(async () => { await vi.advanceTimersByTimeAsync(61_000); });
+        await waitFor(() => expect(logo()).toBeNull());
+        expect(asked.filter((what) => what === 'picture')).toHaveLength(2);
+      } finally {
+        vi.useRealTimers();
+      }
+    }, 20000);
 
     it('asks nothing about a logo the address does not want', async () => {
       renderOverlay('?camera=false');
