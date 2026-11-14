@@ -171,6 +171,34 @@ describe('PrintersPage', () => {
     }
   });
 
+  // The switch was greyed out in wall view: the wall had one fixed grid.
+  it('sizes the wall tiles with the size switch, apart from the card size', async () => {
+    localStorage.setItem('printerPageView', 'camwall');
+    localStorage.setItem('printerCardSize', '3');
+    localStorage.removeItem('camWallTileSize');
+    const view = render(<PrintersPage />);
+    try {
+      await userEvent.click(screen.getByRole('button', { name: 'View' }));
+      const sizes = await screen.findByRole('group', { name: 'Tile size' });
+      expect(screen.queryByRole('group', { name: 'Card size' })).not.toBeInTheDocument();
+      const button = (label: string) =>
+        Array.from(sizes.querySelectorAll('button')).find((candidate) => candidate.textContent === label)!;
+      // The wall's own size — M until picked — not the cards' L.
+      expect(button('M')).toHaveAttribute('aria-pressed', 'true');
+      expect(button('XL')).not.toBeDisabled();
+
+      await userEvent.click(button('XL'));
+
+      await waitFor(() => expect(button('XL')).toHaveAttribute('aria-pressed', 'true'));
+      expect(localStorage.getItem('camWallTileSize')).toBe('4');
+      expect(localStorage.getItem('printerCardSize')).toBe('3');
+    } finally {
+      view.unmount();
+      localStorage.removeItem('printerPageView');
+      localStorage.removeItem('camWallTileSize');
+    }
+  });
+
   it('restores only the last saved camera and switches the single popup to another card', async () => {
     // Seeded WITHOUT `kind`: that is what an install saved before a camera could
     // stand on its own, and such a row must still read as a printer's camera.
@@ -194,6 +222,101 @@ describe('PrintersPage', () => {
       view.unmount();
       localStorage.removeItem('openEmbeddedCameras');
     }
+  });
+
+  // Browser storage outlives what it describes: a remembered camera is shown
+  // only once it is vouched for, and forgotten otherwise.
+  describe('a floating camera remembered by the browser', () => {
+    afterEach(() => localStorage.removeItem('openEmbeddedCameras'));
+
+    it('is not shown, and is forgotten, when its printer is gone', async () => {
+      localStorage.setItem('openEmbeddedCameras', JSON.stringify([{ kind: 'printer', id: 77, name: 'Sold Printer' }]));
+      const view = render(<PrintersPage />);
+      try {
+        await waitFor(() => expect(document.getElementById('printer-1')).not.toBeNull());
+        await waitFor(() => expect(localStorage.getItem('openEmbeddedCameras')).toBeNull());
+        expect(screen.queryByAltText('Camera stream')).not.toBeInTheDocument();
+        expect(screen.queryByText('Sold Printer')).not.toBeInTheDocument();
+      } finally {
+        view.unmount();
+      }
+    });
+
+    it('is not shown, and is forgotten, when the user may no longer view cameras', async () => {
+      localStorage.setItem('openEmbeddedCameras', JSON.stringify([{ kind: 'printer', id: 1, name: 'X1 Carbon' }]));
+      server.use(http.get('/api/v1/auth/me', () => HttpResponse.json({
+        id: 9, username: 'reader', role: 'viewer', is_active: true, is_admin: false,
+        groups: [], permissions: ['printers:read'], created_at: '2024-01-01T00:00:00Z',
+      })));
+      const view = render(<PrintersPage />);
+      try {
+        await waitFor(() => expect(document.getElementById('printer-1')).not.toBeNull());
+        await waitFor(() => expect(localStorage.getItem('openEmbeddedCameras')).toBeNull());
+        expect(screen.queryByAltText('Camera stream')).not.toBeInTheDocument();
+      } finally {
+        view.unmount();
+      }
+    });
+
+    it('is not shown before the printer list has answered', async () => {
+      localStorage.setItem('openEmbeddedCameras', JSON.stringify([{ kind: 'printer', id: 2, name: 'P1S Backup' }]));
+      let answer: () => void = () => {};
+      const held = new Promise<void>((resolve) => { answer = resolve; });
+      server.use(http.get('/api/v1/printers/', async () => {
+        await held;
+        return HttpResponse.json(mockPrinters);
+      }));
+      const view = render(<PrintersPage />);
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        expect(screen.queryByAltText('Camera stream')).not.toBeInTheDocument();
+        // Still remembered: an unanswered list is no verdict.
+        expect(JSON.parse(localStorage.getItem('openEmbeddedCameras')!)).toHaveLength(1);
+        answer();
+        const stream = await screen.findByAltText('Camera stream') as HTMLImageElement;
+        expect(stream.src).toContain('/printers/2/');
+      } finally {
+        answer();
+        view.unmount();
+      }
+    });
+  });
+
+  // A web app started from the iOS home screen has no second window:
+  // `window.open` loads the camera page into the app, with no way back.
+  describe('camera in a home-screen web app', () => {
+    beforeEach(() => {
+      Object.defineProperty(window.navigator, 'standalone', { configurable: true, value: true });
+    });
+    afterEach(() => {
+      Reflect.deleteProperty(window.navigator, 'standalone');
+      localStorage.removeItem('cameraViewMode');
+      localStorage.removeItem('openEmbeddedCameras');
+    });
+
+    it('opens the overlay whatever this browser and the farm chose, and offers no window', async () => {
+      localStorage.setItem('cameraViewMode', 'window');
+      server.use(http.get('/api/v1/settings/ui-preferences', () => HttpResponse.json({ camera_view_mode: 'window' })));
+      const open = vi.spyOn(window, 'open').mockReturnValue(null);
+      const view = render(<PrintersPage />);
+      try {
+        const card = await waitFor(() => {
+          const el = document.getElementById('printer-1');
+          expect(el).not.toBeNull();
+          return el!;
+        });
+        await userEvent.click(await within(card).findByTitle('Open camera overlay'));
+        expect(await screen.findByAltText('Camera stream')).toBeInTheDocument();
+        expect(open).not.toHaveBeenCalled();
+
+        await userEvent.click(within(card).getByRole('button', { name: 'Choose how the camera opens' }));
+        expect(await screen.findByRole('menuitem', { name: /Embedded Overlay/ })).toBeInTheDocument();
+        expect(screen.queryByRole('menuitem', { name: /New Window/ })).not.toBeInTheDocument();
+      } finally {
+        open.mockRestore();
+        view.unmount();
+      }
+    });
   });
 
   describe('camera view mode (audit D9 b)', () => {

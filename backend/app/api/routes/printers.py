@@ -129,6 +129,7 @@ from backend.app.utils.http import build_content_disposition
 from backend.app.utils.kprofile_lookup import build_slot_k_resolver
 from backend.app.utils.model_compatibility import compatibility_matrix, effective_model_for_state, model_compatibility
 from backend.app.utils.printer_configs import is_bed_slinger
+from backend.app.utils.printer_models import normalize_model_name
 from backend.app.utils.printer_storage import storage_capability_for
 from backend.app.utils.slot_nozzle import slot_nozzle
 from backend.app.utils.temperature_limits import is_within, limits_for
@@ -1794,10 +1795,14 @@ async def get_overlay_status(
 
     A token-authenticated sibling of ``get_printer_status`` for embeds with no
     login session — OBS loads ``/overlay/{id}?token=...`` and this feeds it.
-    Deliberately flat and minimal (name, camera rotation, live print state, and
-    the one setting the overlay reads) rather than the full ``PrinterStatus``: a
-    token holder gets exactly the fields the overlay renders, nothing more — no
-    serial number, no IP address.
+    Deliberately flat and minimal (name, model, camera rotation, live print
+    state, and the one setting the overlay reads) rather than the full
+    ``PrinterStatus``: a token holder gets exactly the fields the overlay
+    renders, nothing more — no serial number, no IP address.
+
+    The model is the short display name (``show=model`` draws it beside the
+    name, upstream #3099), never the raw column: that one may hold an internal
+    code or the long marketing name, and the page OBS loads should need no map.
 
     It *does* include the print filename, because the overlay names the part on
     screen. That is why it sits behind its own ``overlay`` scope instead of the
@@ -1812,6 +1817,14 @@ async def get_overlay_status(
 
     time_format = await get_setting(db, "time_format") or "system"
     state = printer_manager.get_status(printer_id)
+    # Is the stream this token watches alive? A stream the server ends cleanly
+    # fires nothing on the browser's <img>, and the token cannot read the
+    # session's /camera/status — so the same two flags ride this feed. Within
+    # the grant: the token already opens this printer's stream. Flags only —
+    # no source type, telemetry or viewer count.
+    from backend.app.api.routes.camera import stream_liveness
+
+    camera = stream_liveness(printer_id)
 
     if not state:
         # Never connected this run — mirror get_printer_status()'s disconnected
@@ -1819,6 +1832,7 @@ async def get_overlay_status(
         return {
             "id": printer_id,
             "name": printer.name,
+            "model": normalize_model_name(printer.model),
             "camera_rotation": printer.camera_rotation or 0,
             "connected": False,
             "state": None,
@@ -1832,6 +1846,7 @@ async def get_overlay_status(
             "stg_cur_name": None,
             "temperatures": {},
             "time_format": time_format,
+            "camera": camera,
         }
 
     from backend.app.services.layer_projection import resolve_layer_pair
@@ -1840,6 +1855,7 @@ async def get_overlay_status(
     return {
         "id": printer_id,
         "name": printer.name,
+        "model": normalize_model_name(printer.model),
         "camera_rotation": printer.camera_rotation or 0,
         "connected": state.connected,
         "state": state.state,
@@ -1855,6 +1871,7 @@ async def get_overlay_status(
         # Filtered rather than passed through — see display_temperatures.
         "temperatures": display_temperatures(state.temperatures, printer.model),
         "time_format": time_format,
+        "camera": camera,
     }
 
 

@@ -12,6 +12,10 @@ import { CameraSnapshotImage } from './CameraSnapshotImage';
 import { sourceKey, stopPath, streamPath, type CameraSource } from '../utils/cameraSource';
 import { useCameraLiveBudget } from '../hooks/useCameraLiveBudget';
 import { useCameraImageRef } from '../hooks/useCameraImageRef';
+import { containLimits, fillStyle, useRotatedBox } from '../hooks/useRotatedFit';
+import {
+  currentViewport, defaultCameraWindow, draggedCameraWindow, restoredCameraWindow, type CameraWindowState,
+} from '../utils/cameraWindowPlacement';
 
 interface EmbeddedCameraViewerProps {
   /** A printer's camera, or a camera that belongs to a place. Everything the
@@ -29,19 +33,6 @@ const INITIAL_RECONNECT_DELAY = 2000;
 const MAX_RECONNECT_DELAY = 30000;
 const STALL_CHECK_INTERVAL = 5000;
 
-interface CameraState {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-}
-
-const DEFAULT_STATE: CameraState = {
-  x: window.innerWidth - 420,
-  y: 20,
-  width: 400,
-  height: 300,
-};
 
 export function EmbeddedCameraViewer({ source: sourceProp, name, onClose }: EmbeddedCameraViewerProps) {
   // Pinned to its two values: the caller builds the descriptor inline, so the
@@ -64,27 +55,21 @@ export function EmbeddedCameraViewer({ source: sourceProp, name, onClose }: Embe
   // position of whatever printer happens to share its id.
   const storageKey = `${STORAGE_KEY_PREFIX}${sourceKey(source)}`;
 
-  // Load saved state or use defaults
-  const loadState = (): CameraState => {
+  // Load saved state or use defaults. Either way the window starts where it
+  // can be seen and grabbed: on screen — a phone is narrower than the desktop
+  // default — and below the fixed compact header (`--app-top`).
+  const loadState = (): CameraWindowState => {
+    const viewport = currentViewport();
     try {
       const saved = localStorage.getItem(storageKey);
-      if (saved) {
-        const state = JSON.parse(saved);
-        // Validate state is on screen
-        return {
-          x: Math.min(Math.max(0, state.x), window.innerWidth - 100),
-          y: Math.min(Math.max(0, state.y), window.innerHeight - 100),
-          width: Math.max(200, Math.min(state.width, window.innerWidth - 20)),
-          height: Math.max(150, Math.min(state.height, window.innerHeight - 20)),
-        };
-      }
+      if (saved) return restoredCameraWindow(JSON.parse(saved), viewport);
     } catch {
       // Ignore parse errors
     }
-    return { ...DEFAULT_STATE };
+    return defaultCameraWindow(viewport);
   };
 
-  const [state, setState] = useState<CameraState>(loadState);
+  const [state, setState] = useState<CameraWindowState>(loadState);
   const [isDragging, setIsDragging] = useState(false);
   const [isResizing, setIsResizing] = useState(false);
   const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
@@ -128,6 +113,12 @@ export function EmbeddedCameraViewer({ source: sourceProp, name, onClose }: Embe
     queryFn: () => api.getPrinter(printerId),
     enabled: isPrinter && printerId > 0,
   });
+
+  // A camera turned sideways is laid out in the video area's sides swapped,
+  // or it is cut off in a wide window and boxed in a tall one. The area is
+  // gone while the window is minimized; the hook picks it up on restore.
+  const rotation = printer?.camera_rotation || 0;
+  const { boxRef: videoAreaRef, box: videoArea } = useRotatedBox(rotation);
 
   // Fetch printer status for light toggle and skip objects
   const { data: status } = useQuery({
@@ -526,8 +517,7 @@ export function EmbeddedCameraViewer({ source: sourceProp, name, onClose }: Embe
       if (isDragging) {
         setState((prev) => ({
           ...prev,
-          x: Math.max(0, Math.min(e.clientX - dragOffset.x, window.innerWidth - prev.width)),
-          y: Math.max(0, Math.min(e.clientY - dragOffset.y, window.innerHeight - prev.height)),
+          ...draggedCameraWindow(e.clientX - dragOffset.x, e.clientY - dragOffset.y, prev, currentViewport()),
         }));
       } else if (isResizing && containerRef.current) {
         const rect = containerRef.current.getBoundingClientRect();
@@ -546,8 +536,7 @@ export function EmbeddedCameraViewer({ source: sourceProp, name, onClose }: Embe
       if (isDragging) {
         setState((prev) => ({
           ...prev,
-          x: Math.max(0, Math.min(touch.clientX - dragOffset.x, window.innerWidth - prev.width)),
-          y: Math.max(0, Math.min(touch.clientY - dragOffset.y, window.innerHeight - prev.height)),
+          ...draggedCameraWindow(touch.clientX - dragOffset.x, touch.clientY - dragOffset.y, prev, currentViewport()),
         }));
       } else if (isResizing && containerRef.current) {
         const rect = containerRef.current.getBoundingClientRect();
@@ -682,6 +671,7 @@ export function EmbeddedCameraViewer({ source: sourceProp, name, onClose }: Embe
       {/* Video area */}
       {!isMinimized && (
         <div
+          ref={videoAreaRef}
           className={`relative w-full bg-black flex items-center justify-center overflow-hidden ${isFullscreen ? 'h-[calc(100%-40px)]' : 'h-[calc(100%-40px)]'}`}
           onWheel={handleWheel}
           onMouseMove={handleImageMouseMove}
@@ -732,12 +722,11 @@ export function EmbeddedCameraViewer({ source: sourceProp, name, onClose }: Embe
           {isLive ? <img
             ref={attachImage}
             key={imageKey}
-            src={streamUrl}
             alt="Camera stream"
             className="max-w-full max-h-full object-contain select-none"
             style={{
-              transform: `scale(${zoomLevel}) translate(${panOffset.x / zoomLevel}px, ${panOffset.y / zoomLevel}px) rotate(${printer?.camera_rotation || 0}deg)`,
-              ...(printer?.camera_rotation === 90 || printer?.camera_rotation === 270 ? { maxWidth: '100%', maxHeight: '100%' } : {}),
+              transform: `scale(${zoomLevel}) translate(${panOffset.x / zoomLevel}px, ${panOffset.y / zoomLevel}px) rotate(${rotation}deg)`,
+              ...containLimits(videoArea, rotation),
               cursor: zoomLevel > 1 ? (isPanning ? 'grabbing' : 'grab') : 'default',
             }}
             onError={handleStreamError}
@@ -746,7 +735,7 @@ export function EmbeddedCameraViewer({ source: sourceProp, name, onClose }: Embe
             draggable={false}
           /> : ready ? <>
             <CameraSnapshotImage source={source} name={name} intervalMs={5000}
-              transform={`scale(${zoomLevel}) rotate(${printer?.camera_rotation || 0}deg)`} />
+              style={fillStyle(videoArea, rotation, `scale(${zoomLevel})`)} />
             <span className="absolute top-1 left-1 right-1 bg-black/70 px-2 py-1 text-xs text-white">
               {t('printers.camWall.transportLimit', { protocol: protocol === 'unknown' ? t('printers.camWall.transportUnknown') : protocol, limit })}
             </span>

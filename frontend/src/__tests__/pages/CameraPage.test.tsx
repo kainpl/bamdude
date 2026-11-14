@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { screen, waitFor, render as rtlRender } from '@testing-library/react';
+import { fireEvent, screen, waitFor, render as rtlRender } from '@testing-library/react';
 import { CameraPage } from '../../pages/CameraPage';
 import { http, HttpResponse } from 'msw';
 import { server } from '../mocks/server';
@@ -14,6 +14,7 @@ import { ToastProvider } from '../../contexts/ToastContext';
 import { AuthProvider } from '../../contexts/AuthContext';
 import { I18nextProvider } from 'react-i18next';
 import i18n from '../../i18n';
+import { holdsImage, stubBoxSize } from '../stubBoxSize';
 
 // Mock navigator.sendBeacon which isn't available in jsdom
 vi.stubGlobal('navigator', {
@@ -134,6 +135,77 @@ describe('CameraPage', () => {
     });
   });
 
+  // The page swapped a sideways picture against the viewport; the header and
+  // the padding leave the video area smaller, so the picture ran under them.
+  describe('camera turned sideways', () => {
+    it('fits the picture to the video area, not the viewport', async () => {
+      const restore = stubBoxSize(holdsImage('Camera stream'), 800, 500);
+      server.use(http.get('/api/v1/printers/:id', () => HttpResponse.json({ ...mockPrinter, camera_rotation: 270 })));
+
+      renderCameraPage(1);
+
+      const img = await screen.findByAltText('Camera stream');
+      await waitFor(() => expect(img.style.transform).toContain('rotate(270deg)'));
+      await waitFor(() => expect(img).toHaveStyle({ maxWidth: '500px', maxHeight: '800px' }));
+      restore();
+    });
+
+    it('leaves an upright picture at the area size', async () => {
+      const restore = stubBoxSize(holdsImage('Camera stream'), 800, 500);
+      server.use(http.get('/api/v1/printers/:id', () => HttpResponse.json({ ...mockPrinter, camera_rotation: 180 })));
+
+      renderCameraPage(1);
+
+      const img = await screen.findByAltText('Camera stream');
+      await waitFor(() => expect(img.style.transform).toContain('rotate(180deg)'));
+      expect(img.style.maxWidth).toBe('');
+      restore();
+    });
+  });
+
+  // A web app started from the iOS home screen has no browser chrome, so a
+  // camera page without navigation of its own is a dead end.
+  describe('home-screen web app', () => {
+    const setHomeScreenApp = (value: boolean) =>
+      Object.defineProperty(window.navigator, 'standalone', { configurable: true, value });
+    let historyLength: { mockRestore: () => void } | undefined;
+    const setHistoryLength = (length: number) => {
+      historyLength = vi.spyOn(window.history, 'length', 'get').mockReturnValue(length);
+    };
+
+    afterEach(() => {
+      Reflect.deleteProperty(window.navigator, 'standalone');
+      historyLength?.mockRestore();
+    });
+
+    it('offers Back when there is a page to go back to', async () => {
+      setHomeScreenApp(true);
+      setHistoryLength(3);
+      renderCameraPage(1);
+
+      expect(await screen.findByRole('button', { name: 'Back' })).toBeInTheDocument();
+      expect(screen.queryByRole('link', { name: 'Printers' })).not.toBeInTheDocument();
+    });
+
+    it('offers the way to Printers when the camera was opened cold', async () => {
+      setHomeScreenApp(true);
+      setHistoryLength(1);
+      renderCameraPage(1);
+
+      expect(await screen.findByRole('link', { name: 'Printers' })).toHaveAttribute('href', '/');
+      expect(screen.queryByRole('button', { name: 'Back' })).not.toBeInTheDocument();
+    });
+
+    it('adds nothing to the camera window of an ordinary browser', async () => {
+      setHistoryLength(3);
+      renderCameraPage(1);
+
+      await waitFor(() => expect(screen.getByText('X1 Carbon')).toBeInTheDocument());
+      expect(screen.queryByRole('button', { name: 'Back' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('link', { name: 'Printers' })).not.toBeInTheDocument();
+    });
+  });
+
   describe('camera controls', () => {
     it('renders without crashing', async () => {
       renderCameraPage(1);
@@ -203,6 +275,68 @@ describe('CameraPage', () => {
         const src = (document.querySelector('img') as HTMLImageElement | null)?.getAttribute('src') || '';
         expect(src).toContain('fps=15');
       });
+    });
+  });
+
+  // The page empties its own image before it re-opens the stream. An emptied
+  // image fires `error`, and the page read that as the camera failing: its own
+  // refresh started a "Connection lost" countdown.
+  describe('the page emptying its own image', () => {
+    // Signed in: the page fetches its stream token itself and keeps it. (A token
+    // set by hand lasts one render — the page's own token sync replaces it.)
+    beforeEach(async () => {
+      const { setAuthToken } = await import('../../api/client');
+      setAuthToken('test-admin-token');
+    });
+    afterEach(async () => {
+      const { setAuthToken } = await import('../../api/client');
+      setAuthToken(null);
+    });
+
+    const streamImage = async () => {
+      await waitFor(() => {
+        expect(screen.getByAltText('Camera stream').getAttribute('src')).toContain('/camera/stream');
+      });
+      return screen.getByAltText('Camera stream') as HTMLImageElement;
+    };
+
+    it('does not start a reconnect countdown when the view goes fullscreen', async () => {
+      renderCameraPage(1);
+      const img = await streamImage();
+      fireEvent.load(img);
+
+      fireEvent(document, new Event('fullscreenchange'));
+      // What the browser fires for the `src = ''` the page has just written.
+      expect(img.getAttribute('src')).toBe('');
+      fireEvent.error(img);
+
+      expect(screen.queryByText('Connection lost')).not.toBeInTheDocument();
+      // The stream is opened again, on a new image.
+      await waitFor(() => expect(screen.getByAltText('Camera stream')).not.toBe(img));
+      expect((await streamImage()).getAttribute('src')).toContain('/camera/stream');
+    });
+
+    it('still reconnects when the camera itself fails', async () => {
+      renderCameraPage(1);
+      const img = await streamImage();
+
+      fireEvent.error(img);
+
+      expect(screen.getByText('Connection lost')).toBeInTheDocument();
+    });
+
+    it('closes the stream of the image it shows now, not only the first one', async () => {
+      const view = renderCameraPage(1);
+      const first = await streamImage();
+      fireEvent.load(first);
+
+      fireEvent.click(screen.getByTitle('Restart stream'));
+      await waitFor(() => expect(screen.getByAltText('Camera stream')).not.toBe(first));
+      const second = await streamImage();
+      expect(first.src).toMatch(/^data:image\/gif;/);
+
+      view.unmount();
+      expect(second.src).toMatch(/^data:image\/gif;/);
     });
   });
 

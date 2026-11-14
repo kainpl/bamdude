@@ -374,9 +374,10 @@ function TokenTable({ tokens, showOwner, userIdToName, onRevoke, emptyMessage }:
 /**
  * The actual UI block: create form + my-tokens table + admin all-tokens table.
  * Renders without any outer page chrome so it can be embedded inside
- * Settings → API Keys (the canonical home).
+ * Settings → API Keys (the canonical home). `refreshKey` makes it read the
+ * list again when its owner knows a token was created elsewhere.
  */
-export default function CameraTokensPanel() {
+export default function CameraTokensPanel({ refreshKey = 0 }: { refreshKey?: number } = {}) {
   const { t } = useTranslation();
   const { user, isAdmin, hasPermission } = useAuth();
   const { showToast } = useToast();
@@ -417,8 +418,10 @@ export default function CameraTokensPanel() {
 
   useEffect(() => {
     void refresh();
+    // `refreshKey` moves when a token was created outside this panel (the
+    // streaming-overlay builder under it creates overlay tokens too).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isAdmin]);
+  }, [isAdmin, refreshKey]);
 
   // Open the confirmation modal. The actual delete fires from
   // ``confirmRevoke`` once the user clicks through.

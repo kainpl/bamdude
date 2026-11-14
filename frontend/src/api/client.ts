@@ -5105,6 +5105,8 @@ export interface CamWallPrinter {
 export interface OverlayStatus {
   id: number;
   name: string;
+  /** The model's short display name (`show=model`). Absent on an older server. */
+  model?: string | null;
   camera_rotation: number;
   connected: boolean;
   state: string | null;
@@ -5123,6 +5125,10 @@ export interface OverlayStatus {
    *  real chamber sensor. */
   temperatures: Record<string, number>;
   time_format: 'system' | '12h' | '24h';
+  /** Whether this printer's camera stream is alive — the overlay's token
+   *  cannot read the session's camera status route, and a stream the server
+   *  ends cleanly fires nothing on the image. Absent on an older server. */
+  camera?: { active: boolean; stalled: boolean };
 }
 
 export interface CloudAuthStatus {

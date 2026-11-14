@@ -1890,6 +1890,7 @@ def _can_manage_long_lived_token(user: User | None, scope: str, action: str) -> 
 @router.post("/tokens", response_model=dict, status_code=status.HTTP_201_CREATED)
 async def create_long_lived_camera_token(
     payload: dict,
+    response: Response,
     current_user: User = RequireAnyPermission(Permission.CAMERA_VIEW, Permission.API_KEYS_CREATE),
     db: AsyncSession = Depends(get_auth_db),
 ):
@@ -1901,6 +1902,10 @@ async def create_long_lived_camera_token(
     only ever stores a pbkdf2 hash, so a leaked DB dump cannot replay the
     token. Hard cap of 365 days; the issue's ``expire_in: 0`` (never) is
     explicitly rejected.
+
+    The answer is the one place the plaintext exists outside the caller, so it
+    is marked ``no-store``: no proxy or browser cache keeps a copy (upstream
+    #3207).
     """
     import logging as _logging
 
@@ -1946,6 +1951,7 @@ async def create_long_lived_camera_token(
         scope,
         created.record.expires_at.isoformat(),
     )
+    response.headers["Cache-Control"] = "no-store"
     return _long_lived_token_to_response(created.record, plaintext=created.plaintext)
 
 

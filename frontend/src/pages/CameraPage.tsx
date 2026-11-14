@@ -1,9 +1,10 @@
-import { useCameraImageRef } from '../hooks/useCameraImageRef';
+import { isIdleCameraImage, useCameraImageRef } from '../hooks/useCameraImageRef';
+import { containLimits, useRotatedBox } from '../hooks/useRotatedFit';
 import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
-import { useParams, useSearchParams } from 'react-router';
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { RefreshCw, AlertTriangle, Camera, Maximize, Minimize, WifiOff, ZoomIn, ZoomOut, Stethoscope } from 'lucide-react';
+import { ArrowLeft, RefreshCw, AlertTriangle, Camera, Maximize, Minimize, WifiOff, ZoomIn, ZoomOut, Stethoscope } from 'lucide-react';
 import { api, getAuthToken, getStreamToken, withStreamToken } from '../api/client';
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
@@ -12,6 +13,7 @@ import { ChamberLight } from '../components/icons/ChamberLight';
 import { SkipObjectsModal, SkipObjectsIcon } from '../components/SkipObjectsModal';
 import { CameraDiagnoseModal } from '../components/CameraDiagnoseModal';
 import { snapshotPath, stopPath, streamPath, type CameraSource } from '../utils/cameraSource';
+import { isHomeScreenApp } from '../utils/standaloneApp';
 
 const MAX_RECONNECT_ATTEMPTS = 5;
 const INITIAL_RECONNECT_DELAY = 2000; // 2 seconds
@@ -37,6 +39,7 @@ export function CameraPage() {
   // Honor ?fps=N query param for /camera/<id> diagnostic URLs (#1131).
   // Default 15, clamp 1–30, fallback to 15 on non-numeric input.
   const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
   const fpsParam = parseInt(searchParams.get('fps') || '15', 10);
   const fps = Math.min(Math.max(isNaN(fpsParam) ? 15 : fpsParam, 1), 30);
 
@@ -653,6 +656,12 @@ export function CameraPage() {
 
   const isDisabled = streamLoading || transitioning || isReconnecting;
 
+  // A sideways camera is laid out in the video area's sides swapped. The
+  // viewport is the wrong box: the header and the padding leave the area
+  // smaller, and the picture ran under them.
+  const rotation = printer?.camera_rotation || 0;
+  const { boxRef: videoAreaRef, box: videoArea } = useRotatedBox(rotation);
+
   if (!id) {
     return (
       <div className="min-h-screen bg-black flex items-center justify-center">
@@ -665,10 +674,33 @@ export function CameraPage() {
     <div ref={containerRef} className="min-h-screen bg-black flex flex-col">
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-2 bg-bambu-dark-secondary border-b border-bambu-dark-tertiary">
-        <h1 className="text-sm font-medium text-white flex items-center gap-2">
-          <Camera className="w-4 h-4" />
-          {printer?.name || camera?.name || (isPrinter ? `Printer ${id}` : `Camera ${id}`)}
-        </h1>
+        <div className="flex items-center gap-2 min-w-0">
+          {/* A home-screen web app has no browser chrome: without this the
+              camera page is a dead end. Back when there is somewhere to go
+              back to; else — a camera link opened cold — the way to Printers. */}
+          {isHomeScreenApp() && (window.history.length > 1 ? (
+            <button
+              type="button"
+              onClick={() => navigate(-1)}
+              className="inline-flex items-center gap-1 px-2 py-1 text-xs text-bambu-gray hover:text-white hover:bg-bambu-dark-tertiary rounded"
+            >
+              <ArrowLeft className="w-4 h-4" aria-hidden="true" />
+              {t('common.back')}
+            </button>
+          ) : (
+            <Link
+              to="/"
+              className="inline-flex items-center gap-1 px-2 py-1 text-xs text-bambu-gray hover:text-white hover:bg-bambu-dark-tertiary rounded"
+            >
+              <ArrowLeft className="w-4 h-4" aria-hidden="true" />
+              {t('nav.printers')}
+            </Link>
+          ))}
+          <h1 className="text-sm font-medium text-white flex items-center gap-2 min-w-0">
+            <Camera className="w-4 h-4" />
+            {printer?.name || camera?.name || (isPrinter ? `Printer ${id}` : `Camera ${id}`)}
+          </h1>
+        </div>
         <div className="flex items-center gap-2">
           {/* Mode toggle */}
           <div className="flex bg-bambu-dark rounded p-0.5">
@@ -758,7 +790,7 @@ export function CameraPage() {
         onTouchEnd={handleTouchEnd}
         style={{ touchAction: 'none' }}
       >
-        <div className="relative w-full h-full flex items-center justify-center">
+        <div ref={videoAreaRef} className="relative w-full h-full flex items-center justify-center">
           {(streamLoading || transitioning) && !isReconnecting && (
             <div className="absolute inset-0 flex items-center justify-center bg-black/50 z-10">
               <div className="text-center">
@@ -814,16 +846,22 @@ export function CameraPage() {
           <img
             ref={attachStreamImage}
             key={imageKey}
-            src={currentUrl}
             alt={t('camera.cameraStream')}
             className="max-w-full max-h-full object-contain select-none"
             style={{
-              transform: `scale(${zoomLevel}) translate(${panOffset.x / zoomLevel}px, ${panOffset.y / zoomLevel}px) rotate(${printer?.camera_rotation || 0}deg)`,
-              ...(printer?.camera_rotation === 90 || printer?.camera_rotation === 270 ? { maxWidth: '100vh', maxHeight: '100vw' } : {}),
+              transform: `scale(${zoomLevel}) translate(${panOffset.x / zoomLevel}px, ${panOffset.y / zoomLevel}px) rotate(${rotation}deg)`,
+              ...containLimits(videoArea, rotation),
               cursor: zoomLevel > 1 ? (isPanning ? 'grabbing' : 'grab') : 'default',
             }}
-            onError={currentUrl ? handleStreamError : undefined}
-            onLoad={currentUrl ? handleStreamLoad : undefined}
+            // An image this page has just emptied (`src = ''` before a refresh,
+            // a mode switch, a reconnect or a fullscreen change) fires `error`,
+            // and the placeholder fires `load`: neither is the camera's answer.
+            onError={(event) => {
+              if (currentUrl && !isIdleCameraImage(event.currentTarget)) handleStreamError();
+            }}
+            onLoad={(event) => {
+              if (currentUrl && !isIdleCameraImage(event.currentTarget)) handleStreamLoad();
+            }}
             onMouseDown={handleImageMouseDown}
             draggable={false}
           />

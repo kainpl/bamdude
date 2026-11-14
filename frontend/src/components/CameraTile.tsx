@@ -1,9 +1,11 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { AlertTriangle, Expand, VideoOff, WifiOff } from 'lucide-react';
-import { getAuthToken, withStreamToken } from '../api/client';
+import { api, getAuthToken, withStreamToken } from '../api/client';
 import { formatDuration } from '../utils/date';
 import { useCameraImageRef } from '../hooks/useCameraImageRef';
+import { useCameraStreamRecovery } from '../hooks/useCameraStreamRecovery';
+import { fillStyle, useRotatedBox } from '../hooks/useRotatedFit';
 import { useConnection } from '../contexts/ConnectionContext';
 import { sourceKey, stopPath, streamPath, type CameraSource } from '../utils/cameraSource';
 import { CameraSnapshotImage } from './CameraSnapshotImage';
@@ -93,22 +95,44 @@ export function CameraTile({
   streamToken,
 }: CameraTileProps) {
   const { t } = useTranslation();
-  const [bust, setBust] = useState(0);
-  const [errored, setErrored] = useState(false);
   const lastModeRef = useRef<CameraTileMode>(mode);
   const { isConnected: serverConnected, showOfflineIndicator } = useConnection();
   const wasOfflineRef = useRef(showOfflineIndicator);
+
+  // A stream the server ends cleanly fires nothing on the image: the tile asks
+  // the server about its source, and re-opens with a bounded backoff. A kiosk
+  // wall's token may not read that status (and a kiosk wall has no live tile);
+  // there only the image's own `error` starts a retry.
+  const {
+    phase: livePhase,
+    generation,
+    onError: onLiveError,
+    onLoad: onLiveLoad,
+    restart: restartLive,
+  } = useCameraStreamRecovery({
+    enabled: mode === 'live' && connected,
+    readHealth: streamToken ? undefined : () => api.getCameraSourceStatus(source),
+  });
 
   useEffect(() => {
     // A browser can keep the last decoded MJPEG frame after the server closes
     // the stream, without firing img.onerror. Restart that image when the
     // shared server connection returns instead of showing a stale frame.
     if (wasOfflineRef.current && !showOfflineIndicator && serverConnected && mode === 'live') {
-      setErrored(false);
-      setBust((b) => b + 1);
+      restartLive();
     }
     wasOfflineRef.current = showOfflineIndicator;
-  }, [mode, serverConnected, showOfflineIndicator]);
+  }, [mode, serverConnected, showOfflineIndicator, restartLive]);
+
+  // A new selection starts on a fresh image. Not on mount: re-keying the image
+  // the tile has just opened is a second stream request for one view.
+  const selection = `${mode}|${sourceKey(source)}`;
+  const lastSelectionRef = useRef(selection);
+  useEffect(() => {
+    if (lastSelectionRef.current === selection) return;
+    lastSelectionRef.current = selection;
+    restartLive();
+  }, [selection, restartLive]);
 
   // Tell the backend to release its MJPEG transcoder when this tile stops
   // being live — either by unmounting or by transitioning to snapshot/paused.
@@ -127,8 +151,6 @@ export function CameraTile({
         headers,
       }).catch(() => {});
     }
-    setErrored(false);
-    setBust((b) => b + 1);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode, sourceKey(source)]);
 
@@ -152,10 +174,14 @@ export function CameraTile({
   // short-lived one that only a signed-in browser holds (upstream #2531).
   const withToken = (path: string) =>
     streamToken ? `${path}&token=${encodeURIComponent(streamToken)}` : withStreamToken(path);
-  const liveUrl = withToken(streamPath(source, LIVE_FPS, bust));
+  const liveUrl = withToken(streamPath(source, LIVE_FPS, generation));
   const { attachImage: attachLiveImage } = useCameraImageRef(liveUrl);
 
-  const transform = cameraRotation ? `rotate(${cameraRotation}deg)` : undefined;
+  // A sideways camera is laid out in the tile's sides swapped and centred, or
+  // the turned picture is cut off at the tile's top and bottom. One measure
+  // serves the live image and the snapshot.
+  const { boxRef: tileRef, box: tileBox } = useRotatedBox(cameraRotation);
+  const pictureStyle = fillStyle(tileBox, cameraRotation);
 
   const bucket = classifyState(printerState, hmsErrorCount);
   // Hide chip for idle to keep cold walls clean; always show when something
@@ -191,6 +217,7 @@ export function CameraTile({
 
   return (
     <div
+      ref={tileRef}
       className={rootClass}
       title={name}
     >
@@ -216,28 +243,44 @@ export function CameraTile({
           name={name}
           intervalMs={snapshotIntervalMs}
           streamToken={streamToken}
-          transform={transform}
+          style={pictureStyle}
         />
-      ) : errored ? (
+      ) : livePhase === 'failed' ? (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-1 bg-black/80 text-bambu-gray">
           <VideoOff className="h-7 w-7" aria-hidden="true" />
           <span className="text-xs">{t('printers.camWall.noSignal')}</span>
+          {/* Above the tile-wide live toggle, or the click would deselect the tile. */}
+          <button
+            type="button"
+            onClick={restartLive}
+            className="relative z-20 mt-1 rounded bg-bambu-dark-tertiary px-2 py-0.5 text-xs text-white hover:bg-bambu-green focus:outline-none focus-visible:ring-2 focus-visible:ring-bambu-green"
+          >
+            {t('common.retry')}
+          </button>
+        </div>
+      ) : livePhase === 'waiting' ? (
+        // The dead image is gone (its request aborted) for the whole wait:
+        // there is never a second stream beside a live one.
+        <div role="status" className="absolute inset-0 flex flex-col items-center justify-center gap-1 bg-black/80 text-bambu-gray">
+          <VideoOff className="h-7 w-7" aria-hidden="true" />
+          <span className="text-xs">{t('common.reconnecting')}</span>
         </div>
       ) : (
+        // No `src` prop: the hook gives the mounted image its URL.
         <img
           ref={attachLiveImage}
-          key={`${mode}-${bust}`}
-          src={liveUrl}
+          key={`${mode}-${generation}`}
           alt={name}
           draggable={false}
           loading="lazy"
           className="h-full w-full select-none object-contain"
-          style={{ transform }}
-          onError={() => setErrored(true)}
+          style={pictureStyle}
+          onError={onLiveError}
+          onLoad={onLiveLoad}
         />
       )}
 
-      {mode === 'live' && showOfflineIndicator && (
+      {mode === 'live' && showOfflineIndicator && livePhase === 'live' && (
         <div role="status" className="pointer-events-none absolute inset-x-2 top-9 z-20 flex items-center justify-center gap-1.5 rounded bg-black/80 px-2 py-1 text-xs text-amber-300">
           <WifiOff className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
           <span>{t('common.reconnecting')}</span>
