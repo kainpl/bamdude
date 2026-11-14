@@ -12,6 +12,7 @@ import {
   snapshotPath,
   sourceKey,
   standaloneSource,
+  statusApiPath,
   stopPath,
   streamPath,
   viewerPath,
@@ -34,6 +35,22 @@ describe('camera source paths', () => {
       '/api/v1/printers/7/camera/snapshot?t=1&poll=8000',
     );
     expect(snapshotPath(standaloneSource(7), { bust: 1, pollMs: 8000 })).toBe('/api/v1/cameras/7/snapshot?t=1');
+  });
+
+  it('asks each kind for ITS OWN stream status', () => {
+    // a standalone camera asked the printers' route was told "not active" about a healthy stream
+    expect(statusApiPath(printerSource(3))).toBe('/printers/3/camera/status');
+    expect(statusApiPath(standaloneSource(3))).toBe('/cameras/3/status');
+  });
+
+  it('no viewer polls a printer route for whatever source it shows', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { resolve } = await import('node:path');
+    for (const file of ['components/EmbeddedCameraViewer.tsx', 'pages/CameraPage.tsx']) {
+      const text = readFileSync(resolve(__dirname, '../..', file), 'utf8');
+      expect(text, file).not.toMatch(/api\.getCameraStatus\(/);
+      expect(text, file).toMatch(/api\.getCameraSourceStatus\(source\)/);
+    }
   });
 
   it('stops and opens the right thing', () => {

@@ -312,7 +312,7 @@ export function CameraPage() {
     stallStrikesRef.current = 0;
     stallCheckIntervalRef.current = setInterval(async () => {
       try {
-        const status = await api.getCameraStatus(id);
+        const status = await api.getCameraSourceStatus(source);
         // A "bad" read is: backend reports stall (no frames for 10+ seconds),
         // OR the stream is no longer active (process died).
         const bad = status.stalled || (!status.active && !streamError);

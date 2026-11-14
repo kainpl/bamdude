@@ -261,7 +261,7 @@ export function EmbeddedCameraViewer({ source: sourceProp, name, onClose }: Embe
     let cancelled = false;
     stallCheckIntervalRef.current = setInterval(async () => {
       try {
-        const status = await api.getCameraStatus(printerId);
+        const status = await api.getCameraSourceStatus(source);
         if (cancelled) return;
         if (status.stalled || (!status.active && !streamError)) {
           if (stallCheckIntervalRef.current) {

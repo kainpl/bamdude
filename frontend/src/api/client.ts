@@ -162,6 +162,7 @@ export class ApiError extends Error {
 
 import type { AppliedEntry } from '../utils/reportingStatus';
 import { byLocationName } from '../utils/locationOrder';
+import { statusApiPath, type CameraSource } from '../utils/cameraSource';
 
 const API_BASE = '/api/v1';
 
@@ -13384,6 +13385,8 @@ export const api = {
     request<{ success: boolean; message?: string; error?: string }>(`/printers/${printerId}/camera/test`),
   getCameraStatus: (printerId: number) =>
     request<CameraStreamStatus>(`/printers/${printerId}/camera/status`),
+  /** The stream status of whatever a view shows — a printer's camera or a camera of its own. */
+  getCameraSourceStatus: (source: CameraSource) => request<CameraStreamStatus>(statusApiPath(source)),
   // Camera diagnostic (#1395 follow-up) — staged check the operator
   // can run inline to self-diagnose "connection lost" before opening a
   // ticket. The modal renders one row per stage and looks up the

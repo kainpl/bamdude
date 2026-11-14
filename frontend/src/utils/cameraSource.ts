@@ -47,6 +47,13 @@ export function snapshotPath(source: CameraSource, options: { bust?: number | st
   return `${base(source)}/snapshot${query ? `?${query}` : ''}`;
 }
 
+/**
+ * Where a view asks whether its stream is alive, relative to the API base. Each kind answers for itself:
+ * the printers' route knows printer ids only.
+ */
+export const statusApiPath = (source: CameraSource): string =>
+  source.kind === 'printer' ? `/printers/${source.id}/camera/status` : `/cameras/${source.id}/status`;
+
 export const stopPath = (source: CameraSource): string => `${base(source)}/stop`;
 
 /** The full-page viewer's route for this source. */

@@ -47,7 +47,12 @@ from backend.app.schemas.camera import (
     _validated_source,
 )
 from backend.app.services.camera_credentials import resolve_standalone_camera_credentials
-from backend.app.services.camera_fanout import MjpegBroadcaster, get_or_create_broadcaster, iter_subscriber
+from backend.app.services.camera_fanout import (
+    MjpegBroadcaster,
+    get_or_create_broadcaster,
+    get_subscriber_count,
+    iter_subscriber,
+)
 from backend.app.services.live_media import bind_camera, mjpeg_response
 
 logger = logging.getLogger(__name__)
@@ -66,6 +71,10 @@ _snapshot_frame_times: dict[int, float] = {}
 _SNAPSHOT_CACHE_TTL_SECONDS = 5.0
 #: A live frame older than this is stale: the stream died and nobody cleaned up.
 _LIVE_FRAME_MAX_AGE_SECONDS = 10.0
+#: When the camera's current upstream got its first viewer — a stream is given a
+#: moment to deliver its first frame before silence counts as a stall.
+_stream_started: dict[int, float] = {}
+_STREAM_START_GRACE_SECONDS = 5.0
 
 
 def _fanout_key(camera_id: int) -> str:
@@ -89,7 +98,7 @@ def _live_frame(camera_id: int) -> bytes | None:
 
 
 def _forget_frames(camera_id: int) -> None:
-    for registry in (_last_frames, _last_frame_times, _snapshot_frames, _snapshot_frame_times):
+    for registry in (_last_frames, _last_frame_times, _snapshot_frames, _snapshot_frame_times, _stream_started):
         registry.pop(camera_id, None)
 
 
@@ -370,6 +379,7 @@ async def camera_stream(
                 _forget_frames(camera_id)
 
         viewer.releases.append(unsubscribe)
+        _stream_started.setdefault(camera_id, time.monotonic())
         logger.info("Camera viewer attached to %s (subscribers=%d)", key, broadcaster.subscriber_count)
 
         async def stopped():
@@ -393,9 +403,52 @@ async def stop_camera_stream(
     camera_id: int,
     _: User | None = RequirePermission(Permission.CAMERA_VIEW),
 ):
-    """Force this camera's upstream down. Kept for parity with the printers' route."""
+    """Take this camera's upstream down — unless somebody is still watching.
+
+    A view sends this when it closes, and every view of a camera shares ONE upstream: with another
+    viewer attached the stop is skipped, and the upstream goes by itself once the last one has left
+    (the printers' route keeps the same rule, #451).
+    """
+    remaining = get_subscriber_count(_fanout_key(camera_id))
+    if remaining >= 1:
+        logger.info("Skipping camera %s force-shutdown: %d subscriber(s) still attached", camera_id, remaining)
+        return {"stopped": 0, "skipped": True}
     stopped = await _stop_stream(camera_id)
     return {"stopped": 1 if stopped else 0}
+
+
+@router.get("/{camera_id}/status")
+async def camera_stream_status(
+    camera_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.CAMERA_VIEW),
+):
+    """Whether this camera's live stream is alive — what a view polls to notice a stall.
+
+    The printers' status route answers for PRINTER ids only; a view of a standalone camera that asked
+    it was told "not active" about a healthy stream and reconnected in a loop.
+    """
+    await _get_camera_or_404(camera_id, db)
+    subscribers = get_subscriber_count(_fanout_key(camera_id))
+    active = subscribers >= 1
+    now = time.monotonic()
+    last = _last_frame_times.get(camera_id)
+    started = _stream_started.get(camera_id)
+    since_frame = None if last is None else now - last
+    uptime = None if started is None else now - started
+    return {
+        "active": active,
+        "has_frames": camera_id in _last_frames,
+        "seconds_since_frame": since_frame,
+        "stream_uptime": uptime,
+        "subscribers": subscribers,
+        "stalled": (
+            active
+            and uptime is not None
+            and uptime > _STREAM_START_GRACE_SECONDS
+            and (since_frame is None or since_frame > _LIVE_FRAME_MAX_AGE_SECONDS)
+        ),
+    }
 
 
 # ---------------------------------------------------------------- snapshot
