@@ -77,6 +77,20 @@ LIGHT_ALTITUDE_DEG = 45
 # Maximum vertices before simplification
 MAX_VERTICES = 100000
 
+# matplotlib has no depth buffer: it sorts triangles by ONE average depth and
+# draws them back to front. That holds while triangles are small; a CAD export is
+# often made of needles — a cylinder's wall as slivers running its whole height, a
+# flat cap as wedges from the centre to the rim — and one depth for a triangle
+# that spans the model sorts it wrongly against its neighbours: wedges show
+# through, the far wall is painted over the near one. A triangle whose longest
+# edge exceeds this share of the model's size is split before it is drawn.
+LONG_EDGE_SHARE = 0.05
+
+# The view is a mild perspective, so a face the parallel rule calls edge-on can
+# still show a sliver of itself: faces turned away by less than this (the cosine
+# of the angle past edge-on) are kept.
+BACK_FACE_SLACK = 0.12
+
 # Minimum STL file size that could possibly contain a usable mesh:
 # - Binary STL with one triangle: 80B header + 4B count + 50B triangle = 134B
 # - ASCII STL with one triangle: header + "facet ... endfacet" + footer ≈ 150B
@@ -127,6 +141,69 @@ def _repair_winding(mesh, trimesh, label: str) -> None:
     if float(np.einsum("ij,ij->i", mesh.face_normals, outward).sum()) < 0:
         logger.debug("Winding settled inward on a non-watertight mesh, inverting: %s", label)
         mesh.invert()
+
+
+def _camera_direction():
+    """Unit vector from the model towards the camera ``view_init`` places."""
+    import numpy as np
+
+    elev, azim = np.radians(VIEW_ELEV_DEG), np.radians(VIEW_AZIM_DEG)
+    return np.array([np.cos(elev) * np.cos(azim), np.cos(elev) * np.sin(azim), np.sin(elev)])
+
+
+def _hides_its_back(mesh) -> bool:
+    """Whether the faces turned away from the camera can be left out: only for a closed mesh wound outward.
+
+    On such a mesh they are never visible, and drawing them is how the inside of a thin wall ends up painted
+    over its outside (the two surfaces are a wall's thickness apart, closer than the depth sort can tell).
+    An open mesh may be showing its inside through the opening, and a mesh wound inward would lose the very
+    faces the viewer looks at.
+    """
+    try:
+        return bool(mesh.is_watertight and mesh.is_winding_consistent and mesh.volume > 0)
+    except Exception:  # a mesh trimesh cannot judge is drawn whole
+        return False
+
+
+def _facing_camera(triangles):
+    """The triangles a closed mesh shows to the camera (see ``_hides_its_back``); the others are dropped."""
+    import numpy as np
+
+    if len(triangles) == 0:
+        return triangles
+    normals = np.cross(triangles[:, 1] - triangles[:, 0], triangles[:, 2] - triangles[:, 0])
+    lengths = np.linalg.norm(normals, axis=1)
+    facing = normals @ _camera_direction() > -BACK_FACE_SLACK * lengths
+    return triangles[facing] if facing.any() else triangles
+
+
+def _split_long_triangles(triangles, max_edge: float, max_faces: int):
+    """Halve every triangle whose longest edge exceeds ``max_edge``, until none does or the budget is spent.
+
+    Only the long ones: an ordinary mesh comes back untouched (the same array). A split bisects the longest
+    edge, so the two halves keep the triangle's winding and plane — the shading does not change, only the
+    depth each piece is sorted by. The pieces of neighbours no longer share vertices, which a renderer that
+    draws flat triangles does not care about.
+    """
+    import numpy as np
+
+    for _ in range(16):
+        if len(triangles) == 0:
+            return triangles
+        edges = np.linalg.norm(triangles - np.roll(triangles, -1, axis=1), axis=2)  # 0-1, 1-2, 2-0
+        long = edges.max(axis=1) > max_edge
+        count = int(long.sum())
+        if count == 0 or len(triangles) + count > max_faces:
+            return triangles
+        chosen = triangles[long]
+        first = edges[long].argmax(axis=1)
+        row = np.arange(count)
+        a, b, c = chosen[row, first], chosen[row, (first + 1) % 3], chosen[row, (first + 2) % 3]
+        middle = (a + b) / 2
+        triangles = np.concatenate(
+            [triangles[~long], np.stack([a, middle, c], axis=1), np.stack([middle, b, c], axis=1)]
+        )
+    return triangles
 
 
 def _shade_kwargs(poly3d, LightSource) -> dict:
@@ -298,12 +375,25 @@ def _generate_stl_thumbnail(stl_path: Path, thumbnails_dir: Path, size: int) -> 
         # 82k-face mesh the list form costs ~0.19 s against ~0.007 s.
         poly3d = vertices_scaled[mesh.faces]
 
+        # A mesh of needles would come out torn (see ``LONG_EDGE_SHARE``): leave
+        # out what a closed mesh cannot show, then split what is too long to be
+        # sorted by one depth. The model is scaled to 1.0 on its longest side.
+        if _hides_its_back(mesh):
+            poly3d = _facing_camera(poly3d)
+        poly3d = _split_long_triangles(poly3d, LONG_EDGE_SHARE, FACE_LIMIT)
+
+        # ``antialiaseds=False``: matplotlib smooths the edge of every polygon
+        # on its own, which leaves a see-through hairline between two that share
+        # an edge — on a wall of thousands of slivers the hairlines ARE the
+        # picture. The render is three times the final size and scaled down with
+        # Lanczos below, so the silhouette is still smooth.
         collection = Poly3DCollection(
             poly3d,
             facecolors=BAMBU_GREEN,
             edgecolors=BAMBU_GREEN,
             linewidths=0,
             alpha=1.0,
+            antialiaseds=False,
             **_shade_kwargs(poly3d, LightSource),
         )
         ax.add_collection3d(collection)
