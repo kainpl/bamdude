@@ -42,9 +42,12 @@ const STALL_CHECK_INTERVAL = 5000;
 export const CAMERA_HIDDEN_RELEASE_MS = 5 * 60_000;
 
 /** True once the page has been hidden for `ms` in one stretch; false again the
- *  moment it is shown. */
+ *  moment it is shown. A page that is ALREADY hidden when this mounts — the
+ *  window is restored from storage in a tab opened in the background — starts
+ *  true: a tab nobody has looked at yet opens no stream, and gets its camera
+ *  when it is first shown. */
 function useHiddenFor(ms: number): boolean {
-  const [hiddenLong, setHiddenLong] = useState(false);
+  const [hiddenLong, setHiddenLong] = useState(() => document.hidden);
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const update = () => {

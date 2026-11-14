@@ -21,7 +21,6 @@ import { ToastProvider } from '../../contexts/ToastContext';
 import { AuthProvider, useAuth } from '../../contexts/AuthContext';
 import { EmbeddedCameraProvider, useEmbeddedCamera } from '../../contexts/EmbeddedCameraContext';
 import { Layout } from '../../components/Layout';
-import { LoginPage } from '../../pages/LoginPage';
 import { setAuthToken } from '../../api/client';
 
 const STORAGE = 'openEmbeddedCameras';
@@ -143,6 +142,32 @@ describe('the floating camera window of the app shell', () => {
     }
   }, 20000);
 
+  // A middle-clicked link opens the app in a tab nobody is looking at. The
+  // window is restored from storage there too — and must not open the camera
+  // (and, behind it, the chamber-light lease) for a tab that was never shown.
+  it('restored in a tab that is already hidden, it opens no stream until the tab is first shown', async () => {
+    localStorage.setItem(STORAGE, JSON.stringify([{ kind: 'printer', id: 1, name: 'X1 Carbon' }]));
+    let hidden = true;
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => hidden });
+    const view = render(<Bare><EmbeddedCameraProvider><OtherPage /></EmbeddedCameraProvider></Bare>);
+    try {
+      // The window itself is there (its title bar), released.
+      expect(await screen.findByText('Paused while this tab is in the background')).toBeInTheDocument();
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      expect(screen.queryByAltText('Camera stream')).not.toBeInTheDocument();
+      expect(spy.records).toEqual([]);
+
+      hidden = false;
+      act(() => { document.dispatchEvent(new Event('visibilitychange')); });
+      expect((await screen.findByAltText('Camera stream') as HTMLImageElement).src).toContain('/printers/1/camera/stream?');
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(spy.records).toHaveLength(1);
+    } finally {
+      view.unmount();
+      Reflect.deleteProperty(document, 'hidden');
+    }
+  });
+
   it('is not shown before its list has answered, on any page', async () => {
     localStorage.setItem(STORAGE, JSON.stringify([{ kind: 'printer', id: 2, name: 'P1S Backup' }]));
     let answer: () => void = () => {};
@@ -263,17 +288,9 @@ describe('the floating camera window of the app shell', () => {
     }
   });
 
-  it('does not exist outside the app shell: the login page opens no window for a remembered camera', async () => {
-    localStorage.setItem(STORAGE, JSON.stringify([{ kind: 'printer', id: 1, name: 'X1 Carbon' }]));
-    const view = render(<Bare at="/login"><LoginPage /></Bare>);
-    try {
-      await new Promise((resolve) => setTimeout(resolve, 300));
-      expect(screen.queryByAltText('Camera stream')).not.toBeInTheDocument();
-      expect(spy.records).toEqual([]);
-      // Still remembered: a page outside the shell is no verdict on it.
-      expect(remembered()).toHaveLength(1);
-    } finally {
-      view.unmount();
-    }
-  });
+  // That the window does not exist outside the app shell (login, kiosk wall,
+  // overlay, camera page) is pinned by `components/embeddedCameraWindowOwner.test.ts`,
+  // which scans who mounts the provider and where those routes are declared. A
+  // render of the bare login page here proved nothing: it mounts no provider
+  // whatever the app does.
 });
