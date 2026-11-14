@@ -610,7 +610,15 @@ def _variant_manifest(groups: list[ProductVariantGroup]) -> tuple[list[dict], li
     pairs: list[tuple[int, list[str]]] = []
     for group in groups:
         default = next((o.name for o in group.options if o.id == group.default_option_id), None)
-        out.append({"name": group.name, "options": [o.name for o in group.options], "default": default})
+        out.append(
+            {
+                "name": group.name,
+                "options": [o.name for o in group.options],
+                "default": default,
+                # «Every value needs its own part»; an archive without the key imports it off.
+                "requires_part": bool(group.requires_part),
+            }
+        )
         for option in group.options:
             pairs.append((option.id, [group.name, option.name]))
     return out, pairs
@@ -1378,7 +1386,14 @@ async def _import_variant_groups(db: AsyncSession, product_id: int, raw_groups: 
         default_index = next((i for i, n in enumerate(names) if default and variant_key(n) == variant_key(default)), 0)
         # Through the one writer (WS-13 E1 VR1). The product is new — nothing to record on.
         group = await product_variants.create_group(
-            db, product_id, name, names, default_index=default_index, record_lines=False
+            db,
+            product_id,
+            name,
+            names,
+            default_index=default_index,
+            record_lines=False,
+            # Only an explicit true marks it — an older archive has no key, anything else is off.
+            requires_part=raw.get("requires_part") is True,
         )
         for option in await _group_options(db, group.id):
             option_by_pair[(variant_key(name), variant_key(option.name))] = option.id

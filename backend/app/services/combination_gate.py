@@ -2,14 +2,17 @@
 product-part-variant-combinations, п. 10–14).
 
 The rule is :func:`line_composition.availability` — pure, beside the kit's one
-reader. This module reads what it needs (the product's sliced parts) and refuses:
+reader. This module reads what it needs (the product's sliced parts, and its groups
+marked «every value needs its own part» — :func:`strict_groups`) and refuses:
 
 * every line constructor goes through ``line_config.seed_line``, which asks
   :func:`ensure_available` for a ``product`` line — ``line_intake.add_lines``
   (order creation, one line, a batch) and ``order_from_files`` (a catalog
   product's order) at one point (п. 13);
 * ``line_config.set_configuration`` asks it when the line's CHOICE changes,
-  before its dry run — a change of counts alone is not checked.
+  before its dry run — a change of counts alone is not checked (the choice is
+  compared with the saved one merged over the product's standards, as the kit
+  reads it).
 
 Never asked (п. 14): saved lines (they keep a combination that closed later),
 an order's copy, a ``parts`` line, and finished-stock positions — a receipt, a
@@ -118,15 +121,37 @@ def _reasons(product: Product, unavailable: list[Unavailable]) -> list[dict]:
     return _reasons_of(product)(unavailable)
 
 
-async def ensure_available(db: AsyncSession, product: Product, choices: Mapping[int, int]) -> None:
+def strict_groups(product: Product) -> set[int]:
+    """The product's groups marked «every value needs its own part» (``requires_part``) —
+    the only ones in which a value with no part closes a combination."""
+    return {g.id for g in product.variant_groups if g.requires_part}
+
+
+async def ensure_available(
+    db: AsyncSession,
+    product: Product,
+    choices: Mapping[int, int],
+    *,
+    sliced_memo: dict[int, set[int]] | None = None,
+) -> None:
     """Refuse (:class:`CombinationUnavailable`) a combination the product cannot make.
 
     ``product`` as ``line_config`` loads it — parts, and variant groups with their
     options; ``choices`` the FULL resolved choices, a value for every group. A
-    product without groups returns at once, without a query (п. 12)."""
+    product without groups returns at once, without a query (п. 12).
+
+    ``sliced_memo`` — ``product_id → sliced part ids`` a caller keeps for ONE call of its
+    own (a batch of lines, an order from files): the set is read once per product there,
+    not once per line. Nothing is cached beyond it."""
     if not product.variant_groups:
         return
-    reasons = availability(list(product.parts), choices, await sliced_for(db, product.id))
+    if sliced_memo is None:
+        sliced = await sliced_for(db, product.id)
+    elif product.id in sliced_memo:
+        sliced = sliced_memo[product.id]
+    else:
+        sliced = sliced_memo[product.id] = await sliced_for(db, product.id)
+    reasons = availability(list(product.parts), choices, sliced, strict_groups(product))
     if reasons:
         raise CombinationUnavailable(COMBINATION_UNAVAILABLE, _reasons(product, reasons))
 
@@ -190,10 +215,11 @@ async def table(db: AsyncSession, product: Product, *, page: int, page_size: int
         return {"total": total, "page": page, "items": []}
     parts = list(product.parts)
     sliced = await sliced_for(db, product.id)
+    strict = strict_groups(product)
     reasons_of = _reasons_of(product)
     items = []
     for combination in itertools.islice(_from_index([values for _g, values in axes], start), page_size):
-        reasons = reasons_of(availability(parts, _choices_of(axes, combination), sliced))
+        reasons = reasons_of(availability(parts, _choices_of(axes, combination), sliced, strict))
         items.append(
             {
                 "choices": [
@@ -226,9 +252,10 @@ async def describe(db: AsyncSession, product: Product, choices: Mapping[int, int
         return {"available": True, "reasons": [], "options": []}
     parts = list(product.parts)
     sliced = await sliced_for(db, product.id)
+    strict = strict_groups(product)
 
     def is_open(candidate: Mapping[int, int]) -> bool:
-        return not availability(parts, candidate, sliced)
+        return not availability(parts, candidate, sliced, strict)
 
     anywhere: set[int] | None = None
     if _total(axes) <= MAX_ENUMERATED:
@@ -239,7 +266,7 @@ async def describe(db: AsyncSession, product: Product, choices: Mapping[int, int
                 anywhere.update(option.id for option in combination)
                 if len(anywhere) == every:
                     break
-    reasons = _reasons(product, availability(parts, chosen, sliced))
+    reasons = _reasons(product, availability(parts, chosen, sliced, strict))
     return {
         "available": not reasons,
         "reasons": reasons,

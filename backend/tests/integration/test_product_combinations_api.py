@@ -27,11 +27,14 @@ from backend.tests.integration.test_combination_gate_api import jar  # noqa: F40
 pytestmark = pytest.mark.integration
 
 
-async def _groups(db, product_id: int, spec) -> list[tuple[ProductVariantGroup, list[ProductVariantOption]]]:
-    """Groups ``spec`` = ``[(name, [option names]), …]`` in that order; the first option standard."""
+async def _groups(
+    db, product_id: int, spec, *, marked: frozenset[str] = frozenset()
+) -> list[tuple[ProductVariantGroup, list[ProductVariantOption]]]:
+    """Groups ``spec`` = ``[(name, [option names]), …]`` in that order; the first option standard.
+    The groups named in ``marked`` need a part for every value (``requires_part``)."""
     made = []
     for position, (name, values) in enumerate(spec):
-        group = ProductVariantGroup(product_id=product_id, name=name, position=position)
+        group = ProductVariantGroup(product_id=product_id, name=name, position=position, requires_part=name in marked)
         db.add(group)
         await db.flush()
         options = [ProductVariantOption(group_id=group.id, name=v, position=i) for i, v in enumerate(values)]
@@ -45,12 +48,14 @@ async def _groups(db, product_id: int, spec) -> list[tuple[ProductVariantGroup, 
 @pytest.fixture
 async def six_by_five(db_session):
     """Six groups of five values — 15 625 combinations, past ``MAX_ENUMERATED``. One part,
-    sliced, is bound to the first group's first value: that group discriminates, the
-    others are descriptive."""
+    sliced, is bound to the first group's first value: that group, marked, discriminates;
+    the others are descriptive."""
     product = Product(name="Six by five")
     db_session.add(product)
     await db_session.flush()
-    groups = await _groups(db_session, product.id, [(f"G{g}", [f"v{g}{o}" for o in range(5)]) for g in range(6)])
+    groups = await _groups(
+        db_session, product.id, [(f"G{g}", [f"v{g}{o}" for o in range(5)]) for g in range(6)], marked=frozenset({"G0"})
+    )
     part = bind(
         ProductPart(product_id=product.id, kind="printed", name="core", name_key="core", qty_per_unit=1),
         groups[0][1][0],
@@ -64,12 +69,14 @@ async def six_by_five(db_session):
 
 @pytest.fixture
 async def legacy(db_session):
-    """A group with no standard value (a legacy product): «Colour» red / blue, and a sliced
-    red shell — the only part, bound to red."""
+    """A group with no standard value (a legacy product): «Colour» red / blue, marked, and a
+    sliced red shell — the only part, bound to red."""
     product = Product(name="Legacy")
     db_session.add(product)
     await db_session.flush()
-    ((group, (red, blue)),) = await _groups(db_session, product.id, [("Colour", ["red", "blue"])])
+    ((group, (red, blue)),) = await _groups(
+        db_session, product.id, [("Colour", ["red", "blue"])], marked=frozenset({"Colour"})
+    )
     group.default_option_id = None
     shell = bind(
         ProductPart(product_id=product.id, kind="printed", name="red shell", name_key="red shell", qty_per_unit=1),
@@ -192,11 +199,8 @@ async def test_describe_marks_here_and_anywhere(async_client, jar):  # noqa: F81
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["available"] is False
-    assert {(x["code"], x["group"], x["option"], x["part"]) for x in body["reasons"]} == {
-        ("option_without_part", "Weight", "1200", None),
-        ("option_without_part", "Kind", "solid", None),
-        ("option_without_part", "Lid", "screw", None),
-    }
+    # 1200 is named by no part at all — the one reason said, as the 409 says it.
+    assert body["reasons"] == [{"code": "option_without_part", "group": "Weight", "option": "1200", "part": None}]
     flags = {o["option_id"]: (o["available_here"], o["available_anywhere"]) for o in body["options"]}
     assert flags[jar.w400] == (True, True) and flags[jar.mesh] == (False, False)
     assert flags == {
@@ -329,8 +333,11 @@ def _route_gates(method: str, path: str) -> list[tuple[str, tuple[str, ...]]]:
     return _gates(route.dependant)
 
 
-def test_the_table_asks_what_the_product_asks_and_the_state_what_the_kits_ask():
+def test_the_table_and_the_state_ask_what_the_product_asks():
+    """Both answer facts about the product's structure — its own read (owner, 2026-11-14), so
+    an order manager without stock rights still sees the marks."""
     base = "/api/v1/products/{product_id}"
     assert _route_gates("GET", f"{base}/combinations") == _route_gates("GET", base)
-    assert _route_gates("POST", f"{base}/combination") == _route_gates("GET", f"{base}/kits")
-    assert _route_gates("GET", base) and _route_gates("GET", f"{base}/kits")
+    assert _route_gates("POST", f"{base}/combination") == _route_gates("GET", base)
+    assert _route_gates("GET", base)
+    assert _route_gates("POST", f"{base}/combination") != _route_gates("GET", f"{base}/kits")

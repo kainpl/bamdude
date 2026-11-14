@@ -521,6 +521,9 @@ class VariantGroupOut(BaseModel):
     name: str
     position: int = 0
     default_option_id: int | None = None
+    #: «Every value needs its own part» (spec product-part-variant-combinations, п. 10): only
+    #: then does a chosen value no part of the kit names close a combination.
+    requires_part: bool = False
     options: list[VariantOptionOut] = []
     #: What would refuse the group's delete, counted by the server exactly as the delete
     #: guard counts (WS-13 E1 VR9): lines and positions with a choice in it, parts bound
@@ -552,11 +555,19 @@ class VariantGroupDraftIn(BaseModel):
     #: The standard option — an ``id`` or a ``temp_id`` of THIS group's options; ``null``
     #: only for an existing group whose stored standard is already ``null`` (WS-13 E10 A06).
     default: int | str | None = None
+    #: «Every value needs its own part». Left out — an existing group keeps its mark, a new
+    #: group is off; an explicit ``null`` is refused.
+    requires_part: bool | None = None
 
     @field_validator("name", mode="before")
     @classmethod
     def _name(cls, v: Any) -> Any:
         return _clean_name(v)
+
+    @field_validator("requires_part")
+    @classmethod
+    def _requires_part(cls, v: bool | None) -> bool | None:
+        return _never_null(v, "requires_part")
 
 
 class VariantsApplyIn(BaseModel):
@@ -578,6 +589,8 @@ class VariantGroupCreate(BaseModel):
     #: The first one is the standard. At least one — checked by the route, so
     #: the refusal is a sentence rather than a validation list.
     options: list[str] = []
+    #: «Every value needs its own part» — off unless asked for.
+    requires_part: bool = False
 
     @field_validator("name", mode="before")
     @classmethod
@@ -601,15 +614,16 @@ class VariantGroupUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=128)
     default_option_id: int | None = None
     position: int | None = None
+    requires_part: bool | None = None
 
     @field_validator("name", mode="before")
     @classmethod
     def _name(cls, v: Any) -> Any:
         return _clean_name(_never_null(v, "name"))
 
-    @field_validator("default_option_id", "position")
+    @field_validator("default_option_id", "position", "requires_part")
     @classmethod
-    def _not_null(cls, v: int | None) -> int | None:
+    def _not_null(cls, v: int | bool | None) -> int | bool | None:
         return _never_null(v, "value")
 
 

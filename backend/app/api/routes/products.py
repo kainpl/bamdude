@@ -442,6 +442,7 @@ async def _variant_groups_out(db: AsyncSession, groups: list[ProductVariantGroup
             name=g.name,
             position=g.position,
             default_option_id=g.default_option_id,
+            requires_part=bool(g.requires_part),
             # A line (and a position) holds exactly one choice per group: the sums ARE
             # the delete guard's distinct counts. A part's are counted distinct above.
             lines_count=sum(lines.get(o.id, 0) for o in g.options),
@@ -2009,7 +2010,7 @@ async def create_variant_group(
     orders gets the standard recorded on each of its lines (rule 5)."""
     product = await _get(db, product_id)
     try:
-        await product_variants.create_group(db, product.id, data.name, data.options)
+        await product_variants.create_group(db, product.id, data.name, data.options, requires_part=data.requires_part)
     except product_variants.VariantError as e:
         raise _variant_refusal(e) from e
     return await _response(db, product)
@@ -2033,6 +2034,7 @@ async def apply_variants(
             name=g.name,
             options=[product_variants.OptionDraft(id=o.id, temp_id=o.temp_id, name=o.name) for o in g.options],
             default=g.default,
+            requires_part=g.requires_part,
         )
         for g in data.groups
     ]
@@ -2052,8 +2054,8 @@ async def update_variant_group(
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.PRODUCTS_UPDATE),
 ):
-    """Rename, reorder, or pick another standard. A new standard changes no saved
-    line — every line recorded its choice (rule 5)."""
+    """Rename, reorder, pick another standard, or mark «every value needs its own part».
+    A new standard changes no saved line — every line recorded its choice (rule 5)."""
     product = await _get(db, product_id)
     try:
         await product_variants.update_group(
@@ -2254,11 +2256,12 @@ async def describe_product_combination(
     product_id: int,
     data: CombinationIn,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.STOCK_READ),
+    _: User | None = RequirePermission(Permission.PRODUCTS_READ),
 ):
-    """The state of one choice for the order dialogs — the gate of ``GET …/kits``, which
-    the same dialogs already call: whether it is available, why not, and which values are
-    open here and anywhere. A POST only for its body; it writes nothing and takes no gate."""
+    """The state of one choice for the order dialogs: whether it is available, why not,
+    and which values are open here and anywhere. Facts about the product's structure, so
+    the product's own read (owner, 2026-11-14) — an order manager without stock rights
+    still sees the marks. A POST only for its body; it writes nothing and takes no gate."""
     product = await _with_variants(db, product_id)
     try:
         return await combination_gate.describe(db, product, data.choices)

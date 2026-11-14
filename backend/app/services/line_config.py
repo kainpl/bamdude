@@ -323,7 +323,12 @@ async def _dropping(
 
 
 async def seed_line(
-    db: AsyncSession, line: ProjectLine, *, choices: Mapping[int, int] | None, counts: Mapping[int, int] | None
+    db: AsyncSession,
+    line: ProjectLine,
+    *,
+    choices: Mapping[int, int] | None,
+    counts: Mapping[int, int] | None,
+    sliced_memo: dict[int, set[int]] | None = None,
 ) -> None:
     """A new line's configuration: the given choices, the standard for every other group.
 
@@ -331,7 +336,9 @@ async def seed_line(
     the line is this transaction's own new row (WS-13 E1 BL0: nobody can wait on it),
     and where a ``product`` line's combination is checked (spec
     product-part-variant-combinations, п. 13): a closed one is
-    ``combination_gate.CombinationUnavailable``, before anything is written."""
+    ``combination_gate.CombinationUnavailable``, before anything is written.
+    ``sliced_memo`` — a caller adding several lines in one call keeps the products'
+    sliced sets there, read once per product (``combination_gate.ensure_available``)."""
     ledger(db).note_created("project_lines", line.id)
     product = await _product(db, line.product_id)
     new_choices, new_counts = _validate(product, line.mode, choices or {}, counts or {})
@@ -339,7 +346,7 @@ async def seed_line(
         # Imported here: the gate's refusal is a LineConfigError, so it imports this module.
         from backend.app.services import combination_gate
 
-        await combination_gate.ensure_available(db, product, new_choices)
+        await combination_gate.ensure_available(db, product, new_choices, sliced_memo=sliced_memo)
     await _write(db, line, new_choices, new_counts)
 
     line.extra_percentages = snapshot_extra_percentages(product.parts) if line.mode == "product" else {}
@@ -374,7 +381,10 @@ async def set_configuration(
 
     A changed CHOICE must be an available combination — checked before the dry run,
     so a preview of a closed one is refused too; counts alone are never checked
-    (spec product-part-variant-combinations, п. 11, 13).
+    (spec product-part-variant-combinations, п. 11, 13). "Changed" is judged against
+    the saved choices merged over the product's standards — the choices the line's kit
+    reads — so a line saved without a row for a group that took a standard later is
+    not checked on a change of its counts.
     """
     status = await db.scalar(select(Project.status).where(Project.id == line.project_id))
     if status == "completed":
@@ -385,7 +395,7 @@ async def set_configuration(
     product = await _product(db, line.product_id)
     current = (await load_line_configs(db, [line.id])).get(line.id, LineConfig())
     new_choices, new_counts = _validate(product, line.mode, {**current.choices, **choices}, counts)
-    if line.mode == "product" and new_choices != current.choices:
+    if line.mode == "product" and new_choices != {**_defaults(product), **current.choices}:
         from backend.app.services import combination_gate
 
         await combination_gate.ensure_available(db, product, new_choices)

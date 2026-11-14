@@ -199,12 +199,14 @@ async def test_a_refusal_half_way_writes_nothing(committing_client, lamp):
     assert after["variant_groups"][0]["name"] == "Colour"
 
 
-@pytest.mark.parametrize("foreign", ["rename", "standard", "reorder", "add", "delete", "apply"])
+@pytest.mark.parametrize("foreign", ["rename", "standard", "reorder", "add", "delete", "apply", "mark"])
 @pytest.mark.asyncio
 async def test_a_stale_draft_is_refused_whatever_changed_meanwhile(committing_client, lamp, foreign):
     state = await _state(committing_client, lamp)
     base = f"{_url(lamp)}/variant-groups/{lamp['group']}"
-    if foreign == "rename":
+    if foreign == "mark":
+        r = await committing_client.patch(base, json={"requires_part": True})
+    elif foreign == "rename":
         r = await committing_client.patch(f"{base}/options/{lamp['options']['blue']}", json={"name": "navy"})
     elif foreign == "standard":
         r = await committing_client.patch(base, json={"default_option_id": lamp["options"]["blue"]})
@@ -244,6 +246,28 @@ async def test_a_draft_without_changes_writes_nothing(committing_client, db_sess
 
 
 @pytest.mark.asyncio
+async def test_a_draft_that_only_marks_a_group_writes_it_and_moves_no_configuration(
+    committing_client, db_session, lamp
+):
+    state = await _state(committing_client, lamp)
+    before = await _keys(db_session, lamp)
+    draft = _draft(state)
+    draft[0]["requires_part"] = True
+    r = await _put(committing_client, lamp, state["variants_revision"], draft)
+    assert r.status_code == 200, r.text
+    assert r.json()["variant_groups"][0]["requires_part"] is True
+    assert r.json()["variants_revision"] != state["variants_revision"]
+    # No freeze, no re-key: the line and the position keep their configuration.
+    assert await _keys(db_session, lamp) == before
+    # Sent again unchanged, the mark is no change.
+    again = await _put(committing_client, lamp, r.json()["variants_revision"], draft)
+    assert again.status_code == 200 and again.json()["variants_revision"] == r.json()["variants_revision"]
+    null = _draft(r.json())
+    null[0]["requires_part"] = None
+    assert (await _put(committing_client, lamp, r.json()["variants_revision"], null)).status_code == 422
+
+
+@pytest.mark.asyncio
 async def test_only_the_message_is_translated(committing_client, lamp):
     state = await _state(committing_client, lamp)
     set_language_cache("uk")
@@ -274,8 +298,11 @@ def test_the_revision_ignores_the_order_the_rows_were_loaded_in():
 
     a = Obj(id=1, name="red", position=0)
     b = Obj(id=2, name="blue", position=1)
-    g1 = Obj(id=10, name="Colour", position=0, default_option_id=1, options=[a, b])
-    g2 = Obj(id=10, name="Colour", position=0, default_option_id=1, options=[b, a])
+    g1 = Obj(id=10, name="Colour", position=0, default_option_id=1, requires_part=False, options=[a, b])
+    g2 = Obj(id=10, name="Colour", position=0, default_option_id=1, requires_part=False, options=[b, a])
     assert product_variants.revision([g1]) == product_variants.revision([g2])
-    renamed = Obj(id=10, name="Hue", position=0, default_option_id=1, options=[a, b])
+    renamed = Obj(id=10, name="Hue", position=0, default_option_id=1, requires_part=False, options=[a, b])
     assert product_variants.revision([renamed]) != product_variants.revision([g1])
+    # «Every value needs its own part» is part of what the client saw.
+    marked = Obj(id=10, name="Colour", position=0, default_option_id=1, requires_part=True, options=[a, b])
+    assert product_variants.revision([marked]) != product_variants.revision([g1])

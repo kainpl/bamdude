@@ -208,8 +208,9 @@ async def test_a_deleted_product_takes_its_variants(committing_client, db_sessio
 
 @pytest.fixture
 async def jar(db_session):
-    """Jar: a weight (400 standard, 600, 1200), a view (solid standard, mesh) and a cap
-    type (screw standard, snap); two bodies and a cap, none of them bound yet."""
+    """Jar: a weight (400 standard, 600, 1200), a view (solid standard, mesh — marked «every
+    value needs its own part») and a cap type (screw standard, snap); two bodies and a cap,
+    none of them bound yet."""
     product = Product(name="Jar")
     db_session.add(product)
     await db_session.flush()
@@ -221,7 +222,7 @@ async def jar(db_session):
             ("cap_type", "Cap", (("screw", "screw"), ("snap", "snap"))),
         )
     ):
-        group = ProductVariantGroup(product_id=product.id, name=name, position=position)
+        group = ProductVariantGroup(product_id=product.id, name=name, position=position, requires_part=key == "view")
         db_session.add(group)
         await db_session.flush()
         options = [ProductVariantOption(group_id=group.id, name=n, position=i) for i, (_k, n) in enumerate(values)]
@@ -377,6 +378,12 @@ async def test_duplicate_product_copies_multi_bindings(committing_client, db_ses
     r = await committing_client.post(f"/api/v1/products/{jar.id}/duplicate", json={})
     assert r.status_code == 200, r.text
     copy = r.json()
+    # «Every value needs its own part» goes with the group (View is marked by the fixture).
+    assert {g["name"]: g["requires_part"] for g in copy["variant_groups"]} == {
+        "Weight": False,
+        "View": True,
+        "Cap": False,
+    }
     names = _options_by_name(copy)
     assert sorted(_named(copy, "body 400 solid")["variant_option_ids"]) == sorted(
         [names[("Weight", "400")], names[("View", "solid")]]
@@ -418,6 +425,8 @@ async def legacy_zip(committing_client, jar):
         for part in manifest["parts"]:
             part.pop("variants", None)
             part["variant"] = ["Weight", "600"] if part["name"] == "body 600 solid" else None
+        for group in manifest["variant_groups"]:
+            group.pop("requires_part", None)
 
     return _rewrite_manifest(exported.content, to_old_shape)
 
@@ -436,12 +445,22 @@ async def test_zip_roundtrip_keeps_multi_bindings_and_old_archive_imports(commit
     assert exported.status_code == 200, exported.text
     manifest = json.loads(zipfile.ZipFile(io.BytesIO(exported.content)).read("product.json").decode("utf-8"))
     by_name = {p["name"]: p for p in manifest["parts"]}
+    assert [(g["name"], g["requires_part"]) for g in manifest["variant_groups"]] == [
+        ("Weight", False),
+        ("View", True),
+        ("Cap", False),
+    ]
     # By name, in the groups' order and each group's options' order.
     assert by_name["screw cap"]["variants"] == [["Weight", "400"], ["Weight", "600"], ["Cap", "screw"]]
     assert by_name["body 400 solid"]["variants"] == [["Weight", "400"], ["View", "solid"]]
     assert by_name["body 600 solid"]["variants"] == []
 
     product = await _import(committing_client, exported.content)
+    assert {g["name"]: g["requires_part"] for g in product["variant_groups"]} == {
+        "Weight": False,
+        "View": True,
+        "Cap": False,
+    }
     names = _options_by_name(product)
     assert sorted(_named(product, "screw cap")["variant_option_ids"]) == sorted(
         [names[("Weight", "400")], names[("Weight", "600")], names[("Cap", "screw")]]
@@ -451,6 +470,8 @@ async def test_zip_roundtrip_keeps_multi_bindings_and_old_archive_imports(commit
     )
 
     old = await _import(committing_client, legacy_zip)
+    # An archive written before the mark has no key: every group imports unmarked.
+    assert {g["requires_part"] for g in old["variant_groups"]} == {False}
     old_names = _options_by_name(old)
     assert _named(old, "body 600 solid")["variant_option_ids"] == [old_names[("Weight", "600")]]
     assert _named(old, "screw cap")["variant_option_ids"] == []

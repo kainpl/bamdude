@@ -250,26 +250,46 @@ class Unavailable:
 
 
 def availability(
-    parts: Sequence[ProductPart], choices: Mapping[int, int], sliced: AbstractSet[int]
+    parts: Sequence[ProductPart],
+    choices: Mapping[int, int],
+    sliced: AbstractSet[int],
+    strict_groups: AbstractSet[int],
 ) -> list[Unavailable]:
     """Is the combination ``choices`` (``group_id → option_id``, every group) one an order may
-    take? ``[]`` — yes; otherwise every reason, groups in id order, then the parts in kit
+    take? ``[]`` — yes; otherwise the reasons, groups in id order, then the parts in kit
     order (п. 10–11).
 
     Judged on the STANDARD kit of the choice — a line's changed counts never open a closed
-    combination. Only parts with a standard count and without «не рахувати» count. A group
-    no counted part has options in is descriptive and never closes anything; in a group
-    some counted part discriminates on, the chosen option must be named by a part of the
-    kit. A printed part of the kit needs a sliced source (``sliced``: part ids); a purchased
-    one needs none. Pure — ``combination_gate`` reads ``sliced`` and asks here."""
+    combination. Only parts with a standard count and without «не рахувати» count.
+
+    ``option_without_part`` is asked only in a group marked «every value needs its own
+    part» (``strict_groups``: ``ProductVariantGroup.requires_part``) that some counted part
+    has options in: there the chosen option must be named by a part of the kit. An
+    unmarked group never closes anything by this rule — «Magnet: no / yes» with the magnet
+    bound to «yes» keeps «no» orderable. When a chosen value is named by NO counted part at
+    all (or nothing is chosen), only such values are reported: they are what is missing,
+    and the other groups' values merely have no kit left around them.
+
+    ``part_not_sliced``, for every product with variant groups: a printed part of the kit
+    needs a sliced source (``sliced``: part ids); a purchased one needs none. Pure —
+    ``combination_gate`` reads ``sliced`` and the marked groups and asks here."""
     chosen = set(choices.values())
     ordered = sorted(parts, key=lambda p: (p.sort_order or 0, p.id))
-    counted_parts = [p for p in ordered if not p.ignored and standard_per(p) > 0]
-    kit = [p for p in counted_parts if in_kit(p.bound, chosen)]
-    out: list[Unavailable] = []
-    for group_id in sorted({g for p in counted_parts for g in p.bound}):
+    # ``bound`` is rebuilt on every access: read once per part, per call.
+    counted_parts = [(p, p.bound) for p in ordered if not p.ignored and standard_per(p) > 0]
+    kit = [(p, bound) for p, bound in counted_parts if in_kit(bound, chosen)]
+    named: dict[int, set[int]] = {}
+    for _p, bound in counted_parts:
+        for group_id, options in bound.items():
+            named.setdefault(group_id, set()).update(options)
+    missing: list[Unavailable] = []
+    for group_id in sorted(set(named) & set(strict_groups)):
         option_id = choices.get(group_id)
-        if not any(option_id in p.bound.get(group_id, ()) for p in kit):
-            out.append(Unavailable("option_without_part", group_id, option_id, None))
-    out += [Unavailable("part_not_sliced", None, None, p.id) for p in kit if p.kind == "printed" and p.id not in sliced]
+        if not any(option_id in bound.get(group_id, ()) for _p, bound in kit):
+            missing.append(Unavailable("option_without_part", group_id, option_id, None))
+    nowhere = [u for u in missing if u.option_id not in named[u.group_id]]
+    out = nowhere or missing
+    out += [
+        Unavailable("part_not_sliced", None, None, p.id) for p, _b in kit if p.kind == "printed" and p.id not in sliced
+    ]
     return out

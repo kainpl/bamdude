@@ -193,10 +193,12 @@ async def create_group(
     *,
     default_index: int = 0,
     record_lines: bool = True,
+    requires_part: bool = False,
 ) -> ProductVariantGroup:
     """A group with its options, ``options[default_index]`` standard. With
     ``record_lines`` (every door but a brand-new product's import) the standard is
-    recorded on each line and position of the product (rule 5)."""
+    recorded on each line and position of the product (rule 5). ``requires_part`` —
+    «every value needs its own part» (spec product-part-variant-combinations, п. 10)."""
     await _gate(db, product_id, footprint=record_lines)
     existing = await groups(db, product_id)
     if not options:
@@ -213,6 +215,7 @@ async def create_group(
         options,
         default_index=default_index,
         position=max((g.position for g in existing), default=-1) + 1,
+        requires_part=requires_part,
     )
     if record_lines:
         await line_config.add_group_to_lines(db, group)
@@ -220,9 +223,16 @@ async def create_group(
 
 
 async def _insert_group(
-    db: AsyncSession, product_id: int, name: str, options: Sequence[str], *, default_index: int, position: int
+    db: AsyncSession,
+    product_id: int,
+    name: str,
+    options: Sequence[str],
+    *,
+    default_index: int,
+    position: int,
+    requires_part: bool = False,
 ) -> ProductVariantGroup:
-    group = ProductVariantGroup(product_id=product_id, name=name, position=position)
+    group = ProductVariantGroup(product_id=product_id, name=name, position=position, requires_part=requires_part)
     db.add(group)
     await db.flush()
     created = [ProductVariantOption(group_id=group.id, name=n, position=i) for i, n in enumerate(options)]
@@ -235,8 +245,9 @@ async def _insert_group(
 
 
 async def update_group(db: AsyncSession, product_id: int, group_id: int, fields: Mapping[str, Any]) -> None:
-    """Rename, reorder, or pick another standard. A new standard changes no saved
-    line — every line recorded its choice (rule 5)."""
+    """Rename, reorder, pick another standard, or mark «every value needs its own part».
+    A new standard changes no saved line — every line recorded its choice (rule 5); the
+    mark changes no line or position either — it decides only what a new line may take."""
     await _gate(db, product_id)
     group = await _group(db, product_id, group_id)
     if "name" in fields and variant_key(fields["name"]) != variant_key(group.name):
@@ -247,7 +258,7 @@ async def update_group(db: AsyncSession, product_id: int, group_id: int, fields:
             raise VariantError(409, GROUP_TAKEN)
     if "default_option_id" in fields and fields["default_option_id"] not in {o.id for o in group.options}:
         raise VariantError(422, "That option does not belong to this group")
-    for column in ("name", "default_option_id", "position"):
+    for column in ("name", "default_option_id", "position", "requires_part"):
         if column in fields:
             setattr(group, column, fields[column])
     await db.flush()
@@ -326,7 +337,9 @@ async def copy_groups(db: AsyncSession, source_id: int, target_id: int) -> tuple
     option_map: dict[int, int] = {}
     group_map: dict[int, int] = {}
     for group in await groups(db, source_id):
-        new_group = ProductVariantGroup(product_id=target_id, name=group.name, position=group.position)
+        new_group = ProductVariantGroup(
+            product_id=target_id, name=group.name, position=group.position, requires_part=group.requires_part
+        )
         db.add(new_group)
         await db.flush()
         group_map[group.id] = new_group.id
@@ -367,18 +380,23 @@ class GroupDraft:
     #: ``None`` only for an existing group whose stored standard is already ``None``
     #: (WS-13 E10 A06) — checked against the stored group in :func:`apply`.
     default: int | str | None
+    #: «Every value needs its own part»; ``None`` — not sent: an existing group keeps its
+    #: stored mark (a client that does not know the field never clears it), a new one is off.
+    requires_part: bool | None = None
 
 
 def revision(state: Sequence[Any]) -> str:
     """SHA-256 of the product's variants as the client saw them (spec VR4): groups by
-    id with name, position and standard; options by id with name and position. The
-    order rows were loaded in never changes it; ``position`` is a field, not the order."""
+    id with name, position, standard and «every value needs its own part»; options by id
+    with name and position. The order rows were loaded in never changes it; ``position``
+    is a field, not the order."""
     canonical = [
         {
             "id": g.id,
             "name": g.name,
             "position": g.position,
             "default_option_id": g.default_option_id,
+            "requires_part": bool(g.requires_part),
             "options": [
                 {"id": o.id, "name": o.name, "position": o.position} for o in sorted(g.options, key=lambda o: o.id)
             ],
@@ -511,6 +529,7 @@ async def apply(db: AsyncSession, product_id: int, seen_revision: str, draft: Se
         and all(
             by_group[g.id].name == g.name
             and by_group[g.id].default_option_id == g.default
+            and (g.requires_part is None or bool(by_group[g.id].requires_part) == g.requires_part)
             and [o.id for o in g.options] == [o.id for o in _ordered(by_group[g.id])]
             and all(options_by_id[o.id].name == o.name for o in g.options)
             for g in draft
@@ -519,11 +538,14 @@ async def apply(db: AsyncSession, product_id: int, seen_revision: str, draft: Se
     if unchanged:
         return False
 
-    # (a) renames, in place — ids and configuration keys stay (keys are built from ids).
+    # (a) renames and marks, in place — ids and configuration keys stay (keys are built
+    # from ids); the mark moves no line or position (it decides only new lines).
     for group in draft:
         if group.id is None:
             continue
         by_group[group.id].name = group.name
+        if group.requires_part is not None:
+            by_group[group.id].requires_part = group.requires_part
         for option in group.options:
             if option.id is not None:
                 options_by_id[option.id].name = option.name
@@ -536,7 +558,13 @@ async def apply(db: AsyncSession, product_id: int, seen_revision: str, draft: Se
             continue
         default_index = next(i for i, o in enumerate(group.options) if o.temp_id == group.default)
         created = await _insert_group(
-            db, product_id, group.name, [o.name for o in group.options], default_index=default_index, position=position
+            db,
+            product_id,
+            group.name,
+            [o.name for o in group.options],
+            default_index=default_index,
+            position=position,
+            requires_part=bool(group.requires_part),
         )
         made_groups[group.temp_id] = created
         for option, row in zip(group.options, _ordered(created), strict=True):

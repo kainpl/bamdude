@@ -1,4 +1,5 @@
-"""m225 — a part's option binding moves into ``product_part_options``; the old column goes.
+"""m225 — a part's option binding moves into ``product_part_options``; the old column goes;
+every variant group gets «every value needs its own part» (``requires_part``), off.
 
 Two shapes of ``product_parts`` reach m225 on SQLite, and both are built here: the
 column m191 added to an older table (an inline REFERENCES, which SQLite's DROP COLUMN
@@ -6,6 +7,8 @@ takes once the column's index is gone), and the table ``create_all`` built on a 
 install while the model still had the column (a table-level FOREIGN KEY, which DROP
 COLUMN refuses outright).
 """
+
+import logging
 
 import pytest
 import pytest_asyncio
@@ -272,8 +275,59 @@ async def test_the_table_matches_a_fresh_install(migrated_db):
 
 async def test_a_second_run_changes_nothing(migrated_db):
     before = await _shape(migrated_db, "product_parts")
+    groups_before = await _shape(migrated_db, "product_variant_groups")
+    async with migrated_db.begin() as conn:
+        await conn.execute(text("UPDATE product_variant_groups SET requires_part = 1 WHERE id = :g"), {"g": GROUP_ID})
     await _run(migrated_db)
     assert await fetch_all(migrated_db, "SELECT part_id, option_id, group_id FROM product_part_options") == [
         (PART_ID, OPTION_ID, GROUP_ID)
     ]
     assert await _shape(migrated_db, "product_parts") == before
+    assert await _shape(migrated_db, "product_variant_groups") == groups_before
+    # A mark set after the first run survives the re-run.
+    assert await fetch_all(migrated_db, "SELECT id, requires_part FROM product_variant_groups ORDER BY id") == [
+        (OTHER_GROUP_ID, 0),
+        (GROUP_ID, 1),
+    ]
+
+
+async def test_every_existing_group_is_unmarked(legacy_db):
+    async with legacy_db.connect() as conn:
+        assert not await column_exists(conn, "product_variant_groups", "requires_part")
+    await _run(legacy_db)
+    assert await fetch_all(legacy_db, "SELECT id, requires_part FROM product_variant_groups ORDER BY id") == [
+        (OTHER_GROUP_ID, 0),
+        (GROUP_ID, 0),
+    ]
+    column = next(c for c in (await _shape(legacy_db, "product_variant_groups"))[0] if c[0] == "requires_part")
+    assert (column[1], column[2], column[3]) == ("BOOLEAN", 1, "0")  # type, NOT NULL, default
+    async with legacy_db.begin() as conn:  # a group written without the column takes the default
+        await conn.execute(text("INSERT INTO product_variant_groups (id, product_id, name) VALUES (12, 1, 'Size')"))
+    assert await fetch_all(legacy_db, "SELECT requires_part FROM product_variant_groups WHERE id = 12") == [(0,)]
+
+
+async def test_a_binding_already_in_the_table_is_not_moved_twice(legacy_db, caplog):
+    """A retry after a run that stopped half way: the row it wrote is there; the move skips it."""
+    async with legacy_db.begin() as conn:
+        await conn.run_sync(ProductPartOption.__table__.create)
+        await conn.execute(
+            text("INSERT INTO product_part_options (part_id, option_id, group_id) VALUES (:p, :o, :g)"),
+            {"p": PART_ID, "o": OPTION_ID, "g": GROUP_ID},
+        )
+    with caplog.at_level(logging.INFO, logger=m225.logger.name):
+        await _run(legacy_db)
+    assert await fetch_all(legacy_db, "SELECT part_id, option_id, group_id FROM product_part_options") == [
+        (PART_ID, OPTION_ID, GROUP_ID)
+    ]
+    assert "moved 0 part binding(s)" in caplog.text
+
+
+async def test_the_move_says_what_it_moved_and_what_it_could_not(legacy_db, caplog):
+    with caplog.at_level(logging.INFO, logger=m225.logger.name):
+        await _run(legacy_db)
+    (record,) = [r for r in caplog.records if r.name == m225.logger.name]
+    assert record.levelno == logging.INFO
+    assert record.getMessage() == (
+        "m225: moved 1 part binding(s) into product_part_options; 1 named an option that no longer exists "
+        "and were not moved"
+    )

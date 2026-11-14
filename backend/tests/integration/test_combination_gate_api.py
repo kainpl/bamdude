@@ -2,16 +2,20 @@
 combination (spec product-part-variant-combinations, п. 10–14).
 
 The jar: a weight (400 standard, 600, 1200), a kind (solid standard, mesh) and a lid
-(screw standard, snap). Bodies exist for solid 400 and solid 600 only, the screw lid
-fits 400 and 600, the snap lid any weight. Each part is sliced in a file of its own,
-so trashing one file takes exactly one part's source away.
+(screw standard, snap) — every group marked «every value needs its own part». Bodies
+exist for solid 400 and solid 600 only, the screw lid fits 400 and 600, the snap lid any
+weight. Each part is sliced in a file of its own, so trashing one file takes exactly one
+part's source away.
+
+The lamp is an add-on: «Magnet: no / yes», the magnet bound to «yes» — orderable with
+«no» while its group is unmarked, closed by the mark.
 """
 
 from datetime import datetime
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import delete, event, select
 
 from backend.app.models.library import LibraryFile
 from backend.app.models.line_config import ProjectLineChoice, ProjectLinePartCount
@@ -19,6 +23,7 @@ from backend.app.models.product import Product, ProductPart, ProductPlate, produ
 from backend.app.models.product_variant import ProductVariantGroup, ProductVariantOption
 from backend.app.models.project import Project
 from backend.app.models.project_line import ProjectLine
+from backend.app.services import combination_gate, line_config
 from backend.tests.fixtures.part_bindings import bind
 
 pytestmark = pytest.mark.integration
@@ -56,7 +61,7 @@ async def _make_jar(db, *, weight_standard: str = "w400") -> SimpleNamespace:
     ids: dict[str, int] = {"id": product.id}
     options: dict[str, ProductVariantOption] = {}
     for position, (key, name, values) in enumerate(_GROUPS):
-        group = ProductVariantGroup(product_id=product.id, name=name, position=position)
+        group = ProductVariantGroup(product_id=product.id, name=name, position=position, requires_part=True)
         db.add(group)
         await db.flush()
         made = [ProductVariantOption(group_id=group.id, name=n, position=i) for i, (_k, n) in enumerate(values)]
@@ -165,11 +170,9 @@ async def test_batch_with_one_closed_line_adds_nothing(committing_client, db_ses
         },
     )
     detail = _refusal(r)
-    assert {(x["code"], x["group"], x["option"]) for x in detail["reasons"]} == {
-        ("option_without_part", "Weight", "1200"),
-        ("option_without_part", "Kind", "solid"),
-        ("option_without_part", "Lid", "screw"),
-    }
+    # 1200 is named by no part at all: that is what is missing, and the only reason said —
+    # solid and screw merely have no kit left around them.
+    assert detail["reasons"] == [{"code": "option_without_part", "group": "Weight", "option": "1200", "part": None}]
     assert await _line_ids(db_session, order.id) == []
     # An order created with a closed line is not created at all.
     created = await committing_client.post(
@@ -303,3 +306,249 @@ async def test_trashed_only_source_closes_then_restore_reopens(committing_client
     await _trash(db_session, jar.files["body_400"], trashed=False)
     r = await committing_client.post(f"/api/v1/projects/{order.id}/lines", json={"product_id": jar.id, "quantity": 1})
     assert r.status_code == 200, r.text
+
+
+# ---------- a saved line without a stored choice for a group (review M-a) ----------
+
+
+@pytest.mark.asyncio
+async def test_a_counts_only_change_of_a_line_without_a_stored_choice_is_not_checked(
+    committing_client, db_session, jar, saved_line
+):
+    """A line saved before its group had a standard holds no row for it — its kit reads the
+    standard. A change of counts alone keeps that choice, so it is not checked, even with the
+    combination closed under the line."""
+    await db_session.execute(
+        delete(ProjectLineChoice).where(
+            ProjectLineChoice.line_id == saved_line.id, ProjectLineChoice.group_id == jar.weight
+        )
+    )
+    await db_session.commit()
+    await _trash(db_session, jar.files["body_400"])  # 400 + solid + screw is closed now
+    url = f"/api/v1/projects/{saved_line.order.id}/lines/{saved_line.id}/configuration"
+    preview = await committing_client.put(url, json={"part_counts": {str(jar.body_400): 2}, "dry_run": True})
+    assert preview.status_code == 200, preview.text
+    r = await committing_client.put(url, json={"part_counts": {str(jar.body_400): 2}})
+    assert r.status_code == 200, r.text
+    # The standard the kit read is now recorded beside the new count.
+    assert await _choices(db_session, saved_line.id) == {jar.weight: jar.w400, jar.kind: jar.solid, jar.lid: jar.screw}
+    # A changed choice on that line is still checked.
+    other = await committing_client.put(url, json={"choices": {str(jar.lid): jar.snap}})
+    assert {x["code"] for x in _refusal(other)["reasons"]} == {"part_not_sliced"}
+
+
+# ---------- «every value needs its own part» is a mark on the group, off by default ----------
+
+
+@pytest.fixture
+async def lamp(db_session):
+    """A lamp with an add-on: «Magnet: no (standard) / yes», the purchased magnet bound to
+    «yes», the printed shade in every kit and sliced. The group is NOT marked."""
+    product = Product(name="Lamp")
+    db_session.add(product)
+    await db_session.flush()
+    group = ProductVariantGroup(product_id=product.id, name="Magnet", position=0)
+    db_session.add(group)
+    await db_session.flush()
+    no, yes = (ProductVariantOption(group_id=group.id, name=n, position=i) for i, n in enumerate(("no", "yes")))
+    db_session.add_all([no, yes])
+    await db_session.flush()
+    group.default_option_id = no.id
+    shade = bind(ProductPart(product_id=product.id, kind="printed", name="shade", name_key="shade", qty_per_unit=1))
+    magnet = bind(
+        ProductPart(
+            product_id=product.id, kind="purchased", name="magnet", name_key="purchased:magnet", qty_per_unit=1
+        ),
+        yes,
+    )
+    db_session.add_all([shade, magnet])
+    await db_session.flush()
+    f = await _sliced_file(db_session, "shade")
+    db_session.add(ProductPlate(product_id=product.id, library_file_id=f.id, plate_index=0))
+    await db_session.execute(product_files.insert().values(product_id=product.id, library_file_id=f.id))
+    await db_session.commit()
+    return SimpleNamespace(id=product.id, magnet=group.id, no=no.id, yes=yes.id, shade_file=f.id)
+
+
+async def _product_state(client, product_id: int) -> dict:
+    r = await client.get(f"/api/v1/products/{product_id}")
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+async def _mark(client, product_id: int, state: dict, requires_part: bool) -> dict:
+    """``PUT …/variants`` with the product's groups as they are — only the mark changes."""
+    draft = [
+        {
+            "id": g["id"],
+            "name": g["name"],
+            "options": [{"id": o["id"], "name": o["name"]} for o in g["options"]],
+            "default": g["default_option_id"],
+            "requires_part": requires_part,
+        }
+        for g in state["variant_groups"]
+    ]
+    r = await client.put(
+        f"/api/v1/products/{product_id}/variants", json={"revision": state["variants_revision"], "groups": draft}
+    )
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+async def _table(client, product_id: int) -> list[tuple[str, bool, list]]:
+    r = await client.get(f"/api/v1/products/{product_id}/combinations")
+    assert r.status_code == 200, r.text
+    return [(i["choices"][0]["option"], i["available"], i["reasons"]) for i in r.json()["items"]]
+
+
+@pytest.mark.asyncio
+async def test_an_add_on_no_is_orderable_unless_its_group_is_marked(committing_client, db_session, lamp, order):
+    lines = f"/api/v1/projects/{order.id}/lines"
+    no = {"product_id": lamp.id, "quantity": 1, "choices": {str(lamp.magnet): lamp.no}}
+    saved = await committing_client.post(lines, json=no)
+    assert saved.status_code == 200, saved.text
+    line_id = saved.json()["lines"][0]["id"]
+    assert await _table(committing_client, lamp.id) == [("no", True, []), ("yes", True, [])]
+
+    before = await _product_state(committing_client, lamp.id)
+    assert before["variant_groups"][0]["requires_part"] is False
+    marked = await _mark(committing_client, lamp.id, before, True)
+    assert marked["variant_groups"][0]["requires_part"] is True
+    # The mark is part of the revision: a draft opened before it is stale.
+    assert marked["variants_revision"] != before["variants_revision"]
+    assert await _table(committing_client, lamp.id) == [
+        ("no", False, [{"code": "option_without_part", "group": "Magnet", "option": "no", "part": None}]),
+        ("yes", True, []),
+    ]
+    refused = _refusal(await committing_client.post(lines, json=no))
+    assert refused["reasons"] == [{"code": "option_without_part", "group": "Magnet", "option": "no", "part": None}]
+    yes = await committing_client.post(
+        lines, json={"product_id": lamp.id, "quantity": 1, "choices": {str(lamp.magnet): lamp.yes}}
+    )
+    assert yes.status_code == 200, yes.text
+    # The line saved with «no» keeps it: a mark changes no saved line.
+    assert await _choices(db_session, line_id) == {lamp.magnet: lamp.no}
+
+    unmarked = await _mark(committing_client, lamp.id, marked, False)
+    assert unmarked["variants_revision"] == before["variants_revision"]
+    assert (await committing_client.post(lines, json=no)).status_code == 200
+    assert await _table(committing_client, lamp.id) == [("no", True, []), ("yes", True, [])]
+
+
+@pytest.mark.asyncio
+async def test_an_unmarked_group_still_needs_its_kit_sliced(committing_client, db_session, lamp, order):
+    await _trash(db_session, lamp.shade_file)
+    detail = _refusal(
+        await committing_client.post(f"/api/v1/projects/{order.id}/lines", json={"product_id": lamp.id, "quantity": 1})
+    )
+    assert detail["reasons"] == [{"code": "part_not_sliced", "group": None, "option": None, "part": "shade"}]
+
+
+@pytest.mark.asyncio
+async def test_the_mark_goes_through_every_group_door(committing_client, lamp):
+    base = f"/api/v1/products/{lamp.id}/variant-groups"
+    patched = await committing_client.patch(f"{base}/{lamp.magnet}", json={"requires_part": True})
+    assert patched.status_code == 200, patched.text
+    assert patched.json()["variant_groups"][0]["requires_part"] is True
+    assert (await committing_client.patch(f"{base}/{lamp.magnet}", json={"requires_part": None})).status_code == 422
+    # A draft that does not send the mark keeps it.
+    state = await _product_state(committing_client, lamp.id)
+    draft = [
+        {
+            "id": g["id"],
+            "name": "Magnets",
+            "options": [{"id": o["id"], "name": o["name"]} for o in g["options"]],
+            "default": g["default_option_id"],
+        }
+        for g in state["variant_groups"]
+    ]
+    kept = await committing_client.put(
+        f"/api/v1/products/{lamp.id}/variants", json={"revision": state["variants_revision"], "groups": draft}
+    )
+    assert kept.status_code == 200, kept.text
+    assert [(g["name"], g["requires_part"]) for g in kept.json()["variant_groups"]] == [("Magnets", True)]
+    # A new group: off unless asked for, through either door.
+    plain = await committing_client.post(base, json={"name": "Colour", "options": ["red"]})
+    asked = await committing_client.post(base, json={"name": "Size", "options": ["S"], "requires_part": True})
+    assert asked.status_code == 200, asked.text
+    marks = {g["name"]: g["requires_part"] for g in asked.json()["variant_groups"]}
+    assert plain.status_code == 200 and marks == {"Magnets": True, "Colour": False, "Size": True}
+    state = asked.json()
+    new_group = await committing_client.put(
+        f"/api/v1/products/{lamp.id}/variants",
+        json={
+            "revision": state["variants_revision"],
+            "groups": [
+                *[
+                    {
+                        "id": g["id"],
+                        "name": g["name"],
+                        "options": [{"id": o["id"], "name": o["name"]} for o in g["options"]],
+                        "default": g["default_option_id"],
+                    }
+                    for g in state["variant_groups"]
+                ],
+                {"temp_id": "g", "name": "Base", "options": [{"temp_id": "o", "name": "round"}], "default": "o"},
+                {
+                    "temp_id": "h",
+                    "name": "Cord",
+                    "options": [{"temp_id": "p", "name": "white"}],
+                    "default": "p",
+                    "requires_part": True,
+                },
+            ],
+        },
+    )
+    assert new_group.status_code == 200, new_group.text
+    marks = {g["name"]: g["requires_part"] for g in new_group.json()["variant_groups"]}
+    assert (marks["Base"], marks["Cord"]) == (False, True)
+
+
+# ---------- what the gate costs (review M-b, m4) ----------
+
+
+@pytest.mark.asyncio
+async def test_a_batch_reads_a_products_sliced_set_once(committing_client, jar, order, monkeypatch):
+    calls: list[int] = []
+    real = combination_gate.sliced_for
+
+    async def counted(db, product_id):
+        calls.append(product_id)
+        return await real(db, product_id)
+
+    monkeypatch.setattr(combination_gate, "sliced_for", counted)
+    r = await committing_client.post(
+        f"/api/v1/projects/{order.id}/lines/batch",
+        json={
+            "lines": [
+                {"kind": "product", "product_id": jar.id, "quantity": 1},
+                {"kind": "product", "product_id": jar.id, "quantity": 2, "choices": {str(jar.weight): jar.w600}},
+                {"kind": "product", "product_id": jar.id, "quantity": 3, "choices": {str(jar.lid): jar.snap}},
+            ]
+        },
+    )
+    assert r.status_code == 200, r.text
+    assert calls == [jar.id]
+
+
+@pytest.mark.asyncio
+async def test_a_product_without_groups_costs_the_gate_no_query(db_session):
+    product = Product(name="Plain")
+    db_session.add(product)
+    await db_session.flush()
+    db_session.add(bind(ProductPart(product_id=product.id, kind="printed", name="x", name_key="x", qty_per_unit=1)))
+    await db_session.commit()
+    loaded = (await line_config.load_products(db_session, [product.id]))[product.id]
+    statements: list[str] = []
+
+    def record(_conn, _cursor, statement, *_args):
+        statements.append(statement)
+
+    sync = (await db_session.connection()).sync_connection
+    event.listen(sync, "before_cursor_execute", record)
+    try:
+        await combination_gate.ensure_available(db_session, loaded, {})
+        await combination_gate.ensure_available(db_session, loaded, {}, sliced_memo={})
+    finally:
+        event.remove(sync, "before_cursor_execute", record)
+    assert statements == []

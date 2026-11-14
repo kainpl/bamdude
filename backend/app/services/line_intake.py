@@ -147,6 +147,8 @@ async def add_lines(
         raise LineIntakeError("Project not found", 404)
     active = status == "active"
     out: list[Intake] = []
+    # The products' sliced sets, read once per product for the whole batch (the gate's memo).
+    sliced_memo: dict[int, set[int]] = {}
     for spec, product_id in zip(specs, product_ids, strict=True):
         line = _new_line(spec, product_id, sort_order)
         sort_order += 1
@@ -156,7 +158,7 @@ async def add_lines(
         choices = getattr(spec, "choices", None) or None
         counts = getattr(spec, "part_counts", None) or None
         try:
-            await line_config.seed_line(db, line, choices=choices, counts=counts)
+            await line_config.seed_line(db, line, choices=choices, counts=counts, sliced_memo=sliced_memo)
         except combination_gate.CombinationUnavailable as e:
             raise LineIntakeError(str(e), e.status, e.payload()) from e
         except line_config.LineConfigError as e:

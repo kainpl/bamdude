@@ -25,8 +25,19 @@ AUTOINCREMENT on SQLite: its rows are never addressed by a code.
   On an SQLite too old for DROP COLUMN, ``drop_column`` leaves the column in place,
   unread; it is nulled so a re-run cannot bring back a binding the operator removed.
 
+* The move tolerates a row already there (``INSERT OR IGNORE`` on SQLite, ``ON CONFLICT
+  DO NOTHING`` on PostgreSQL), so a retry after a run that stopped half way does not fail
+  on its own earlier rows. One INFO line says how many bindings moved and how many named
+  an option that no longer exists and so did not.
+* ``product_variant_groups.requires_part`` — «every value needs its own part», a boolean,
+  NOT NULL, default false. Only in a group so marked does a chosen value that no part of
+  the kit names close a combination (spec п. 10, owner's decision 2026-11-14): without it
+  an optional add-on («Magnet: no / yes», the magnet bound to «yes») would make «no»
+  unorderable. Every existing group gets false — the upgrade closes nothing by this rule;
+  only an unsliced printed part does.
+
 Idempotent: ``DEBUG=true`` re-runs the newest migration on every start, and with the
-column gone there is nothing left to move.
+column gone there is nothing left to move; the flag column is added only when absent.
 """
 
 import logging
@@ -35,6 +46,7 @@ import re
 from sqlalchemy import text
 
 from backend.app.migrations.helpers import (
+    add_column,
     column_exists,
     drop_column,
     get_table_columns,
@@ -59,6 +71,8 @@ _MENTION = re.compile(rf"\b{_COLUMN}\b", re.IGNORECASE)
 
 
 async def upgrade(conn):
+    if await table_exists(conn, "product_variant_groups"):
+        await add_column(conn, "product_variant_groups", "requires_part BOOLEAN NOT NULL DEFAULT 0")
     if not await table_exists(conn, _TABLE):
         return
     if not await table_exists(conn, "product_part_options"):
@@ -78,14 +92,29 @@ async def upgrade(conn):
 
     if not await column_exists(conn, _TABLE, _COLUMN):
         return
-    moved = await conn.execute(
+    select_bindings = (
+        "SELECT p.id, p.variant_option_id, o.group_id FROM product_parts p "
+        "JOIN product_variant_options o ON o.id = p.variant_option_id"
+    )
+    if conn.dialect.name == "sqlite":
+        move = f"INSERT OR IGNORE INTO product_part_options (part_id, option_id, group_id) {select_bindings}"
+    else:
+        move = (
+            f"INSERT INTO product_part_options (part_id, option_id, group_id) {select_bindings} ON CONFLICT DO NOTHING"
+        )
+    moved = await conn.execute(text(move))
+    dangling = await conn.scalar(
         text(
-            "INSERT INTO product_part_options (part_id, option_id, group_id) "
-            "SELECT p.id, p.variant_option_id, o.group_id FROM product_parts p "
-            "JOIN product_variant_options o ON o.id = p.variant_option_id"
+            f"SELECT COUNT(*) FROM {_TABLE} p WHERE p.{_COLUMN} IS NOT NULL "
+            f"AND NOT EXISTS (SELECT 1 FROM product_variant_options o WHERE o.id = p.{_COLUMN})"
         )
     )
-    logger.info("m225: moved %d part binding(s) into product_part_options", moved.rowcount)
+    logger.info(
+        "m225: moved %d part binding(s) into product_part_options; %d named an option that no longer exists "
+        "and were not moved",
+        moved.rowcount,
+        dangling or 0,
+    )
     await _drop_binding_column(conn)
 
 

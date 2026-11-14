@@ -8,7 +8,7 @@ in it. What a line chose is ``line_config.ProjectLineChoice``, written by
 ``services/line_config.py`` alone.
 """
 
-from sqlalchemy import ForeignKey, Integer, String
+from sqlalchemy import Boolean, ForeignKey, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.app.core.database import Base
@@ -34,6 +34,10 @@ class ProductVariantGroup(Base):
     # the portable backup's DDL keeps out of its checked set, and a fresh
     # install would carry a constraint a migrated one does not.
     default_option_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # «Every value needs its own part» (spec product-part-variant-combinations, п. 10): only
+    # in such a group does a chosen value no part of the kit names close the combination.
+    # Off by default — an optional add-on («Magnet: no / yes») keeps its «no» orderable.
+    requires_part: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="0")
 
     options: Mapped[list["ProductVariantOption"]] = relationship(
         back_populates="group",
