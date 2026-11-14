@@ -4908,6 +4908,14 @@ export default {
       fieldLayers: 'Layer count',
       fieldEta: 'Time remaining and ETA',
       fieldCamera: 'Camera feed',
+      design: 'Design',
+      designClassic: 'Classic',
+      designV2: 'Version 2',
+      designHint:
+        'Classic lays the text over the picture. Version 2 frames it: printer and model in a corner, the job in a panel below, and a stacked arrangement in a portrait source.',
+      transparency: 'Background transparency',
+      transparencyHint:
+        'Fades the dark panels so another source in your scene shows through them. At 100% only the text and the bar are left.',
       customColours: 'Custom progress colours',
       progressFrom: 'Start colour',
       progressTo: 'End colour',
@@ -4928,6 +4936,11 @@ export default {
     eta: 'ETA',
     printerIdle: 'Printer is idle',
     printerOffline: 'Printer offline',
+    v2: {
+      layers: 'Layers',
+      remaining: 'Remaining',
+      finish: 'Finish',
+    },
     status: {
       printing: 'Printing',
       paused: 'Paused',

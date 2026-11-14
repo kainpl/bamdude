@@ -211,4 +211,35 @@ describe('StreamOverlayBuilder', () => {
       expect(document.querySelector('iframe')?.getAttribute('src')).not.toContain('110000');
     });
   });
+
+  describe('design', () => {
+    it('starts on Classic and says nothing about the design', async () => {
+      render(<StreamOverlayBuilder />);
+
+      await waitFor(() => expect(screen.getByLabelText('Design')).toBeInTheDocument());
+      expect(screen.getByLabelText('Design')).toHaveValue('classic');
+      expect(shownUrl()).not.toContain('design=');
+      expect(shownUrl()).not.toContain('backgroundTransparency');
+      // Transparency belongs to Version 2 only.
+      expect(screen.queryByLabelText(/Background transparency/)).not.toBeInTheDocument();
+    });
+
+    it('emits design=2 for Version 2, and the transparency only above zero', async () => {
+      const user = userEvent.setup();
+      render(<StreamOverlayBuilder />);
+
+      await waitFor(() => expect(screen.getByLabelText('Design')).toBeInTheDocument());
+      await user.selectOptions(screen.getByLabelText('Design'), '2');
+      await waitFor(() => expect(shownUrl()).toContain('design=2'));
+      expect(shownUrl()).not.toContain('backgroundTransparency');
+
+      fireEvent.change(screen.getByLabelText(/Background transparency/), { target: { value: '35' } });
+      await waitFor(() => expect(shownUrl()).toContain('backgroundTransparency=35'));
+
+      // Back on Classic the parameter would mean nothing: it is left out.
+      await user.selectOptions(screen.getByLabelText('Design'), 'classic');
+      await waitFor(() => expect(shownUrl()).not.toContain('design='));
+      expect(shownUrl()).not.toContain('backgroundTransparency');
+    });
+  });
 });

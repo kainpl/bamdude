@@ -11,7 +11,8 @@ import { useCameraImageRef } from '../hooks/useCameraImageRef';
 import { useCameraStreamRecovery, type CameraStreamHealth } from '../hooks/useCameraStreamRecovery';
 import { printerSource, streamPath } from '../utils/cameraSource';
 import { normalizeModelName } from '../utils/printer';
-import { progressFill } from '../utils/overlayOptions';
+import { overlayDesign, overlayTransparency, progressFill, type OverlayDesign } from '../utils/overlayOptions';
+import { StreamOverlayV2 } from '../components/StreamOverlayV2';
 
 type TFunction = (key: string, options?: Record<string, unknown>) => string;
 
@@ -46,6 +47,8 @@ interface OverlayConfig {
   showBed: boolean;
   showChamber: boolean;
   progressFill: string | undefined;
+  design: OverlayDesign;
+  transparency: number;
 }
 
 function parseConfig(params: URLSearchParams): OverlayConfig {
@@ -79,6 +82,10 @@ function parseConfig(params: URLSearchParams): OverlayConfig {
     showChamber: show.includes('chamber'),
     // Undefined unless the URL names a valid colour: the bar keeps its own.
     progressFill: progressFill(params.get('progressFrom'), params.get('progressTo')),
+    // Classic unless the URL says `design=2`: every address already in a scene
+    // keeps the design it was made with.
+    design: overlayDesign(params.get('design')),
+    transparency: overlayTransparency(params.get('backgroundTransparency')),
   };
 }
 
@@ -447,6 +454,45 @@ export function StreamOverlayPage() {
   const online = status.connected;
   const isPrinting = online && (status.state === 'RUNNING' || status.state === 'PAUSE');
   const progress = status.progress || 0;
+
+  if (config.design === 'v2') {
+    // The same facts as Classic below, handed over as values: what must not be
+    // shown (an offline printer's frozen figures) is null, and Version 2 only
+    // draws. The status names the offline printer itself — this design has no
+    // separate idle line.
+    const remaining = isPrinting && config.showEta && status.remaining_time != null && status.remaining_time > 0
+      ? status.remaining_time
+      : null;
+    return (
+      <StreamOverlayV2
+        size={config.size}
+        transparency={config.transparency}
+        progressFill={config.progressFill}
+        camera={showsCamera ? {
+          attach: attachStreamImage,
+          generation: streamGeneration,
+          rotation: printer?.camera_rotation ?? 0,
+          phase: streamPhase,
+          onError: handleStreamError,
+          onLoad: handleStreamLoad,
+        } : null}
+        name={config.showPrinter && printer ? printer.name : null}
+        model={modelName || null}
+        filename={config.showFilename && status.current_print
+          ? formatPrintName(status.current_print.replace(/\.gcode\.3mf$|\.3mf$|\.gcode$/i, ''), status.gcode_file, t)
+          : null}
+        status={config.showStatus ? (online ? getStatusText(status, t) : t('streamOverlay.printerOffline')) : null}
+        state={online ? status.state : 'OFFLINE'}
+        progress={config.showProgress && isPrinting ? Math.min(Math.max(progress, 0), 100) : null}
+        layers={config.showLayers && isPrinting && status.layer_num != null && status.total_layers != null && status.total_layers > 0
+          ? `${status.layer_num} / ${status.total_layers}`
+          : null}
+        remaining={remaining != null ? formatDuration(remaining * 60) : null}
+        finish={remaining != null ? formatETA(remaining, timeFormat, t) : null}
+        temperatures={online ? tempReadings : []}
+      />
+    );
+  }
 
   return (
     <div ref={sceneRef} className="min-h-screen bg-black relative overflow-hidden">

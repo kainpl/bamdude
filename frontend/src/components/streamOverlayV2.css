@@ -1,0 +1,289 @@
+/*
+ * The stream overlay's second design (components/StreamOverlayV2.tsx).
+ *
+ * Scoped under `.so2`. Colours are fixed, not theme tokens: the page is
+ * composited into a broadcast, where the app's theme means nothing.
+ *
+ * Everything is sized in `em` off ONE font size, which follows the shorter
+ * side of the browser source (`--so2-unit`), so a 720p and a 4K source show
+ * the same composition.
+ *
+ * `--so2-alpha` (1 = solid) fades the dark grounds for `backgroundTransparency`.
+ */
+.so2 {
+  --so2-unit: 1vmin;
+  --so2-scale: 1;
+  --so2-alpha: 1;
+  --so2-ink: 12 19 23;
+  --so2-green: #00ae42;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  width: 100%;
+  height: 100vh;
+  overflow: hidden;
+  background: rgb(0 0 0 / var(--so2-alpha));
+  color: #fff;
+  font-size: calc(var(--so2-unit) * 2 * var(--so2-scale));
+  line-height: 1.3;
+  font-variant-numeric: tabular-nums;
+}
+.so2[data-size='small'] {
+  --so2-scale: 0.8;
+}
+.so2[data-size='large'] {
+  --so2-scale: 1.2;
+}
+
+/* The picture: behind everything, filling the source. */
+.so2__camera {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+.so2__camera img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  object-fit: cover;
+}
+.so2__nosignal {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
+  color: rgb(255 255 255 / 0.6);
+}
+
+.so2__header {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1em;
+  padding: 1.2em;
+}
+.so2__identity {
+  display: flex;
+  align-items: center;
+  gap: 0.6em;
+  min-width: 0;
+  padding: 0.5em 0.9em;
+  border-radius: 0.7em;
+  background: rgb(var(--so2-ink) / calc(0.9 * var(--so2-alpha)));
+}
+.so2__identity svg {
+  flex-shrink: 0;
+  width: 1.6em;
+  height: 1.6em;
+  color: var(--so2-green);
+}
+.so2__identity > div {
+  min-width: 0;
+}
+.so2__identity strong,
+.so2__identity span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.so2__identity strong {
+  font-size: 1.1em;
+  font-weight: 700;
+}
+.so2__identity span {
+  font-size: 0.8em;
+  color: rgb(255 255 255 / 0.65);
+}
+.so2__brand {
+  flex-shrink: 0;
+  margin-left: auto;
+}
+.so2__brand img {
+  display: block;
+  width: auto;
+  height: 3.2em;
+  max-width: none;
+  filter: drop-shadow(0 0.1em 0.3em rgb(0 0 0 / 0.5));
+}
+
+.so2__panel {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  gap: 0.8em;
+  margin: 1.2em;
+  padding: 1em 1.3em;
+  border-radius: 1em;
+  background: rgb(var(--so2-ink) / calc(0.88 * var(--so2-alpha)));
+}
+.so2__summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1em;
+  min-width: 0;
+}
+.so2__summary h1 {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  font-size: 1.5em;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.so2__status {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 0.5em;
+  padding: 0.25em 0.8em;
+  border-radius: 999px;
+  background: rgb(255 255 255 / 0.1);
+  font-size: 0.9em;
+  white-space: nowrap;
+}
+.so2__status i {
+  width: 0.6em;
+  height: 0.6em;
+  border-radius: 50%;
+  background: #9aa4aa;
+}
+.so2[data-state='RUNNING'] .so2__status i,
+.so2[data-state='FINISH'] .so2__status i {
+  background: var(--so2-green);
+}
+.so2[data-state='PAUSE'] .so2__status i {
+  background: #f5a524;
+}
+.so2[data-state='FAILED'] .so2__status i {
+  background: #ef4444;
+}
+
+.so2__progress {
+  display: flex;
+  align-items: center;
+  gap: 0.8em;
+}
+.so2__progress > span {
+  font-size: 0.85em;
+  color: rgb(255 255 255 / 0.65);
+}
+.so2__track {
+  flex: 1;
+  height: 0.7em;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgb(255 255 255 / 0.18);
+}
+.so2__fill {
+  height: 100%;
+  border-radius: inherit;
+  background-color: var(--so2-green);
+  transition: width 0.5s ease;
+}
+.so2__progress strong {
+  min-width: 3em;
+  font-size: 1.2em;
+  font-weight: 700;
+  text-align: right;
+}
+
+.so2__readings {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6em 1.6em;
+}
+.so2__reading {
+  display: flex;
+  align-items: center;
+  gap: 0.5em;
+}
+.so2__reading svg {
+  flex-shrink: 0;
+  width: 1.3em;
+  height: 1.3em;
+  color: rgb(255 255 255 / 0.6);
+}
+.so2__reading span {
+  display: block;
+  font-size: 0.7em;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: rgb(255 255 255 / 0.6);
+}
+.so2__reading strong {
+  display: block;
+  font-weight: 600;
+}
+.so2__reading small {
+  font-size: 0.85em;
+  font-weight: 400;
+  color: rgb(255 255 255 / 0.6);
+}
+
+/* Portrait: header, picture, panel — stacked, so nothing covers the picture. */
+.so2[data-layout='portrait'] {
+  display: grid;
+  grid-template-rows: auto minmax(30%, 1fr) auto;
+  font-size: calc(var(--so2-unit) * 3 * var(--so2-scale));
+}
+.so2[data-layout='portrait'] .so2__header {
+  grid-row: 1;
+  align-items: center;
+  padding: 0.8em 1em;
+  background: rgb(var(--so2-ink) / calc(0.9 * var(--so2-alpha)));
+}
+.so2[data-layout='portrait'] .so2__identity {
+  padding: 0;
+  background: none;
+}
+.so2[data-layout='portrait'] .so2__camera {
+  position: relative;
+  inset: auto;
+  grid-row: 2;
+}
+.so2[data-layout='portrait'] .so2__panel {
+  grid-row: 3;
+  margin: 0;
+  padding: 1em;
+  border-radius: 0;
+}
+.so2[data-layout='portrait'] .so2__summary {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.5em;
+}
+.so2[data-layout='portrait'] .so2__summary h1 {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+.so2[data-layout='portrait'] .so2__progress {
+  flex-wrap: wrap;
+}
+.so2[data-layout='portrait'] .so2__progress > span {
+  flex: 1;
+}
+.so2[data-layout='portrait'] .so2__track {
+  order: 3;
+  flex: none;
+  width: 100%;
+}
+.so2[data-layout='portrait'] .so2__readings {
+  flex-direction: column;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .so2__fill {
+    transition: none;
+  }
+}

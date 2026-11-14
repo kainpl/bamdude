@@ -17,6 +17,8 @@ import { Select } from './Select';
 import { overlayColour } from '../utils/overlayOptions';
 
 type OverlaySize = 'small' | 'medium' | 'large';
+// The value the URL carries: `design=2`; Classic is the absence of it.
+type BuilderDesign = 'classic' | '2';
 
 // Order matters: it is the order the fields appear in the overlay, so the
 // checkbox list reads as a preview of the result.
@@ -61,6 +63,8 @@ export function StreamOverlayBuilder() {
   const [customColours, setCustomColours] = useState(false);
   const [progressFrom, setProgressFrom] = useState(DEFAULT_PROGRESS_FROM);
   const [progressTo, setProgressTo] = useState(DEFAULT_PROGRESS_TO);
+  const [design, setDesign] = useState<BuilderDesign>('classic');
+  const [transparency, setTransparency] = useState(0);
   const [token, setToken] = useState('');
   const [preview, setPreview] = useState(false);
 
@@ -102,9 +106,14 @@ export function StreamOverlayBuilder() {
       params.set('progressFrom', from.slice(1));
       params.set('progressTo', to.slice(1));
     }
+    if (design === '2') {
+      params.set('design', '2');
+      // Version 2 only: Classic has no ground to fade.
+      if (transparency > 0) params.set('backgroundTransparency', String(transparency));
+    }
     if (token.trim()) params.set('token', token.trim());
     return `${window.location.origin}/overlay/${id}?${params.toString()}`;
-  }, [printerId, fields, size, fps, showCamera, customColours, progressFrom, progressTo, token]);
+  }, [printerId, fields, size, fps, showCamera, customColours, progressFrom, progressTo, design, transparency, token]);
 
   // The address the open preview shows: the URL once it has stood still.
   const [previewUrl, setPreviewUrl] = useState(url);
@@ -175,6 +184,52 @@ export function StreamOverlayBuilder() {
             ))}
           </Select>
         </div>
+
+        <div>
+          <label htmlFor="overlay-builder-design" className="block text-sm font-medium text-white mb-1">
+            {t('streamOverlay.builder.design', 'Design')}
+          </label>
+          <Select
+            className="w-full"
+            id="overlay-builder-design"
+            value={design}
+            onChange={(e) => setDesign(e.target.value === '2' ? '2' : 'classic')}
+          >
+            <option value="classic">{t('streamOverlay.builder.designClassic', 'Classic')}</option>
+            <option value="2">{t('streamOverlay.builder.designV2', 'Version 2')}</option>
+          </Select>
+          <p className="text-xs text-bambu-gray mt-1">
+            {t(
+              'streamOverlay.builder.designHint',
+              'Classic lays the text over the picture. Version 2 frames it: printer and model in a corner, the job in a panel below, and a stacked arrangement in a portrait source.',
+            )}
+          </p>
+        </div>
+
+        {design === '2' && (
+          <div>
+            <label htmlFor="overlay-builder-transparency" className="block text-sm font-medium text-white mb-1">
+              {t('streamOverlay.builder.transparency', 'Background transparency')}
+              <span className="ml-2 font-normal text-bambu-gray">{transparency}%</span>
+            </label>
+            <input
+              id="overlay-builder-transparency"
+              type="range"
+              min={0}
+              max={100}
+              step={5}
+              value={transparency}
+              onChange={(e) => setTransparency(Math.min(Math.max(Math.round(Number(e.target.value)) || 0, 0), 100))}
+              className="w-full accent-bambu-green"
+            />
+            <p className="text-xs text-bambu-gray mt-1">
+              {t(
+                'streamOverlay.builder.transparencyHint',
+                'Fades the dark panels so another source in your scene shows through them. At 100% only the text and the bar are left.',
+              )}
+            </p>
+          </div>
+        )}
 
         <div>
           <label htmlFor="overlay-builder-size" className="block text-sm font-medium text-white mb-1">

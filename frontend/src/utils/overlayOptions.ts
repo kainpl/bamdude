@@ -40,3 +40,24 @@ export function progressFill(
   if (!start && !end) return undefined;
   return `linear-gradient(to right, ${start ?? end}, ${end ?? start})`;
 }
+
+export type OverlayDesign = 'classic' | 'v2';
+
+/** `design=2` selects Version 2; absent or anything else is Classic. */
+export function overlayDesign(raw: string | null | undefined): OverlayDesign {
+  return raw === '2' ? 'v2' : 'classic';
+}
+
+/**
+ * `backgroundTransparency`: a whole number of percent, 0 (solid) … 100.
+ * Anything else — a sign, a fraction, an exponent, a number out of range — is
+ * ignored and the ground stays solid.
+ */
+export function overlayTransparency(raw: string | null | undefined): number {
+  if (!raw || raw.length > 3) return 0;
+  for (const char of raw) {
+    if (char < '0' || char > '9') return 0;
+  }
+  const value = Number(raw);
+  return value <= 100 ? value : 0;
+}
