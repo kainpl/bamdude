@@ -11976,7 +11976,8 @@ export default {
     resetZoom: 'Reset zoom',
     zoomIn: 'Zoom in',
     dragToResize: 'Drag to resize',
-    reconnectingIn: 'Reconnecting in {{countdown}}s...'
+    reconnectingIn: 'Reconnecting in {{countdown}}s...',
+    pausedHidden: 'Paused while this tab is in the background'
   },
 
   // Timelapse Viewer

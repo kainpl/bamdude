@@ -12179,7 +12179,8 @@ export default {
     resetZoom: 'Скинути масштаб',
     zoomIn: 'Збільшити',
     dragToResize: 'Перетягніть для зміни розміру',
-    reconnectingIn: 'Перепідключення через {{countdown}} с…'
+    reconnectingIn: 'Перепідключення через {{countdown}} с…',
+    pausedHidden: 'Призупинено, поки ця вкладка у фоні'
   },
 
   // Timelapse Viewer
