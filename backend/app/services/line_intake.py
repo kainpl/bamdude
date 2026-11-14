@@ -14,8 +14,9 @@ goes — the writers CLAMP, never refuse, so a shelf that moved while the dialog
 was open gives less and the answer says how much (``asked`` / ``got``).
 
 A refusal of any line raises :class:`LineIntakeError` with that line's own
-sentence; the route turns it into the HTTP answer and the request's transaction
-rolls back — a batch is added whole or not at all.
+sentence (a closed combination also with its structured ``payload``); the route
+turns it into the HTTP answer and the request's transaction rolls back — a batch
+is added whole or not at all.
 """
 
 from __future__ import annotations
@@ -32,16 +33,27 @@ from backend.app.models.project import Project
 from backend.app.models.project_line import ProjectLine
 from backend.app.models.user import User
 from backend.app.schemas.project import BatchPartsLineIn, BatchPlateLineIn, BatchProductLineIn, BatchStockIn
-from backend.app.services import finished_stock, line_config, order_from_files, order_journal, part_stock, stock_pick
+from backend.app.services import (
+    combination_gate,
+    finished_stock,
+    line_config,
+    order_from_files,
+    order_journal,
+    part_stock,
+    stock_pick,
+)
 from backend.app.services.product_gate import product_gate
 
 
 class LineIntakeError(Exception):
-    """A line the batch refuses; ``status`` is the HTTP answer."""
+    """A line the batch refuses; ``status`` is the HTTP answer. ``payload`` — a
+    structured refusal the route answers with instead of the sentence (a closed
+    combination: ``{"error": "combination_unavailable", "message", "reasons"}``)."""
 
-    def __init__(self, detail: str, status: int) -> None:
+    def __init__(self, detail: str, status: int, payload: dict | None = None) -> None:
         super().__init__(detail)
         self.status = status
+        self.payload = payload
 
 
 @dataclass(slots=True)
@@ -145,6 +157,8 @@ async def add_lines(
         counts = getattr(spec, "part_counts", None) or None
         try:
             await line_config.seed_line(db, line, choices=choices, counts=counts)
+        except combination_gate.CombinationUnavailable as e:
+            raise LineIntakeError(str(e), e.status, e.payload()) from e
         except line_config.LineConfigError as e:
             raise LineIntakeError(str(e), e.status) from e
         intake = Intake(line)

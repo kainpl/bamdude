@@ -68,6 +68,9 @@ FORWARDED_EXCEPTIONS = frozenset(
         "OrcaCloudAuthError",
         "PartStockError",
         "LineConfigError",
+        # services/combination_gate: a LineConfigError whose route answer is its
+        # ``{"error", "message", "reasons"}`` payload — the sentence is its first argument.
+        "CombinationUnavailable",
         "FinishedStockError",
         "StockPickError",
         "LineIntakeError",

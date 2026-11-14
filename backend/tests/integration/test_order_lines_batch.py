@@ -9,6 +9,7 @@ from backend.app.models.product_variant import ProductVariantGroup, ProductVaria
 from backend.app.models.project import Project, ProjectEvent
 from backend.app.services import finished_stock, order_from_files, part_stock
 from backend.tests.fixtures.part_bindings import bind
+from backend.tests.fixtures.sliced_sources import slice_parts
 
 pytestmark = pytest.mark.integration
 
@@ -61,6 +62,8 @@ async def farm(db_session):
     bind(parts["shade"])
     db_session.add_all(parts.values())
     await db_session.flush()
+    # A variant product's line needs its kit sliced (spec product-part-variant-combinations, п. 10).
+    await slice_parts(db_session, pipe.id, [parts["flask"], parts["straight"], parts["angled"]])
     for name, n in (("flask", 4), ("straight", 3), ("angled", 1), ("shade", 2)):
         await part_stock.move(db_session, part_id=parts[name].id, delta=n, reason="manual", note="seed")
     standard = await finished_stock.item_for(db_session, pipe.id, {}, create=True)

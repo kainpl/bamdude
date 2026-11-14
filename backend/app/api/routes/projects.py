@@ -173,6 +173,7 @@ from backend.app.schemas.project import (
 )
 from backend.app.services import (
     archive_parts,
+    combination_gate,
     farm_forecast,
     filament_needs,
     finished_stock,
@@ -1264,6 +1265,10 @@ async def create_project_from_files(
         raise HTTPException(status_code=400, detail="Product is not a catalogue product")
     except order_from_files.FilesNotLinked:
         raise HTTPException(status_code=400, detail="Every file must be linked to the product")
+    except line_config.LineConfigError as e:
+        # A catalog product's standard combination may be closed (spec
+        # product-part-variant-combinations, п. 13): its structured refusal.
+        raise HTTPException(status_code=e.status, detail=combination_gate.refusal_detail(e)) from e
     # Rule 10 of spec workshop-order-stage: the author is responsible.
     project.responsible_id = current_user.id if current_user else None
     await order_journal.record(db, project.id, "order_created", {"source": "files"}, actor=current_user)
@@ -1939,7 +1944,8 @@ async def _intake(
     try:
         return await line_intake.add_lines(db, project, specs, actor=actor, visible=visible)
     except line_intake.LineIntakeError as e:
-        raise HTTPException(status_code=e.status, detail=str(e)) from e
+        # A closed combination answers its structured refusal (spec product-part-variant-combinations, п. 13).
+        raise HTTPException(status_code=e.status, detail=combination_gate.refusal_detail(e)) from e
     except (part_stock.PartStockError, finished_stock.FinishedStockError) as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
 
@@ -2341,7 +2347,7 @@ async def configure_line(
             key = await line_config.target_key(db, line, choices=data.choices, counts=data.part_counts)
             await finished_stock.lock_line(db, line, also_keys=[key])
         except line_config.LineConfigError as e:
-            raise HTTPException(status_code=e.status, detail=str(e)) from e
+            raise HTTPException(status_code=e.status, detail=combination_gate.refusal_detail(e)) from e
         except finished_stock.FinishedStockError as e:
             raise HTTPException(status_code=e.status, detail=str(e)) from e
     old_key = line.config_key
@@ -2353,7 +2359,8 @@ async def configure_line(
             db, line, choices=data.choices, counts=data.part_counts, actor=current_user, dry_run=data.dry_run
         )
     except line_config.LineConfigError as e:
-        raise HTTPException(status_code=e.status, detail=str(e)) from e
+        # A changed choice to a closed combination: the structured refusal, dry run included.
+        raise HTTPException(status_code=e.status, detail=combination_gate.refusal_detail(e)) from e
     except part_stock.PartStockError as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
     if data.dry_run:

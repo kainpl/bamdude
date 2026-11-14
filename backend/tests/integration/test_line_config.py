@@ -16,6 +16,7 @@ from backend.app.models.project import Project, ProjectEvent
 from backend.app.models.project_line import ProjectLine
 from backend.app.services import line_config, part_stock
 from backend.tests.fixtures.part_bindings import bind
+from backend.tests.fixtures.sliced_sources import slice_parts
 
 pytestmark = pytest.mark.integration
 
@@ -55,6 +56,9 @@ async def pipe(db_session):
         for i, (name, options) in enumerate((("flask", ()), ("straight", (straight,)), ("angled", (angled,))))
     }
     db_session.add_all(parts.values())
+    await db_session.flush()
+    # A variant product's line needs its kit sliced (spec product-part-variant-combinations, п. 10).
+    await slice_parts(db_session, product.id, parts.values())
     project = Project(name="O")
     db_session.add(project)
     await db_session.flush()

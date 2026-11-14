@@ -61,6 +61,7 @@ from backend.app.schemas.stock import (
     StockSummaryOut,
 )
 from backend.app.services import (
+    combination_gate,
     finished_stock,
     finished_stock_views,
     line_config,
@@ -356,7 +357,7 @@ def _item_word_matches(word: str):
 
 
 def _raise(e: Exception) -> NoReturn:
-    raise HTTPException(status_code=getattr(e, "status", 409), detail=str(e)) from e
+    raise HTTPException(status_code=getattr(e, "status", 409), detail=combination_gate.refusal_detail(e)) from e
 
 
 async def _choices_from_options(db: AsyncSession, product_id: int, options: list[int]) -> dict[int, int]:

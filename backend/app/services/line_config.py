@@ -328,10 +328,18 @@ async def seed_line(
     """A new line's configuration: the given choices, the standard for every other group.
 
     Every line constructor passes here, so it is also where the lock ledger learns
-    the line is this transaction's own new row (WS-13 E1 BL0: nobody can wait on it)."""
+    the line is this transaction's own new row (WS-13 E1 BL0: nobody can wait on it),
+    and where a ``product`` line's combination is checked (spec
+    product-part-variant-combinations, п. 13): a closed one is
+    ``combination_gate.CombinationUnavailable``, before anything is written."""
     ledger(db).note_created("project_lines", line.id)
     product = await _product(db, line.product_id)
     new_choices, new_counts = _validate(product, line.mode, choices or {}, counts or {})
+    if line.mode == "product":
+        # Imported here: the gate's refusal is a LineConfigError, so it imports this module.
+        from backend.app.services import combination_gate
+
+        await combination_gate.ensure_available(db, product, new_choices)
     await _write(db, line, new_choices, new_counts)
 
     line.extra_percentages = snapshot_extra_percentages(product.parts) if line.mode == "product" else {}
@@ -363,6 +371,10 @@ async def set_configuration(
     ``choices`` names the groups to change — the others keep the line's current
     choice; ``counts`` is the WHOLE set of changed counts (or, for a parts line,
     of wanted counts): what is not in it goes back to the standard.
+
+    A changed CHOICE must be an available combination — checked before the dry run,
+    so a preview of a closed one is refused too; counts alone are never checked
+    (spec product-part-variant-combinations, п. 11, 13).
     """
     status = await db.scalar(select(Project.status).where(Project.id == line.project_id))
     if status == "completed":
@@ -373,6 +385,10 @@ async def set_configuration(
     product = await _product(db, line.product_id)
     current = (await load_line_configs(db, [line.id])).get(line.id, LineConfig())
     new_choices, new_counts = _validate(product, line.mode, {**current.choices, **choices}, counts)
+    if line.mode == "product" and new_choices != current.choices:
+        from backend.app.services import combination_gate
+
+        await combination_gate.ensure_available(db, product, new_choices)
     reserved_before = await part_stock.reserved_units_for_line(db, line)
     reserved_parts = await part_stock.reserved_parts_for_line(db, line)
     if new_choices == current.choices and new_counts == current.counts:

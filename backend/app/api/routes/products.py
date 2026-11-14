@@ -131,6 +131,7 @@ from backend.app.schemas.product import (
     VariantsApplyIn,
 )
 from backend.app.services import (
+    combination_gate,
     finished_stock,
     finished_stock_views,
     line_config,
@@ -1763,7 +1764,7 @@ async def update_part(
         except product_variants.VariantError as e:
             raise _variant_refusal(e) from e
         except line_config.LineConfigError as e:
-            raise HTTPException(status_code=e.status, detail=str(e)) from e
+            raise HTTPException(status_code=e.status, detail=combination_gate.refusal_detail(e)) from e
     # A PURCHASED part IS its name — ``name_key`` is derived from it (there is no
     # 3MF object to key off), so a rename that left the key behind made the two
     # disagree for good and let a second "M4 screw" be created beside the first.
@@ -1785,7 +1786,7 @@ async def update_part(
         try:
             await line_config.ensure_no_extra_snapshot(db, product.id, [part.id])
         except line_config.LineConfigError as e:
-            raise HTTPException(status_code=e.status, detail=str(e)) from e
+            raise HTTPException(status_code=e.status, detail=combination_gate.refusal_detail(e)) from e
     if ignored_after and not part.ignored and part.kind != "printed":
         raise HTTPException(status_code=422, detail=_PRINTED_ONLY)
     if ignored_after and qty_after > 0:
@@ -1841,7 +1842,7 @@ async def delete_part(
     try:
         await line_config.ensure_no_extra_snapshot(db, product.id, [part_id])
     except line_config.LineConfigError as e:
-        raise HTTPException(status_code=e.status, detail=str(e)) from e
+        raise HTTPException(status_code=e.status, detail=combination_gate.refusal_detail(e)) from e
     # What the delete destroys beyond the catalog asks that domain's right too (WS-13 E13
     # O24), behind the locks and before a write: the part's shelf history and balance; an
     # order's acquisitions of it and a parts line's counters.
@@ -1867,7 +1868,7 @@ async def delete_part(
     try:
         await line_config.forget_part(db, part_id)
     except line_config.LineConfigError as e:
-        raise HTTPException(status_code=e.status, detail=str(e)) from e
+        raise HTTPException(status_code=e.status, detail=combination_gate.refusal_detail(e)) from e
     part_images.forget_part(db, part)  # its photo goes after the commit (spec part-thumbnails §10.3)
     await db.delete(part)
     return {"message": "Part deleted"}
@@ -1906,7 +1907,7 @@ async def merge_part(
     try:
         await line_config.ensure_no_extra_snapshot(db, product.id, [target.id, source.id])
     except line_config.LineConfigError as e:
-        raise HTTPException(status_code=e.status, detail=str(e)) from e
+        raise HTTPException(status_code=e.status, detail=combination_gate.refusal_detail(e)) from e
     if (target.extra_percent or 0) != (source.extra_percent or 0):
         raise HTTPException(status_code=409, detail="Parts with different additional percentages cannot be merged")
     merge_parts(target, source)
@@ -1923,7 +1924,7 @@ async def merge_part(
     try:
         await line_config.repoint_part(db, source.id, target.id)
     except line_config.LineConfigError as e:
-        raise HTTPException(status_code=e.status, detail=str(e)) from e
+        raise HTTPException(status_code=e.status, detail=combination_gate.refusal_detail(e)) from e
     # The source row goes away, so its procurement rows go with it — the same
     # FK-cascade reason as ``delete_part``, and deliberately NOT a transfer of
     # the acquired counts onto the target: PostgreSQL's cascade would drop them

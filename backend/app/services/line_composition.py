@@ -9,7 +9,7 @@ predicate, nothing reads ``qty_per_unit`` —
 ``tests/unit/test_line_composition_is_the_one_reader.py`` scans for it.
 """
 
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence, Set as AbstractSet
 from dataclasses import dataclass, field
 from decimal import ROUND_CEILING, Decimal
 
@@ -235,3 +235,41 @@ def standard_per(part: ProductPart) -> int:
     """A part's per-unit count in the product's own kit — the named door for a
     reader that shows the product's standard (the stock shelf's row)."""
     return part.qty_per_unit
+
+
+@dataclass(frozen=True)
+class Unavailable:
+    """Why a combination of choices cannot be ordered (spec product-part-variant-combinations,
+    п. 10): ``option_without_part`` names the group and the chosen option no part of the
+    kit names; ``part_not_sliced`` names a printed part of the kit without a sliced source."""
+
+    code: str
+    group_id: int | None
+    option_id: int | None
+    part_id: int | None
+
+
+def availability(
+    parts: Sequence[ProductPart], choices: Mapping[int, int], sliced: AbstractSet[int]
+) -> list[Unavailable]:
+    """Is the combination ``choices`` (``group_id → option_id``, every group) one an order may
+    take? ``[]`` — yes; otherwise every reason, groups in id order, then the parts in kit
+    order (п. 10–11).
+
+    Judged on the STANDARD kit of the choice — a line's changed counts never open a closed
+    combination. Only parts with a standard count and without «не рахувати» count. A group
+    no counted part has options in is descriptive and never closes anything; in a group
+    some counted part discriminates on, the chosen option must be named by a part of the
+    kit. A printed part of the kit needs a sliced source (``sliced``: part ids); a purchased
+    one needs none. Pure — ``combination_gate`` reads ``sliced`` and asks here."""
+    chosen = set(choices.values())
+    ordered = sorted(parts, key=lambda p: (p.sort_order or 0, p.id))
+    counted_parts = [p for p in ordered if not p.ignored and standard_per(p) > 0]
+    kit = [p for p in counted_parts if in_kit(p.bound, chosen)]
+    out: list[Unavailable] = []
+    for group_id in sorted({g for p in counted_parts for g in p.bound}):
+        option_id = choices.get(group_id)
+        if not any(option_id in p.bound.get(group_id, ()) for p in kit):
+            out.append(Unavailable("option_without_part", group_id, option_id, None))
+    out += [Unavailable("part_not_sliced", None, None, p.id) for p in kit if p.kind == "printed" and p.id not in sliced]
+    return out
