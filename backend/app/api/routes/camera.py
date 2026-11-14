@@ -339,6 +339,19 @@ async def get_printer_or_404(printer_id: int, db: AsyncSession) -> Printer:
     return printer
 
 
+async def _printer_for_capture(printer_id: int) -> Printer:
+    """The printer row for a route that is about to wait on its camera, read in a session that is closed again.
+
+    A capture takes seconds — the worker's whole timeout against a printer that does not answer. A
+    ``Depends(get_db)`` session stays in the transaction its printer SELECT opened until the request ends, so
+    every such request pinned a pooled connection for the wait (#2572; upstream cf0ba31f1 for the test,
+    diagnose and plate routes). ``expire_on_commit=False`` keeps the loaded columns readable afterwards and
+    the callers read scalar columns only. Via the module, so the maker is looked up at call time.
+    """
+    async with database.async_session() as db:
+        return await get_printer_or_404(printer_id, db)
+
+
 async def _worker_stream_response(
     *,
     printer: Printer,
@@ -849,14 +862,13 @@ async def _snapshot_from(printer_id: int, printer):
 @router.get("/{printer_id}/camera/test")
 async def test_camera(
     printer_id: int,
-    db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.CAMERA_VIEW),
 ):
     """Test camera connection for a printer.
 
     Returns success status and any error message.
     """
-    printer = await get_printer_or_404(printer_id, db)
+    printer = await _printer_for_capture(printer_id)
 
     result = await test_camera_connection(
         ip_address=printer.ip_address,
@@ -871,7 +883,6 @@ async def test_camera(
 @router.post("/{printer_id}/camera/diagnose")
 async def diagnose_camera_route(
     printer_id: int,
-    db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.CAMERA_VIEW),
 ):
     """Run staged diagnostics for a printer's camera path.
@@ -886,7 +897,7 @@ async def diagnose_camera_route(
 
     from backend.app.services.camera_diagnose import diagnose_camera
 
-    printer = await get_printer_or_404(printer_id, db)
+    printer = await _printer_for_capture(printer_id)
 
     # Look up live-stream evidence so the diagnostic can short-circuit
     # instead of fighting a viewer for the printer's single camera slot.
@@ -1026,7 +1037,6 @@ async def check_plate_empty(
     plate_type: str | None = None,
     use_external: bool | None = None,
     include_debug_image: bool = False,
-    db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.CAMERA_VIEW),
 ):
     """Check if the build plate is empty using camera vision.
@@ -1055,7 +1065,7 @@ async def check_plate_empty(
         - difference_percent: float - How different from calibration reference
         - message: str - Human-readable result message
         - needs_calibration: bool - True if calibration is required
-        - light_warning: bool - True if chamber light is off
+        - light_warning: bool - True if the chamber was still dark after the check
     """
     from backend.app.services.plate_detection import (
         check_plate_empty as do_check,
@@ -1064,7 +1074,7 @@ async def check_plate_empty(
     from backend.app.services.printer_manager import printer_manager
 
     # Check printer exists first (before OpenCV check)
-    printer = await get_printer_or_404(printer_id, db)
+    printer = await _printer_for_capture(printer_id)
 
     # #1359: when the caller doesn't pin a value, default to the printer's
     # external-camera config so the UI's manual check captures from the
@@ -1081,12 +1091,6 @@ async def check_plate_empty(
             status_code=503,
             detail="Plate detection not available. Install opencv-python-headless to enable.",
         )
-
-    # Check chamber light status
-    light_warning = False
-    state = printer_manager.get_status(printer_id)
-    if state and not state.chamber_light:
-        light_warning = True
 
     from backend.app.services.plate_detection import PlateDetector
 
@@ -1121,6 +1125,12 @@ async def check_plate_empty(
         polygon=printer.plate_detection_polygon,
         external_camera_snapshot_url=printer.external_camera_snapshot_url if printer.external_camera_enabled else None,
     )
+
+    # The check lights a dark chamber itself (the ``plate_check`` light lease), so a light that was off
+    # BEFORE it says nothing about the frame that was judged. Warn only when the chamber is still dark
+    # after it: no controllable light, a refused command, or a printer that never reported the switch.
+    state = printer_manager.get_status(printer_id)
+    light_warning = bool(state and not state.chamber_light)
 
     # Get reference count for the response
     detector = PlateDetector()
@@ -1157,7 +1167,6 @@ async def calibrate_plate_detection(
     printer_id: int,
     label: str | None = None,
     use_external: bool | None = None,
-    db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.PRINTERS_UPDATE),
 ):
     """Calibrate plate detection by capturing a reference image of the empty plate.
@@ -1192,7 +1201,7 @@ async def calibrate_plate_detection(
     from backend.app.services.printer_manager import printer_manager
 
     # Check printer exists first (before OpenCV check)
-    printer = await get_printer_or_404(printer_id, db)
+    printer = await _printer_for_capture(printer_id)
 
     # #1359: default to the printer's external-camera config when the
     # caller doesn't pin a value, so the reference saved here uses the
@@ -1208,10 +1217,6 @@ async def calibrate_plate_detection(
             detail="Plate detection not available. Install opencv-python-headless to enable.",
         )
 
-    # Check chamber light - warn but don't block
-    state = printer_manager.get_status(printer_id)
-    light_warning = state and not state.chamber_light
-
     success, message, index = await calibrate_plate(
         printer_id=printer.id,
         ip_address=printer.ip_address,
@@ -1224,7 +1229,10 @@ async def calibrate_plate_detection(
         external_camera_snapshot_url=printer.external_camera_snapshot_url if printer.external_camera_enabled else None,
     )
 
-    if light_warning and success:
+    # Read AFTER the capture: it lights a dark chamber itself, so only a chamber still dark then is worth a
+    # warning on the reference that was just saved.
+    state = printer_manager.get_status(printer_id)
+    if success and state and not state.chamber_light:
         message += " (Warning: Chamber light was off)"
 
     return {"success": success, "message": message, "index": index}
