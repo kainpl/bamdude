@@ -119,6 +119,7 @@ async def test_part_render_refusal_keeps_vps_retired_until_restart(tmp_path, mon
     apply.assert_not_called()
     sync = AsyncMock()
     monkeypatch.setattr(manager, "_sync_from_db_locked", sync)
+    manager.set_session_factory(Mock(name="session_factory"))
     await manager.sync_from_db()
     sync.assert_not_awaited()
 
