@@ -90,7 +90,9 @@ class TestAValueTooBigIsNotSilentlyRescaled:
             c._percent_from_gear(200)
             c._percent_from_gear(201)
 
-        assert sum("out of the 0-15 range" in r.message for r in caplog.records) == 1
+        # Capture publishes records before formatting; a concurrent record may
+        # not have the formatter's ``message`` attribute yet.
+        assert sum("out of the 0-15 range" in r.getMessage() for r in caplog.records) == 1
 
 
 class TestThePackedWord:
