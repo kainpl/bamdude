@@ -124,13 +124,8 @@ def _load_parts(root: Path, job: dict) -> list[tuple]:
 
 def _pack_printer(root: Path, job: dict, printer: dict, index: int, meshes: list, deadline_ns: int | None) -> dict:
     import cv2
-    from platenest import Options, Part, Zone, render_plate
+    from platenest import Cancelled, Options, Part, Zone, pack, render_plate
     from platenest.bambu3mf import Instance, MeshObject, write_project
-
-    # platenest 0.1.0: the function ``pack`` shares its name with the submodule that defines it, so
-    # ``from platenest import pack`` hands back the MODULE once anything else from it was imported first.
-    # Import from the submodule until the pin moves to a release that renames it.
-    from platenest.pack import Cancelled, pack
 
     from backend.app.services.assembly import record as rec
 
