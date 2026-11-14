@@ -5105,6 +5105,8 @@ export interface CamWallPrinter {
 export interface OverlayStatus {
   id: number;
   name: string;
+  /** The model's short display name (`show=model`). Absent on an older server. */
+  model?: string | null;
   camera_rotation: number;
   connected: boolean;
   state: string | null;

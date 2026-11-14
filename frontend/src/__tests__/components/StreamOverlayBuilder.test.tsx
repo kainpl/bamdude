@@ -84,6 +84,18 @@ describe('StreamOverlayBuilder', () => {
     await waitFor(() => expect(shownUrl()).toContain('show=printer%2Cfilename'));
   });
 
+  it('adds the printer model right after the name', async () => {
+    const user = userEvent.setup();
+    render(<StreamOverlayBuilder />);
+
+    await waitFor(() => expect(screen.getByLabelText('Printer model')).toBeInTheDocument());
+    await user.click(screen.getByLabelText('Printer model'));
+    await waitFor(() => expect(shownUrl()).toContain('show=model%2Cfilename'));
+
+    await user.click(screen.getByLabelText('Printer name'));
+    await waitFor(() => expect(shownUrl()).toContain('show=printer%2Cmodel%2Cfilename'));
+  });
+
   it('drops a field when its box is cleared', async () => {
     const user = userEvent.setup();
     render(<StreamOverlayBuilder />);

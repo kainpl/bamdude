@@ -10,6 +10,7 @@ import { fillStyle, useRotatedBox } from '../hooks/useRotatedFit';
 import { useCameraImageRef } from '../hooks/useCameraImageRef';
 import { useCameraStreamRecovery, type CameraStreamHealth } from '../hooks/useCameraStreamRecovery';
 import { printerSource, streamPath } from '../utils/cameraSource';
+import { normalizeModelName } from '../utils/printer';
 
 type TFunction = (key: string, options?: Record<string, unknown>) => string;
 
@@ -39,6 +40,7 @@ interface OverlayConfig {
   showFilename: boolean;
   showStatus: boolean;
   showPrinter: boolean;
+  showModel: boolean;
   showNozzle: boolean;
   showBed: boolean;
   showChamber: boolean;
@@ -65,6 +67,8 @@ function parseConfig(params: URLSearchParams): OverlayConfig {
     showFilename: show.includes('filename'),
     showStatus: show.includes('status'),
     showPrinter: show.includes('printer'),
+    // Independent of the name: `show=model` alone draws only the model.
+    showModel: show.includes('model'),
     // ⚠️ Absent from the default set on purpose: temperatures are opt-in, so
     // every overlay URL already pasted into an OBS scene keeps looking exactly
     // the same after upgrading.
@@ -223,11 +227,16 @@ export function StreamOverlayPage() {
   const printer = useMemo(
     () =>
       kiosk
-        ? overlay && { name: overlay.name, camera_rotation: overlay.camera_rotation }
+        ? overlay && { name: overlay.name, model: overlay.model, camera_rotation: overlay.camera_rotation }
         : printerData,
     [kiosk, overlay, printerData],
   );
   const status = kiosk ? overlay : statusData;
+  // The model by its display name, through OUR map: the row may hold an
+  // internal code or the long marketing name. The token feed already sends the
+  // display name; passing it through again costs nothing. Empty when the URL
+  // does not ask for it or an older server's feed does not name it.
+  const modelName = config.showModel ? normalizeModelName(printer?.model) : '';
 
   // Temperature readings the URL asked for, in a fixed order, skipping any the
   // printer does not report. Labels reuse printers.heaterHistory.* so the
@@ -473,10 +482,14 @@ export function StreamOverlayPage() {
       <div className="absolute bottom-0 left-0 right-0 z-10 bg-gradient-to-t from-black/80 via-black/60 to-transparent">
         <div className={`${sizes.container}`}>
           {/* Printer name */}
-          {config.showPrinter && printer && (
+          {printer && (config.showPrinter || modelName) && (
             <div className={`flex items-center ${sizes.gap} mb-2`}>
               <Printer className={`${sizes.icon} text-white/70`} />
-              <span className={`${sizes.text} text-white font-medium`}>{printer.name}</span>
+              {config.showPrinter && (
+                <span className={`${sizes.text} text-white font-medium`}>{printer.name}</span>
+              )}
+              {config.showPrinter && modelName && <span className={`${sizes.text} text-white/50`}>·</span>}
+              {modelName && <span className={`${sizes.text} text-white/70`}>{modelName}</span>}
             </div>
           )}
 
