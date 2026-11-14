@@ -76,8 +76,13 @@ function parseConfig(params: URLSearchParams): OverlayConfig {
   const cameraParam = params.get('camera');
   const showCamera = cameraParam !== 'false' && cameraParam !== '0';
 
+  // One of the three sizes or medium — never the address's own text: Version 2
+  // writes the size into the markup for its stylesheet to match.
+  const sizeParam = params.get('size');
+  const size: OverlaySize = sizeParam === 'small' || sizeParam === 'large' ? sizeParam : 'medium';
+
   return {
-    size: (params.get('size') as OverlaySize) || 'medium',
+    size,
     fps,
     showCamera,
     showProgress: show.includes('progress'),

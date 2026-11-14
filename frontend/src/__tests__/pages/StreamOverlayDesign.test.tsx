@@ -117,6 +117,48 @@ describe('StreamOverlayPage — design', () => {
     });
   });
 
+  // `size=` reaches the page from an address anybody can hand to a streamer.
+  describe('a size the address made up', () => {
+    const hostile = [
+      'huge',
+      'LARGE',
+      'small large',
+      '"><script>window.__pwned=1</script>',
+      "x' onmouseover='window.__pwned=1",
+      'large]{position:fixed}',
+      '__proto__',
+    ];
+
+    it.each(hostile)('Version 2 draws medium for size=%s, and takes nothing from it', async (size) => {
+      const { container } = renderOverlay(`?design=2&size=${encodeURIComponent(size)}`);
+
+      await waitFor(() => expect(v2()).not.toBeNull());
+      // One of the three sizes the stylesheet knows — never the address's text.
+      expect(v2()).toHaveAttribute('data-size', 'medium');
+      expect(container.querySelector('script')).toBeNull();
+      expect(container.innerHTML).not.toContain('__pwned');
+      expect((window as unknown as { __pwned?: number }).__pwned).toBeUndefined();
+      expect(screen.getByText('45%')).toBeInTheDocument();
+    });
+
+    it.each(hostile)('Classic draws medium for size=%s', async (size) => {
+      const { container } = renderOverlay(`?size=${encodeURIComponent(size)}`);
+      const medium = renderOverlay('?size=medium');
+
+      await waitFor(() => expect(screen.getAllByText('45%')).toHaveLength(2));
+      const classes = (root: HTMLElement) => Array.from(root.querySelectorAll('[class]'), (el) => el.getAttribute('class'));
+      expect(classes(container)).toEqual(classes(medium.container));
+      expect(container.innerHTML).not.toContain('__pwned');
+    });
+
+    it.each(['small', 'medium', 'large'])('Version 2 keeps the real size %s', async (size) => {
+      renderOverlay(`?design=2&size=${size}`);
+
+      await waitFor(() => expect(v2()).not.toBeNull());
+      expect(v2()).toHaveAttribute('data-size', size);
+    });
+  });
+
   describe('Version 2', () => {
     it('draws the identity, the job, a status pill, a labelled bar and the readings', async () => {
       renderOverlay(`?design=2&${everything}`);

@@ -171,6 +171,40 @@ describe('useRotatedBox', () => {
     expect(disconnect).toHaveBeenCalled();
   });
 
+  // The rotation is a printer setting: it changes under an open view.
+  it('stops measuring when a sideways camera is set upright again', () => {
+    stubLayout();
+    const view = render(<Probe rotation={90} />);
+    expect(view.getByTestId('probe').textContent).toBe('400x260');
+    expect(observed).toHaveLength(1);
+
+    view.rerender(<Probe rotation={0} />);
+
+    expect(view.getByTestId('probe').textContent).toBe('none');
+    expect(disconnect).toHaveBeenCalled();
+    // A resize that still arrives measures nothing for an upright picture.
+    size = PORTRAIT;
+    act(() => resized?.());
+    expect(view.getByTestId('probe').textContent).toBe('none');
+  });
+
+  it('keeps the measured box through a turn from one side to the other, and through every later turn', () => {
+    stubLayout();
+    const view = render(<Probe rotation={90} />);
+
+    view.rerender(<Probe rotation={270} />);
+    expect(view.getByTestId('probe').textContent).toBe('400x260');
+    size = PORTRAIT;
+    act(() => resized?.());
+    expect(view.getByTestId('probe').textContent).toBe('260x400');
+
+    view.rerender(<Probe rotation={180} />);
+    expect(view.getByTestId('probe').textContent).toBe('none');
+    view.rerender(<Probe rotation={90} />);
+    // Measured afresh: the size the box has now, not the one from before.
+    expect(view.getByTestId('probe').textContent).toBe('260x400');
+  });
+
   it('starts measuring when the camera is turned sideways afterwards', () => {
     stubLayout();
     const view = render(<Probe rotation={0} />);
