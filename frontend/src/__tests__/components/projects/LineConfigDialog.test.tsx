@@ -5,13 +5,26 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { screen, fireEvent, waitFor, within } from '@testing-library/react';
+import { act, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import i18n from '../../../i18n';
 import { render } from '../../utils';
 import { api, ApiError } from '../../../api/client';
-import type { CombinationState, Order, Product, ProjectLine } from '../../../api/client';
+import type { CombinationReason, CombinationState, LineConfigurationBody, Order, Permission, Product, ProjectLine } from '../../../api/client';
 import { LineConfigDialog } from '../../../components/projects/LineConfigDialog';
 import { lineConfigLabel } from '../../../components/projects/lineConfigLabel';
+
+// The signed-in user's rights pass through, minus what a test denies (`auth.denied`).
+const auth = vi.hoisted(() => ({ denied: new Set<string>() }));
+vi.mock('../../../contexts/AuthContext', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../contexts/AuthContext')>();
+  return {
+    ...actual,
+    useAuth: () => {
+      const real = actual.useAuth();
+      return { ...real, hasPermission: (p: Permission) => !auth.denied.has(p) && real.hasPermission(p) };
+    },
+  };
+});
 
 const t = i18n.t.bind(i18n);
 
@@ -277,17 +290,49 @@ const noImpact = { reserved_before: 0, reserved_after: 0, finished_before: 0, fi
 const CLOSES = 'With the other choices as they are, the combination would not be available';
 const NEVER = 'Not in any combination that can be ordered';
 
+/** The server's 409 for a closed combination, with its reasons as name snapshots. */
+function refusalOf(reasons: CombinationReason[]): ApiError {
+  const refusal = new ApiError('That combination is not available', 409, 'combination_unavailable');
+  refusal.reasons = reasons;
+  return refusal;
+}
+
+/** Longer than the dialog's 300 ms debounce: a dry run it would ask has been asked by now. */
+const pastTheDebounce = () => act(() => new Promise<void>((resolve) => setTimeout(resolve, 450)));
+
 describe('LineConfigDialog — which combinations an order can take', () => {
   let describeCombination: ReturnType<typeof vi.spyOn>;
-  const openOnly = (...open: string[]) =>
-    describeCombination.mockImplementation(async (_id: number, choices: Record<number, number>) => answerFor(open, choices));
+  let preview: ReturnType<typeof vi.spyOn>;
+  // What the server would answer: the combinations an order may take, and the line's saved one.
+  let open: string[] = [];
+  let saved = '';
+  const openOnly = (...keys: string[]) => {
+    open = keys;
+  };
+  const renderLine = (tail: number, mount: number) => {
+    saved = `${tail},${mount}`;
+    return render(<LineConfigDialog orderId={9} orderCode="OR-0009" line={lampLine(tail, mount)} onClose={() => {}} />);
+  };
 
   beforeEach(() => {
     vi.restoreAllMocks();
+    auth.denied = new Set();
     vi.spyOn(api, 'getProduct').mockResolvedValue(lamp);
     vi.spyOn(api, 'getProductSources').mockResolvedValue({ parts: [] } as never);
-    vi.spyOn(api, 'previewLineConfiguration').mockResolvedValue(noImpact);
-    describeCombination = vi.spyOn(api, 'describeCombination');
+    // As the server does (`set_configuration`): a CHANGED closed choice is refused before its dry
+    // run; the line's own choice, a parts line and a product without groups are never checked.
+    preview = vi
+      .spyOn(api, 'previewLineConfiguration')
+      .mockImplementation(async (_order: number, _line: number, body: LineConfigurationBody) => {
+        const choices = body.choices ?? {};
+        if (Object.keys(choices).length === 0) return noImpact;
+        const key = `${choices[3]},${choices[4]}`;
+        if (key !== saved && !open.includes(key)) throw refusalOf(answerFor(open, choices).reasons);
+        return noImpact;
+      });
+    describeCombination = vi
+      .spyOn(api, 'describeCombination')
+      .mockImplementation(async (_id: number, choices: Record<number, number>) => answerFor(open, choices));
     openOnly('11,21', '11,22', '12,22');
   });
 
@@ -299,7 +344,7 @@ describe('LineConfigDialog — which combinations an order can take', () => {
   const saveButton = () => screen.getByRole('button', { name: 'Save configuration' });
 
   it('marks a value that closes the combination and keeps it clickable', async () => {
-    render(<LineConfigDialog orderId={9} orderCode="OR-0009" line={lampLine(11, 21)} onClose={() => {}} />);
+    renderLine(11, 21);
     const angled = await radio('Tail', 'angled');
     // angled + wall is closed; angled is in another available combination.
     await waitFor(() => expect(angled).toHaveAccessibleDescription(CLOSES));
@@ -312,7 +357,7 @@ describe('LineConfigDialog — which combinations an order can take', () => {
 
   it('disables a value no available combination contains', async () => {
     openOnly('11,21');
-    render(<LineConfigDialog orderId={9} orderCode="OR-0009" line={lampLine(11, 21)} onClose={() => {}} />);
+    renderLine(11, 21);
     const din = await radio('Mount', 'DIN');
     await waitFor(() => expect(din).toBeDisabled());
     expect(din).toHaveAccessibleDescription(NEVER);
@@ -321,24 +366,29 @@ describe('LineConfigDialog — which combinations an order can take', () => {
     expect(await radio('Mount', 'wall')).toBeEnabled();
   });
 
-  it('disables Save on a closed choice and says why', async () => {
-    render(<LineConfigDialog orderId={9} orderCode="OR-0009" line={lampLine(11, 21)} onClose={() => {}} />);
+  it('disables Save on a closed choice and says why — no dry run the server would refuse, nothing to retry', async () => {
+    renderLine(11, 21);
     fireEvent.click(await radio('Tail', 'angled'));
     expect(
       await screen.findByText('This combination can’t be ordered: no part for «wall» in «Mount»'),
     ).toBeInTheDocument();
-    await screen.findByText('The reserve will not change; there will be no extra surplus.');
+    await pastTheDebounce();
+    expect(preview).not.toHaveBeenCalledWith(9, 21, { choices: { 3: 12, 4: 21 }, part_counts: {} });
+    expect(screen.queryByText('That combination is not available')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument();
     expect(saveButton()).toBeDisabled();
   });
 
-  it('keeps Save off while the answer for the new choice is not in', async () => {
-    render(<LineConfigDialog orderId={9} orderCode="OR-0009" line={lampLine(11, 21)} onClose={() => {}} />);
+  it('keeps Save off while the answer for the new choice is not in, and asks no dry run meanwhile', async () => {
+    renderLine(11, 21);
     const din = await radio('Mount', 'DIN');
     await waitFor(() => expect(describeCombination).toHaveBeenCalled());
     describeCombination.mockImplementation(() => new Promise(() => {}));
     fireEvent.click(din);
-    await screen.findByText('The reserve will not change; there will be no extra surplus.');
-    expect(screen.getByText('Checking the combination…')).toBeInTheDocument();
+    expect(await screen.findByText('Checking the combination…')).toBeInTheDocument();
+    await pastTheDebounce();
+    expect(screen.getByTestId('line-config-impact')).toHaveTextContent('Checking what this changes…');
+    expect(preview).not.toHaveBeenCalled();
     expect(saveButton()).toBeDisabled();
   });
 
@@ -346,28 +396,53 @@ describe('LineConfigDialog — which combinations an order can take', () => {
     // Only straight + DIN is open: from angled + wall, one group alone never gets there.
     openOnly('11,22');
     const save = vi.spyOn(api, 'setLineConfiguration').mockResolvedValue({ id: 9, lines: [] } as unknown as Order);
-    render(<LineConfigDialog orderId={9} orderCode="OR-0009" line={lampLine(12, 21)} onClose={() => {}} />);
+    renderLine(12, 21);
     const straight = await radio('Tail', 'straight');
     await waitFor(() => expect(straight).toHaveAccessibleDescription(CLOSES));
     expect(straight).toBeEnabled();
     fireEvent.click(straight);
     expect(await screen.findByText(/^This combination can’t be ordered/)).toBeInTheDocument();
+    // The closed step between the two: said once, by the note — no refused dry run, no retry.
+    await pastTheDebounce();
+    expect(screen.queryByText('That combination is not available')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument();
+    expect(saveButton()).toBeDisabled();
     // The line's own angled is in no available combination, yet stays choosable — it is the line's.
     expect(await radio('Tail', 'angled')).toBeEnabled();
     const din = await radio('Mount', 'DIN');
     await waitFor(() => expect(din).toHaveAccessibleDescription(''));
     fireEvent.click(din);
-    await screen.findByText('The reserve will not change; there will be no extra surplus.');
+    await waitFor(() =>
+      expect(screen.getByTestId('line-config-impact')).toHaveTextContent(
+        'The reserve will not change; there will be no extra surplus.',
+      ),
+    );
     await waitFor(() => expect(saveButton()).toBeEnabled());
     expect(screen.queryByTestId('combination-note')).not.toBeInTheDocument();
+    expect(preview).toHaveBeenCalledWith(9, 21, { choices: { 3: 11, 4: 22 }, part_counts: {} });
+    expect(preview).not.toHaveBeenCalledWith(9, 21, { choices: { 3: 11, 4: 21 }, part_counts: {} });
     fireEvent.click(saveButton());
     await waitFor(() => expect(save).toHaveBeenCalledWith(9, 21, { choices: { 3: 11, 4: 22 }, part_counts: {} }));
+  });
+
+  it('without the stock read nothing is asked: the dry run’s refusal alone says why and holds Save', async () => {
+    auth.denied = new Set(['stock:read']);
+    renderLine(11, 21);
+    fireEvent.click(await radio('Tail', 'angled'));
+    await waitFor(() => expect(preview).toHaveBeenCalledWith(9, 21, { choices: { 3: 12, 4: 21 }, part_counts: {} }));
+    const impact = await screen.findByTestId('line-config-impact');
+    await waitFor(() =>
+      expect(impact).toHaveTextContent('This combination can’t be ordered: no part for «wall» in «Mount»'),
+    );
+    expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument();
+    expect(saveButton()).toBeDisabled();
+    expect(describeCombination).not.toHaveBeenCalled();
   });
 
   it('a saved line whose combination closed since still opens, says so, and saves a changed count', async () => {
     openOnly('11,21');
     const save = vi.spyOn(api, 'setLineConfiguration').mockResolvedValue({ id: 9, lines: [] } as unknown as Order);
-    render(<LineConfigDialog orderId={9} orderCode="OR-0009" line={lampLine(12, 22)} onClose={() => {}} />);
+    renderLine(12, 22);
     expect(await radio('Tail', 'angled')).toBeChecked();
     expect(
       await screen.findByText(
@@ -382,10 +457,9 @@ describe('LineConfigDialog — which combinations an order can take', () => {
   });
 
   it('shows the 409 combination_unavailable sentence from the server, and asks again', async () => {
-    const refusal = new ApiError('That combination is not available', 409, 'combination_unavailable');
-    refusal.reasons = [{ code: 'part_not_sliced', group: null, option: null, part: 'angled DIN clip' }];
+    const refusal = refusalOf([{ code: 'part_not_sliced', group: null, option: null, part: 'angled DIN clip' }]);
     vi.spyOn(api, 'setLineConfiguration').mockRejectedValue(refusal);
-    render(<LineConfigDialog orderId={9} orderCode="OR-0009" line={lampLine(11, 21)} onClose={() => {}} />);
+    renderLine(11, 21);
     fireEvent.click(await radio('Tail', 'angled'));
     fireEvent.click(await radio('Mount', 'DIN'));
     await screen.findByText('The reserve will not change; there will be no extra surplus.');
@@ -399,7 +473,7 @@ describe('LineConfigDialog — which combinations an order can take', () => {
   });
 
   it('computes the local kit with multi-group bindings', async () => {
-    render(<LineConfigDialog orderId={9} orderCode="OR-0009" line={lampLine(11, 21)} onClose={() => {}} />);
+    renderLine(11, 21);
     // straight + wall: the clip wants angled AND DIN — out; the plate is on either mount — in.
     expect(await screen.findByLabelText('straight tail — in the kit')).toBeChecked();
     expect(screen.getByLabelText('angled DIN clip — in the kit')).not.toBeChecked();
@@ -415,7 +489,7 @@ describe('LineConfigDialog — which combinations an order can take', () => {
   });
 
   it('never counts a part bound to an option the product does not hold as always in the kit', async () => {
-    render(<LineConfigDialog orderId={9} orderCode="OR-0009" line={lampLine(11, 21)} onClose={() => {}} />);
+    renderLine(11, 21);
     expect(await screen.findByLabelText('ghost — in the kit')).not.toBeChecked();
     expect(screen.getByLabelText('ghost — per unit')).toHaveValue(0);
   });

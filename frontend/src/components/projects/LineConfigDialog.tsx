@@ -123,7 +123,8 @@ function bodyOf(
  * would close it is marked and stays clickable — two groups can be changed one after
  * the other to leave a closed choice; a value no available combination holds is off,
  * unless the line has it or it is chosen. Save waits for that answer and refuses a
- * closed choice, but only when the CHOICES differ from the line's own: a saved line
+ * closed choice — whose dry run is not asked, the server would refuse it as well — but
+ * only when the CHOICES differ from the line's own: a saved line
  * whose combination closed later keeps it, and its counts can still be changed (the
  * server checks only a changed choice).
  */
@@ -170,14 +171,7 @@ export function LineConfigDialog({
   const initialKey = JSON.stringify(bodyOf(product, isParts, initialChoices, initialCounts));
   const dirty = product != null && bodyKey !== initialKey;
   const debouncedKey = useDebouncedValue(bodyKey, 300);
-
-  const preview = useQuery<LineConfigurationImpact>({
-    queryKey: ['line-config-preview', orderId, line.id, debouncedKey],
-    queryFn: () => api.previewLineConfiguration(orderId, line.id, JSON.parse(debouncedKey) as LineConfigurationBody),
-    enabled: product != null && debouncedKey !== initialKey,
-    retry: false,
-    staleTime: 30_000,
-  });
+  const settled = debouncedKey === bodyKey;
 
   const defaults = defaultsOf(product);
   const groups = product?.variant_groups ?? [];
@@ -191,6 +185,18 @@ export function LineConfigDialog({
   );
   // Only a changed choice is the server's to refuse; while its answer is not in, nothing is sent.
   const combinationBlocks = choicesChanged && combination.gate !== 'open';
+  // A closed choice is said by the combination note; its dry run would only be refused.
+  const combinationClosed = choicesChanged && combination.gate === 'closed';
+
+  // The dry run asks about the draft on screen only (settled), and a changed choice only once the
+  // combination has answered open — the server refuses a closed one's dry run too.
+  const preview = useQuery<LineConfigurationImpact>({
+    queryKey: ['line-config-preview', orderId, line.id, debouncedKey],
+    queryFn: () => api.previewLineConfiguration(orderId, line.id, JSON.parse(debouncedKey) as LineConfigurationBody),
+    enabled: product != null && debouncedKey !== initialKey && settled && !combinationBlocks,
+    retry: false,
+    staleTime: 30_000,
+  });
 
   const save = useMutation({
     mutationFn: () => api.setLineConfiguration(orderId, line.id, body),
@@ -238,7 +244,6 @@ export function LineConfigDialog({
   // An override is what the body carries — a count the chosen options would not give anyway.
   // A draft key the options have since caught up with is no override (review M2).
   const overrides = isParts ? Object.keys(counts).length : Object.keys(body.part_counts).length;
-  const settled = debouncedKey === bodyKey;
   const canSave =
     saveAllowed({
       productRead: product != null,
@@ -505,7 +510,9 @@ export function LineConfigDialog({
             </div>
           )}
 
-          {dirty && <Impact preview={preview} settled={settled} parts={product?.parts ?? []} />}
+          {dirty && (
+            <Impact preview={preview} settled={settled} closed={combinationClosed} parts={product?.parts ?? []} />
+          )}
         </fieldset>
       ) : null}
     </WorkshopDialog>
@@ -562,19 +569,37 @@ function SourceCell({
 }
 
 /** The dry run's answer for this draft, said line by line (E5 F07). A part it drops shows the live
- *  product's picture beside its sentence (plan E6, D5): a picture changing does not re-ask the dry run. */
+ *  product's picture beside its sentence (plan E6, D5): a picture changing does not re-ask the dry run.
+ *
+ *  A closed choice has no dry run (`closed`: the combination note says why). A dry run the server
+ *  refused as `combination_unavailable` — the state said open, failed, or was not asked — is no
+ *  failure to retry: asking again can only be refused again, so it says the refusal's own reasons
+ *  and offers nothing; Save stays off, as for any dry run without an answer. */
 function Impact({
   preview,
   settled,
+  closed,
   parts,
 }: {
   preview: UseQueryResult<LineConfigurationImpact>;
   settled: boolean;
+  closed: boolean;
   parts: ProductPart[];
 }) {
   const { t } = useTranslation();
+  if (closed) return null;
   if (!settled || preview.isFetching || preview.isPending) {
     return <p className="text-sm text-bambu-gray" data-testid="line-config-impact">{t('orders.lineConfig.checking')}</p>;
+  }
+  if (preview.isError && isCombinationRefusal(preview.error)) {
+    const reasons = preview.error.reasons ?? [];
+    return (
+      <p className="text-sm text-amber-700 dark:text-amber-400" data-testid="line-config-impact">
+        {reasons.length > 0
+          ? t('orders.combination.closed', { reasons: reasonsText(t, reasons) })
+          : preview.error.message}
+      </p>
+    );
   }
   if (preview.isError) {
     return (

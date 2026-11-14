@@ -111,6 +111,9 @@ describe('AddToOrderDialog', () => {
 
   it('from a product page: the product is ticked and an active order is chosen first', async () => {
     const getOrders = vi.spyOn(api, 'getOrdersPaged').mockResolvedValue(orders as never);
+    const describeCombination = vi
+      .spyOn(api, 'describeCombination')
+      .mockResolvedValue({ available: true, reasons: [], options: [] });
     render(<AddToOrderDialog preselectProduct={{ id: 1, code: 'PR-0001' }} onClose={() => {}} />);
     expect(within(await screen.findByTestId('add-product-1')).getByRole('checkbox')).toBeChecked();
     // Final review I4: the product is found, not merely ticked somewhere off the page.
@@ -118,10 +121,12 @@ describe('AddToOrderDialog', () => {
     expect(screen.getByLabelText('Product, SKU, category, material or part name…')).toHaveValue('PR-0001');
     expect(getOrders).toHaveBeenLastCalledWith({ status: 'active', page: 1, per_page: 20 });
     const submit = screen.getByRole('button', { name: 'Add lines (1)' });
+    // The product's combination has answered: what keeps «Add» off now is the missing order alone.
+    await waitFor(() => expect(describeCombination).toHaveBeenCalledWith(1, {}));
+    await waitFor(() => expect(screen.queryByText('Checking the products’ combinations…')).not.toBeInTheDocument());
     expect(submit).toBeDisabled();
     fireEvent.change(screen.getByLabelText('Order'), { target: { value: '6' } });
-    // Enabled once the order is chosen — and the product's combination answered.
-    await waitFor(() => expect(submit).toBeEnabled());
+    expect(submit).toBeEnabled();
     fireEvent.click(submit);
     await waitFor(() => expect(add).toHaveBeenCalledWith(6, expect.any(Array)));
   });
