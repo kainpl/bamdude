@@ -1,5 +1,16 @@
 ## [Unreleased]
 
+- SQLite now limits its default pool to 10 persistent plus 90 overflow connections,
+  bounding descriptors retained by WAL. Larger bursts wait for the pool timeout;
+  existing pool overrides remain available. Supported systems raise only the soft
+  descriptor limit before children start. Support bundles include path-free FD
+  counts, kinds and limits, including when the heap census is skipped.
+- The printer connection watchdog can rebuild a disconnected client that never
+  received a message, after the existing grace/cooldown and reachable-port checks.
+  This recovers paho clients with an unusable high-numbered wake-up socketpair.
+  Periodic TLS attempts during the grace are expected. MQTT relay and smart-plug
+  initial-failure recovery remains separate; see the process-resources guide.
+
 - Settings offers **Force color match by default**, off initially. New jobs queued from an order plan capture this choice, and a fresh print dialog starts with it selected when enabled. Operators can still change the dialog's checkbox. Saved jobs, copied routing choices, virtual-printer settings and explicit API choices retain their own policy; changing the setting does not rewrite them. A registered plan submission retains the choice it captured, including on retry.
 
 - **Assemble project in the File Library.** Select STL, OBJ or STEP models, press *Assemble project*, and BamDude lays them out densely — small parts go into the holes and hollows of larger ones, which the slicers' own auto-arrange does not do — and saves ready project 3MF files next to the sources. Give each model a number of copies or tick *Fill a plate* to get as many as one plate takes, on a plate of its own. Add several printers at once: each gets its own project, laid out for its bed and saved with the printer, process and filament presets you picked, so it opens in Bambu Studio or OrcaSlicer ready to slice; on a two-nozzle printer you choose which nozzle prints and the layout stays within its reach. The result can be one multi-plate file or a file per plate, and the summary shows a picture of every plate.

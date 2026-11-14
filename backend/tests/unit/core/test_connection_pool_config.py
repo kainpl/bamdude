@@ -90,7 +90,7 @@ async def test_reinitialize_uses_new_default_and_preserves_case_folding_probe(mo
 
 async def test_sqlite_keeps_defaults_and_connection_listener(monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "database_url", f"sqlite+aiosqlite:///{tmp_path / 'pool.sqlite'}")
-    assert database._resolve_pool_kwargs() == {"pool_size": 20, "max_overflow": 200}
+    assert database._resolve_pool_kwargs() == {"pool_size": 10, "max_overflow": 90}
     assert database._resolve_connect_args() == {}
     engine = database._create_engine()
     try:

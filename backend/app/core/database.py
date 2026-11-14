@@ -117,12 +117,12 @@ def _resolve_pool_kwargs() -> dict:
         bursty farm). The default capacity of 80 leaves room on a stock
         100-connection server; other engines, workers and clients share that
         server budget, so explicit overrides still need operator sizing.
-      - SQLite: pool_size 20 + max_overflow 200 (unchanged); no pre-ping /
+      - SQLite: pool_size 10 + max_overflow 90; no pre-ping /
         recycle / lifo — the connection is a local file, not a server socket.
     """
     if is_sqlite():
-        pool_size = settings.db_pool_size if settings.db_pool_size is not None else 20
-        max_overflow = settings.db_max_overflow if settings.db_max_overflow is not None else 200
+        pool_size = settings.db_pool_size if settings.db_pool_size is not None else 10
+        max_overflow = settings.db_max_overflow if settings.db_max_overflow is not None else 90
         kwargs = {"pool_size": pool_size, "max_overflow": max_overflow}
     else:
         pool_size = settings.db_pool_size if settings.db_pool_size is not None else 20

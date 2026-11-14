@@ -58,9 +58,8 @@ class TestTheFourConditions:
             assert await cw.should_rebuild(_printer(), _client(connected=True, silent_for=600)) is False
         probe.assert_not_awaited(), "a connected client should not even cost a probe"
 
-    async def test_leaves_a_printer_that_never_connected_alone(self) -> None:
-        """Never had a working session — that is a configuration problem, not a
-        session to rebuild."""
+    async def test_leaves_a_client_with_no_message_or_attempt_timestamp_alone(self) -> None:
+        """No recorded attempt means no age from which to decide recovery."""
         with patch.object(cw, "check_port", AsyncMock(return_value=True)):
             assert await cw.should_rebuild(_printer(), _client(connected=False, silent_for=None)) is False
 
@@ -175,3 +174,42 @@ def _db_with(printers):
     result.scalars.return_value.all.return_value = printers
     db.execute = AsyncMock(return_value=result)
     return db
+
+
+@pytest.mark.parametrize(
+    "started,connected,port,cooldown,expected",
+    [
+        (0.0, False, True, False, True),
+        (900.0, False, True, False, False),
+        (0.0, True, True, False, False),
+        (0.0, False, False, False, False),
+        (0.0, False, True, True, False),
+        (None, False, True, False, False),
+    ],
+)
+async def test_never_message_recovery_retains_grace_port_and_cooldown(
+    monkeypatch, started, connected, port, cooldown, expected
+):
+    monkeypatch.setattr(cw.time, "time", lambda: 1000.0)
+    client = _client(connected=connected, silent_for=None)
+    client._connect_started_at = started
+    if cooldown:
+        cw._last_rebuild[1] = 999.0
+    with patch.object(cw, "check_port", AsyncMock(return_value=port)) as probe:
+        assert await cw.should_rebuild(_printer(), client) is expected
+    if connected or cooldown or started is None or started == 900.0:
+        probe.assert_not_awaited()
+
+
+def test_connect_records_new_attempt_without_faking_message_or_carrying_old_age(monkeypatch):
+    from backend.app.services import bambu_mqtt
+
+    old = bambu_mqtt.BambuMQTTClient("192.0.2.1", "OLD", "fake")
+    old._connect_started_at = 12.0
+    fresh = bambu_mqtt.BambuMQTTClient("192.0.2.1", "FRESH", "fake")
+    fresh.carry_print_lifecycle_from(old)
+    assert fresh._connect_started_at is None
+    with patch.object(bambu_mqtt.mqtt, "Client"), patch.object(bambu_mqtt.time, "time", return_value=500.0):
+        fresh.connect()
+    assert fresh._connect_started_at == 500.0
+    assert fresh._last_message_time == 0

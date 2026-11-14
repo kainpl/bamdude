@@ -63,7 +63,7 @@ async def test_pg_engine_and_diagnostic_use_resolved_bool(monkeypatch, configure
 async def test_sqlite_ignores_setting(monkeypatch, tmp_path, configured):
     monkeypatch.setattr(settings, "database_url", f"sqlite+aiosqlite:///{tmp_path / 'ping.sqlite'}")
     monkeypatch.setattr(settings, "db_pool_pre_ping", configured)
-    assert database._resolve_pool_kwargs() == {"pool_size": 20, "max_overflow": 200}
+    assert database._resolve_pool_kwargs() == {"pool_size": 10, "max_overflow": 90}
     engine = database._create_engine()
     monkeypatch.setattr(database, "engine", engine)
     try:
