@@ -124,15 +124,23 @@ export function CameraTile({
     wasOfflineRef.current = showOfflineIndicator;
   }, [mode, serverConnected, showOfflineIndicator, restartLive]);
 
-  // A new selection starts on a fresh image. Not on mount: re-keying the image
-  // the tile has just opened is a second stream request for one view.
+  // A new selection starts on a fresh image and a fresh address — and opens
+  // ONE stream. The generation is therefore moved only while no live image is
+  // on the page: when the tile LEAVES live, or when its recovery is waiting.
+  // Moving it in the commit that has just mounted the live image (snapshot →
+  // live by props, as the wall does) re-keyed that image: connect, abort,
+  // connect against a printer whose firmware allows one camera socket.
   const selection = `${mode}|${sourceKey(source)}`;
-  const lastSelectionRef = useRef(selection);
+  const lastSelectionRef = useRef({ selection, mode });
   useEffect(() => {
-    if (lastSelectionRef.current === selection) return;
-    lastSelectionRef.current = selection;
+    const last = lastSelectionRef.current;
+    if (last.selection === selection) return;
+    lastSelectionRef.current = { selection, mode };
+    // Live before and live now is another source: its address is new by its
+    // path, and the mounted image is simply given it.
+    if (mode === 'live' && (last.mode !== 'live' || livePhase === 'live')) return;
     restartLive();
-  }, [selection, restartLive]);
+  }, [selection, mode, livePhase, restartLive]);
 
   // Tell the backend to release its MJPEG transcoder when this tile stops
   // being live — either by unmounting or by transitioning to snapshot/paused.

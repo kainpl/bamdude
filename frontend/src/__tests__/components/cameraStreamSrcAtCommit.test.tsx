@@ -117,6 +117,46 @@ describe('a camera view opens one stream, on a mounted image', () => {
     expectOneAttachedStream('/api/v1/printers/7/camera/stream');
   });
 
+  // The wall switches a mounted tile between snapshot and live by its props.
+  // A selection is ONE request: the printer's firmware allows one camera
+  // socket, and connect → abort → connect is how it gets stuck.
+  it('a mounted Cam Wall tile switched from snapshot to live', async () => {
+    const tile = (mode: 'live' | 'snapshot') => (
+      <CameraTile source={printerSource(7)} name="H2C" mode={mode} snapshotIntervalMs={5000} connected />
+    );
+    const view = render(tile('snapshot'));
+    await settle();
+    expect(spy.records).toEqual([]);
+
+    view.rerender(tile('live'));
+    await settle();
+
+    expectOneAttachedStream('/api/v1/printers/7/camera/stream');
+  });
+
+  it('a mounted Cam Wall tile switched live, to snapshot and live again opens one stream per selection', async () => {
+    const tile = (mode: 'live' | 'snapshot') => (
+      <CameraTile source={printerSource(7)} name="H2C" mode={mode} snapshotIntervalMs={5000} connected />
+    );
+    const view = render(tile('live'));
+    await settle();
+    const first = spy.records.map((record) => record.src);
+    expect(first).toHaveLength(1);
+
+    view.rerender(tile('snapshot'));
+    await settle();
+    expect(spy.records).toHaveLength(1);
+
+    view.rerender(tile('live'));
+    await settle();
+
+    expect(spy.detached()).toEqual([]);
+    expect(spy.leaked()).toEqual([]);
+    expect(spy.records).toHaveLength(2);
+    // A new selection is a new address, never the one the browser has just aborted.
+    expect(spy.records[1].src).not.toBe(first[0]);
+  });
+
   it('the floating camera window, also beside a render React throws away', async () => {
     const { Gate, release } = suspendOnce();
     render(
