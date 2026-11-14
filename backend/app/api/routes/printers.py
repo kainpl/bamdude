@@ -551,6 +551,16 @@ async def get_printer(
     return _serialize_printer(printer, include_secret=_caller_can_view_printer_secrets(user))
 
 
+async def _retire_camera_stream(printer_id: int) -> None:
+    """End the printer's running camera upstream after a committed change; a failure is logged, never raised."""
+    from backend.app.api.routes.camera import retire_printer_stream
+
+    try:
+        await retire_printer_stream(printer_id)
+    except Exception as e:
+        logger.warning("Could not retire the camera stream of printer %s: %s", printer_id, type(e).__name__)
+
+
 @router.patch("/{printer_id}", response_model=PrinterResponse)
 async def update_printer(
     printer_id: int,
@@ -633,11 +643,20 @@ async def update_printer(
         key in update_data and update_data[key] != getattr(printer, key)
         for key in ("ip_address", "access_code", "is_active")
     )
+    from backend.app.api.routes.camera import camera_source_of
+
+    camera_before = camera_source_of(printer)
     for field, value in update_data.items():
         setattr(printer, field, value)
 
     await db.commit()
     await db.refresh(printer)
+
+    # A live view keeps the upstream it was opened on; a camera that changed must not go on being served
+    # (and lent to captures) as the new one. After the commit, so a viewer that reconnects reads the saved
+    # row — and never able to fail a change that is already saved.
+    if camera_source_of(printer) != camera_before:
+        await _retire_camera_stream(printer_id)
 
     # A name-only edit does not reconnect MQTT, but callbacks, notifications,
     # and relays read the connected printer's lightweight in-memory info.
@@ -950,6 +969,13 @@ async def _delete_printer(
     from backend.app.services.camera_metrics import forget_printer
 
     forget_printer(printer_id)
+    # The camera's two id-keyed leftovers. A pending switch-off would reach the light of the printer that
+    # takes this id; and a still-running upstream would be joined by that printer's first viewer, and its
+    # frames lent to its captures, until every old viewer had been gone for the grace window.
+    from backend.app.services import camera_light
+
+    camera_light.forget_printer(printer_id)
+    await _retire_camera_stream(printer_id)
     # Both halves of the advertised-profile memory: the entries themselves and
     # the "this process already rebuilt it" mark. An id is reused by the next
     # printer created, which would otherwise inherit a stranger's masked slots

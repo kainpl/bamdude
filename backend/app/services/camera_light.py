@@ -293,6 +293,22 @@ async def note_light_report(printer_id: int, on: bool) -> None:
         light.confirmed.set()
 
 
+def forget_printer(printer_id: int) -> None:
+    """A deleted printer's light goes with it: the next printer to take the id inherits nothing.
+
+    SQLite reuses ids. A switch-off armed for the deleted printer would otherwise look the id up after the
+    grace and switch off the light of whichever printer holds it by then. A lease still open keeps counting
+    on the detached record and, owning nothing, arms nothing when it is given back.
+    """
+    light = _lights.pop(printer_id, None)
+    if light is None:
+        return
+    light.owned = False
+    if light.release_task is not None and not light.release_task.done():
+        light.release_task.cancel()
+    light.release_task = None
+
+
 @contextlib.asynccontextmanager
 async def held(printer_id: int | None, purpose: str, *, hold: float | None = None) -> AsyncIterator[Lease | None]:
     lease = await acquire(printer_id, purpose, hold=hold)

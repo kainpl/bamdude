@@ -363,6 +363,29 @@ async def test_shutdown_drops_the_pending_switch_off_and_leaves_the_light_as_it_
 
 
 @pytest.mark.asyncio
+async def test_a_deleted_printers_pending_switch_off_never_reaches_the_printer_that_takes_its_id(printer, sleeper):
+    lease = await camera_light.acquire(1, "telegram")
+    camera_light.release(lease)
+    await asyncio.sleep(0)
+    assert sleeper.delays == [camera_light.GRACE_SECONDS]
+
+    camera_light.forget_printer(1)  # the printer is deleted; SQLite hands id 1 to the next one
+    await sleeper.elapse()
+    assert printer.commands == [True], "the successor's light is not switched off for a lease it never had"
+    assert 1 not in camera_light._lights
+
+
+@pytest.mark.asyncio
+async def test_a_lease_still_open_when_its_printer_is_deleted_arms_nothing_when_given_back(printer, sleeper):
+    lease = await camera_light.acquire(1, "stream")
+    camera_light.forget_printer(1)
+    camera_light.release(lease)
+    await asyncio.sleep(0)
+    assert sleeper.delays == []
+    assert printer.commands == [True]
+
+
+@pytest.mark.asyncio
 async def test_held_releases_on_the_way_out_even_when_the_body_raises(printer, sleeper):
     with pytest.raises(RuntimeError):
         async with camera_light.held(1, "telegram") as lease:

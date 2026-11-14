@@ -224,6 +224,48 @@ def _release_printer_frame_state(printer_id: int | None) -> None:
     _snapshot_frame_times.pop(printer_id, None)
 
 
+def camera_source_of(printer) -> tuple:
+    """What a live view of ``printer`` dials: the choice ``camera_stream`` makes, with everything it reads.
+
+    Two answers that differ mean the running upstream is of a camera the printer no longer has — see
+    :func:`retire_printer_stream`. Saved external fields of a printer whose external camera is off are not
+    part of it, and neither is the printer's own address while an external camera is the source.
+    """
+    if printer.external_camera_enabled and printer.external_camera_url:
+        return (
+            "external",
+            printer.external_camera_url,
+            printer.external_camera_type,
+            printer.external_camera_snapshot_url,
+        )
+    return ("builtin", printer.ip_address, printer.access_code, printer.model)
+
+
+async def retire_printer_stream(printer_id: int) -> bool:
+    """End the printer's running camera upstream because its camera changed, or the printer is gone.
+
+    The broadcaster key and the worker identity carry no configuration on purpose (a rotated access token
+    must not add a second producer), so a saved change does not reach a running upstream by itself: every
+    viewer, reconnecting ones included, kept the OLD source until all of them had been gone for the grace
+    window at once — on a kiosk wall, never — and background captures were lent the old camera's frame
+    (upstream 31888777a). A deleted printer's upstream would likewise be joined by the printer that takes
+    its id.
+
+    Returns once the old upstream has let go: the relay's ``finally`` has released the worker lease (the
+    worker confirms its producer ended) and dropped the frame state it owned. The stopped broadcaster stays
+    in the registry, so a viewer that reconnects meanwhile is chained behind it and never dials beside it
+    (``40-invariants/inv-single-camera-socket``). Current viewers' responses end; their pages reconnect and
+    the relay they open reads the saved configuration.
+    """
+    stopped = await shutdown_broadcaster(f"printer-{printer_id}")
+    # A snapshot cached from the old camera is not the new one's either, watched or not.
+    _snapshot_frames.pop(printer_id, None)
+    _snapshot_frame_times.pop(printer_id, None)
+    if stopped:
+        logger.info("Retired the camera upstream of printer %s: its camera source changed", printer_id)
+    return stopped
+
+
 def _snapshot_response(printer_id: int, image_data: bytes) -> Response:
     return Response(
         content=image_data,
@@ -910,8 +952,8 @@ async def camera_status(
         "source": source,
         "telemetry": camera_metrics.for_printer(printer_id),
         "last_snapshot": camera_metrics.delivery_for_printer(printer_id),
-        # External-camera streams are intentionally direct today, so this is
-        # their viewer count only when the built-in fan-out path is active.
+        # Viewers of the printer's one fan-out, whichever camera feeds it: the
+        # built-in and the external camera share the ``printer-{id}`` broadcaster.
         "subscribers": get_subscriber_count(f"printer-{printer_id}"),
         # Consider stalled if no frame for more than 10 seconds after stream started
         "stalled": (
