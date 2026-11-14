@@ -5811,7 +5811,7 @@ export interface SliceJobProgress {
 export interface SliceJobState {
   job_id: number;
   status: SliceJobStatus;
-  kind: 'library_file' | 'archive';
+  kind: 'library_file' | 'archive' | 'assembly';
   source_id: number;
   source_name: string;
   created_at: string;
@@ -5824,6 +5824,112 @@ export interface SliceJobState {
   result?: SliceResponse | SliceArchiveResponse;
   error_status?: number;
   error_detail?: string;
+}
+
+// ── "Assemble project": dense layout of library models into project 3MFs ──
+export type AssemblyOrientation = 'as_is' | 'x+90' | 'x-90' | 'y+90' | 'y-90' | 'x180';
+export type AssemblyRotationStep = 0 | 45 | 90 | 180;
+
+export interface AssemblyPart {
+  /** Required for a new assembly; absent on a re-layout (the stored order is used). */
+  file_id?: number;
+  quantity: number;
+  /** As many copies as one plate takes, on a plate of its own. */
+  fill: boolean;
+  orientation: AssemblyOrientation;
+}
+
+/** One printer model the project is assembled for: its three presets and the nozzle. */
+export interface AssemblyTarget {
+  printer_preset: PresetRef;
+  process_preset: PresetRef;
+  filament_preset: PresetRef;
+  /** 1-based extruder the parts are printed with. */
+  nozzle: number;
+}
+
+export interface AssemblyLayout {
+  spacing: number;
+  rotation_step: AssemblyRotationStep;
+  centre: boolean;
+  split_plates: boolean;
+}
+
+export interface AssemblyRequest {
+  parts: AssemblyPart[];
+  targets: AssemblyTarget[];
+  layout: AssemblyLayout;
+  name: string;
+}
+
+export interface RelayoutRequest extends AssemblyRequest {
+  trash_previous: boolean;
+}
+
+export interface AssemblyPrinterInfo {
+  model: string | null;
+  bed_size: [number, number];
+  nozzles: { index: number; area: [number, number, number, number]; max_height: number }[];
+}
+
+export interface AssemblyRecordResponse {
+  set_id: string;
+  base_name: string;
+  parts: { name: string; quantity: number; fill: boolean; orientation: AssemblyOrientation }[];
+  printer: { printer: PresetRef; process: PresetRef; filament: PresetRef; nozzle: number; model: string };
+  layout: AssemblyLayout;
+  plates: { plate: number; counts: Record<string, number>; fill: boolean }[];
+  set_files: { id: number; filename: string }[];
+}
+
+export interface AssemblyRejectedPart {
+  index: number;
+  name: string;
+  reason: string;
+}
+
+export interface AssemblyPrinterResult {
+  label: string;
+  model: string | null;
+  status: 'ok' | 'failed' | 'partial';
+  reason: string;
+  detail: string;
+  parts: AssemblyRejectedPart[];
+  files: { library_file_id: number; name: string; plate: number | null; fallback_reason: string | null }[];
+  plates: { plate: number; picture: string | null; counts: Record<string, number>; fill: boolean }[];
+  fill_counts: Record<string, number>;
+  fill_limited: number[];
+}
+
+export interface AssemblyJobResult {
+  outcome: 'ok' | 'failed';
+  reason: string;
+  parts: AssemblyRejectedPart[];
+  printers: AssemblyPrinterResult[];
+  trashed: number[];
+  /** Previous files on an external share: their rows are gone, the files themselves stay there. */
+  removed: number[];
+  kept: number[];
+}
+
+/** What the packing reports while an assembly job runs (`SliceJobState.progress` of kind `assembly`). */
+export interface AssemblyProgress {
+  stage: 'preparing' | 'waiting' | 'converting' | 'packing' | 'publishing';
+  position?: number;
+  /** While STEP sources are converted, before anything is packed: which file of how many. */
+  convert?: number;
+  convert_count?: number;
+  printer_index?: number;
+  printer_count?: number;
+  placed?: number;
+  total?: number;
+  /** Set while a "fill a plate" part is being laid out: `total` is then only the packer's upper bound. */
+  fill_part?: number | null;
+}
+
+export interface AssemblyJobState extends Omit<SliceJobState, 'result' | 'progress'> {
+  progress: AssemblyProgress | null;
+  result?: AssemblyJobResult;
 }
 
 // ── Saved slice preset bundles ────────────────────────────────────────────
@@ -14714,6 +14820,24 @@ export const api = {
     }),
   getSliceJob: (jobId: number) =>
     request<SliceJobState>(`/slice-jobs/${jobId}`),
+  // "Assemble project" — dense layout of STL / OBJ models into project 3MFs, no slicer involved.
+  assembleProject: (body: AssemblyRequest) =>
+    request<SliceJobEnqueueResponse>('/library/assemble', { method: 'POST', body: JSON.stringify(body) }),
+  relayoutFile: (fileId: number, body: RelayoutRequest) =>
+    request<SliceJobEnqueueResponse>(`/library/files/${fileId}/relayout`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  getAssemblyRecord: (fileId: number) =>
+    request<AssemblyRecordResponse>(`/library/files/${fileId}/assembly`),
+  getAssemblyPrinterInfo: (ref: PresetRef) =>
+    request<AssemblyPrinterInfo>(
+      `/library/assemble/printer-info?source=${encodeURIComponent(ref.source)}&id=${encodeURIComponent(ref.id)}`,
+    ),
+  getAssemblyJob: (jobId: number) =>
+    request<AssemblyJobState>(`/slice-jobs/${jobId}`),
+  cancelSliceJob: (jobId: number) =>
+    request<void>(`/slice-jobs/${jobId}`, { method: 'DELETE' }),
   // Unified slicer-preset listing — cloud + local + standard, deduped by name.
   // Drives the SliceModal preset dropdowns. See backend
   // routes/slicer_presets.py for the priority + dedup rules.
@@ -15413,6 +15537,8 @@ export interface ArchiveTrashSettings {
 }
 
 export interface LibraryFile {
+  /** A project assembled here: "Re-layout" is offered for it. */
+  can_relayout?: boolean;
   id: number;
   folder_id: number | null;
   folder_name: string | null;
@@ -15523,6 +15649,8 @@ export interface LibraryFileListItem {
   // Used to gate gallery rendering — single-plate files skip the per-card
   // gallery fetch entirely.
   is_multi_plate?: boolean;
+  /** A project assembled here: "Re-layout" is offered for it. */
+  can_relayout?: boolean;
   // spec 4 - plate 1's (or the only plate's) filament types in slot order, and
   // one compact slice per plate for a multi-plate file (empty otherwise). The
   // card pages through the slices without a /plates fetch. OPTIONAL: legacy

@@ -49,6 +49,7 @@ from backend.app.api.routes import (
     label_templates,
     labels,
     library,
+    library_assembly,
     library_notes,
     library_tags,
     library_thumbnail_jobs,
@@ -12196,6 +12197,12 @@ async def _application_lifespan(app: FastAPI):
     from backend.app.services.local_worker_broker import stop_local_worker_broker
 
     await start_analysis_runtime(Path(app_settings.base_dir))
+    from backend.app.services.assembly.runtime import start_assembly_runtime, stop_assembly_runtime
+
+    try:
+        await start_assembly_runtime(Path(app_settings.base_dir))
+    except Exception:
+        logging.getLogger(__name__).exception("Assembly service unavailable at startup")
     from backend.app.services.library_file_runtime import start_library_file_runtime, stop_library_file_runtime
 
     try:
@@ -12370,6 +12377,7 @@ async def _application_lifespan(app: FastAPI):
     cancel_running_scans()
     printer_manager.disconnect_all()
     await stop_library_file_runtime()
+    await stop_assembly_runtime()
     await stop_analysis_runtime()
     await stop_local_worker_broker()
     await close_spoolman_client()
@@ -13190,6 +13198,7 @@ app.include_router(local_presets.router, prefix=app_settings.api_prefix)
 app.include_router(slicer_presets.router, prefix=app_settings.api_prefix)
 app.include_router(slicer_pipelines.router, prefix=app_settings.api_prefix)
 app.include_router(slice_jobs.router, prefix=app_settings.api_prefix)
+app.include_router(library_assembly.router, prefix=app_settings.api_prefix)
 app.include_router(makerworld.router, prefix=app_settings.api_prefix)
 app.include_router(smart_plugs.router, prefix=app_settings.api_prefix)
 app.include_router(zigbee.router, prefix=app_settings.api_prefix)

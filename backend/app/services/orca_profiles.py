@@ -27,8 +27,8 @@ CACHE_TTL_DAYS = 7
 MAX_INHERITANCE_DEPTH = 10
 
 
-async def get_cached_base_profile(name: str, db: AsyncSession) -> dict | None:
-    """Get a base profile from cache if still fresh."""
+async def get_cached_base_profile(name: str, db: AsyncSession, *, allow_stale: bool = False) -> dict | None:
+    """Get a base profile from cache if still fresh — or, with ``allow_stale``, whatever its age."""
     result = await db.execute(select(OrcaBaseProfile).where(OrcaBaseProfile.name == name))
     profile = result.scalar_one_or_none()
     if not profile:
@@ -39,7 +39,7 @@ async def get_cached_base_profile(name: str, db: AsyncSession) -> dict | None:
     fetched = profile.fetched_at
     if fetched.tzinfo is None:
         fetched = fetched.replace(tzinfo=timezone.utc)
-    if fetched < cutoff:
+    if fetched < cutoff and not allow_stale:
         return None
 
     try:
@@ -84,6 +84,12 @@ async def fetch_and_cache_base_profile(name: str, profile_type: str, db: AsyncSe
                 logger.debug("Failed to fetch %s: %s", url, e)
 
     if data is None:
+        # An expired copy is still the profile: a farm without internet must not lose its presets a week
+        # after it last reached GitHub. The TTL says when to look for a newer one, not when to forget.
+        stale = await get_cached_base_profile(name, db, allow_stale=True)
+        if stale is not None:
+            logger.info("Using the cached copy of base profile '%s': GitHub could not be reached", name)
+            return stale
         logger.warning("Could not fetch base profile '%s' from GitHub", name)
         return None
 
@@ -107,13 +113,29 @@ async def fetch_and_cache_base_profile(name: str, profile_type: str, db: AsyncSe
     return data
 
 
-async def resolve_preset(preset_data: dict, profile_type: str, db: AsyncSession, depth: int = 0) -> dict:
+class MissingBaseProfile(Exception):
+    """A parent profile could not be fetched, or the chain is deeper than the limit (``strict`` only)."""
+
+    def __init__(self, name: str):
+        super().__init__(f"base profile {name!r} was not found")
+        self.name = name
+
+
+async def resolve_preset(
+    preset_data: dict, profile_type: str, db: AsyncSession, depth: int = 0, *, strict: bool = False
+) -> dict:
     """Recursively resolve inheritance chain, merging parent into child.
 
     OrcaSlicer uses shallow merge: child keys fully replace parent keys.
+
+    By default a parent that cannot be fetched leaves the child as it is (import and editing must not fail
+    on a missing base). ``strict=True`` raises :class:`MissingBaseProfile` instead — for callers that must
+    not act on half a preset.
     """
     if depth >= MAX_INHERITANCE_DEPTH:
         logger.warning("Inheritance depth limit reached for preset")
+        if strict:
+            raise MissingBaseProfile(str(preset_data.get("inherits") or preset_data.get("name") or ""))
         return preset_data
 
     inherits = preset_data.get("inherits")
@@ -124,10 +146,12 @@ async def resolve_preset(preset_data: dict, profile_type: str, db: AsyncSession,
     base = await fetch_and_cache_base_profile(inherits, profile_type, db)
     if base is None:
         logger.warning("Cannot resolve inherits='%s' - base profile not found", inherits)
+        if strict:
+            raise MissingBaseProfile(str(inherits))
         return preset_data
 
     # Recursively resolve the base first
-    resolved_base = await resolve_preset(base, profile_type, db, depth + 1)
+    resolved_base = await resolve_preset(base, profile_type, db, depth + 1, strict=strict)
 
     # Shallow merge: start with base, override with child
     merged = {**resolved_base, **preset_data}

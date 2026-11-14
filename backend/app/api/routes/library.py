@@ -14,6 +14,7 @@ import uuid
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Literal
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Response, UploadFile
@@ -549,7 +550,9 @@ def _unique_external_name(ext_dir: Path, filename: str) -> str:
     return candidate
 
 
-def _resolve_slice_destination(target_folder: LibraryFolder | None, out_filename: str) -> tuple[Path, bool, str | None]:
+def _resolve_slice_destination(
+    target_folder: LibraryFolder | None, out_filename: str, *, managed_suffix: str = ".gcode.3mf"
+) -> tuple[Path, bool, str | None]:
     """Where a slice result should be written: ``(path, is_external, reason)``.
 
     ``reason`` is None on the normal paths, and otherwise names why an external
@@ -568,7 +571,7 @@ def _resolve_slice_destination(target_folder: LibraryFolder | None, out_filename
     real time to produce, so an unwritable target falls back to managed storage
     with a reason attached rather than discarding the slice.
     """
-    managed = get_library_files_dir() / f"{uuid.uuid4().hex}.gcode.3mf"
+    managed = get_library_files_dir() / f"{uuid.uuid4().hex}{managed_suffix}"
     if target_folder is None or not target_folder.is_external:
         return managed, False, None
 
@@ -617,7 +620,29 @@ def _stored_file_path(abs_path: Path, is_external: bool) -> str:
     return str(abs_path) if is_external else to_relative_path(abs_path)
 
 
-async def _guard_ingest(db, authority, folder):
+async def _free_row_name(db, folder_id: int | None, filename: str) -> str:
+    """``filename``, or the first ``<stem> (n)<suffix>`` no active file of that folder carries.
+
+    A managed file's name on disk is a UUID, so two rows of one folder may share a display name; a file BamDude
+    generates must not add a second "jar.3mf" beside the first, which the operator could not tell apart.
+    """
+    stem, suffix = Path(filename).stem, Path(filename).suffix
+    in_folder = LibraryFile.folder_id.is_(None) if folder_id is None else LibraryFile.folder_id == folder_id
+    taken = set(
+        await db.scalars(
+            select(LibraryFile.filename).where(
+                LibraryFile.deleted_at.is_(None), in_folder, LibraryFile.filename.startswith(stem, autoescape=True)
+            )
+        )
+    )
+    candidate, counter = filename, 2
+    while candidate in taken and counter < 1000:
+        candidate = f"{stem} ({counter}){suffix}"
+        counter += 1
+    return candidate
+
+
+async def _guard_ingest(db, authority, folder, *, allow_readonly: bool = False):
     from backend.app.services.domain_authority import guard
 
     _, principal = await guard(db, authority, permissions=(Permission.LIBRARY_UPLOAD.value,))
@@ -631,7 +656,7 @@ async def _guard_ingest(db, authority, folder):
         )
         if current is None or (current.id, current.is_external, current.external_path) != expected:
             raise HTTPException(409, {"code": "destination_changed"})
-        if current.is_external and current.external_readonly:
+        if current.is_external and current.external_readonly and not allow_readonly:
             raise HTTPException(403, "Cannot upload to a read-only external folder")
         folder = current
     return folder, principal
@@ -664,6 +689,8 @@ async def save_3mf_bytes_to_library(
     authority=None,
     credential_snapshots=(),
     publication_check=None,
+    destination: Literal["upload", "unique"] = "upload",
+    swap_origin: Literal["generated"] | None = None,
 ) -> IngestResult:
     """Persist raw 3MF / gcode bytes as a ``LibraryFile`` row.
 
@@ -695,6 +722,14 @@ async def save_3mf_bytes_to_library(
     already holds the same bytes under another one is a 409
     ``swap_source_conflict``: that row is not rewritten, and the copy written
     for the comparison is removed.
+
+    ``destination="unique"`` is for a file BamDude generated itself (an assembled
+    project): it never answers a taken name with a refusal and never overwrites.
+    On a writable external folder it takes the first free ``<stem> (n).3mf`` on
+    the share; a folder that cannot take it (read-only, unreachable) gets the
+    file in managed storage instead, with ``IngestResult.fallback_reason`` saying
+    why; in managed storage the ROW's name is made free within its folder.
+    ``swap_origin="generated"`` declares such bytes False whatever they are called.
     """
 
     if source_url:
@@ -734,11 +769,22 @@ async def save_3mf_bytes_to_library(
 
     file_type = detect_file_type(filename)
 
-    file_path, is_external_upload = _resolve_upload_destination(folder, filename)
+    fallback_reason = None
+    if destination == "unique":
+        file_path, is_external_upload, fallback_reason = _resolve_slice_destination(
+            folder, filename, managed_suffix=Path(filename).suffix
+        )
+        if is_external_upload:
+            filename = file_path.name  # the free name it got on the share
+    else:
+        file_path, is_external_upload = _resolve_upload_destination(folder, filename)
     await db.commit()
-    from backend.app.services.library_file_runtime import upload_writes
+    from backend.app.services.library_file_runtime import UploadWritesClosed, upload_writes
 
-    await upload_writes.run(_write_upload, file_path, content)
+    try:
+        await upload_writes.run(_write_upload, file_path, content)
+    except UploadWritesClosed as exc:
+        raise HTTPException(503, "Library uploads are unavailable while storage is being restored") from exc
 
     from backend.app.services.library_file_runtime import get_library_file_runtime
 
@@ -760,7 +806,7 @@ async def save_3mf_bytes_to_library(
         presence = await prepare_reuse(
             db, content_hash=file_hash, access=await read_access(db, user_id=created_by_id, authority=authority)
         )
-        folder, principal = await _guard_ingest(db, authority, folder)
+        folder, principal = await _guard_ingest(db, authority, folder, allow_readonly=destination == "unique")
         if principal is not None:
             created_by_id = principal.user.id
         from backend.app.services.cloud_credentials import guard_snapshot
@@ -828,9 +874,19 @@ async def save_3mf_bytes_to_library(
     if extra_metadata:
         metadata = {**metadata, **extra_metadata}
 
-    swap_compatible = (
-        declared_swap if declared_swap is not None else swap_compatibility.classify_external_name(filename)
-    )
+    if swap_origin == "generated":
+        swap_compatible, origin = False, "generated"  # we wrote these bytes: no swap sequence, whatever the name
+    elif declared_swap is not None:
+        swap_compatible, origin = declared_swap, "transferred"
+    else:
+        swap_compatible, origin = swap_compatibility.classify_external_name(filename), "classifier"
+    if destination == "unique" and not is_external_upload:
+        try:
+            filename = await _free_row_name(db, folder.id if folder is not None else None, filename)
+        except BaseException:
+            await db.rollback()
+            await _discard_ingest_stage(file_path, thumbnail_path)
+            raise
 
     library_file = LibraryFile(
         folder_id=folder.id if folder is not None else None,
@@ -847,9 +903,7 @@ async def save_3mf_bytes_to_library(
         source_type=source_type,
         source_url=source_url,
     )
-    swap_compatibility.declare_ingest(
-        library_file, swap_compatible, origin="transferred" if declared_swap is not None else "classifier"
-    )
+    swap_compatibility.declare_ingest(library_file, swap_compatible, origin=origin)
     db.add(library_file)
     await db.flush()
     # After the flush, never in the constructor: the system-tag associations key
@@ -863,7 +917,7 @@ async def save_3mf_bytes_to_library(
         await db.commit()
         await db.refresh(library_file)
 
-    return IngestResult(file=library_file, outcome="created")
+    return IngestResult(file=library_file, outcome="created", fallback_reason=fallback_reason)
 
 
 class _MoveSkip(Exception):
@@ -2253,6 +2307,7 @@ async def list_files(
         sliced_for_model = None
         object_count = None
         is_multi_plate = False
+        can_relayout = False
         filament_types: list[str] = []
         plate_summaries: list[PlateSummary] = []
         if f.file_metadata:
@@ -2267,6 +2322,7 @@ async def list_files(
             # so the frontend can gate the carousel without an extra /plates
             # fetch per single-plate file.
             is_multi_plate = bool(f.file_metadata.get("is_multi_plate"))
+            can_relayout = f.file_metadata.get("assembled") is True
             filament_types = split_types(f.file_metadata.get("filament_type"))
 
             # The card shows ONE plate at a time (vault
@@ -2317,6 +2373,7 @@ async def list_files(
                 # Only a row with a valid content hash declares anything; no file is read to answer.
                 **swap_compatibility.wire_fields(swap_compatibility.library_fact(f)),
                 is_multi_plate=is_multi_plate,
+                can_relayout=can_relayout,
                 filament_types=filament_types,
                 plate_summaries=plate_summaries,
                 source_type=f.source_type,
@@ -5617,6 +5674,7 @@ async def get_file(
         skip_objects_supported=file.skip_objects_supported,
         sliced_for_model=sliced_for_model,
         **swap_compatibility.wire_fields(swap_compatibility.library_fact(file)),
+        can_relayout=bool(file.file_metadata) and file.file_metadata.get("assembled") is True,
         source_type=file.source_type,
         source_url=file.source_url,
     )

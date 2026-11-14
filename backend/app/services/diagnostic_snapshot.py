@@ -181,6 +181,9 @@ async def collect_diagnostic_snapshot(
         snapshot["usage_projection"] = get_usage_projection_diagnostics()
         snapshot["print_file_analysis"] = get_print_file_analysis_diagnostics(printer_manager)
         snapshot["analysis_worker"] = get_analysis_health()
+        from backend.app.services.assembly.runtime import get_assembly_health
+
+        snapshot["assembly_worker"] = get_assembly_health()
     except Exception as e:
         # A support bundle must remain usable if a future telemetry refactor
         # breaks; unlike the live parser, this is read-only bookkeeping.

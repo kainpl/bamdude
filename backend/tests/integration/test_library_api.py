@@ -744,6 +744,7 @@ class TestLibraryFilesAPI:
             # swap-source-lifecycle §9: additive and required — is the bool a declaration?
             "swap_compatibility_known",
             "is_multi_plate",
+            "can_relayout",
             "filament_types",
             "plate_summaries",
             "source_type",

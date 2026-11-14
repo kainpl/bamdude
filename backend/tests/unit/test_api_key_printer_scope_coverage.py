@@ -36,6 +36,7 @@ NOT_A_PRINTER = {
     "printer_models": "model names a maintenance type applies to, not printers",
     "printer_model": "a model name, not a printer",
     "printer_name": "a preset's printer-model name, not a printer",
+    "printer_preset": "a slicer preset reference (source + id) of an assembly target, not a farm printer",
     "controls_printer_power": "a boolean describing the plug's power role, not a printer reference",
     "show_on_printer_card": "a boolean display preference, not a printer reference",
 }

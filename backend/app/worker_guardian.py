@@ -23,6 +23,8 @@ _PREVIEW_MODULES = {
     "backend.app.library_file_service",
     "backend.app.part_render_service",
     "backend.app.part_render",
+    "backend.app.assembly_service",
+    "backend.app.assembly_child",
 }
 _CAMERA_MODULE = "backend.app.camera_worker"
 # the workers whose guardian records them before their bootstrap, and under what name
