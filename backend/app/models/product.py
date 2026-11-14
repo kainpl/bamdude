@@ -160,11 +160,6 @@ class ProductPart(Base):
     sourcing_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
     remarks: Mapped[str | None] = mapped_column(Text, nullable=True)
     sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
-    # spec workshop-product-variants, rule 3: in the kit only when a line chose
-    # this option; NULL = in every configuration.
-    variant_option_id: Mapped[int | None] = mapped_column(
-        ForeignKey("product_variant_options.id", ondelete="SET NULL"), nullable=True, index=True
-    )
     # spec part-thumbnails §8.6: which picture the part shows. Only the chosen source's data is
     # kept, and services/part_images.py is the only writer. No FK on image_file_id: a pin whose
     # file went explains itself (``file_unlinked``) instead of silently becoming "auto" (plan E4, D9).
@@ -175,6 +170,17 @@ class ProductPart(Base):
     image_photo: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     product: Mapped["Product"] = relationship(back_populates="parts")
+    # spec product-part-variant-combinations (m225): the options the part is bound
+    # to, across groups; none = in every configuration. Loaded with the part.
+    option_links: Mapped[list["ProductPartOption"]] = relationship(cascade="all, delete-orphan", lazy="selectin")
+
+    @property
+    def bound(self) -> dict[int, frozenset[int]]:
+        """``group_id → option ids`` the part is bound to; ``{}`` = always in the kit."""
+        grouped: dict[int, set[int]] = {}
+        for link in self.option_links:
+            grouped.setdefault(link.group_id, set()).add(link.option_id)
+        return {group_id: frozenset(options) for group_id, options in grouped.items()}
 
 
 class ProductPlate(Base):
@@ -225,5 +231,5 @@ class ProductFacet(Base):
 
 from backend.app.models.library import LibraryFile, LibraryFolder  # noqa: E402
 from backend.app.models.product_category import ProductCategory  # noqa: E402
-from backend.app.models.product_variant import ProductVariantGroup  # noqa: E402
+from backend.app.models.product_variant import ProductPartOption, ProductVariantGroup  # noqa: E402
 from backend.app.models.project_line import ProjectLine  # noqa: E402
