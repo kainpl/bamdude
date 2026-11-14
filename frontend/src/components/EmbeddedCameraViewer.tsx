@@ -13,6 +13,9 @@ import { sourceKey, stopPath, streamPath, type CameraSource } from '../utils/cam
 import { useCameraLiveBudget } from '../hooks/useCameraLiveBudget';
 import { useCameraImageRef } from '../hooks/useCameraImageRef';
 import { containLimits, fillStyle, useRotatedBox } from '../hooks/useRotatedFit';
+import {
+  currentViewport, defaultCameraWindow, draggedCameraWindow, restoredCameraWindow, type CameraWindowState,
+} from '../utils/cameraWindowPlacement';
 
 interface EmbeddedCameraViewerProps {
   /** A printer's camera, or a camera that belongs to a place. Everything the
@@ -30,19 +33,6 @@ const INITIAL_RECONNECT_DELAY = 2000;
 const MAX_RECONNECT_DELAY = 30000;
 const STALL_CHECK_INTERVAL = 5000;
 
-interface CameraState {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-}
-
-const DEFAULT_STATE: CameraState = {
-  x: window.innerWidth - 420,
-  y: 20,
-  width: 400,
-  height: 300,
-};
 
 export function EmbeddedCameraViewer({ source: sourceProp, name, onClose }: EmbeddedCameraViewerProps) {
   // Pinned to its two values: the caller builds the descriptor inline, so the
@@ -65,27 +55,21 @@ export function EmbeddedCameraViewer({ source: sourceProp, name, onClose }: Embe
   // position of whatever printer happens to share its id.
   const storageKey = `${STORAGE_KEY_PREFIX}${sourceKey(source)}`;
 
-  // Load saved state or use defaults
-  const loadState = (): CameraState => {
+  // Load saved state or use defaults. Either way the window starts where it
+  // can be seen and grabbed: on screen — a phone is narrower than the desktop
+  // default — and below the fixed compact header (`--app-top`).
+  const loadState = (): CameraWindowState => {
+    const viewport = currentViewport();
     try {
       const saved = localStorage.getItem(storageKey);
-      if (saved) {
-        const state = JSON.parse(saved);
-        // Validate state is on screen
-        return {
-          x: Math.min(Math.max(0, state.x), window.innerWidth - 100),
-          y: Math.min(Math.max(0, state.y), window.innerHeight - 100),
-          width: Math.max(200, Math.min(state.width, window.innerWidth - 20)),
-          height: Math.max(150, Math.min(state.height, window.innerHeight - 20)),
-        };
-      }
+      if (saved) return restoredCameraWindow(JSON.parse(saved), viewport);
     } catch {
       // Ignore parse errors
     }
-    return { ...DEFAULT_STATE };
+    return defaultCameraWindow(viewport);
   };
 
-  const [state, setState] = useState<CameraState>(loadState);
+  const [state, setState] = useState<CameraWindowState>(loadState);
   const [isDragging, setIsDragging] = useState(false);
   const [isResizing, setIsResizing] = useState(false);
   const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
@@ -533,8 +517,7 @@ export function EmbeddedCameraViewer({ source: sourceProp, name, onClose }: Embe
       if (isDragging) {
         setState((prev) => ({
           ...prev,
-          x: Math.max(0, Math.min(e.clientX - dragOffset.x, window.innerWidth - prev.width)),
-          y: Math.max(0, Math.min(e.clientY - dragOffset.y, window.innerHeight - prev.height)),
+          ...draggedCameraWindow(e.clientX - dragOffset.x, e.clientY - dragOffset.y, prev, currentViewport()),
         }));
       } else if (isResizing && containerRef.current) {
         const rect = containerRef.current.getBoundingClientRect();
@@ -553,8 +536,7 @@ export function EmbeddedCameraViewer({ source: sourceProp, name, onClose }: Embe
       if (isDragging) {
         setState((prev) => ({
           ...prev,
-          x: Math.max(0, Math.min(touch.clientX - dragOffset.x, window.innerWidth - prev.width)),
-          y: Math.max(0, Math.min(touch.clientY - dragOffset.y, window.innerHeight - prev.height)),
+          ...draggedCameraWindow(touch.clientX - dragOffset.x, touch.clientY - dragOffset.y, prev, currentViewport()),
         }));
       } else if (isResizing && containerRef.current) {
         const rect = containerRef.current.getBoundingClientRect();

@@ -58,6 +58,63 @@ describe('floating camera lifecycle', () => {
   });
 });
 
+// The default was the desktop one everywhere: wider than a phone and starting
+// left of its screen, with the title bar inside the compact header's band.
+describe('floating camera placement', () => {
+  const viewer = () => <EmbeddedCameraViewer source={printerSource(7)} name="A1 Mini" onClose={() => {}} />;
+  const frame = () => screen.getByText('A1 Mini').closest('.fixed') as HTMLElement;
+  const px = (value: string) => parseFloat(value);
+  const size = { width: window.innerWidth, height: window.innerHeight };
+  const setScreen = (width: number, height: number) => {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: width });
+    Object.defineProperty(window, 'innerHeight', { configurable: true, writable: true, value: height });
+  };
+
+  beforeEach(() => {
+    localStorage.clear();
+    vi.spyOn(global, 'fetch').mockResolvedValue(new Response('{}'));
+    setScreen(375, 667);
+    document.documentElement.style.setProperty('--app-top', '3.5rem');
+  });
+  afterEach(() => {
+    setScreen(size.width, size.height);
+    document.documentElement.style.removeProperty('--app-top');
+    vi.restoreAllMocks();
+  });
+
+  it('opens whole on a phone screen and below the compact header', async () => {
+    render(viewer());
+    await act(async () => { await Promise.resolve(); });
+
+    const { left, top, width, height } = frame().style;
+    expect(px(left)).toBeGreaterThanOrEqual(0);
+    expect(px(left) + px(width)).toBeLessThanOrEqual(375);
+    expect(px(top)).toBeGreaterThanOrEqual(56);
+    expect(px(top) + px(height)).toBeLessThanOrEqual(667);
+  });
+
+  it('brings a window saved under the header, or off a smaller screen, back into reach', async () => {
+    localStorage.setItem('embeddedCameraState_printer-7', JSON.stringify({ x: 1500, y: 5, width: 900, height: 700 }));
+    render(viewer());
+    await act(async () => { await Promise.resolve(); });
+
+    const { left, top, width } = frame().style;
+    expect(px(top)).toBe(56);
+    expect(px(left)).toBeLessThanOrEqual(275);
+    expect(px(width)).toBeLessThanOrEqual(375);
+  });
+
+  it('cannot be dragged under the header', async () => {
+    render(viewer());
+    await act(async () => { await Promise.resolve(); });
+
+    fireEvent.mouseDown(screen.getByText('A1 Mini'), { clientX: 100, clientY: 100 });
+    fireEvent.mouseMove(document, { clientX: 100, clientY: -300 });
+    fireEvent.mouseUp(document);
+    expect(px(frame().style.top)).toBe(56);
+  });
+});
+
 // A sideways camera was laid out at the window's unswapped size and then
 // turned: cut off in a wide window, boxed in by black bars in a tall one.
 describe('floating camera turned sideways', () => {

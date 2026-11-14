@@ -9,7 +9,28 @@
  * every other browser opens with.
  */
 
+import { isHomeScreenApp } from './standaloneApp';
+
 export type CameraViewMode = 'window' | 'embedded';
+
+/**
+ * The modes this browser can offer. A web app started from the iOS home
+ * screen has no second window — `window.open` loads the camera page into the
+ * app itself, with nothing to come back by — so there a camera is the overlay.
+ */
+export function cameraViewModes(): CameraViewMode[] {
+  return isHomeScreenApp() ? ['embedded'] : ['window', 'embedded'];
+}
+
+/** The mode a camera button opens with: this browser's pick, else the farm
+ *  default — and always the overlay where no window can open. */
+export function resolveCameraViewMode(
+  picked: CameraViewMode | null,
+  farmDefault: CameraViewMode | null | undefined,
+): CameraViewMode {
+  if (isHomeScreenApp()) return 'embedded';
+  return picked ?? farmDefault ?? 'window';
+}
 
 const STORAGE_KEY = 'cameraViewMode';
 

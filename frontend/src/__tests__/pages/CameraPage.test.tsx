@@ -163,6 +163,49 @@ describe('CameraPage', () => {
     });
   });
 
+  // A web app started from the iOS home screen has no browser chrome, so a
+  // camera page without navigation of its own is a dead end.
+  describe('home-screen web app', () => {
+    const setHomeScreenApp = (value: boolean) =>
+      Object.defineProperty(window.navigator, 'standalone', { configurable: true, value });
+    let historyLength: { mockRestore: () => void } | undefined;
+    const setHistoryLength = (length: number) => {
+      historyLength = vi.spyOn(window.history, 'length', 'get').mockReturnValue(length);
+    };
+
+    afterEach(() => {
+      Reflect.deleteProperty(window.navigator, 'standalone');
+      historyLength?.mockRestore();
+    });
+
+    it('offers Back when there is a page to go back to', async () => {
+      setHomeScreenApp(true);
+      setHistoryLength(3);
+      renderCameraPage(1);
+
+      expect(await screen.findByRole('button', { name: 'Back' })).toBeInTheDocument();
+      expect(screen.queryByRole('link', { name: 'Printers' })).not.toBeInTheDocument();
+    });
+
+    it('offers the way to Printers when the camera was opened cold', async () => {
+      setHomeScreenApp(true);
+      setHistoryLength(1);
+      renderCameraPage(1);
+
+      expect(await screen.findByRole('link', { name: 'Printers' })).toHaveAttribute('href', '/');
+      expect(screen.queryByRole('button', { name: 'Back' })).not.toBeInTheDocument();
+    });
+
+    it('adds nothing to the camera window of an ordinary browser', async () => {
+      setHistoryLength(3);
+      renderCameraPage(1);
+
+      await waitFor(() => expect(screen.getByText('X1 Carbon')).toBeInTheDocument());
+      expect(screen.queryByRole('button', { name: 'Back' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('link', { name: 'Printers' })).not.toBeInTheDocument();
+    });
+  });
+
   describe('camera controls', () => {
     it('renders without crashing', async () => {
       renderCameraPage(1);

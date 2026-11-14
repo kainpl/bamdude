@@ -4,6 +4,7 @@ import { availableEngines, hasEngineChoice, resolveEngine, type SliceEngineId } 
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useSearchParams } from 'react-router';
 import { api, macrosApi } from '../api/client';
+import { cameraTestMessage } from '../utils/cameraTestMessage';
 import type { SecretAction } from '../api/client';
 import { SecretInput } from '../components/SecretInput';
 import { credentialDraft } from '../utils/credentialDraft';
@@ -1619,7 +1620,7 @@ export function SettingsPage() {
       const result = await api.testExternalCamera(printerId, url || undefined, cameraType, source);
       setExtCameraTestResults(prev => ({ ...prev, [printerId]: result }));
       if (result.success) {
-        showToast(t('settings.toast.cameraConnected', { resolution: result.resolution || '' }), 'success');
+        showToast(cameraTestMessage(t, result.resolution), 'success');
       } else {
         showToast(result.error || t('settings.toast.connectionFailed'), 'error');
       }

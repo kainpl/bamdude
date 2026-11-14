@@ -230,15 +230,13 @@ import { TagFilterMenu } from '../components/printers/TagFilterMenu';
 import { parseIdList } from '../components/settings/staggerGroupIds';
 import { LocationConditions } from '../components/zigbee/LocationConditions';
 import { LocationCameras } from '../components/LocationCameras';
-import { openCameraWindow, printerSource, type CameraSourceKind } from '../utils/cameraSource';
-import { rememberCameraViewMode, storedCameraViewMode, type CameraViewMode } from '../utils/cameraViewMode';
-
-/** What the one floating camera window is currently showing. */
-interface EmbeddedCameraSelection {
-  kind: CameraSourceKind;
-  id: number;
-  name: string;
-}
+import { openCameraWindow, printerSource } from '../utils/cameraSource';
+import {
+  cameraViewModes, rememberCameraViewMode, resolveCameraViewMode, storedCameraViewMode, type CameraViewMode,
+} from '../utils/cameraViewMode';
+import {
+  checkEmbeddedCamera, readStoredEmbeddedCamera, storeEmbeddedCamera, type EmbeddedCameraSelection,
+} from '../utils/embeddedCameraSelection';
 import { PrinterConditions } from '../components/zigbee/PrinterConditions';
 import { PrinterHASensorRow } from '../components/PrinterHASensorRow';
 import { AirductModal } from '../components/AirductModal';
@@ -6579,7 +6577,7 @@ const PrinterCard = memo(function PrinterCard({
                 >
                   {(close) => (
                     <>
-                      {(['window', 'embedded'] as const).map((mode) => (
+                      {cameraViewModes().map((mode) => (
                         <CardActionMenuItem
                           key={mode}
                           onSelect={() => {
@@ -9360,28 +9358,22 @@ export function PrintersPage() {
   // ⚠️ `kind` distinguishes a printer's camera from a camera of its own: both
   // open the same window, and an id alone names neither. An entry saved by an
   // older version has no kind and is read as a printer, which is what it was.
-  const [embeddedCamera, setEmbeddedCamera] = useState<EmbeddedCameraSelection | null>(() => {
-    try {
-      const saved: unknown = JSON.parse(localStorage.getItem('openEmbeddedCameras') || '[]');
-      if (!Array.isArray(saved)) return null;
-      const last = saved.filter((camera) => camera && Number.isInteger(camera.id) && camera.id > 0
-        && typeof camera.name === 'string').at(-1);
-      if (!last) return null;
-      return { kind: last.kind === 'camera' ? 'camera' : 'printer', id: last.id, name: last.name };
-    } catch {
-      return null;
-    }
-  });
+  const [embeddedCamera, setEmbeddedCamera] = useState<EmbeddedCameraSelection | null>(readStoredEmbeddedCamera);
+  // ⚠️ What the browser remembered is not shown until it is vouched for: the
+  // user may have lost `camera:view`, the printer may be gone (and its id
+  // handed to the next one), the camera switched off. A camera opened by a
+  // click on this page needs no such check — it came off a live card.
+  const [restoreUnchecked, setRestoreUnchecked] = useState(() => embeddedCamera !== null);
+  const openEmbeddedCamera = useCallback((selection: EmbeddedCameraSelection) => {
+    setRestoreUnchecked(false);
+    setEmbeddedCamera(selection);
+  }, []);
 
   useEffect(() => {
-    if (embeddedCamera) {
-      localStorage.setItem('openEmbeddedCameras', JSON.stringify([embeddedCamera]));
-    } else {
-      localStorage.removeItem('openEmbeddedCameras');
-    }
+    storeEmbeddedCamera(embeddedCamera);
   }, [embeddedCamera]);
 
-  const { data: printers, isLoading } = useQuery({
+  const { data: printers, isLoading, isFetching: printersFetching } = useQuery({
     queryKey: ['printers'],
     queryFn: api.getPrinters,
   });
@@ -9399,10 +9391,28 @@ export function PrintersPage() {
 
   // Cameras that belong to no printer. Shared cache key with the location
   // header's buttons and with Settings, so the three ask once between them.
-  const { data: allCameras } = useQuery({
+  const { data: allCameras, isFetching: camerasFetching } = useQuery({
     queryKey: ['cameras'],
     queryFn: api.getCameras,
   });
+
+  // A list still being fetched cannot vouch for a remembered camera: the copy
+  // in the cache may predate the printer's deletion.
+  const restoreCheck = !restoreUnchecked || !embeddedCamera
+    ? 'show'
+    : authLoading
+      ? 'wait'
+      : checkEmbeddedCamera(embeddedCamera, {
+          canView: hasPermission('camera:view'),
+          printers: printersFetching ? undefined : printers,
+          cameras: camerasFetching ? undefined : allCameras,
+        });
+  useEffect(() => {
+    if (!restoreUnchecked || restoreCheck === 'wait') return;
+    // Dropped silently: the stored entry goes with the selection.
+    if (restoreCheck === 'drop') setEmbeddedCamera(null);
+    setRestoreUnchecked(false);
+  }, [restoreUnchecked, restoreCheck]);
   const wallCameras = useMemo(
     () => (allCameras ?? []).filter((camera) => camera.enabled),
     [allCameras],
@@ -9479,7 +9489,7 @@ export function PrintersPage() {
   // overlay when the default is "window" any more — with the choice made per
   // click, that would shut what the operator just opened on purpose.
   const [pickedCameraViewMode, setPickedCameraViewMode] = useState<CameraViewMode | null>(storedCameraViewMode);
-  const cameraViewMode: CameraViewMode = pickedCameraViewMode ?? settings?.camera_view_mode ?? 'window';
+  const cameraViewMode: CameraViewMode = resolveCameraViewMode(pickedCameraViewMode, settings?.camera_view_mode);
   const chooseCameraViewMode = useCallback((mode: CameraViewMode) => {
     rememberCameraViewMode(mode);
     setPickedCameraViewMode(mode);
@@ -9609,8 +9619,8 @@ export function PrintersPage() {
     [unassignSpool],
   );
   const handleOpenEmbeddedCamera = useCallback(
-    (id: number, name: string) => setEmbeddedCamera({ kind: 'printer', id, name }),
-    [],
+    (id: number, name: string) => openEmbeddedCamera({ kind: 'printer', id, name }),
+    [openEmbeddedCamera],
   );
   const handleExpandPrinter = useCallback((id: number) => setExpandedPrinterId(id), []);
 
@@ -10600,7 +10610,7 @@ export function PrintersPage() {
                     locationId={group.locationId}
                     onOpenEmbedded={
                       cameraViewMode === 'embedded'
-                        ? (id, name) => setEmbeddedCamera({ kind: 'camera', id, name })
+                        ? (id, name) => openEmbeddedCamera({ kind: 'camera', id, name })
                         : undefined
                     }
                   />
@@ -10649,7 +10659,7 @@ export function PrintersPage() {
       )}
 
       {/* The printer key unmounts/cancels the old camera before its replacement. */}
-      {embeddedCamera && (
+      {embeddedCamera && restoreCheck === 'show' && (
         <EmbeddedCameraViewer
           key={`${embeddedCamera.kind}-${embeddedCamera.id}`}
           source={{ kind: embeddedCamera.kind, id: embeddedCamera.id }}
@@ -10719,7 +10729,7 @@ export function PrintersPage() {
               dateFormat={settings?.date_format || 'system'}
               cameraViewMode={cameraViewMode}
               onCameraViewModeChange={chooseCameraViewMode}
-              onOpenEmbeddedCamera={(id, name) => setEmbeddedCamera({ kind: 'printer', id, name })}
+              onOpenEmbeddedCamera={(id, name) => openEmbeddedCamera({ kind: 'printer', id, name })}
               checkPrinterFirmware={settings?.check_printer_firmware !== false}
               useSlicerApi={settings?.use_slicer_api ?? false}
               dryingPresets={effectiveDryingPresets}
