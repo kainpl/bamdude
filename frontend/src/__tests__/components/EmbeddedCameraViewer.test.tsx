@@ -96,6 +96,58 @@ describe('floating camera whose own stream the server ended', () => {
   });
 });
 
+// One bad status read is a blip while the shared upstream starts or changes
+// hands (upstream #2521). The camera page and the wall waited for a second;
+// the floating window reconnected on the first — and a reconnect is the very
+// hand-over that makes the next read bad.
+describe('floating camera and one bad status read', () => {
+  let answers: object[] = [];
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.spyOn(global, 'fetch').mockImplementation(async (input) => {
+      const url = String(input instanceof Request ? input.url : input);
+      if (!/\/camera\/status/.test(url)) return new Response('{}');
+      return new Response(JSON.stringify(answers.length > 1 ? answers.shift() : answers[0]));
+    });
+  });
+  afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
+  const advance = (ms: number) => act(async () => { await vi.advanceTimersByTimeAsync(ms); });
+  const ALIVE = { active: true, stalled: false };
+  const open = async () => {
+    render(<EmbeddedCameraViewer source={printerSource(42)} name="H2C" onClose={() => {}} />);
+    await advance(0);
+    const img = screen.getByAltText('Camera stream') as HTMLImageElement;
+    fireEvent.load(img);
+    return img;
+  };
+
+  it.each([
+    ['not active', { active: false, stalled: false }],
+    ['stalled', { active: true, stalled: true }],
+  ])('keeps the stream on one "%s" read and reconnects on the second in a row', async (_name, bad) => {
+    answers = [bad];
+    const img = await open();
+
+    await advance(5000);
+    expect(screen.queryByText(/Reconnecting in/)).toBeNull();
+    expect(screen.getByAltText('Camera stream')).toBe(img);
+    expect(img.src).toContain('/camera/stream');
+
+    await advance(5000);
+    expect(screen.getByText(/Reconnecting in/)).toBeInTheDocument();
+  });
+
+  it('forgets a bad read once a good one follows it', async () => {
+    answers = [{ active: false, stalled: false }, ALIVE, { active: true, stalled: true }, ALIVE];
+    const img = await open();
+
+    await advance(60_000);
+
+    expect(screen.queryByText(/Reconnecting in/)).toBeNull();
+    expect(screen.getByAltText('Camera stream')).toBe(img);
+  });
+});
+
 // The default was the desktop one everywhere: wider than a phone and starting
 // left of its screen, with the title bar inside the compact header's band.
 describe('floating camera placement', () => {

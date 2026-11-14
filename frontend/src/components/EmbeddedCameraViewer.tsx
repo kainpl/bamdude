@@ -9,9 +9,10 @@ import { ChamberLight } from './icons/ChamberLight';
 import { SkipObjectsModal, SkipObjectsIcon } from './SkipObjectsModal';
 import { CameraDiagnoseModal } from './CameraDiagnoseModal';
 import { CameraSnapshotImage } from './CameraSnapshotImage';
-import { newViewerId, sourceKey, stopPath, streamPath, type CameraSource } from '../utils/cameraSource';
+import { sourceKey, stopPath, streamPath, type CameraSource } from '../utils/cameraSource';
 import { useCameraLiveBudget } from '../hooks/useCameraLiveBudget';
 import { useCameraImageRef } from '../hooks/useCameraImageRef';
+import { STREAM_STRIKES, strikesAfter, useViewerId } from '../hooks/useCameraStreamRecovery';
 import { containLimits, fillStyle, useRotatedBox } from '../hooks/useRotatedFit';
 import {
   currentViewport, defaultCameraWindow, draggedCameraWindow, resizedCameraWindow, restoredCameraWindow,
@@ -96,12 +97,16 @@ export function EmbeddedCameraViewer({ source: sourceProp, name, onClose }: Embe
   const isLive = granted > 0;
   // One id per stream opened: the status read below asks about THIS viewer,
   // because the upstream is shared with every other view of the camera.
-  const viewerId = useMemo(newViewerId, [imageKey]);
+  const viewerId = useViewerId(imageKey);
   const streamUrl = withStreamToken(streamPath(source, 15, imageKey, viewerId));
   const { imageRef: imgRef, attachImage } = useCameraImageRef(streamUrl);
   const reconnectTimerRef = useRef<NodeJS.Timeout | null>(null);
   const countdownIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const stallCheckIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  // Bad status reads in a row. One is a blip while the shared upstream starts
+  // or changes hands (upstream #2521) — and this window's own reconnect is
+  // such a hand-over for everybody else watching the camera.
+  const stallStrikesRef = useRef(0);
 
   const [showSkipObjectsModal, setShowSkipObjectsModal] = useState(false);
   // Camera diagnostic modal — opens from both the always-visible
@@ -277,11 +282,16 @@ export function EmbeddedCameraViewer({ source: sourceProp, name, onClose }: Embe
     }
 
     let cancelled = false;
+    // A freshly loaded stream does not inherit strikes from the one before it.
+    stallStrikesRef.current = 0;
     stallCheckIntervalRef.current = setInterval(async () => {
       try {
         const status = await api.getCameraSourceStatus(source, viewerId);
         if (cancelled) return;
-        if (status.stalled || (!status.active && !streamError) || status.viewer_attached === false) {
+        const bad = status.stalled || (!status.active && !streamError) || status.viewer_attached === false;
+        stallStrikesRef.current = strikesAfter(stallStrikesRef.current, bad);
+        if (stallStrikesRef.current >= STREAM_STRIKES) {
+          stallStrikesRef.current = 0;
           if (stallCheckIntervalRef.current) {
             clearInterval(stallCheckIntervalRef.current);
             stallCheckIntervalRef.current = null;

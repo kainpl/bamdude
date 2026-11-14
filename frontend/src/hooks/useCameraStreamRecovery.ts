@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { newViewerId } from '../utils/cameraSource';
 
 /** What the server says about one source's stream. */
@@ -11,6 +11,16 @@ export interface CameraStreamHealth {
    *  `false` is a bad read; absent or `null` is "cannot say" and decides
    *  nothing — an older server does not send it. */
   viewer_attached?: boolean | null;
+}
+
+/** The id of the stream a view has open: a new one each time `streamKey` — the
+ *  view's cache-buster — changes, because a re-opened stream is another viewer. */
+export function useViewerId(streamKey: number | string): string {
+  const [held, setHeld] = useState(() => ({ streamKey, id: newViewerId() }));
+  if (held.streamKey === streamKey) return held.id;
+  const next = { streamKey, id: newViewerId() };
+  setHeld(next);
+  return next.id;
 }
 
 /** A read the rule acts on: the upstream is gone or silent, or it is fine and
@@ -38,7 +48,14 @@ export const HEALTH_CHECK_MS = 5000;
 /** One bad read is a blip while the shared upstream starts or changes hands
  *  (upstream #2521); two in a row is a dead stream. */
 export const STREAM_STRIKES = 2;
-const STRIKES = STREAM_STRIKES;
+
+/** The count of bad reads in a row after this one. Every camera view — the
+ *  wall's tile and the overlay through the hook below, the floating window and
+ *  the camera page with their own reconnect UI — decides by this one rule:
+ *  the stream is lost when the count reaches `STREAM_STRIKES`. */
+export function strikesAfter(strikes: number, bad: boolean): number {
+  return bad ? strikes + 1 : 0;
+}
 const MAX_ATTEMPTS = 5;
 const FIRST_DELAY_MS = 2000;
 const MAX_DELAY_MS = 30_000;
@@ -76,8 +93,7 @@ const MAX_DELAY_MS = 30_000;
 export function useCameraStreamRecovery({ enabled, readHealth, slowRetryMs }: Options) {
   const [phase, setPhase] = useState<CameraStreamPhase>('live');
   const [generation, setGeneration] = useState(0);
-  // One id per stream opened: a re-opened stream is another viewer.
-  const viewerId = useMemo(newViewerId, [generation]);
+  const viewerId = useViewerId(generation);
   const phaseRef = useRef<CameraStreamPhase>('live');
   const attemptsRef = useRef(0);
   const strikesRef = useRef(0);
@@ -178,12 +194,8 @@ export function useCameraStreamRecovery({ enabled, readHealth, slowRetryMs }: Op
         return; // the server may be away for a moment; that is not the camera's answer
       }
       if (cancelled || health === null) return;
-      if (!isBadStreamRead(health)) {
-        strikesRef.current = 0;
-        return;
-      }
-      strikesRef.current += 1;
-      if (strikesRef.current >= STRIKES) lost();
+      strikesRef.current = strikesAfter(strikesRef.current, isBadStreamRead(health));
+      if (strikesRef.current >= STREAM_STRIKES) lost();
     }, HEALTH_CHECK_MS);
     return () => {
       cancelled = true;

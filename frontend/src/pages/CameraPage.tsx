@@ -1,4 +1,5 @@
 import { isIdleCameraImage, useCameraImageRef } from '../hooks/useCameraImageRef';
+import { STREAM_STRIKES, strikesAfter, useViewerId } from '../hooks/useCameraStreamRecovery';
 import { containLimits, useRotatedBox } from '../hooks/useRotatedFit';
 import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router';
@@ -12,7 +13,7 @@ import { useStreamTokenSync } from '../hooks/useCameraStreamToken';
 import { ChamberLight } from '../components/icons/ChamberLight';
 import { SkipObjectsModal, SkipObjectsIcon } from '../components/SkipObjectsModal';
 import { CameraDiagnoseModal } from '../components/CameraDiagnoseModal';
-import { newViewerId, snapshotPath, stopPath, streamPath, type CameraSource } from '../utils/cameraSource';
+import { snapshotPath, stopPath, streamPath, type CameraSource } from '../utils/cameraSource';
 import { isHomeScreenApp } from '../utils/standaloneApp';
 
 const MAX_RECONNECT_ATTEMPTS = 5;
@@ -65,7 +66,7 @@ export function CameraPage() {
   const [imageKey, setImageKey] = useState(Date.now());
   // One id per stream opened: the status read asks about THIS viewer, because
   // the upstream is shared with every other view of the camera.
-  const viewerId = useMemo(newViewerId, [imageKey]);
+  const viewerId = useViewerId(imageKey);
   const [transitioning, setTransitioning] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [reconnectAttempts, setReconnectAttempts] = useState(0);
@@ -323,14 +324,11 @@ export function CameraPage() {
         // OR the stream is no longer active (process died), OR the upstream is
         // fine for somebody else and the server has ended THIS viewer.
         const bad = status.stalled || (!status.active && !streamError) || status.viewer_attached === false;
-        if (!bad) {
-          stallStrikesRef.current = 0;
-          return;
-        }
-        stallStrikesRef.current += 1;
         // Require two consecutive bad reads before acting (upstream #2521) —
-        // one blip during fan-out startup/handover is not a real stall.
-        if (stallStrikesRef.current < 2) {
+        // one blip during fan-out startup/handover is not a real stall. The
+        // rule is the one every camera view counts by.
+        stallStrikesRef.current = strikesAfter(stallStrikesRef.current, bad);
+        if (stallStrikesRef.current < STREAM_STRIKES) {
           return;
         }
         stallStrikesRef.current = 0;
