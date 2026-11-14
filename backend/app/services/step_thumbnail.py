@@ -13,6 +13,11 @@ before meshing; one tessellation max(0.1 mm, diag/1000), angular 0.5, absolute, 
 triangles counted before anything is gathered; every face occurrence triangulated; location and winding
 (REVERSED XOR negative transform) applied; float32 range; N in the header and 84 + 50·N bytes. A model that is
 partial in any of these ways is render_failed, never a picture of part of it.
+
+``mode: "print"`` (project assembly) is the same recipe for a mesh that will be PRINTED: Bambu Studio's import
+precision (0.003 mm absolute, angular 0.5 — its STEP.hpp defaults) under limits of its own, a model no printer
+could hold refused before it is meshed, and only whole outward solids — a loose surface or an inside-out body is
+no part. The thumbnail mode does not change.
 """
 
 from __future__ import annotations
@@ -29,16 +34,27 @@ from pathlib import Path
 
 from backend.app.services.preview_protocol import (
     CAD_FACE_OCCURRENCES,
+    CAD_PRINT_FACE_OCCURRENCES,
+    CAD_PRINT_TRIANGLES,
     CAD_TRIANGLES,
     JSON_BYTES,
     STEP_DATA_LIMIT_BYTES,
     STEP_INPUT_BYTES,
+    STEP_PRINT_DATA_LIMIT_BYTES,
+    STEP_PRINT_INPUT_BYTES,
 )
 
 INPUT, OUTPUT, RESULT = "input.step", "mesh.stl", "result.json"
 F32_MAX = 3.4028234663852886e38
 MAX_ABS_MM = 1.0e7  # ±1e100 from an unbounded face is finite; only this bound catches it (stage 0)
 ANGULAR = 0.5
+PRINT_DEFLECTION_MM = 0.003  # Bambu Studio's default linear deflection for a STEP import
+PRINT_MAX_EXTENT_MM = 2000.0  # a longer diagonal fits no printer; at 0.003 mm it would also be meshed for hours
+#: per mode: (input bytes, face occurrences, triangles, data segment)
+MODES = {
+    "thumbnail": (STEP_INPUT_BYTES, CAD_FACE_OCCURRENCES, CAD_TRIANGLES, STEP_DATA_LIMIT_BYTES),
+    "print": (STEP_PRINT_INPUT_BYTES, CAD_PRINT_FACE_OCCURRENCES, CAD_PRINT_TRIANGLES, STEP_PRINT_DATA_LIMIT_BYTES),
+}
 FAULTS = frozenset({"drop_triangulation", "static_unit_m", "access_violation", "interrupt_write"})  # test seams (S3)
 
 # Measured allowlist (addendum §3, 35/40 real files + 34/34 fixtures). Anything else refuses.
@@ -87,6 +103,15 @@ class Refusal(Exception):
     def __init__(self, outcome: str, why: str):
         super().__init__(why)
         self.outcome, self.why = outcome, why
+
+
+def print_refusal(*, faces: int, solid_faces: int, solids: int, negative: int) -> str | None:
+    """Why a transferred model is no printable part: a face outside every solid, or a body turned inside out."""
+    if solids == 0 or solid_faces != faces:
+        return "not_solid"
+    if negative:
+        return "inverted_solid"
+    return None
 
 
 def load_check_allowed(etype: str | None, message: str) -> bool:
@@ -244,14 +269,19 @@ def _left_handed_cto3d(model) -> int:
 
 def convert(cfg: dict, result: dict) -> None:
     """The recipe. Raises Refusal for every closed refusal; writes mesh.stl only after the last check."""
-    caps = {
-        "byte_cap": min(int(cfg.get("byte_cap", STEP_INPUT_BYTES)), STEP_INPUT_BYTES),
-        "face_cap": min(int(cfg.get("face_cap", CAD_FACE_OCCURRENCES)), CAD_FACE_OCCURRENCES),
-        "triangle_cap": min(int(cfg.get("triangle_cap", CAD_TRIANGLES)), CAD_TRIANGLES),
-    }
+    mode = cfg.get("mode", "thumbnail")
     faults = set(cfg.get("faults") or ())
-    if faults - FAULTS:
+    if faults - FAULTS or mode not in MODES:
         raise Refusal("render_failed", "protocol_error")
+    for_print = mode == "print"
+    if for_print:
+        result["mode"] = mode
+    byte_cap, face_cap, triangle_cap, _data = MODES[mode]
+    caps = {
+        "byte_cap": min(int(cfg.get("byte_cap", byte_cap)), byte_cap),
+        "face_cap": min(int(cfg.get("face_cap", face_cap)), face_cap),
+        "triangle_cap": min(int(cfg.get("triangle_cap", triangle_cap)), triangle_cap),
+    }
     _stage(result, "snapshot")
     size = os.path.getsize(INPUT)
     if size > caps["byte_cap"]:
@@ -347,10 +377,12 @@ def convert(cfg: dict, result: dict) -> None:
     result["bounds_mm"] = bounds
     if face_count > caps["face_cap"]:
         raise Refusal("resource_limit", "face_cap")
+    diagonal = math.sqrt(sum(x * x for x in extent))
+    if for_print and diagonal > PRINT_MAX_EXTENT_MM:
+        raise Refusal("resource_limit", "extent_cap")
 
     _stage(result, "mesh")
-    diagonal = math.sqrt(sum(x * x for x in extent))
-    deflection = max(0.1, diagonal / 1000.0)
+    deflection = PRINT_DEFLECTION_MM if for_print else max(0.1, diagonal / 1000.0)
     result["deflection_mm"] = deflection
     mesher = BRepMesh_IncrementalMesh(compound, deflection, False, ANGULAR, False)
     flags = int(mesher.GetStatusFlags())
@@ -374,7 +406,7 @@ def convert(cfg: dict, result: dict) -> None:
         raise Refusal("resource_limit", "triangle_cap")  # before anything is gathered or written
 
     _stage(result, "mesh_write")
-    solids = negative = 0
+    solids = negative = solid_faces = 0
     total_volume = 0.0
     lo_m = [math.inf] * 3
     hi_m = [-math.inf] * 3
@@ -402,11 +434,18 @@ def convert(cfg: dict, result: dict) -> None:
 
     solid_explorer = TopExp_Explorer(compound, TopAbs_SOLID)
     while solid_explorer.More():
-        volume = sum(signed(*t) for f in faces(solid_explorer.Current()) for t in oriented(f))
+        volume = 0.0
+        for face in faces(solid_explorer.Current()):
+            solid_faces += 1
+            volume += sum(signed(*t) for t in oriented(face))
         solids += 1
         negative += volume < 0
         total_volume += abs(volume)
         solid_explorer.Next()
+    if for_print:
+        why = print_refusal(faces=face_count, solid_faces=solid_faces, solids=solids, negative=negative)
+        if why:
+            raise Refusal("render_failed", why)
     with open(OUTPUT + ".part", "wb") as out:
         header = b"BamDude STEP preview".ljust(80, b"\0") + struct.pack("<I", count)
         out.write(header)
@@ -461,7 +500,7 @@ def main() -> int:
     request = json.loads(sys.stdin.buffer.readline(JSON_BYTES + 1))
     os.chdir(request["root"])  # private cwd before OCP: no XSTEP.us/SHAPE.us from the install directory
     _windows_error_mode()
-    _set_data_limit(STEP_DATA_LIMIT_BYTES)
+    _set_data_limit(MODES.get(request.get("mode", "thumbnail"), MODES["thumbnail"])[3])
     result = {"pid": os.getpid(), "outcome": "render_failed", "why": "unknown", "stage": "snapshot"}
     try:
         if time.monotonic_ns() >= int(request["deadline"]):
