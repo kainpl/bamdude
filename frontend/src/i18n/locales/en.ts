@@ -4979,6 +4979,22 @@ export default {
       replaceTokenMessage:
         'The token you created on this page cannot be shown again once it is replaced. Copy the address first if you still need it.',
       replaceTokenConfirm: 'Replace token',
+      logoTitle: 'Logo',
+      logoShow: 'Show the logo on the overlay',
+      logoUpload: 'Upload a logo',
+      logoReplace: 'Replace the logo',
+      logoRemove: 'Remove logo',
+      logoRemoveTitle: 'Remove the logo?',
+      logoRemoveMessage:
+        'Every overlay that shows the logo stops drawing it, including the ones already in a scene.',
+      logoNone: 'No logo is saved yet. An overlay asked to show it draws none until one is uploaded.',
+      logoHint:
+        'One logo for the whole installation, drawn above the BamDude mark in the corner of the overlay. PNG, JPEG or WebP up to 2 MiB; it is saved without its metadata and scaled down to 512 pixels. Anyone with an overlay address can see it.',
+      logoNoPermission: 'Only somebody who may change settings can upload, replace or remove the logo.',
+      logoPreviewAlt: 'The saved logo',
+      logoSaved: 'Logo saved',
+      logoRemoved: 'Logo removed',
+      logoFailed: 'The logo could not be saved',
     },
     invalidPrinterId: 'Invalid printer ID',
     cameraStream: 'Camera stream',

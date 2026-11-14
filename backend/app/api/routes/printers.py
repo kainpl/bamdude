@@ -1829,6 +1829,12 @@ async def get_overlay_status(
     from backend.app.api.routes.camera import stream_liveness
 
     camera = stream_liveness(printer_id, viewer)
+    # Whether the installation has a logo for `logo=1`, and which: the overlay then asks for that revision
+    # under this same token instead of probing a route that answers 404 (routes/overlay_branding).
+    from backend.app.services import overlay_logo
+
+    saved_logo = await overlay_logo.current()
+    logo = {"revision": saved_logo.revision} if saved_logo else None
 
     if not state:
         # Never connected this run — mirror get_printer_status()'s disconnected
@@ -1851,6 +1857,7 @@ async def get_overlay_status(
             "temperatures": {},
             "time_format": time_format,
             "camera": camera,
+            "logo": logo,
         }
 
     from backend.app.services.layer_projection import resolve_layer_pair
@@ -1876,6 +1883,7 @@ async def get_overlay_status(
         "temperatures": display_temperatures(state.temperatures, printer.model),
         "time_format": time_format,
         "camera": camera,
+        "logo": logo,
     }
 
 

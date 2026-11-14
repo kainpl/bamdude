@@ -68,6 +68,7 @@ from backend.app.api.routes import (
     notifications,
     obico,
     orca_cloud,
+    overlay_branding,
     part_images as part_images_routes,
     print_options_preferences,
     print_queue,
@@ -12676,6 +12677,10 @@ PUBLIC_API_PATTERNS: tuple[re.Pattern[str], ...] = (
     # token in the URL instead of a JWT. The route's own RequireOverlayToken
     # gate is what authenticates it; this entry only lets it be reached.
     re.compile(r"^/api/v1/printers/\d+/overlay-status$"),
+    # The installation's logo that overlay draws, under the SAME overlay token (RequireOverlayToken) — the one
+    # picture a long-lived token opens, by the owner's decision (2026-11-15): branding, not a user's resource.
+    # This one file only: the upload / remove routes live under /settings/overlay-logo and are not public.
+    re.compile(r"^/api/v1/overlay-branding/logo$"),
     # Cam Wall kiosk feed (upstream #2531). Same reasoning as the overlay feed
     # above: a TV or Pi has no login session, so the wall carries a long-lived
     # ``camwall``-scoped token in the URL, checked by RequireCamWallToken.
@@ -13228,6 +13233,7 @@ app.include_router(macros.router, prefix=app_settings.api_prefix)
 app.include_router(maintenance.router, prefix=app_settings.api_prefix)
 app.include_router(camera.router, prefix=app_settings.api_prefix)
 app.include_router(camwall.router, prefix=app_settings.api_prefix)
+app.include_router(overlay_branding.router, prefix=app_settings.api_prefix)
 app.include_router(cameras.router, prefix=app_settings.api_prefix)
 app.include_router(monitor.router, prefix=app_settings.api_prefix)
 app.include_router(external_links.router, prefix=app_settings.api_prefix)

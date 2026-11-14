@@ -25,6 +25,8 @@ OUR_ROOTS = {
     "projects",
     "products",
     "certs",
+    # The stream overlay's logo: an upload nothing can rebuild (G09, 2026-11-15).
+    "overlay_branding",
 }
 
 

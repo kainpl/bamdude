@@ -14,6 +14,7 @@ import { normalizeModelName } from '../utils/printer';
 import {
   overlayDesign,
   overlayLayout,
+  overlayLogo,
   overlayTransparency,
   progressFill,
   type OverlayDesign,
@@ -21,6 +22,7 @@ import {
 } from '../utils/overlayOptions';
 import { StreamOverlayV2 } from '../components/StreamOverlayV2';
 import { OverlayCanvas } from '../components/OverlayCanvas';
+import { useOverlayLogo } from '../hooks/useOverlayLogo';
 
 type TFunction = (key: string, options?: Record<string, unknown>) => string;
 
@@ -63,6 +65,7 @@ interface OverlayConfig {
   design: OverlayDesign;
   transparency: number;
   layout: OverlayLayout | null;
+  showLogo: boolean;
 }
 
 function parseConfig(params: URLSearchParams): OverlayConfig {
@@ -107,6 +110,9 @@ function parseConfig(params: URLSearchParams): OverlayConfig {
     transparency: overlayTransparency(params.get('backgroundTransparency')),
     // Null keeps the overlay sized by its window.
     layout: overlayLayout(params.get('layout')),
+    // Off unless the URL says `logo=1`: every address already in a scene
+    // keeps looking exactly the same.
+    showLogo: overlayLogo(params.get('logo')),
   };
 }
 
@@ -308,6 +314,18 @@ export function StreamOverlayPage() {
     queryFn: api.getUiPreferences,
     enabled: !kiosk,
   });
+
+  // The installation's logo (`logo=1`). OBS learns from the feed it already
+  // polls whether there is one, and which; a signed-in page asks the session's
+  // route — and neither asks anything unless the address wants the logo.
+  const { data: logoInfo } = useQuery({
+    queryKey: ['overlayLogoInfo'],
+    queryFn: api.getOverlayLogoInfo,
+    enabled: config.showLogo && !kiosk,
+    retry: false,
+  });
+  const logoRevision = config.showLogo ? (kiosk ? overlay?.logo?.revision : logoInfo?.revision) ?? null : null;
+  const logo = useOverlayLogo(logoRevision, kiosk ? token : null);
 
   // Normalize the two sources into the shape the render below reads. Memoized
   // because the title effect depends on `printer` — a fresh object literal each
@@ -612,6 +630,7 @@ export function StreamOverlayPage() {
         size={config.size}
         transparency={config.transparency}
         progressFill={config.progressFill}
+        logo={logo}
         camera={showsCamera ? {
           attach: attachStreamImage,
           generation: streamGeneration,
@@ -639,6 +658,21 @@ export function StreamOverlayPage() {
     );
   }
 
+  const brandMark = (className?: string) => (
+    <a
+      href="https://github.com/kainpl/bamdude"
+      target="_blank"
+      rel="noopener noreferrer"
+      className={className}
+    >
+      <img
+        src="/img/brand/lockup-compact-on-dark.svg"
+        alt="BamDude"
+        className={`${sizes.logoHeight} w-auto object-contain drop-shadow-lg hover:scale-105 transition-transform`}
+      />
+    </a>
+  );
+
   return framed(
     <div ref={sceneRef} className={`${config.layout ? 'h-full' : 'min-h-screen'} bg-black relative overflow-hidden`}>
       {/* Camera feed - fullscreen background (optional) */}
@@ -659,19 +693,21 @@ export function StreamOverlayPage() {
         </div>
       )}
 
-      {/* BamDude logo - top right */}
-      <a
-        href="https://github.com/kainpl/bamdude"
-        target="_blank"
-        rel="noopener noreferrer"
-        className="absolute top-4 right-4 z-10"
-      >
-        <img
-          src="/img/brand/lockup-compact-on-dark.svg"
-          alt="BamDude"
-          className={`${sizes.logoHeight} w-auto object-contain drop-shadow-lg hover:scale-105 transition-transform`}
-        />
-      </a>
+      {/* BamDude logo - top right. With `logo=1` the installation's logo sits
+          above it in the same corner, off the middle of the picture; without
+          one the corner is exactly as it always was. */}
+      {logo ? (
+        <div className="absolute top-4 right-4 z-10 flex flex-col items-end gap-2">
+          <img
+            data-overlay-logo=""
+            src={logo.src}
+            alt=""
+            onError={logo.onError}
+            className={`${sizes.logoHeight} w-auto max-w-[40vw] object-contain object-right drop-shadow-lg`}
+          />
+          {brandMark()}
+        </div>
+      ) : brandMark('absolute top-4 right-4 z-10')}
 
       {/* Status overlay - bottom */}
       <div className="absolute bottom-0 left-0 right-0 z-10 bg-gradient-to-t from-black/80 via-black/60 to-transparent">

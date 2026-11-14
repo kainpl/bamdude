@@ -59,6 +59,8 @@ interface StreamOverlayV2Props {
   remaining: string | null;
   finish: string | null;
   temperatures: OverlayV2Reading[];
+  /** The installation's logo (`logo=1`), ready to draw, or null. */
+  logo?: { src: string; onError: () => void } | null;
 }
 
 // Without `?layout=` the shape of the browser source decides the arrangement.
@@ -110,6 +112,17 @@ export function StreamOverlayV2(props: StreamOverlayV2Props) {
     rootStyle['--so2-unit'] = `${Math.min(width, height) / 100}px`;
   }
 
+  const brand = (
+    <a
+      className="so2__brand"
+      href="https://github.com/kainpl/bamdude"
+      target="_blank"
+      rel="noopener noreferrer"
+    >
+      <img src="/img/brand/lockup-compact-on-dark.svg" alt="BamDude" />
+    </a>
+  );
+
   return (
     <div
       className="so2"
@@ -130,14 +143,14 @@ export function StreamOverlayV2(props: StreamOverlayV2Props) {
             </div>
           </div>
         )}
-        <a
-          className="so2__brand"
-          href="https://github.com/kainpl/bamdude"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <img src="/img/brand/lockup-compact-on-dark.svg" alt="BamDude" />
-        </a>
+        {props.logo ? (
+          // The installation's logo sits with the mark in the header corner,
+          // off the picture's middle; without one the header is as it always was.
+          <div className="so2__brands">
+            <img className="so2__logo" data-overlay-logo="" src={props.logo.src} alt="" onError={props.logo.onError} />
+            {brand}
+          </div>
+        ) : brand}
       </header>
 
       {camera && (
