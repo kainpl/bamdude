@@ -2,9 +2,11 @@
 
 The schema foundation records settlement and return facts separately from print
 history. It does not enable automatic retry or publish a settlement receipt.
-The runtime publisher, final return transaction, repeatability guards and UI are
-separate implementation stages; this foundation must not be released as the
-completed feature.
+The runtime publisher, final return transaction and UI are separate implementation
+stages; this foundation must not be released as the completed feature. The shared
+repeatability guard refuses any non-null returned marker, including a missing or
+malformed receipt reference. Plate ownership remains available to Clear; Repeat
+button projections use the same policy as the final rearm writers.
 
 `AutoQueueItem.failed_return_count` belongs to the logical job. Its nullable
 `failed_return_proof` preserves dispatch evidence when an eventual guarded
@@ -14,8 +16,9 @@ no proof. A manual transfer of the same job must retain both facts.
 `PrintQueueItem.returned_receipt_identity` is separate from `error_code` and
 archive failure details. A return must retain the failed printer row, archive,
 per-print costs and plate/SWAP evidence. These columns do not authorize reuse of
-the failed row; consumers must use the shared repeatability guard when the
-remaining stages are implemented.
+the failed row. Retry/Clone/Repeat and bulk retry use the shared repeatability
+guard. The irreversible AutoQueue proof or a positive count also makes source
+declaration refresh ineligible after assignment fields have been cleared.
 
 `AutoQueueReturn` stores immutable job, execution-archive, AutoQueue, printer and
 owner identities, accepted-source basis and dispatch evidence. Numeric ids are

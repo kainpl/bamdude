@@ -4,7 +4,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 
 from backend.app.models.archive import PrintArchive
 from backend.app.models.print_queue import PrintQueueItem
@@ -26,18 +26,48 @@ class StaleClaimRepeat(queue_sources.QueueSourceError):
         super().__init__()
 
 
-async def require_repeatable(db, row, *, whole_batch=False):
+class ReturnedJobRepeat(StaleClaimRepeat):
+    reason = "already_returned_to_auto_queue"
+
+
+def repeat_refusal_code(row) -> str | None:
     if row.error_code in STALE_CLAIM_CODES:
+        return "stale_execution_claim"
+    # Any marker, including a broken/empty reference, fails closed. A missing
+    # receipt must never make a retired execution runnable again.
+    if getattr(row, "returned_receipt_identity", None) is not None:
+        return "already_returned_to_auto_queue"
+    return None
+
+
+def repeatable_predicate():
+    """SQL counterpart for batch guards and button projections; not plate ownership."""
+    return and_(
+        PrintQueueItem.returned_receipt_identity.is_(None),
+        or_(PrintQueueItem.error_code.is_(None), PrintQueueItem.error_code.not_in(STALE_CLAIM_CODES)),
+    )
+
+
+def _require_repeatable_row(row):
+    code = repeat_refusal_code(row)
+    if code == "stale_execution_claim":
         raise StaleClaimRepeat(row.archive_id)
+    if code == "already_returned_to_auto_queue":
+        raise ReturnedJobRepeat(row.archive_id)
+
+
+async def require_repeatable(db, row, *, whole_batch=False):
+    _require_repeatable_row(row)
     if whole_batch and row.batch_id:
         stale = await db.scalar(
             select(PrintQueueItem)
-            .where(PrintQueueItem.batch_id == row.batch_id, PrintQueueItem.error_code.in_(STALE_CLAIM_CODES))
+            .where(PrintQueueItem.batch_id == row.batch_id, ~repeatable_predicate())
+            .execution_options(populate_existing=True)
             .order_by(PrintQueueItem.id)
             .limit(1)
         )
         if stale is not None:
-            raise StaleClaimRepeat(stale.archive_id)
+            _require_repeatable_row(stale)
 
 
 class ExecutionChanged(ValueError):

@@ -53,13 +53,14 @@ async def retry_block(db, queue_id, item_ids, *, actor, granted_scope, key_hash,
                     .execution_options(populate_existing=True)
                 )
             }
-            from backend.app.services.print_execution import STALE_CLAIM_CODES
+            from backend.app.services.print_execution import require_repeatable
+            from backend.app.services.queue_source_capture import refusal
 
-            stale = next((row for row in rows.values() if row.error_code in STALE_CLAIM_CODES), None)
-            if stale is not None:
-                from backend.app.services.filament_intake import routing_detail
-
-                raise HTTPException(409, routing_detail("stale_execution_claim", archive=stale.archive_id))
+            try:
+                for row in rows.values():
+                    await require_repeatable(db, row)
+            except queue_sources.QueueSourceError as exc:
+                raise refusal(exc) from exc
             # Foreign rows are never locked under this lane. The result exposes
             # no foreign state, and cannot mutate or steal a different queue's job.
             blobs = {

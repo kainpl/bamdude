@@ -8,6 +8,7 @@ from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.printer import Printer
 from backend.app.models.printer_queue import PrinterQueue
 from backend.app.services.plate_hold import waiting_row_predicate
+from backend.app.services.print_execution import repeatable_predicate
 
 
 async def current_archive_ids(db: AsyncSession, subtasks: dict[int, str | None]) -> dict[int, int | None]:
@@ -45,7 +46,7 @@ async def printers_with_waiting_rows(db: AsyncSession, printer_ids: list[int]) -
         select(PrinterQueue.printer_id)
         .join(PrintQueueItem, PrintQueueItem.queue_id == PrinterQueue.id)
         .join(Printer, PrinterQueue.printer_id == Printer.id)
-        .where(PrinterQueue.printer_id.in_(printer_ids), waiting_row_predicate())
+        .where(PrinterQueue.printer_id.in_(printer_ids), waiting_row_predicate(), repeatable_predicate())
         .distinct()
     )
     return set(rows)

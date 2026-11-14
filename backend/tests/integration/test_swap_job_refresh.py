@@ -142,6 +142,31 @@ async def audits(factory):
         )
 
 
+@pytest.mark.parametrize("proof,count", [({"receipt_identity": "retired"}, 1), ({}, 0), (None, 1)])
+async def test_returned_auto_proof_refuses_refresh_after_assignment_fields_cleared(factory, tmp_path, proof, count):
+    user = await a_user(factory)
+    archive_id = await a_declared_archive(factory, tmp_path, user)
+    auto_id = await a_job(
+        factory,
+        archive_id,
+        kind="auto_queue",
+        failed_return_proof=proof,
+        failed_return_count=count,
+        assigned_to_item_id=None,
+        assigned_at=None,
+    )
+    seen = await listing(archive_id, user)
+    entry = by_id(seen, "auto_queue", auto_id)
+    assert (entry["eligible"], entry["reason"]) == (False, "not_before_dispatch")
+    before = await row(factory, "auto_queue", auto_id)
+    with pytest.raises(HTTPException) as error:
+        await apply(archive_id, user, [ref(entry)], seen)
+    assert error.value.status_code == 409
+    after = await row(factory, "auto_queue", auto_id)
+    assert after.source_snapshot == before.source_snapshot
+    assert after.failed_return_proof == proof and after.failed_return_count == count
+
+
 # --- what a refresh changes -------------------------------------------------------------------------------------------
 
 
