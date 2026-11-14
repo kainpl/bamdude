@@ -9,5 +9,3 @@ Order-plan Queue and Queue entire plan capture the effective Boolean in each new
 The wire setting is `default_force_color_match` in GET/PUT settings and GET UI preferences. It is an ordinary non-secret Boolean, included in portable settings restore. Explicit null is not an instruction to clear it. No schema migration is required for the existing key/value settings store.
 
 This is a default for these two composition paths, not a global dispatch override. Direct queue/AutoQueue API requests keep their existing omitted-field default and honor explicit `force_color_match: false` or `true`. Virtual printers keep their separately configured `queue_force_color_match` policy. Integrations that require exact colours should send their own explicit choice.
-
-These changes are in development and are not included in stable 0.7.3.
