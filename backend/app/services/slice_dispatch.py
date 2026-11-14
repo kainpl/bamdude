@@ -33,7 +33,7 @@ SliceJobStatus = Literal["pending", "running", "completed", "failed"]
 @dataclass(slots=True)
 class SliceJob:
     id: int
-    kind: Literal["library_file", "archive"]
+    kind: Literal["library_file", "archive", "assembly"]
     source_id: int
     source_name: str
     # JWT user id that started the job, for per-row scoping of the polling
@@ -78,7 +78,7 @@ class SliceDispatchService:
     async def enqueue(
         self,
         *,
-        kind: Literal["library_file", "archive"],
+        kind: Literal["library_file", "archive", "assembly"],
         source_id: int,
         source_name: str,
         owner_id: int | None = None,
@@ -111,6 +111,8 @@ class SliceDispatchService:
 
         task = asyncio.create_task(self._run_job(job, run), name=f"slice-job-{job.id}")
         self._tasks[job.id] = task
+        # a task cancelled before its first step never reaches _run_job's own cleanup
+        task.add_done_callback(lambda _task, job_id=job.id: self._tasks.pop(job_id, None))
         return job
 
     async def _run_job(
@@ -124,6 +126,10 @@ class SliceDispatchService:
             result = await run(job.id)
             job.result = result
             job.status = "completed"
+        except asyncio.CancelledError:
+            # a cancel (the route's, a restore's, shutdown's) is a terminal state too, never a job left "running"
+            self._mark_canceled(job)
+            raise
         except _SliceJobError as exc:
             # Caller-controlled HTTP error — propagate status + detail.
             job.status = "failed"
@@ -140,6 +146,27 @@ class SliceDispatchService:
 
     def get(self, job_id: int) -> SliceJob | None:
         return self._jobs.get(job_id)
+
+    @staticmethod
+    def _mark_canceled(job: SliceJob) -> None:
+        job.status = "failed"
+        job.error_status = 499
+        job.error_detail = "Canceled"
+
+    def cancel(self, job_id: int) -> bool:
+        """Stop a pending or running job. False when there is nothing left to stop.
+
+        The job ends ``failed`` with status 499; its task is cancelled, and whatever it owns (an assembly's
+        packing child) is ended by the task's own cancellation path.
+        """
+        job = self._jobs.get(job_id)
+        task = self._tasks.get(job_id)
+        if job is None or task is None or task.done() or job.status not in ("pending", "running"):
+            return False
+        self._mark_canceled(job)  # a task cancelled before its first step never runs its handler
+        job.completed_at = datetime.now(timezone.utc)
+        task.cancel()
+        return True
 
     def set_progress(self, job_id: int, progress: dict[str, Any] | None) -> None:
         """Update the live-progress snapshot for a running job.

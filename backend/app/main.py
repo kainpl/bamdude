@@ -49,6 +49,7 @@ from backend.app.api.routes import (
     label_templates,
     labels,
     library,
+    library_assembly,
     library_notes,
     library_tags,
     library_thumbnail_jobs,
@@ -13197,6 +13198,7 @@ app.include_router(local_presets.router, prefix=app_settings.api_prefix)
 app.include_router(slicer_presets.router, prefix=app_settings.api_prefix)
 app.include_router(slicer_pipelines.router, prefix=app_settings.api_prefix)
 app.include_router(slice_jobs.router, prefix=app_settings.api_prefix)
+app.include_router(library_assembly.router, prefix=app_settings.api_prefix)
 app.include_router(makerworld.router, prefix=app_settings.api_prefix)
 app.include_router(smart_plugs.router, prefix=app_settings.api_prefix)
 app.include_router(zigbee.router, prefix=app_settings.api_prefix)

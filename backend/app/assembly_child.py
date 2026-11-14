@@ -155,19 +155,21 @@ def _pack_printer(root: Path, job: dict, printer: dict, index: int, meshes: list
         if now - last[0] < _PROGRESS_SECONDS:
             return
         last[0] = now
-        _write_json(
-            root / "progress.json",
-            {
-                "printer": printer["key"],
-                "printer_index": index,
-                "printer_count": len(job["printers"]),
-                "run": p.run,
-                "runs": p.runs,
-                "placed": p.placed,
-                "total": p.total,
-                "fill_part": p.fill_part,
-            },
-        )
+        payload = {
+            "printer": printer["key"],
+            "printer_index": index,
+            "printer_count": len(job["printers"]),
+            "run": p.run,
+            "runs": p.runs,
+            "placed": p.placed,
+            "total": p.total,
+            "fill_part": p.fill_part,
+        }
+        try:
+            _write_json(root / "progress.json", payload)
+        except OSError:
+            # progress is a courtesy: on Windows the reader may hold the file open at the moment it is replaced
+            pass
 
     def cancel() -> bool:
         if deadline_ns is not None and time.monotonic_ns() >= deadline_ns:

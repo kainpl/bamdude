@@ -253,3 +253,21 @@ def test_progress_is_written_while_packing(tmp_path, monkeypatch):
     run(stage(tmp_path, [("lid", 6)], [_printer("p0", 256)]))
     progress = json.loads((tmp_path / "progress.json").read_text())
     assert progress["printer"] == "p0" and progress["printer_count"] == 1 and progress["total"] == 6
+
+
+def test_a_progress_file_that_cannot_be_replaced_does_not_fail_the_job(tmp_path, monkeypatch):
+    """On Windows the service may hold progress.json open for a read at the very moment it is replaced."""
+    from backend.app import assembly_child
+
+    real, refused = assembly_child._write_json, []
+
+    def write(path, payload):
+        if path.name == "progress.json":
+            refused.append(path)
+            raise PermissionError("in use by another process")
+        real(path, payload)
+
+    monkeypatch.setattr(assembly_child, "_write_json", write)
+    monkeypatch.setattr(assembly_child, "_PROGRESS_SECONDS", 0.0)
+    result = run(stage(tmp_path, [("frame", 1), ("lid", 3)], [_printer("p0", 256)]))
+    assert refused and result["outcome"] == "ok" and result["printers"][0]["status"] == "ok"
