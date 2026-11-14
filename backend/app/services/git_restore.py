@@ -332,6 +332,7 @@ _RESTORABLE_SETTING_KEYS = frozenset(
         "auto_queue_rebalance_models",
         "auto_queue_compatible_models",
         "auto_order_for_batches",
+        "default_force_color_match",
         "preheat_enabled",
         "preheat_filament_targets",
         "preheat_max_wait_seconds",

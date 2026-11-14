@@ -548,6 +548,7 @@ async def drive_start_with_manager(db_session, test_engine, tmp_path, monkeypatc
 
     from backend.app.core.config import settings as app_settings
     from backend.app.main import on_print_start
+    from backend.app.services.printer_manager import PrinterManager
 
     monkeypatch.setattr(app_settings, "base_dir", tmp_path)
     monkeypatch.setattr(app_settings, "archive_dir", tmp_path / "archive")
@@ -555,7 +556,7 @@ async def drive_start_with_manager(db_session, test_engine, tmp_path, monkeypatc
     factory = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
     monkeypatch.setattr("backend.app.main.async_session", factory)
     monkeypatch.setattr("backend.app.core.database.async_session", factory)
-    manager = MagicMock()
+    manager = PrinterManager()
     ws = MagicMock()
     for attribute in ("send_print_start", "send_archive_created", "send_archive_updated", "broadcast"):
         setattr(ws, attribute, AsyncMock())
@@ -667,9 +668,12 @@ async def test_name_only_rebind_has_no_swap_authority(db_session, test_engine, t
     )
 
     bound = binding_of(manager, printer_id)
-    assert [row.id for row in rows] == [named.id]  # adopted by its name, as archiving always did
-    assert bound is not None and bound.archive_id == named.id
-    assert not origin_is_proven(bound)  # ...and that is all a name buys: no swap authority
+    assert [row.id for row in rows] == [named.id]
+    # The execution classifier now refuses an unproven start before even creating
+    # an observational binding. A name cannot prove which physical run is current.
+    assert bound is None and not origin_is_proven(bound)
+    assert manager._unproven_starts[printer_id]["reason"] == "execution difference unproven"
+    assert not any(key[0] == printer_id for key in _active_prints)
     assert sc.archive_fact(rows[0]) == sc.ArchiveFact(True, recorded=True)
 
 
@@ -684,8 +688,8 @@ async def test_provisional_carrier_does_not_overwrite_retained_twin(
     monkeypatch.setattr(settings, "base_dir", tmp_path)
     (tmp_path / "archive" / "1").mkdir(parents=True, exist_ok=True)
     twin_file = a_sliced_file(tmp_path / "archive" / "1" / "shelf.gcode.3mf")
-    # No start and no estimate (an earlier adoption whose file never parsed), so the stale-row cleanup leaves it
-    # for the hash to find.
+    # No start and no estimate (an earlier adoption whose file never parsed).
+    # Equal file bytes still do not prove which physical run is on the printer.
     twin = await a_running_archive(
         db_session, printer.id, twin_file, fact=True, print_name="shelf", started_at=None, print_time_seconds=None
     )
@@ -704,11 +708,13 @@ async def test_provisional_carrier_does_not_overwrite_retained_twin(
         download_result=(downloaded, "other.swap.gcode.3mf"),
     )
 
-    assert [row.id for row in rows] == [twin.id]  # the provisional row was withdrawn
+    assert [row.id for row in rows] == [twin.id]  # refusal, without creating or rewriting an execution
     assert sc.archive_fact(rows[0]) == sc.ArchiveFact(True, recorded=True)  # its own record, not the provisional's
+    assert rows[0].started_at is None and rows[0].print_time_seconds is None
     bound = binding_of(manager, printer_id)
-    assert bound is not None and bound.archive_id == twin.id
-    assert not origin_is_proven(bound)  # a hash twin is no proof of the run
+    assert bound is None and not origin_is_proven(bound)
+    assert manager._unproven_starts[printer_id]["reason"] == "execution difference unproven"
+    assert not any(key[0] == printer_id for key in _active_prints)
 
 
 async def test_a_new_external_start_is_a_proven_origin(db_session, test_engine, tmp_path, monkeypatch, printer_factory):
@@ -746,11 +752,12 @@ def test_only_the_named_origins_are_proven():
     assert not origin_is_proven(None)
 
 
-async def test_our_expected_dispatch_start_is_a_proven_origin(
-    db_session, test_engine, tmp_path, monkeypatch, printer_factory
+@pytest.mark.parametrize("identified", [False, True], ids=["alias-only-refused", "device-id-proven"])
+async def test_our_expected_dispatch_start_needs_execution_evidence(
+    db_session, test_engine, tmp_path, monkeypatch, printer_factory, identified
 ):
-    """The dispatcher registered the print; the start binds to it as ours even when no prepared binding survived."""
-    from backend.app.main import _active_prints, _expected_prints
+    """Without a prepared binding, the device ID proves the execution; an expected filename alone cannot."""
+    from backend.app.main import _active_prints, _expected_prints, register_expected_print, withdraw_expected_print
     from backend.app.services.print_run_binding import origin_is_proven
 
     printer = await an_archiving_printer(db_session, printer_factory)
@@ -758,11 +765,15 @@ async def test_our_expected_dispatch_start_is_a_proven_origin(
     monkeypatch.setattr(settings, "base_dir", tmp_path)
     (tmp_path / "archive" / "1").mkdir(parents=True, exist_ok=True)
     ours = await a_running_archive(
-        db_session, printer_id, a_sliced_file(tmp_path / "archive" / "1" / "lamp.gcode.3mf"), fact=False
+        db_session,
+        printer_id,
+        a_sliced_file(tmp_path / "archive" / "1" / "lamp.gcode.3mf"),
+        fact=False,
+        subtask_id="777" if identified else None,
     )
     _active_prints.clear()
     _expected_prints.clear()
-    _expected_prints[(printer_id, "lamp.gcode.3mf")] = ours.id
+    register_expected_print(printer_id, "lamp.gcode.3mf", ours.id, archive_identity=ours.recovery_identity)
     try:
         rows, manager = await drive_start_with_manager(
             db_session,
@@ -770,15 +781,20 @@ async def test_our_expected_dispatch_start_is_a_proven_origin(
             tmp_path,
             monkeypatch,
             printer,
-            {"filename": "/sdcard/lamp.gcode.3mf", "subtask_name": "lamp", "subtask_id": ""},
+            {"filename": "/sdcard/lamp.gcode.3mf", "subtask_name": "lamp", "subtask_id": "777" if identified else ""},
         )
     finally:
-        _expected_prints.clear()
+        withdraw_expected_print(printer_id, "lamp.gcode.3mf", ours.id)
 
     bound = binding_of(manager, printer_id)
     assert [row.id for row in rows] == [ours.id]
-    assert bound is not None and bound.archive_id == ours.id
-    assert origin_is_proven(bound)
+    if identified:
+        assert bound is not None and bound.archive_id == ours.id
+        assert origin_is_proven(bound)
+    else:
+        assert bound is None
+        assert manager._unproven_starts[printer_id]["reason"] == "execution difference unproven"
+    assert sc.archive_fact(rows[0]) == sc.ArchiveFact(False, recorded=True)
 
 
 # --- metadata merges after an await (§7: energy, reconciliation) -----------------------------------------------------

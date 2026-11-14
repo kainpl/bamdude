@@ -679,6 +679,15 @@ async def clear_persisted_session_of(db: AsyncSession, printer_id: int, archive_
     return bool(result.rowcount)
 
 
+def discard_active_session_of(printer_id: int, archive_identity: str | None) -> bool:
+    """Forget only this execution's in-memory session, without accounting or touching durable context."""
+    session = _active_sessions.get(printer_id)
+    if not archive_identity or session is None or session.archive_identity != archive_identity:
+        return False
+    del _active_sessions[printer_id]
+    return True
+
+
 async def discard_session(db: AsyncSession, printer_id: int) -> None:
     """Forget a printer's print-start context, in memory and on disk.
 

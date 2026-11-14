@@ -1453,8 +1453,15 @@ async def _apply_rows(session_factory, payload, actor, actor_label, recheck):
                 if close_print and (not latest["idle"] or latest["observation_unproven"]):
                     raise ValueError("recovery_changed")
                 await db.commit()
-                if release_context:
-                    _release_closed_print_context(key[0], archive_id, f, pin[1], nonce)
+                if close_print:
+                    # The audit is already durable. This observation belongs only to this response;
+                    # a replay must not claim that an old process-memory release happened again.
+                    result = {
+                        **result,
+                        "context_released": _release_closed_print_context(
+                            key[0], archive_id, f, pin[1] if pin else None, nonce
+                        ),
+                    }
             except IntegrityError:
                 await db.rollback()
                 async with session_factory() as retry:
@@ -1476,20 +1483,33 @@ async def _apply_rows(session_factory, payload, actor, actor_label, recheck):
 
 def _release_closed_print_context(printer_id, archive_id, f, expected, nonce):
     """After the close commits, clear only the context the operator previewed, synchronously."""
-    from backend.app.services import runtime_context_release
+    from backend.app.services import runtime_context_release, usage_tracker
     from backend.app.services.printer_manager import printer_manager
 
-    latest, runtime = live_snapshot(printer_id), repair_runtime_snapshot(printer_id, archive_id)
-    if (
-        latest["idle"]
-        and not latest["observation_unproven"]
-        and previews.digest(latest["identity"]) == previews.digest(f.live["identity"])
-        and previews.digest(runtime) == previews.digest(f.repair_runtime)
-        and runtime_context_release.release(printer_manager, expected)
-    ):
-        return
+    try:
+        latest, runtime = live_snapshot(printer_id), repair_runtime_snapshot(printer_id, archive_id)
+        if (
+            latest["idle"]
+            and not latest["observation_unproven"]
+            and latest["mode"] == f.live["mode"]
+            and previews.digest(latest["identity"]) == previews.digest(f.live["identity"])
+            and previews.digest(runtime) == previews.digest(f.repair_runtime)
+            and (expected is None or runtime_context_release.release(printer_manager, expected))
+        ):
+            # Same loop turn and proof as the RAM release: no completion, accounting, DB write
+            # or await. An unstamped session or a successor's session remains with its owner.
+            usage_tracker.discard_active_session_of(printer_id, f.archive["recovery_identity"])
+            return True
+    except Exception as error:
+        logger.warning(
+            "operator recovery committed; context release unavailable action=%s error_type=%s",
+            nonce,
+            type(error).__name__,
+        )
+        return False
     # Leave a changed or successor context alone. A held terminal context is visible in diagnostics.
     logger.info("operator recovery committed; runtime context changed or unavailable action=%s", nonce)
+    return False
 
 
 # --- The in-memory repair (spec printer-runtime-stall r3 R6, R8) -------------------------------------------------

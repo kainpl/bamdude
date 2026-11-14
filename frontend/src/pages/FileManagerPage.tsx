@@ -114,6 +114,7 @@ import { SkipObjectsIcon } from '../components/SkipObjectsModal';
 import { getTagStyle, is3mf, isPrintable, isSliceable, isMultiPlate } from '../lib/fileTags';
 import { figuresAt, formatMaterials, plateAt, plateSlices, plateThumbnailUrl, step } from '../lib/plateBrowsing';
 import { PlanFromFilesModal } from '../components/library/PlanFromFilesModal';
+import { AssembleProjectModal, type AssembleMode } from '../components/library/AssembleProjectModal';
 import { desktopSlicerAccepts, isApiSliceableFileType, openInSlicer, type SlicerType } from '../utils/slicer';
 import { LibraryTagsModal } from '../components/LibraryTagsModal';
 import { BulkTagsPickerModal } from '../components/BulkTagsPickerModal';
@@ -742,6 +743,7 @@ interface FileCardProps {
   onPreview3d?: (file: LibraryFileListItem) => void;
   onRename?: (file: LibraryFileListItem) => void;
   onSwapDeclaration?: (file: LibraryFileListItem) => void;
+  onRelayout?: (file: LibraryFileListItem) => void;
   onLink?: (file: LibraryFileListItem) => void;
   onGenerateThumbnail?: (file: LibraryFileListItem) => void;
   /** Cancel this file's STEP thumbnail job — offered in the menu while one runs. */
@@ -859,7 +861,7 @@ function ThumbnailMenuEntry({ file, t, hasPermission, canModify, onGenerate, onC
   );
 }
 
-function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedule, onAddToOrder, onSlice, onOpenInSlicer, useSlicerApi, desktopSlicer, onPreview3d, onModelCard, onDownload, onRename, onSwapDeclaration, onGenerateThumbnail, onCancelThumbnail, thumbnailJobActive, onMove, onTags, onDelete }: {
+function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedule, onAddToOrder, onSlice, onRelayout, onOpenInSlicer, useSlicerApi, desktopSlicer, onPreview3d, onModelCard, onDownload, onRename, onSwapDeclaration, onGenerateThumbnail, onCancelThumbnail, thumbnailJobActive, onMove, onTags, onDelete }: {
   file: LibraryFileListItem;
   t: TFunction;
   hasPermission: (permission: Permission) => boolean;
@@ -877,6 +879,7 @@ function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedul
   onRename: (f: LibraryFileListItem) => void;
   /** The file's swap declaration for future prints (swap-source-declaration spec r3 §7). */
   onSwapDeclaration?: (f: LibraryFileListItem) => void;
+  onRelayout?: (f: LibraryFileListItem) => void;
   onGenerateThumbnail: (f: LibraryFileListItem) => void;
   onCancelThumbnail?: (f: LibraryFileListItem) => void;
   thumbnailJobActive?: boolean;
@@ -987,6 +990,15 @@ function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedul
               >
                 {useSlicerApi ? <Cog className="w-3.5 h-3.5" /> : <ExternalLink className="w-3.5 h-3.5" />}
                 {useSlicerApi ? t('slice.action') : t('modelViewer.openInSlicer')}
+              </button>
+            )}
+            {file.can_relayout && onRelayout && hasPermission('library:upload') && (
+              <button
+                className="w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 text-white hover:bg-bambu-dark"
+                onClick={() => { onRelayout(file); closeMenu(); }}
+              >
+                <LayoutGrid className="w-3.5 h-3.5" />
+                {t('fileManager.assemble.relayoutAction')}
               </button>
             )}
             {(file.file_type === '3mf' || file.file_type === 'gcode' || file.file_type === 'stl' || file.file_type === 'obj') && (
@@ -1116,7 +1128,7 @@ function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedul
   );
 }
 
-function FileCard({ file, isSelected, onSelect, onOpenArchives, onDelete, onDownload, onAddToQueue, onPrint, onSlice, onOpenInSlicer, useSlicerApi, desktopSlicer, onPreview3d, onModelCard, onRename, onSwapDeclaration, onLink, onGenerateThumbnail, onCancelThumbnail, thumbnailJobActive, onPlateGallery, onAddToOrder, onMove, onTags, onTagClick, thumbnailVersion, isRegeneratingThumbnail, hasPermission, canModify, authEnabled, timeFormat, dateFormat, t }: FileCardProps) {
+function FileCard({ file, isSelected, onSelect, onOpenArchives, onDelete, onDownload, onAddToQueue, onPrint, onSlice, onRelayout, onOpenInSlicer, useSlicerApi, desktopSlicer, onPreview3d, onModelCard, onRename, onSwapDeclaration, onLink, onGenerateThumbnail, onCancelThumbnail, thumbnailJobActive, onPlateGallery, onAddToOrder, onMove, onTags, onTagClick, thumbnailVersion, isRegeneratingThumbnail, hasPermission, canModify, authEnabled, timeFormat, dateFormat, t }: FileCardProps) {
   // ⚠️ The two modes need different permissions: slicing through the sidecar
   // writes a new library file, while opening in a desktop slicer is a download.
   const sliceDisabled = useSlicerApi ? !hasPermission('library:upload') : !hasPermission('library:read');
@@ -1480,6 +1492,15 @@ function FileCard({ file, isSelected, onSelect, onOpenArchives, onDelete, onDown
                   {useSlicerApi ? t('slice.action') : t('modelViewer.openInSlicer')}
                 </button>
               )}
+              {file.can_relayout && onRelayout && hasPermission('library:upload') && (
+                <button
+                  className="w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 text-white hover:bg-bambu-dark"
+                  onClick={() => { onRelayout(file); closeActions(); }}
+                >
+                  <LayoutGrid className="w-3.5 h-3.5" />
+                  {t('fileManager.assemble.relayoutAction')}
+                </button>
+              )}
               {onPreview3d && (file.file_type === '3mf' || file.file_type === 'gcode' || file.file_type === 'stl' || file.file_type === 'obj') && (
                 <button
                   className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${
@@ -1732,6 +1753,7 @@ export function FileManagerPage() {
   // The library wizard's file set — «Розрахувати». Just the ids: the modal
   // re-fetches everything it needs about them from `parts-preview`.
   const [planFiles, setPlanFiles] = useState<number[] | null>(null);
+  const [assembleMode, setAssembleMode] = useState<AssembleMode | null>(null);
   const [sliceFile, setSliceFile] = useState<LibraryFileListItem | null>(null);
   const [renameItem, setRenameItem] = useState<{ type: 'file' | 'folder'; id: number; name: string } | null>(null);
   const [swapDeclarationFile, setSwapDeclarationFile] = useState<LibraryFileListItem | null>(null);
@@ -2574,6 +2596,17 @@ export function FileManagerPage() {
     [files, selectedFiles],
   );
 
+  // "Assemble project" lays out raw models: every selected file, in the order shown. One file that is not
+  // a model it can read (STL / OBJ, or STEP converted on the server) disables the button, with the reason in its title.
+  const selectedForAssembly = useMemo(
+    () => (files ?? []).filter((f) => selectedFiles.includes(f.id)),
+    [files, selectedFiles],
+  );
+  const notAssemblable = selectedForAssembly.filter(
+    (f) => !['stl', 'obj', 'step', 'stp'].includes((f.file_type ?? '').toLowerCase()),
+  );
+  const assemblyBlocked = notAssemblable.length > 0;
+
   // Schedule one file from its own ⋮ menu — a run over one file, which leaves
   // the selection alone like Move and Tags do from there. Single-plate it looks
   // exactly as the dialog always did; multi-plate it opens with every plate
@@ -2770,6 +2803,7 @@ export function FileManagerPage() {
       }}
       onPrint={setPrintFile}
       onSlice={setSliceFile}
+      onRelayout={(f) => setAssembleMode({ kind: 'relayout', fileId: f.id, filename: f.filename })}
       onOpenInSlicer={handleOpenInSlicer}
       useSlicerApi={settings?.use_slicer_api ?? false}
       desktopSlicer={preferredSlicer}
@@ -3615,6 +3649,22 @@ export function FileManagerPage() {
                         <span className="sr-only sm:not-sr-only">{t('fileManager.computeOrder')}</span>
                       </Button>
                     )}
+                    {selectedForAssembly.length > 0 && hasPermission('library:upload') && (
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        onClick={() => setAssembleMode({ kind: 'new', files: selectedForAssembly })}
+                        disabled={assemblyBlocked}
+                        title={
+                          assemblyBlocked
+                            ? `${t('fileManager.assemble.onlyMeshes')}: ${notAssemblable.map((f) => f.filename).join(', ')}`
+                            : t('fileManager.assemble.hint')
+                        }
+                      >
+                        <LayoutGrid className="w-4 h-4 sm:mr-1" />
+                        <span className="sr-only sm:not-sr-only">{t('fileManager.assemble.action')}</span>
+                      </Button>
+                    )}
                     <Button
                       variant="secondary"
                       size="sm"
@@ -4060,6 +4110,7 @@ export function FileManagerPage() {
                         onSchedule={scheduleOne}
                         onAddToOrder={openAddToOrder}
                         onSlice={setSliceFile}
+                        onRelayout={(f) => setAssembleMode({ kind: 'relayout', fileId: f.id, filename: f.filename })}
                         onOpenInSlicer={handleOpenInSlicer}
                         useSlicerApi={settings?.use_slicer_api ?? false}
                         desktopSlicer={preferredSlicer}
@@ -4373,6 +4424,17 @@ export function FileManagerPage() {
       )}
 
       {planFiles && <PlanFromFilesModal fileIds={planFiles} onClose={() => setPlanFiles(null)} />}
+
+      {assembleMode && (
+        <AssembleProjectModal
+          mode={assembleMode}
+          onClose={() => setAssembleMode(null)}
+          onOpenFile={(id) => {
+            setSelectedFiles([id]);
+            setAssembleMode(null);
+          }}
+        />
+      )}
 
       {modelCardFile && (
         <ModelCardModal

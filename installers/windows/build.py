@@ -307,7 +307,17 @@ def verify_requirements(python_dir: Path) -> None:
     this runs on every build, not only after a pip install.
     """
     py = python_dir / "python.exe"
-    names = ["fastapi", "sqlalchemy", "aiogram", "uvicorn", "asyncpg", "embedded-postgres", "embedded-nats", "nats-py"]
+    names = [
+        "fastapi",
+        "sqlalchemy",
+        "aiogram",
+        "uvicorn",
+        "asyncpg",
+        "embedded-postgres",
+        "embedded-nats",
+        "nats-py",
+        "platenest",
+    ]
     script = (
         "import sys\n"
         "from importlib.metadata import version, PackageNotFoundError\n"

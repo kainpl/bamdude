@@ -184,7 +184,7 @@ beforeEach(() => {
     // Decision 6: the batch-order proposal reads this setting; every other test
     // in this file stays a single print or a batch a needy candidate already
     // covers, so turning it on file-wide changes nothing else here.
-    http.get('/api/v1/settings/', () =>
+    http.get('/api/v1/settings/ui-preferences', () =>
       HttpResponse.json({
         save_thumbnails: true,
         capture_finish_photo: true,

@@ -49,6 +49,14 @@ vi.mock('../../utils/queryInvalidation', async (importOriginal) => {
 import { render } from '../utils';
 import { PrintModal } from '../../components/PrintModal';
 
+// The dialog is visible before its initial defaults have been read. Start the
+// tested submission only once it is ready, including the direct-form case.
+const enabledButton = async (options: Parameters<typeof screen.findByRole>[1]) => {
+  const button = await screen.findByRole('button', options);
+  await waitFor(() => expect(button).toBeEnabled());
+  return button;
+};
+
 const printers = [
   { id: 1, name: 'A1-01', model: 'A1', ip_address: '192.168.1.101', enabled: true, is_active: true },
   { id: 2, name: 'A1-02', model: 'A1', ip_address: '192.168.1.102', enabled: true, is_active: true },
@@ -106,7 +114,7 @@ describe('the print dialog while the queue saves the file', () => {
     );
     mount();
 
-    fireEvent.click(await screen.findByRole('button', { name: /^add to queue$/i }));
+    fireEvent.click(await enabledButton({ name: /^add to queue$/i }));
 
     expect(await screen.findByText('Saving the file for the queue…')).toBeInTheDocument();
     // No progress API exists, so nothing on screen may imply one.
@@ -140,7 +148,7 @@ describe('the print dialog while the queue saves the file', () => {
     mount([1], [1, 2]);
 
     fireEvent.click(await screen.findByLabelText('Run next'));
-    fireEvent.click(screen.getByRole('button', { name: /^queue 2 plates$/i }));
+    fireEvent.click(await enabledButton({ name: /^queue 2 plates$/i }));
 
     await waitFor(() => expect(submitted).toBeDefined());
     expect(submitted!.items).toEqual([
@@ -158,7 +166,7 @@ describe('the print dialog while the queue saves the file', () => {
       }),
     );
     mount();
-    await screen.findByRole('button', { name: /^add to queue$/i });
+    await enabledButton({ name: /^add to queue$/i });
     // The modal is portalled into `body`, so the form is not under `container`.
     const form = document.querySelector('form')!;
 
@@ -179,7 +187,7 @@ describe('the print dialog while the queue saves the file', () => {
     );
     mount();
 
-    fireEvent.click(await screen.findByRole('button', { name: /^add to queue$/i }));
+    fireEvent.click(await enabledButton({ name: /^add to queue$/i }));
 
     await waitFor(() =>
       expect(mockShowToast).toHaveBeenCalledWith(
@@ -194,7 +202,7 @@ describe('the print dialog while the queue saves the file', () => {
     server.use(http.post('/api/v1/queue/', () => refusal('source_unreadable', 422)));
     mount();
 
-    fireEvent.click(await screen.findByRole('button', { name: /^add to queue$/i }));
+    fireEvent.click(await enabledButton({ name: /^add to queue$/i }));
 
     await waitFor(() =>
       expect(mockShowToast).toHaveBeenCalledWith(
@@ -217,7 +225,7 @@ describe('the print dialog while the queue saves the file', () => {
     );
     mount([1, 2, 3]);
 
-    fireEvent.click(await screen.findByRole('button', { name: /queue to 3 printers/i }));
+    fireEvent.click(await enabledButton({ name: /queue to 3 printers/i }));
 
     await waitFor(() =>
       expect(mockShowToast).toHaveBeenCalledWith(
@@ -246,7 +254,7 @@ describe('the print dialog while the queue saves the file', () => {
     );
     mount([1, 2, 3]);
 
-    fireEvent.click(await screen.findByRole('button', { name: /queue to 3 printers/i }));
+    fireEvent.click(await enabledButton({ name: /queue to 3 printers/i }));
 
     await waitFor(() => expect(mockShowToast).toHaveBeenCalled());
     const message = mockShowToast.mock.calls[0][0] as string;
@@ -270,11 +278,11 @@ describe('the print dialog while the queue saves the file', () => {
     );
     mount([1, 2, 3]);
 
-    fireEvent.click(await screen.findByRole('button', { name: /queue to 3 printers/i }));
+    fireEvent.click(await enabledButton({ name: /queue to 3 printers/i }));
     await waitFor(() => expect(mockShowToast).toHaveBeenCalled());
 
     // The button renamed itself: two printers are left ticked.
-    fireEvent.click(await screen.findByRole('button', { name: /queue to 2 printers/i }));
+    fireEvent.click(await enabledButton({ name: /queue to 2 printers/i }));
     await waitFor(() => expect(posts).toBe(5));
 
     expect(sentTo).toEqual([1, 2, 3, 2, 3]);
@@ -297,7 +305,7 @@ describe('the print dialog while the queue saves the file', () => {
     );
     mount([1, 2, 3]);
 
-    fireEvent.click(await screen.findByRole('button', { name: /queue to 3 printers/i }));
+    fireEvent.click(await enabledButton({ name: /queue to 3 printers/i }));
 
     await waitFor(() => expect(mockShowToast).toHaveBeenCalled());
     const message = mockShowToast.mock.calls[0][0] as string;
@@ -315,7 +323,7 @@ describe('the print dialog while the queue saves the file', () => {
     );
     mount();
 
-    fireEvent.click(await screen.findByRole('button', { name: /^add to queue$/i }));
+    fireEvent.click(await enabledButton({ name: /^add to queue$/i }));
 
     await waitFor(() =>
       expect(mockShowToast).toHaveBeenCalledWith(
@@ -342,7 +350,7 @@ describe('the print dialog while the queue saves the file', () => {
     );
     mount([1, 2, 3]);
 
-    fireEvent.click(await screen.findByRole('button', { name: /queue to 3 printers/i }));
+    fireEvent.click(await enabledButton({ name: /queue to 3 printers/i }));
 
     await waitFor(() =>
       expect(mockShowToast).toHaveBeenCalledWith(
@@ -377,7 +385,7 @@ describe('the print dialog while the queue saves the file', () => {
     );
     mount([1], [1, 2]);
 
-    fireEvent.click(await screen.findByRole('button', { name: /queue 2 plates/i }));
+    fireEvent.click(await enabledButton({ name: /queue 2 plates/i }));
 
     await waitFor(() => expect(onClose).toHaveBeenCalled());
     expect(posts).toBe(2);

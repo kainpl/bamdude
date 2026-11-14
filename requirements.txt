@@ -92,6 +92,12 @@ scipy>=1.11.0
 networkx>=3.0
 shapely>=2.0.0
 mapbox-earcut>=1.0.0
+# Packing engine of "Assemble project" (File Library): places parts by their real
+# outline, so small parts go into the holes and concavities of larger ones, and
+# writes the Bambu project 3MF. Our own library (kainpl/platenest, AGPL-3.0); needs
+# only numpy and opencv-python-headless, both already here. Pinned exactly because
+# BamDude writes files with it and reads them back for re-layout.
+platenest==0.1.1
 matplotlib>=3.8.0
 fast-simplification>=0.1.0
 # trimesh's 3MF loader imports lxml lazily inside the 3MF code path (model.xml

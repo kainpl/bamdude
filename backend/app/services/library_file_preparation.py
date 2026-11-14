@@ -127,6 +127,20 @@ def _image_thumbnail(path: Path) -> bytes:
         return output.getvalue()
 
 
+def _assembly_set(archive: zipfile.ZipFile, names: list[str]) -> str | None:
+    """The set id of a project assembled here, or None. A 3MF comes from anywhere: the record counts only beside
+    the layout library's own marker and only when it parses as a record (read with its size cap)."""
+    from backend.app.services.assembly import record
+
+    if "Metadata/platenest.json" not in names or record.RECORD_MEMBER not in names:
+        return None
+    try:
+        with archive.open(record.RECORD_MEMBER) as member:
+            return record.load(member.read(record.MAX_RECORD_BYTES + 1)).set_id
+    except (ValueError, OSError, zipfile.BadZipFile):
+        return None
+
+
 def prepare_file(path: Path, *, root: Path, display_filename: str | None = None) -> PreparedLibraryFile:
     """Prepare one file using the same parser for managed and mounted storage."""
     resolved_root = root.resolve(strict=True)
@@ -161,12 +175,15 @@ def prepare_file(path: Path, *, root: Path, display_filename: str | None = None)
                     json.loads(archive.read(member).decode("utf-8"))
             plates = parse_plates_from_3mf(archive)
             sliced = names_carry_sliced_gcode(names)
+            assembly_set = _assembly_set(archive, names)
         raw = ThreeMFParser(resolved_path).parse()
         thumbnail = raw.get("_thumbnail_data")
         thumbnail_ext = raw.get("_thumbnail_ext", ".png") if thumbnail else None
         metadata = _clean(raw)
         metadata.pop("print_name", None)
         metadata.update({"plates": plates, "is_multi_plate": len(plates) > 1, SLICED_GCODE_META_KEY: sliced})
+        if assembly_set:
+            metadata.update({"assembled": True, "assembly_set": assembly_set})
     elif name.lower().endswith(".gcode"):
         thumbnail = _gcode_thumbnail(resolved_path)
         thumbnail_ext = ".png" if thumbnail else None

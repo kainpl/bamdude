@@ -333,3 +333,78 @@ def test_open_cascades_out_of_memory_is_a_resource_limit_like_memoryerror():
     assert converter._classify(MemoryError()) == ("resource_limit", "memory_error")
     assert converter._classify(converter.Refusal("timeout", "deadline")) == ("timeout", "deadline")
     assert converter._classify(Standard_Failure()) == ("render_failed", "Standard_Failure")
+
+
+# --- print mode (project assembly, stage C): the slicer's precision, a closed solid, limits of its own ---
+
+
+def _open_edges(tris) -> int:
+    """Directed edges without their opposite: 0 for a closed, consistently wound surface."""
+    edges: dict = {}
+    for a, b, c in tris:
+        for u, v in ((a, b), (b, c), (c, a)):
+            edges[(u, v)] = edges.get((u, v), 0) + 1
+    return sum(1 for (u, v), count in edges.items() if edges.get((v, u), 0) != count)
+
+
+@pytest.mark.requires_cad
+@pytest.mark.parametrize("name", ["sphere_r50.step", "plate_holes.step"])
+def test_print_mode_meshes_at_the_slicers_precision_and_stays_closed(tmp_path, site, name):
+    source = FIXTURES / "occt" / name
+    _rc, coarse, _root = run_converter(tmp_path / "thumbnail", source, site)
+    rc, fine, root = run_converter(tmp_path / "print", source, site, mode="print")
+    assert rc == 0 and fine["outcome"] == "ok", fine
+    assert fine["mode"] == "print" and fine["deflection_mm"] == 0.003
+    assert coarse["deflection_mm"] >= 0.1 and "mode" not in coarse  # the thumbnail's recipe is untouched
+    assert fine["triangles"] > 2 * coarse["triangles"]
+    n, tris = read_stl(root / "mesh.stl")
+    assert n == fine["triangles"]
+    assert _open_edges(tris) == 0
+
+
+@pytest.mark.requires_cad
+def test_print_mode_refuses_a_model_no_printer_could_hold_before_meshing_it(tmp_path, site):
+    """A 1 km sphere is a few kilobytes of STEP and, at 0.003 mm, more triangles than any memory holds."""
+    rc, result, root = run_converter(tmp_path, FIXTURES / "occt" / "sphere_r1km.step", site, mode="print")
+    assert rc == 1 and (result["outcome"], result["why"], result["stage"]) == (
+        "resource_limit",
+        "extent_cap",
+        "transfer",
+    )
+    assert not (root / "mesh.stl").exists()
+
+
+@pytest.mark.requires_cad
+def test_print_mode_has_its_own_triangle_cap_and_a_bootstrap_can_only_lower_it(tmp_path, site):
+    source = FIXTURES / "occt" / "sphere_r50.step"
+    rc, result, root = run_converter(tmp_path, source, site, mode="print", triangle_cap=100)
+    assert rc == 1 and (result["outcome"], result["why"]) == ("resource_limit", "triangle_cap")
+    assert not (root / "mesh.stl").exists()
+
+
+def test_an_unknown_mode_is_refused(tmp_path):
+    rc, result, _root = run_converter(tmp_path, None, tmp_path / "no-site", mode="draft")
+    assert rc == 1 and (result["outcome"], result["why"]) == ("render_failed", "protocol_error")
+
+
+def test_print_mode_takes_only_whole_outward_solids():
+    from backend.app.services.step_thumbnail import print_refusal
+
+    assert print_refusal(faces=6, solid_faces=6, solids=1, negative=0) is None
+    assert print_refusal(faces=6, solid_faces=0, solids=0, negative=0) == "not_solid"  # a surface, not a body
+    assert print_refusal(faces=7, solid_faces=6, solids=1, negative=0) == "not_solid"  # a loose face beside it
+    assert print_refusal(faces=6, solid_faces=6, solids=1, negative=1) == "inverted_solid"
+
+
+def test_print_limits_are_the_agreed_ones():
+    from backend.app.services import preview_protocol as p
+    from backend.app.services.step_thumbnail import MODES, PRINT_DEFLECTION_MM, PRINT_MAX_EXTENT_MM
+
+    assert PRINT_DEFLECTION_MM == 0.003 and PRINT_MAX_EXTENT_MM == 2000.0  # Bambu Studio's import default
+    assert (p.STEP_PRINT_INPUT_BYTES, p.CAD_PRINT_FACE_OCCURRENCES, p.CAD_PRINT_TRIANGLES) == (
+        64 * 1024**2,
+        60_000,
+        2_000_000,
+    )
+    assert MODES["thumbnail"] == (p.STEP_INPUT_BYTES, p.CAD_FACE_OCCURRENCES, p.CAD_TRIANGLES, p.STEP_DATA_LIMIT_BYTES)
+    assert MODES["print"][3] == p.STEP_PRINT_DATA_LIMIT_BYTES == 2 * 1024**3

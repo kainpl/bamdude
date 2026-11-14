@@ -15,18 +15,27 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useQueryClient } from '@tanstack/react-query';
-import { api, type SliceJobProgress, type SliceJobState, type SliceJobStatus } from '../api/client';
+import {
+  api,
+  type AssemblyJobResult,
+  type SliceJobProgress,
+  type SliceJobState,
+  type SliceJobStatus,
+} from '../api/client';
 import { useToast } from './ToastContext';
 import { AlertModal } from '../components/AlertModal';
 
+/** `assembly`: an "Assemble project" job, handed over when its dialog is closed while it still runs. */
+export type TrackedJobKind = 'libraryFile' | 'archive' | 'assembly';
+
 interface TrackedJob {
   id: number;
-  kind: 'libraryFile' | 'archive';
+  kind: TrackedJobKind;
   sourceName: string;
 }
 
 interface SliceJobTrackerContextValue {
-  trackJob: (id: number, kind: 'libraryFile' | 'archive', sourceName: string) => void;
+  trackJob: (id: number, kind: TrackedJobKind, sourceName: string) => void;
   activeJobs: TrackedJob[];
 }
 
@@ -67,7 +76,7 @@ export function SliceJobTrackerProvider({ children }: { children: ReactNode }) {
   const [activeJobs, setActiveJobs] = useState<TrackedJob[]>([]);
   // A failed slice surfaces as an acknowledge-only modal (see the failed
   // branch below) rather than an auto-dismissing toast.
-  const [sliceError, setSliceError] = useState<{ name: string; detail: string } | null>(null);
+  const [sliceError, setSliceError] = useState<{ title?: string; name: string; detail: string } | null>(null);
 
   // Stable mutable ref so the polling effect can read the current list
   // without re-subscribing every time it changes.
@@ -94,6 +103,14 @@ export function SliceJobTrackerProvider({ children }: { children: ReactNode }) {
       const phase = phaseRef.current.get(job.id) ?? 'pending';
       const elapsedStr = formatElapsed(elapsedSecs);
       const progress = progressRef.current.get(job.id) ?? null;
+      if (job.kind === 'assembly') {
+        showPersistentToast(
+          toastIdFor(job.id),
+          t('fileManager.assemble.toast.running', { name: job.sourceName, elapsed: elapsedStr }),
+          'loading',
+        );
+        return;
+      }
       // When the sidecar has emitted at least one progress frame, weave
       // the stage label + percent into the toast — that's what makes the
       // wait feel professional ("Generating G-code 75%" beats "Slicing X
@@ -129,7 +146,7 @@ export function SliceJobTrackerProvider({ children }: { children: ReactNode }) {
   );
 
   const trackJob = useCallback(
-    (id: number, kind: 'libraryFile' | 'archive', sourceName: string) => {
+    (id: number, kind: TrackedJobKind, sourceName: string) => {
       setActiveJobs((prev) => (prev.some((j) => j.id === id) ? prev : [...prev, { id, kind, sourceName }]));
       startedAtRef.current.set(id, Date.now());
       phaseRef.current.set(id, 'pending');
@@ -162,6 +179,48 @@ export function SliceJobTrackerProvider({ children }: { children: ReactNode }) {
       // Replace the persistent progress toast with a transient
       // success/error toast (auto-dismisses, same as showToast).
       dismissToast(toastIdFor(job.id));
+
+      if (job.kind === 'assembly') {
+        // An assembly job always completes with its own verdict; "failed" here is a stop or a bug.
+        const result = state.result as unknown as AssemblyJobResult | undefined;
+        const missed = result?.printers.filter((row) => row.status !== 'ok') ?? [];
+        const clean = missed.length === 0 && (result?.kept.length ?? 0) === 0;
+        if (state.status === 'completed' && result?.outcome === 'ok' && clean) {
+          showToast(t('fileManager.assemble.toast.done', { name: job.sourceName }), 'success');
+        } else if (state.status === 'completed' && result?.outcome === 'ok') {
+          // Saved for some printers only, or the previous files stayed. The dialog that would have shown the
+          // summary is closed, so this is acknowledged — never a green toast over a missing project.
+          const lines = missed.map(
+            (row) =>
+              `${row.model ? `${row.model} — ${row.label}` : row.label}: ${t(
+                `fileManager.assemble.reason.${row.reason}`,
+                { defaultValue: t('fileManager.assemble.reason.unknown', { reason: row.reason }) },
+              )}`,
+          );
+          if (result.kept.length > 0) lines.push(t('fileManager.assemble.kept', { count: result.kept.length }));
+          setSliceError({
+            title: t('fileManager.assemble.partialTitle'),
+            name: job.sourceName,
+            detail: lines.join('\n'),
+          });
+        } else if (state.status === 'failed' && state.error_status === 499) {
+          showToast(t('fileManager.assemble.toast.stopped', { name: job.sourceName }), 'warning');
+        } else {
+          const reason = result?.reason ?? '';
+          setSliceError({
+            title: t('fileManager.assemble.failedTitle'),
+            name: job.sourceName,
+            detail:
+              state.status === 'completed'
+                ? t(`fileManager.assemble.reason.${reason}`, {
+                    defaultValue: t('fileManager.assemble.reason.unknown', { reason }),
+                  })
+                : state.error_detail || t('fileManager.assemble.failed'),
+          });
+        }
+        queryClient.invalidateQueries({ queryKey: ['library-files'] });
+        return;
+      }
 
       if (state.status === 'completed') {
         // ⚠️ A slice whose source lives on an external mount but could not be
@@ -269,7 +328,7 @@ export function SliceJobTrackerProvider({ children }: { children: ReactNode }) {
       {children}
       {sliceError && (
         <AlertModal
-          title={t('slice.failedTitle', 'Slice failed')}
+          title={sliceError.title ?? t('slice.failedTitle', 'Slice failed')}
           subtitle={sliceError.name}
           message={sliceError.detail}
           onClose={() => setSliceError(null)}

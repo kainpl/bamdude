@@ -4554,6 +4554,9 @@ async def _enqueue_order_plan(
     except ValueError as exc:
         raise HTTPException(422, "Order print options do not fit the target printer") from exc
 
+    from backend.app.services.print_color_defaults import default_force_color_match
+
+    color_default = await default_force_color_match(db) if frozen_options is None else False
     created: list[PlanEnqueueCreated] = []
 
     def _partial(message: str) -> HTTPException:
@@ -4578,6 +4581,8 @@ async def _enqueue_order_plan(
         options.update(explicit_options[plate.sliced_for_model])
         if frozen_options is not None:
             options = deepcopy(frozen_options["options"])
+        # Old registered submissions have no colour field: retain their original loose policy.
+        options.setdefault("force_color_match", color_default)
         # Explicit order choices win over the profile. Swap macros are NOT decided
         # here from the library row: the printer branch's writer decides them from
         # the declaration its capture confirms and that printer's swap mode, and an

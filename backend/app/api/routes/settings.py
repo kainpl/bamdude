@@ -319,6 +319,7 @@ async def _load_settings(db: AsyncSession, *, effective_env: bool = True) -> App
                 "auto_queue_rebalance_models",
                 "auto_queue_compatible_models",
                 "auto_order_for_batches",
+                "default_force_color_match",
                 "queue_drying_enabled",
                 "queue_drying_block",
                 "ambient_drying_enabled",
@@ -483,8 +484,15 @@ async def resolve_settings_credentials(db: AsyncSession, changes: dict, actions:
         and not code
     ):
         raise HTTPException(400, "virtual_printer_access_code: enabled integration requires a credential")
+    # These three legacy nullable toggles already have explicit stored-"None" semantics
+    # in _load_settings and their consumers. Validate that effective value, without
+    # relaxing credential nulls or accepting None for unrelated non-nullable fields.
+    effective = dict(merged)
+    for key in ("runout_archive_spool_enabled", "runout_zero_point_enabled", "ams_sync_bidirectional"):
+        if effective.get(key) is None:
+            effective[key] = getattr(DEFAULT_SETTINGS, key)
     try:
-        AppSettings(**merged)
+        AppSettings(**effective)
     except ValidationError:
         raise HTTPException(422, "Invalid effective settings configuration") from None
     return merged
@@ -771,6 +779,7 @@ _UI_PREFERENCE_FIELDS: tuple[str, ...] = (
     "per_printer_mapping_expanded",
     "default_filament_cost",
     "auto_order_for_batches",
+    "default_force_color_match",
     "queue_shortest_first",
     "low_stock_threshold",
     "library_all_files_recursive",
@@ -1233,6 +1242,12 @@ async def _restore_backup(file: UploadFile, db: AsyncSession, *, authority=None)
                     raise HTTPException(409, "Git backup work has not stopped; restart before restoring")
                 if not await slice_dispatch.quiesce_for_restore():
                     raise HTTPException(409, "Slicing work has not stopped; restart before restoring")
+                from backend.app.services.assembly.runtime import assembly_quiesced
+
+                # an assembly job is a slice-dispatch job, so it was cancelled just above; what is asked here is
+                # whether its packing child was PROVEN gone before storage moves
+                if not assembly_quiesced():
+                    raise HTTPException(409, "Project assembly work has not stopped; restart before restoring")
                 if not await library_scan.quiesce_for_restore():
                     raise HTTPException(409, "Library scan work has not stopped; restart before restoring")
                 if not await credential_rollout.quiesce_for_restore(10):

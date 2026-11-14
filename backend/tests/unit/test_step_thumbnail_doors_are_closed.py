@@ -64,3 +64,22 @@ def test_the_negative_doors_never_name_the_step_jobs():
         for path in files:
             text = path.read_text(encoding="utf-8")
             assert "library_preview_jobs" not in text and "_queue_step_thumbnail" not in text, path
+
+
+def test_only_three_modules_start_the_converter():
+    """The converter is the one importer of OCP, so who starts it is decided, not found: the preview service (a
+    picture), the assembly service (a print-grade mesh for "Assemble project", stage C of its spec) and the
+    runtime's own smoke check. The assembly never asks for a PICTURE — it names no thumbnail job."""
+    starters = {
+        path.relative_to(APP).as_posix()
+        for path in APP.rglob("*.py")
+        if "backend.app.services.step_thumbnail" in path.read_text(encoding="utf-8")
+    }
+    # the converter names itself in its docstring, and the guardian only lists what it may be asked to run
+    starters -= {"services/step_thumbnail.py", "worker_guardian.py"}
+    assert starters == {"preview_service.py", "assembly_service.py", "step_runtime.py"}
+    for relative in ("assembly_service.py", "assembly_child.py", "services/assembly", "api/routes/library_assembly.py"):
+        target = APP / relative
+        for path in [target] if target.is_file() else target.rglob("*.py"):
+            text = path.read_text(encoding="utf-8")
+            assert "library_preview_jobs" not in text and "_queue_step_thumbnail" not in text, path
