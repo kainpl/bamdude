@@ -454,6 +454,7 @@ async def run(bootstrap: WorkerBootstrap) -> int:
                             "rtsp" if isinstance(subscription, LiveBuiltinSubscription) else subscription.camera_type,
                             subscription.fps,
                             on_frame=lambda frame: live_registry.publish(subscription.identity, frame),
+                            on_still_scene=lambda still: live_registry.mark_still(subscription.identity, still),
                             rtsp_profile=(
                                 get_camera_profile(subscription.model)
                                 if isinstance(subscription, LiveBuiltinSubscription)
@@ -465,7 +466,9 @@ async def run(bootstrap: WorkerBootstrap) -> int:
                     lease, _queue = await live_registry.subscribe(subscription.identity, producer)
                     live_leases[lease.lease_id] = lease
 
-                    async def forward(queue=_queue, session_id=subscription.media_session_id) -> None:
+                    async def forward(
+                        queue=_queue, session_id=subscription.media_session_id, identity=subscription.identity
+                    ) -> None:
                         from backend.app.services.camera_worker_media import (
                             MediaHello,
                             WorkerMediaFrame,
@@ -495,6 +498,9 @@ async def run(bootstrap: WorkerBootstrap) -> int:
                                         attempt_id=None,
                                         first_frame_ms=None,
                                         cleanup_ms=None,
+                                        # The verdict as it stands when the frame leaves; it falls
+                                        # before a changed picture is published, never after.
+                                        still_scene=live_registry.is_still(identity),
                                     ),
                                 )
                         finally:

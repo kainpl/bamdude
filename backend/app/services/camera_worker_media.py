@@ -39,12 +39,17 @@ class WorkerMediaFrame:
     attempt_id: str | None
     first_frame_ms: float | None
     cleanup_ms: float | None
+    #: A live frame from a source its producer has judged a still scene: a redial showed the same
+    #: picture, so a repeat of it is a live camera's frame. Never set on a one-shot capture.
+    still_scene: bool = False
 
     def __post_init__(self) -> None:
         _validate_uuid(self.generation, "media generation")
         _validate_uuid(self.session_id, "media session")
         if not _is_jpeg(self.frame):
             raise CameraWorkerProtocolError("media frame is not a JPEG")
+        if not isinstance(self.still_scene, bool):
+            raise CameraWorkerProtocolError("media frame still-scene flag is invalid")
         if self.source not in {None, "fresh", "coalesced"}:
             raise CameraWorkerProtocolError("media frame source is invalid")
         if self.attempt_id is not None and (not isinstance(self.attempt_id, str) or len(self.attempt_id) > 128):
@@ -90,6 +95,7 @@ async def write_media_frame(writer, frame: WorkerMediaFrame) -> None:
             "attempt_id": frame.attempt_id,
             "first_frame_ms": frame.first_frame_ms,
             "cleanup_ms": frame.cleanup_ms,
+            "still_scene": frame.still_scene,
         },
         limit=MAX_MEDIA_HEADER_BYTES,
     )
@@ -99,7 +105,7 @@ async def write_media_frame(writer, frame: WorkerMediaFrame) -> None:
 
 async def read_media_frame(reader) -> WorkerMediaFrame:
     payload = await _read_json(reader, limit=MAX_MEDIA_HEADER_BYTES)
-    expected = {"generation", "session_id", "source", "attempt_id", "first_frame_ms", "cleanup_ms"}
+    expected = {"generation", "session_id", "source", "attempt_id", "first_frame_ms", "cleanup_ms", "still_scene"}
     if set(payload) != expected:
         raise CameraWorkerProtocolError("media frame has an invalid schema")
     return WorkerMediaFrame(
@@ -109,6 +115,7 @@ async def read_media_frame(reader) -> WorkerMediaFrame:
         attempt_id=payload["attempt_id"],
         first_frame_ms=payload["first_frame_ms"],
         cleanup_ms=payload["cleanup_ms"],
+        still_scene=payload["still_scene"],
         frame=await _read_frame(reader, limit=MAX_MEDIA_JPEG_BYTES),
     )
 

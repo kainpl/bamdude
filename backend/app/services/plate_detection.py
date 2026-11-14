@@ -648,6 +648,15 @@ class PlateDetector:
             )
 
 
+#: How long a check that must not take the live view's frame as it stands waits for the next one.
+LIVE_FRAME_WAIT_SECONDS = 10.0
+#: Why a check got no frame from a watched camera. "Empty": nothing arrived since the check began.
+#: "Unchanged": frames kept arriving, all of them the picture from before — a frozen source, or a still
+#: scene the camera worker has not confirmed yet (it does so by redialling, after its freeze limit).
+LIVE_VIEW_EMPTY = "Live camera view is attached and its buffer is empty"
+LIVE_VIEW_UNCHANGED = "Live camera view is attached and its buffered picture has not changed since the check began"
+
+
 async def capture_camera_image(
     printer_id: int,
     ip_address: str,
@@ -725,7 +734,11 @@ async def _capture_camera_image(
     # docstring's promise not to compete with a viewer was true for one camera
     # kind and not the other — and a USB device allows exactly one handle, so
     # the external attempt did not degrade, it failed.
-    from backend.app.api.routes.camera import live_frame_for_capture, live_stream_generation
+    from backend.app.api.routes.camera import (
+        live_frame_for_capture,
+        live_stream_generation,
+        live_view_repeats_since,
+    )
     from backend.app.services.camera_runtime import CameraCaptureRequest
 
     expected_source = (
@@ -747,6 +760,11 @@ async def _capture_camera_image(
     )
     generation = live_stream_generation(printer_id) if fresh else None
     live_options = {"expected_source": expected_source, "generation": generation} if fresh else {}
+    if fresh and lit_since is None:
+        # A still plate repeats its picture: a repeat that arrived after this check began is a frame of
+        # now, once the camera worker has confirmed the scene is still and the camera alive. Never under a
+        # light this check has just switched on — the frame it needs is then a different picture.
+        live_options["accept_still_scene"] = True
     not_before = time.monotonic() if fresh else lit_since
     defer, buffered_live = (
         live_frame_for_capture(printer_id, not_before=not_before, **live_options)
@@ -756,7 +774,7 @@ async def _capture_camera_image(
     if awaited and defer:
         # A viewer owns the camera socket. Wait for its next frame, never open
         # a second reader or accept a frame from before this check.
-        deadline = time.monotonic() + 10
+        deadline = time.monotonic() + LIVE_FRAME_WAIT_SECONDS
         while buffered_live is None and defer and time.monotonic() < deadline:
             await asyncio.sleep(0.1)
             defer, buffered_live = live_frame_for_capture(printer_id, not_before=not_before, **live_options)
@@ -769,7 +787,9 @@ async def _capture_camera_image(
             )
             # The contract is (None, reason) — a bare None here would reach the
             # caller as an unexplained failure.
-            return None, "Live camera view is attached and its buffer is empty"
+            if awaited and live_view_repeats_since(printer_id, not_before):
+                return None, LIVE_VIEW_UNCHANGED
+            return None, LIVE_VIEW_EMPTY
         image_data = buffered_live
         camera_source = "live view (buffered)"
 
@@ -891,11 +911,14 @@ async def check_plate_empty(
     )
 
     if image_data is None:
+        # ``camera_source`` is then the reason, when the capture had one to give.
+        reason = f": {camera_source}" if camera_source not in ("unknown", "built-in", "external") else ""
+        logger.info("Plate check for printer %s got no camera frame%s", printer_id, reason)
         return PlateDetectionResult(
             is_empty=False,
             confidence=0.0,
             difference_percent=0.0,
-            message="Failed to capture camera frame from any source",
+            message=f"Failed to capture camera frame from any source{reason}",
             status="unavailable",
         )
 

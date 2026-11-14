@@ -64,6 +64,11 @@ LIVE_FRAME_MAX_AGE_SECONDS = 10.0
 # Its time is when this PICTURE first arrived: a source can keep delivering the bytes it froze
 # on (upstream e0149ae4a), and a repeat of the frame before it is not evidence of anything new.
 _live_frame_metadata: dict[int, tuple[float, str, CameraCaptureRequest]] = {}
+# Printers whose current producer (the token) is showing what the WORKER judged a still scene: it
+# ended the session, redialled, and the new connection showed the same picture — a live camera, a
+# plate nothing moves on. Written with every relayed frame from the flag that frame carries, and only
+# for a repeat; it falls with the first changed picture and means nothing for another producer.
+_still_scene_streams: dict[int, str] = {}
 # Wall-clock twin of that time. ``_last_frame_times`` keeps meaning "bytes arrived": a still
 # scene that repeats a frame is a live stream, not a stalled one.
 _last_change_times: dict[int, float] = {}
@@ -128,6 +133,7 @@ def live_frame_for_capture(
     not_before: float | None = None,
     expected_source: CameraCaptureRequest | None = None,
     generation: str | None = None,
+    accept_still_scene: bool = False,
 ) -> tuple[bool, bytes | None]:
     """Should a one-shot capture stand down for the live view, and to what frame?
 
@@ -163,13 +169,42 @@ def live_frame_for_capture(
         if metadata is None:
             return True, None
         arrived, producer, source_request = metadata
-        if (
-            producer != live_stream_generation(printer_id)
-            or (not_before is not None and arrived <= not_before)
-            or (expected_source is not None and not source_request.same_source(expected_source))
+        if producer != live_stream_generation(printer_id) or (
+            expected_source is not None and not source_request.same_source(expected_source)
         ):
             return True, None
+        if not_before is not None and arrived <= not_before:
+            # The PICTURE is from before the moment asked for. A repeat of it whose bytes arrived since
+            # is evidence only for a caller that asked for "a frame of now" (``accept_still_scene``) and
+            # only while the worker's still-scene verdict stands: without it the source may as well be
+            # frozen, and nothing here can tell. A caller whose moment is a CHANGE it made to the scene
+            # (the light it switched on) never asks: the picture it waits for is a different one.
+            if not (
+                accept_still_scene
+                and still_scene_stands(printer_id)
+                and _last_frame_arrivals.get(printer_id, arrived) > not_before
+            ):
+                return True, None
     return True, get_buffered_frame(printer_id)
+
+
+def still_scene_stands(printer_id: int) -> bool:
+    """The worker's verdict "a still scene, alive" stands for the producer now feeding this printer's view."""
+    producer = _still_scene_streams.get(printer_id)
+    return producer is not None and producer == live_stream_generation(printer_id)
+
+
+def live_view_repeats_since(printer_id: int, moment: float) -> bool:
+    """The view has delivered bytes since ``moment`` (monotonic) but no new picture.
+
+    For a consumer that waited for a frame from after ``moment`` and got none: its buffer is not empty and
+    the stream is not stalled — the camera keeps sending the picture it showed before.
+    """
+    metadata = _live_frame_metadata.get(printer_id)
+    if metadata is None or metadata[1] != live_stream_generation(printer_id):
+        return False
+    last_bytes = _last_frame_arrivals.get(printer_id)
+    return last_bytes is not None and metadata[0] <= moment < last_bytes
 
 
 def live_view_frame(printer_id: int, kind: Literal["builtin", "external"]) -> tuple[bool, bytes | None]:
@@ -243,6 +278,7 @@ def _release_printer_frame_state(printer_id: int | None) -> None:
     _last_frame_times.pop(printer_id, None)
     _last_frame_arrivals.pop(printer_id, None)
     _live_frame_metadata.pop(printer_id, None)
+    _still_scene_streams.pop(printer_id, None)
     _last_change_times.pop(printer_id, None)
     _stream_start_times.pop(printer_id, None)
     _snapshot_frames.pop(printer_id, None)
@@ -425,6 +461,12 @@ async def _worker_stream_response(
         started = time.monotonic()
         frames = 0
         first_frame_ms: float | None = None
+        still_scene = False
+
+        def _note_still_scene(still: bool) -> None:
+            # The worker's verdict on the frame that follows (camera_runtime hands it over first).
+            nonlocal still_scene
+            still_scene = still
 
         def _observe_worker_frame(frame: bytes) -> None:
             nonlocal frames, first_frame_ms
@@ -447,6 +489,11 @@ async def _worker_stream_response(
             arrived = time.time()
             _last_frame_times[printer_id] = arrived
             _last_frame_arrivals[printer_id] = time.monotonic()
+            if still_scene and repeated:
+                _still_scene_streams[printer_id] = worker_stream_token
+            else:
+                # A changed picture is no still scene, whatever the frame was stamped with.
+                _still_scene_streams.pop(printer_id, None)
             if not repeated:
                 # A repeat of the previous frame keeps the time its picture first arrived, so a
                 # check that waits for a frame from after its own start is never handed a
@@ -476,6 +523,7 @@ async def _worker_stream_response(
                         fps=fps,
                         disconnect_event=disconnect_event,
                         on_frame=_observe_worker_frame,
+                        on_still_scene=_note_still_scene,
                     )
                     if builtin
                     else runtime.stream_external(
@@ -485,6 +533,7 @@ async def _worker_stream_response(
                         fps=fps,
                         disconnect_event=disconnect_event,
                         on_frame=_observe_worker_frame,
+                        on_still_scene=_note_still_scene,
                     )
                 )
                 async for chunk in stream:

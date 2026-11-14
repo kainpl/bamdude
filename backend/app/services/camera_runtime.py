@@ -191,6 +191,7 @@ class WorkerCameraRuntime:
         fps: int,
         disconnect_event: asyncio.Event,
         on_frame: Callable[[bytes], None] | None = None,
+        on_still_scene: Callable[[bool], None] | None = None,
     ) -> AsyncGenerator[bytes, None]:
         """Yield a worker-owned external camera stream as standard MJPEG parts.
 
@@ -221,6 +222,9 @@ class WorkerCameraRuntime:
                     continue
                 if media is None:
                     return
+                # The worker's verdict on this frame's source, before the frame itself.
+                if on_still_scene is not None:
+                    on_still_scene(media.still_scene)
                 if on_frame is not None:
                     on_frame(media.frame)
                 yield format_mjpeg_frame(media.frame)
@@ -237,6 +241,7 @@ class WorkerCameraRuntime:
         fps: int,
         disconnect_event: asyncio.Event,
         on_frame: Callable[[bytes], None] | None = None,
+        on_still_scene: Callable[[bool], None] | None = None,
     ) -> AsyncGenerator[bytes, None]:
         """Yield worker-owned Bambu chamber/RTSPS frames as MJPEG parts."""
 
@@ -259,6 +264,9 @@ class WorkerCameraRuntime:
                     continue
                 if media is None:
                     return
+                # The worker's verdict on this frame's source, before the frame itself.
+                if on_still_scene is not None:
+                    on_still_scene(media.still_scene)
                 if on_frame is not None:
                     on_frame(media.frame)
                 yield format_mjpeg_frame(media.frame)

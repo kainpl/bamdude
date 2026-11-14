@@ -674,6 +674,7 @@ async def generate_mjpeg_stream(
     printer_id: int | None = None,
     stream_id: str | None = None,
     rtsp_profile: CameraProfile | None = None,
+    on_still_scene: Callable[[bool], None] | None = None,
 ) -> AsyncGenerator[bytes, None]:
     """Generator yielding MJPEG frames for streaming.
 
@@ -701,6 +702,12 @@ async def generate_mjpeg_stream(
         stop_event: When set, the reconnect loops stop retrying. An explicit
             stop kills the current ffmpeg; without this the loop would spawn a
             replacement and take the device straight back.
+        on_still_scene: Called (``rtsp`` only) whenever the freeze watch's
+            verdict changes, BEFORE the frame it applies to is published: True
+            once a redial has shown the same picture — a still scene, a live
+            camera — and False with the first changed picture. A consumer that
+            asks for a frame from after some moment may then take a repeat
+            that arrived after it. Exceptions are logged and swallowed.
 
     Yields:
         MJPEG frame data with HTTP multipart boundaries
@@ -760,6 +767,7 @@ async def generate_mjpeg_stream(
         # the picture the session before it froze on.  A camera without a
         # profile may legitimately repeat frames, so its limit adapts.
         watch = _FreezeWatch(adaptive=rtsp_profile is None)
+        told_still = False
         try:
             while True:
                 first_frame_at = last_frame_at = None
@@ -774,6 +782,12 @@ async def generate_mjpeg_stream(
                         first_frame_at = first_frame_at or now
                         if watch.observe(frame, now):
                             break
+                        if on_still_scene is not None and watch.still_scene != told_still:
+                            told_still = watch.still_scene
+                            try:
+                                on_still_scene(told_still)
+                            except Exception:
+                                logger.exception("on_still_scene callback raised")
                         yield _publish(frame)
                 metric = camera_metrics.current.get()
                 watch.count_session(metric)
