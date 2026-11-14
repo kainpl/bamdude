@@ -159,6 +159,29 @@ export function EmbeddedCameraViewer({ source: sourceProp, name, onClose }: Embe
     && (status?.printable_objects_count ?? 0) >= 2
     && (status?.skip_objects_supported ?? false);
 
+  // The viewport changes under an open window: a phone is turned, a desktop
+  // window is narrowed across the compact-header breakpoint. The window is put
+  // back where it can be seen and grabbed by the same rule that restores a
+  // saved one. `--app-top` is published by Layout AFTER the resize event (a
+  // layout effect of its own re-render), so its change is watched as well.
+  useEffect(() => {
+    const refit = () => setState((prev) => {
+      const next = restoredCameraWindow(prev, currentViewport());
+      return next.x === prev.x && next.y === prev.y && next.width === prev.width && next.height === prev.height
+        ? prev
+        : next;
+    });
+    window.addEventListener('resize', refit);
+    window.addEventListener('orientationchange', refit);
+    const header = new MutationObserver(refit);
+    header.observe(document.documentElement, { attributes: true, attributeFilter: ['style'] });
+    return () => {
+      window.removeEventListener('resize', refit);
+      window.removeEventListener('orientationchange', refit);
+      header.disconnect();
+    };
+  }, []);
+
   // Save state to localStorage (printer-specific)
   useEffect(() => {
     const saveTimeout = setTimeout(() => {

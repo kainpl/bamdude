@@ -142,6 +142,56 @@ describe('floating camera placement', () => {
     expect(px(width)).toBeLessThanOrEqual(375);
   });
 
+  // Rotating a phone, or narrowing a desktop window across the compact-header
+  // breakpoint, used to leave the title bar — the only handle the window is
+  // dragged and closed by — off screen until the page was reloaded.
+  it('comes back into reach when the viewport shrinks under it', async () => {
+    setScreen(1440, 900);
+    document.documentElement.style.setProperty('--app-top', '0px');
+    render(viewer());
+    await act(async () => { await Promise.resolve(); });
+    expect(px(frame().style.left)).toBe(1020);
+
+    setScreen(375, 667);
+    act(() => { window.dispatchEvent(new Event('resize')); });
+
+    const { left, top, width, height } = frame().style;
+    expect(px(left)).toBeLessThanOrEqual(275);
+    expect(px(width)).toBeLessThanOrEqual(375);
+    expect(px(top) + 40).toBeLessThanOrEqual(667);
+    expect(px(height)).toBeLessThanOrEqual(667);
+  });
+
+  it('comes back into reach when a phone is turned', async () => {
+    setScreen(667, 375);
+    localStorage.setItem('embeddedCameraState_printer-7', JSON.stringify({ x: 300, y: 60, width: 360, height: 300 }));
+    render(viewer());
+    await act(async () => { await Promise.resolve(); });
+    expect(px(frame().style.left)).toBe(300);
+
+    setScreen(375, 667);
+    act(() => { window.dispatchEvent(new Event('orientationchange')); });
+
+    expect(px(frame().style.left)).toBeLessThanOrEqual(275);
+    expect(px(frame().style.width)).toBeLessThanOrEqual(375);
+  });
+
+  it('moves out from under the compact header when it appears', async () => {
+    document.documentElement.style.setProperty('--app-top', '0px');
+    localStorage.setItem('embeddedCameraState_printer-7', JSON.stringify({ x: 10, y: 5, width: 300, height: 200 }));
+    render(viewer());
+    await act(async () => { await Promise.resolve(); });
+    expect(px(frame().style.top)).toBe(5);
+
+    // Layout publishes the header's height after the resize event has been handled.
+    await act(async () => {
+      document.documentElement.style.setProperty('--app-top', '3.5rem');
+      await Promise.resolve();
+    });
+
+    await waitFor(() => expect(px(frame().style.top)).toBe(56));
+  });
+
   it('cannot be dragged under the header', async () => {
     render(viewer());
     await act(async () => { await Promise.resolve(); });
