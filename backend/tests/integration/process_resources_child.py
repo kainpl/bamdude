@@ -17,7 +17,8 @@ from pathlib import Path
 
 def startup():
     original = resource.getrlimit(resource.RLIMIT_NOFILE)
-    resource.setrlimit(resource.RLIMIT_NOFILE, (min(1024, original[1]), original[1]))
+    initial_soft = 1024 if original[1] == resource.RLIM_INFINITY else min(1024, original[1])
+    resource.setrlimit(resource.RLIMIT_NOFILE, (initial_soft, original[1]))
     before = resource.getrlimit(resource.RLIMIT_NOFILE)
     import backend.app.main as main
 
@@ -69,7 +70,8 @@ def startup():
 
     asyncio.run(enter())
     after = resource.getrlimit(resource.RLIMIT_NOFILE)
-    assert after == (min(65536, before[1]), before[1])
+    expected_soft = 65536 if before[1] == resource.RLIM_INFINITY else min(65536, before[1])
+    assert after == (expected_soft, before[1])
     assert inherited == list(after) and marks == ["heap", "limits", "child"]
     return {
         "uid": os.getuid(),
