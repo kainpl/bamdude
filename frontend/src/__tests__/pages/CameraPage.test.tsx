@@ -14,6 +14,7 @@ import { ToastProvider } from '../../contexts/ToastContext';
 import { AuthProvider } from '../../contexts/AuthContext';
 import { I18nextProvider } from 'react-i18next';
 import i18n from '../../i18n';
+import { holdsImage, stubBoxSize } from '../stubBoxSize';
 
 // Mock navigator.sendBeacon which isn't available in jsdom
 vi.stubGlobal('navigator', {
@@ -131,6 +132,34 @@ describe('CameraPage', () => {
         expect(screen.getByText('X1 Carbon')).toBeInTheDocument();
       });
       expect(screen.getByTitle('Diagnose')).toBeInTheDocument();
+    });
+  });
+
+  // The page swapped a sideways picture against the viewport; the header and
+  // the padding leave the video area smaller, so the picture ran under them.
+  describe('camera turned sideways', () => {
+    it('fits the picture to the video area, not the viewport', async () => {
+      const restore = stubBoxSize(holdsImage('Camera stream'), 800, 500);
+      server.use(http.get('/api/v1/printers/:id', () => HttpResponse.json({ ...mockPrinter, camera_rotation: 270 })));
+
+      renderCameraPage(1);
+
+      const img = await screen.findByAltText('Camera stream');
+      await waitFor(() => expect(img.style.transform).toContain('rotate(270deg)'));
+      await waitFor(() => expect(img).toHaveStyle({ maxWidth: '500px', maxHeight: '800px' }));
+      restore();
+    });
+
+    it('leaves an upright picture at the area size', async () => {
+      const restore = stubBoxSize(holdsImage('Camera stream'), 800, 500);
+      server.use(http.get('/api/v1/printers/:id', () => HttpResponse.json({ ...mockPrinter, camera_rotation: 180 })));
+
+      renderCameraPage(1);
+
+      const img = await screen.findByAltText('Camera stream');
+      await waitFor(() => expect(img.style.transform).toContain('rotate(180deg)'));
+      expect(img.style.maxWidth).toBe('');
+      restore();
     });
   });
 

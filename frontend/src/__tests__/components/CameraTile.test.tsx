@@ -5,6 +5,7 @@ import { render } from '../utils';
 import { CameraTile } from '../../components/CameraTile';
 import { printerSource } from '../../utils/cameraSource';
 import { ConnectionProvider, useConnection } from '../../contexts/ConnectionContext';
+import { stubBoxSize } from '../stubBoxSize';
 
 function ServerConnectionToggle() {
   const { setIsConnected } = useConnection();
@@ -103,6 +104,46 @@ describe('CameraTile', () => {
     expect(screen.getByAltText('P1S-Garage')).toBe(image);
     expect(refreshed).toContain('blob:frame-');
     expect(refreshed).not.toBe(initial);
+  });
+
+  // A sideways camera was fitted to the 16:9 tile and then turned, so its long
+  // side stuck out above and below the tile and was clipped.
+  describe('with the camera turned sideways', () => {
+    const isTile = (element: HTMLElement) => element.title === 'A1-Side';
+    const tile = (mode: 'live' | 'snapshot', rotation: number) => (
+      <CameraTile
+        source={printerSource(9)}
+        name="A1-Side"
+        cameraRotation={rotation}
+        mode={mode}
+        snapshotIntervalMs={5000}
+        connected
+      />
+    );
+
+    it.each(['live', 'snapshot'] as const)('lays the %s picture out in the tile sides swapped', async (mode) => {
+      const restore = stubBoxSize(isTile, 320, 180);
+      render(tile(mode, 90));
+      await flushMicrotasks();
+
+      const img = screen.getByAltText('A1-Side') as HTMLImageElement;
+      expect(img).toHaveStyle({ position: 'absolute', left: '50%', top: '50%', width: '180px', height: '320px' });
+      expect(img.style.maxWidth).toBe('none');
+      expect(img.style.transform).toBe('translate(-50%, -50%) rotate(90deg)');
+      restore();
+    });
+
+    it.each(['live', 'snapshot'] as const)('only turns an upside-down %s picture', async (mode) => {
+      const restore = stubBoxSize(isTile, 320, 180);
+      render(tile(mode, 180));
+      await flushMicrotasks();
+
+      const img = screen.getByAltText('A1-Side') as HTMLImageElement;
+      expect(img.style.transform).toBe('rotate(180deg)');
+      expect(img.style.width).toBe('');
+      expect(img.style.position).toBe('');
+      restore();
+    });
   });
 
   it('shows an offline placeholder when not connected', async () => {

@@ -4,6 +4,7 @@ import { AlertTriangle, Expand, VideoOff, WifiOff } from 'lucide-react';
 import { getAuthToken, withStreamToken } from '../api/client';
 import { formatDuration } from '../utils/date';
 import { useCameraImageRef } from '../hooks/useCameraImageRef';
+import { fillStyle, useRotatedBox } from '../hooks/useRotatedFit';
 import { useConnection } from '../contexts/ConnectionContext';
 import { sourceKey, stopPath, streamPath, type CameraSource } from '../utils/cameraSource';
 import { CameraSnapshotImage } from './CameraSnapshotImage';
@@ -155,7 +156,11 @@ export function CameraTile({
   const liveUrl = withToken(streamPath(source, LIVE_FPS, bust));
   const { attachImage: attachLiveImage } = useCameraImageRef(liveUrl);
 
-  const transform = cameraRotation ? `rotate(${cameraRotation}deg)` : undefined;
+  // A sideways camera is laid out in the tile's sides swapped and centred, or
+  // the turned picture is cut off at the tile's top and bottom. One measure
+  // serves the live image and the snapshot.
+  const { boxRef: tileRef, box: tileBox } = useRotatedBox(cameraRotation);
+  const pictureStyle = fillStyle(tileBox, cameraRotation);
 
   const bucket = classifyState(printerState, hmsErrorCount);
   // Hide chip for idle to keep cold walls clean; always show when something
@@ -191,6 +196,7 @@ export function CameraTile({
 
   return (
     <div
+      ref={tileRef}
       className={rootClass}
       title={name}
     >
@@ -216,7 +222,7 @@ export function CameraTile({
           name={name}
           intervalMs={snapshotIntervalMs}
           streamToken={streamToken}
-          transform={transform}
+          style={pictureStyle}
         />
       ) : errored ? (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-1 bg-black/80 text-bambu-gray">
@@ -232,7 +238,7 @@ export function CameraTile({
           draggable={false}
           loading="lazy"
           className="h-full w-full select-none object-contain"
-          style={{ transform }}
+          style={pictureStyle}
           onError={() => setErrored(true)}
         />
       )}

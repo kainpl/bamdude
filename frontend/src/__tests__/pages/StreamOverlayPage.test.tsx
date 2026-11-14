@@ -11,6 +11,7 @@ import { MemoryRouter, Route, Routes } from 'react-router';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ThemeProvider } from '../../contexts/ThemeContext';
 import { ToastProvider } from '../../contexts/ToastContext';
+import { holdsImage, stubBoxSize } from '../stubBoxSize';
 
 const mockPrinter = {
   id: 1,
@@ -411,6 +412,51 @@ describe('StreamOverlayPage', () => {
         expect(screen.getByText('Printer offline')).toBeInTheDocument();
       });
       expectNoLiveFigures();
+    });
+  });
+
+  // A sideways camera was laid out at the browser source's own size and then
+  // turned, which cropped it.
+  describe('camera turned sideways', () => {
+    it('lays the picture out in the browser source sides swapped', async () => {
+      const restore = stubBoxSize(holdsImage('Camera stream'), 1920, 1080);
+      server.use(http.get('/api/v1/printers/:id', () => HttpResponse.json({ ...mockPrinter, camera_rotation: 90 })));
+
+      renderOverlayPage(1);
+
+      const img = await screen.findByAltText('Camera stream');
+      await waitFor(() => expect(img).toHaveStyle({ left: '50%', top: '50%', width: '1080px', height: '1920px' }));
+      expect(img.style.maxWidth).toBe('none');
+      expect(img.style.transform).toBe('translate(-50%, -50%) rotate(90deg)');
+      restore();
+    });
+
+    it('fits the kiosk feed the same way', async () => {
+      const restore = stubBoxSize(holdsImage('Camera stream'), 1080, 1920);
+      server.use(
+        http.get('/api/v1/printers/:id/overlay-status', () =>
+          HttpResponse.json({ ...mockStatusIdle, camera_rotation: 270, gcode_file: null, time_format: 'system' }),
+        ),
+      );
+
+      renderOverlayPage(1, '?token=obs-tok');
+
+      const img = await screen.findByAltText('Camera stream');
+      await waitFor(() => expect(img).toHaveStyle({ width: '1920px', height: '1080px' }));
+      expect(img.style.transform).toBe('translate(-50%, -50%) rotate(270deg)');
+      restore();
+    });
+
+    it('only turns an upside-down picture', async () => {
+      const restore = stubBoxSize(holdsImage('Camera stream'), 1920, 1080);
+      server.use(http.get('/api/v1/printers/:id', () => HttpResponse.json({ ...mockPrinter, camera_rotation: 180 })));
+
+      renderOverlayPage(1);
+
+      const img = await screen.findByAltText('Camera stream');
+      await waitFor(() => expect(img.style.transform).toBe('rotate(180deg)'));
+      expect(img.style.width).toBe('');
+      restore();
     });
   });
 

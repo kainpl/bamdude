@@ -6,6 +6,7 @@ import { Layers, Clock, Timer, Printer, Flame, Square, Box } from 'lucide-react'
 import { LoadingBlock } from '../components/LoadingBlock';
 import { api, ApiError, withStreamToken } from '../api/client';
 import { formatDuration, formatETA, type TimeFormat } from '../utils/date';
+import { fillStyle, useRotatedBox } from '../hooks/useRotatedFit';
 
 type TFunction = (key: string, options?: Record<string, unknown>) => string;
 
@@ -372,6 +373,11 @@ export function StreamOverlayPage() {
     setRetryStream(true);
   };
 
+  // The picture fills the browser source: a sideways camera is laid out in
+  // the source's sides swapped, or it is cropped. The box appears once the
+  // status has loaded; the hook picks it up then.
+  const { boxRef: sceneRef, box: scene } = useRotatedBox(printer?.camera_rotation);
+
   if (!id) {
     return (
       <div className="min-h-screen bg-black flex items-center justify-center">
@@ -408,7 +414,7 @@ export function StreamOverlayPage() {
     : withStreamToken(camPath);
 
   return (
-    <div className="min-h-screen bg-black relative overflow-hidden">
+    <div ref={sceneRef} className="min-h-screen bg-black relative overflow-hidden">
       {/* Camera feed - fullscreen background (optional) */}
       {config.showCamera && !kioskRefused && (
         <img
@@ -416,7 +422,7 @@ export function StreamOverlayPage() {
           src={streamUrl}
           alt={t('streamOverlay.cameraStream')}
           className="absolute inset-0 w-full h-full object-contain"
-          style={printer?.camera_rotation ? { transform: `rotate(${printer.camera_rotation}deg)` } : undefined}
+          style={fillStyle(scene, printer?.camera_rotation)}
           onError={handleStreamError}
         />
       )}

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { withStreamToken } from '../api/client';
@@ -11,11 +11,12 @@ interface CameraSnapshotImageProps {
   name: string;
   intervalMs: number;
   streamToken?: string;
-  transform?: string;
+  /** Geometry of the picture in its box — `fillStyle` of the surface showing it. */
+  style?: CSSProperties;
 }
 
 export function CameraSnapshotImage({
-  source, name, intervalMs, streamToken, transform,
+  source, name, intervalMs, streamToken, style,
 }: CameraSnapshotImageProps) {
   const { t, i18n } = useTranslation();
   const queryClient = useQueryClient();
@@ -109,7 +110,7 @@ export function CameraSnapshotImage({
       alt={name}
       draggable={false}
       className="h-full w-full select-none object-contain"
-      style={{ transform, visibility: hasFrame ? 'visible' : 'hidden' }}
+      style={{ ...style, visibility: hasFrame ? 'visible' : 'hidden' }}
     />
     {lastFrameAt !== null && <time
       dateTime={new Date(lastFrameAt).toISOString()}

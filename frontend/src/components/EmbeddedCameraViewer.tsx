@@ -12,6 +12,7 @@ import { CameraSnapshotImage } from './CameraSnapshotImage';
 import { sourceKey, stopPath, streamPath, type CameraSource } from '../utils/cameraSource';
 import { useCameraLiveBudget } from '../hooks/useCameraLiveBudget';
 import { useCameraImageRef } from '../hooks/useCameraImageRef';
+import { containLimits, fillStyle, useRotatedBox } from '../hooks/useRotatedFit';
 
 interface EmbeddedCameraViewerProps {
   /** A printer's camera, or a camera that belongs to a place. Everything the
@@ -128,6 +129,12 @@ export function EmbeddedCameraViewer({ source: sourceProp, name, onClose }: Embe
     queryFn: () => api.getPrinter(printerId),
     enabled: isPrinter && printerId > 0,
   });
+
+  // A camera turned sideways is laid out in the video area's sides swapped,
+  // or it is cut off in a wide window and boxed in a tall one. The area is
+  // gone while the window is minimized; the hook picks it up on restore.
+  const rotation = printer?.camera_rotation || 0;
+  const { boxRef: videoAreaRef, box: videoArea } = useRotatedBox(rotation);
 
   // Fetch printer status for light toggle and skip objects
   const { data: status } = useQuery({
@@ -682,6 +689,7 @@ export function EmbeddedCameraViewer({ source: sourceProp, name, onClose }: Embe
       {/* Video area */}
       {!isMinimized && (
         <div
+          ref={videoAreaRef}
           className={`relative w-full bg-black flex items-center justify-center overflow-hidden ${isFullscreen ? 'h-[calc(100%-40px)]' : 'h-[calc(100%-40px)]'}`}
           onWheel={handleWheel}
           onMouseMove={handleImageMouseMove}
@@ -736,8 +744,8 @@ export function EmbeddedCameraViewer({ source: sourceProp, name, onClose }: Embe
             alt="Camera stream"
             className="max-w-full max-h-full object-contain select-none"
             style={{
-              transform: `scale(${zoomLevel}) translate(${panOffset.x / zoomLevel}px, ${panOffset.y / zoomLevel}px) rotate(${printer?.camera_rotation || 0}deg)`,
-              ...(printer?.camera_rotation === 90 || printer?.camera_rotation === 270 ? { maxWidth: '100%', maxHeight: '100%' } : {}),
+              transform: `scale(${zoomLevel}) translate(${panOffset.x / zoomLevel}px, ${panOffset.y / zoomLevel}px) rotate(${rotation}deg)`,
+              ...containLimits(videoArea, rotation),
               cursor: zoomLevel > 1 ? (isPanning ? 'grabbing' : 'grab') : 'default',
             }}
             onError={handleStreamError}
@@ -746,7 +754,7 @@ export function EmbeddedCameraViewer({ source: sourceProp, name, onClose }: Embe
             draggable={false}
           /> : ready ? <>
             <CameraSnapshotImage source={source} name={name} intervalMs={5000}
-              transform={`scale(${zoomLevel}) rotate(${printer?.camera_rotation || 0}deg)`} />
+              style={fillStyle(videoArea, rotation, `scale(${zoomLevel})`)} />
             <span className="absolute top-1 left-1 right-1 bg-black/70 px-2 py-1 text-xs text-white">
               {t('printers.camWall.transportLimit', { protocol: protocol === 'unknown' ? t('printers.camWall.transportUnknown') : protocol, limit })}
             </span>

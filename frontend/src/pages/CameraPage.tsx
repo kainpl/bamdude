@@ -1,4 +1,5 @@
 import { useCameraImageRef } from '../hooks/useCameraImageRef';
+import { containLimits, useRotatedBox } from '../hooks/useRotatedFit';
 import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { useParams, useSearchParams } from 'react-router';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
@@ -653,6 +654,12 @@ export function CameraPage() {
 
   const isDisabled = streamLoading || transitioning || isReconnecting;
 
+  // A sideways camera is laid out in the video area's sides swapped. The
+  // viewport is the wrong box: the header and the padding leave the area
+  // smaller, and the picture ran under them.
+  const rotation = printer?.camera_rotation || 0;
+  const { boxRef: videoAreaRef, box: videoArea } = useRotatedBox(rotation);
+
   if (!id) {
     return (
       <div className="min-h-screen bg-black flex items-center justify-center">
@@ -758,7 +765,7 @@ export function CameraPage() {
         onTouchEnd={handleTouchEnd}
         style={{ touchAction: 'none' }}
       >
-        <div className="relative w-full h-full flex items-center justify-center">
+        <div ref={videoAreaRef} className="relative w-full h-full flex items-center justify-center">
           {(streamLoading || transitioning) && !isReconnecting && (
             <div className="absolute inset-0 flex items-center justify-center bg-black/50 z-10">
               <div className="text-center">
@@ -818,8 +825,8 @@ export function CameraPage() {
             alt={t('camera.cameraStream')}
             className="max-w-full max-h-full object-contain select-none"
             style={{
-              transform: `scale(${zoomLevel}) translate(${panOffset.x / zoomLevel}px, ${panOffset.y / zoomLevel}px) rotate(${printer?.camera_rotation || 0}deg)`,
-              ...(printer?.camera_rotation === 90 || printer?.camera_rotation === 270 ? { maxWidth: '100vh', maxHeight: '100vw' } : {}),
+              transform: `scale(${zoomLevel}) translate(${panOffset.x / zoomLevel}px, ${panOffset.y / zoomLevel}px) rotate(${rotation}deg)`,
+              ...containLimits(videoArea, rotation),
               cursor: zoomLevel > 1 ? (isPanning ? 'grabbing' : 'grab') : 'default',
             }}
             onError={currentUrl ? handleStreamError : undefined}
