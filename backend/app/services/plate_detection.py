@@ -821,7 +821,9 @@ async def _capture_camera_image(
                     printer_id=printer_id,
                 )
             )
-            image_data = captured.frame if not fresh or captured.source == "fresh" else None
+            # ``awaited``: a coalesced capture was begun by somebody else — before this check, or before the
+            # light this check switched on.
+            image_data = captured.frame if not awaited or captured.source == "fresh" else None
             if image_data:
                 camera_source = "external"
                 logger.debug("Captured frame from external camera for printer %s", printer_id)
@@ -862,7 +864,7 @@ async def _capture_camera_image(
                     printer_id=printer_id,
                 )
             )
-            image_data = captured.frame if not fresh or captured.source == "fresh" else None
+            image_data = captured.frame if not awaited or captured.source == "fresh" else None
             if image_data:
                 camera_source = "built-in"
                 logger.debug("Captured frame from built-in camera for printer %s", printer_id)
@@ -877,10 +879,11 @@ async def _own_still_beside_live_view(
 
     A plain HTTP GET the worker makes beside the stream, so the check does not wait on the view (owner,
     2026-11-15). It keeps the guarantees of the live path: fetched only once the light this check switched
-    on can show in a picture (``lit_since`` may lie ahead of now), and a ``fresh`` check accepts only a still
-    fetched for it — never a capture somebody else began earlier, never the view's frame that
-    ``camera_runtime.capture`` lends when the still fails. None hands the check to the live path and its own
-    proofs; an unwatched camera is not this function's (the capture below fetches its still as before).
+    on can show in a picture (``lit_since`` may lie ahead of now), and a ``fresh`` check — or one judged
+    under a light it switched on — accepts only a still fetched for it: never a capture somebody else began
+    earlier (it may predate the check, or the light), never the view's frame that ``camera_runtime.capture``
+    lends when the still fails. None hands the check to the live path and its own proofs; an unwatched
+    camera is not this function's (the capture below fetches its still under the same rule).
     """
     from backend.app.api.routes.camera import live_view_frame
     from backend.app.services.camera_runtime import CameraCaptureRequest, capture
@@ -902,7 +905,7 @@ async def _own_still_beside_live_view(
     except Exception as exc:
         logger.warning("Plate detection: the external camera's still failed: %s", type(exc).__name__)
         return None
-    if captured.source == "live_view" or (fresh and captured.source != "fresh"):
+    if captured.source == "live_view" or ((fresh or lit_since is not None) and captured.source != "fresh"):
         return None
     return captured.frame or None
 

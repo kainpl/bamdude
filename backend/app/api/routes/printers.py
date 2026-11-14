@@ -88,7 +88,11 @@ from backend.app.services.bambu_mqtt import (
     airduct_mode_effective,
     airduct_parts_effective,
 )
-from backend.app.services.camera_credentials import CAMERA_SECRET_FIELDS, resolve_camera_credentials
+from backend.app.services.camera_credentials import (
+    CAMERA_SECRET_FIELDS,
+    resolve_camera_credentials,
+    same_camera_address,
+)
 from backend.app.services.cloud_link.service import cloud_link_service
 from backend.app.services.mqtt_recorder import mqtt_recorder
 from backend.app.services.plate_answers import FilingRefused, InvalidPlateAssessment, answer_plate_run
@@ -304,6 +308,8 @@ async def create_printer(
         if patch.auto_stock_spool and patch.auto_stock_spool.enabled:
             await creds.check(_may_change_stock_policy)
     printer = Printer(**data)
+    if same_camera_address(printer.external_camera_snapshot_url, printer.external_camera_url):
+        printer.external_camera_snapshot_url = None  # the stream's own address is no still (camera_credentials)
 
     # Probe MQTT connectivity BEFORE persisting so a mistyped access code or
     # wrong IP doesn't leave a permanently-empty card on the dashboard
@@ -649,6 +655,8 @@ async def update_printer(
     camera_before = camera_source_of(printer)
     for field, value in update_data.items():
         setattr(printer, field, value)
+    if same_camera_address(printer.external_camera_snapshot_url, printer.external_camera_url):
+        printer.external_camera_snapshot_url = None  # the stream's own address is no still (camera_credentials)
 
     await db.commit()
     await db.refresh(printer)

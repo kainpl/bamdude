@@ -508,6 +508,56 @@ class TestThePlateCheck:
         assert fetched and fetched[0] >= lit_at
 
 
+# ---------------------------------------------------------------- a picture from before our light (review M1)
+
+
+@asynccontextmanager
+async def _lit_now(*_args, **_kwargs):
+    """The light this check switched on: it shows in a picture from now."""
+
+    class _Lease:
+        async def settle(self) -> None:
+            return None
+
+        def lit_since(self) -> float:
+            return time.monotonic()
+
+    yield _Lease()
+
+
+@pytest.mark.asyncio
+class TestAPictureFromBeforeOurLight:
+    """A coalesced still was begun by somebody else's poll — before the light this check switched on. It is
+    a picture of a dark chamber and is not judged as a lit one, fresh check or not."""
+
+    async def test_a_watched_camera_does_not_judge_a_coalesced_still(self, worker, monkeypatch) -> None:
+        from backend.app.services import plate_detection
+
+        monkeypatch.setattr("backend.app.services.camera_light.held", _lit_now)
+        monkeypatch.setattr(plate_detection, "LIVE_FRAME_WAIT_SECONDS", 0.2)
+        _watch_printer()
+        worker.source = "coalesced"
+
+        image, reason = await _plate_image()
+
+        assert image != STILL
+        assert reason in (plate_detection.LIVE_VIEW_EMPTY, plate_detection.LIVE_VIEW_UNCHANGED)
+
+    async def test_an_unwatched_camera_does_not_judge_a_coalesced_still(self, worker, monkeypatch) -> None:
+        monkeypatch.setattr("backend.app.services.camera_light.held", _lit_now)
+        worker.source = "coalesced"
+
+        image, _reason = await _plate_image()
+
+        assert image is None
+
+    async def test_without_a_light_of_ours_a_coalesced_still_is_judged_as_before(self, worker) -> None:
+        _watch_printer()
+        worker.source = "coalesced"
+
+        assert await _plate_image() == (STILL, "external")
+
+
 # ---------------------------------------------------------------- Obico keeps the view's frame
 
 
