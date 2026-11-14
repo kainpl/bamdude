@@ -60,6 +60,11 @@ async function ready() {
   await waitFor(() => expect(screen.getByLabelText('Printer')).not.toHaveValue(''));
 }
 
+async function importAddress(text: string) {
+  fireEvent.change(screen.getByLabelText('Import an overlay address'), { target: { value: text } });
+  fireEvent.click(screen.getByRole('button', { name: 'Import' }));
+}
+
 describe('StreamOverlayBuilder — token', () => {
   beforeEach(() => {
     window.localStorage.removeItem(STORAGE_KEY);
@@ -109,6 +114,48 @@ describe('StreamOverlayBuilder — token', () => {
 
       await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
       expect(writeText.mock.calls[0][0]).toContain(`token=${SECRET}`);
+    });
+
+    // A password field with `autocomplete="new-password"` is where a browser
+    // offers to GENERATE or SAVE a password — the one way a token could reach
+    // storage the builder does not control.
+    it('gives no password manager a reason to step in', async () => {
+      render(<StreamOverlayBuilder />);
+      await ready();
+
+      for (const field of [screen.getByLabelText(/Streaming Overlay token/), screen.getByLabelText('Import an overlay address')]) {
+        expect(field).toHaveAttribute('autocomplete', 'off');
+        expect(field).not.toHaveAttribute('autocomplete', 'new-password');
+        expect(field).toHaveAttribute('data-1p-ignore');
+        expect(field).toHaveAttribute('data-lpignore', 'true');
+        expect(field).toHaveAttribute('data-bwignore');
+        expect(field).toHaveAttribute('data-form-type', 'other');
+        expect(field.closest('form')).toBeNull();
+      }
+    });
+
+    it('is a plain text field masked by the browser where the browser can do that', async () => {
+      const actor = userEvent.setup();
+      vi.stubGlobal('CSS', { supports: (property: string) => property === '-webkit-text-security' });
+      try {
+        render(<StreamOverlayBuilder />);
+        await ready();
+        const field = screen.getByLabelText(/Streaming Overlay token/);
+        const pasted = screen.getByLabelText('Import an overlay address');
+
+        // Not a password field at all — and masked all the same.
+        expect(field).toHaveAttribute('type', 'text');
+        expect(field.className).toContain('[-webkit-text-security:disc]');
+        expect(pasted).toHaveAttribute('type', 'text');
+        expect(pasted.className).toContain('[-webkit-text-security:disc]');
+
+        await actor.click(screen.getByRole('button', { name: 'Show token' }));
+        expect(field.className).not.toContain('[-webkit-text-security:disc]');
+        await actor.click(screen.getByRole('button', { name: 'Hide token' }));
+        expect(field.className).toContain('[-webkit-text-security:disc]');
+      } finally {
+        vi.unstubAllGlobals();
+      }
     });
 
     it('closes an open preview when the token changes', async () => {
@@ -167,6 +214,83 @@ describe('StreamOverlayBuilder — token', () => {
       expect(everythingStored()).not.toContain(SECRET);
     });
 
+    // The server shows a new token once and keeps only its hash: replaced
+    // here, it is gone for good.
+    describe('a token created in this session', () => {
+      async function created() {
+        user(['camera:view']);
+        server.use(
+          http.post('/api/v1/auth/tokens', () => HttpResponse.json(
+            { id: 5, user_id: 7, name: 'OBS scene', scope: 'overlay', lookup_prefix: '0a1b2c3d', token: SECRET },
+            { status: 201 },
+          )),
+        );
+        const actor = userEvent.setup();
+        render(<StreamOverlayBuilder />);
+        await ready();
+        await actor.click(await screen.findByRole('button', { name: 'Create token' }));
+        await actor.type(screen.getByLabelText('Token name'), 'OBS scene');
+        await actor.click(screen.getByRole('button', { name: 'Create' }));
+        await waitFor(() => expect(realUrl()).toContain(`token=${SECRET}`));
+        return actor;
+      }
+
+      it('is not replaced by an imported address without asking, and stays when the answer is no', async () => {
+        const actor = await created();
+
+        await importAddress('http://farm.local/overlay/2?size=small&token=bblt_other');
+
+        const dialog = await screen.findByRole('dialog');
+        expect(dialog).toHaveTextContent('cannot be shown again');
+        // Nothing has moved yet: neither the token nor the choices.
+        expect(realUrl()).toContain(`token=${SECRET}`);
+        expect(realUrl()).toContain('/overlay/1?');
+
+        await actor.click(screen.getByRole('button', { name: 'Cancel' }));
+
+        await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+        expect(realUrl()).toContain(`token=${SECRET}`);
+        expect(realUrl()).toContain('/overlay/1?');
+        expect(screen.getByText(/cannot be shown again/)).toBeInTheDocument();
+      });
+
+      it('is replaced by an imported address once that is confirmed', async () => {
+        const actor = await created();
+
+        await importAddress('http://farm.local/overlay/2?size=small&token=bblt_other');
+        await actor.click(await screen.findByRole('button', { name: 'Replace token' }));
+
+        await waitFor(() => expect(realUrl()).toContain('token=bblt_other'));
+        expect(realUrl()).toContain('/overlay/2?');
+        expect(realUrl()).not.toContain(SECRET);
+      });
+
+      it('is not lost to a stray keystroke in its field', async () => {
+        const actor = await created();
+        const field = screen.getByLabelText(/Streaming Overlay token/);
+
+        await actor.type(field, 'x');
+
+        expect(await screen.findByRole('dialog')).toHaveTextContent('cannot be shown again');
+        expect(realUrl()).toContain(`token=${SECRET}`);
+        await actor.click(screen.getByRole('button', { name: 'Cancel' }));
+        await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+        expect(field).toHaveValue(SECRET);
+      });
+
+      it('takes an imported address that carries no token, or the same one, without asking', async () => {
+        await created();
+
+        await importAddress('http://farm.local/overlay/2?size=small');
+        await waitFor(() => expect(realUrl()).toContain('/overlay/2?'));
+        await importAddress(`http://farm.local/overlay/1?token=${SECRET}`);
+        await waitFor(() => expect(realUrl()).toContain('/overlay/1?'));
+
+        expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+        expect(realUrl()).toContain(`token=${SECRET}`);
+      });
+    });
+
     it('keeps the form and the address as they were when the server refuses', async () => {
       user(['camera:view']);
       const actor = userEvent.setup();
@@ -205,11 +329,6 @@ describe('StreamOverlayBuilder — token', () => {
   });
 
   describe('import an address', () => {
-    async function importAddress(text: string) {
-      fireEvent.change(screen.getByLabelText('Import an overlay address'), { target: { value: text } });
-      fireEvent.click(screen.getByRole('button', { name: 'Import' }));
-    }
-
     it('loads every choice of a pasted address and throws its origin away', async () => {
       render(<StreamOverlayBuilder />);
       await ready();

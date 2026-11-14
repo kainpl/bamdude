@@ -4969,6 +4969,11 @@ export default {
       showPreview: 'Show preview',
       hidePreview: 'Hide preview',
       previewTitle: 'Overlay preview',
+      noPrinter: 'Add a printer first: an overlay address names the printer it shows.',
+      replaceTokenTitle: 'Replace the token created here?',
+      replaceTokenMessage:
+        'The token you created on this page cannot be shown again once it is replaced. Copy the address first if you still need it.',
+      replaceTokenConfirm: 'Replace token',
     },
     invalidPrinterId: 'Invalid printer ID',
     cameraStream: 'Camera stream',

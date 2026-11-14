@@ -27,6 +27,7 @@ import { api, type Printer } from '../api/client';
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
 import { Select } from './Select';
+import { ConfirmModal } from './ConfirmModal';
 import {
   DEFAULT_OVERLAY_CHOICES,
   OVERLAY_CANVAS,
@@ -90,6 +91,39 @@ function saveChoices(choices: OverlayChoices): void {
 // is a new camera stream.
 const PREVIEW_SETTLE_MS = 300;
 
+/**
+ * A field that holds a token — or an address that carries one.
+ *
+ * ⚠️ Not a password field where that can be helped. A `type="password"` input
+ * is where a browser offers to save what was typed, and with
+ * `autocomplete="new-password"` to GENERATE a password: the one way a token
+ * could reach storage this page does not control. So the field is plain text,
+ * masked by the browser's own text security, and marked for every password
+ * manager to leave alone. A browser without that masking keeps a password
+ * field — a visible token would be worse — still with no `new-password`.
+ */
+function canMaskText(): boolean {
+  return typeof CSS !== 'undefined' && typeof CSS.supports === 'function'
+    && CSS.supports('-webkit-text-security', 'disc');
+}
+
+function secretField(masksText: boolean, shown: boolean) {
+  return {
+    type: masksText || shown ? 'text' : 'password',
+    autoComplete: 'off',
+    autoCorrect: 'off',
+    autoCapitalize: 'off',
+    spellCheck: false,
+    'data-1p-ignore': true,
+    'data-lpignore': 'true',
+    'data-bwignore': true,
+    'data-form-type': 'other',
+    className:
+      'min-w-0 flex-1 px-3 py-2 bg-bambu-dark rounded-md text-white border border-bambu-dark-tertiary focus:border-bambu-green focus:outline-none font-mono text-xs'
+      + (masksText && !shown ? ' [-webkit-text-security:disc]' : ''),
+  } as const;
+}
+
 interface StreamOverlayBuilderProps {
   /** A token was created here: whoever lists the tokens should read them again. */
   onTokenCreated?: () => void;
@@ -101,7 +135,10 @@ export function StreamOverlayBuilder({ onTokenCreated }: StreamOverlayBuilderPro
   const { hasPermission } = useAuth();
 
   const [remembered] = useState(loadChoices);
+  const [masksText] = useState(canMaskText);
   const [printers, setPrinters] = useState<Printer[]>([]);
+  // Whether the server has answered with its printers: "none" is said only then.
+  const [printersLoaded, setPrintersLoaded] = useState(false);
   const [printerId, setPrinterId] = useState<number | null>(remembered.printerId);
   const [fields, setFields] = useState<string[]>(remembered.fields);
   const [size, setSize] = useState<OverlaySize>(remembered.size);
@@ -118,6 +155,9 @@ export function StreamOverlayBuilder({ onTokenCreated }: StreamOverlayBuilderPro
   const [revealToken, setRevealToken] = useState(false);
   const [tokenCreatedHere, setTokenCreatedHere] = useState(false);
   const [preview, setPreview] = useState(false);
+  // A replacement of a token created here, waiting for a yes: typed over it,
+  // or carried by an address about to be imported.
+  const [replacement, setReplacement] = useState<{ kind: 'typed'; token: string } | { kind: 'imported' } | null>(null);
 
   const [importText, setImportText] = useState('');
   const [importFailed, setImportFailed] = useState(false);
@@ -134,6 +174,10 @@ export function StreamOverlayBuilder({ onTokenCreated }: StreamOverlayBuilderPro
     setTokenCreatedHere(createdHere);
     setPreview(false);
   };
+
+  // ⚠️ The server showed a token created here once and kept only its hash:
+  // replaced, it cannot be had again. So nothing replaces it without asking.
+  const wouldLoseCreatedToken = (next: string) => tokenCreatedHere && token !== '' && next !== token;
 
   const applyChoices = (choices: OverlayChoices) => {
     setPrinterId(choices.printerId);
@@ -170,6 +214,7 @@ export function StreamOverlayBuilder({ onTokenCreated }: StreamOverlayBuilderPro
         const list = await api.getPrinters();
         if (cancelled) return;
         setPrinters(list);
+        setPrintersLoaded(true);
         // The remembered printer, unless it is gone: then the first one. (An
         // imported address may name a printer this server does not have; that
         // happens later and is kept as it is.)
@@ -189,6 +234,8 @@ export function StreamOverlayBuilder({ onTokenCreated }: StreamOverlayBuilderPro
   }, []);
 
   const buildUrl = useCallback((target: OverlayLayout | null, tokenText: string) => {
+    // The list could not be read: printer 1, the one thing a user can fix by
+    // hand in the address. (A server that HAS no printers builds none — below.)
     const id = printerId ?? 1;
     const params = new URLSearchParams();
     // Emit ?show= in the canonical field order rather than click order, so the
@@ -220,7 +267,10 @@ export function StreamOverlayBuilder({ onTokenCreated }: StreamOverlayBuilderPro
   // One address per output: one, or a landscape and a portrait one for "both".
   // `url` is the real one (copied, opened, previewed); `shown` is what the
   // screen reads, with the token hidden unless it was asked for.
+  // A server with no printers has nothing an address could name.
+  const noPrinter = printersLoaded && printers.length === 0 && printerId == null;
   const outputs = useMemo(() => {
+    if (noPrinter) return [];
     const targets: (OverlayLayout | null)[] = layout === 'both'
       ? ['landscape', 'portrait']
       : [layout === 'auto' ? null : layout];
@@ -230,7 +280,7 @@ export function StreamOverlayBuilder({ onTokenCreated }: StreamOverlayBuilderPro
       url: buildUrl(target, real),
       shown: buildUrl(target, real && !revealToken ? MASKED_TOKEN : real),
     }));
-  }, [layout, buildUrl, token, revealToken]);
+  }, [noPrinter, layout, buildUrl, token, revealToken]);
 
   // What the open preview shows: the outputs once they have stood still.
   const [settled, setSettled] = useState(outputs);
@@ -248,10 +298,15 @@ export function StreamOverlayBuilder({ onTokenCreated }: StreamOverlayBuilderPro
     setFields((prev) => (prev.includes(key) ? prev.filter((f) => f !== key) : [...prev, key]));
   };
 
-  const importAddress = () => {
+  const importAddress = (confirmed = false) => {
     const parsed = parseOverlayUrl(importText);
     if (!parsed) {
       setImportFailed(true);
+      return;
+    }
+    if (!confirmed && parsed.token && wouldLoseCreatedToken(parsed.token)) {
+      // Nothing is taken from the address until this is answered.
+      setReplacement({ kind: 'imported' });
       return;
     }
     applyChoices(parsed.choices);
@@ -471,13 +526,14 @@ export function StreamOverlayBuilder({ onTokenCreated }: StreamOverlayBuilderPro
           <div className="flex items-center gap-2">
             <input
               id="overlay-builder-token"
-              type={revealToken ? 'text' : 'password'}
-              autoComplete="new-password"
-              spellCheck={false}
+              {...secretField(masksText, revealToken)}
               value={token}
-              onChange={(e) => setToken(e.target.value)}
+              onChange={(e) => {
+                const next = e.target.value;
+                if (wouldLoseCreatedToken(next)) setReplacement({ kind: 'typed', token: next });
+                else setToken(next);
+              }}
               placeholder="bblt_…"
-              className="min-w-0 flex-1 px-3 py-2 bg-bambu-dark rounded-md text-white border border-bambu-dark-tertiary focus:border-bambu-green focus:outline-none font-mono text-xs"
             />
             <button
               type="button"
@@ -671,6 +727,11 @@ export function StreamOverlayBuilder({ onTokenCreated }: StreamOverlayBuilderPro
             {t('streamOverlay.builder.resetChoices', 'Reset choices')}
           </button>
         </div>
+        {noPrinter && (
+          <p className="text-sm text-bambu-gray mb-3">
+            {t('streamOverlay.builder.noPrinter', 'Add a printer first: an overlay address names the printer it shows.')}
+          </p>
+        )}
         {outputs.map((output) => (
           <div key={output.layout ?? 'auto'} className="mb-3 last:mb-0">
             {output.layout && (
@@ -731,9 +792,7 @@ export function StreamOverlayBuilder({ onTokenCreated }: StreamOverlayBuilderPro
               carries a token. */}
           <input
             id="overlay-builder-import"
-            type="password"
-            autoComplete="new-password"
-            spellCheck={false}
+            {...secretField(masksText, false)}
             value={importText}
             onChange={(e) => {
               setImportText(e.target.value);
@@ -744,11 +803,10 @@ export function StreamOverlayBuilder({ onTokenCreated }: StreamOverlayBuilderPro
             }}
             placeholder="https://…/overlay/1?show=…"
             aria-invalid={importFailed}
-            className="min-w-0 flex-1 px-3 py-2 bg-bambu-dark rounded-md text-white border border-bambu-dark-tertiary focus:border-bambu-green focus:outline-none font-mono text-xs"
           />
           <button
             type="button"
-            onClick={importAddress}
+            onClick={() => importAddress()}
             className="flex shrink-0 items-center gap-2 px-3 py-2 bg-bambu-dark-tertiary text-white rounded-md hover:bg-bambu-dark-tertiary/80 text-sm"
           >
             <Import className="w-4 h-4" />
@@ -775,8 +833,15 @@ export function StreamOverlayBuilder({ onTokenCreated }: StreamOverlayBuilderPro
       <div className="mt-4">
         <button
           type="button"
-          onClick={() => setPreview((p) => !p)}
-          className="flex items-center gap-2 px-3 py-2 bg-bambu-dark-tertiary text-white rounded-md hover:bg-bambu-dark-tertiary/80 text-sm"
+          disabled={outputs.length === 0}
+          onClick={() => {
+            // A preview opens on the address as it is NOW. The wait before an
+            // OPEN preview follows a change is for a preview already running;
+            // opened inside that wait, it showed the address from before it.
+            if (!preview) setSettled(outputs);
+            setPreview((p) => !p);
+          }}
+          className="flex items-center gap-2 px-3 py-2 bg-bambu-dark-tertiary text-white rounded-md hover:bg-bambu-dark-tertiary/80 text-sm disabled:cursor-not-allowed disabled:opacity-50"
         >
           {preview ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
           {preview
@@ -802,6 +867,25 @@ export function StreamOverlayBuilder({ onTokenCreated }: StreamOverlayBuilderPro
           </div>
         )}
       </div>
+
+      {replacement && (
+        <ConfirmModal
+          variant="warning"
+          title={t('streamOverlay.builder.replaceTokenTitle', 'Replace the token created here?')}
+          message={t(
+            'streamOverlay.builder.replaceTokenMessage',
+            'The token you created on this page cannot be shown again once it is replaced. Copy the address first if you still need it.',
+          )}
+          confirmText={t('streamOverlay.builder.replaceTokenConfirm', 'Replace token')}
+          onCancel={() => setReplacement(null)}
+          onConfirm={() => {
+            const pending = replacement;
+            setReplacement(null);
+            if (pending.kind === 'typed') setToken(pending.token);
+            else importAddress(true);
+          }}
+        />
+      )}
     </div>
   );
 }

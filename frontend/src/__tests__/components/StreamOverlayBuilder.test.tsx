@@ -166,6 +166,32 @@ describe('StreamOverlayBuilder', () => {
     expect(document.querySelector('iframe')?.getAttribute('src')).toContain('/overlay/1');
   });
 
+  it('previews the address as it is now, also right after a change', async () => {
+    const user = userEvent.setup();
+    render(<StreamOverlayBuilder />);
+    await waitFor(() => expect(shownUrl()).toContain('/overlay/1'));
+    // Let the first address settle, so the change below is the only one pending.
+    await new Promise((resolve) => setTimeout(resolve, 400));
+
+    // Changed and previewed at once, inside the wait an OPEN preview keeps
+    // before it follows the address.
+    fireEvent.change(screen.getByLabelText('Frame rate'), { target: { value: '7' } });
+    await user.click(screen.getByText('Show preview'));
+
+    expect(document.querySelector('iframe')?.getAttribute('src')).toContain('fps=7');
+  });
+
+  it('builds no address, and says why, when the server has no printers', async () => {
+    server.use(http.get('/api/v1/printers', () => HttpResponse.json([])));
+    render(<StreamOverlayBuilder />);
+
+    expect(await screen.findByText(/Add a printer first/)).toBeInTheDocument();
+    // Not "/overlay/1": that names a printer nobody has.
+    expect(document.querySelectorAll('code')).toHaveLength(0);
+    expect(screen.queryByRole('link', { name: 'Open' })).not.toBeInTheDocument();
+    expect(screen.getByText('Show preview').closest('button')).toBeDisabled();
+  });
+
   it('still builds a URL when the printer list cannot be loaded', async () => {
     server.use(http.get('/api/v1/printers', () => HttpResponse.json({ detail: 'nope' }, { status: 500 })));
     render(<StreamOverlayBuilder />);
