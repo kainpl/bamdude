@@ -391,7 +391,13 @@ export function StreamOverlayPage() {
     );
   }
 
-  const isPrinting = status.state === 'RUNNING' || status.state === 'PAUSE';
+  // ⚠️ A dropped MQTT session flips only `connected`: the server keeps answering
+  // with the last state, progress, layers, ETA and temperatures it cached. On a
+  // broadcast those would sit frozen and look live, so an offline printer shows
+  // the offline line and none of them. The file name stays — it names the job
+  // that was running, which is still true.
+  const online = status.connected;
+  const isPrinting = online && (status.state === 'RUNNING' || status.state === 'PAUSE');
   const progress = status.progress || 0;
   // Append the kiosk token directly rather than leaning on withStreamToken's
   // module cache — the cache is populated by an effect and would miss the first
@@ -448,7 +454,7 @@ export function StreamOverlayPage() {
           )}
 
           {/* Status text */}
-          {config.showStatus && (
+          {config.showStatus && online && (
             <div className={`${sizes.text} text-white/70 mb-2`}>
               {getStatusText(status, t)}
             </div>
@@ -512,7 +518,7 @@ export function StreamOverlayPage() {
               so a single-nozzle machine shows one nozzle, and a model without a
               chamber sensor shows no chamber row even with `chamber` in
               ?show= (the backend omits the reading entirely for those). */}
-          {tempReadings.length > 0 && (
+          {online && tempReadings.length > 0 && (
             <div className={`flex items-center ${sizes.gap} flex-wrap mt-2`}>
               {tempReadings.map((reading) => (
                 <TempReading

@@ -364,6 +364,54 @@ describe('StreamOverlayPage', () => {
         expect(screen.getByText('Printer offline')).toBeInTheDocument();
       });
     });
+
+    // A dropped MQTT session flips only `connected`; the last state, progress,
+    // layers, ETA and temperatures stay in the server's cache.
+    const frozenMidPrint = {
+      ...mockStatusPrinting,
+      connected: false,
+      temperatures: { nozzle: 219.6, nozzle_target: 220, bed: 60, bed_target: 60 },
+    };
+    const allFields = '?show=progress,layers,eta,filename,status,nozzle,bed';
+
+    function expectNoLiveFigures() {
+      // Said once, not also as a stale "Printing" on the status line.
+      expect(screen.getAllByText('Printer offline')).toHaveLength(1);
+      expect(screen.queryByText('Printing')).not.toBeInTheDocument();
+      expect(screen.queryByText('45%')).not.toBeInTheDocument();
+      expect(screen.queryByText('Progress')).not.toBeInTheDocument();
+      expect(screen.queryByText('150')).not.toBeInTheDocument();
+      expect(screen.queryByText('300')).not.toBeInTheDocument();
+      expect(screen.queryByText(/ETA/)).not.toBeInTheDocument();
+      expect(screen.queryByText('Nozzle')).not.toBeInTheDocument();
+      expect(screen.queryByText('60°C')).not.toBeInTheDocument();
+      // The last known job name is a fact about the past, not a live figure.
+      expect(screen.getByText('Benchy')).toBeInTheDocument();
+    }
+
+    it('withholds the frozen figures of a printer that went offline mid-print', async () => {
+      server.use(http.get('/api/v1/printers/:id/status', () => HttpResponse.json(frozenMidPrint)));
+      renderOverlayPage(1, allFields);
+
+      await waitFor(() => {
+        expect(screen.getByText('Printer offline')).toBeInTheDocument();
+      });
+      expectNoLiveFigures();
+    });
+
+    it('withholds them on the token-authed kiosk feed too', async () => {
+      server.use(
+        http.get('/api/v1/printers/:id/overlay-status', () =>
+          HttpResponse.json({ ...frozenMidPrint, camera_rotation: 0, gcode_file: 'plate_1.gcode', time_format: 'system' }),
+        ),
+      );
+      renderOverlayPage(1, `${allFields}&token=obs-tok`);
+
+      await waitFor(() => {
+        expect(screen.getByText('Printer offline')).toBeInTheDocument();
+      });
+      expectNoLiveFigures();
+    });
   });
 
   describe('temperatures', () => {
