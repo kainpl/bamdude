@@ -217,12 +217,13 @@ async def an_execution(
         queue = await db.get(PrinterQueue, rig.queue_id)
         queue.status, queue.current_item_id = "printing", item.id
         await db.commit()
-        archive_id, item_id = archive.id, item.id
+        archive_id, item_id, archive_identity = archive.id, item.id, archive.recovery_identity
     if bound:
         bind_print_run(
             rig.manager,
             printer_id=rig.printer_id,
             archive_id=archive_id,
+            archive_identity=archive_identity,
             queue_item_id=item_id,
             claim_started_at=started,
             observed_subtask_id="81",

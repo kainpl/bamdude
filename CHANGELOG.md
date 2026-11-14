@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+- Updating the runout archive, runout zero-point or bidirectional AMS-sync switches with an explicit null again uses their established default behavior instead of rejecting the settings save. The settings response and accounting readers stay consistent.
+
 - Scheduled Git backups now require explicit approval by a current administrator. Existing configurations pause until an administrator reviews and saves them in Settings → Backup. A blocked run has its own reason and history, a separate last-success time, support counters and one administrator inbox notice per blocked period; schedules remain enabled. Approval survives signing out or resetting a password, pauses when its approving account loses access, and cannot pass to a recreated account. Partial Git restore validates ordinary settings, preserves local integration destinations and checks the initiating administrator again after remote reads. See the [backup approval guide](docs/development/backup-approval.md).
 
 - Open WebSockets, camera viewers and private media now recheck the issuing credential and current access. Revoking a session or token stops its own viewers while other devices and shared cameras keep running. Live status hides private print details outside the viewer's current permissions and printer scope. Expired derivative links can be renewed through a still-valid parent; temporary authentication failures remain retryable.

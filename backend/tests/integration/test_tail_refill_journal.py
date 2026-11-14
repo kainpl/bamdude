@@ -605,7 +605,8 @@ async def test_a_seed_that_keeps_failing_ends_the_hold_with_the_feed_unknown(
     ] == [(UNKNOWN_FEED, 0), (TRAY, 50)]
 
 
-async def test_a_seed_retry_leaves_a_print_that_moved_on_alone(db_session, incident, monkeypatch, seed_retries):
+@pytest.mark.parametrize("joined", [False, True], ids=["watched-start", "joined-in-flight"])
+async def test_a_seed_retry_leaves_a_print_that_moved_on_alone(db_session, incident, monkeypatch, seed_retries, joined):
     import logging
 
     from backend.app.main import _restore_usage_tracking_session
@@ -621,13 +622,22 @@ async def test_a_seed_retry_leaves_a_print_that_moved_on_alone(db_session, incid
         await _restore_usage_tracking_session(
             printer.id, client.state, db_session, logging.getLogger(__name__), generation=generation
         )
-        client._previous_gcode_state, client._was_running = "IDLE", False
+        # A watched new start needs no seed. Catching a run already in flight
+        # instead creates its own hold, which the previous generation must not end.
+        client._previous_gcode_state = "RUNNING" if joined else "IDLE"
+        client._previous_gcode_file = None if joined else "plate.3mf"
+        client._was_running = False
         client._process_message({"print": {"gcode_state": "RUNNING", "gcode_file": "next.3mf"}})
+        next_generation = client.journal_generation()
+        next_log = list(client.state.tray_change_log)
+        assert next_generation != generation
+        assert client.journal_held() is joined
         await seed_retries.pop()
 
     assert len(calls) == 1  # the retry of the old print read nothing
-    assert client.journal_generation() != generation
-    assert client.journal_held()  # the next print's own hold, not ended by the old print's retry
+    assert client.journal_generation() == next_generation
+    assert client.journal_held() is joined
+    assert client.state.tray_change_log == next_log
 
 
 # ── F-R3 / F-R4 · an assignment while the journal waits for its seed ─────────
