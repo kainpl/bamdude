@@ -36,6 +36,7 @@ const result = (over: Partial<AssemblyJobResult> = {}): AssemblyJobResult => ({
   parts: [],
   printers: [row()],
   trashed: [],
+  removed: [],
   kept: [],
   ...over,
 });

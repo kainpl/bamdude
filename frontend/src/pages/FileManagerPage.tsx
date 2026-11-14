@@ -2597,13 +2597,13 @@ export function FileManagerPage() {
   );
 
   // "Assemble project" lays out raw models: every selected file, in the order shown. One file that is not
-  // a mesh it can read (STL / OBJ) disables the button, with the reason in its title.
+  // a model it can read (STL / OBJ, or STEP converted on the server) disables the button, with the reason in its title.
   const selectedForAssembly = useMemo(
     () => (files ?? []).filter((f) => selectedFiles.includes(f.id)),
     [files, selectedFiles],
   );
   const notAssemblable = selectedForAssembly.filter(
-    (f) => !['stl', 'obj'].includes((f.file_type ?? '').toLowerCase()),
+    (f) => !['stl', 'obj', 'step', 'stp'].includes((f.file_type ?? '').toLowerCase()),
   );
   const assemblyBlocked = notAssemblable.length > 0;
 

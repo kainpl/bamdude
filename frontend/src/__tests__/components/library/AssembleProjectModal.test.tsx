@@ -62,6 +62,7 @@ const okResult = (over: Partial<AssemblyJobResult> = {}): AssemblyJobResult => (
     },
   ],
   trashed: [],
+  removed: [],
   kept: [],
   ...over,
 });
@@ -239,6 +240,64 @@ describe('AssembleProjectModal', () => {
     fireEvent.click(within(dialog).getAllByRole('button', { name: 'Close' })[0]);
     expect(onClose).toHaveBeenCalled();
     expect(cancelled).toBe(1);
+  });
+
+  it('does not start a re-layout with a preset that is no longer there', async () => {
+    server.use(
+      http.get('/api/v1/library/files/57/assembly', () =>
+        HttpResponse.json({
+          set_id: 'b'.repeat(32),
+          base_name: 'jars',
+          parts: [{ name: 'jar.stl', quantity: 1, fill: false, orientation: 'as_is' }],
+          printer: {
+            printer: { source: 'local', id: '1' },
+            process: { source: 'local', id: '99' },
+            filament: { source: 'local', id: '20' },
+            nozzle: 1,
+            model: 'X1C',
+          },
+          layout: { spacing: 2, rotation_step: 90, centre: true, split_plates: false },
+          plates: [],
+          set_files: [{ id: 57, filename: 'jars.3mf' }],
+        }),
+      ),
+    );
+    open({ kind: 'relayout', fileId: 57, filename: 'jars.3mf' });
+    const dialog = await screen.findByRole('dialog', { name: 'Re-layout project' });
+    expect(
+      await within(dialog).findByText('A preset this project was assembled with is no longer available — choose another one'),
+    ).toBeInTheDocument();
+    const start = within(dialog).getByRole('button', { name: 'Re-layout' });
+    expect(start).toBeDisabled();
+    fireEvent.change(within(target(0)).getByRole('combobox', { name: 'Process' }), { target: { value: 'local:10' } });
+    await waitFor(() => expect(start).toBeEnabled());
+    expect(within(dialog).queryByText(/no longer available/)).not.toBeInTheDocument();
+  });
+
+  it('says that a previous file on an external share was removed, not trashed', async () => {
+    jobState = { job_id: 31, status: 'completed', kind: 'assembly', result: okResult({ removed: [5] }) };
+    open();
+    const dialog = await screen.findByRole('dialog', { name: 'Assemble project' });
+    await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Assemble' })).toBeEnabled());
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Assemble' }));
+    const summary = await screen.findByTestId('assemble-summary');
+    expect(
+      within(summary).getByText('1 previous file was removed from the library; the file itself stays on its share.'),
+    ).toBeInTheDocument();
+  });
+
+  it('says which STEP file is being converted before anything is laid out', async () => {
+    jobState = {
+      job_id: 31,
+      status: 'running',
+      kind: 'assembly',
+      progress: { stage: 'converting', convert: 2, convert_count: 3 },
+    };
+    open();
+    const dialog = await screen.findByRole('dialog', { name: 'Assemble project' });
+    await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Assemble' })).toBeEnabled());
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Assemble' }));
+    expect(await screen.findByText('Converting STEP file 2 of 3…')).toBeInTheDocument();
   });
 
   it('counts what is placed while a plate is being filled, without a made-up total', async () => {

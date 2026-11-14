@@ -51,6 +51,7 @@ const FILES = [
   file(2, 'lid.obj', 'obj'),
   file(3, 'old.3mf', '3mf'),
   file(4, 'jars — X1C.3mf', '3mf', { can_relayout: true, source_type: 'assembled' }),
+  file(5, 'bracket.step', 'step'),
 ];
 const BASE = ['library:read_all', 'library:update_all'];
 const EMPTY = { printer: [], process: [], filament: [] };
@@ -102,7 +103,16 @@ describe('FileManagerPage — "Assemble project"', () => {
     show('1,3');
     const button = await screen.findByRole('button', { name: 'Assemble project' });
     expect(button).toBeDisabled();
-    expect(button).toHaveAttribute('title', expect.stringContaining('Only STL and OBJ models'));
+    expect(button).toHaveAttribute('title', expect.stringContaining('Only STL, OBJ and STEP models'));
+  });
+
+  it('takes a STEP model like a mesh', async () => {
+    show('1,5');
+    const button = await screen.findByRole('button', { name: 'Assemble project' });
+    expect(button).toBeEnabled();
+    fireEvent.click(button);
+    const dialog = await screen.findByRole('dialog', { name: 'Assemble project' });
+    expect(await within(dialog).findByText('bracket.step')).toBeInTheDocument();
   });
 
   it('is absent without the right to upload', async () => {

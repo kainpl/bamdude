@@ -5905,13 +5905,18 @@ export interface AssemblyJobResult {
   parts: AssemblyRejectedPart[];
   printers: AssemblyPrinterResult[];
   trashed: number[];
+  /** Previous files on an external share: their rows are gone, the files themselves stay there. */
+  removed: number[];
   kept: number[];
 }
 
 /** What the packing reports while an assembly job runs (`SliceJobState.progress` of kind `assembly`). */
 export interface AssemblyProgress {
-  stage: 'preparing' | 'waiting' | 'packing' | 'publishing';
+  stage: 'preparing' | 'waiting' | 'converting' | 'packing' | 'publishing';
   position?: number;
+  /** While STEP sources are converted, before anything is packed: which file of how many. */
+  convert?: number;
+  convert_count?: number;
   printer_index?: number;
   printer_count?: number;
   placed?: number;

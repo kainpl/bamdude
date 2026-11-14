@@ -66,6 +66,16 @@ function firstMachinePreset(data: UnifiedPresetsResponse): PresetRef | null {
   return null;
 }
 
+/**
+ * A chosen preset the listing no longer holds — a re-layout opens with the presets the file was made with,
+ * and one of them may have been deleted since. Its select shows nothing, so the row has to say it.
+ */
+function targetPresetGone(data: UnifiedPresetsResponse, target: TargetRow): boolean {
+  return (['printer', 'process', 'filament'] as const).some(
+    (slot) => target[slot] !== null && resolvePresetName(data, target[slot], slot) === null,
+  );
+}
+
 const printerInfoQuery = (printer: PresetRef | null) => ({
   queryKey: ['assemblyPrinterInfo', printer?.source, printer?.id],
   queryFn: () => api.getAssemblyPrinterInfo(printer as PresetRef),
@@ -111,6 +121,7 @@ function TargetEditor({
   const printerName = resolvePresetName(data, target.printer, 'printer');
   const info = useQuery(printerInfoQuery(target.printer));
   const nozzles = info.data?.nozzles ?? [];
+  const presetGone = targetPresetGone(data, target);
 
   // A printer with one nozzle has nothing to choose; one that lost the chosen nozzle falls back to the first.
   useEffect(() => {
@@ -182,6 +193,12 @@ function TargetEditor({
             ))}
           </Select>
         </label>
+      )}
+      {presetGone && (
+        <p className="text-xs text-amber-400 flex items-center gap-1">
+          <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+          {t('fileManager.assemble.presetGone')}
+        </p>
       )}
       {info.error instanceof ApiError && (
         <p className="text-xs text-amber-400 flex items-center gap-1">
@@ -263,6 +280,12 @@ function progressLine(t: ReturnType<typeof useTranslation>['t'], progress: Assem
   if (!progress) return t('fileManager.assemble.progress.preparing');
   if (progress.stage === 'waiting') {
     return t('fileManager.assemble.progress.waiting', { position: progress.position ?? 1 });
+  }
+  if (progress.stage === 'converting') {
+    return t('fileManager.assemble.progress.converting', {
+      file: progress.convert ?? 1,
+      files: progress.convert_count ?? 1,
+    });
   }
   if (progress.stage === 'packing') {
     if (!progress.printer_count) return t('fileManager.assemble.progress.starting');
@@ -427,7 +450,9 @@ export function AssembleProjectModal({ mode, onClose, onOpenFile }: AssembleProj
   const issues = form ? validate(form) : [];
   // the same queries the rows show their warning from: a printer preset that cannot be used blocks the button
   const printerInfos = useQueries({ queries: (form?.targets ?? []).map((target) => printerInfoQuery(target.printer)) });
-  const printerUnusable = printerInfos.some((info) => info.isError);
+  const printerUnusable =
+    printerInfos.some((info) => info.isError) ||
+    (data !== undefined && (form?.targets ?? []).some((target) => targetPresetGone(data, target)));
   const submit = useMutation({
     mutationFn: () =>
       relayout
@@ -510,6 +535,9 @@ export function AssembleProjectModal({ mode, onClose, onOpenFile }: AssembleProj
         ))}
         {result && result.trashed.length > 0 && (
           <p className="text-xs text-bambu-gray">{t('fileManager.assemble.trashed', { count: result.trashed.length })}</p>
+        )}
+        {result && result.removed.length > 0 && (
+          <p className="text-xs text-bambu-gray">{t('fileManager.assemble.removed', { count: result.removed.length })}</p>
         )}
         {result && result.kept.length > 0 && (
           <p className="text-xs text-amber-400">{t('fileManager.assemble.kept', { count: result.kept.length })}</p>
