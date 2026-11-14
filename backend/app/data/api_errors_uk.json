@@ -768,6 +768,7 @@
   "Product not found": "Виріб не знайдено",
   "Product(s) not found: {}": "Виріб(и) не знайдено: {}",
   "Progress unavailable": "Прогрес недоступний",
+  "Project assembly work has not stopped; restart before restoring": "Збирання проєкту ще не завершилося. Перезапустіть BamDude перед відновленням",
   "Project not found": "Замовлення не знайдено",
   "Prometheus metrics not enabled": "Метрики Prometheus не увімкнено",
   "Provide exactly one of archive_id, library_file_id, or source_queue_item_id": "Вкажіть рівно одне з: archive_id, library_file_id або source_queue_item_id",

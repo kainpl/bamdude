@@ -12196,6 +12196,12 @@ async def _application_lifespan(app: FastAPI):
     from backend.app.services.local_worker_broker import stop_local_worker_broker
 
     await start_analysis_runtime(Path(app_settings.base_dir))
+    from backend.app.services.assembly.runtime import start_assembly_runtime, stop_assembly_runtime
+
+    try:
+        await start_assembly_runtime(Path(app_settings.base_dir))
+    except Exception:
+        logging.getLogger(__name__).exception("Assembly service unavailable at startup")
     from backend.app.services.library_file_runtime import start_library_file_runtime, stop_library_file_runtime
 
     try:
@@ -12370,6 +12376,7 @@ async def _application_lifespan(app: FastAPI):
     cancel_running_scans()
     printer_manager.disconnect_all()
     await stop_library_file_runtime()
+    await stop_assembly_runtime()
     await stop_analysis_runtime()
     await stop_local_worker_broker()
     await close_spoolman_client()
