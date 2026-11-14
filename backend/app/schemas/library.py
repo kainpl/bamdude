@@ -208,6 +208,8 @@ class FileResponse(BaseModel):
     # uses this to gate gallery rendering — saves an N-card-page worth of
     # /plates fetches when most files are single-plate.
     is_multi_plate: bool = False
+    # a project assembled here (its input record is inside the file): "Re-layout" is offered for it
+    can_relayout: bool = False
 
     class Config:
         from_attributes = True
@@ -331,6 +333,7 @@ class FileListResponse(BaseModel):
     swap_compatible: bool = False
     swap_compatibility_known: bool  # see ``FileResponse``
     is_multi_plate: bool = False
+    can_relayout: bool = False  # see ``FileResponse``
     # spec §4 - plate 1's (or the only plate's) filament types in slot order,
     # and one compact slice per plate for a multi-plate file (empty otherwise),
     # so the card pages through plates without a /plates request per card.
