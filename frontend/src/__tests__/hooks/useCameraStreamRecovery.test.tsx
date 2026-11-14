@@ -113,6 +113,65 @@ describe('useCameraStreamRecovery', () => {
     expect(result.current.generation).toBe(3);
   });
 
+  // A camera that answers each connection with one frame and then goes silent
+  // looked healthy on every attempt: the frame reset the budget, so the browser
+  // redialled it for ever and never said "No signal".
+  it('gives up on a camera that sends one frame per connection and goes silent', async () => {
+    let opened = Date.now();
+    // The server calls a stream stalled once it has been silent for ten seconds.
+    const read = vi.fn(async () => (Date.now() - opened < 10_000 ? ALIVE : STALLED));
+    const { result } = mount(read);
+    let generation = -1;
+
+    for (let second = 0; second < 600 && result.current.phase !== 'failed'; second += 1) {
+      if (result.current.phase === 'live' && result.current.generation !== generation) {
+        // A new connection: it delivers its one frame, and nothing after it.
+        generation = result.current.generation;
+        opened = Date.now();
+        act(() => result.current.onLoad());
+      }
+      await advance(1000);
+    }
+
+    expect(result.current.phase).toBe('failed');
+    expect(result.current.generation).toBe(5);
+  });
+
+  it('starts the backoff over once the server has seen the stream deliver for a while', async () => {
+    const read = vi.fn().mockResolvedValue(ALIVE);
+    const { result } = mount(read);
+    act(() => result.current.onError());
+    await advance(2000);
+    act(() => result.current.onError());
+    await advance(4000);
+    expect(result.current.generation).toBe(2);
+
+    // A frame, and healthy answers well past the server's stall window.
+    act(() => result.current.onLoad());
+    await advance(25_000);
+    act(() => result.current.onError());
+    await advance(2000);
+    expect(result.current.generation).toBe(3);
+  });
+
+  it('does not start the backoff over on a frame the server has not confirmed', async () => {
+    const read = vi.fn().mockResolvedValue(ALIVE);
+    const { result } = mount(read);
+    act(() => result.current.onError());
+    await advance(2000);
+    act(() => result.current.onError());
+    await advance(4000);
+    expect(result.current.generation).toBe(2);
+
+    act(() => result.current.onLoad());
+    await advance(6000); // one healthy read, inside the stall window
+    act(() => result.current.onError());
+    await advance(2000);
+    expect(result.current.generation).toBe(2); // still the third wait, not the first
+    await advance(6000);
+    expect(result.current.generation).toBe(3);
+  });
+
   it('never has two re-opens pending', async () => {
     const { result } = mount();
     act(() => result.current.onError());

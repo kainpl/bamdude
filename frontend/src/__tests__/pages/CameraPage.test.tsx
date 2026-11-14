@@ -218,17 +218,17 @@ describe('CameraPage', () => {
   });
 
   describe('fps URL parameter (#1131)', () => {
-    // Stream URL only renders once a stream token is available. The page's
-    // `useQuery` for the token is gated on `!!user`, which is unauthenticated
-    // in tests; the `getStreamToken()` module fallback wins instead, so set
-    // it directly per fps test. Cleared in afterEach so other tests aren't
-    // contaminated.
+    // Stream URL only renders once a stream token is available. Signed in, the
+    // page fetches it itself and keeps it. (A token set by hand lasts until the
+    // page's own token sync runs: with nobody signed in it clears the token,
+    // and the page — which follows the token — rightly shows no stream.)
     beforeEach(async () => {
-      const { setStreamToken } = await import('../../api/client');
-      setStreamToken('test-stream-token');
+      const { setAuthToken } = await import('../../api/client');
+      setAuthToken('test-admin-token');
     });
     afterEach(async () => {
-      const { setStreamToken } = await import('../../api/client');
+      const { setAuthToken, setStreamToken } = await import('../../api/client');
+      setAuthToken(null);
       setStreamToken(null);
     });
 

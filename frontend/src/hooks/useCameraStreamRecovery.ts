@@ -57,6 +57,11 @@ export function strikesAfter(strikes: number, bad: boolean): number {
   return bad ? strikes + 1 : 0;
 }
 const MAX_ATTEMPTS = 5;
+/** How long a stream must have been open, with a frame drawn, before a healthy
+ *  answer gives it its retry budget back. Past the server's own stall window
+ *  (10 s without a frame, after a 5 s start): a camera that sends one frame per
+ *  connection and goes silent reads healthy until then, on every attempt. */
+export const STEADY_AFTER_MS = 20_000;
 const FIRST_DELAY_MS = 2000;
 const MAX_DELAY_MS = 30_000;
 
@@ -81,7 +86,11 @@ const MAX_DELAY_MS = 30_000;
  * (`phase` leaves `live`, the view unmounts it and `useCameraImageRef` clears
  * its `src`, which aborts the request) and re-open it under a new `generation`
  * — and a new `viewerId` — after a growing wait: 2 s, 4 s, … 30 s. After five
- * attempts in a row it gives up (`failed`) until `restart`.
+ * attempts in a row it gives up (`failed`) until `restart`. "In a row" ends
+ * when the SERVER has called the stream healthy `STEADY_AFTER_MS` after it
+ * opened and drew a frame — not at the first frame, which a camera that then
+ * goes silent delivers on every connection. (A view that may not ask the
+ * server has only the frame to go by.)
  *
  * There is never a second stream beside a live one: a re-open is scheduled
  * only from `live`, and the old image is gone for the whole wait.
@@ -97,6 +106,9 @@ export function useCameraStreamRecovery({ enabled, readHealth, slowRetryMs }: Op
   const phaseRef = useRef<CameraStreamPhase>('live');
   const attemptsRef = useRef(0);
   const strikesRef = useRef(0);
+  // The stream now open has drawn a frame; and when it was opened.
+  const loadedRef = useRef(false);
+  const openedAtRef = useRef(0);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const dueRef = useRef(false);
   const readRef = useRef(readHealth);
@@ -145,10 +157,12 @@ export function useCameraStreamRecovery({ enabled, readHealth, slowRetryMs }: Op
     reopenAfter(Math.min(MAX_DELAY_MS, FIRST_DELAY_MS * 2 ** attemptsRef.current));
   }, [go, reopenAfter]);
 
-  /** A frame arrived: the next loss starts from the short wait again. */
+  /** A frame arrived. Where the server can be asked, the budget waits for its
+   *  word on a stream that kept delivering; elsewhere the frame is all there is. */
   const onLoad = useCallback(() => {
-    attemptsRef.current = 0;
+    loadedRef.current = true;
     strikesRef.current = 0;
+    if (!readRef.current) attemptsRef.current = 0;
   }, []);
 
   /** Open the stream again now, with a fresh budget (Retry; a new selection). */
@@ -184,6 +198,8 @@ export function useCameraStreamRecovery({ enabled, readHealth, slowRetryMs }: Op
     if (!enabled || phase !== 'live') return;
     let cancelled = false;
     strikesRef.current = 0;
+    loadedRef.current = false;
+    openedAtRef.current = Date.now();
     const timer = setInterval(async () => {
       const read = readRef.current;
       if (!read || document.hidden) return;
@@ -196,6 +212,9 @@ export function useCameraStreamRecovery({ enabled, readHealth, slowRetryMs }: Op
       if (cancelled || health === null) return;
       strikesRef.current = strikesAfter(strikesRef.current, isBadStreamRead(health));
       if (strikesRef.current >= STREAM_STRIKES) lost();
+      else if (strikesRef.current === 0 && loadedRef.current && Date.now() - openedAtRef.current >= STEADY_AFTER_MS) {
+        attemptsRef.current = 0;
+      }
     }, HEALTH_CHECK_MS);
     return () => {
       cancelled = true;

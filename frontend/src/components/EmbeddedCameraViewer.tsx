@@ -202,8 +202,10 @@ export function EmbeddedCameraViewer({ source: sourceProp, name, onClose }: Embe
     stopSentRef.current = false;
     const stopUrl = stopPath(source);
 
+    // For a standalone camera too: with other viewers attached the server
+    // skips the stop, so the window that closes may always say so.
     const sendStopOnce = () => {
-      if (printerId > 0 && !stopSentRef.current) {
+      if (!stopSentRef.current) {
         stopSentRef.current = true;
         const headers: Record<string, string> = {};
         const token = getAuthToken();
@@ -218,7 +220,7 @@ export function EmbeddedCameraViewer({ source: sourceProp, name, onClose }: Embe
       if (countdownIntervalRef.current) clearInterval(countdownIntervalRef.current);
       if (stallCheckIntervalRef.current) clearInterval(stallCheckIntervalRef.current);
     };
-  }, [printerId, source]);
+  }, [source]);
 
   useEffect(() => {
     if (isLive) return;
@@ -311,7 +313,7 @@ export function EmbeddedCameraViewer({ source: sourceProp, name, onClose }: Embe
         stallCheckIntervalRef.current = null;
       }
     };
-  }, [streamLoading, streamError, isReconnecting, isLive, printerId, viewerId, attemptReconnect]);
+  }, [streamLoading, streamError, isReconnecting, isLive, source, viewerId, attemptReconnect]);
 
   // Fullscreen change listener
   useEffect(() => {

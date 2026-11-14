@@ -489,11 +489,22 @@ export function StreamOverlayPage() {
     { health: undefined, at: 0, viewer: undefined },
   );
   const feedCameraRead = useRef(0);
+  // Signed in without `camera:view`: the status route refuses for as long as
+  // the page lives. Asked once, not every five seconds for a whole broadcast.
+  const statusRefused = useRef(false);
   useEffect(() => {
     feedCamera.current = { health: overlay?.camera, at: overlayReadAt, viewer: feedAskedAbout.current };
   }, [overlay, overlayReadAt]);
   const readStreamHealth = useCallback(async (viewerId: string): Promise<CameraStreamHealth | null> => {
-    if (!kiosk) return api.getCameraSourceStatus(printerSource(id), viewerId);
+    if (!kiosk) {
+      if (statusRefused.current) return null;
+      try {
+        return await api.getCameraSourceStatus(printerSource(id), viewerId);
+      } catch (error) {
+        if (error instanceof ApiError && (error.status === 401 || error.status === 403)) statusRefused.current = true;
+        throw error;
+      }
+    }
     const { health, at, viewer } = feedCamera.current;
     if (!health || at === feedCameraRead.current) return null;
     feedCameraRead.current = at;

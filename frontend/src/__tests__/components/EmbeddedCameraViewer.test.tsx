@@ -3,7 +3,7 @@ import { act, fireEvent, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render } from '../utils';
 import { EmbeddedCameraViewer } from '../../components/EmbeddedCameraViewer';
-import { printerSource } from '../../utils/cameraSource';
+import { printerSource, standaloneSource } from '../../utils/cameraSource';
 import { holdsImage, stubBoxSize } from '../stubBoxSize';
 
 describe('floating camera lifecycle', () => {
@@ -93,6 +93,35 @@ describe('floating camera whose own stream the server ended', () => {
     expect(reconnecting).toBe(true);
     expect(statusReads.length).toBeGreaterThan(0);
     for (const url of statusReads) expect(new URL(url, 'http://x').searchParams.get('viewer')).toBe(viewer);
+  });
+});
+
+// A camera that belongs to a place is one upstream for its viewers, like a
+// printer's: the window that closes says so, and asks the CAMERA about itself.
+describe('floating window of a standalone camera', () => {
+  let calls: { url: string; method: string }[] = [];
+  beforeEach(() => {
+    vi.useFakeTimers();
+    calls = [];
+    vi.spyOn(global, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input instanceof Request ? input.url : input);
+      calls.push({ url, method: (input instanceof Request ? input.method : init?.method) ?? 'GET' });
+      return new Response(JSON.stringify({ active: true, stalled: false }));
+    });
+  });
+  afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
+
+  it('tells the server when it closes, and asks the camera route whether its stream is alive', async () => {
+    const view = render(<EmbeddedCameraViewer source={standaloneSource(3)} name="Rack" onClose={() => {}} />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    fireEvent.load(screen.getByAltText('Camera stream'));
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+    expect(calls.some((call) => /\/api\/v1\/cameras\/3\/status/.test(call.url))).toBe(true);
+    expect(calls.some((call) => /\/printers\//.test(call.url))).toBe(false);
+
+    view.unmount();
+
+    expect(calls.filter((call) => call.url.endsWith('/api/v1/cameras/3/stop') && call.method === 'POST')).toHaveLength(1);
   });
 });
 

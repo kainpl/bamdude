@@ -284,9 +284,22 @@ export function getAuthToken(): string | null {
 // Stream token for image/video URLs loaded via <img>/<video> tags
 // (these can't send Authorization headers, so a query param token is used)
 let streamToken: string | null = null;
+const streamTokenListeners = new Set<() => void>();
 
 export function setStreamToken(token: string | null) {
+  if (token === streamToken) return;
   streamToken = token;
+  streamTokenListeners.forEach((listener) => listener());
+}
+
+/** Told when the stream token changes — for `useSyncExternalStore`. The owner
+ *  of a live stream image re-renders on it and gives the image its new address
+ *  itself, once (`useCameraImageRef`). */
+export function subscribeStreamToken(listener: () => void): () => void {
+  streamTokenListeners.add(listener);
+  return () => {
+    streamTokenListeners.delete(listener);
+  };
 }
 
 export function getStreamToken(): string | null {

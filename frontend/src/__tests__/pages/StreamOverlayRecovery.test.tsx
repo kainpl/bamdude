@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter, Route, Routes } from 'react-router';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { api, type OverlayStatus } from '../../api/client';
+import { api, ApiError, type OverlayStatus } from '../../api/client';
 import { StreamOverlayPage } from '../../pages/StreamOverlayPage';
 import { printerSource } from '../../utils/cameraSource';
 
@@ -205,6 +205,26 @@ describe('the stream overlay in OBS (token in the URL)', () => {
 });
 
 describe('the stream overlay in a signed-in browser', () => {
+  it('stops asking the camera status once it is refused', async () => {
+    vi.spyOn(api, 'getPrinter').mockResolvedValue({ id: 1, name: 'X1', camera_rotation: 0 } as never);
+    vi.spyOn(api, 'getPrinterStatus').mockResolvedValue({ connected: true, state: 'IDLE', progress: 0 } as never);
+    vi.spyOn(api, 'getUiPreferences').mockResolvedValue({ time_format: 'system' } as never);
+    vi.spyOn(api, 'getWebSocketToken').mockResolvedValue({ token: 'ws' } as never);
+    // A user without `camera:view`: the route answers 403 for as long as the page lives.
+    const status = vi.spyOn(api, 'getCameraSourceStatus').mockRejectedValue(new ApiError('forbidden', 403));
+    mount('');
+    await advance(100);
+    const first = image();
+
+    await advance(300_000);
+
+    expect(status).toHaveBeenCalledTimes(1);
+    // The image's own `error` is still acted on.
+    expect(image()).toBe(first);
+    fireEvent.error(first);
+    expect(screen.queryByAltText('Camera stream')).toBeNull();
+  });
+
   it('asks the camera status route and re-opens an ended stream', async () => {
     vi.spyOn(api, 'getPrinter').mockResolvedValue({ id: 1, name: 'X1', camera_rotation: 0 } as never);
     vi.spyOn(api, 'getPrinterStatus').mockResolvedValue({ connected: true, state: 'IDLE', progress: 0 } as never);
