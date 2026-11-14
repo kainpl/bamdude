@@ -1,7 +1,7 @@
 /**
  * Long-lived camera-stream tokens (#1108).
  *
- * Drop-in panel for Settings → API Keys: list + create + revoke UI for
+ * Drop-in panel for Settings → Camera: list + create + revoke UI for
  * the long-lived counterpart to the 60-minute ephemeral camera-stream
  * token. Designed to live inside an existing card without page chrome of
  * its own.

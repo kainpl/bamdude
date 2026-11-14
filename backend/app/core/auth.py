@@ -2094,9 +2094,7 @@ def require_camwall_token():
         if not token or not await verify_camwall_token(token):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=(
-                    "Valid Cam Wall token required. Create one under Settings > API Keys with the 'Cam Wall' scope."
-                ),
+                detail="Valid Cam Wall token required. Create one under Settings > Camera with the 'Cam Wall' scope.",
             )
 
     return checker
@@ -2133,7 +2131,7 @@ def require_overlay_token():
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail=(
-                    "Valid overlay token required. Create one under Settings > API Keys "
+                    "Valid overlay token required. Create one under Settings > Camera "
                     "with the 'Streaming Overlay' scope."
                 ),
             )
