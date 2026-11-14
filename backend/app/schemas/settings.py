@@ -309,6 +309,10 @@ class AppSettings(BaseModel):
         default=False,
         description="Auto-queue: use Bambu Studio compatible printer models when no exact model is ready",
     )
+    default_force_color_match: bool = Field(
+        default=False,
+        description="Default exact colour matching for new order-plan jobs and the print dialog",
+    )
     auto_order_for_batches: bool = Field(
         default=True,
         description="Print dialog: a submission of two or more prints proposes a new order for the batch (spec 2026-09-06, Decision 6)",
@@ -893,6 +897,7 @@ class AppSettingsUpdate(BaseModel):
     queue_shortest_first: bool | None = None
     auto_queue_rebalance_models: bool | None = None
     auto_queue_compatible_models: bool | None = None
+    default_force_color_match: bool | None = None
     auto_order_for_batches: bool | None = None
     preheat_enabled: bool | None = None
     preheat_filament_targets: str | None = None

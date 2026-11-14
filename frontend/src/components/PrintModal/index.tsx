@@ -381,6 +381,10 @@ export function PrintModal({
   const [dispatchMode, setDispatchMode] = useState<'specific' | 'auto'>(
     initialDispatchMode ?? seededAnswer?.dispatchMode ?? 'specific',
   );
+  const hasColorMatchAnswer = mode === 'edit-queue-item' || mode === 'edit-auto-item' ||
+    isSnapshotSource || !!seededAnswer || !!initialRouting || !!queueItem?.filament_routing;
+  const colorMatchAnswered = useRef(hasColorMatchAnswer);
+  const [initialColorMatchReady, setInitialColorMatchReady] = useState(hasColorMatchAnswer);
   const [autoModeOptions, setAutoModeOptions] = useState<AutoModeOptionsState>(() => {
     if (mode === 'edit-auto-item' && autoQueueItem) {
       return {
@@ -445,10 +449,30 @@ export function PrintModal({
   const effectivePrinterId = selectedPrinters.length > 0 ? selectedPrinters[0] : null;
 
   // Queries
-  const { data: settings } = useQuery({
+  const {
+    data: settings,
+    isPending: uiPreferencesPending,
+    isFetching: uiPreferencesFetching,
+    isError: uiPreferencesError,
+    refetch: reloadUiPreferences,
+  } = useQuery({
     queryKey: ['ui-preferences'],
     queryFn: api.getUiPreferences,
   });
+
+  // A default answers only a fresh dialog, once. Existing/seeded choices and
+  // an operator who answered while this query was in flight keep their answer.
+  useEffect(() => {
+    if (colorMatchAnswered.current || !settings || uiPreferencesFetching || uiPreferencesError) return;
+    colorMatchAnswered.current = true;
+    setAutoModeOptions(previous => ({ ...previous, force_color_match: settings.default_force_color_match ?? false }));
+    setInitialColorMatchReady(true);
+  }, [settings, uiPreferencesFetching, uiPreferencesError]);
+
+  const answerColorMatch = () => {
+    colorMatchAnswered.current = true;
+    setInitialColorMatchReady(true);
+  };
 
   const currencySymbol = getCurrencySymbol(settings?.currency || 'USD');
   const defaultCostPerKg = settings?.default_filament_cost ?? 0;
@@ -2478,7 +2502,7 @@ export function PrintModal({
   const swapRequestBlocked = !isAutoMode && swapFact === 'unknown' && swapMacrosRequested && !swapOptOut;
 
   const canSubmit = useMemo(() => {
-    if (isPending) return false;
+    if (isPending || !initialColorMatchReady) return false;
     if (incompatibleModelSelection) return false;
     // Our swap macros are requested over a source nobody declared (D2): refused,
     // never guessed — until this job opts out of them.
@@ -2522,6 +2546,7 @@ export function PrintModal({
     perPlateReqsFailed,
     incompatibleModelSelection,
     swapRequestBlocked,
+    initialColorMatchReady,
   ]);
 
   // --- Self-submit for a grouped run ------------------------------------
@@ -2554,6 +2579,10 @@ export function PrintModal({
 
   useEffect(() => {
     if (!autoSubmitWhenUnambiguous || autoSubmittedRef.current || autoSubmitRefused) return;
+    if (!initialColorMatchReady) {
+      if (uiPreferencesError) setAutoSubmitRefused(true);
+      return;
+    }
 
     // ⚠️ `canSubmit` is a two-valued answer to a three-valued question. Most of
     // its false cases are "not yet" — plates loading, per-plate requirements in
@@ -2650,6 +2679,8 @@ export function PrintModal({
   }, [
     autoSubmitWhenUnambiguous,
     autoSubmitRefused,
+    initialColorMatchReady,
+    uiPreferencesError,
     canSubmit,
     isAutoMode,
     selectedPrinters.length,
@@ -2878,6 +2909,22 @@ export function PrintModal({
               </div>
             )}
 
+            {!initialColorMatchReady && (uiPreferencesPending || uiPreferencesFetching) && (
+              <p className="text-sm text-bambu-gray mb-3">{t('common.loading')}</p>
+            )}
+            {!initialColorMatchReady && uiPreferencesError && (
+              <div role="alert" className="rounded border border-amber-500/40 p-3 mb-3 text-sm text-bambu-gray">
+                <p>{t('settings.printDefaultsUnavailable')}</p>
+                <div className="flex flex-wrap gap-2 mt-2">
+                  <Button type="button" variant="secondary" onClick={() => void reloadUiPreferences()}>
+                    {t('settings.retryPrintDefaults')}
+                  </Button>
+                  <Button type="button" variant="secondary" onClick={answerColorMatch}>
+                    {t('settings.useCurrentPrintChoices')}
+                  </Button>
+                </div>
+              </div>
+            )}
             {/* Archive name */}
             <p className={`text-sm text-bambu-gray ${mode === 'reprint' ? 'mb-4' : ''}`}>
               {mode === 'reprint' ? (
@@ -3007,7 +3054,10 @@ export function PrintModal({
               </label>
               <label className="flex gap-2 items-center text-white">
                 <input type="checkbox" checked={autoModeOptions.force_color_match}
-                  onChange={event => setAutoModeOptions(previous => ({ ...previous, force_color_match: event.target.checked }))} />
+                  onChange={event => {
+                    answerColorMatch();
+                    setAutoModeOptions(previous => ({ ...previous, force_color_match: event.target.checked }));
+                  }} />
                 {t('printModal.autoMode.forceColorMatch')}
               </label>
               <label className="flex gap-2 items-center text-white">
@@ -3027,7 +3077,10 @@ export function PrintModal({
                 onRetry={() => { void routingPreview.refetch(); }}
                 overrides={autoOverrides}
                 onOverridesChange={setAutoOverrides}
-                onChange={setAutoModeOptions}
+                onChange={next => {
+                  if (next.force_color_match !== autoModeOptions.force_color_match) answerColorMatch();
+                  setAutoModeOptions(next);
+                }}
                 printers={printers}
                 slicedForModel={slicedForModel}
                 modelMatrix={modelMatrix?.models}
