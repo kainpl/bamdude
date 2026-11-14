@@ -231,3 +231,69 @@ async def test_two_returns_then_third_physical_failure_stays_failed(failed_auto_
         assert (
             len((await db.scalars(select(AutoQueueReturn).where(AutoQueueReturn.returned_at.is_not(None)))).all()) == 2
         )
+
+
+async def test_failed_swap_hold_returns_without_clearing_old_physical_debt(failed_auto_run):
+    from backend.app.services import swap_terminal
+
+    rig, archive_id, job_id, auto_id, _ = failed_auto_run
+    async with rig.db() as db:
+        (await db.get(Printer, rig.printer_id)).swap_mode_enabled = True
+        (await db.get(PrintQueueItem, job_id)).execute_swap_macros = True
+        archive = await db.get(PrintArchive, archive_id)
+        archive.extra_data = {**archive.extra_data, "swap_macro_events_pending": [swap_terminal.CHANGE_TABLE_EVENT]}
+        await db.commit()
+    receipt_id, now = await ready(failed_auto_run)
+    async with rig.db() as db:
+        archive = await db.get(PrintArchive, archive_id)
+        queue = await db.get(PrinterQueue, rig.queue_id)
+        assert archive.extra_data["swap_hold"]["reason"] == swap_terminal.HOLD_NOT_COMPLETED
+        assert queue.status == "paused"
+        operator_pause = queue.is_paused
+        old = archive.extra_data
+    assert (await returns.return_ready(receipt_id, now=now)).ordinal == 1
+    async with rig.db() as db:
+        assert (await db.get(AutoQueueItem, auto_id)).status == "pending"
+        assert (await db.get(PrintQueueItem, job_id)).status == "failed"
+        assert (await db.get(PrintArchive, archive_id)).extra_data == old
+        queue = await db.get(PrinterQueue, rig.queue_id)
+        assert queue.status == "paused" and queue.is_paused == operator_pause
+    rig.macro.assert_not_awaited()
+
+
+@pytest.mark.parametrize("unavailable", [False, True])
+async def test_return_uses_accepted_bytes_after_original_is_gone(failed_auto_run, tmp_path, unavailable):
+    from backend.app.models.library import LibraryFile
+    from backend.app.models.queue_source import QueueSource
+
+    rig, _, job_id, auto_id, _ = failed_auto_run
+    async with rig.db() as db:
+        original = LibraryFile(
+            filename="original.3mf", file_path=str(tmp_path / "missing-original.3mf"), file_type="3mf", file_size=999
+        )
+        db.add(original)
+        await db.flush()
+        (await db.get(PrintQueueItem, job_id)).library_file_id = original.id
+        (await db.get(AutoQueueItem, auto_id)).library_file_id = original.id
+        await db.commit()
+    receipt_id, at = await ready(failed_auto_run)
+    async with rig.db() as db:
+        job = await db.get(PrintQueueItem, job_id)
+        auto = await db.get(AutoQueueItem, auto_id)
+        job.library_file_id = auto.library_file_id = None
+        await db.delete(await db.get(LibraryFile, original.id))
+        source = await db.get(QueueSource, job.queue_source_id)
+        blob_path = tmp_path / source.relative_path
+        assert blob_path.is_relative_to(tmp_path)
+        if unavailable:
+            blob_path.write_bytes(b"corrupted accepted bytes")
+        await db.commit()
+    if unavailable:
+        with pytest.raises(returns.ReturnRefused, match="source_unavailable"):
+            await returns.return_ready(receipt_id, now=at)
+    else:
+        assert (await returns.return_ready(receipt_id, now=at)).ordinal == 1
+    async with rig.db() as db:
+        auto = await db.get(AutoQueueItem, auto_id)
+        assert auto.failed_return_count == int(not unavailable)
+        assert auto.status == ("assigned" if unavailable else "pending")
