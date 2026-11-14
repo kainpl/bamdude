@@ -324,7 +324,15 @@ def _reflect_sqlite_schema(sqlite_path: Path, models_metadata) -> MetaData:
     does not matter. Reflection cannot carry an expression index (it warns
     and skips), which ``conform_imported_schema`` covers after the chain.
     """
-    from sqlalchemy import TIMESTAMP, Boolean, CheckConstraint, MetaData, create_engine, text as sa_text
+    from sqlalchemy import (
+        TIMESTAMP,
+        Boolean,
+        CheckConstraint,
+        MetaData,
+        UniqueConstraint,
+        create_engine,
+        text as sa_text,
+    )
     from sqlalchemy.dialects.postgresql import BYTEA
     from sqlalchemy.schema import DefaultClause
     from sqlalchemy.types import DateTime, LargeBinary, _Binary
@@ -379,6 +387,16 @@ def _reflect_sqlite_schema(sqlite_path: Path, models_metadata) -> MetaData:
         for con in [c for c in table.constraints if isinstance(c, CheckConstraint)]:
             table.constraints.discard(con)
             CheckConstraint(sa_text(_pg_predicate(str(con.sqltext), booleans)), name=con.name, table=table)
+        # A UNIQUE constraint and an index may share a name in SQLite, where the
+        # constraint's own index is ``sqlite_autoindex_…``: ``create_all`` writes
+        # ``CONSTRAINT uq_x UNIQUE (…)`` and a migration's ``CREATE UNIQUE INDEX IF
+        # NOT EXISTS uq_x`` then sees no such index and adds one (m222,
+        # ``uq_user_notifications_dedupe_key``). PostgreSQL names the constraint's
+        # index after the constraint, so the second one is "relation already
+        # exists" and the whole import stops. The constraint already enforces it.
+        constraint_names = {c.name for c in table.constraints if isinstance(c, UniqueConstraint) and c.name}
+        for index in [i for i in table.indexes if i.unique and i.name in constraint_names]:
+            table.indexes.discard(index)
         for index in table.indexes:
             where = index.kwargs.get("sqlite_where")
             if where is not None:

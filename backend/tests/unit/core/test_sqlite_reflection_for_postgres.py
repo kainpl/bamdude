@@ -103,3 +103,32 @@ class TestReflectedSchema:
         index_ddl = str(CreateIndex(index).compile(dialect=postgresql.dialect()))
         assert index_ddl.strip().endswith("WHERE is_active = true")
         assert "UNIQUE" in index_ddl
+
+
+class TestConstraintAndIndexOfOneName:
+    def test_an_index_named_like_a_unique_constraint_is_not_created_twice(self, tmp_path):
+        """``create_all`` writes the named constraint, a migration's ``CREATE UNIQUE INDEX IF NOT
+        EXISTS`` adds an index of the same name beside it (SQLite keeps the constraint's own as
+        an autoindex). PostgreSQL names the constraint's index after the constraint, so the
+        second one must not come across."""
+        path = tmp_path / "twice.db"
+        con = sqlite3.connect(path)
+        con.executescript(
+            """
+            CREATE TABLE notes (
+                id INTEGER NOT NULL,
+                dedupe_key VARCHAR(160),
+                owner VARCHAR(40),
+                PRIMARY KEY (id),
+                CONSTRAINT uq_notes_dedupe_key UNIQUE (dedupe_key)
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_notes_dedupe_key ON notes (dedupe_key);
+            CREATE INDEX ix_notes_owner ON notes (owner);
+            """
+        )
+        con.commit()
+        con.close()
+        table = _reflect_sqlite_schema(path, MetaData()).tables["notes"]
+        ddl = str(CreateTable(table).compile(dialect=postgresql.dialect()))
+        assert "CONSTRAINT uq_notes_dedupe_key UNIQUE (dedupe_key)" in ddl
+        assert [i.name for i in table.indexes] == ["ix_notes_owner"]
