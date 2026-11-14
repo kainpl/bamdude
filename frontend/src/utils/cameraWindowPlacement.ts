@@ -77,6 +77,25 @@ export function restoredCameraWindow(saved: CameraWindowState, viewport: Viewpor
   };
 }
 
+/**
+ * The window after its resize handle was dragged to `pointer`: it stands where
+ * a restored window may stand (so never under the header, wherever it was when
+ * the drag began), is no smaller and no larger than one, and ends at the edge
+ * of the screen. What this returns, `restoredCameraWindow` leaves as it is.
+ */
+export function resizedCameraWindow(
+  state: CameraWindowState, pointer: { x: number; y: number }, viewport: Viewport,
+): CameraWindowState {
+  const { x, y } = restoredCameraWindow(state, viewport);
+  const fitted = fitSize(pointer.x - x, pointer.y - y, viewport);
+  return {
+    x,
+    y,
+    width: Math.max(Math.min(MIN_WIDTH, viewport.width), Math.min(fitted.width, viewport.width - x)),
+    height: Math.max(MIN_HEIGHT, Math.min(fitted.height, viewport.height - y)),
+  };
+}
+
 /** Where a drag may put a window of this size: whole on screen, below the header. */
 export function draggedCameraWindow(
   x: number, y: number, size: { width: number; height: number }, viewport: Viewport,

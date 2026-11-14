@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import {
-  appTopPx, defaultCameraWindow, draggedCameraWindow, restoredCameraWindow,
+  appTopPx, defaultCameraWindow, draggedCameraWindow, resizedCameraWindow, restoredCameraWindow,
 } from '../../utils/cameraWindowPlacement';
 
 const DESKTOP = { width: 1440, height: 900, top: 0 };
@@ -41,6 +41,38 @@ describe('restoredCameraWindow', () => {
   it('moves a window saved above the header line down to it', () => {
     expect(restoredCameraWindow({ x: 10, y: 5, width: 300, height: 200 }, PHONE).y).toBe(56);
     expect(restoredCameraWindow({ x: -40, y: -10, width: 300, height: 200 }, DESKTOP)).toMatchObject({ x: 0, y: 0 });
+  });
+});
+
+// The resize handle used arithmetic of its own, against the raw window size:
+// it knew nothing of the header line or of the limits a restored window obeys.
+describe('resizedCameraWindow', () => {
+  const state = { x: 100, y: 200, width: 300, height: 200 };
+
+  it('follows the pointer from the window corner', () => {
+    expect(resizedCameraWindow(state, { x: 600, y: 650 }, DESKTOP)).toEqual({ x: 100, y: 200, width: 500, height: 450 });
+  });
+
+  it('stops at the edges of the screen', () => {
+    expect(resizedCameraWindow(state, { x: 9999, y: 9999 }, DESKTOP)).toEqual({ x: 100, y: 200, width: 1340, height: 700 });
+  });
+
+  it('keeps the smallest size a restored window may have', () => {
+    expect(resizedCameraWindow(state, { x: -50, y: -50 }, DESKTOP)).toMatchObject({ width: 200, height: 150 });
+  });
+
+  it('never leaves the window under the header, wherever it stood when the drag began', () => {
+    const under = resizedCameraWindow({ x: 10, y: 5, width: 300, height: 200 }, { x: 9999, y: 9999 }, PHONE);
+    expect(under.y).toBe(56);
+    expect(under.y + under.height).toBeLessThanOrEqual(PHONE.height);
+    expect(under.x + under.width).toBeLessThanOrEqual(PHONE.width);
+  });
+
+  it('gives back what the restore rule would keep', () => {
+    for (const pointer of [{ x: 9999, y: 9999 }, { x: 250, y: 400 }, { x: -9, y: -9 }]) {
+      const resized = resizedCameraWindow({ x: 20, y: 80, width: 300, height: 200 }, pointer, PHONE);
+      expect(restoredCameraWindow(resized, PHONE)).toEqual(resized);
+    }
   });
 });
 

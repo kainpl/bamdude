@@ -14,7 +14,8 @@ import { useCameraLiveBudget } from '../hooks/useCameraLiveBudget';
 import { useCameraImageRef } from '../hooks/useCameraImageRef';
 import { containLimits, fillStyle, useRotatedBox } from '../hooks/useRotatedFit';
 import {
-  currentViewport, defaultCameraWindow, draggedCameraWindow, restoredCameraWindow, type CameraWindowState,
+  currentViewport, defaultCameraWindow, draggedCameraWindow, resizedCameraWindow, restoredCameraWindow,
+  type CameraWindowState,
 } from '../utils/cameraWindowPlacement';
 
 interface EmbeddedCameraViewerProps {
@@ -545,13 +546,10 @@ export function EmbeddedCameraViewer({ source: sourceProp, name, onClose }: Embe
           ...prev,
           ...draggedCameraWindow(e.clientX - dragOffset.x, e.clientY - dragOffset.y, prev, currentViewport()),
         }));
-      } else if (isResizing && containerRef.current) {
-        const rect = containerRef.current.getBoundingClientRect();
-        setState((prev) => ({
-          ...prev,
-          width: Math.max(200, Math.min(e.clientX - rect.left, window.innerWidth - prev.x - 10)),
-          height: Math.max(150, Math.min(e.clientY - rect.top, window.innerHeight - prev.y - 10)),
-        }));
+      } else if (isResizing) {
+        // The same rules a drag and a restore obey: the header line, the
+        // edges of the screen, the smallest and the largest window.
+        setState((prev) => resizedCameraWindow(prev, { x: e.clientX, y: e.clientY }, currentViewport()));
       }
     };
 
@@ -564,13 +562,8 @@ export function EmbeddedCameraViewer({ source: sourceProp, name, onClose }: Embe
           ...prev,
           ...draggedCameraWindow(touch.clientX - dragOffset.x, touch.clientY - dragOffset.y, prev, currentViewport()),
         }));
-      } else if (isResizing && containerRef.current) {
-        const rect = containerRef.current.getBoundingClientRect();
-        setState((prev) => ({
-          ...prev,
-          width: Math.max(200, Math.min(touch.clientX - rect.left, window.innerWidth - prev.x - 10)),
-          height: Math.max(150, Math.min(touch.clientY - rect.top, window.innerHeight - prev.y - 10)),
-        }));
+      } else if (isResizing) {
+        setState((prev) => resizedCameraWindow(prev, { x: touch.clientX, y: touch.clientY }, currentViewport()));
       }
     };
 

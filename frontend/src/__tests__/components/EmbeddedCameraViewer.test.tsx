@@ -192,6 +192,31 @@ describe('floating camera placement', () => {
     await waitFor(() => expect(px(frame().style.top)).toBe(56));
   });
 
+  it('cannot be resized off the screen or left under the header', async () => {
+    document.documentElement.style.setProperty('--app-top', '0px');
+    localStorage.setItem('embeddedCameraState_printer-7', JSON.stringify({ x: 10, y: 20, width: 300, height: 200 }));
+    render(viewer());
+    await act(async () => { await Promise.resolve(); });
+    // The header appears with nothing telling the window (no resize, no style
+    // event it could act on yet): the resize itself must respect it.
+    Object.defineProperty(document.documentElement.style, 'getPropertyValue', {
+      configurable: true,
+      value: (name: string) => (name === '--app-top' ? '3.5rem' : ''),
+    });
+    try {
+      fireEvent.mouseDown(screen.getByTitle('Drag to resize'), { clientX: 310, clientY: 220 });
+      fireEvent.mouseMove(document, { clientX: 5000, clientY: 5000 });
+      fireEvent.mouseUp(document);
+
+      const { left, top, width, height } = frame().style;
+      expect(px(top)).toBe(56);
+      expect(px(left) + px(width)).toBeLessThanOrEqual(375);
+      expect(px(top) + px(height)).toBeLessThanOrEqual(667);
+    } finally {
+      delete (document.documentElement.style as unknown as { getPropertyValue?: unknown }).getPropertyValue;
+    }
+  });
+
   it('cannot be dragged under the header', async () => {
     render(viewer());
     await act(async () => { await Promise.resolve(); });
