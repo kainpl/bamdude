@@ -231,6 +231,197 @@ async def test_a_foreign_switch_while_we_wait_for_confirmation_releases_the_wait
 
 
 @pytest.mark.asyncio
+async def test_the_plate_check_lights_a_chamber_the_operator_darkened_under_a_viewer(printer, sleeper):
+    """Upstream cf0ba31f1: the check's reference was calibrated in light, so it lights the plate even when it
+    is not the first holder — and giving it back returns the chamber to the dark its operator chose (G09
+    review M1): the viewer never asked for the light, and on a kiosk wall it never leaves."""
+    viewer = await camera_light.acquire(1, "stream")
+    await _report(1, True)
+    camera_light._lights[1].last_command_at -= camera_light.ATTRIBUTION_WINDOW_SECONDS + 1
+    printer.state.chamber_light = False
+    await _report(1, False)  # the operator switched it off while watching
+    assert printer.commands == [True]
+
+    check = await camera_light.acquire(1, "plate_check")
+    assert printer.commands == [True, True], "the plate check lights the plate whoever else holds the lease"
+
+    camera_light.release(check)
+    await asyncio.sleep(0)
+    assert sleeper.delays == [camera_light.GRACE_SECONDS], "the operator's dark chamber is due back"
+    assert printer.commands == [True, True], "not before the grace: two checks in a row do not blink"
+    await sleeper.elapse()
+    assert printer.commands == [True, True, False], "back off although the viewer still watches"
+    camera_light.release(viewer)
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    assert printer.commands == [True, True, False], "the light is nobody's now: the viewer switches nothing"
+
+
+async def _darkened_under_a_viewer(printer):
+    """A viewer whose operator switched the light off while watching; the chamber is dark and nobody's."""
+    viewer = await camera_light.acquire(1, "stream")
+    await _report(1, True)
+    camera_light._lights[1].last_command_at -= camera_light.ATTRIBUTION_WINDOW_SECONDS + 1
+    printer.state.chamber_light = False
+    await _report(1, False)
+    return viewer
+
+
+@pytest.mark.asyncio
+async def test_a_light_the_operator_takes_over_after_the_check_is_not_switched_off(printer, sleeper):
+    """M1, the other way: lit by the check, then switched on by its operator — theirs, and it stays."""
+    viewer = await _darkened_under_a_viewer(printer)
+    check = await camera_light.acquire(1, "plate_check")
+    await _report(1, True)
+    camera_light.note_operator_switch(1)  # "light on" from the card: no report follows, it is on already
+    camera_light.release(check)
+    await asyncio.sleep(0)
+    assert sleeper.delays == []
+    camera_light.release(viewer)
+    await asyncio.sleep(0)
+    assert printer.commands == [True, True]
+
+
+@pytest.mark.asyncio
+async def test_a_light_a_viewer_holds_on_itself_is_not_touched_by_a_check_beside_it(printer, sleeper):
+    """The viewer lit the chamber and still holds it: a plate check beside it switches nothing either way."""
+    viewer = await camera_light.acquire(1, "stream")
+    await _report(1, True)
+    check = await camera_light.acquire(1, "plate_check")
+    camera_light.release(check)
+    await asyncio.sleep(0)
+    assert sleeper.delays == []
+    assert printer.commands == [True]
+    camera_light.release(viewer)
+
+
+@pytest.mark.asyncio
+async def test_the_dark_comes_back_only_after_the_last_of_two_checks(printer, sleeper):
+    viewer = await _darkened_under_a_viewer(printer)
+    first = await camera_light.acquire(1, "plate_check")
+    second = await camera_light.acquire(1, "plate_check")
+    camera_light.release(first)
+    await asyncio.sleep(0)
+    assert sleeper.delays == [], "the second check still needs the light"
+    camera_light.release(second)
+    await asyncio.sleep(0)
+    await sleeper.elapse()
+    assert printer.commands == [True, True, False]
+    camera_light.release(viewer)
+
+
+@pytest.mark.asyncio
+async def test_a_check_inside_the_grace_keeps_the_light_and_a_joining_viewer_does_not(printer, sleeper):
+    viewer = await _darkened_under_a_viewer(printer)
+    check = await camera_light.acquire(1, "plate_check")
+    camera_light.release(check)
+    await asyncio.sleep(0)
+    assert sleeper.delays == [camera_light.GRACE_SECONDS]
+
+    again = await camera_light.acquire(1, "plate_check")  # the retry of a check: no blink
+    await asyncio.sleep(0)
+    assert printer.commands == [True, True]
+    camera_light.release(again)
+    await asyncio.sleep(0)
+    assert sleeper.delays == [camera_light.GRACE_SECONDS] * 2
+
+    second_viewer = await camera_light.acquire(1, "stream")  # joins the darkened chamber: leaves it dark
+    await sleeper.elapse()
+    assert printer.commands == [True, True, False]
+    camera_light.release(second_viewer)
+    camera_light.release(viewer)
+
+
+@pytest.mark.asyncio
+async def test_a_viewer_joining_a_dark_chamber_still_leaves_it_dark(printer, sleeper):
+    """Only the plate check overrides the operator: a second viewer does not switch the light back on."""
+    viewer = await camera_light.acquire(1, "stream")
+    await _report(1, True)
+    camera_light._lights[1].last_command_at -= camera_light.ATTRIBUTION_WINDOW_SECONDS + 1
+    printer.state.chamber_light = False
+    await _report(1, False)
+    second = await camera_light.acquire(1, "stream")
+    assert printer.commands == [True]
+    camera_light.release(second)
+    camera_light.release(viewer)
+
+
+@pytest.mark.asyncio
+async def test_lit_since_is_the_moment_our_light_was_confirmed(printer, monkeypatch):
+    now = [100.0]
+    monkeypatch.setattr(camera_light, "_clock", lambda: now[0])
+    margin = camera_light.LIT_FRAME_MARGIN_SECONDS
+    assert margin > 0
+    lease = await camera_light.acquire(1, "plate_check")
+    assert lease.lit_since() == 100.0 + margin, "unconfirmed: nothing older than now shows our light"
+    now[0] = 101.0
+    await _report(1, True)
+    now[0] = 130.0
+    assert lease.lit_since() == 101.0 + margin, "the report is not the exposure: the margin follows it"
+    camera_light.release(lease)
+
+
+@pytest.mark.asyncio
+async def test_lit_since_is_none_for_a_light_that_was_not_ours_to_switch(printer):
+    printer.state.chamber_light = True
+    lease = await camera_light.acquire(1, "plate_check")
+    assert lease.lit_since() is None
+    camera_light.release(lease)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("named_by", ["id", "client"])
+async def test_an_explicit_on_for_a_light_we_already_lit_hands_it_back(printer, sleeper, named_by):
+    """Upstream 6954cff3e leg 5. The light is on because WE lit it; "on" from the API or a macro changes
+    nothing on the printer, so no report arrives to end our ownership — and we switched the light off after
+    the grace, against the command that had just asked for it."""
+    lease = await camera_light.acquire(1, "stream")
+    await _report(1, True)
+    assert camera_light._lights[1].owned is True
+
+    if named_by == "id":
+        camera_light.note_operator_switch(1)
+    else:
+        camera_light.note_operator_switch(client=printer)
+
+    camera_light.release(lease)
+    await asyncio.sleep(0)
+    assert sleeper.delays == [], "the light is the operator's now: nothing is armed to switch it off"
+    assert printer.commands == [True]
+
+
+@pytest.mark.asyncio
+async def test_an_operator_switch_releases_a_capture_waiting_for_our_confirmation(printer):
+    lease = await camera_light.acquire(1, "telegram")
+    settled = asyncio.create_task(lease.settle())
+    await asyncio.sleep(0)
+    camera_light.note_operator_switch(1)
+    await asyncio.wait_for(settled, 1)
+    assert lease.lit_since() is None
+    camera_light.release(lease)
+
+
+def test_an_operator_switch_on_a_printer_nobody_leased_is_ignored():
+    camera_light._lights.clear()
+    camera_light.note_operator_switch(42)
+    camera_light.note_operator_switch(client=object())
+    camera_light.note_operator_switch()
+
+
+@pytest.mark.asyncio
+async def test_the_chamber_light_macro_action_hands_the_light_back(printer, sleeper):
+    from backend.app.core.mqtt_macro_actions import MQTT_MACRO_ACTIONS
+
+    lease = await camera_light.acquire(1, "stream")
+    await _report(1, True)
+    assert MQTT_MACRO_ACTIONS["chamber_light"].dispatch(printer, "on") is True
+    assert printer.commands == [True, True]
+    camera_light.release(lease)
+    await asyncio.sleep(0)
+    assert sleeper.delays == []
+
+
+@pytest.mark.asyncio
 async def test_a_report_for_a_printer_nobody_leased_is_ignored():
     camera_light._lights.clear()
     await camera_light.note_light_report(42, True)
@@ -301,6 +492,29 @@ async def test_shutdown_drops_the_pending_switch_off_and_leaves_the_light_as_it_
     await camera_light.shutdown()
     assert printer.commands == [True]
     assert camera_light._lights == {}
+
+
+@pytest.mark.asyncio
+async def test_a_deleted_printers_pending_switch_off_never_reaches_the_printer_that_takes_its_id(printer, sleeper):
+    lease = await camera_light.acquire(1, "telegram")
+    camera_light.release(lease)
+    await asyncio.sleep(0)
+    assert sleeper.delays == [camera_light.GRACE_SECONDS]
+
+    camera_light.forget_printer(1)  # the printer is deleted; SQLite hands id 1 to the next one
+    await sleeper.elapse()
+    assert printer.commands == [True], "the successor's light is not switched off for a lease it never had"
+    assert 1 not in camera_light._lights
+
+
+@pytest.mark.asyncio
+async def test_a_lease_still_open_when_its_printer_is_deleted_arms_nothing_when_given_back(printer, sleeper):
+    lease = await camera_light.acquire(1, "stream")
+    camera_light.forget_printer(1)
+    camera_light.release(lease)
+    await asyncio.sleep(0)
+    assert sleeper.delays == []
+    assert printer.commands == [True]
 
 
 @pytest.mark.asyncio

@@ -184,3 +184,82 @@ async def test_stalled_producer_returns_unavailable_at_its_bounded_deadline(live
     assert "buffer" in reason
     assert 9.9 <= time.monotonic() - began < 12
     capture.assert_not_awaited()
+
+
+# A source can keep delivering the picture it froze on (upstream e0149ae4a): the bytes arrive
+# after the check began and are still not evidence of what the plate looks like now.
+
+
+@pytest.mark.asyncio
+async def test_a_repeat_of_the_pre_check_frame_is_not_a_fresh_frame(live):
+    pid, start, observer, calls, capture, old = live
+    await start()
+    task = asyncio.create_task(pd.capture_camera_image(pid, "192.0.2.60", "synthetic", "A1M", fresh=True))
+    await asyncio.sleep(0.05)
+    for _ in range(5):
+        observer[0](bytes(old))  # the same picture again, as a new bytes object
+        await asyncio.sleep(0.12)
+    assert not task.done(), "a repeat of the frame from before the check passed as fresh"
+    new = b"\xff\xd8next-frame\xff\xd9"
+    observer[0](new)
+    assert (await asyncio.wait_for(task, FRAME_WAIT_SECONDS))[0] == new
+    capture.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_frozen_live_view_fails_the_fresh_plate_frame_at_its_deadline(live):
+    pid, start, observer, calls, capture, old = live
+    await start()
+
+    async def repeat():
+        while True:
+            observer[0](bytes(old))
+            await asyncio.sleep(0.2)
+
+    repeating = asyncio.create_task(repeat())
+    try:
+        frame, reason = await asyncio.wait_for(
+            pd.capture_camera_image(pid, "192.0.2.60", "synthetic", "A1M", fresh=True), 12
+        )
+    finally:
+        repeating.cancel()
+        await asyncio.gather(repeating, return_exceptions=True)
+    assert frame is None
+    assert "buffer" in reason
+    capture.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_repeated_frame_keeps_the_stream_alive_but_not_the_picture_new(live, monkeypatch):
+    """Arrival still counts for the stall check; the observation keeps the picture's first arrival."""
+    pid, start, observer, calls, capture, old = live
+    wall = [5_000.0]
+    monkeypatch.setattr(time, "time", lambda: wall[0])
+    await start()
+    observer[0](b"\xff\xd8picture\xff\xd9")
+    _defer, _frame, received, arrived = camera.live_frame_observation(pid)
+    wall[0] += 30
+    await asyncio.sleep(0.05)
+    observer[0](b"\xff\xd8picture\xff\xd9")
+    assert camera._last_frame_times[pid] == 5_030.0
+    assert camera.live_frame_observation(pid) == (True, b"\xff\xd8picture\xff\xd9", received, arrived)
+    assert received == 5_000.0
+    status = await camera.camera_status(pid, None)
+    assert status["seconds_since_frame"] == 0
+    assert status["seconds_since_change"] == 30
+    wall[0] += 1
+    observer[0](b"\xff\xd8another\xff\xd9")
+    status = await camera.camera_status(pid, None)
+    assert status["seconds_since_change"] == 0
+    assert camera.live_frame_observation(pid)[2] == 5_031.0
+
+
+@pytest.mark.asyncio
+async def test_a_new_producer_showing_the_same_picture_is_fresh(live):
+    """A repeat is judged within one producer: a new upstream's first frame arrived from a new connection."""
+    pid, start, observer, calls, capture, old = live
+    await start()
+    before = time.monotonic()
+    camera._live_frame_metadata[pid] = (before - 60, "an-earlier-producer", camera._live_frame_metadata[pid][2])
+    observer[0](bytes(old))
+    assert camera._live_frame_metadata[pid][0] >= before

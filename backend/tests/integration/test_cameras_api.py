@@ -316,3 +316,96 @@ class TestKioskFeed:
 
         response = await async_client.get("/api/v1/camwall/cameras", params={"token": wrong.plaintext})
         assert response.status_code == 401
+
+
+class TestSharedViewLifecycle:
+    """G09 U1 (upstream cde94f99d): a standalone camera is one upstream for every viewer, so one viewer
+    leaving must not cut it for the others, and a viewer asks the CAMERA whether its stream is alive."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_stop_leaves_the_stream_alone_while_somebody_else_is_watching(self, async_client: AsyncClient):
+        camera_id = (await async_client.post("/api/v1/cameras/", json=MJPEG)).json()["id"]
+        shutdown = AsyncMock(return_value=True)
+        with (
+            patch("backend.app.api.routes.cameras.get_subscriber_count", return_value=1) as count,
+            patch("backend.app.services.camera_fanout.shutdown_broadcaster", shutdown),
+        ):
+            answer = await async_client.post(f"/api/v1/cameras/{camera_id}/stop")
+        assert answer.status_code == 200 and answer.json() == {"stopped": 0, "skipped": True}
+        count.assert_called_once_with(f"camera-{camera_id}")
+        shutdown.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_stop_takes_the_upstream_down_when_nobody_is_watching(self, async_client: AsyncClient):
+        camera_id = (await async_client.post("/api/v1/cameras/", json=MJPEG)).json()["id"]
+        shutdown = AsyncMock(return_value=True)
+        with (
+            patch("backend.app.api.routes.cameras.get_subscriber_count", return_value=0),
+            patch("backend.app.services.camera_fanout.shutdown_broadcaster", shutdown),
+        ):
+            answer = await async_client.get(f"/api/v1/cameras/{camera_id}/stop")
+        assert answer.json() == {"stopped": 1}
+        shutdown.assert_awaited_once_with(f"camera-{camera_id}")
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_status_says_whether_this_cameras_stream_is_alive(self, async_client: AsyncClient):
+        import time
+
+        from backend.app.api.routes import cameras
+
+        camera_id = (await async_client.post("/api/v1/cameras/", json=MJPEG)).json()["id"]
+        idle = (await async_client.get(f"/api/v1/cameras/{camera_id}/status")).json()
+        assert idle["active"] is False and idle["stalled"] is False and idle["seconds_since_frame"] is None
+
+        with patch("backend.app.api.routes.cameras.get_subscriber_count", return_value=2):
+            cameras._stream_started[camera_id] = time.monotonic() - 60
+            cameras._publish_frame(camera_id, b"\xff\xd8frame")
+            live = (await async_client.get(f"/api/v1/cameras/{camera_id}/status")).json()
+            assert live["active"] is True and live["stalled"] is False and live["subscribers"] == 2
+            assert 0 <= live["seconds_since_frame"] < 5
+
+            cameras._last_frame_times[camera_id] = time.monotonic() - 30
+            silent = (await async_client.get(f"/api/v1/cameras/{camera_id}/status")).json()
+            assert silent["active"] is True and silent["stalled"] is True
+
+            # a stream that has only just started is given time to deliver its first frame
+            cameras._forget_frames(camera_id)
+            cameras._stream_started[camera_id] = time.monotonic()
+            starting = (await async_client.get(f"/api/v1/cameras/{camera_id}/status")).json()
+            assert starting["active"] is True and starting["stalled"] is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_status_of_an_unknown_camera_is_a_404(self, async_client: AsyncClient):
+        assert (await async_client.get("/api/v1/cameras/999999/status")).status_code == 404
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_status_tells_a_view_whether_its_own_stream_is_attached(self, async_client: AsyncClient):
+        """Every viewer shares the upstream: one the server ended reads `active` and keeps a frozen frame."""
+        from backend.app.services import camera_viewers
+
+        camera_id = (await async_client.post("/api/v1/cameras/", json=MJPEG)).json()["id"]
+        other_id = (await async_client.post("/api/v1/cameras/", json={**MJPEG, "name": "Other"})).json()["id"]
+        release = camera_viewers.attach(f"camera-{camera_id}", "windowView_00001")
+        try:
+            url = f"/api/v1/cameras/{camera_id}/status"
+            assert (await async_client.get(url, params={"viewer": "windowView_00001"})).json()[
+                "viewer_attached"
+            ] is True
+            assert (await async_client.get(url, params={"viewer": "someoneElse_0002"})).json()[
+                "viewer_attached"
+            ] is False
+            # The id answers for its own camera only.
+            other = await async_client.get(f"/api/v1/cameras/{other_id}/status", params={"viewer": "windowView_00001"})
+            assert other.json()["viewer_attached"] is False
+            # No id, or one that is not an id: the answer it always gave, and never an error.
+            assert "viewer_attached" not in (await async_client.get(url)).json()
+            malformed = await async_client.get(url, params={"viewer": "../../etc/passwd"})
+            assert malformed.status_code == 200 and "viewer_attached" not in malformed.json()
+        finally:
+            release()
+        assert (await async_client.get(url, params={"viewer": "windowView_00001"})).json()["viewer_attached"] is False

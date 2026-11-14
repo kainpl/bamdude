@@ -24,6 +24,7 @@ ADDED_PRINTER_FIELDS = {
     "require_plate_clear",
     "swap_mode_enabled",
     "stagger_interval_minutes",
+    "camera_light_excluded",
 }
 
 
@@ -89,3 +90,14 @@ async def test_the_auto_queue_is_counted(printer_factory, test_engine, monkeypat
     info = await _info(printer_factory, test_engine, monkeypatch)
 
     assert set(info["queue"]["auto_queue"]) >= {"pending", "assigned", "by_status"}
+
+
+async def test_the_camera_light_policy_is_reported_per_printer(printer_factory, test_engine, monkeypatch):
+    """Upstream 6954cff3e leg 7. "The light does not come on for the camera" is decided by the farm toggle
+    (a settings row, already in the bundle) AND the printer's own opt-out, which was not."""
+    excluded = await printer_factory(camera_light_auto="off")
+    info = await _info(printer_factory, test_engine, monkeypatch)
+
+    by_exclusion = [entry["camera_light_excluded"] for entry in info["printers"]]
+    assert by_exclusion.count(True) == 1 and by_exclusion.count(False) == 1, by_exclusion
+    assert excluded.camera_light_auto == "off"

@@ -11,6 +11,7 @@ import { MemoryRouter, Route, Routes } from 'react-router';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ThemeProvider } from '../../contexts/ThemeContext';
 import { ToastProvider } from '../../contexts/ToastContext';
+import { holdsImage, stubBoxSize } from '../stubBoxSize';
 
 const mockPrinter = {
   id: 1,
@@ -363,6 +364,99 @@ describe('StreamOverlayPage', () => {
       await waitFor(() => {
         expect(screen.getByText('Printer offline')).toBeInTheDocument();
       });
+    });
+
+    // A dropped MQTT session flips only `connected`; the last state, progress,
+    // layers, ETA and temperatures stay in the server's cache.
+    const frozenMidPrint = {
+      ...mockStatusPrinting,
+      connected: false,
+      temperatures: { nozzle: 219.6, nozzle_target: 220, bed: 60, bed_target: 60 },
+    };
+    const allFields = '?show=progress,layers,eta,filename,status,nozzle,bed';
+
+    function expectNoLiveFigures() {
+      // Said once, not also as a stale "Printing" on the status line.
+      expect(screen.getAllByText('Printer offline')).toHaveLength(1);
+      expect(screen.queryByText('Printing')).not.toBeInTheDocument();
+      expect(screen.queryByText('45%')).not.toBeInTheDocument();
+      expect(screen.queryByText('Progress')).not.toBeInTheDocument();
+      expect(screen.queryByText('150')).not.toBeInTheDocument();
+      expect(screen.queryByText('300')).not.toBeInTheDocument();
+      expect(screen.queryByText(/ETA/)).not.toBeInTheDocument();
+      expect(screen.queryByText('Nozzle')).not.toBeInTheDocument();
+      expect(screen.queryByText('60°C')).not.toBeInTheDocument();
+      // The last known job name is a fact about the past, not a live figure.
+      expect(screen.getByText('Benchy')).toBeInTheDocument();
+    }
+
+    it('withholds the frozen figures of a printer that went offline mid-print', async () => {
+      server.use(http.get('/api/v1/printers/:id/status', () => HttpResponse.json(frozenMidPrint)));
+      renderOverlayPage(1, allFields);
+
+      await waitFor(() => {
+        expect(screen.getByText('Printer offline')).toBeInTheDocument();
+      });
+      expectNoLiveFigures();
+    });
+
+    it('withholds them on the token-authed kiosk feed too', async () => {
+      server.use(
+        http.get('/api/v1/printers/:id/overlay-status', () =>
+          HttpResponse.json({ ...frozenMidPrint, camera_rotation: 0, gcode_file: 'plate_1.gcode', time_format: 'system' }),
+        ),
+      );
+      renderOverlayPage(1, `${allFields}&token=obs-tok`);
+
+      await waitFor(() => {
+        expect(screen.getByText('Printer offline')).toBeInTheDocument();
+      });
+      expectNoLiveFigures();
+    });
+  });
+
+  // A sideways camera was laid out at the browser source's own size and then
+  // turned, which cropped it.
+  describe('camera turned sideways', () => {
+    it('lays the picture out in the browser source sides swapped', async () => {
+      const restore = stubBoxSize(holdsImage('Camera stream'), 1920, 1080);
+      server.use(http.get('/api/v1/printers/:id', () => HttpResponse.json({ ...mockPrinter, camera_rotation: 90 })));
+
+      renderOverlayPage(1);
+
+      const img = await screen.findByAltText('Camera stream');
+      await waitFor(() => expect(img).toHaveStyle({ left: '50%', top: '50%', width: '1080px', height: '1920px' }));
+      expect(img.style.maxWidth).toBe('none');
+      expect(img.style.transform).toBe('translate(-50%, -50%) rotate(90deg)');
+      restore();
+    });
+
+    it('fits the kiosk feed the same way', async () => {
+      const restore = stubBoxSize(holdsImage('Camera stream'), 1080, 1920);
+      server.use(
+        http.get('/api/v1/printers/:id/overlay-status', () =>
+          HttpResponse.json({ ...mockStatusIdle, camera_rotation: 270, gcode_file: null, time_format: 'system' }),
+        ),
+      );
+
+      renderOverlayPage(1, '?token=obs-tok');
+
+      const img = await screen.findByAltText('Camera stream');
+      await waitFor(() => expect(img).toHaveStyle({ width: '1920px', height: '1080px' }));
+      expect(img.style.transform).toBe('translate(-50%, -50%) rotate(270deg)');
+      restore();
+    });
+
+    it('only turns an upside-down picture', async () => {
+      const restore = stubBoxSize(holdsImage('Camera stream'), 1920, 1080);
+      server.use(http.get('/api/v1/printers/:id', () => HttpResponse.json({ ...mockPrinter, camera_rotation: 180 })));
+
+      renderOverlayPage(1);
+
+      const img = await screen.findByAltText('Camera stream');
+      await waitFor(() => expect(img.style.transform).toBe('rotate(180deg)'));
+      expect(img.style.width).toBe('');
+      restore();
     });
   });
 

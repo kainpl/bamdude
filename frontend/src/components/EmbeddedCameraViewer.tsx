@@ -12,6 +12,12 @@ import { CameraSnapshotImage } from './CameraSnapshotImage';
 import { sourceKey, stopPath, streamPath, type CameraSource } from '../utils/cameraSource';
 import { useCameraLiveBudget } from '../hooks/useCameraLiveBudget';
 import { useCameraImageRef } from '../hooks/useCameraImageRef';
+import { STREAM_STRIKES, strikesAfter, useViewerId } from '../hooks/useCameraStreamRecovery';
+import { containLimits, fillStyle, useRotatedBox } from '../hooks/useRotatedFit';
+import {
+  currentViewport, defaultCameraWindow, draggedCameraWindow, resizedCameraWindow, restoredCameraWindow,
+  type CameraWindowState,
+} from '../utils/cameraWindowPlacement';
 
 interface EmbeddedCameraViewerProps {
   /** A printer's camera, or a camera that belongs to a place. Everything the
@@ -29,19 +35,6 @@ const INITIAL_RECONNECT_DELAY = 2000;
 const MAX_RECONNECT_DELAY = 30000;
 const STALL_CHECK_INTERVAL = 5000;
 
-interface CameraState {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-}
-
-const DEFAULT_STATE: CameraState = {
-  x: window.innerWidth - 420,
-  y: 20,
-  width: 400,
-  height: 300,
-};
 
 export function EmbeddedCameraViewer({ source: sourceProp, name, onClose }: EmbeddedCameraViewerProps) {
   // Pinned to its two values: the caller builds the descriptor inline, so the
@@ -64,27 +57,21 @@ export function EmbeddedCameraViewer({ source: sourceProp, name, onClose }: Embe
   // position of whatever printer happens to share its id.
   const storageKey = `${STORAGE_KEY_PREFIX}${sourceKey(source)}`;
 
-  // Load saved state or use defaults
-  const loadState = (): CameraState => {
+  // Load saved state or use defaults. Either way the window starts where it
+  // can be seen and grabbed: on screen — a phone is narrower than the desktop
+  // default — and below the fixed compact header (`--app-top`).
+  const loadState = (): CameraWindowState => {
+    const viewport = currentViewport();
     try {
       const saved = localStorage.getItem(storageKey);
-      if (saved) {
-        const state = JSON.parse(saved);
-        // Validate state is on screen
-        return {
-          x: Math.min(Math.max(0, state.x), window.innerWidth - 100),
-          y: Math.min(Math.max(0, state.y), window.innerHeight - 100),
-          width: Math.max(200, Math.min(state.width, window.innerWidth - 20)),
-          height: Math.max(150, Math.min(state.height, window.innerHeight - 20)),
-        };
-      }
+      if (saved) return restoredCameraWindow(JSON.parse(saved), viewport);
     } catch {
       // Ignore parse errors
     }
-    return { ...DEFAULT_STATE };
+    return defaultCameraWindow(viewport);
   };
 
-  const [state, setState] = useState<CameraState>(loadState);
+  const [state, setState] = useState<CameraWindowState>(loadState);
   const [isDragging, setIsDragging] = useState(false);
   const [isResizing, setIsResizing] = useState(false);
   const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
@@ -108,11 +95,18 @@ export function EmbeddedCameraViewer({ source: sourceProp, name, onClose }: Embe
   const containerRef = useRef<HTMLDivElement>(null);
   const { granted, ready, protocol, limit } = useCameraLiveBudget(isMinimized ? 0 : 1);
   const isLive = granted > 0;
-  const streamUrl = withStreamToken(streamPath(source, 15, imageKey));
+  // One id per stream opened: the status read below asks about THIS viewer,
+  // because the upstream is shared with every other view of the camera.
+  const viewerId = useViewerId(imageKey);
+  const streamUrl = withStreamToken(streamPath(source, 15, imageKey, viewerId));
   const { imageRef: imgRef, attachImage } = useCameraImageRef(streamUrl);
   const reconnectTimerRef = useRef<NodeJS.Timeout | null>(null);
   const countdownIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const stallCheckIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  // Bad status reads in a row. One is a blip while the shared upstream starts
+  // or changes hands (upstream #2521) — and this window's own reconnect is
+  // such a hand-over for everybody else watching the camera.
+  const stallStrikesRef = useRef(0);
 
   const [showSkipObjectsModal, setShowSkipObjectsModal] = useState(false);
   // Camera diagnostic modal — opens from both the always-visible
@@ -128,6 +122,12 @@ export function EmbeddedCameraViewer({ source: sourceProp, name, onClose }: Embe
     queryFn: () => api.getPrinter(printerId),
     enabled: isPrinter && printerId > 0,
   });
+
+  // A camera turned sideways is laid out in the video area's sides swapped,
+  // or it is cut off in a wide window and boxed in a tall one. The area is
+  // gone while the window is minimized; the hook picks it up on restore.
+  const rotation = printer?.camera_rotation || 0;
+  const { boxRef: videoAreaRef, box: videoArea } = useRotatedBox(rotation);
 
   // Fetch printer status for light toggle and skip objects
   const { data: status } = useQuery({
@@ -150,7 +150,7 @@ export function EmbeddedCameraViewer({ source: sourceProp, name, onClose }: Embe
       return { previousStatus };
     },
     onSuccess: (_, on) => {
-      showToast(`Chamber light ${on ? 'on' : 'off'}`);
+      showToast(t(on ? 'camera.chamberLightTurnedOn' : 'camera.chamberLightTurnedOff'));
     },
     onError: (error: Error, _, context) => {
       if (context?.previousStatus) {
@@ -164,6 +164,29 @@ export function EmbeddedCameraViewer({ source: sourceProp, name, onClose }: Embe
     (status?.state === 'RUNNING' || status?.state === 'PAUSE')
     && (status?.printable_objects_count ?? 0) >= 2
     && (status?.skip_objects_supported ?? false);
+
+  // The viewport changes under an open window: a phone is turned, a desktop
+  // window is narrowed across the compact-header breakpoint. The window is put
+  // back where it can be seen and grabbed by the same rule that restores a
+  // saved one. `--app-top` is published by Layout AFTER the resize event (a
+  // layout effect of its own re-render), so its change is watched as well.
+  useEffect(() => {
+    const refit = () => setState((prev) => {
+      const next = restoredCameraWindow(prev, currentViewport());
+      return next.x === prev.x && next.y === prev.y && next.width === prev.width && next.height === prev.height
+        ? prev
+        : next;
+    });
+    window.addEventListener('resize', refit);
+    window.addEventListener('orientationchange', refit);
+    const header = new MutationObserver(refit);
+    header.observe(document.documentElement, { attributes: true, attributeFilter: ['style'] });
+    return () => {
+      window.removeEventListener('resize', refit);
+      window.removeEventListener('orientationchange', refit);
+      header.disconnect();
+    };
+  }, []);
 
   // Save state to localStorage (printer-specific)
   useEffect(() => {
@@ -179,8 +202,10 @@ export function EmbeddedCameraViewer({ source: sourceProp, name, onClose }: Embe
     stopSentRef.current = false;
     const stopUrl = stopPath(source);
 
+    // For a standalone camera too: with other viewers attached the server
+    // skips the stop, so the window that closes may always say so.
     const sendStopOnce = () => {
-      if (printerId > 0 && !stopSentRef.current) {
+      if (!stopSentRef.current) {
         stopSentRef.current = true;
         const headers: Record<string, string> = {};
         const token = getAuthToken();
@@ -195,7 +220,7 @@ export function EmbeddedCameraViewer({ source: sourceProp, name, onClose }: Embe
       if (countdownIntervalRef.current) clearInterval(countdownIntervalRef.current);
       if (stallCheckIntervalRef.current) clearInterval(stallCheckIntervalRef.current);
     };
-  }, [printerId, source]);
+  }, [source]);
 
   useEffect(() => {
     if (isLive) return;
@@ -259,11 +284,16 @@ export function EmbeddedCameraViewer({ source: sourceProp, name, onClose }: Embe
     }
 
     let cancelled = false;
+    // A freshly loaded stream does not inherit strikes from the one before it.
+    stallStrikesRef.current = 0;
     stallCheckIntervalRef.current = setInterval(async () => {
       try {
-        const status = await api.getCameraStatus(printerId);
+        const status = await api.getCameraSourceStatus(source, viewerId);
         if (cancelled) return;
-        if (status.stalled || (!status.active && !streamError)) {
+        const bad = status.stalled || (!status.active && !streamError) || status.viewer_attached === false;
+        stallStrikesRef.current = strikesAfter(stallStrikesRef.current, bad);
+        if (stallStrikesRef.current >= STREAM_STRIKES) {
+          stallStrikesRef.current = 0;
           if (stallCheckIntervalRef.current) {
             clearInterval(stallCheckIntervalRef.current);
             stallCheckIntervalRef.current = null;
@@ -283,7 +313,7 @@ export function EmbeddedCameraViewer({ source: sourceProp, name, onClose }: Embe
         stallCheckIntervalRef.current = null;
       }
     };
-  }, [streamLoading, streamError, isReconnecting, isLive, printerId, attemptReconnect]);
+  }, [streamLoading, streamError, isReconnecting, isLive, source, viewerId, attemptReconnect]);
 
   // Fullscreen change listener
   useEffect(() => {
@@ -526,16 +556,12 @@ export function EmbeddedCameraViewer({ source: sourceProp, name, onClose }: Embe
       if (isDragging) {
         setState((prev) => ({
           ...prev,
-          x: Math.max(0, Math.min(e.clientX - dragOffset.x, window.innerWidth - prev.width)),
-          y: Math.max(0, Math.min(e.clientY - dragOffset.y, window.innerHeight - prev.height)),
+          ...draggedCameraWindow(e.clientX - dragOffset.x, e.clientY - dragOffset.y, prev, currentViewport()),
         }));
-      } else if (isResizing && containerRef.current) {
-        const rect = containerRef.current.getBoundingClientRect();
-        setState((prev) => ({
-          ...prev,
-          width: Math.max(200, Math.min(e.clientX - rect.left, window.innerWidth - prev.x - 10)),
-          height: Math.max(150, Math.min(e.clientY - rect.top, window.innerHeight - prev.y - 10)),
-        }));
+      } else if (isResizing) {
+        // The same rules a drag and a restore obey: the header line, the
+        // edges of the screen, the smallest and the largest window.
+        setState((prev) => resizedCameraWindow(prev, { x: e.clientX, y: e.clientY }, currentViewport()));
       }
     };
 
@@ -546,16 +572,10 @@ export function EmbeddedCameraViewer({ source: sourceProp, name, onClose }: Embe
       if (isDragging) {
         setState((prev) => ({
           ...prev,
-          x: Math.max(0, Math.min(touch.clientX - dragOffset.x, window.innerWidth - prev.width)),
-          y: Math.max(0, Math.min(touch.clientY - dragOffset.y, window.innerHeight - prev.height)),
+          ...draggedCameraWindow(touch.clientX - dragOffset.x, touch.clientY - dragOffset.y, prev, currentViewport()),
         }));
-      } else if (isResizing && containerRef.current) {
-        const rect = containerRef.current.getBoundingClientRect();
-        setState((prev) => ({
-          ...prev,
-          width: Math.max(200, Math.min(touch.clientX - rect.left, window.innerWidth - prev.x - 10)),
-          height: Math.max(150, Math.min(touch.clientY - rect.top, window.innerHeight - prev.y - 10)),
-        }));
+      } else if (isResizing) {
+        setState((prev) => resizedCameraWindow(prev, { x: touch.clientX, y: touch.clientY }, currentViewport()));
       }
     };
 
@@ -682,6 +702,7 @@ export function EmbeddedCameraViewer({ source: sourceProp, name, onClose }: Embe
       {/* Video area */}
       {!isMinimized && (
         <div
+          ref={videoAreaRef}
           className={`relative w-full bg-black flex items-center justify-center overflow-hidden ${isFullscreen ? 'h-[calc(100%-40px)]' : 'h-[calc(100%-40px)]'}`}
           onWheel={handleWheel}
           onMouseMove={handleImageMouseMove}
@@ -702,7 +723,7 @@ export function EmbeddedCameraViewer({ source: sourceProp, name, onClose }: Embe
               <div className="text-center p-2">
                 <WifiOff className="w-6 h-6 text-orange-600 dark:text-orange-400 mx-auto mb-2" />
                 <p className="text-xs text-bambu-gray">
-                  Reconnecting in {reconnectCountdown}s...
+                  {t('embeddedCameraViewer.reconnectingIn', { countdown: reconnectCountdown })}
                 </p>
               </div>
             </div>
@@ -732,12 +753,11 @@ export function EmbeddedCameraViewer({ source: sourceProp, name, onClose }: Embe
           {isLive ? <img
             ref={attachImage}
             key={imageKey}
-            src={streamUrl}
-            alt="Camera stream"
+            alt={t('camera.cameraStream')}
             className="max-w-full max-h-full object-contain select-none"
             style={{
-              transform: `scale(${zoomLevel}) translate(${panOffset.x / zoomLevel}px, ${panOffset.y / zoomLevel}px) rotate(${printer?.camera_rotation || 0}deg)`,
-              ...(printer?.camera_rotation === 90 || printer?.camera_rotation === 270 ? { maxWidth: '100%', maxHeight: '100%' } : {}),
+              transform: `scale(${zoomLevel}) translate(${panOffset.x / zoomLevel}px, ${panOffset.y / zoomLevel}px) rotate(${rotation}deg)`,
+              ...containLimits(videoArea, rotation),
               cursor: zoomLevel > 1 ? (isPanning ? 'grabbing' : 'grab') : 'default',
             }}
             onError={handleStreamError}
@@ -746,7 +766,7 @@ export function EmbeddedCameraViewer({ source: sourceProp, name, onClose }: Embe
             draggable={false}
           /> : ready ? <>
             <CameraSnapshotImage source={source} name={name} intervalMs={5000}
-              transform={`scale(${zoomLevel}) rotate(${printer?.camera_rotation || 0}deg)`} />
+              style={fillStyle(videoArea, rotation, `scale(${zoomLevel})`)} />
             <span className="absolute top-1 left-1 right-1 bg-black/70 px-2 py-1 text-xs text-white">
               {t('printers.camWall.transportLimit', { protocol: protocol === 'unknown' ? t('printers.camWall.transportUnknown') : protocol, limit })}
             </span>

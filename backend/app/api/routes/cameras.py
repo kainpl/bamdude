@@ -46,8 +46,14 @@ from backend.app.schemas.camera import (
     CameraUpdate,
     _validated_source,
 )
+from backend.app.services import camera_viewers
 from backend.app.services.camera_credentials import resolve_standalone_camera_credentials
-from backend.app.services.camera_fanout import MjpegBroadcaster, get_or_create_broadcaster, iter_subscriber
+from backend.app.services.camera_fanout import (
+    MjpegBroadcaster,
+    get_or_create_broadcaster,
+    get_subscriber_count,
+    iter_subscriber,
+)
 from backend.app.services.live_media import bind_camera, mjpeg_response
 
 logger = logging.getLogger(__name__)
@@ -66,6 +72,10 @@ _snapshot_frame_times: dict[int, float] = {}
 _SNAPSHOT_CACHE_TTL_SECONDS = 5.0
 #: A live frame older than this is stale: the stream died and nobody cleaned up.
 _LIVE_FRAME_MAX_AGE_SECONDS = 10.0
+#: When the camera's current upstream got its first viewer — a stream is given a
+#: moment to deliver its first frame before silence counts as a stall.
+_stream_started: dict[int, float] = {}
+_STREAM_START_GRACE_SECONDS = 5.0
 
 
 def _fanout_key(camera_id: int) -> str:
@@ -88,8 +98,22 @@ def _live_frame(camera_id: int) -> bytes | None:
     return frame
 
 
+def live_frame_for_capture(camera_id: int) -> tuple[bool, bytes | None]:
+    """``(defer, frame)`` for a one-shot capture of this camera — the printers' rule, for a standalone camera.
+
+    ``defer`` is True while the camera's upstream exists: from the first viewer's subscription, through a
+    view that has no frame yet, to the end of the grace window after the last viewer left — the upstream
+    holds the camera's one socket for all of it. What ``camera_runtime.capture`` asks before the worker dials.
+    """
+    from backend.app.services.camera_fanout import active_broadcaster_keys
+
+    if _fanout_key(camera_id) not in active_broadcaster_keys():
+        return False, None
+    return True, _live_frame(camera_id)
+
+
 def _forget_frames(camera_id: int) -> None:
-    for registry in (_last_frames, _last_frame_times, _snapshot_frames, _snapshot_frame_times):
+    for registry in (_last_frames, _last_frame_times, _snapshot_frames, _snapshot_frame_times, _stream_started):
         registry.pop(camera_id, None)
 
 
@@ -300,7 +324,17 @@ async def test_saved_camera(
         url = _validated_source(url, camera_type)
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from None
+    # The saved stream source, as the live view reads it — a draft address is another device.
+    saved_stream = payload.source != "snapshot" and (url, camera_type) == (camera.url, camera.camera_type)
     await db.rollback()
+    if saved_stream:
+        from backend.app.services.camera_runtime import CameraCaptureRequest, test_on_live_view
+
+        watched = await test_on_live_view(
+            CameraCaptureRequest.external(url=url, camera_type=camera_type, camera_id=camera_id)
+        )
+        if watched is not None:
+            return watched
     return await _test_source(url, camera_type)
 
 
@@ -321,12 +355,14 @@ async def camera_stream(
     camera_id: int,
     request: Request,
     fps: int = 10,
+    viewer: str | None = None,
     _token: None = RequireCameraStreamToken,
 ):
     """MJPEG multipart, one upstream shared by every viewer.
 
     Gated by ``?token=…`` like the printers' streams, because an ``<img>`` tag
-    cannot send an Authorization header.
+    cannot send an Authorization header. ``viewer`` is the view's correlation id for this stream
+    (not a secret, not authority): its status read asks whether THIS viewer is still attached.
     """
     # Short-lived session: a stream stays open for as long as the tab does, and
     # holding a pooled connection across it is #2572 all over again.
@@ -354,6 +390,7 @@ async def camera_stream(
         )
 
     key = _fanout_key(camera_id)
+    viewer_id = viewer
 
     async def _prepare(viewer):
         broadcaster: MjpegBroadcaster = await get_or_create_broadcaster(key, _factory)
@@ -370,6 +407,8 @@ async def camera_stream(
                 _forget_frames(camera_id)
 
         viewer.releases.append(unsubscribe)
+        viewer.releases.append(camera_viewers.attach(key, viewer_id))
+        _stream_started.setdefault(camera_id, time.monotonic())
         logger.info("Camera viewer attached to %s (subscribers=%d)", key, broadcaster.subscriber_count)
 
         async def stopped():
@@ -393,9 +432,57 @@ async def stop_camera_stream(
     camera_id: int,
     _: User | None = RequirePermission(Permission.CAMERA_VIEW),
 ):
-    """Force this camera's upstream down. Kept for parity with the printers' route."""
+    """Take this camera's upstream down — unless somebody is still watching.
+
+    A view sends this when it closes, and every view of a camera shares ONE upstream: with another
+    viewer attached the stop is skipped, and the upstream goes by itself once the last one has left
+    (the printers' route keeps the same rule, #451).
+    """
+    remaining = get_subscriber_count(_fanout_key(camera_id))
+    if remaining >= 1:
+        logger.info("Skipping camera %s force-shutdown: %d subscriber(s) still attached", camera_id, remaining)
+        return {"stopped": 0, "skipped": True}
     stopped = await _stop_stream(camera_id)
     return {"stopped": 1 if stopped else 0}
+
+
+@router.get("/{camera_id}/status")
+async def camera_stream_status(
+    camera_id: int,
+    viewer: str | None = None,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.CAMERA_VIEW),
+):
+    """Whether this camera's live stream is alive — what a view polls to notice a stall.
+
+    The printers' status route answers for PRINTER ids only; a view of a standalone camera that asked
+    it was told "not active" about a healthy stream and reconnected in a loop.
+    """
+    await _get_camera_or_404(camera_id, db)
+    subscribers = get_subscriber_count(_fanout_key(camera_id))
+    active = subscribers >= 1
+    now = time.monotonic()
+    last = _last_frame_times.get(camera_id)
+    started = _stream_started.get(camera_id)
+    since_frame = None if last is None else now - last
+    uptime = None if started is None else now - started
+    # Whether the stream of the view that asks (by its correlation id) is still attached: the flags
+    # below answer for the upstream every viewer shares. Absent when it cannot be said.
+    viewer_attached = camera_viewers.attached(_fanout_key(camera_id), viewer)
+    return {
+        **({} if viewer_attached is None else {"viewer_attached": viewer_attached}),
+        "active": active,
+        "has_frames": camera_id in _last_frames,
+        "seconds_since_frame": since_frame,
+        "stream_uptime": uptime,
+        "subscribers": subscribers,
+        "stalled": (
+            active
+            and uptime is not None
+            and uptime > _STREAM_START_GRACE_SECONDS
+            and (since_frame is None or since_frame > _LIVE_FRAME_MAX_AGE_SECONDS)
+        ),
+    }
 
 
 # ---------------------------------------------------------------- snapshot
@@ -431,14 +518,25 @@ async def camera_snapshot(
                     camera_type=camera_type,
                     snapshot_url=snapshot_url,
                     purpose="snapshot",
+                    camera_id=camera_id,
                 )
             )
         except CameraWorkerUnavailable as exc:
             raise HTTPException(503, "Camera worker is unavailable.") from exc
         frame = result.frame
-        if not frame:
+        if result.source == "live_view":
+            # The capture stood down for a view of this camera: its frame, or "come back" — never a second
+            # reader beside a view that has no frame yet. Not cached: the view's next frame is newer.
+            if not frame:
+                raise HTTPException(
+                    503,
+                    "The camera's live view is still starting. Try again in a moment.",
+                    headers={"Retry-After": "2"},
+                )
+        elif not frame:
             raise HTTPException(503, "Failed to capture a frame from this camera.")
-        _remember_snapshot(camera_id, frame)
+        else:
+            _remember_snapshot(camera_id, frame)
 
     return Response(
         content=frame,

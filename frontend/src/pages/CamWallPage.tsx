@@ -12,6 +12,10 @@
  *     comes from the read-only kiosk feed (which serves neither serial number
  *     nor IP address, and never names the file being printed), and the tiles
  *     stream with the same token.
+ *
+ * URL parameters, each winning over what this browser remembers: `interval`
+ * (seconds between snapshots), `status` (`off` / `compact` / `full`) and `size`
+ * (`s` / `m` / `l` / `xl` — tiles per row).
  */
 import { useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router';
@@ -20,6 +24,8 @@ import { useTranslation } from 'react-i18next';
 import { ApiError, api, type CamWallPrinter } from '../api/client';
 import { CameraWall, type CameraWallStatus } from '../components/CameraWall';
 import type { CameraTileStatusMode } from '../components/CameraTile';
+import { readStoredCardSize, storeCardSize } from '../utils/cardSize';
+import { CAM_WALL_TILE_SIZE_KEY, DEFAULT_CAM_WALL_TILE_SIZE, camWallTileSizeFromParam } from '../utils/camWallTileSize';
 
 // Same localStorage keys the in-app wall uses, so a kiosk started from a
 // browser that had already tuned the wall inherits those settings.
@@ -84,14 +90,40 @@ export function CamWallPage() {
     return 'compact';
   });
 
+  // `?size=` first — the only way to size a wall on a TV — then the size last
+  // picked in this browser, then M.
+  const [tileSize, setTileSize] = useState(() =>
+    camWallTileSizeFromParam(searchParams.get('size'))
+      ?? readStoredCardSize(CAM_WALL_TILE_SIZE_KEY, DEFAULT_CAM_WALL_TILE_SIZE),
+  );
+  // ⚠️ Written only when somebody PICKS a size here, never from an effect: a
+  // size that came in by the URL must not replace the one this browser
+  // remembers, and a kiosk writes nothing at all.
+  const pickTileSize = (size: number) => {
+    setTileSize(size);
+    storeCardSize(CAM_WALL_TILE_SIZE_KEY, size);
+  };
+
   // Persist only on the signed-in wall. A kiosk's settings come from its URL, and
   // writing them back would let opening a kiosk link once silently overwrite the
   // wall preferences of whoever's browser it was opened in.
+  // A write throws in a private window or when storage is full or blocked —
+  // from an effect that would take the whole wall down with it.
   useEffect(() => {
-    if (!kiosk) localStorage.setItem(SNAPSHOT_SEC_KEY, String(snapshotSec));
+    if (kiosk) return;
+    try {
+      localStorage.setItem(SNAPSHOT_SEC_KEY, String(snapshotSec));
+    } catch {
+      // Not remembered; the wall keeps the value for this visit.
+    }
   }, [kiosk, snapshotSec]);
   useEffect(() => {
-    if (!kiosk) localStorage.setItem(STATUS_MODE_KEY, statusMode);
+    if (kiosk) return;
+    try {
+      localStorage.setItem(STATUS_MODE_KEY, statusMode);
+    } catch {
+      // Not remembered; the wall keeps the value for this visit.
+    }
   }, [kiosk, statusMode]);
 
   // Kiosk path: one token-authenticated call for the whole wall.
@@ -171,6 +203,9 @@ export function CamWallPage() {
         // A passive display has nobody standing at it, and its settings come
         // from the URL rather than this browser's localStorage.
         hideSettings={kiosk}
+        tileSize={tileSize}
+        // This page has no toolbar: the size is picked in the wall's settings.
+        onChangeTileSize={kiosk ? undefined : pickTileSize}
         // A kiosk remains passive. An authenticated standalone wall delegates
         // the established M-card popup to PrintersPage, which owns all of that
         // card's data and actions instead of duplicating it here.

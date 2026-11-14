@@ -48,6 +48,11 @@ logger = logging.getLogger(__name__)
 GRACE_SECONDS = 10.0
 #: How long ``Lease.settle`` waits for the printer to report the light on.
 CONFIRM_TIMEOUT_SECONDS = 3.0
+#: How long after the printer confirmed OUR "on" a relayed frame may still show the dark chamber. The
+#: report is not the exposure: an RTSP frame is 0.5-2 s old when it is relayed, and a chamber-image camera
+#: sends about one frame a second and needs a few of them for its auto-exposure. ⚠️ A GUESS pending a
+#: measurement on a printer (audit G09, Unsure 3) — applied in ``Lease.lit_since`` and nowhere else.
+LIT_FRAME_MARGIN_SECONDS = 2.0
 #: A ``lights_report`` in the direction we commanded within this window is ours.
 ATTRIBUTION_WINDOW_SECONDS = 5.0
 #: The longest cadence a poller may declare (``?poll=`` on the snapshot route).
@@ -82,9 +87,17 @@ class _PrinterLight:
     hold_until: float = 0.0
     #: Set when the printer reports the light on after our own "on".
     confirmed: asyncio.Event | None = None
+    #: When the printer reported OUR "on" (``_clock`` time); None until it does.
+    confirmed_at: float | None = None
     last_command_at: float = 0.0
     last_command_on: bool | None = None
     release_task: asyncio.Task | None = None
+    #: Holders whose purpose ALWAYS needs the light (plate checks) and have not released yet.
+    must: int = 0
+    #: The light is on because a must-have purpose switched it on BESIDE other holders, who had it off
+    #: (the operator darkened the chamber under a live view). It goes back off when the last such holder
+    #: releases — the others never asked for it and may never leave (a kiosk wall).
+    lit_beside: bool = False
 
 
 @dataclass(frozen=True)
@@ -112,6 +125,22 @@ class Lease:
                 self.printer_id,
                 CONFIRM_TIMEOUT_SECONDS,
             )
+
+    def lit_since(self) -> float | None:
+        """From when (monotonic) a frame shows the light WE switched on; None when the light was not ours.
+
+        For a consumer that takes its frame from a live view instead of capturing: a frame the view relayed
+        before this moment was taken in the dark and is not evidence. Ask after :meth:`settle`. The moment
+        is the printer's confirmation plus :data:`LIT_FRAME_MARGIN_SECONDS` — arrival is not exposure, and
+        the first frames relayed after the report were still taken in the dark. An "on" the printer never
+        confirmed counts from "now". Nothing sleeps here: a consumer that waits for a frame waits past
+        this moment, and one that does not wait is not delayed.
+        None means the light was already on (or could not be switched): any frame is as lit as it will get.
+        """
+        light = self._light
+        if not light.owned:
+            return None
+        return (light.confirmed_at if light.confirmed_at is not None else _clock()) + LIT_FRAME_MARGIN_SECONDS
 
 
 _lights: dict[int, _PrinterLight] = {}
@@ -180,9 +209,11 @@ def _switch(client, light: _PrinterLight, on: bool) -> bool:
         return False
     light.last_command_at = _clock()
     light.last_command_on = on
+    light.lit_beside = False
     if on:
         light.owned = True
         light.confirmed = asyncio.Event()
+        light.confirmed_at = None
     else:
         light.owned = False
         light.confirmed = None
@@ -195,7 +226,10 @@ async def acquire(printer_id: int | None, purpose: str, *, hold: float | None = 
     Nothing happens when the feature is off for this printer and purpose,
     when the printer has no client or is not connected, or when it has never
     reported a controllable chamber light. The first holder switches the light
-    on if it is off; every holder after that only counts.
+    on if it is off; every holder after that only counts — except a purpose
+    that ALWAYS needs the light (the plate check), which switches a dark
+    chamber on even beside other holders: the operator who darkened it under a
+    live view did not ask for a print paused over a frame nobody could judge.
     """
     if printer_id is None:
         return None
@@ -211,14 +245,21 @@ async def acquire(printer_id: int | None, purpose: str, *, hold: float | None = 
         return None
 
     light = _lights.setdefault(printer_id, _PrinterLight())
-    if light.release_task is not None and not light.release_task.done():
-        light.release_task.cancel()
-    light.release_task = None
+    must = purpose in ALWAYS_PURPOSES
+    # A switch-off armed for a light lit beside other holders is not theirs to cancel: a viewer that joins
+    # a chamber its operator darkened leaves it dark. Another plate check does cancel it (it needs the light).
+    if not (light.lit_beside and not must):
+        if light.release_task is not None and not light.release_task.done():
+            light.release_task.cancel()
+        light.release_task = None
     light.refcount += 1
+    if must:
+        light.must += 1
     if hold:
         light.hold_until = max(light.hold_until, _clock() + hold)
-    if light.refcount == 1 and not light.owned and not state.chamber_light:
+    if (light.refcount == 1 or must) and not light.owned and not state.chamber_light:
         if _switch(client, light, True):
+            light.lit_beside = light.refcount > 1
             logger.info("camera light: switched on for printer %s (%s)", printer_id, purpose)
     return Lease(printer_id, purpose, light)
 
@@ -229,17 +270,41 @@ def release(lease: Lease | None) -> None:
         return
     light = lease._light
     light.refcount = max(0, light.refcount - 1)
-    if light.refcount > 0 or not light.owned:
+    if lease.purpose in ALWAYS_PURPOSES:
+        light.must = max(0, light.must - 1)
+    if light.refcount > 0:
+        # Other holders remain. A light that was lit BESIDE them goes back to the state their operator
+        # left it in once no plate check needs it; a light they hold on themselves is not touched.
+        pending = light.release_task is not None and not light.release_task.done()
+        if light.owned and light.lit_beside and light.must == 0 and not pending:
+            light.release_task = asyncio.get_running_loop().create_task(
+                _release_later(lease.printer_id, light, GRACE_SECONDS, beside=True),
+                name=f"camera-light-off-{lease.printer_id}",
+            )
         return
+    # Nobody holds it any more: an ordinary light of ours, off after the grace or the hold.
+    light.lit_beside = False
+    if not light.owned:
+        return
+    if light.release_task is not None and not light.release_task.done():
+        light.release_task.cancel()
     delay = max(GRACE_SECONDS, light.hold_until - _clock())
     light.release_task = asyncio.get_running_loop().create_task(
         _release_later(lease.printer_id, light, delay), name=f"camera-light-off-{lease.printer_id}"
     )
 
 
-async def _release_later(printer_id: int, light: _PrinterLight, delay: float) -> None:
+async def _release_later(printer_id: int, light: _PrinterLight, delay: float, *, beside: bool = False) -> None:
     await _sleep(delay)
-    if light.refcount > 0 or not light.owned:
+    if not light.owned:
+        return
+    if beside:
+        # The other holders stay; only a new plate check, or a light that stopped being "lit beside"
+        # (somebody switched it, the last holder left), keeps it on.
+        if light.must > 0 or not light.lit_beside:
+            return
+        light.release_task = None
+    elif light.refcount > 0:
         return
     client = _get_client(printer_id)
     if client is None:
@@ -257,6 +322,8 @@ async def note_light_report(printer_id: int, on: bool) -> None:
     ours = light.last_command_on is on and (_clock() - light.last_command_at) <= ATTRIBUTION_WINDOW_SECONDS
     if ours:
         if on and light.confirmed is not None:
+            if light.confirmed_at is None:
+                light.confirmed_at = _clock()
             light.confirmed.set()
         return
     if light.owned:
@@ -269,6 +336,45 @@ async def note_light_report(printer_id: int, on: bool) -> None:
     if light.confirmed is not None:
         # Whatever the light is now, it is not going to become "our on" any more.
         light.confirmed.set()
+
+
+def note_operator_switch(printer_id: int | None = None, *, client=None) -> None:
+    """Somebody switched the light on purpose — the API, the card button, a macro. It is theirs from here.
+
+    A switch that CHANGES the light is already noticed through its ``lights_report``. This is for the one
+    that changes nothing: "on" for a light that is on because we lit it. The printer reports no change, so
+    our ownership stood and the light went off after the grace — against the command that had just asked
+    for it (upstream 6954cff3e). Called after the command was sent; the printer is named by id, or by its
+    client where the caller has nothing else (a macro's MQTT action).
+    """
+    if printer_id is None and client is not None:
+        printer_id = next((pid for pid in _lights if _get_client(pid) is client), None)
+    light = _lights.get(printer_id) if printer_id is not None else None
+    if light is None:
+        return
+    if light.owned:
+        logger.info("camera light: printer %s light switched by its operator; no longer ours", printer_id)
+    light.owned = False
+    # The report that may follow is the answer to THEIR command, not the confirmation of ours.
+    light.last_command_on = None
+    if light.confirmed is not None:
+        light.confirmed.set()
+
+
+def forget_printer(printer_id: int) -> None:
+    """A deleted printer's light goes with it: the next printer to take the id inherits nothing.
+
+    SQLite reuses ids. A switch-off armed for the deleted printer would otherwise look the id up after the
+    grace and switch off the light of whichever printer holds it by then. A lease still open keeps counting
+    on the detached record and, owning nothing, arms nothing when it is given back.
+    """
+    light = _lights.pop(printer_id, None)
+    if light is None:
+        return
+    light.owned = False
+    if light.release_task is not None and not light.release_task.done():
+        light.release_task.cancel()
+    light.release_task = None
 
 
 @contextlib.asynccontextmanager

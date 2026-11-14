@@ -89,12 +89,23 @@ class MQTTMacroAction:
     param: MQTTActionParamSpec | None = None
 
 
+def _set_chamber_light(client: BambuMQTTClient, param: str | None) -> bool:
+    sent = client.set_chamber_light(param == "on")
+    if sent:
+        # A macro's switch is a decision, like the card button's: the camera's light lease must not undo
+        # it after its grace (an "on" for a light the lease lit changes nothing the printer would report).
+        from backend.app.services import camera_light
+
+        camera_light.note_operator_switch(client=client)
+    return sent
+
+
 MQTT_MACRO_ACTIONS: dict[str, MQTTMacroAction] = {
     "chamber_light": MQTTMacroAction(
         id="chamber_light",
         label="Chamber light",
         i18n_key="chamberLight",
-        dispatch=lambda client, param: client.set_chamber_light(param == "on"),
+        dispatch=_set_chamber_light,
         param=MQTTActionParamSpec(
             kind="choice",
             i18n_key="lightState",

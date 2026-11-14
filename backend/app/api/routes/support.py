@@ -1338,6 +1338,10 @@ async def _build_support_info(*, print_state_scope=None, include_print_state: bo
                     "ams_tray_count": ams_tray_count,
                     "has_vt_tray": has_vt_tray,
                     "external_camera_configured": bool(printer.external_camera_url),
+                    # The printer's own opt-out of "light while the camera is in use". The farm toggles
+                    # (``camera_light_auto``, ``camera_light_auto_obico``) are settings rows and ride the
+                    # settings section; without this half "the light never comes on here" was a guess.
+                    "camera_light_excluded": printer.camera_light_auto == "off",
                     "plate_detection_enabled": printer.plate_detection_enabled,
                     # Obico AI failure detection on this printer: global flag
                     # AND (all-printers OR this printer in the id list) (#1312).
