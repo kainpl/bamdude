@@ -12257,6 +12257,11 @@ async def _application_lifespan(app: FastAPI):
     yield
 
     # Shutdown
+    from backend.app.services.auto_queue_return_runtime import auto_queue_return_runtime
+
+    auto_queue_return_runtime.close_admission()
+    if not await auto_queue_return_runtime.quiesce_for_restore(10):
+        logging.getLogger(__name__).warning("AutoQueue return shutdown work remains owned")
     from backend.app.services.print_run_binding import revoke_print_effects
     from backend.app.services.print_state_observer import print_state_observer
 

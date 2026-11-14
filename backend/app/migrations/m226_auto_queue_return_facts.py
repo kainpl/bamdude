@@ -53,6 +53,8 @@ def _receipt_table():
         Column("ready_at", DateTime, nullable=False),
         Column("returned_at", DateTime, nullable=True),
         Column("ordinal", Integer, nullable=True),
+        Column("last_refusal_code", String(64), nullable=True),
+        Column("last_refusal_at", DateTime, nullable=True),
         UniqueConstraint("old_job_identity", "execution_archive_identity", name="uq_aq_return_attempt_identity"),
         UniqueConstraint("auto_identity", "ordinal", name="uq_aq_return_auto_ordinal"),
         CheckConstraint(
@@ -74,6 +76,10 @@ async def upgrade(conn):
     await add_column(conn, "print_queue", "returned_receipt_identity VARCHAR(36)")
     receipt = _receipt_table()
     await conn.run_sync(lambda sync: receipt.create(sync, checkfirst=True))
+    # This migration is unreleased; preserve databases used by earlier feature
+    # checkpoints without synthesizing any settlement or erasing diagnostics.
+    await add_column(conn, "auto_queue_returns", "last_refusal_code VARCHAR(64)")
+    await add_column(conn, "auto_queue_returns", "last_refusal_at TIMESTAMP")
     # A retry after an interrupted SQLite DDL must also restore a missing index.
     for index in receipt.indexes:
         await conn.run_sync(lambda sync, index=index: index.create(sync, checkfirst=True))

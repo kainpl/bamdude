@@ -123,6 +123,15 @@ async def test_a_job_the_rebalancer_may_not_move_still_holds_the_home_printer(
 RED = "#FF0000"
 
 
+@pytest.mark.parametrize("sjf", [False, True])
+async def test_returned_first_wave_matches_actual_router(
+    db_session, tick_scheduler, printer_factory, tmp_path, monkeypatch, sjf
+):
+    await _first_wave_parity(
+        db_session, tick_scheduler, printer_factory, tmp_path, monkeypatch, sjf, True, edge="returned"
+    )
+
+
 async def _parity_farm(db_session, printer_factory, tmp_path, *, compatible=False):
     """Printers in every state the router ranks or refuses, and pending jobs of every kind.
 
@@ -269,7 +278,13 @@ async def _first_wave_parity(
     status, connected, awaiting, interlocked = await _parity_farm(
         db_session, printer_factory, tmp_path, compatible=compatible
     )
-    if edge is not None:
+    if edge == "returned":
+        row = await db_session.scalar(select(AutoQueueItem).where(AutoQueueItem.position == 1))
+        first = await db_session.scalar(select(Printer).where(Printer.name == "P2S-A"))
+        row.failed_return_count = 1
+        row.failed_return_proof = {"version": 1, "last_failed_printer_identity": first.connector_identity}
+        await db_session.commit()
+    elif edge is not None:
         # Codex r1 T-R2: a stored 0 sorts before every estimate; a row with no model sorts where
         # the database puts NULL (first on SQLite, last on PostgreSQL).
         row = (

@@ -260,6 +260,9 @@ def _enrich_response(item: PrintQueueItem) -> PrintQueueItemResponse:
 
     # Create response with parsed ams_mapping
     item_dict = {
+        "returned_receipt_identity": item.returned_receipt_identity,
+        "return_ordinal": getattr(item, "_return_ordinal", None),
+        "return_refusal_code": getattr(item, "_return_refusal_code", None),
         "auto_eject": item.auto_eject,
         "auto_eject_settings": item.auto_eject_settings or {},
         "id": item.id,
@@ -531,6 +534,9 @@ async def queue_issues(
     if user is not None and not can_read_all:
         stmt = stmt.where(PrintQueueItem.created_by_id == user.id)
     rows = (await db.execute(stmt)).scalars().all()
+    from backend.app.services.auto_queue_return_views import describe_returns
+
+    await describe_returns(db, rows[:limit])
     return QueueIssuesResponse(
         items=[_enrich_response(item) for item in rows[:limit]],
         next_cursor=rows[limit - 1].id if len(rows) > limit else None,
@@ -632,6 +638,9 @@ async def list_queue(
 
     result = await db.execute(query)
     items = result.scalars().all()
+    from backend.app.services.auto_queue_return_views import describe_returns
+
+    await describe_returns(db, items)
     enriched = [_enrich_response(item) for item in items]
 
     # Augment with virtual current-print items for printers whose queue
@@ -1086,6 +1095,9 @@ async def get_queue_item(
         and (item.created_by_id is None or item.created_by_id != current_user.id)
     ):
         raise HTTPException(404, "Queue item not found")
+    from backend.app.services.auto_queue_return_views import describe_returns
+
+    await describe_returns(db, [item])
     return _enrich_response(item)
 
 

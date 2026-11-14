@@ -149,6 +149,8 @@ def _to_response(item: AutoQueueItem) -> AutoQueueItemResponse:
             selected_macros = None
 
     response = AutoQueueItemResponse(
+        failed_return_count=item.failed_return_count or 0,
+        return_refusal_code=getattr(item, "_return_refusal_code", None),
         id=item.id,
         archive_id=item.archive_id,
         library_file_id=item.library_file_id,
@@ -311,7 +313,11 @@ async def list_auto_queue(
         stmt = stmt.where(AutoQueueItem.batch_id == batch_id)
     stmt = stmt.order_by(AutoQueueItem.position)
     result = await db.execute(stmt)
-    return [_to_response(item) for item in result.scalars().all()]
+    items = result.scalars().all()
+    from backend.app.services.auto_queue_return_views import describe_returns
+
+    await describe_returns(db, items, auto=True)
+    return [_to_response(item) for item in items]
 
 
 @router.get("/summary", response_model=AutoQueuePendingSummaryResponse)
@@ -379,6 +385,9 @@ async def get_auto_queue_item(
     item = result.scalar_one_or_none()
     if not item:
         raise HTTPException(404, "Auto-queue item not found")
+    from backend.app.services.auto_queue_return_views import describe_returns
+
+    await describe_returns(db, [item], auto=True)
     return _to_response(item)
 
 

@@ -4954,6 +4954,7 @@ export interface AppSettings {
   queue_shortest_first: boolean;  // SJF + been_jumped guard for the auto-queue scheduler
   auto_queue_rebalance_models: boolean;  // Move an order line's pending prints to idle printers of another model when that finishes sooner (spec 2026-09-10)
   auto_queue_compatible_models: boolean;
+  auto_queue_return_failed: boolean;
   default_force_color_match: boolean;
   auto_order_for_batches: boolean;  // A multi-print batch from the print dialog proposes a new order when nothing open needs the plate
   prefer_lowest_filament: boolean;  // Drain the emptiest compatible spool first — honoured by AutoQueue AND by the Print dialog's auto-match
@@ -6911,6 +6912,9 @@ export interface PrintQueueItem {
   // detail. Absent or null on rows failed before m208.
   error_code?: string | null;
   created_at: string;
+  returned_receipt_identity?: string | null;
+  return_ordinal?: number | null;
+  return_refusal_code?: string | null;
   batch_id?: string | null;
   /** Whether this job owns a local copy of the bytes it prints (m173). */
   source_storage?: QueueSourceStorage;
@@ -7460,6 +7464,8 @@ export interface AutoQueueItem {
   print_time_seconds: number | null;
   been_jumped: boolean;
   batch_id: string | null;
+  failed_return_count?: number;
+  return_refusal_code?: string | null;
   /** Whether this row owns a local copy of the bytes its work prints (m173).
    *  Never `exempt` — the external and calibration exceptions only ever reach a
    *  per-printer row. */

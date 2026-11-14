@@ -44,3 +44,5 @@ class AutoQueueReturn(Base):
     ready_at: Mapped[datetime] = mapped_column(DateTime)
     returned_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     ordinal: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_refusal_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    last_refusal_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

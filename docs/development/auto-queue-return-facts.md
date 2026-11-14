@@ -1,55 +1,69 @@
-# AutoQueue failed-return facts
+# Automatic return of failed AutoQueue jobs
 
-The schema foundation records settlement and return facts separately from print
-history. It does not enable automatic retry or publish a settlement receipt.
-The runtime publisher, final return transaction and UI are separate implementation
-stages; this foundation must not be released as the completed feature. The shared
-repeatability guard refuses any non-null returned marker, including a missing or
-malformed receipt reference. Plate ownership remains available to Clear; Repeat
-button projections use the same policy as the final rearm writers.
+`auto_queue_return_failed` is a system opt-in, initially false. It permits at most
+two successful automatic returns per immutable logical AutoQueue identity, no
+earlier than 120 seconds after the addressed physical attempt ended. Explicit
+null is rejected; turning the switch off fences new admissions through a shared
+Settings-row lock. It does not cancel an already committed return.
 
-`AutoQueueItem.failed_return_count` belongs to the logical job. Its nullable
-`failed_return_proof` preserves dispatch evidence when an eventual guarded
-return clears active assignment fields. A new job starts with zero returns and
-no proof. A manual transfer of the same job must retain both facts.
+Only the normal live completion can supply settlement: the exact job/archive
+terminal commit succeeded, the late archive writer succeeded, the normal body
+reached its tail and the awaited leftovers pass succeeded. Critical failure or
+cancellation does not grant proof. Reconciliation of an old failed print cannot
+mint a receipt. If a disconnect/restart is followed only by reconciliation, the
+job remains failed. A durable ready receipt written before restart can still be
+consumed after fresh checks.
 
-`PrintQueueItem.returned_receipt_identity` is separate from `error_code` and
-archive failure details. A return must retain the failed printer row, archive,
-per-print costs and plate/SWAP evidence. These columns do not authorize reuse of
-the failed row. Retry/Clone/Repeat and bulk retry use the shared repeatability
-guard. The irreversible AutoQueue proof or a positive count also makes source
-declaration refresh ineligible after assignment fields have been cleared.
+## Facts and the final writer
 
-`AutoQueueReturn` stores immutable job, execution-archive, AutoQueue, printer and
-owner identities, accepted-source basis and dispatch evidence. Numeric ids are
-navigation hints, without cascading foreign keys: deleting/replacing a job or
-reusing its SQLite id cannot erase or reassign an old receipt. This does not
-permit a writer to authorize an operation using a receipt's numeric ids.
+AutoQueueReturn records immutable attempt, archive, logical job, printer and
+owner identities, source/policy basis, completion time and dispatch evidence.
+Numeric ids are navigation hints. Ready and returned are publication facts,
+not another print lifecycle. A unique attempt key and a unique logical-job
+ordinal make duplicate callbacks/ticks idempotent. Backup and portable transfer
+retain these facts; additive migration never synthesizes legacy receipts.
 
-A ready receipt has no return ordinal or return timestamp. Publication must
-set a positive ordinal and `returned_at` together. The database enforces one
-receipt per immutable attempt and one published ordinal per logical job. NULL
-ordinals remain distinct on SQLite and PostgreSQL. The lookup index has a name
-different from both UNIQUE constraints, including through SQLite reflection
-and PostgreSQL portable restore.
+The publisher and final writer verify accepted bytes outside SQL writer locks,
+then enter storage mutation, clean session, archive-before-lane guards and
+current owner/order/row checks. PostgreSQL toggle reads use FOR SHARE. The final
+commit copies irreversible proof before clearing assignment, returns the same
+ancestor to pending, increments its count, stamps the receipt and marks the old
+printer row. Uncertain commit acknowledgement is resolved by guarded reread;
+there is no compensating create/delete or second increment.
 
-The additive migration initializes legacy jobs with no settlement proof and
-creates no receipts. It seeds the future opt-in setting as disabled without
-overwriting an existing value. A rerun retains proofs, markers and counters.
-Full backups retain these facts; migration/restore never infer new readiness
-from a failed status or an old completion timestamp. Reconciliation-only
-failures without live settlement proof will remain failed.
-# Live settlement publication
+The old status, physical failure code/message, per-print archive/cost, source
+ownership, pause, plate gate and SWAP debt remain intact. A macro claim that is
+owed/attempted/sending refuses return; a known failed-print hold alone does not.
+Retry, Clone and Repeat share the returned refusal, including missing receipt
+references. Clear and ordinary Delete retain their existing addressed behavior.
 
-The live completion freezes scalar identities only after its exact job/archive
-terminal commit. A separate archive-writer success and reaching the normal body
-tail are required; early return, swallowed critical failure and cancellation do
-not publish. The awaited leftovers pass reports failure separately from an empty
-successful pass. Candidate-bearing archive updates preserve the committed end
-time. The final publisher rereads the owner, source, assigned chain and epoch on
-its own guarded connection, and writes a ready receipt without rearming work.
+## Routing and operator controls
 
-The return runtime owns admitted preparation and SQL through actual completion;
-cancelling its caller does not detach file-reading threads. Until lifecycle
-integration opens admission, publication remains disabled. Historical terminal
-rows and reconciliation scans cannot synthesize a live settlement.
+One pure rank is shared by actual routing and rebalance replay. Busy printers
+remain excluded before filament fit; no new wait-for-busy rule is introduced.
+The last failed printer is ranked last by immutable identity, then ordinary
+readiness/model/colour/id ties apply. The existing previous-success requirement
+still excludes a printer whose last print failed. A sole eligible failed printer
+may receive pending work, which waits for Resume.
+
+A new never-started attempt may be moved back to AutoQueue with its logical
+identity, count and proof unchanged. Policy edits preserve them too. Model
+rebalance skips returned rows both at selection and final claim, including force;
+its shared refusal remains open to explicit order/plate-fit replanning. Such a
+reviewed replacement is new logical work, with its own budget and retained old
+print history.
+
+## Runtime and views
+
+A bounded keyset pass runs before the ordinary router opens its session. One
+owner retains admitted publication/pass/file I/O/SQL through actual exit when a
+caller is cancelled. Restore closes admission before awaiting drain and refuses
+storage replacement if drain is not proven; the existing farm restore hold keeps
+it closed until restart. Startup opens only after startup.complete. Shutdown
+keeps unresolved work owned and admission closed.
+
+Refusals use finite reason codes, deduplicated per receipt/reason episode, apart
+from physical error_code. Queue views show return counts, historical returned
+markers and deferred reasons without exposing source basis or owner credentials.
+Connector observations validate receipt/lineage before retiring an assignment,
+prefer a proven current pending ancestor, and retain scoped per-print history.

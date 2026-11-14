@@ -137,6 +137,8 @@ class AutoQueueItemUpdate(BaseModel):
 
 
 class AutoQueueItemResponse(BaseModel):
+    failed_return_count: int = 0
+    return_refusal_code: str | None = None
     auto_eject_settings: AutoEjectSettings = Field(default_factory=AutoEjectSettings)
     auto_eject: bool = False
     id: int

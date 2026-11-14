@@ -511,14 +511,19 @@ class TestRequirePreviousSuccessRoutesAround:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
+    @pytest.mark.parametrize("returned", [False, True])
     async def test_a_gated_item_goes_to_the_healthy_printer(
-        self, db_session, scheduler, printer_factory, routing_item
+        self, db_session, scheduler, printer_factory, routing_item, returned
     ) -> None:
         broken, broken_q = await _make_printer_with_queue(db_session, printer_factory, name="broken", model="A1MINI")
         healthy, healthy_q = await _make_printer_with_queue(db_session, printer_factory, name="healthy", model="A1MINI")
         await self._finish(db_session, broken_q.id, "failed", minutes_ago=5)
 
-        db_session.add(routing_item(target_model="A1MINI", status="pending", position=1, require_previous_success=True))
+        row = routing_item(target_model="A1MINI", status="pending", position=1, require_previous_success=True)
+        if returned:
+            row.failed_return_count = 1
+            row.failed_return_proof = {"version": 1, "last_failed_printer_identity": broken.connector_identity}
+        db_session.add(row)
         await db_session.commit()
 
         p_elig, p_sched = _patch_printer_manager({broken.id, healthy.id})

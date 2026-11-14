@@ -1119,6 +1119,39 @@ async def observations(actor: ConnectorActor, proof: OwnProof, *, cursor: str | 
         def printer_of(printer_id):
             return None if printer_id is None else {"id": printer_id, "identity": printer_identity.get(printer_id)}
 
+        from backend.app.models.auto_queue_return import AutoQueueReturn
+        from backend.app.services.auto_queue_return_policy import has_return_history
+
+        returned = {}
+        if auto_ids:
+            query = select(AutoQueueReturn).where(
+                AutoQueueReturn.auto_identity.in_(auto_ids), AutoQueueReturn.returned_at.is_not(None)
+            )
+            returned = {r.id: r for r in (await db.scalars(query)).all()}
+
+        def retired(row, identity):
+            receipt = returned.get(row.returned_receipt_identity)
+            return bool(
+                receipt
+                and receipt.auto_identity == identity
+                and receipt.old_job_identity == row.recovery_identity
+                and row.source_auto_identity == identity
+            )
+
+        def current_return(auto):
+            proof = auto.failed_return_proof
+            if not isinstance(proof, dict) or type(proof.get("version")) is not int or proof["version"] != 1:
+                return False
+            receipt = returned.get(proof.get("receipt_identity"))
+            return bool(
+                receipt
+                and receipt.auto_identity == auto.recovery_identity
+                and receipt.ordinal == auto.failed_return_count
+                and receipt.old_job_identity == proof.get("old_job_identity")
+                and receipt.execution_archive_identity == proof.get("execution_archive_identity")
+                and receipt.printer_identity == proof.get("last_failed_printer_identity")
+            )
+
         jobs = []
         for entry_id, job in page:
             identity = job.get("identity")
@@ -1137,9 +1170,18 @@ async def observations(actor: ConnectorActor, proof: OwnProof, *, cursor: str | 
                 elif runs:
                     state, printer_id = _EXECUTION_STATE.get(runs[0].status, "printing"), runs[0].printer_id
             else:
-                placed = _newest(assignments.get(identity, []))
+                linked = assignments.get(identity, [])
+                if any(row.returned_receipt_identity is not None and not retired(row, identity) for row in linked):
+                    jobs.append(_unavailable(observed, "chain_broken"))
+                    continue
+                placed = _newest([row for row in linked if not retired(row, identity)])
                 auto = live_auto.get(identity)
-                if placed:
+                if auto is not None and has_return_history(auto) and not current_return(auto):
+                    jobs.append(_unavailable(observed, "chain_broken"))
+                    continue
+                if auto is not None and auto.status == "pending" and has_return_history(auto):
+                    state = _AUTO_STATE["pending"]
+                elif placed:
                     assignment = placed[0]
                     state, printer_id = _ASSIGNED_STATE.get(assignment.status, "assigned"), assignment.queue_id
                 elif runs:
@@ -1153,7 +1195,8 @@ async def observations(actor: ConnectorActor, proof: OwnProof, *, cursor: str | 
                 jobs.append(_unavailable(observed, "out_of_scope"))
                 continue
             shown = []
-            for archive in runs[:OBSERVATION_EXECUTIONS]:
+            visible_runs = [archive for archive in runs if scope is None or archive.printer_id in scope]
+            for archive in visible_runs[:OBSERVATION_EXECUTIONS]:
                 run_state = _execution_state(archive)
                 shown.append(
                     {
@@ -1175,7 +1218,7 @@ async def observations(actor: ConnectorActor, proof: OwnProof, *, cursor: str | 
                     "state": state,
                     "printer": printer_of(printer_id),
                     "executions": shown,
-                    "executions_complete": len(runs) <= OBSERVATION_EXECUTIONS,
+                    "executions_complete": len(runs) <= OBSERVATION_EXECUTIONS and len(visible_runs) == len(runs),
                 }
             )
 

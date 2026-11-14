@@ -12,7 +12,7 @@ import json
 import time
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import HTTPException
 from sqlalchemy import select
@@ -28,11 +28,12 @@ from backend.app.models.printer_queue import PrinterQueue
 from backend.app.models.queue_source import STATE_READY, QueueSource
 from backend.app.models.settings import Settings
 from backend.app.models.user import User
-from backend.app.services import order_filing, order_resources, queue_sources
+from backend.app.services import order_filing, order_resources, queue_sources, swap_terminal
 from backend.app.services.filament_intake import item_descriptor
 from backend.app.services.filament_policy import auto_policy, queue_policy
 from backend.app.services.print_execution import STALE_CLAIM_CODES
 from backend.app.services.print_run_binding import PrintEffectToken, print_effect_is_current
+from backend.app.services.queue_counters import update_queue_counters
 from backend.app.services.queue_ops import claim_lanes
 
 SETTING_KEY = "auto_queue_return_failed"
@@ -295,13 +296,17 @@ async def _owner(db, candidate):
         owner is None
         or not owner.is_active
         or not owner.has_permission("queue:create")
-        or not owner.has_permission("queue:read")
+        or not any(owner.has_permission(p) for p in ("queue:read_own", "queue:read_all", "queue:read"))
     ):
         raise ReturnRefused("owner_unavailable")
     return owner
 
 
 async def _locked_rows(db, candidate):
+    from backend.app.services.farm_startup_guard import farm_startup_guard
+
+    if not farm_startup_guard.allowed():
+        raise ReturnRefused("farm_held")
     if queue_sources.current_epoch() != candidate.epoch:
         raise ReturnRefused("storage_changed")
     enabled = await db.scalar(select(Settings.value).where(Settings.key == SETTING_KEY).with_for_update(read=True))
@@ -404,3 +409,164 @@ async def publish_ready(candidate, *, manager):
         db.add(receipt)
         await db.commit()
         return receipt.id
+
+
+@dataclass(frozen=True)
+class ReturnResult:
+    receipt_id: str
+    auto_id: int
+    ordinal: int
+    returned_at: datetime
+
+
+def _receipt_candidate(receipt):
+    """Only durable ready receipts survive restart; never derive one from failed rows."""
+    try:
+        basis = _canonical(receipt.source_basis)
+        if hashlib.sha256(basis.encode("utf-8")).hexdigest() != receipt.source_basis_digest:
+            raise ReturnRefused("settlement_changed")
+        return ReturnCandidate(
+            receipt.old_job_id,
+            receipt.old_job_identity,
+            receipt.execution_archive_id,
+            receipt.execution_archive_identity,
+            receipt.old_queue_id,
+            receipt.auto_item_id,
+            receipt.auto_identity,
+            receipt.printer_id,
+            receipt.printer_identity,
+            receipt.source_basis["auto"]["created_by_id"],
+            receipt.owner_identity,
+            utc(receipt.completed_at),
+            basis,
+            queue_sources.current_epoch(),
+            None,
+        )
+    except (KeyError, TypeError, ValueError, AttributeError) as exc:
+        raise ReturnRefused("settlement_changed") from exc
+
+
+def _returned(receipt):
+    if receipt.returned_at is not None and receipt.ordinal is not None:
+        return ReturnResult(receipt.id, receipt.auto_item_id, receipt.ordinal, utc(receipt.returned_at))
+    return None
+
+
+async def return_ready(receipt_id, *, now=None):
+    """The only reset writer. Caller must own this entire task through actual SQL/I/O exit."""
+    async with database.async_session() as db:
+        receipt = await db.get(AutoQueueReturn, receipt_id)
+        if receipt is None:
+            raise ReturnRefused("settlement_missing")
+        candidate = _receipt_candidate(receipt)
+        previous = _returned(receipt)
+        if previous is not None:
+            return previous
+    await preflight(candidate)
+    commit_started = False
+    try:
+        async with (
+            queue_sources.storage_mutation(),
+            database.async_session() as db,
+            claim_lanes(db, [candidate.queue_id], archive_id=candidate.archive_id),
+        ):
+            # The lane guards serialize a duplicate before we lock domain rows.
+            receipt = await db.get(AutoQueueReturn, receipt_id, populate_existing=True)
+            if receipt is None or _receipt_candidate(receipt) != candidate:
+                raise ReturnRefused("settlement_changed")
+            previous = _returned(receipt)
+            if previous is not None:
+                return previous
+            auto, job, archive, queue, printer = await _locked_rows(db, candidate)
+            receipt = await db.get(AutoQueueReturn, receipt_id, with_for_update=True, populate_existing=True)
+            if receipt is None or _receipt_candidate(receipt) != candidate:
+                raise ReturnRefused("settlement_changed")
+            at = utc(now) if now is not None else datetime.now(timezone.utc).replace(tzinfo=None)
+            if auto.failed_return_count >= MAX_RETURNS:
+                raise ReturnRefused("return_limit")
+            proof = auto.failed_return_proof
+            if auto.failed_return_count == 0:
+                if proof is not None:
+                    raise ReturnRefused("history_changed")
+            else:
+                if (
+                    not isinstance(proof, dict)
+                    or type(proof.get("version")) is not int
+                    or proof["version"] != 1
+                    or not isinstance(proof.get("receipt_identity"), str)
+                ):
+                    raise ReturnRefused("history_changed")
+                prior = await db.get(AutoQueueReturn, proof["receipt_identity"])
+                if (
+                    prior is None
+                    or prior.auto_identity != auto.recovery_identity
+                    or prior.ordinal != auto.failed_return_count
+                    or prior.returned_at is None
+                    or prior.old_job_identity != proof.get("old_job_identity")
+                    or prior.execution_archive_identity != proof.get("execution_archive_identity")
+                    or prior.printer_identity != proof.get("last_failed_printer_identity")
+                ):
+                    raise ReturnRefused("history_changed")
+            if at < candidate.completed_at + timedelta(seconds=COOLDOWN_SECONDS) or at < utc(receipt.ready_at):
+                raise ReturnRefused("cooldown")
+            stage = swap_terminal.claim_stage(archive.extra_data)
+            if stage not in {None, *swap_terminal.ANSWERED, swap_terminal.SETTLED_BY_OPERATOR} or swap_terminal.sending(
+                archive.id
+            ):
+                raise ReturnRefused("physical_claim_unsettled")
+            if queue.status == "printing" or (
+                printer.awaiting_plate_clear and printer.awaiting_plate_clear_archive_id != archive.id
+            ):
+                raise ReturnRefused("physical_owner_changed")
+            later = await db.scalar(
+                select(PrintArchive.id)
+                .where(
+                    PrintArchive.printer_id == printer.id,
+                    PrintArchive.id != archive.id,
+                    PrintArchive.started_at >= candidate.completed_at,
+                )
+                .limit(1)
+            )
+            if later is not None:
+                raise ReturnRefused("execution_changed")
+            ordinal = auto.failed_return_count + 1
+            # Copy positive dispatch facts before clearing assignment. None of
+            # the old printer's error/pause/plate/SWAP facts is reset here.
+            auto.failed_return_proof = {
+                "version": 1,
+                "receipt_identity": receipt.id,
+                "old_job_identity": job.recovery_identity,
+                "execution_archive_identity": archive.recovery_identity,
+                "last_failed_printer_identity": printer.connector_identity,
+                "dispatch_evidence": dict(receipt.dispatch_evidence),
+            }
+            auto.failed_return_count = ordinal
+            auto.status = "pending"
+            auto.assigned_at = None
+            auto.assigned_to_item_id = None
+            auto.waiting_reason = None
+            receipt.returned_at, receipt.ordinal = at, ordinal
+            receipt.last_refusal_code, receipt.last_refusal_at = None, None
+            job.returned_receipt_identity = receipt.id
+            job.source_auto_item_id = None
+            await update_queue_counters(db, queue.id)
+            commit_started = True
+            await db.commit()
+            return _returned(receipt)
+    except Exception:
+        if not commit_started:
+            raise
+        # A lost commit acknowledgement is not permission to increment again.
+        # Reacquire the same guards on a fresh connection after the old scope
+        # has exited. A missing result remains a retryable owned operation.
+        async with (
+            queue_sources.storage_mutation(),
+            database.async_session() as verify,
+            claim_lanes(verify, [candidate.queue_id], archive_id=candidate.archive_id),
+        ):
+            settled = await verify.get(AutoQueueReturn, receipt_id)
+            if settled is not None and _receipt_candidate(settled) == candidate:
+                result = _returned(settled)
+                if result is not None:
+                    return result
+        raise

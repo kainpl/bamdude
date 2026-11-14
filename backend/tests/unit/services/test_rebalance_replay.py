@@ -6,6 +6,7 @@ t ends at t + its seconds.
 """
 
 import random
+from dataclasses import replace
 
 import pytest
 
@@ -87,6 +88,18 @@ def test_the_router_ranks_ready_then_exact_then_colour_then_the_lower_id():
     assert chosen(Job(1, 0, "P1S", 100.0, fits=((2, False, 9), (3, True, 0)))) == 3  # exact beats colour
     assert chosen(Job(1, 0, "P1S", 100.0, fits=((2, True, 1), (3, True, 2)))) == 3  # more colour matches
     assert chosen(Job(1, 0, "P1S", 100.0, fits=((3, True, 0), (2, True, 0)))) == 2  # the lower id
+
+
+def test_returned_job_ranks_last_failed_last_without_waiting_for_busy_peers():
+    job = replace(_job(1, 1, 2), last_failed_printer_identity="failed")
+    failed = _free(1, printer_identity="failed")
+    alternative = _free(2, ready=False, printer_identity="other")
+    assert replay([failed, alternative], [job]).lane_of[1] == 2
+    busy = _busy(2, 1000, printer_identity="other")
+    actual = replay([failed, busy], [job])
+    assert actual.lane_of[1] == 1 and actual.routed_at[1] == 0
+    # Reused numeric id with a new immutable printer identity is ordinary.
+    assert replay([replace(failed, printer_identity="replacement"), alternative], [job]).lane_of[1] == 1
 
 
 def test_a_printer_awaiting_its_plate_is_routed_but_starts_when_served():

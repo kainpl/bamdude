@@ -1,4 +1,5 @@
 import { QueueWaitReason } from '../QueueWaitReason';
+import { AutoQueueReturnInfo } from '../AutoQueueReturnInfo';
 import { QueueDuration } from '../QueueDuration';
 import { sharedSlicerTime } from '../../utils/slicerTime';
 import { AutoEjectBadge } from '../AutoEjectBadge';
@@ -164,7 +165,9 @@ export function AutoQueuePanel() {
     for (const it of sortedItems) {
       const last = out[out.length - 1];
       if (last && last.batchId !== null && last.batchId === it.batch_id
-        && last.items[0].status === it.status && last.items[0].waiting_reason === it.waiting_reason) last.items.push(it);
+          && last.items[0].status === it.status && last.items[0].waiting_reason === it.waiting_reason
+          && last.items[0].failed_return_count === it.failed_return_count
+          && last.items[0].return_refusal_code === it.return_refusal_code) last.items.push(it);
       else out.push({ key: `run-${it.id}`, batchId: it.batch_id, items: [it] });
     }
     return out;
@@ -316,6 +319,7 @@ export function AutoQueuePanel() {
 
   return (
     <div
+      id="auto-queue"
       className="relative"
       onDragEnter={handleDragEnter}
       onDragOver={handleDragOver}
@@ -579,6 +583,7 @@ function AutoQueueRow({
               In the meta line it already has, at the size the icons there
               already are — the row keeps its shape. */}
           <AutoEjectBadge mode={item.auto_eject} settings={item.auto_eject_settings} />
+          <AutoQueueReturnInfo count={item.failed_return_count} reason={item.return_refusal_code} />
           <QueueSourceIndicator
             state={item.source_storage}
             held={item.status === 'failed' || item.status === 'cancelled'}

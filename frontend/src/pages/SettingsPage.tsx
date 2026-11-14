@@ -1321,6 +1321,7 @@ export function SettingsPage() {
       (baseline.queue_shortest_first ?? false) !== (localSettings.queue_shortest_first ?? false) ||
       (baseline.auto_queue_rebalance_models ?? false) !== (localSettings.auto_queue_rebalance_models ?? false) ||
       (baseline.auto_queue_compatible_models ?? false) !== (localSettings.auto_queue_compatible_models ?? false) ||
+      (baseline.auto_queue_return_failed ?? false) !== (localSettings.auto_queue_return_failed ?? false) ||
       (baseline.auto_order_for_batches ?? false) !== (localSettings.auto_order_for_batches ?? false) ||
       (baseline.default_force_color_match ?? false) !== (localSettings.default_force_color_match ?? false) ||
       (baseline.queue_drying_block ?? false) !== (localSettings.queue_drying_block ?? false) ||
@@ -1442,6 +1443,7 @@ export function SettingsPage() {
         queue_shortest_first: localSettings.queue_shortest_first,
         auto_queue_rebalance_models: localSettings.auto_queue_rebalance_models,
         auto_queue_compatible_models: localSettings.auto_queue_compatible_models,
+        auto_queue_return_failed: localSettings.auto_queue_return_failed,
         auto_order_for_batches: localSettings.auto_order_for_batches,
         default_force_color_match: localSettings.default_force_color_match,
         queue_drying_block: localSettings.queue_drying_block,
@@ -4065,6 +4067,16 @@ export function SettingsPage() {
                   <span className="font-medium">{t('settings.autoQueueRouting')}</span>
                 </div>
                 <p className="text-xs text-bambu-gray">{t('settings.autoQueueRoutingDescription')}</p>
+                <label className="flex items-start justify-between gap-4 min-h-11 cursor-pointer py-2">
+                  <span className="min-w-0">
+                    <span className="block text-sm text-white">{t('settings.autoQueueReturnFailed')}</span>
+                    <span id="auto-queue-return-help" className="block text-xs text-bambu-gray mt-1">{t('settings.autoQueueReturnFailedDescription')}</span>
+                  </span>
+                  <input type="checkbox" className="w-5 h-5 mt-1 shrink-0 accent-bambu-green"
+                    aria-describedby="auto-queue-return-help"
+                    checked={localSettings.auto_queue_return_failed ?? false}
+                    onChange={(e) => updateSetting('auto_queue_return_failed', e.target.checked)} />
+                </label>
                 <div className="flex items-center justify-between">
                   <div>
                     <label className="block text-sm text-white">{t('settings.queueShortestFirst')}</label>

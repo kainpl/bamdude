@@ -217,6 +217,11 @@ class AutoQueueScheduler:
 
         if not farm_startup_guard.allowed():
             return
+        from backend.app.services.auto_queue_return_runtime import auto_queue_return_runtime
+
+        # Return owns separate clean sessions/guards; never wait for a local
+        # lane while the ordinary router already owns SQLite's writer.
+        await auto_queue_return_runtime.pass_ready()
         notification_generation = self._notification_generation
         from backend.app.services.printer_manager import printer_manager
 

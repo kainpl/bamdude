@@ -383,7 +383,13 @@ async def find_eligible_printer(
             (ready, verdict == "exact", result.plan.color_matches, -printer.id, printer, result.plan, snapshot)
         )
     if candidates:
-        _, _, _, _, printer, plan, snapshot = max(candidates, key=lambda c: c[:4])
+        from backend.app.services.auto_queue_return_policy import last_failed_printer, returned_printer_rank
+
+        failed_identity = last_failed_printer(item)
+        _, _, _, _, printer, plan, snapshot = max(
+            candidates,
+            key=lambda c: returned_printer_rank(failed_identity, c[4].connector_identity, c[:4]),
+        )
         return EligiblePrinter(
             printer, plan=plan, requirements=req, snapshot_signature=feed_signature(policy, snapshot)
         )

@@ -69,6 +69,8 @@ def test_auto_assignment_reset_writers_are_reviewed():
     assert observed == {
         ("services/queue_auto_transfer.py", "apply", "assigned_at"),
         ("services/queue_auto_transfer.py", "apply", "assigned_to_item_id"),
+        ("services/auto_queue_return.py", "return_ready", "assigned_at"),
+        ("services/auto_queue_return.py", "return_ready", "assigned_to_item_id"),
     }, "Review a new reset writer: dispatched-return proof and count must survive"
 
 
