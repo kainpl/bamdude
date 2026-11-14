@@ -97,6 +97,20 @@ def _live_frame(camera_id: int) -> bytes | None:
     return frame
 
 
+def live_frame_for_capture(camera_id: int) -> tuple[bool, bytes | None]:
+    """``(defer, frame)`` for a one-shot capture of this camera — the printers' rule, for a standalone camera.
+
+    ``defer`` is True while the camera's upstream exists: from the first viewer's subscription, through a
+    view that has no frame yet, to the end of the grace window after the last viewer left — the upstream
+    holds the camera's one socket for all of it. What ``camera_runtime.capture`` asks before the worker dials.
+    """
+    from backend.app.services.camera_fanout import active_broadcaster_keys
+
+    if _fanout_key(camera_id) not in active_broadcaster_keys():
+        return False, None
+    return True, _live_frame(camera_id)
+
+
 def _forget_frames(camera_id: int) -> None:
     for registry in (_last_frames, _last_frame_times, _snapshot_frames, _snapshot_frame_times, _stream_started):
         registry.pop(camera_id, None)
@@ -309,7 +323,17 @@ async def test_saved_camera(
         url = _validated_source(url, camera_type)
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from None
+    # The saved stream source, as the live view reads it — a draft address is another device.
+    saved_stream = payload.source != "snapshot" and (url, camera_type) == (camera.url, camera.camera_type)
     await db.rollback()
+    if saved_stream:
+        from backend.app.services.camera_runtime import CameraCaptureRequest, test_on_live_view
+
+        watched = await test_on_live_view(
+            CameraCaptureRequest.external(url=url, camera_type=camera_type, camera_id=camera_id)
+        )
+        if watched is not None:
+            return watched
     return await _test_source(url, camera_type)
 
 
@@ -484,14 +508,25 @@ async def camera_snapshot(
                     camera_type=camera_type,
                     snapshot_url=snapshot_url,
                     purpose="snapshot",
+                    camera_id=camera_id,
                 )
             )
         except CameraWorkerUnavailable as exc:
             raise HTTPException(503, "Camera worker is unavailable.") from exc
         frame = result.frame
-        if not frame:
+        if result.source == "live_view":
+            # The capture stood down for a view of this camera: its frame, or "come back" — never a second
+            # reader beside a view that has no frame yet. Not cached: the view's next frame is newer.
+            if not frame:
+                raise HTTPException(
+                    503,
+                    "The camera's live view is still starting. Try again in a moment.",
+                    headers={"Retry-After": "2"},
+                )
+        elif not frame:
             raise HTTPException(503, "Failed to capture a frame from this camera.")
-        _remember_snapshot(camera_id, frame)
+        else:
+            _remember_snapshot(camera_id, frame)
 
     return Response(
         content=frame,

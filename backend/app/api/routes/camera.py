@@ -149,6 +149,19 @@ def live_frame_for_capture(
     return True, get_buffered_frame(printer_id)
 
 
+def live_view_frame(printer_id: int, kind: Literal["builtin", "external"]) -> tuple[bool, bytes | None]:
+    """:func:`live_frame_for_capture` for a capture of ONE of the printer's two cameras.
+
+    What ``camera_runtime.capture`` asks before it lets the worker dial. A view of the printer's external
+    camera holds no socket of the built-in one (and the reverse), so a capture of the other device is not
+    deferred — and is never handed the wrong camera's frame.
+    """
+    active = _active_worker_streams.get(printer_id)
+    if active is not None and (active[1] == "external") != (kind == "external"):
+        return False, None
+    return live_frame_for_capture(printer_id)
+
+
 def live_frame_observation(printer_id: int) -> tuple[bool, bytes | None, float | None, float | None]:
     """Freeze bytes and their relay arrival, not a camera exposure timestamp.
 
@@ -673,6 +686,22 @@ def _reusable_frame(printer_id: int) -> tuple[str, bytes] | None:
     return None
 
 
+def _snapshot_of_live_view(printer_id: int, frame: bytes | None) -> Response:
+    """The answer when ``camera_runtime.capture`` stood down for a live view: its frame, or "come back".
+
+    A view that is still starting (or between two sessions) holds the camera's one connection and has no
+    frame to lend; the snapshot is then a 503 with ``Retry-After`` — never a second reader (upstream #2707).
+    """
+    if frame is None:
+        raise HTTPException(
+            status_code=503,
+            detail="The camera's live view is still starting. Try again in a moment.",
+            headers={"Retry-After": "2"},
+        )
+    camera_metrics.remember_delivery(printer_id, "live_buffer")
+    return _snapshot_response(printer_id, frame)
+
+
 async def _snapshot_from(printer_id: int, printer):
     """One frame from ``printer``: external camera, live buffer, recent cache, or a fresh capture."""
     import tempfile
@@ -694,10 +723,13 @@ async def _snapshot_from(printer_id: int, printer):
                     camera_type=printer.external_camera_type,
                     timeout=15,
                     snapshot_url=printer.external_camera_snapshot_url,
+                    view_printer_id=printer_id,
                 )
             )
         except CameraWorkerUnavailable as exc:
             raise HTTPException(status_code=503, detail="Camera worker is unavailable.") from exc
+        if result.source == "live_view":
+            return _snapshot_of_live_view(printer_id, result.frame)
         frame_data = result.frame
         camera_metrics.remember_delivery(
             printer_id,
@@ -743,10 +775,13 @@ async def _snapshot_from(printer_id: int, printer):
                     access_code=printer.access_code,
                     model=printer.model,
                     timeout=15,
+                    view_printer_id=printer_id,
                 )
             )
         except CameraWorkerUnavailable as exc:
             raise HTTPException(status_code=503, detail="Camera worker is unavailable.") from exc
+        if result.source == "live_view":
+            return _snapshot_of_live_view(printer_id, result.frame)
         camera_metrics.remember_delivery(
             printer_id,
             "shared_capture" if result.source == "coalesced" else "own_capture" if result.frame else None,
@@ -785,6 +820,7 @@ async def test_camera(
         ip_address=printer.ip_address,
         access_code=printer.access_code,
         model=printer.model,
+        printer_id=printer_id,
     )
 
     return result
@@ -904,7 +940,7 @@ async def test_external_camera(
 ):
     """Probe a frozen draft through the worker, never persist its credentials."""
     from backend.app.services.camera_credentials import CAMERA_SECRET_FIELDS, resolve_camera_credentials
-    from backend.app.services.camera_runtime import test_external_connection
+    from backend.app.services.camera_runtime import test_external_connection, test_on_live_view
 
     field = "external_camera_snapshot_url" if payload.source == "snapshot" else "external_camera_url"
     supplied = "url" in payload.model_fields_set
@@ -919,7 +955,21 @@ async def test_external_camera(
     camera_type = "snapshot" if payload.source == "snapshot" else payload.camera_type or printer.external_camera_type
     if not url or camera_type not in {"mjpeg", "rtsp", "snapshot", "usb"}:
         raise HTTPException(422, "A camera URL and supported camera type are required")
+    # The saved stream source, as the live view reads it — a draft address is another device.
+    saved_stream = (
+        payload.source == "stream"
+        and bool(printer.external_camera_enabled)
+        and (url, camera_type) == (printer.external_camera_url, printer.external_camera_type)
+    )
     await db.rollback()
+    if saved_stream:
+        # Somebody is watching this very camera: its live view is the proof, a second dial would fail on a
+        # single-reader source (or drop the viewer). The answer carries no URL, as below.
+        watched = await test_on_live_view(
+            CameraCaptureRequest.external(url=url, camera_type=camera_type, view_printer_id=printer_id)
+        )
+        if watched is not None:
+            return watched
     result = await test_external_connection(url, camera_type)
     if not result.get("success"):
         # The worker owns transport diagnostics. An untrusted peer's error can

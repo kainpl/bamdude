@@ -213,6 +213,27 @@ async def test_the_bank_captures_under_its_own_purpose(monkeypatch, external):
         assert capture.await_args.args[0].purpose == "snapshot"
 
 
+async def test_the_bank_stands_down_for_a_starting_view_of_an_external_camera(monkeypatch):
+    """A USB camera has one handle: a view with no frame yet stops the bank on an external camera too (G09 U5)."""
+    printer = _printer()
+    printer.external_camera_enabled = True
+    printer.external_camera_url = "/dev/video0"
+    printer.external_camera_type = "usb"
+    monkeypatch.setattr(main_module, "async_session", _fake_session_factory(printer))
+    _running_client(monkeypatch)
+    with (
+        patch("backend.app.api.routes.settings.get_setting", new=AsyncMock(return_value="true")),
+        patch("backend.app.api.routes.camera.live_frame_for_capture", return_value=(True, None)),
+        patch(
+            "backend.app.services.camera_runtime.capture",
+            new=AsyncMock(return_value=CameraCaptureResult(frame=b"\xff\xd8F", source="fresh")),
+        ) as capture,
+    ):
+        await main_module._maybe_bank_inprint_frame(printer.id, 5)
+    capture.assert_not_awaited()
+    assert main_module._finish_photo_key(printer.id) not in main_module._inprint_frame_bank
+
+
 async def test_banking_through_the_real_capture_never_switches_the_light(monkeypatch):
     """Layer after layer through ``camera_runtime.capture`` and the real lease: no ledctrl at all."""
     from backend.app.services import camera_light, camera_runtime

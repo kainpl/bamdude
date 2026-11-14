@@ -64,6 +64,11 @@ class CameraCaptureRequest:
     printer_id: int | None = None
     #: A poller's declared hold on the light, seconds (camera_light.hold_for_poll).
     hold: float | None = None
+    #: Whose live view answers instead of a second reader (see :func:`capture`). A printer's view is named by
+    #: ``printer_id``; a caller that holds the light itself names ``view_printer_id`` alone. In-memory only.
+    view_printer_id: int | None = None
+    #: The standalone camera (``cameras`` row) this frame is of — its live view answers the same way.
+    camera_id: int | None = None
 
     @classmethod
     def builtin(
@@ -76,6 +81,7 @@ class CameraCaptureRequest:
         purpose: CameraPurpose = "snapshot",
         printer_id: int | None = None,
         hold: float | None = None,
+        view_printer_id: int | None = None,
     ) -> CameraCaptureRequest:
         return cls(
             kind="builtin",
@@ -86,6 +92,7 @@ class CameraCaptureRequest:
             model=model,
             printer_id=printer_id,
             hold=hold,
+            view_printer_id=view_printer_id,
         )
 
     @classmethod
@@ -99,6 +106,8 @@ class CameraCaptureRequest:
         purpose: CameraPurpose = "snapshot",
         printer_id: int | None = None,
         hold: float | None = None,
+        view_printer_id: int | None = None,
+        camera_id: int | None = None,
     ) -> CameraCaptureRequest:
         return cls(
             kind="external",
@@ -109,6 +118,8 @@ class CameraCaptureRequest:
             snapshot_url=snapshot_url,
             printer_id=printer_id,
             hold=hold,
+            view_printer_id=view_printer_id,
+            camera_id=camera_id,
         )
 
     def same_source(self, other: CameraCaptureRequest) -> bool:
@@ -146,6 +157,8 @@ class CameraCaptureRequest:
             raise ValueError("external camera capture requires URL and type")
         if self.ip_address is not None or self.access_code is not None or self.model is not None:
             raise ValueError("external camera capture cannot contain built-in camera fields")
+        if self.camera_id is not None and (self.printer_id is not None or self.view_printer_id is not None):
+            raise ValueError("a capture is of a printer's camera or of a standalone camera, never both")
 
 
 class CameraRuntime(Protocol):
@@ -436,8 +449,71 @@ def camera_runtime_health() -> dict:
     )
 
 
+#: How long a one-shot capture waits for the first frame of a live view that is still starting (or between
+#: two sessions) before it answers "busy". Never longer than the caller's own timeout.
+LIVE_VIEW_FIRST_FRAME_WAIT = 3.0
+
+
+def _live_view_probe(request: CameraCaptureRequest) -> Callable[[], tuple[bool, bytes | None]] | None:
+    """The question "is this camera being watched, and what has the view got" for the camera a request names.
+
+    The frame buffers live with the HTTP relays that fill them (``routes/camera`` for a printer's camera,
+    ``routes/cameras`` for a standalone one); the imports are late because those modules import this one.
+    """
+    if request.camera_id is not None:
+        from backend.app.api.routes import cameras
+
+        camera_id = request.camera_id
+        return lambda: cameras.live_frame_for_capture(camera_id)
+    printer_id = request.view_printer_id if request.view_printer_id is not None else request.printer_id
+    if printer_id is None:
+        return None
+    from backend.app.api.routes import camera
+
+    kind = request.kind
+    return lambda: camera.live_view_frame(printer_id, kind)
+
+
+async def frame_from_live_view(request: CameraCaptureRequest) -> tuple[bool, bytes | None]:
+    """``(watched, frame)`` — the single-reader rule every one-shot capture obeys.
+
+    Most firmware allows ONE camera connection and a USB camera one handle, so a capture beside a live view
+    does not degrade: it fails, or it drops the viewer (``40-invariants/inv-single-camera-socket``).
+    ``watched`` True means the worker must NOT be asked: ``frame`` is the view's frame, or None when the view
+    delivered none within :data:`LIVE_VIEW_FIRST_FRAME_WAIT` — "busy", for the caller to report as its
+    contract says. A view that leaves during the wait hands the camera back, and the caller captures.
+
+    A request that carries a snapshot URL takes the view's frame when there is one and is otherwise NOT held
+    back: that URL is a plain HTTP GET beside the stream, not a second reader of it (audit G09 Unsure 1 —
+    which of the two such a camera should answer with is the owner's to decide; this keeps what it did).
+    """
+    probe = _live_view_probe(request)
+    if probe is None:
+        return False, None
+    deadline = time.monotonic() + min(LIVE_VIEW_FIRST_FRAME_WAIT, request.timeout)
+    while True:
+        watched, frame = probe()
+        if not watched:
+            return False, None
+        if frame is not None:
+            return True, frame
+        if request.snapshot_url:
+            return False, None
+        if time.monotonic() >= deadline:
+            logger.info(
+                "Camera capture (%s) stood down: a live view holds the camera and has no frame yet", request.purpose
+            )
+            return True, None
+        await asyncio.sleep(0.05)
+
+
 async def capture(request: CameraCaptureRequest) -> CameraCaptureResult:
     """Capture through the selected runtime without exposing implementation.
+
+    A camera that is being watched is never dialled a second time: a request that names its camera (a
+    printer's by ``printer_id`` / ``view_printer_id``, a standalone one by ``camera_id``) is answered from
+    the live view — see :func:`frame_from_live_view`. The result then says ``source="live_view"``, with no
+    frame when the view had none to give. This is the one place the rule lives; a caller does not repeat it.
 
     The chamber light is taken here, in the main process, whichever runtime
     does the capture: a request that names its printer holds the light for
@@ -450,6 +526,10 @@ async def capture(request: CameraCaptureRequest) -> CameraCaptureResult:
 
     from backend.app.services import camera_capability, camera_light
 
+    watched, live_frame = await frame_from_live_view(request)
+    if watched:
+        # No light of our own either: the view that holds the camera holds its light.
+        return CameraCaptureResult(frame=live_frame, source="live_view")
     if (
         request.kind == "builtin"
         and request.printer_id is not None
@@ -463,6 +543,35 @@ async def capture(request: CameraCaptureRequest) -> CameraCaptureResult:
         return await get_camera_runtime().capture(request)
 
 
+#: What a camera test answers when a live view holds the camera and has not delivered a frame yet.
+CAMERA_BUSY_WITH_LIVE_VIEW = "The camera is in use by its live view, which has no picture yet. Try again in a moment."
+
+
+def _jpeg_resolution(frame: bytes) -> str | None:
+    for marker in (b"\xff\xc0", b"\xff\xc1", b"\xff\xc2"):
+        index = frame.find(marker)
+        if index >= 0 and index + 9 <= len(frame):
+            height = (frame[index + 5] << 8) | frame[index + 6]
+            width = (frame[index + 7] << 8) | frame[index + 8]
+            return f"{width}x{height}"
+    return None
+
+
+async def test_on_live_view(request: CameraCaptureRequest) -> dict | None:
+    """A camera test of a camera that is being watched, answered from its live view; None when nobody watches.
+
+    The Test button beside a camera's settings must not dial a second time while the Camera page is open on
+    that camera — on a USB camera that reads as "broken" (upstream #2707). ``request`` names the camera as a
+    capture would; the caller passes it only for the SAVED source, since a draft address is another device.
+    """
+    watched, frame = await frame_from_live_view(request)
+    if not watched:
+        return None
+    if frame is None:
+        return {"success": False, "error": CAMERA_BUSY_WITH_LIVE_VIEW, "live_view": True}
+    return {"success": True, "resolution": _jpeg_resolution(frame), "live_view": True}
+
+
 async def test_external_connection(url: str, camera_type: str) -> dict:
     """Probe a proposed external source through the worker, never in main."""
     try:
@@ -472,15 +581,7 @@ async def test_external_connection(url: str, camera_type: str) -> dict:
         frame = result.frame
         if not frame:
             return {"success": False, "error": "Failed to capture frame from camera"}
-        resolution = None
-        for marker in (b"\xff\xc0", b"\xff\xc1", b"\xff\xc2"):
-            index = frame.find(marker)
-            if index >= 0 and index + 9 <= len(frame):
-                height = (frame[index + 5] << 8) | frame[index + 6]
-                width = (frame[index + 7] << 8) | frame[index + 8]
-                resolution = f"{width}x{height}"
-                break
-        return {"success": True, "resolution": resolution}
+        return {"success": True, "resolution": _jpeg_resolution(frame)}
     except Exception as exc:
         logger.warning("External camera test failed: %s", type(exc).__name__)
         return {"success": False, "error": f"Connection failed: {type(exc).__name__}"}

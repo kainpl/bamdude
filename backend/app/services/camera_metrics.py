@@ -35,7 +35,9 @@ _identity_salt = uuid.uuid4().bytes
 @dataclass(frozen=True)
 class CameraCaptureResult:
     frame: bytes | None
-    source: Literal["fresh", "coalesced"] | None
+    #: ``live_view``: the frame a live view already had — or, with no frame, a view that holds the camera and
+    #: has not delivered one yet (services/camera_runtime.capture). Never a worker result.
+    source: Literal["fresh", "coalesced", "live_view"] | None
     attempt_id: str | None = None
     first_frame_ms: float | None = None
     caller_wait_ms: float | None = None

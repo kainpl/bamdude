@@ -918,6 +918,7 @@
   "The archive carries an illegal member name: {}": "Архів містить недопустиме імʼя елемента: {}",
   "The archive carries no {}": "Архів не містить {}",
   "The archive's file is no longer on disk": "Файлу архіву вже немає на диску",
+  "The camera's live view is still starting. Try again in a moment.": "Живий перегляд камери ще запускається. Спробуйте за мить.",
   "The count cannot be below the {} reserved; release the reservation first": "Фактична кількість не може бути меншою за зарезервовані {}; спершу зніміть резерв",
   "The cover must be a picture attachment of this product": "Обкладинкою має бути вкладення-зображення цього виробу",
   "The entry was cancelled before it was published.": "Запис скасовано до того, як його поставлено в чергу.",
