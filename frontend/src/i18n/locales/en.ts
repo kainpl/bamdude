@@ -4,7 +4,7 @@ export default {
       "counts": "Retired at this upgrade: {{owned}} owned API keys, {{ownerless}} ownerless API keys and {{tokens}} camera/monitor tokens.",
       "notificationPending": "Administrator inbox notice: pending.",
       "notificationCompleted": "Administrator inbox notice: completed. Subscription opt-outs are respected.",
-      "checklist": "Create new credentials in Settings → API Keys. Replace secrets in HA, webhooks/scripts, bridge, MCP/AI host settings and OrcaBamDude; reconnect API-key cameras. Regenerate saved camera streams, camera wall, overlay, monitor, TV, OBS, kiosk and launcher links using new camera/monitor tokens. Sign in again in each browser and regenerate its derived links.",
+      "checklist": "Create new credentials in Settings → API Keys. Replace secrets in HA, webhooks/scripts, bridge, MCP/AI host settings and OrcaBamDude; reconnect API-key cameras. Regenerate saved camera streams, camera wall, overlay, monitor, TV, OBS, kiosk and launcher links using new camera/monitor tokens from Settings → Camera. Sign in again in each browser and regenerate its derived links.",
       "safety": "Browser sign-in alone does not reconnect integrations. Choose the minimum scopes, test one allowed operation and do not blindly retry a print. Old credentials cannot be restored or re-enabled.",
       "needsReissue": "Needs reissue",
       "ownerless": "This legacy key has no owner. Create a new key while signed in as its intended owner.",
@@ -573,7 +573,7 @@ export default {
     "forecastUnavailable": "Queue estimate unavailable or out of date",
     "orderHeld": "Order held while interacting",
     "tokenInvalid": "TV access is invalid or expired",
-    "tokenHelp": "Create a new Status monitor token in Settings → API Keys, then open its TV link.",
+    "tokenHelp": "Create a new Status monitor token in Settings → Camera → Camera and monitor tokens, then open its TV link.",
     "accessDenied": "This view is unavailable",
     "accessHelp": "Sign in with an account that can read these printers and queues, then reload the monitor.",
     "signInRequired": "Sign in to continue",
@@ -3271,6 +3271,7 @@ export default {
       general: 'General',
       slicing: 'Slicing',
       printing: 'Printing',
+      camera: 'Camera',
       smartPlugs: 'Smart Plugs',
       notifications: 'Notifications',
       filament: 'Filament',
@@ -4261,6 +4262,8 @@ export default {
     },
     // Camera
     camera: 'Camera',
+    cameraTokensMoved: 'Tokens for cameras, the Cam Wall, the streaming overlay and the status monitor (TV links) are created and revoked on the Camera tab, next to the overlay builder.',
+    openCameraSettings: 'Open camera settings',
     cameraViewMode: 'Camera View Mode',
     cameraOverlayDescription: 'Camera opens in a resizable overlay on the main screen',
     cameraWindowDescription: 'Camera opens in a separate browser window',
@@ -12200,7 +12203,7 @@ export default {
   camWall: {
     temporarilyUnavailable: 'Connection temporarily unavailable. Retrying automatically…',
     pageTitle: 'Cam Wall',
-    tokenRejected: 'This Cam Wall link was rejected. The token may have expired or been revoked - create a new one under Settings > API Keys with the "Cam Wall" scope.',
+    tokenRejected: 'This Cam Wall link was rejected. The token may have expired or been revoked - create a new one under Settings > Camera with the "Cam Wall" scope.',
   },
   cameraTokens: {
     title: 'Camera and monitor tokens',
