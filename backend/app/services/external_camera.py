@@ -8,6 +8,7 @@ to ensure they are well-formed before use.
 """
 
 import asyncio
+import contextlib
 import functools
 import logging
 import random
@@ -753,26 +754,48 @@ async def generate_mjpeg_stream(
             if rtsp_profile is None
             else _ReconnectBudget(rtsp_profile.rtsp_reconnect_max, rtsp_profile.rtsp_reconnect_stable_seconds)
         )
-        while True:
-            first_frame_at = None
-            async for frame in _stream_rtsp(url, fps, on_process=on_process, profile=rtsp_profile):
-                first_frame_at = first_frame_at or time.monotonic()
-                yield _publish(frame)
-            metric = camera_metrics.current.get()
-            budget.count_session(metric, first_frame_at)
-            if stop_event is not None and stop_event.is_set():
-                break
-            if not budget.allows_redial(metric, first_frame_at):
-                break
-            delay = 2.0 if rtsp_profile is None else _rtsp_reconnect_delay(budget.attempt, rtsp_profile)
-            logger.warning(
-                "External RTSP stream ended, reconnecting (attempt %d/%d, delay=%.3fs)...",
-                budget.attempt,
-                budget.max_retries,
-                delay,
-            )
-            if not await _wait_for_rtsp_retry(delay, stop_event):
-                break
+        # One watch for the whole stream: what a redial shows is compared with
+        # the picture the session before it froze on.  A camera without a
+        # profile may legitimately repeat frames, so its limit adapts.
+        watch = _FreezeWatch(adaptive=rtsp_profile is None)
+        try:
+            while True:
+                first_frame_at = None
+                watch.start_session()
+                # Closed before the redial: a frozen session still holds the
+                # camera's one connection.
+                async with contextlib.aclosing(
+                    _stream_rtsp(url, fps, on_process=on_process, profile=rtsp_profile)
+                ) as session:
+                    async for frame in session:
+                        now = time.monotonic()
+                        first_frame_at = first_frame_at or now
+                        if watch.observe(frame, now):
+                            break
+                        yield _publish(frame)
+                metric = camera_metrics.current.get()
+                watch.count_session(metric)
+                budget.count_session(metric, first_frame_at, healthy_until=watch.healthy_until)
+                if stop_event is not None and stop_event.is_set():
+                    break
+                if not budget.allows_redial(metric, first_frame_at):
+                    if watch.ended_session:
+                        metric.end_reason = "source_frozen"
+                    break
+                delay = 2.0 if rtsp_profile is None else _rtsp_reconnect_delay(budget.attempt, rtsp_profile)
+                # A redial the watch asked for is reported by the watch, once it
+                # knows what the new session shows.
+                if not watch.ended_session:
+                    logger.warning(
+                        "External RTSP stream ended, reconnecting (attempt %d/%d, delay=%.3fs)...",
+                        budget.attempt,
+                        budget.max_retries,
+                        delay,
+                    )
+                if not await _wait_for_rtsp_retry(delay, stop_event):
+                    break
+        finally:
+            watch.close()
 
     elif camera_type == "usb":
         # Use ffmpeg to stream from USB camera; its CameraAttempt counts the attempt, as for RTSP.
@@ -1073,14 +1096,20 @@ class _ReconnectBudget:
         self.attempt = 0
         self.delivered = False
 
-    def count_session(self, metric, first_frame_at: float | None) -> None:
-        """Record a finished session in the stream's telemetry and in the budget."""
+    def count_session(self, metric, first_frame_at: float | None, *, healthy_until: float | None = None) -> None:
+        """Record a finished session in the stream's telemetry and in the budget.
+
+        ``healthy_until`` is given for a session ended because its picture had
+        stopped changing: the stable window is measured to that moment, not to
+        the end of the repeats that followed it.
+        """
         if first_frame_at is None:
             metric.consecutive_failures = min(2**53 - 1, metric.consecutive_failures + 1)
             return
         metric.consecutive_failures = 0
         self.delivered = True
-        if time.monotonic() - first_frame_at >= self.stable_seconds:
+        ended = time.monotonic() if healthy_until is None else healthy_until
+        if ended - first_frame_at >= self.stable_seconds:
             self.attempt = 0
 
     def allows_redial(self, metric, first_frame_at: float | None) -> bool:
@@ -1096,6 +1125,155 @@ class _ReconnectBudget:
             return False
         self.attempt += 1
         return True
+
+
+# How long an RTSP session may deliver byte-identical frames before it is ended
+# and redialled, and the interval at which a picture that really does not change
+# is checked again (upstream e0149ae4a / 4a1f602bf; their measurements on X1C
+# and P2S).
+_RTSP_FROZEN_SECONDS = 20.0
+_RTSP_STILL_RECHECK_SECONDS = 300.0
+
+
+class _FreezeWatch:
+    """Notices an RTSP picture that has stopped changing, across the sessions of one stream.
+
+    A session can stay up and keep delivering frames while no new picture
+    arrives: the source's encoder runs on over a dead sensor, or the output rate
+    repeats the last frame.  Nothing downstream can tell such a frame from a new
+    one, so every consumer of the live frame took it for fresh.  A live camera
+    rarely repeats a frame byte for byte (sensor noise), so identical frames for
+    longer than the limit end the session and the stream's ordinary reconnect
+    loop redials.
+
+    What the redial shows decides the rest.  The same bytes again from a fresh
+    connection: the camera is alive and its scene is still, and it is only
+    checked again at the long interval until the picture changes.  A new
+    picture: the source had stopped, or — for a camera without a profile, which
+    may be slower than the output rate or hold a static scene in a smart codec —
+    it is just slow to change, so the limit there is three times the longest gap
+    it has shown between two pictures, never below the short limit and never
+    above the long one.
+
+    Frames are compared as bytes: equal length first, then a memory compare that
+    stops at the first difference.  Nothing is decoded or hashed.
+    """
+
+    def __init__(self, *, adaptive: bool) -> None:
+        self.adaptive = adaptive
+        self.still_scene = False
+        #: The session now running was ended by this watch.
+        self.ended_session = False
+        self._previous: bytes | None = None
+        self._changed_at = 0.0
+        self._picture_changed = False
+        self._identical = 0
+        self._longest_gap = 0.0
+        self._frozen_on: bytes | None = None
+        self._unchanged_for = 0.0
+        # (identical frames, seconds, limit) of a freeze whose outcome is not known yet
+        self._unreported: tuple[int, float, float] | None = None
+
+    def limit(self) -> float:
+        if self.still_scene:
+            return _RTSP_STILL_RECHECK_SECONDS
+        if not self.adaptive:
+            return _RTSP_FROZEN_SECONDS
+        return min(max(_RTSP_FROZEN_SECONDS, 3 * self._longest_gap), _RTSP_STILL_RECHECK_SECONDS)
+
+    def start_session(self) -> None:
+        self.ended_session = False
+        self._previous = None
+        self._picture_changed = False
+        self._identical = 0
+
+    def observe(self, frame: bytes, now: float) -> bool:
+        """Take the session's next frame; True means end the session and redial."""
+        previous = self._previous
+        if previous is None:
+            if self._frozen_on is not None:
+                self.still_scene = frame == self._frozen_on
+                if not self.still_scene:
+                    self._frozen_on = None
+                    if self.adaptive:
+                        self._longest_gap = max(self._longest_gap, self._unchanged_for)
+                self._report("the same picture" if self.still_scene else "a new picture")
+            self._previous = frame
+            self._changed_at = now
+            return False
+        if len(frame) == len(previous) and frame == previous:
+            self._identical += 1
+            self._unchanged_for = now - self._changed_at
+            if self._unchanged_for <= self.limit():
+                return False
+            self.ended_session = True
+            self._frozen_on = frame
+            if not self.still_scene:
+                self._unreported = (self._identical, self._unchanged_for, self.limit())
+            return True
+        if self.adaptive:
+            self._longest_gap = max(self._longest_gap, now - self._changed_at)
+        self._previous = frame
+        self._changed_at = now
+        self._picture_changed = True
+        self._identical = 0
+        self.still_scene = False
+        self._frozen_on = None
+        return False
+
+    @property
+    def healthy_until(self) -> float | None:
+        """To when a session this watch ended counts for the reconnect budget's stable window.
+
+        A confirmed still scene is a healthy camera for as long as it delivers;
+        otherwise only the time the picture was seen changing counts, so a
+        source that shows one picture per connection and then nothing new is
+        not forgiven for the repeats it sent.
+        """
+        if not self.ended_session:
+            return None
+        if self.still_scene:
+            return self._changed_at + self._unchanged_for
+        return self._changed_at if self._picture_changed else float("-inf")
+
+    def count_session(self, metric) -> None:
+        if not self.ended_session:
+            return
+        if self.still_scene:
+            metric.still_rechecks_total = min(2**53 - 1, metric.still_rechecks_total + 1)
+        else:
+            metric.frozen_restarts_total = min(2**53 - 1, metric.frozen_restarts_total + 1)
+
+    def close(self) -> None:
+        """The stream is over; a freeze whose redial never showed a picture is still reported."""
+        self._report("no frame")
+
+    def _report(self, shown: str) -> None:
+        # One line per freeze, written when its outcome is known — never per
+        # frame, and never per re-check of a scene already reported as still.
+        if self._unreported is None:
+            return
+        identical, seconds, limit = self._unreported
+        self._unreported = None
+        if self.still_scene:
+            logger.info(
+                "Camera picture stopped changing: %d identical frames over %.0fs (limit %.0fs); the session was "
+                "restarted and shows the same picture, so the scene is still and is checked again every %.0fs "
+                "until it changes",
+                identical,
+                seconds,
+                limit,
+                _RTSP_STILL_RECHECK_SECONDS,
+            )
+            return
+        logger.warning(
+            "Camera picture stopped changing: %d identical frames over %.0fs (limit %.0fs); the session was "
+            "restarted and delivered %s",
+            identical,
+            seconds,
+            limit,
+            shown,
+        )
 
 
 def _rtsp_reconnect_delay(reconnect_count: int, profile: CameraProfile) -> float:

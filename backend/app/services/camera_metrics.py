@@ -73,6 +73,9 @@ class CameraMetrics:
         self.cleanup_ms: float | None = None
         self.attempts_total = 0
         self.reconnects_total = 0
+        # Sessions ended because the picture had stopped changing, and re-checks of a still scene.
+        self.frozen_restarts_total = 0
+        self.still_rechecks_total = 0
         self.output_frames = 0
         self.consecutive_failures = 0
         self.subscriber_dropped_frames = 0
@@ -128,6 +131,8 @@ class CameraMetrics:
             "frame_age_ms": round((now - self.last_frame_at) * 1000, 3) if self.last_frame_at is not None else None,
             "attempts_total": self.attempts_total,
             "reconnects_total": self.reconnects_total,
+            "frozen_restarts_total": self.frozen_restarts_total,
+            "still_rechecks_total": self.still_rechecks_total,
             "consecutive_failures": self.consecutive_failures,
             "cleanup_ms": self.cleanup_ms,
             "output_frames": self.output_frames,

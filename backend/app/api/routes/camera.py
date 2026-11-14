@@ -53,7 +53,12 @@ _last_frames: dict[int, bytes] = {}
 _last_frame_times: dict[int, float] = {}
 # Admission evidence is separate from wall-clock timestamps used by camera/status.
 # Each frame belongs to one producer generation and its actual camera configuration.
+# Its time is when this PICTURE first arrived: a source can keep delivering the bytes it froze
+# on (upstream e0149ae4a), and a repeat of the frame before it is not evidence of anything new.
 _live_frame_metadata: dict[int, tuple[float, str, CameraCaptureRequest]] = {}
+# Wall-clock twin of that time. ``_last_frame_times`` keeps meaning "bytes arrived": a still
+# scene that repeats a frame is a live stream, not a stalled one.
+_last_change_times: dict[int, float] = {}
 
 # Track stream start times for each printer
 _stream_start_times: dict[int, float] = {}
@@ -175,7 +180,7 @@ def live_frame_observation(printer_id: int) -> tuple[bool, bytes | None, float |
     metadata = _live_frame_metadata.get(printer_id)
     if metadata is None or metadata[1] != live_stream_generation(printer_id):
         return defer, frame, None, None
-    return defer, frame, _last_frame_times.get(printer_id), metadata[0]
+    return defer, frame, _last_change_times.get(printer_id, _last_frame_times.get(printer_id)), metadata[0]
 
 
 def _new_fanout_stream_id(printer_id: int) -> str:
@@ -219,6 +224,7 @@ def _release_printer_frame_state(printer_id: int | None) -> None:
     _last_frames.pop(printer_id, None)
     _last_frame_times.pop(printer_id, None)
     _live_frame_metadata.pop(printer_id, None)
+    _last_change_times.pop(printer_id, None)
     _stream_start_times.pop(printer_id, None)
     _snapshot_frames.pop(printer_id, None)
     _snapshot_frame_times.pop(printer_id, None)
@@ -414,9 +420,20 @@ async def _worker_stream_response(
                 )
             if _active_worker_streams.get(printer_id) != (worker_stream_token, source):
                 return  # A departing producer cannot overwrite its successor's frame.
-            _last_frames[printer_id] = frame
-            _last_frame_times[printer_id] = time.time()
-            _live_frame_metadata[printer_id] = (time.monotonic(), worker_stream_token, source_request)
+            evidence = _live_frame_metadata.get(printer_id)
+            # Bytes compare length first and stop at the first difference; nothing is decoded.
+            repeated = (
+                evidence is not None and evidence[1] == worker_stream_token and frame == _last_frames.get(printer_id)
+            )
+            arrived = time.time()
+            _last_frame_times[printer_id] = arrived
+            if not repeated:
+                # A repeat of the previous frame keeps the time its picture first arrived, so a
+                # check that waits for a frame from after its own start is never handed a
+                # picture from before it.
+                _last_frames[printer_id] = frame
+                _last_change_times[printer_id] = arrived
+                _live_frame_metadata[printer_id] = (time.monotonic(), worker_stream_token, source_request)
             _remember_snapshot(printer_id, frame)
 
         async def _stream():
@@ -948,6 +965,14 @@ async def camera_status(
     if last_frame_time is not None:
         seconds_since_frame = current_time - last_frame_time
 
+    # A picture that stopped changing while frames keep arriving: reported, never called a stall
+    # here. The worker ends and redials a frozen RTSP session by its own limit, and a still scene
+    # is a healthy stream — a browser reconnect would fix neither.
+    last_change_time = _last_change_times.get(printer_id)
+    seconds_since_change = None
+    if last_change_time is not None:
+        seconds_since_change = current_time - last_change_time
+
     # Calculate stream uptime
     stream_uptime = None
     if stream_start_time is not None:
@@ -957,6 +982,7 @@ async def camera_status(
         "active": has_active_stream,
         "has_frames": printer_id in _last_frames,
         "seconds_since_frame": seconds_since_frame,
+        "seconds_since_change": seconds_since_change,
         "stream_uptime": stream_uptime,
         # A support bundle can distinguish a built-in protocol from an
         # operator-configured external camera without inspecting credentials.
