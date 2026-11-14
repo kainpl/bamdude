@@ -4182,6 +4182,11 @@ async def set_chamber_light(
     success = client.set_chamber_light(on)
     if not success:
         raise HTTPException(500, "Failed to control chamber light")
+    # An explicit switch takes the light from the camera's lease — also when it changes nothing ("on" for a
+    # light the lease lit), which no report from the printer would tell it.
+    from backend.app.services import camera_light
+
+    camera_light.note_operator_switch(printer_id)
 
     return {"success": True, "message": f"Chamber light {'on' if on else 'off'}"}
 

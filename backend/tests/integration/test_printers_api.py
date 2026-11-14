@@ -1449,6 +1449,31 @@ class TestChamberLightAPI:
             assert response.status_code == 500
             assert "failed" in response.json()["detail"].lower()
 
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    @pytest.mark.parametrize("sent, still_ours", [(True, False), (False, True)])
+    async def test_the_light_button_takes_the_light_from_the_camera_lease(
+        self, async_client: AsyncClient, printer_factory, sent, still_ours
+    ):
+        """A light the camera lease lit is switched off after its grace. "On" from the API changes nothing on
+        the printer — no report ends the lease's ownership — so the route says it: the light is the
+        operator's from here. A command that was never sent changes nobody's ownership."""
+        from backend.app.services import camera_light
+
+        printer = await printer_factory(name="Test Printer")
+        mock_client = MagicMock()
+        mock_client.set_chamber_light.return_value = sent
+        camera_light._lights[printer.id] = camera_light._PrinterLight(refcount=1, owned=True)
+        try:
+            with patch("backend.app.api.routes.printers.printer_manager") as mock_pm:
+                mock_pm.get_client.return_value = mock_client
+                mock_pm.ensure_fresh_connection_for_printer = AsyncMock(return_value=True)
+                response = await async_client.post(f"/api/v1/printers/{printer.id}/chamber-light?on=true")
+            assert response.status_code == (200 if sent else 500)
+            assert camera_light._lights[printer.id].owned is still_ours
+        finally:
+            camera_light._lights.pop(printer.id, None)
+
 
 class TestClearHMSErrorsAPI:
     """Integration tests for clear HMS errors endpoint."""

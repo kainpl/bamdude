@@ -293,6 +293,29 @@ async def note_light_report(printer_id: int, on: bool) -> None:
         light.confirmed.set()
 
 
+def note_operator_switch(printer_id: int | None = None, *, client=None) -> None:
+    """Somebody switched the light on purpose — the API, the card button, a macro. It is theirs from here.
+
+    A switch that CHANGES the light is already noticed through its ``lights_report``. This is for the one
+    that changes nothing: "on" for a light that is on because we lit it. The printer reports no change, so
+    our ownership stood and the light went off after the grace — against the command that had just asked
+    for it (upstream 6954cff3e). Called after the command was sent; the printer is named by id, or by its
+    client where the caller has nothing else (a macro's MQTT action).
+    """
+    if printer_id is None and client is not None:
+        printer_id = next((pid for pid in _lights if _get_client(pid) is client), None)
+    light = _lights.get(printer_id) if printer_id is not None else None
+    if light is None:
+        return
+    if light.owned:
+        logger.info("camera light: printer %s light switched by its operator; no longer ours", printer_id)
+    light.owned = False
+    # The report that may follow is the answer to THEIR command, not the confirmation of ours.
+    light.last_command_on = None
+    if light.confirmed is not None:
+        light.confirmed.set()
+
+
 def forget_printer(printer_id: int) -> None:
     """A deleted printer's light goes with it: the next printer to take the id inherits nothing.
 

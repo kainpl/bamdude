@@ -290,6 +290,58 @@ async def test_lit_since_is_none_for_a_light_that_was_not_ours_to_switch(printer
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("named_by", ["id", "client"])
+async def test_an_explicit_on_for_a_light_we_already_lit_hands_it_back(printer, sleeper, named_by):
+    """Upstream 6954cff3e leg 5. The light is on because WE lit it; "on" from the API or a macro changes
+    nothing on the printer, so no report arrives to end our ownership — and we switched the light off after
+    the grace, against the command that had just asked for it."""
+    lease = await camera_light.acquire(1, "stream")
+    await _report(1, True)
+    assert camera_light._lights[1].owned is True
+
+    if named_by == "id":
+        camera_light.note_operator_switch(1)
+    else:
+        camera_light.note_operator_switch(client=printer)
+
+    camera_light.release(lease)
+    await asyncio.sleep(0)
+    assert sleeper.delays == [], "the light is the operator's now: nothing is armed to switch it off"
+    assert printer.commands == [True]
+
+
+@pytest.mark.asyncio
+async def test_an_operator_switch_releases_a_capture_waiting_for_our_confirmation(printer):
+    lease = await camera_light.acquire(1, "telegram")
+    settled = asyncio.create_task(lease.settle())
+    await asyncio.sleep(0)
+    camera_light.note_operator_switch(1)
+    await asyncio.wait_for(settled, 1)
+    assert lease.lit_since() is None
+    camera_light.release(lease)
+
+
+def test_an_operator_switch_on_a_printer_nobody_leased_is_ignored():
+    camera_light._lights.clear()
+    camera_light.note_operator_switch(42)
+    camera_light.note_operator_switch(client=object())
+    camera_light.note_operator_switch()
+
+
+@pytest.mark.asyncio
+async def test_the_chamber_light_macro_action_hands_the_light_back(printer, sleeper):
+    from backend.app.core.mqtt_macro_actions import MQTT_MACRO_ACTIONS
+
+    lease = await camera_light.acquire(1, "stream")
+    await _report(1, True)
+    assert MQTT_MACRO_ACTIONS["chamber_light"].dispatch(printer, "on") is True
+    assert printer.commands == [True, True]
+    camera_light.release(lease)
+    await asyncio.sleep(0)
+    assert sleeper.delays == []
+
+
+@pytest.mark.asyncio
 async def test_a_report_for_a_printer_nobody_leased_is_ignored():
     camera_light._lights.clear()
     await camera_light.note_light_report(42, True)
