@@ -26,7 +26,7 @@ from backend.app.core import process_resources as resources
         (20000, 1048576, -1, 1, [(65536, 1048576)]),
     ],
 )
-def test_soft_limit_never_changes_hard_or_lowers_soft(monkeypatch, soft, hard, infinity, failures, expected):
+def test_soft_limit_never_changes_hard_or_lowers_soft(monkeypatch, caplog, soft, hard, infinity, failures, expected):
     calls = []
 
     def set_limit(kind, values):
@@ -40,17 +40,31 @@ def test_soft_limit_never_changes_hard_or_lowers_soft(monkeypatch, soft, hard, i
         RLIMIT_NOFILE=7, RLIM_INFINITY=infinity, getrlimit=lambda _: (soft, hard), setrlimit=set_limit
     )
     monkeypatch.setattr(resources, "resource", fake)
-    resources.raise_nofile_limit()
+    with caplog.at_level("INFO", logger=resources.logger.name):
+        resources.raise_nofile_limit()
     assert calls == expected
+    result, final_soft = "unchanged", soft
+    if expected:
+        result = "refused"
+        if len(expected) > failures:
+            result = "raised" if len(expected) == 1 else "fallback_raised"
+            final_soft = expected[-1][0]
+    results = [r.getMessage() for r in caplog.records if r.msg.startswith("Descriptor limit result=")]
+    assert results == [f"Descriptor limit result={result} soft={final_soft} hard={hard}"]
 
 
-def test_unsupported_and_unavailable_limits_are_noop(monkeypatch):
+def test_unsupported_and_unavailable_limits_are_noop(monkeypatch, caplog):
+    caplog.set_level("INFO", logger=resources.logger.name)
     monkeypatch.setattr(resources, "resource", None)
     resources.raise_nofile_limit()
     fake = SimpleNamespace(RLIMIT_NOFILE=7, getrlimit=Mock(side_effect=OSError("denied")), setrlimit=Mock())
     monkeypatch.setattr(resources, "resource", fake)
     resources.raise_nofile_limit()
     fake.setrlimit.assert_not_called()
+    assert [r.getMessage() for r in caplog.records if r.msg.startswith("Descriptor limit result=")] == [
+        "Descriptor limit result=unsupported soft=None hard=None",
+        "Descriptor limit result=unavailable soft=None hard=None",
+    ]
 
 
 def test_limit_log_does_not_include_exception_path(monkeypatch, caplog):

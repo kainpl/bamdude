@@ -22,28 +22,38 @@ _FD_KIND_LIMIT = 4096
 
 def raise_nofile_limit() -> None:
     """Raise only our soft limit, preserving high/unlimited values and hard."""
-    if resource is None:
-        return
+    result = "unsupported"
+    soft = hard = None
     try:
-        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
-    except (OSError, ValueError):
-        return
-    infinity = resource.RLIM_INFINITY
-    if soft == infinity or soft >= 65536:
-        return
-    target = 65536 if hard == infinity else min(65536, hard)
-    if target <= soft:
-        return
-    try:
-        resource.setrlimit(resource.RLIMIT_NOFILE, (target, hard))
-        return
-    except (OSError, ValueError) as exc:
-        logger.info("Could not raise descriptor soft limit (%s)", type(exc).__name__)
-    if soft < 10240 and (hard == infinity or hard >= 10240):
+        if resource is None:
+            return
+        result = "unavailable"
         try:
-            resource.setrlimit(resource.RLIMIT_NOFILE, (10240, hard))
+            soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        except (OSError, ValueError):
+            return
+        infinity = resource.RLIM_INFINITY
+        result = "unchanged"
+        if soft == infinity or soft >= 65536:
+            return
+        target = 65536 if hard == infinity else min(65536, hard)
+        if target <= soft:
+            return
+        result = "refused"
+        try:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (target, hard))
+            soft, result = target, "raised"
+            return
         except (OSError, ValueError) as exc:
-            logger.info("Could not apply descriptor fallback (%s)", type(exc).__name__)
+            logger.info("Could not raise descriptor soft limit (%s)", type(exc).__name__)
+        if soft < 10240 and (hard == infinity or hard >= 10240):
+            try:
+                resource.setrlimit(resource.RLIMIT_NOFILE, (10240, hard))
+                soft, result = 10240, "fallback_raised"
+            except (OSError, ValueError) as exc:
+                logger.info("Could not apply descriptor fallback (%s)", type(exc).__name__)
+    finally:
+        logger.info("Descriptor limit result=%s soft=%s hard=%s", result, soft, hard)
 
 
 def _fd_kind(target: str) -> str:

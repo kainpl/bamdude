@@ -213,3 +213,17 @@ def test_connect_records_new_attempt_without_faking_message_or_carrying_old_age(
         fresh.connect()
     assert fresh._connect_started_at == 500.0
     assert fresh._last_message_time == 0
+
+
+@pytest.mark.parametrize("message,attempt,expected", [(600.0, 990.0, True), (990.0, 600.0, False)])
+async def test_last_message_age_takes_priority_over_connect_attempt(monkeypatch, message, attempt, expected):
+    monkeypatch.setattr(cw.time, "time", lambda: 1000.0)
+    client = _client(connected=False, silent_for=None)
+    client._last_message_time = message
+    client._connect_started_at = attempt
+    with patch.object(cw, "check_port", AsyncMock(return_value=True)) as probe:
+        assert await cw.should_rebuild(_printer(), client) is expected
+    if expected:
+        probe.assert_awaited_once()
+    else:
+        probe.assert_not_awaited()
