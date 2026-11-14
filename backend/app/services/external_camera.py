@@ -778,8 +778,9 @@ async def generate_mjpeg_stream(
                 budget.count_session(metric, first_frame_at, healthy_until=watch.healthy_until)
                 if stop_event is not None and stop_event.is_set():
                     break
+                unproven = bool(metric.end_reason)
                 if not budget.allows_redial(metric, first_frame_at):
-                    if watch.ended_session:
+                    if watch.ended_session and not unproven:
                         metric.end_reason = "source_frozen"
                     break
                 delay = 2.0 if rtsp_profile is None else _rtsp_reconnect_delay(budget.attempt, rtsp_profile)
@@ -1115,10 +1116,13 @@ class _ReconnectBudget:
     def allows_redial(self, metric, first_frame_at: float | None) -> bool:
         """Take one reconnect of the budget; False ends the stream with its reason."""
         frameless = first_frame_at is None
-        # A frameless session that already named its end (a cleanup that could
-        # not be proven) is never followed by another process.
-        if frameless and (not self.delivered or metric.end_reason):
-            metric.end_reason = metric.end_reason or "connect_failed"
+        # A session that already named its end (a cleanup that could not be
+        # proven) is never followed by another process, whatever it delivered:
+        # the one not proven dead still holds the camera's single connection.
+        if metric.end_reason:
+            return False
+        if frameless and not self.delivered:
+            metric.end_reason = "connect_failed"
             return False
         if self.attempt >= self.max_retries:
             metric.end_reason = metric.end_reason or ("connect_failed" if frameless else "retry_exhausted")
