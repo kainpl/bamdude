@@ -336,10 +336,10 @@ describe('LineConfigDialog — which combinations an order can take', () => {
     openOnly('11,21', '11,22', '12,22');
   });
 
-  /** A value's radio; a group's standard one is named «<value> (standard)». */
+  /** A value's radio, whatever its mark says; a group's standard one is named «<value> (standard)». */
   const radio = async (group: string, name: string) =>
     within(await screen.findByRole('group', { name: group })).getByRole('radio', {
-      name: new RegExp(`^${name}( \\(standard\\))?$`),
+      name: new RegExp(`^${name}( — (not with this choice|not available))?( \\(standard\\))?$`),
     });
   const saveButton = () => screen.getByRole('button', { name: 'Save configuration' });
 
@@ -348,8 +348,11 @@ describe('LineConfigDialog — which combinations an order can take', () => {
     const angled = await radio('Tail', 'angled');
     // angled + wall is closed; angled is in another available combination.
     await waitFor(() => expect(angled).toHaveAccessibleDescription(CLOSES));
+    // Said in words on screen too — the add dialog's short mark, not only a colour or a hover.
+    expect(angled).toHaveAccessibleName('angled — not with this choice');
     expect(angled).toBeEnabled();
     expect(await radio('Mount', 'DIN')).not.toHaveAccessibleDescription(CLOSES);
+    expect(await radio('Mount', 'DIN')).toHaveAccessibleName('DIN');
     fireEvent.click(angled);
     expect(angled).toBeChecked();
     await waitFor(() => expect(describeCombination).toHaveBeenLastCalledWith(7, { 3: 12, 4: 21 }));
@@ -361,6 +364,7 @@ describe('LineConfigDialog — which combinations an order can take', () => {
     const din = await radio('Mount', 'DIN');
     await waitFor(() => expect(din).toBeDisabled());
     expect(din).toHaveAccessibleDescription(NEVER);
+    expect(din).toHaveAccessibleName('DIN — not available');
     expect(await radio('Tail', 'angled')).toBeDisabled();
     // What is chosen is never off.
     expect(await radio('Mount', 'wall')).toBeEnabled();
@@ -377,6 +381,10 @@ describe('LineConfigDialog — which combinations an order can take', () => {
     expect(screen.queryByText('That combination is not available')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument();
     expect(saveButton()).toBeDisabled();
+    // The disabled Save names the note that says why.
+    expect(saveButton()).toHaveAccessibleDescription(
+      'This combination can’t be ordered: no part for «wall» in «Mount»',
+    );
   });
 
   it('keeps Save off while the answer for the new choice is not in, and asks no dry run meanwhile', async () => {
@@ -390,6 +398,7 @@ describe('LineConfigDialog — which combinations an order can take', () => {
     expect(screen.getByTestId('line-config-impact')).toHaveTextContent('Checking what this changes…');
     expect(preview).not.toHaveBeenCalled();
     expect(saveButton()).toBeDisabled();
+    expect(saveButton()).toHaveAccessibleDescription('Checking the combination…');
   });
 
   it('lets the operator leave a closed saved choice by changing two groups', async () => {
@@ -425,8 +434,16 @@ describe('LineConfigDialog — which combinations an order can take', () => {
     await waitFor(() => expect(save).toHaveBeenCalledWith(9, 21, { choices: { 3: 11, 4: 22 }, part_counts: {} }));
   });
 
-  it('without the stock read nothing is asked: the dry run’s refusal alone says why and holds Save', async () => {
+  it('without the stock read the marks still come — the route asks the products’ read', async () => {
     auth.denied = new Set(['stock:read']);
+    renderLine(11, 21);
+    const angled = await radio('Tail', 'angled');
+    await waitFor(() => expect(angled).toHaveAccessibleDescription(CLOSES));
+    expect(describeCombination).toHaveBeenCalledWith(7, { 3: 11, 4: 21 });
+  });
+
+  it('without the products’ read nothing is asked: the dry run’s refusal alone says why and holds Save', async () => {
+    auth.denied = new Set(['products:read']);
     renderLine(11, 21);
     fireEvent.click(await radio('Tail', 'angled'));
     await waitFor(() => expect(preview).toHaveBeenCalledWith(9, 21, { choices: { 3: 12, 4: 21 }, part_counts: {} }));

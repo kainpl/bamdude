@@ -3251,6 +3251,9 @@ export interface VariantGroup {
   name: string;
   position: number;
   default_option_id: number | null;
+  /** «Every value needs its own part»: only then does a chosen value no part of the kit names
+   *  make a combination unorderable (spec product-part-variant-combinations, п. 10). */
+  requires_part: boolean;
   options: VariantOption[];
   /** WS-13 E1 VR9 — what would refuse the group's delete, counted as the delete guard counts. */
   lines_count: number | null;
@@ -3272,6 +3275,8 @@ export interface VariantGroupDraft {
   name: string;
   /** `null` only for an existing group whose stored standard is already `null` (WS-13 E10 A06). */
   default: number | string | null;
+  /** «Every value needs its own part». Left out, an existing group keeps its mark and a new one is off. */
+  requires_part?: boolean;
   options: VariantOptionDraft[];
 }
 
@@ -3286,12 +3291,14 @@ export interface VariantGroupCreate {
   name: string;
   /** The first one is the standard. */
   options: string[];
+  requires_part?: boolean;
 }
 
 export interface VariantGroupUpdate {
   name?: string;
   default_option_id?: number;
   position?: number;
+  requires_part?: boolean;
 }
 
 export interface VariantOptionUpdate {

@@ -86,8 +86,16 @@ describe('an order manager — orders:*, products:read, customers:read + create,
     vi.spyOn(api, 'getLibraryFilesPaged').mockResolvedValue(filesPage([libraryFile(31, 'flask.gcode.3mf')]) as never);
     vi.spyOn(api, 'getLibraryFilePlates').mockResolvedValue({ file_id: 31, filename: 'flask.gcode.3mf', plates: [plate(1)], is_multi_plate: false });
     const suggest = vi.spyOn(api, 'suggestStock');
-    // The combination's state is the stock's read too (its route's gate): not asked, the server decides.
-    const describeCombination = vi.spyOn(api, 'describeCombination');
+    // The combination's state is the product's read (its route's gate, owner 2026-11-14): this
+    // manager, without any stock right, still gets the marks.
+    const describeCombination = vi.spyOn(api, 'describeCombination').mockResolvedValue({
+      available: true,
+      reasons: [],
+      options: [
+        { group_id: 10, option_id: 100, available_here: true, available_anywhere: true },
+        { group_id: 10, option_id: 101, available_here: false, available_anywhere: true },
+      ],
+    });
     const add = vi.spyOn(api, 'addOrderLines').mockImplementation(async (_order, lines) => ({
       order: { id: 5 } as never,
       results: lines.map((_line, i) => ({ line_id: 40 + i, asked_finished: 0, got_finished: 0, asked_kits: 0, got_kits: 0 })),
@@ -95,10 +103,14 @@ describe('an order manager — orders:*, products:read, customers:read + create,
     render(<AddToOrderDialog order={{ id: 5, code: 'OR-0005', name: 'Flasks', active: true }} onClose={() => {}} />);
     const row = await screen.findByTestId('add-product-1');
     fireEvent.click(within(row).getByRole('checkbox'));
+    expect(await within(row).findByRole('option', { name: 'angled — not with this choice' })).toBeEnabled();
+    expect(describeCombination).toHaveBeenCalledWith(1, {});
     fireEvent.click(screen.getByRole('tab', { name: 'One-off from a file' }));
     fireEvent.click(await screen.findByRole('button', { name: /^flask\.gcode\.3mf/ }));
     fireEvent.click(await screen.findByRole('radio', { name: /Plate 1/ }));
-    fireEvent.click(screen.getByRole('button', { name: 'Add lines (2)' }));
+    const submit = screen.getByRole('button', { name: 'Add lines (2)' });
+    await waitFor(() => expect(submit).toBeEnabled());
+    fireEvent.click(submit);
     const none = { from_finished: 0, from_kits: 0 };
     await waitFor(() =>
       expect(add).toHaveBeenCalledWith(5, [
@@ -107,7 +119,6 @@ describe('an order manager — orders:*, products:read, customers:read + create,
       ]),
     );
     expect(suggest).not.toHaveBeenCalled();
-    expect(describeCombination).not.toHaveBeenCalled();
   });
 
   it('is offered no «take from stock» and asks no offers', async () => {

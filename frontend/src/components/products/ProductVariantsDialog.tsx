@@ -321,6 +321,28 @@ export function ProductVariantsDialog({ product, onClose }: { product: Product; 
                   </Button>
                 </div>
                 {blocked && <small className="block text-xs text-bambu-gray">{blocked}</small>}
+                {/* «Every value needs its own part» (spec product-part-variant-combinations п. 10):
+                    off by default — an optional add-on keeps its «no» orderable. */}
+                <div className="flex min-w-0 flex-col gap-0.5">
+                  <label
+                    htmlFor={idOf(group.key, 'requires')}
+                    className="inline-flex items-center gap-2 text-sm text-bambu-gray-light"
+                  >
+                    <input
+                      id={idOf(group.key, 'requires')}
+                      type="checkbox"
+                      checked={group.requiresPart}
+                      onChange={(e) => setGroup(group.key, { requiresPart: e.target.checked })}
+                      aria-describedby={idOf(group.key, 'requires-hint')}
+                      disabled={pending}
+                      className="accent-bambu-green"
+                    />
+                    {t('products.variantsDialog.requiresPart')}
+                  </label>
+                  <small id={idOf(group.key, 'requires-hint')} className="block text-xs text-bambu-gray">
+                    {t('products.variantsDialog.requiresPartHint')}
+                  </small>
+                </div>
                 {groupErrors.length > 0 && (
                   <p id={errorId} className="text-xs text-red-600 dark:text-red-400">
                     {groupErrors.map((e) => t(`products.variantsDialog.errors.${e.code}`)).join(' ')}

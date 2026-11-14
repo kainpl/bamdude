@@ -21,8 +21,8 @@ vi.mock('../../../contexts/AuthContext', async (importOriginal) => {
 });
 // The dialog itself is E5's; here only which product it opens on matters.
 vi.mock('../../../components/projects/add-to-order/AddToOrderDialog', () => ({
-  AddToOrderDialog: ({ preselectProduct }: { preselectProduct: { id: number; code: string } }) => (
-    <div role="dialog" aria-label="Add to order">
+  AddToOrderDialog: ({ preselectProduct }: { preselectProduct: { id: number; code: string; hasGroups?: boolean } }) => (
+    <div role="dialog" aria-label="Add to order" data-has-groups={String(preselectProduct.hasGroups)}>
       {preselectProduct.code}
     </div>
   ),
@@ -77,7 +77,10 @@ describe('ProductActionMenu — To order…', () => {
   it('opens the dialog on this product', async () => {
     open();
     fireEvent.click(screen.getByRole('menuitem', { name: 'To order…' }));
-    expect(await screen.findByRole('dialog', { name: 'Add to order' })).toHaveTextContent('PR-0004');
+    const dialog = await screen.findByRole('dialog', { name: 'Add to order' });
+    expect(dialog).toHaveTextContent('PR-0004');
+    // The row says whether the product has groups: the dialog need not wait for a list (review M-h).
+    expect(dialog).toHaveAttribute('data-has-groups', 'false');
   });
 
   it('is not offered for a hidden product', () => {

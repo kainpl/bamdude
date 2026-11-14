@@ -220,6 +220,8 @@ describe('the products tab of «Add to order» — which combinations an order c
     expect(await within(row).findByText('This combination can’t be ordered: no part for «screw» in «Lid»')).toBeInTheDocument();
     expect(screen.getByText('Can’t be ordered in the chosen combination: Jar')).toBeInTheDocument();
     expect(addButton()).toBeDisabled();
+    // The disabled «Add» names the note that says why.
+    expect(addButton()).toHaveAccessibleDescription('Can’t be ordered in the chosen combination: Jar');
     // A pick on another page still counts.
     fireEvent.click(screen.getByRole('button', { name: /next page/i }));
     expect(await screen.findByTestId('add-product-3')).toBeInTheDocument();
@@ -229,6 +231,7 @@ describe('the products tab of «Add to order» — which combinations an order c
     fireEvent.change(within(back).getByLabelText('Lid'), { target: { value: '211' } });
     await waitFor(() => expect(addButton()).toBeEnabled());
     expect(within(back).queryByTestId('combination-note')).not.toBeInTheDocument();
+    expect(addButton()).not.toHaveAccessibleDescription();
     fireEvent.click(addButton());
     await waitFor(() =>
       expect(add).toHaveBeenCalledWith(5, [expect.objectContaining({ product_id: 4, choices: { 20: 201, 21: 211 } })]),
@@ -241,6 +244,7 @@ describe('the products tab of «Add to order» — which combinations an order c
     await tickJar();
     expect(await screen.findByText('Checking the products’ combinations…')).toBeInTheDocument();
     expect(addButton()).toBeDisabled();
+    expect(addButton()).toHaveAccessibleDescription('Checking the products’ combinations…');
   });
 
   it('asks nothing for a product without groups', async () => {

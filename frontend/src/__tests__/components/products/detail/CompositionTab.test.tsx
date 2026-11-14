@@ -190,6 +190,16 @@ describe('CompositionTab', () => {
       expect(chips[0]).toHaveAttribute('data-standard', 'true');
     });
 
+    it('a group marked «every value needs its own part» says so beside its name; an unmarked one says nothing', () => {
+      const [lid] = product.variant_groups;
+      const marked = { ...product, variant_groups: [{ ...lid, requires_part: true }] };
+      const { unmount } = render(<Host product={marked} />);
+      expect(screen.getByTestId('variant-requires-part-1')).toHaveTextContent('Every value needs its own part');
+      unmount();
+      render(<Host />);
+      expect(screen.queryByTestId('variant-requires-part-1')).not.toBeInTheDocument();
+    });
+
     it('a part bound to two options lists under each of them', () => {
       const either = { ...product, parts: [...parts, part({ id: 6, name: 'Seal', variant_option_ids: [10, 11] })] };
       render(<Host product={either} />);

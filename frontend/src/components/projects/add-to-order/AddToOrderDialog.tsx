@@ -3,7 +3,7 @@ import { useMutation, useQueries, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router';
 import { useTranslation } from 'react-i18next';
 import { useAuth } from '../../../contexts/AuthContext';
-import { canReadStock, canTakeStock } from '../../../utils/workshopRights';
+import { canReadProducts, canReadStock, canTakeStock } from '../../../utils/workshopRights';
 import { api } from '../../../api/client';
 import type { BatchLine, ProductListItem } from '../../../api/client';
 import { useToast } from '../../../contexts/ToastContext';
@@ -86,8 +86,9 @@ export interface AddTarget {
  * ordered (spec product-part-variant-combinations п. 25) — here, for every pick at
  * once, so a pick on another page still counts: «Add» waits for every answer and
  * stays off while one is closed, naming the products. A product without groups, or a
- * caller without the stock's read, is never asked; a product no page has listed yet
- * is waited for. The server refuses a closed combination anyway (409
+ * caller without the products' read, is never asked; a product no page has listed yet
+ * is waited for — unless the caller said whether it has groups (`preselectProduct`,
+ * the product's own page). The server refuses a closed combination anyway (409
  * `combination_unavailable`): the dialog says its sentence with the reasons and asks again.
  */
 export function AddToOrderDialog({
@@ -97,7 +98,9 @@ export function AddToOrderDialog({
   onClose,
 }: {
   order?: AddTarget;
-  preselectProduct?: { id: number; code: string };
+  /** The product to open on. `hasGroups` (and `name`) — what the caller already knows: with
+   *  them the pick's combination is asked at once, without waiting for a catalog page to list it. */
+  preselectProduct?: { id: number; code: string; name?: string; hasGroups?: boolean };
   preselectPlate?: { file: PlateFile; plateIndex: number | null };
   onClose: () => void;
 }) {
@@ -106,6 +109,7 @@ export function AddToOrderDialog({
   const navigate = useNavigate();
   const { showToast } = useToast();
   const idBase = useId();
+  const blockedId = `${idBase}-combination-blocked`;
   const anchor = useRef<HTMLDivElement>(null);
   const [tab, setTab] = useState<Tab>(preselectPlate ? 'plate' : 'products');
   const [visited, setVisited] = useState<Set<Tab>>(() => new Set([preselectPlate ? 'plate' : 'products']));
@@ -114,7 +118,18 @@ export function AddToOrderDialog({
   const [products, setProducts] = useState<ProductPicks>(() =>
     preselectProduct ? new Map([[preselectProduct.id, newProductPick()]]) : new Map(),
   );
-  const [seen, setSeen] = useState<Map<number, SeenProduct>>(() => new Map());
+  // A product page knows whether its product has groups: the pick need not wait for the list
+  // (which may never load — review M-h); a page's later answer still replaces the fact.
+  const [seen, setSeen] = useState<Map<number, SeenProduct>>(() =>
+    preselectProduct?.hasGroups != null
+      ? new Map([
+          [
+            preselectProduct.id,
+            { name: preselectProduct.name ?? preselectProduct.code, hasGroups: preselectProduct.hasGroups },
+          ],
+        ])
+      : new Map(),
+  );
   const onProductsSeen = useCallback((items: ProductListItem[]) => {
     setSeen((prev) => {
       let next: Map<number, SeenProduct> | null = null;
@@ -166,8 +181,8 @@ export function AddToOrderDialog({
   // Only proposals that answer what each row asks NOW reach the rows and the batch (E5 R02).
   const { current, status, refreshFailed, retry } = useStockSuggest(items, takesStock);
 
-  // Every pick's combination — the route asks the stock's read, as the kits proposal does.
-  const checksCombinations = canReadStock(hasPermission);
+  // Every pick's combination — the route asks the products' read, as the catalog list does.
+  const checksCombinations = canReadProducts(hasPermission);
   const picked = [...products];
   const asks = picked.map(([id]) => checksCombinations && seen.get(id)?.hasGroups === true);
   const combinationResults = useQueries({
@@ -290,12 +305,12 @@ export function AddToOrderDialog({
       footer={
         <>
           {closedNames.length > 0 ? (
-            <span data-testid="combination-blocked" className="text-sm text-amber-700 dark:text-amber-400">
+            <span id={blockedId} data-testid="combination-blocked" className="text-sm text-amber-700 dark:text-amber-400">
               {t('orders.add.combinationClosed', { names: closedNames.join(', ') })}
             </span>
           ) : (
             checkingCombinations && (
-              <span data-testid="combination-blocked" className="text-sm text-bambu-gray">
+              <span id={blockedId} data-testid="combination-blocked" className="text-sm text-bambu-gray">
                 {t('orders.add.combinationChecking')}
               </span>
             )
@@ -308,6 +323,8 @@ export function AddToOrderDialog({
               target != null && !pending && add.mutate({ id: target.id, lines, shown: shownForLines(products, current, takesStock) })
             }
             disabled={!canSubmit}
+            // The note beside it says why it waits or refuses — read with the button.
+            aria-describedby={closedNames.length > 0 || checkingCombinations ? blockedId : undefined}
           >
             {submitLabel}
           </Button>

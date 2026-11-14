@@ -24,6 +24,7 @@ function group(id: number, name: string, position: number, options: [number, str
     name,
     position,
     default_option_id: options[0][0],
+    requires_part: false,
     lines_count: 0,
     stock_count: 0,
     parts_count: 0,

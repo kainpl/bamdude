@@ -14,7 +14,7 @@ import type {
 import { useAuth } from '../../contexts/AuthContext';
 import { useProductDetail } from '../../hooks/useProductDetail';
 import { invalidateOrderViews } from '../../utils/queryInvalidation';
-import { canReadStock } from '../../utils/workshopRights';
+import { canReadProducts } from '../../utils/workshopRights';
 import { Button } from '../Button';
 import { RefreshFailedNote } from '../workshop/RefreshFailedNote';
 import { WorkshopDialog } from '../workshop/WorkshopDialog';
@@ -28,6 +28,8 @@ import {
   COMBINATION_STATE_KEY,
   choicesKey,
   isCombinationRefusal,
+  optionLabel,
+  optionState,
   reasonsText,
   useCombinationState,
 } from './useCombinationState';
@@ -181,7 +183,7 @@ export function LineConfigDialog({
   const combination = useCombinationState(
     line.product_id,
     chosen,
-    !isParts && product != null && groups.length > 0 && canReadStock(hasPermission),
+    !isParts && product != null && groups.length > 0 && canReadProducts(hasPermission),
   );
   // Only a changed choice is the server's to refuse; while its answer is not in, nothing is sent.
   const combinationBlocks = choicesChanged && combination.gate !== 'open';
@@ -259,18 +261,24 @@ export function LineConfigDialog({
     : t('orders.lineConfig.subtitle', { order: orderCode, product: line.product_name, qty: line.quantity });
 
   // Beside Save: why it waits or refuses — or that the line keeps a combination closed since.
+  // Save names it as its description (`aria-describedby`), so the reason is read with the button.
+  const noteId = `${markId}-note`;
   const combinationNote =
     combination.gate === 'closed' ? (
-      <span data-testid="combination-note" className="text-amber-700 dark:text-amber-400">
+      <span id={noteId} data-testid="combination-note" className="text-amber-700 dark:text-amber-400">
         {t(choicesChanged ? 'orders.combination.closed' : 'orders.combination.closedKept', {
           reasons: reasonsText(t, combination.reasons),
         })}
       </span>
     ) : combination.gate === 'checking' && choicesChanged ? (
-      <span data-testid="combination-note">{t('orders.combination.checking')}</span>
+      <span id={noteId} data-testid="combination-note">
+        {t('orders.combination.checking')}
+      </span>
     ) : combination.isError && choicesChanged ? (
       <span data-testid="combination-note" className="inline-flex flex-wrap items-center gap-2">
-        <span className="text-amber-700 dark:text-amber-400">{t('orders.combination.failed')}</span>
+        <span id={noteId} className="text-amber-700 dark:text-amber-400">
+          {t('orders.combination.failed')}
+        </span>
         <Button size="sm" variant="ghost" onClick={() => combination.refetch()}>
           {t('common.retry')}
         </Button>
@@ -300,7 +308,11 @@ export function LineConfigDialog({
           <Button variant="secondary" onClick={onClose} disabled={pending}>
             {t('common.cancel')}
           </Button>
-          <Button onClick={() => (dirty ? save.mutate() : onClose())} disabled={!canSave || pending}>
+          <Button
+            onClick={() => (dirty ? save.mutate() : onClose())}
+            disabled={!canSave || pending}
+            aria-describedby={combinationNote ? noteId : undefined}
+          >
             {t('orders.lineConfig.save')}
           </Button>
         </>
@@ -343,12 +355,11 @@ export function LineConfigDialog({
                       </label>
                     )}
                     {group.options.map((option) => {
-                      const flags = combination.optionFlags.get(option.id);
-                      const never = flags?.anywhere === false;
-                      const closes = flags !== undefined && !flags.here;
                       // What the line has, and what is chosen, always shows — marked, never off.
-                      const off = never && option.id !== current && option.id !== initialChoices[group.id];
-                      const mark = never ? 'never' : closes ? 'closes' : null;
+                      const { mark, disabled: off } = optionState(combination, option.id, [
+                        current,
+                        initialChoices[group.id],
+                      ]);
                       return (
                         <label
                           key={option.id}
@@ -364,7 +375,7 @@ export function LineConfigDialog({
                             onChange={() => choose(group.id, option.id)}
                             className="accent-bambu-green"
                           />
-                          {option.name}
+                          {optionLabel(t, option.name, mark)}
                           {option.id === group.default_option_id && (
                             <span className="text-xs text-bambu-gray">{t('orders.lineConfig.standardOption')}</span>
                           )}

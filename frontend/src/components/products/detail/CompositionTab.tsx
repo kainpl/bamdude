@@ -224,6 +224,11 @@ export function CompositionTab({
           groups.map((group) => (
             <div key={group.id} className="flex flex-wrap items-center gap-2 text-sm">
               <b className="font-semibold text-white">{group.name}</b>
+              {group.requires_part && (
+                <small data-testid={`variant-requires-part-${group.id}`} className="text-[11px] text-bambu-gray">
+                  {t('products.variantsDialog.requiresPart')}
+                </small>
+              )}
               {group.options.map((option) => {
                 const standard = option.id === group.default_option_id;
                 const names = product.parts.filter((p) => p.variant_option_ids.includes(option.id)).map((p) => p.name);

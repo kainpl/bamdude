@@ -130,6 +130,43 @@ describe('AddToOrderDialog', () => {
     fireEvent.click(submit);
     await waitFor(() => expect(add).toHaveBeenCalledWith(6, expect.any(Array)));
   });
+
+  it('from a product page whose catalog page never loads: the pick is asked at once, «Add» is not held', async () => {
+    // Review M-h: the product page says whether its product has groups, so the dialog does
+    // not wait on «Checking…» for a list that failed — the list says so with its own retry.
+    vi.spyOn(api, 'getProductsPaged').mockRejectedValue(new Error('offline'));
+    vi.spyOn(api, 'getOrdersPaged').mockResolvedValue(orders as never);
+    const describeCombination = vi
+      .spyOn(api, 'describeCombination')
+      .mockResolvedValue({ available: true, reasons: [], options: [] });
+    render(
+      <AddToOrderDialog preselectProduct={{ id: 1, code: 'PR-0001', name: 'Pipe', hasGroups: true }} onClose={() => {}} />,
+    );
+    await waitFor(() => expect(describeCombination).toHaveBeenCalledWith(1, {}));
+    expect(await screen.findByText('Could not load the products')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByText('Checking the products’ combinations…')).not.toBeInTheDocument());
+    await screen.findByRole('option', { name: /OR-0006/ });
+    fireEvent.change(screen.getByLabelText('Order'), { target: { value: '6' } });
+    const submit = screen.getByRole('button', { name: 'Add lines (1)' });
+    await waitFor(() => expect(submit).toBeEnabled());
+    fireEvent.click(submit);
+    await waitFor(() => expect(add).toHaveBeenCalledWith(6, [expect.objectContaining({ product_id: 1 })]));
+  });
+
+  it('from a product without groups: nothing is asked, even before its page is listed', async () => {
+    vi.spyOn(api, 'getProductsPaged').mockImplementation(() => new Promise(() => {}));
+    vi.spyOn(api, 'getOrdersPaged').mockResolvedValue(orders as never);
+    const describeCombination = vi.spyOn(api, 'describeCombination');
+    render(
+      <AddToOrderDialog preselectProduct={{ id: 2, code: 'PR-0002', name: 'Lamp', hasGroups: false }} onClose={() => {}} />,
+    );
+    await screen.findByRole('option', { name: /OR-0006/ });
+    fireEvent.change(screen.getByLabelText('Order'), { target: { value: '6' } });
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Add lines (1)' })).toBeEnabled());
+    expect(screen.queryByText('Checking the products’ combinations…')).not.toBeInTheDocument();
+    expect(describeCombination).not.toHaveBeenCalled();
+  });
   it('three kinds of lines, picked on three tabs, go in one batch', async () => {
     vi.spyOn(api, 'getProductParts').mockResolvedValue(partsPage([part({})]));
     vi.spyOn(api, 'getLibraryFilesPaged').mockResolvedValue(filesPage([libraryFile(31, 'flask.gcode.3mf')]) as never);

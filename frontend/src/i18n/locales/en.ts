@@ -8081,6 +8081,9 @@ export default {
       noOptions: 'No options',
       noOptionsHint: 'Add an option or delete the group',
       deleteGroupLabel: 'Delete group',
+      requiresPart: 'Every value needs its own part',
+      requiresPartHint:
+        'A combination with a value that has no part in the kit can’t be added to an order. Leave it off for optional add-ons.',
       save: 'Save',
       saving: 'Saving…',
       saved: 'Variants saved',

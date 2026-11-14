@@ -15,8 +15,8 @@ import { reasonText } from '../products/partBinding';
  * (409 `combination_unavailable`), so a dialog never trusts its own reading over that refusal.
  *
  * `enabled` is false — and nothing is asked — for a product without variant groups, a parts
- * line and a caller without the stock's read (the route's gate, as for the add dialog's kits):
- * the gate is then `open` and the server alone decides.
+ * line and a caller without the product's read (the route's gate, `products:read` —
+ * `canReadProducts`): the gate is then `open` and the server alone decides.
  */
 
 /** The query key's first element; the second is the product id, the third the choices' key. */
@@ -123,6 +123,34 @@ export function combinationView(query: UseQueryResult<CombinationState>, enabled
 /** The state of one product's choice (the line dialog). */
 export function useCombinationState(productId: number, choices: Record<number, number>, enabled: boolean): CombinationView {
   return combinationView(useQuery(combinationQuery(productId, choices, enabled)), enabled);
+}
+
+/** A value's mark beside the current choice: `never` — in no available combination; `closes` — the
+ *  combination would close with it, the other groups as chosen; `null` — nothing to say. */
+export type OptionMark = 'never' | 'closes' | null;
+
+/**
+ * The one rule of both order dialogs for a value of a group: its mark, and whether it is off.
+ * A `never` value is off unless it is one the field must keep showing (`keep` — the chosen value,
+ * and in the line's dialog the line's own); a `closes` value is marked and stays clickable, so two
+ * groups can be changed one after the other. An unknown `anywhere` (`null`) never switches it off.
+ */
+export function optionState(
+  view: CombinationView | undefined,
+  optionId: number,
+  keep: readonly (number | null | undefined)[],
+): { mark: OptionMark; disabled: boolean } {
+  const flags = view?.optionFlags.get(optionId);
+  const never = flags?.anywhere === false;
+  const mark: OptionMark = never ? 'never' : flags !== undefined && !flags.here ? 'closes' : null;
+  return { mark, disabled: never && !keep.includes(optionId) };
+}
+
+/** A value's visible name with its mark — readable without colour or a hover, the same words in both dialogs. */
+export function optionLabel(t: TFunction, name: string, mark: OptionMark): string {
+  if (mark === 'never') return t('orders.combination.option.neverShort', { option: name });
+  if (mark === 'closes') return t('orders.combination.option.closesShort', { option: name });
+  return name;
 }
 
 /** The server refused a closed combination (409 `combination_unavailable`) — by its code, never its text. */

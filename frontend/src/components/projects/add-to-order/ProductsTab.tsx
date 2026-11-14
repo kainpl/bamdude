@@ -4,7 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { Package } from 'lucide-react';
 import { api } from '../../../api/client';
 import type { ListVariantGroup, ProductListItem, StockSuggestion } from '../../../api/client';
-import { reasonsText } from '../useCombinationState';
+import { optionLabel, optionState, reasonsText } from '../useCombinationState';
 import type { CombinationView } from '../useCombinationState';
 import type { SuggestStatus } from '../../../hooks/useStockSuggest';
 import { useSearchBox } from '../../../hooks/useSearchBox';
@@ -434,16 +434,10 @@ function PickedConfiguration({
               >
                 {group.default_option_id == null && <option value="">{t('orders.add.noChoice')}</option>}
                 {group.options.map((option) => {
-                  const flags = combination?.optionFlags.get(option.id);
-                  const never = flags?.anywhere === false;
-                  const closes = flags !== undefined && !flags.here;
+                  const { mark, disabled } = optionState(combination, option.id, [current]);
                   return (
-                    <option key={option.id} value={String(option.id)} disabled={never && option.id !== current}>
-                      {never
-                        ? t('orders.combination.option.neverShort', { option: option.name })
-                        : closes
-                          ? t('orders.combination.option.closesShort', { option: option.name })
-                          : option.name}
+                    <option key={option.id} value={String(option.id)} disabled={disabled}>
+                      {optionLabel(t, option.name, mark)}
                     </option>
                   );
                 })}
