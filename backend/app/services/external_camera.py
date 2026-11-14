@@ -724,15 +724,17 @@ async def generate_mjpeg_stream(
         while True:
             camera_metrics.current.get().begin_attempt()
             first_frame_at: float | None = None
+            last_frame_at: float | None = None
             async for frame in _stream_mjpeg(url):
-                first_frame_at = first_frame_at or time.monotonic()
+                last_frame_at = time.monotonic()
+                first_frame_at = first_frame_at or last_frame_at
                 camera_metrics.record_frame(frame, output=False)
                 current_time = asyncio.get_event_loop().time()
                 if current_time - last_frame_time >= frame_interval:
                     last_frame_time = current_time
                     yield _publish(frame)
             metric = camera_metrics.current.get()
-            budget.count_session(metric, first_frame_at)
+            budget.count_session(metric, first_frame_at, last_frame_at)
             if stop_event is not None and stop_event.is_set():
                 break
             if not budget.allows_redial(metric, first_frame_at):
@@ -760,7 +762,7 @@ async def generate_mjpeg_stream(
         watch = _FreezeWatch(adaptive=rtsp_profile is None)
         try:
             while True:
-                first_frame_at = None
+                first_frame_at = last_frame_at = None
                 watch.start_session()
                 # Closed before the redial: a frozen session still holds the
                 # camera's one connection.
@@ -768,14 +770,14 @@ async def generate_mjpeg_stream(
                     _stream_rtsp(url, fps, on_process=on_process, profile=rtsp_profile)
                 ) as session:
                     async for frame in session:
-                        now = time.monotonic()
+                        last_frame_at = now = time.monotonic()
                         first_frame_at = first_frame_at or now
                         if watch.observe(frame, now):
                             break
                         yield _publish(frame)
                 metric = camera_metrics.current.get()
                 watch.count_session(metric)
-                budget.count_session(metric, first_frame_at, healthy_until=watch.healthy_until)
+                budget.count_session(metric, first_frame_at, last_frame_at, healthy_until=watch.healthy_until)
                 if stop_event is not None and stop_event.is_set():
                     break
                 unproven = bool(metric.end_reason)
@@ -1097,19 +1099,30 @@ class _ReconnectBudget:
         self.attempt = 0
         self.delivered = False
 
-    def count_session(self, metric, first_frame_at: float | None, *, healthy_until: float | None = None) -> None:
+    def count_session(
+        self,
+        metric,
+        first_frame_at: float | None,
+        last_frame_at: float | None,
+        *,
+        healthy_until: float | None = None,
+    ) -> None:
         """Record a finished session in the stream's telemetry and in the budget.
 
-        ``healthy_until`` is given for a session ended because its picture had
-        stopped changing: the stable window is measured to that moment, not to
-        the end of the repeats that followed it.
+        The stable window is measured to the session's LAST FRAME, never to
+        the moment it ended: a source that goes silent ends at its read
+        timeout, and that silence is not health — a camera that sends one
+        frame per connection would be forgiven every time.  ``healthy_until``
+        is given for a session ended because its picture had stopped changing:
+        the window is then measured to that moment, not to the end of the
+        repeats that followed it.
         """
-        if first_frame_at is None:
+        if first_frame_at is None or last_frame_at is None:
             metric.consecutive_failures = min(2**53 - 1, metric.consecutive_failures + 1)
             return
         metric.consecutive_failures = 0
         self.delivered = True
-        ended = time.monotonic() if healthy_until is None else healthy_until
+        ended = last_frame_at if healthy_until is None else healthy_until
         if ended - first_frame_at >= self.stable_seconds:
             self.attempt = 0
 

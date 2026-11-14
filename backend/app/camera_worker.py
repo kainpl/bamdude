@@ -114,12 +114,14 @@ async def _produce_chamber_frames(ip_address: str, access_code: str, fps: int, m
     outcome = SimpleNamespace(consecutive_failures=0, end_reason=None)
     while True:
         first_frame_at: float | None = None
+        last_frame_at: float | None = None
         connection = await camera.generate_chamber_image_stream(ip_address, access_code, fps)
         if connection is not None:
             reader, chamber_writer = connection
             try:
                 while frame := await camera.read_next_chamber_frame(reader, timeout=30.0):
-                    first_frame_at = first_frame_at or time.monotonic()
+                    last_frame_at = time.monotonic()
+                    first_frame_at = first_frame_at or last_frame_at
                     publish(frame)
             finally:
                 chamber_writer.close()
@@ -127,7 +129,7 @@ async def _produce_chamber_frames(ip_address: str, access_code: str, fps: int, m
                     await chamber_writer.wait_closed()
                 except OSError:
                     pass
-        budget.count_session(outcome, first_frame_at)
+        budget.count_session(outcome, first_frame_at, last_frame_at)
         if not budget.allows_redial(outcome, first_frame_at):
             logger.warning(
                 "Chamber image stream ended: reason=%s consecutive_failures=%d",
