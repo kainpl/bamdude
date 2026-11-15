@@ -69,6 +69,44 @@ class Writer:
     def write(self, data) -> None:
         pass
 
+    async def drain(self) -> None:
+        pass
+
+
+def _nested(depth: int) -> str:
+    leaf = "{}"
+    for _ in range(depth):
+        leaf = '{"":' + leaf + "}"
+    return leaf
+
+
+#: Units an envelope is padded with, up to the scan bound: each makes many Python
+#: objects per byte of JSON. ``nested_dict`` is the shape of Codex's re-review probe.
+SHAPES = {
+    "empty_lists": "[]",
+    "empty_dicts": "{}",
+    "nested_dict": _nested(20),
+    "deep_lists": "[" * 30 + "]" * 30,
+}
+
+
+def _full_envelope(sequence: int, shape: str, *, reply: dict | None = None, result: int = 0) -> bytes:
+    """An envelope just under the scan bound, padded with ``shape`` — valid JSON the client accepts."""
+    head = json.dumps({"sequence": sequence, "result": result, "reply": reply or {}}, separators=(",", ":"))
+    prefix = head[:-1] + ',"pad":['
+    unit = SHAPES[shape]
+    count = (tc.MAX_ENVELOPE_SCAN - len(prefix) - 16) // (len(unit) + 1)
+    envelope = (prefix + ",".join([unit] * count) + "]}").encode()
+    assert len(envelope) < tc.MAX_ENVELOPE_SCAN
+    return envelope
+
+
+def _shaped_frame(sequence: int, payload: int, shape: str | None, **envelope) -> bytes:
+    """A frame of exactly ``payload`` bytes whose envelope is padded with ``shape`` (None: a small one)."""
+    head = _full_envelope(sequence, shape, **envelope) if shape else _envelope(sequence, **envelope)
+    body = b"x" * (payload - len(head) - len(ENVELOPE_SEPARATOR))
+    return pack_frame(TYPE_DATA_REQUEST, sequence, head + ENVELOPE_SEPARATOR + body)
+
 
 def _client(raw: bytes) -> BambuTunnelClient:
     client = BambuTunnelClient("no-network", "fake")
@@ -186,6 +224,46 @@ class TestOneEnvelope:
         (parked,) = client._parked[2]
         # Charged exactly its payload: its parsed envelope was dropped.
         assert parked.charge == parked.payload_len
+
+
+@pytest.mark.asyncio
+class TestNoUnchargedEnvelopeOutlivesItsCharge:
+    """Codex re-review A4: a parsed envelope given back to the budget must be gone, not merely uncharged.
+
+    The charge is exactly the envelope here — 3 MiB parked, then a 2 MiB live
+    frame with its overhead — so any envelope still alive past its charge
+    shows up as a peak above it.
+    """
+
+    @pytest.mark.parametrize("shape", sorted(SHAPES))
+    async def test_a_parked_frames_envelope_is_gone_before_the_next_is_parsed(self, shape):
+        raw = _shaped_frame(2, 2 * MIB, None) + _shaped_frame(3, MIB, shape) + _shaped_frame(1, MAX_FRAME, shape)
+        client = _client(raw)
+        (envelope, frame), peak = await _measured(client._await_sequence(1))
+        assert client._held == ENVELOPE  # the scenario sits exactly at the bound
+        assert peak <= ENVELOPE, peak
+        client._release(frame)
+
+    @pytest.mark.parametrize("shape", sorted(SHAPES))
+    async def test_an_upload_drops_the_open_answer_before_reading_its_completion(self, shape, tmp_path):
+        local = tmp_path / "u.3mf"
+        local.write_bytes(b"u" * 512)
+        raw = (
+            _shaped_frame(1, 128 * 1024, shape, reply={"chunk_size": 1, "offset": 0}, result=1)
+            + _shaped_frame(7, 2 * MIB, None)
+            + _shaped_frame(8, MIB, shape)
+            + _shaped_frame(1, MAX_FRAME, shape)
+        )
+        client = _client(raw)
+        _none, peak = await _measured(client.upload_file(local, "u.3mf", "emmc"))
+        assert peak <= ENVELOPE, peak
+
+    async def test_an_envelope_nested_too_deep_to_parse_is_a_typed_refusal(self):
+        payload = b'{"sequence":1,"x":' + b"[" * 20_000 + b"]" * 20_000 + b"}"
+        client = _client(pack_frame(TYPE_DATA_REQUEST, 1, payload))
+        refused, _peak = await _measured(client._await_sequence(1))
+        assert isinstance(refused, TunnelProtocolError) and refused.category == "envelope_unbounded"
+        assert client._held == 0
 
 
 @pytest.fixture

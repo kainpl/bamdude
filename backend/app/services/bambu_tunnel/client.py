@@ -537,8 +537,20 @@ class BambuTunnelClient:
             ).encode(),
         )
         answer, frame = await self._await_sequence(sequence)
-        self._release(frame)
-        opened = answer.get("result", 0)
+        try:
+            opened = answer.get("result", 0)
+            open_reply = answer.get("reply") or {}
+            # ⚠️ **The printer chooses the fragment size**, in KILOBYTES, and tells
+            # us in this reply — 255 there is where the observed 261120 comes from.
+            # It also says where to resume: a re-sent file starts at its ``offset``,
+            # not at zero.
+            chunk_kb = open_reply.get("chunk_size")
+            resume_at = open_reply.get("offset")
+        finally:
+            # The scalars are read; the parsed reply goes with the frame's charge,
+            # before the completion frame is read (review A4 r2).
+            answer = open_reply = None
+            self._release(frame)
         # ⚠️ The printer answers the open with CONTINUE (1), not SUCCESS.
         # BambuStudio accepts SUCCESS, CONTINUE and FILE_EXIST here and treats
         # anything else as an error — reading CONTINUE as a refusal rejects the
@@ -546,19 +558,14 @@ class BambuTunnelClient:
         if opened not in (RESULT_SUCCESS, RESULT_CONTINUE, RESULT_FILE_EXIST):
             raise TunnelError(f"tunnel refused the upload of {remote_name} with result={opened}", opened)
 
-        open_reply = answer.get("reply") or {}
         if opened == RESULT_SUCCESS:
             # Already complete on the printer's side; BS shows 100% and stops.
             if progress_cb is not None:
                 progress_cb(total, total)
             return
 
-        # ⚠️ **The printer chooses the fragment size**, in KILOBYTES, and tells
-        # us in this reply — 255 there is where the observed 261120 comes from.
-        # It also says where to resume: a re-sent file starts at its ``offset``,
-        # not at zero.
-        chunk_size = int(open_reply.get("chunk_size") or 0) * 1024 or CHUNK_SIZE
-        start_offset = int(open_reply.get("offset") or 0)
+        chunk_size = int(chunk_kb or 0) * 1024 or CHUNK_SIZE
+        start_offset = int(resume_at or 0)
 
         digest = hashlib.md5(usedforsecurity=False)  # the printer's choice of digest, not ours
         sent = start_offset
@@ -622,8 +629,9 @@ class BambuTunnelClient:
         # any, and this log line is what will tell us if one ever does.
         logger.debug("[%s] upload of %s: %d fragment(s) sent, awaiting completion", self._ip, remote_name, frag_id)
         answer, frame = await self._await_sequence(sequence)
-        self._release(frame)
         finished = answer.get("result", 0)
+        answer = None
+        self._release(frame)
         if finished not in (RESULT_SUCCESS, RESULT_FILE_EXIST):
             raise TunnelError(f"tunnel rejected the uploaded {remote_name} with result={finished}", finished)
 
@@ -692,7 +700,11 @@ class BambuTunnelClient:
             read = await self._read_frame()
             if read is None:
                 continue  # a bare control ack, no envelope to match
+            # ⚠️ Drop the tuple at once (review A4 r2): it is another reference to
+            # the parsed envelope, and it would outlive the overhead ``_park``
+            # gives back — alive, uncharged, through the next frame's read and parse.
             envelope, frame = read
+            read = None
             found = envelope.get("sequence")
             if found == sequence:
                 return envelope, frame
@@ -771,6 +783,11 @@ class BambuTunnelClient:
                 envelope, body = split_envelope_view(payload, MAX_ENVELOPE_SCAN)
             except EnvelopeTooLong as exc:
                 raise TunnelProtocolError("envelope_unbounded", f"{self._ip}: {exc}") from exc
+            except RecursionError as exc:
+                # Nested past what the JSON parser descends: within the scan bound,
+                # but no envelope we read — refused like one that never closes,
+                # not raised to the caller as an untyped error.
+                raise TunnelProtocolError("envelope_unbounded", f"{self._ip}: envelope nested too deep") from exc
             except ValueError:
                 # ⚠️ Expected, not exceptional: the session acknowledgement is four
                 # zero bytes with no JSON in it.
