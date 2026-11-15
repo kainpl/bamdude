@@ -86,6 +86,14 @@ Migration seeds name historical columns for reads and writes. For INSERT use a l
 
 G02 B's historical PG repair uses a frozen literal whitelist, never ordinary-startup reconciliation against live models. Unknown NULLs, duplicate identities and unsafe native orphan repairs remain named/count residuals. Its guarded FTS helper is shared by import conformance; a failed backfill rolls back and stops startup. A migration may provide an explicit repeat-safe `replay(conn)` for DEBUG without deleting its completed marker. The narrow released-DDL exception changes only missing-table PG arms in m043/m127; SQLite rendered DDL stays byte-identical. SQLite-file→PG has a preflight floor; ordinary SQLite/native-PG upgrades do not. See `docs/development/postgres-historical-schema.md`.
 
+PostgreSQL import owns one prepared DB/WAL source through identity/floor,
+effective-type validation and load. Pass that owner explicitly; validators
+must not make independent copies or open the original with SQLite. The
+reflected PG types own width/NUL validation, including unknown legacy columns.
+Before commit/consumption recheck the original fingerprint. Notification
+UNIQUE name-collision translation is exact and proof-based, never a generic
+index-name dedupe.
+
 ## Key Invariants
 
 **Live delivery needs current authority and owned cleanup.** The live coordinator

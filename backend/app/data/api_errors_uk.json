@@ -1285,5 +1285,7 @@
   "Virtual printer access is paused for restore; restart after restoring.": "Доступ до віртуальних принтерів призупинено для відновлення; перезапустіть після його завершення.",
   "Virtual printer cleanup could not be confirmed. Restart BamDude before restoring.": "Не вдалося підтвердити зупинку віртуального принтера. Перезапустіть BamDude перед відновленням.",
   "Virtual printer connections interrupted: {count}.": "Перервано з’єднань віртуальних принтерів: {count}.",
-  "Virtual printer work has not stopped. Wait for accepted uploads to finish, then retry in this process. Restart after restoring, or to abandon this attempt.": "Робота віртуальних принтерів ще не завершилася. Дочекайтеся прийнятих завантажень і повторіть у цьому процесі. Перезапустіть після відновлення або щоб відмовитися від цієї спроби."
+  "Virtual printer work has not stopped. Wait for accepted uploads to finish, then retry in this process. Restart after restoring, or to abandon this attempt.": "Робота віртуальних принтерів ще не завершилася. Дочекайтеся прийнятих завантажень і повторіть у цьому процесі. Перезапустіть після відновлення або щоб відмовитися від цієї спроби.",
+  "The backup contains text values incompatible with PostgreSQL. Correct a copy of the source and retry; no data has been replaced.": "Резервна копія містить текстові значення, несумісні з PostgreSQL. Виправте копію джерела та повторіть спробу; жодні дані не замінено.",
+  "The backup contains an unsupported constraint/index name collision. No data has been replaced.": "Резервна копія містить непідтримуваний конфлікт імен обмеження та індексу. Жодні дані не замінено."
 }

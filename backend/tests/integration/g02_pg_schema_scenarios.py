@@ -85,13 +85,25 @@ async def run(case):
     if case.startswith("retry"):
         await load_failed_pg(database, case)
     await database.init_db()
-    if case == "prepare_head_v061":
+    if case in ("prepare_head_v061", "prepare_head_fresh", "prepare_head_fresh_affected"):
         assert database.engine.dialect.name == "sqlite"
+        if case == "prepare_head_fresh_affected":
+            async with database.engine.begin() as conn:
+                await conn.execute(
+                    text("CREATE UNIQUE INDEX uq_user_notifications_dedupe_key ON user_notifications(dedupe_key)")
+                )
         async with database.engine.connect() as conn:
             level = await conn.scalar(text("SELECT max(version) FROM _migrations"))
             assert await conn.scalar(text("SELECT count(*) FROM _migrations WHERE version=228")) == 1
+            redundant = await conn.scalar(
+                text(
+                    "SELECT count(*) FROM sqlite_master WHERE type='index' AND name='uq_user_notifications_dedupe_key'"
+                )
+            )
+            if case != "prepare_head_v061":
+                assert redundant == int(case.endswith("affected"))
         await database.engine.dispose()
-        return {"source_level": level, "has_b_marker": True, "dialect": "sqlite"}
+        return {"source_level": level, "has_b_marker": True, "dialect": "sqlite", "redundant_unique": redundant}
     if case == "repair":
         await exercise_repair(database, repair)
         await exercise_failed_start(database)

@@ -11,6 +11,21 @@ The level probe opens a temporary copy of the DB and any existing WAL. It
 does not create WAL/SHM sidecars beside the source. A source changing during
 that copy is refused; stop its writer before trying again.
 
+Identity, migration-level checks, effective-type preflight and the actual
+import share one owned private DB/WAL snapshot. PostgreSQL widths come from
+the same reflection that builds its target schema: current model types
+override known columns, while unknown legacy VARCHAR widths still apply.
+Overlength values, including excess spaces PostgreSQL could truncate, and
+NUL in text/JSON are refused with field counts before restore drains. JSON's
+escaped NUL is refused even for PG json, which is more permissive than jsonb.
+The original's fingerprint is checked again before commit and consumption.
+
+The unreleased auth-lifetime migration skips an extra notification dedupe
+index when a full UNIQUE guarantee already exists. Importing an already
+affected source omits only the proven identical index from its translated
+schema; source bytes and the UNIQUE constraint remain intact. A different
+predicate, expression, key, ordering or collation fails preflight.
+
 The historical PG repair is a numbered, additive migration with frozen
 targets. It does not compare the running database with current ORM models on
 every start. It repairs the observed REAL precision, missing write defaults,

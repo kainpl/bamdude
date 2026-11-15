@@ -1160,6 +1160,7 @@ PREVIEW_QUIESCE_UNPROVEN = "Library previews could not prove they stopped. Resta
 async def _restore_backup(file: UploadFile, db: AsyncSession, *, authority=None):
     import asyncio
     import tempfile
+    from contextlib import AsyncExitStack
 
     from backend.app.core.database import Base, close_all_connections, init_db, reinitialize_database
     from backend.app.core.db_dialect import is_sqlite
@@ -1167,15 +1168,21 @@ async def _restore_backup(file: UploadFile, db: AsyncSession, *, authority=None)
         _file_work,
         _snapshot_sqlite,
         import_sqlite_to_postgres,
+        prepared_import_source,
         validate_sqlite_backup,
     )
     from backend.app.core.paths import resolve_data_dir
+    from backend.app.core.sqlite_import_preflight import (
+        SOURCE_COLLISION_MESSAGE,
+        SOURCE_VALUES_MESSAGE,
+        SqliteSourceCollisionError,
+        SqliteSourceValuesError,
+    )
     from backend.app.core.sqlite_import_source import (
         SOURCE_LEVEL_MESSAGE,
         SOURCE_READ_MESSAGE,
         SqliteSourceLevelError,
         SqliteSourceReadError,
-        validate_postgres_source,
     )
     from backend.app.services import queue_sources
     from backend.app.services.backup_files import FileRestore, extract_zip, validate_staged_queue_spool
@@ -1185,7 +1192,8 @@ async def _restore_backup(file: UploadFile, db: AsyncSession, *, authority=None)
     if not file.filename or not file.filename.endswith(".zip"):
         raise HTTPException(400, "Invalid backup file: must be a .zip file")
 
-    with tempfile.TemporaryDirectory() as temp_dir:
+    async with AsyncExitStack() as source_stack:
+        temp_dir = source_stack.enter_context(tempfile.TemporaryDirectory())
         staging = Path(temp_dir)
         # UploadFile is already spooled: don't duplicate a multi-GB ZIP in RAM.
         await file.seek(0)
@@ -1205,20 +1213,34 @@ async def _restore_backup(file: UploadFile, db: AsyncSession, *, authority=None)
         if not backup_db.exists():
             raise HTTPException(400, "Invalid backup: missing database file (bamdude.db or bambuddy.db)")
         try:
+            prepared = None
             if not is_sqlite():
-                await _file_work(validate_postgres_source, backup_db)
-            await _file_work(validate_sqlite_backup, backup_db, require_app_schema=True)
+                prepared = await source_stack.enter_async_context(prepared_import_source(backup_db, Base.metadata))
+            checked_db = prepared.path if prepared is not None else backup_db
+            await _file_work(validate_sqlite_backup, checked_db, require_app_schema=True)
             zigbee_db = staging / "zigbee/zigbee.db"
             if zigbee_db.exists():
                 await _file_work(validate_sqlite_backup, zigbee_db)
-            await _file_work(validate_staged_queue_spool, staging, backup_db)
+            await _file_work(validate_staged_queue_spool, staging, checked_db)
             from backend.app.services.obico_history_files import validate_history
 
-            await _file_work(validate_history, staging, backup_db)
+            await _file_work(validate_history, staging, checked_db)
         except SqliteSourceLevelError as exc:
             raise HTTPException(400, {"error": exc.code, "message": SOURCE_LEVEL_MESSAGE}) from exc
         except SqliteSourceReadError as exc:
             raise HTTPException(400, {"error": exc.code, "message": SOURCE_READ_MESSAGE}) from exc
+        except SqliteSourceValuesError as exc:
+            raise HTTPException(
+                400,
+                {
+                    "error": exc.code,
+                    "message": SOURCE_VALUES_MESSAGE,
+                    "violations": exc.violations[:20],
+                    "violation_fields": len(exc.violations),
+                },
+            ) from exc
+        except SqliteSourceCollisionError as exc:
+            raise HTTPException(400, {"error": exc.code, "message": SOURCE_COLLISION_MESSAGE}) from exc
         except ValueError as exc:
             logger.warning("Restore preflight rejected database: %s", exc)
             raise HTTPException(400, "Invalid backup database: damaged or incompatible. Check server logs.") from exc
@@ -1354,7 +1376,7 @@ async def _restore_backup(file: UploadFile, db: AsyncSession, *, authority=None)
                     else:
                         from backend.app.core.database import engine
 
-                        await import_sqlite_to_postgres(engine, Base.metadata, backup_db)
+                        await import_sqlite_to_postgres(engine, Base.metadata, prepared)
                         files.committed = True  # No await between DB success and this flag.
             finally:
                 await _file_work(files.finish)

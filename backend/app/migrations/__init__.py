@@ -218,24 +218,33 @@ async def run_all_migrations(engine, session_factory) -> bool:
                 if wal.exists():
                     wal.rename(db_path.parent / (db_path.name + suffix))
 
+    prepared = None
     if not is_sqlite():
         from backend.app.core.db_portable import preflight_sqlite_to_pg
 
-        await preflight_sqlite_to_pg(engine)
+        prepared = await preflight_sqlite_to_pg(engine)
 
     # Create/update all tables from models
-    async with engine.begin() as conn:
-        created_schema = not await conn.run_sync(lambda sync: inspect(sync).get_table_names())
-        await conn.run_sync(Base.metadata.create_all)
+    try:
+        async with engine.begin() as conn:
+            created_schema = not await conn.run_sync(lambda sync: inspect(sync).get_table_names())
+            await conn.run_sync(Base.metadata.create_all)
 
-    # Auto-migrate SQLite → PostgreSQL if PG is empty and local SQLite exists
-    if not is_sqlite():
-        from backend.app.core.db_portable import auto_migrate_sqlite_to_pg
+        # Auto-migrate SQLite → PostgreSQL if PG is empty and local SQLite exists
+        if not is_sqlite():
+            from backend.app.core.db_portable import auto_migrate_sqlite_to_pg
 
-        # A failed or declined import is not proof this is a new installation.
-        if any((Path(settings.data_dir) / name).exists() for name in ("bamdude.db", "bambuddy.db", "bambutrack.db")):
-            created_schema = False
-        await auto_migrate_sqlite_to_pg(engine, Base.metadata)
+            # A failed or declined import is not proof this is a new installation.
+            if any(
+                (Path(settings.data_dir) / name).exists() for name in ("bamdude.db", "bambuddy.db", "bambutrack.db")
+            ):
+                created_schema = False
+            await auto_migrate_sqlite_to_pg(engine, Base.metadata, prepared=prepared or False)
+    finally:
+        if prepared is not None:
+            from backend.app.core.db_portable import _file_work
+
+            await _file_work(prepared.close)
 
     # Ensure _migrations table
     await _ensure_migrations_table(engine)

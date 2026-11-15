@@ -1,5 +1,12 @@
 ## [Unreleased]
 
+- SQLite-to-PostgreSQL import validates text against the actual destination
+  types before stopping services, including legacy column widths, NUL and
+  overlength trailing spaces. Identity, validation and import share one DB/WAL
+  snapshot; a changed original is not silently consumed. Fresh SQLite databases
+  avoid a redundant notification UNIQUE index, and an existing exact duplicate
+  is translated safely without changing the source or weakening uniqueness.
+
 - Historical PostgreSQL upgrades repair the observed schema gaps without
   inventing timestamps or discarding usage history. PostgreSQL archive removal keeps
   its filament-consumption rows and clears their archive link. Missing write
