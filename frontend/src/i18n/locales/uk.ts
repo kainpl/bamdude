@@ -3536,7 +3536,7 @@ export default {
         last_used_time: 'Останнє використання',
         storage_location: 'Місце зберігання',
         cost_per_kg: 'Ціна за кг',
-        lot: 'Партія',
+        lot: 'Лот',
         id: 'Номер котушки'
       }
     },

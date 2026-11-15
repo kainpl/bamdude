@@ -531,7 +531,10 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
                         : 'bg-bambu-dark border-bambu-dark-tertiary hover:border-bambu-gray'
                     }`}
                   >
-                    <p className="text-white text-sm font-medium truncate">
+                    <p
+                      className="text-white text-sm font-medium truncate"
+                      title={formatSpoolDisplayName(spool, spoolDisplayTemplate)}
+                    >
                       {formatSpoolDisplayName(spool, spoolDisplayTemplate)}
                     </p>
                     <div className="flex items-center gap-1.5 mt-1">
@@ -618,7 +621,10 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
                                 : 'bg-bambu-dark border-bambu-dark-tertiary hover:border-bambu-gray'
                             }`}
                           >
-                            <p className="text-white text-sm font-medium truncate">
+                            <p
+                              className="text-white text-sm font-medium truncate"
+                              title={formatSpoolDisplayName(spool, spoolDisplayTemplate)}
+                            >
                               {formatSpoolDisplayName(spool, spoolDisplayTemplate)}
                             </p>
                             <div className="flex items-center gap-1.5 mt-1">
