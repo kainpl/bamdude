@@ -54,8 +54,10 @@ async def write_sync_results(
     the slots it saw without a spool. Commits; raises after a rollback.
     """
     from backend.app.main import _get_ams_assignment_lock  # noqa: PLC0415
+    from backend.app.services import spool_single_slot  # noqa: PLC0415
 
     moved: list[tuple[int, int]] = []
+    vacated: list[tuple[int, int, int]] = []
     async with _get_ams_assignment_lock(printer_id):
         try:
             for ams_id, tray_id, spool_id in changes:
@@ -74,6 +76,17 @@ async def write_sync_results(
                     result = await db.execute(_REPOINT_IF_UNCHANGED, {**slot, "spool_id": spool_id, "read": was})
                 if result.rowcount:
                     moved.append((ams_id, tray_id))
+            # A spool sits in one slot (owner decision Р7): a spool this sync
+            # just put into a slot leaves its other ledger rows, on any printer —
+            # except a slot that feeds a running print. Rows only; conditional on
+            # what was read, as every write here.
+            for ams_id, tray_id, spool_id in changes:
+                if (ams_id, tray_id) not in moved:
+                    continue
+                released = await spool_single_slot.release_other_spoolman_slots(
+                    db, spoolman_spool_id=spool_id, keep=(printer_id, ams_id, tray_id), refuse=False
+                )
+                vacated += released.vacated
             for ams_id, tray_id in empties:
                 slot = {"printer_id": printer_id, "ams_id": ams_id, "tray_id": tray_id}
                 if read is None:
@@ -91,4 +104,8 @@ async def write_sync_results(
         except Exception:
             await db.rollback()
             raise
+    # This printer's own vacated slots are reported with ``moved``; the others
+    # are announced here, after the commit.
+    moved += [(a, t) for p, a, t in vacated if p == printer_id]
+    await spool_single_slot.announce([slot for slot in vacated if slot[0] != printer_id])
     return list(dict.fromkeys(moved))

@@ -1726,6 +1726,17 @@ async def assign_spoolman_slot(
                     status_code=409, detail="Mid-print replacement needs a print that is paused or has been paused"
                 )
 
+        # A spool sits in one slot (owner decision Р7): the slot it would leave
+        # must not be feeding a running print. Asked before anything is written.
+        from backend.app.services import spool_single_slot
+
+        _keep = (body.printer_id, body.ams_id, body.tray_id)
+        for _other in await spool_single_slot.other_spoolman_slots(
+            db, spoolman_spool_id=body.spoolman_spool_id, keep=_keep
+        ):
+            if spool_single_slot.slot_feeds_running_print(*_other):
+                raise spool_single_slot.refusal(spool_single_slot.SpoolFeedsPrint(_other))
+
         # What the upsert below is about to displace, read BEFORE it (spec
         # 2026-09-13 §3.3) — the ON CONFLICT DO UPDATE overwrites the old spool id
         # in place, so afterwards there is nothing left to report. Reported on the
@@ -1788,7 +1799,15 @@ async def assign_spoolman_slot(
                     "spool_id": body.spoolman_spool_id,
                 },
             )
+            # Its other ledger rows go with the same commit. Rows only: nothing
+            # is journalled for a vacated slot and nothing is sent to it.
+            _released = await spool_single_slot.release_other_spoolman_slots(
+                db, spoolman_spool_id=body.spoolman_spool_id, keep=_keep, refuse=True
+            )
             await db.commit()
+        except spool_single_slot.SpoolFeedsPrint as feeding:
+            await db.rollback()
+            raise spool_single_slot.refusal(feeding) from feeding
         except Exception as exc:
             await db.rollback()
             logger.error("Failed to persist slot assignment: %s", exc)
@@ -1808,6 +1827,8 @@ async def assign_spoolman_slot(
             )
         except Exception:
             logger.exception("note_assignment_change failed for printer %s", body.printer_id)
+
+    await spool_single_slot.announce(_released.vacated)
 
     # #1457: clear stale fallback-tag links on OTHER spools still bound to this
     # slot. Without this, a non-RFID slot's deterministic fallback tag stays

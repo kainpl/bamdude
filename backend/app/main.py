@@ -2926,6 +2926,12 @@ async def on_ams_change(printer_id: int, ams_data: list):
         state = printer_manager.get_status(printer_id)
         current = getattr(state, "raw_data", {}).get("ams") if state else None
         await _on_ams_change(printer_id, current if isinstance(current, list) else ams_data)
+    # A spool sits in one slot: what the pass above put into a slot of this
+    # printer may still have rows on OTHER printers. Those are deleted under
+    # their own printers' locks, one at a time, with this one released.
+    from backend.app.services import spool_single_slot
+
+    await spool_single_slot.release_elsewhere(printer_id)
 
 
 async def _on_ams_change(printer_id: int, ams_data: list):
@@ -3401,6 +3407,20 @@ async def _on_ams_change(printer_id: int, ams_data: list):
             _auto_add_raw = await get_setting(db, "auto_add_unknown_rfid")
             _auto_add_unknown = _auto_add_raw is None or _auto_add_raw.lower() == "true"
             if not _spoolman_on or _spoolman_on.lower() != "true":
+                # Rows that were double before "a spool sits in one slot" was a
+                # rule are settled as printers report in (owner decision Р36):
+                # the slot that reports the tag keeps the spool, else the newest
+                # row. Nothing here touches a journal or a session.
+                try:
+                    from backend.app.services import spool_single_slot as _single_slot
+
+                    _settled = await _single_slot.resolve_duplicates(db, printer_id)
+                    await db.commit()
+                    if _settled.vacated:
+                        _single_slot._pending_announce.setdefault(printer_id, []).extend(_settled.vacated)
+                except Exception:  # noqa: BLE001 — a duplicate row survives until the next pass
+                    await db.rollback()
+                    logger.exception("Could not settle doubled spool assignments for printer %s", printer_id)
                 for ams_unit in ams_data:
                     if not isinstance(ams_unit, dict):
                         continue

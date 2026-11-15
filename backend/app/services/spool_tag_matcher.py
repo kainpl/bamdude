@@ -572,6 +572,21 @@ async def auto_assign_spool(
     db.add(assignment)
     await db.flush()
 
+    # A spool sits in one slot (owner decision Р7): the tag just read here is
+    # the proof it is no longer in its other slots — the partial-return hold
+    # exists to survive the ABSENCE of proof, and yields to it. Rows only: the
+    # journal is not told (a vacated slot is not a loaded one), and a row whose
+    # slot feeds a running print stays. Best-effort; never the assignment's fate.
+    try:
+        from backend.app.services import spool_single_slot
+
+        async with db.begin_nested():
+            await spool_single_slot.release_for_callback(
+                db, printer_id=printer_id, spool=spool, keep=(printer_id, ams_id, tray_id)
+            )
+    except Exception:
+        logger.exception("Could not take spool %s out of its other slots", spool.id)
+
     # Replacement-after-runout boundary for the journal (deduped there; the
     # RFID uuid-watch usually records it first for tagged spools).
     try:

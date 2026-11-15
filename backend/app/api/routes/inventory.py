@@ -2719,13 +2719,37 @@ async def assign_spool(
 
     await _refuse_in_spoolman_mode(db)
 
+    from contextlib import AsyncExitStack
+
+    from backend.app.services import spool_single_slot
+
+    # A spool sits in one slot: assigning it here takes it out of its other
+    # slots, and the rows of ANOTHER printer are deleted under that printer's
+    # lock too (its AMS callback deletes rows through the ORM). Every lock this
+    # move needs is taken in ascending printer id — the one order — before
+    # anything is written.
+    keep = (data.printer_id, data.ams_id, data.tray_id)
+    lock_ids = sorted(
+        {data.printer_id, *await spool_single_slot.printers_holding(db, spool_id=data.spool_id, keep=keep)}
+    )
+
     # A manual answer must not race insertion/RFID reconciliation on this slot.
-    async with _get_ams_assignment_lock(data.printer_id):
-        return await _assign_spool(data, db, current_user)
+    async with AsyncExitStack() as locks:
+        for printer_id in lock_ids:
+            await locks.enter_async_context(_get_ams_assignment_lock(printer_id))
+        response, vacated = await _assign_spool(data, db, current_user, locked=set(lock_ids))
+    await spool_single_slot.announce(vacated)
+    return response
 
 
-async def _assign_spool(data: SpoolAssignmentCreate, db: AsyncSession, current_user: User | None):
+async def _assign_spool(
+    data: SpoolAssignmentCreate, db: AsyncSession, current_user: User | None, *, locked: set[int] | None = None
+):
+    from backend.app.services import spool_single_slot
     from backend.app.services.printer_manager import printer_manager
+
+    keep = (data.printer_id, data.ams_id, data.tray_id)
+    locked = {data.printer_id} if locked is None else locked
 
     # 1. Validate spool exists and is not archived
     result = await db.execute(select(Spool).options(selectinload(Spool.k_profiles)).where(Spool.id == data.spool_id))
@@ -2734,6 +2758,12 @@ async def _assign_spool(data: SpoolAssignmentCreate, db: AsyncSession, current_u
         raise HTTPException(404, "Spool not found")
     if spool.archived_at:
         raise HTTPException(400, "Cannot assign an archived spool")
+
+    # The slot it would leave must not be feeding a running print. Asked before
+    # anything below writes: a refusal leaves the journal and the slot untouched.
+    for other in await spool_single_slot.other_slots(db, spool_id=data.spool_id, keep=keep):
+        if spool_single_slot.slot_feeds_running_print(*other):
+            raise spool_single_slot.refusal(spool_single_slot.SpoolFeedsPrint(other))
 
     # 2. Get current AMS tray state for fingerprint + existing filament ID.
     #
@@ -2847,6 +2877,17 @@ async def _assign_spool(data: SpoolAssignmentCreate, db: AsyncSession, current_u
         if old:
             await db.delete(old)
             await db.flush()
+
+        # The spool's other slots go in the same transaction as the new binding
+        # (one spool, one slot). Only the rows — a vacated slot is not a loaded
+        # one, so nothing is journalled for it and nothing is sent to it.
+        try:
+            released = await spool_single_slot.release_other_slots(
+                db, spool_id=data.spool_id, keep=keep, locked=locked, refuse=True
+            )
+        except spool_single_slot.SpoolFeedsPrint as feeding:
+            await db.rollback()
+            raise spool_single_slot.refusal(feeding) from feeding
 
         assignment = SpoolAssignment(
             spool_id=data.spool_id,
@@ -2991,7 +3032,7 @@ async def _assign_spool(data: SpoolAssignmentCreate, db: AsyncSession, current_u
         }
     )
 
-    return response
+    return response, released.vacated
 
 
 @router.delete("/assignments/{printer_id}/{ams_id}/{tray_id}")
@@ -4349,6 +4390,11 @@ async def create_spool_from_slot(
             tray_info_idx=tray.get("tray_info_idx", ""),
         )
         await db.commit()
+    # A reel whose spool already existed may have had rows on other printers
+    # (one spool, one slot): vacated under those printers' locks, this one released.
+    from backend.app.services import spool_single_slot
+
+    await spool_single_slot.release_elsewhere(req.printer_id)
     await ws_manager.broadcast({"type": "inventory_changed"})
     await ws_manager.broadcast(
         {
