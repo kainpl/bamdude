@@ -2488,6 +2488,13 @@ class BambuMQTTClient:
         self._finish_photo_captured: bool = False
         self._last_valid_progress: float = 0.0  # Last non-zero progress (firmware resets on cancel)
         self._last_valid_layer_num: int = 0  # Last non-zero layer (firmware resets on cancel)
+        # The layer the previous print ended on, while the print that followed it has not yet
+        # reported a layer of its own (upstream a8dd164c7, #3317). Right after a start an H2S
+        # sends one frame still carrying it (``layer_num`` 357 with ``mc_percent`` 0, then 0);
+        # the observed run boundary has already cleared the old counters by then, so the frame
+        # would become THIS print's layer, and the 0 after it this print's last valid layer —
+        # a print failing before its first layer was then charged as nearly whole. 0 = unarmed.
+        self._stale_layer_num: int = 0
         self._startup_reconcile_done: bool = False  # one-shot guard for reconcile_printer_prints
         self._is_dual_nozzle: bool = False  # Set when device.extruder.info has >= 2 entries
         # Last suppressed runout-tail (tray, origin) — repeats of the same
@@ -2737,6 +2744,7 @@ class BambuMQTTClient:
         self._finish_photo_captured = prior._finish_photo_captured
         self._last_valid_progress = prior._last_valid_progress
         self._last_valid_layer_num = prior._last_valid_layer_num
+        self._stale_layer_num = prior._stale_layer_num
         # Re-arm the connect-edge reconcile sweep on every client recreation
         # (#1542 follow-up): a print that finished during a disconnect window —
         # or a firmware ghost-replay that reran the file under a new subtask —
@@ -5993,6 +6001,13 @@ class BambuMQTTClient:
         if new_print_boundary:
             # Clear the previous print BEFORE applying this frame's counters.
             # The lifecycle reset below must not erase these fresh values.
+            # A start we watched is followed, on some firmware, by one frame
+            # that repeats the layer the previous print ended on: remember it
+            # so it is not read as this print's (see ``_stale_layer_num``).
+            # Only above 1 — every print reports layer 1 first, and a one-layer
+            # job printed again must keep its own. A run first seen already
+            # RUNNING is long past its start frames and is not guarded.
+            self._stale_layer_num = self.state.layer_num if observed_start and self.state.layer_num > 1 else 0
             self.state.layer_num = 0
             self.state.total_layers = 0
             self._last_valid_layer_num = 0
@@ -6022,6 +6037,17 @@ class BambuMQTTClient:
             self.state.mc_print_sub_stage = new_sub_stage
         if "layer_num" in data:
             new_layer = int(data["layer_num"])
+            if self._stale_layer_num and new_layer == self._stale_layer_num:
+                logger.debug(
+                    "[%s] ignoring layer_num %s: the last layer of the previous print",
+                    self.serial_number,
+                    new_layer,
+                )
+                new_layer = self.state.layer_num
+            elif new_layer > 0:
+                # The new print reports a layer of its own; from here on the
+                # previous print's value is a layer this print can reach.
+                self._stale_layer_num = 0
             old_layer = self.state.layer_num
             # Save last non-zero layer for usage tracking (firmware resets to 0 on cancel)
             if old_layer > 0:
