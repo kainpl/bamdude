@@ -1822,14 +1822,28 @@ async def _bump_library_file_usage_if_completed(db, item, queue_status: str) -> 
     await _bump_library_file_usage(db, item.library_file_id)
 
 
-def mark_printer_stopped_by_user(printer_id: int) -> None:
+def mark_printer_stopped_by_user(printer_id: int, *, unless_idle: bool = False) -> None:
     """Mark that the active print on this printer was stopped by the user from the queue UI.
 
     When on_print_complete fires with status 'failed' for a printer in this set we
     reclassify it as 'cancelled' so the correct 'print stopped' notification is sent
     rather than a 'print failed' notification.
+
+    ``unless_idle`` is the printer card's Stop: on a printer that REPORTS a state
+    with no print loaded the stop stops nothing, and its mark would wait for the
+    failure of some later print (upstream ab5ccc108). An unknown state is not
+    idle and still marks. The queue's Stop has a row behind it and always marks.
     """
     from backend.app.services.print_run_binding import current_print_run
+
+    if unless_idle:
+        status = printer_manager.get_status(printer_id)
+        state = getattr(status, "state", None)
+        if state and state != "unknown" and state not in printer_manager.ACTIVE_PRINT_STATES:
+            logging.getLogger(__name__).info(
+                "Stop on printer %s in state %s: nothing is printing, no user-stopped mark", printer_id, state
+            )
+            return
 
     run = current_print_run(printer_manager, printer_id)
     _user_stopped_printers[printer_id] = run.archive_id if run is not None else None
@@ -1838,6 +1852,16 @@ def mark_printer_stopped_by_user(printer_id: int) -> None:
         printer_id,
         _user_stopped_printers[printer_id],
     )
+
+
+def _forget_unbound_user_stop(printer_id: int) -> None:
+    """A mark that could name no run does not outlive the next run bound to the printer.
+
+    ``None`` matches any archive, so it ends before a later print can meet it;
+    a mark that names its archive is that run's own and stays.
+    """
+    if printer_id in _user_stopped_printers and _user_stopped_printers[printer_id] is None:
+        _user_stopped_printers.pop(printer_id, None)
 
 
 def _normalise_user_stopped_terminal(printer_id: int, archive_id: int | None, data: dict) -> dict:
@@ -4266,6 +4290,7 @@ def _bind_print_file_analysis_context(
         client_generation=getattr(printer_manager, "current_client_generation", lambda _printer_id: None)(printer_id),
         origin=origin,
     )
+    _forget_unbound_user_stop(printer_id)
     from backend.app.services.layer_projection import bind_layer_grant
 
     bind_layer_grant(

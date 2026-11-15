@@ -3581,7 +3581,7 @@ async def stop_print(
     try:
         from backend.app.main import mark_printer_stopped_by_user
 
-        mark_printer_stopped_by_user(printer_id)
+        mark_printer_stopped_by_user(printer_id, unless_idle=True)
     except Exception as _mark_err:
         logger.warning("Failed to mark printer %s as user-stopped: %s", printer_id, _mark_err)
 
