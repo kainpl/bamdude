@@ -43,7 +43,12 @@ from backend.app.models.spoolman_k_profile import SpoolmanKProfile
 from backend.app.models.spoolman_slot_assignment import SpoolmanSlotAssignment
 from backend.app.models.user import User
 from backend.app.schemas.spool import SpoolKProfileBase, naive_utc
-from backend.app.schemas.spoolman import SpoolmanFilamentPatch, SpoolmanSlotAssignmentEnriched
+from backend.app.schemas.spoolman import (
+    SlotAmsId,
+    SlotTrayId,
+    SpoolmanFilamentPatch,
+    SpoolmanSlotAssignmentEnriched,
+)
 from backend.app.services import spool_drying
 from backend.app.services.location_service import (
     enrich_spool_dicts_with_location_id,
@@ -437,9 +442,10 @@ class SpoolTagLinkRequest(BaseModel):
 class SpoolSlotAssignmentRequest(BaseModel):
     spoolman_spool_id: int = Field(..., gt=0)
     printer_id: int = Field(..., gt=0)
-    # ams_id 0–7 for physical AMS units; 255 = external/virtual spool extruder slot
-    ams_id: int = Field(..., ge=0, le=255)
-    tray_id: int = Field(..., ge=0, le=3)
+    # The slot ledger's own range (schemas/spoolman.SlotAmsId): refused here,
+    # before the journal or Spoolman is touched.
+    ams_id: SlotAmsId
+    tray_id: SlotTrayId
     # The human answered the mid-pause prompt with "this is a replacement" —
     # journal a manual runout boundary (see inventory.SpoolAssignmentCreate).
     mid_print_replacement: bool = False
@@ -1469,6 +1475,10 @@ async def assign_spoolman_slot(
     # This prevents ghost rows pointing at non-existent spool IDs.
     async with _translate_spoolman_errors():
         spool = await client.get_spool(body.spoolman_spool_id)
+    # As the built-in route refuses: the ledger must not name a spool that is
+    # out of use — tag-less usage would be charged to it (upstream c2bc41a5e).
+    if spool.get("archived"):
+        raise HTTPException(status_code=400, detail="Cannot assign an archived spool")
 
     from backend.app.main import _get_ams_assignment_lock
     from backend.app.services.print_usage_journal import journal_lock
@@ -1849,7 +1859,7 @@ async def unassign_spoolman_slot(
 @router.get("/slot-assignments")
 async def get_spoolman_slot_assignment(
     printer_id: int = Query(..., gt=0),
-    ams_id: int = Query(..., ge=0, le=7),
+    ams_id: SlotAmsId = Query(...),
     tray_id: int = Query(..., ge=0, le=3),
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.INVENTORY_READ),

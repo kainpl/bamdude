@@ -21,6 +21,7 @@ from backend.app.models.settings import Settings
 from backend.app.models.spool_assignment import SpoolAssignment
 from backend.app.models.spoolman_slot_assignment import SpoolmanSlotAssignment
 from backend.app.models.user import User
+from backend.app.schemas.spoolman import SlotAmsId, SlotTrayId
 from backend.app.services.ams_slot_presence import spool_present
 from backend.app.services.printer_manager import printer_manager
 from backend.app.services.spoolman import (
@@ -840,8 +841,9 @@ class LinkSpoolRequest(BaseModel):
     tray_uuid: str | None = None
     tag_uid: str | None = None
     printer_id: int | None = None
-    ams_id: int | None = None
-    tray_id: int | None = None
+    # The slot ledger's own range: refused before the tag is written to Spoolman.
+    ams_id: SlotAmsId | None = None
+    tray_id: SlotTrayId | None = None
 
 
 @router.post("/spools/{spool_id}/link")
@@ -893,6 +895,10 @@ async def link_spool(
         printer_context = (request.printer_id, request.ams_id, request.tray_id)
 
     try:
+        if printer_context and (await client.get_spool(spool_id)).get("archived"):
+            # A link with a slot is an assignment: as the assign routes refuse,
+            # and before the tag is written (upstream c2bc41a5e).
+            raise HTTPException(status_code=400, detail="Cannot assign an archived spool")
         await client.merge_spool_extra(spool_id, {"tag": json.dumps(spool_tag)})
     except SpoolmanNotFoundError:
         raise HTTPException(status_code=404, detail="Spool not found in Spoolman")

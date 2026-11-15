@@ -531,14 +531,27 @@ async def _spool_counts_for_locations(
     db: AsyncSession,
     locations: list[Location],
     settings: dict[str, str],
+    *,
+    strict: bool = False,
 ) -> dict[int, int]:
+    """Spools per location, from the inventory in use.
+
+    ``strict`` is the delete's: in Spoolman mode only Spoolman knows which
+    spools sit at a location, so when it cannot be read the lenient fallback —
+    counting built-in spools, of which there are none — said "empty" and the
+    location was deleted from under them (upstream c2bc41a5e). Lists keep it.
+    """
     if _spoolman_is_enabled(settings):
         client = await _ensure_spoolman_client(settings)
+        if strict and not client:
+            raise HTTPException(status_code=503, detail="Spoolman is not reachable")
         if client:
             try:
                 spools = await client.get_all_spools(allow_archived=False)
-            except Exception:
+            except Exception as exc:
                 logger.warning("Failed to fetch Spoolman spools for location counts", exc_info=True)
+                if strict:
+                    raise HTTPException(status_code=503, detail="Spoolman is not reachable") from exc
             else:
                 # Use the canonical key helper so this matches what the
                 # migration backfill, Location.name_key, and every other
@@ -712,7 +725,7 @@ async def delete_location(
         raise HTTPException(status_code=404, detail="Location not found")
 
     settings = await _load_settings_map(db)
-    counts = await _spool_counts_for_locations(db, [location], settings)
+    counts = await _spool_counts_for_locations(db, [location], settings, strict=True)
     if counts.get(location.id, 0) > 0:
         raise HTTPException(status_code=409, detail="Location has spools assigned and cannot be deleted")
 
