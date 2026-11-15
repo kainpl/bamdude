@@ -42,3 +42,49 @@ export function slotSpoolNames(input: {
   }
   return names;
 }
+
+/** What the print dialog shows about the spool bound to a slot. */
+export interface SlotSpoolFacts {
+  /** The per-kg rate a print off the spool is charged; null → the farm rate. */
+  costPerKg: number | null;
+  /** Whole grams left on the spool. */
+  remainingGrams: number;
+}
+
+/**
+ * The charged rate and the grams left of the spool bound to each slot, keyed
+ * by global tray id (upstream 5649f836d).
+ *
+ * The dialog read both off the built-in assignment rows in both inventory
+ * modes. In Spoolman mode those hold nothing, so a print off a priced Spoolman
+ * spool was estimated at the farm rate and then archived at the Spoolman one.
+ * The binding is the active inventory's: in Spoolman mode the Spoolman spool
+ * the slot is bound to, priced by `effective_cost_per_kg` — the charge's own
+ * rule (spool price, else its filament's; unpriced grams go at the farm rate).
+ * Built-in mode keeps its rule: the spool's rate as stored, 0 included.
+ */
+export function slotSpoolFacts(input: {
+  spoolmanMode: boolean;
+  assignments?: readonly (SlotRow & { spool?: InventorySpool | null })[];
+  spoolmanAssignments?: readonly (SlotRow & { spoolman_spool_id: number })[];
+  spoolmanSpools?: readonly InventorySpool[];
+}): Map<number, SlotSpoolFacts> {
+  const facts = new Map<number, SlotSpoolFacts>();
+  const put = (row: SlotRow, spool: InventorySpool | null | undefined, costPerKg: number | null) => {
+    if (!spool) return;
+    facts.set(getGlobalTrayId(row.ams_id, row.tray_id, row.ams_id === 255), {
+      costPerKg,
+      remainingGrams: Math.max(0, Math.round((spool.label_weight ?? 0) - (spool.weight_used ?? 0))),
+    });
+  };
+  if (input.spoolmanMode) {
+    const byId = new Map((input.spoolmanSpools ?? []).map((s) => [s.id, s]));
+    for (const row of input.spoolmanAssignments ?? []) {
+      const spool = byId.get(row.spoolman_spool_id);
+      put(row, spool, spool?.effective_cost_per_kg ?? null);
+    }
+  } else {
+    for (const row of input.assignments ?? []) put(row, row.spool, row.spool?.cost_per_kg ?? null);
+  }
+  return facts;
+}

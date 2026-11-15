@@ -9694,6 +9694,7 @@ export default {
     measuredWeight: 'Виміряна вага',
     spoolName: 'Котушка',
     costPerKg: 'Вартість за кг',
+    costFromFilament: '(ціна філаменту)',
     pricePerSpool: 'Ціна за котушку',
     purchaseDate: 'Дата придбання',
     lastDried: 'Востаннє сушено',

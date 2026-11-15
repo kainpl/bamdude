@@ -67,6 +67,7 @@ import {
 } from '../utils/spoolName';
 import { compareByOrder, parseSpoolSortOrder } from '../utils/spoolSort';
 import { bulkResetOutcome } from '../utils/bulkResetOutcome';
+import { shownCostPerKg } from '../utils/spoolCost';
 // filterSpoolsByQuery — imported from utils/inventorySearch by Spoolman-mode upstream PR #1241; reserved for future Spoolman-side filtering paths.
 
 type SortDirection = 'asc' | 'desc';
@@ -598,11 +599,17 @@ const columnCells: Record<string, (ctx: CellCtx) => ReactNode> = {
     const entry = spool.core_weight_catalog_id != null ? catalogMap[spool.core_weight_catalog_id] : undefined;
     return <span className="text-sm text-bambu-gray">{entry?.name || '-'}</span>;
   },
-  cost_per_kg: ({ spool, currencySymbol }) => (
-    <span className="text-sm text-bambu-gray">
-      {spool.cost_per_kg != null ? `${currencySymbol}${spool.cost_per_kg.toFixed(2)}` : '-'}
-    </span>
-  ),
+  cost_per_kg: ({ spool, currencySymbol, t }) => {
+    // The rate a print is charged: a Spoolman spool without a price of its
+    // own pays its filament's, shown here and marked as such.
+    const { rate, fromFilament } = shownCostPerKg(spool);
+    return (
+      <span className="text-sm text-bambu-gray">
+        {rate != null ? `${currencySymbol}${rate.toFixed(2)}` : '-'}
+        {fromFilament && <span className="ml-1 text-xs opacity-70">{t('inventory.costFromFilament')}</span>}
+      </span>
+    );
+  },
   weight_check: ({ spool, onSyncWeight }) => {
     const scaleWeight = spool.last_scale_weight;
     if (scaleWeight == null) return <span className="text-sm text-bambu-gray/50" title="No scale measurement">-</span>;
@@ -723,7 +730,7 @@ const columnSortValues: Record<string, (spool: InventorySpool, assignmentMap: Re
   tag_type: (s) => (s.tag_type || '').toLowerCase(),
   stock: (s) => s.slicer_filament ? 1 : 0,
   spool_name: (s) => s.core_weight_catalog_id ?? 0,
-  cost_per_kg: (s) => s.cost_per_kg ?? 0,
+  cost_per_kg: (s) => shownCostPerKg(s).rate ?? 0,
   filament_diameter: (s) => s.filament_diameter || '',
   lot: (s) => s.lot ?? 0,
   weight_check: (s) => {

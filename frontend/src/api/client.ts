@@ -8240,6 +8240,9 @@ export interface InventorySpool {
   created_at: string;
   updated_at: string;
   cost_per_kg: number | null;
+  // Spoolman rows only, read-only: the per-kg rate a print off the spool is
+  // charged — its own price, else its filament's. Never sent back by the form.
+  effective_cost_per_kg?: number | null;
   purchase_date: string | null;
   // "1.75" | "2.85" — NOT NULL on the DB side (defaulted in m020), but
   // typed as string here to keep the dropdown binding straightforward.

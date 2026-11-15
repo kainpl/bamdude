@@ -1,4 +1,5 @@
 import type { InventorySpool } from '../api/client';
+import { shownCostPerKg } from './spoolCost';
 import { formatSpoolDisplayName } from './spoolName';
 
 /**
@@ -37,7 +38,7 @@ const EXTRACTORS: Record<string, Extractor> = {
   last_used_time: (s) => s.last_used || '',
   last_dried: (s) => s.last_dried_at || '',
   storage_location: (s) => text(s.storage_location),
-  cost_per_kg: (s) => s.cost_per_kg ?? 0,
+  cost_per_kg: (s) => shownCostPerKg(s).rate ?? 0,
   lot: (s) => s.lot ?? 0,
   id: (s) => s.id,
 };
