@@ -550,6 +550,11 @@ async def _reconcile_columns(engine, models_metadata) -> None:
     """
     from sqlalchemy import inspect as sqla_inspect
 
+    from backend.app.migrations._pg_schema_228_contract import REPAIRS
+
+    retained_nulls = {
+        row["object"] for row in REPAIRS if row["action"] == "repair_or_named_null_residual" and not row["fill_allowed"]
+    }
     ddl = engine.dialect.ddl_compiler(engine.dialect, None)
 
     def _plan(sync_conn):
@@ -573,6 +578,17 @@ async def _reconcile_columns(engine, models_metadata) -> None:
                         )
                     )
                 elif not col.primary_key and bool(present[col.name]["nullable"]) != bool(col.nullable):
+                    if not col.nullable and f"{table.name}.{col.name}" in retained_nulls:
+                        quote = sync_conn.dialect.identifier_preparer.quote
+                        count = sync_conn.scalar(
+                            text(f"SELECT count(*) FROM {quote(table.name)} WHERE {quote(col.name)} IS NULL")
+                        )
+                        if count:
+                            # B already reported this exact residual. Repeating
+                            # a known failing ALTER only adds a server ERROR;
+                            # it cannot supply the missing historical value.
+                            logger.debug("Import retained B NULL residual %s.%s: %d", table.name, col.name, count)
+                            continue
                     verb = "DROP" if col.nullable else "SET"
                     nulls.append(
                         (
