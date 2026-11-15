@@ -3774,6 +3774,7 @@ async def _on_ams_change(printer_id: int, ams_data: list):
                             cached_spools=cached_spools,
                             inventory_remaining=inv_remaining,
                             auto_add_unknown_rfid=auto_add_unknown_rfid,
+                            db=db,
                         )
                         if result is None and spool_tag and not auto_add_unknown_rfid:
                             # Spoolman skipped auto-create per user setting — surface

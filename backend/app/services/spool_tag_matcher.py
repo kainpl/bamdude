@@ -52,8 +52,8 @@ async def create_spool_from_tray(db: AsyncSession, tray_data: dict) -> Spool:
     Extracts material, subtype, color, temps, and tag info from the tray dict.
     Takes core_weight from the catalogue row that names the Bambu plastic spool.
     """
-    from backend.app.models.color_catalog import ColorCatalogEntry
     from backend.app.models.spool_catalog import SpoolCatalogEntry
+    from backend.app.services.color_catalog_lookup import resolve_bambu_color
 
     tray_type = tray_data.get("tray_type", "")  # "PLA"
     tray_sub_brands = tray_data.get("tray_sub_brands", "")  # "PLA Basic"
@@ -109,34 +109,18 @@ async def create_spool_from_tray(db: AsyncSession, tray_data: dict) -> Spool:
     extra_colors = None
     effect_type = None
 
-    # Transparent filament (#1545): the AMS reports alpha=00 for clear spools.
-    # Skip the catalog lookup — the catalog stores only RGB, so 000000 would
-    # resolve to "Black" (exactly the bug the cream rewrite in parse_ams_tray
-    # used to paper over). Store "Clear" directly and let the frontend's
-    # resolveSpoolColorName + hexToColorName render the swatch as a checkerboard.
-    if rgba and len(rgba) == 8 and rgba[6:8].lower() == "00":
-        color_name = "Clear"
-    elif rgba and len(rgba) >= 6:
-        hex_prefix = f"#{rgba[:6].upper()}"
-        cat_query = (
-            select(ColorCatalogEntry)
-            .where(func.upper(ColorCatalogEntry.hex_color) == hex_prefix)
-            .where(func.upper(ColorCatalogEntry.manufacturer) == "BAMBU LAB")
-        )
-        if tray_sub_brands:
-            cat_query = cat_query.where(func.upper(ColorCatalogEntry.material) == tray_sub_brands.upper())
-        # Deterministic tiebreak when the material filter can't disambiguate
-        # (e.g. third-party spools with empty tray_sub_brands).
-        cat_query = cat_query.order_by(ColorCatalogEntry.id).limit(1)
-        cat_result = await db.execute(cat_query)
-        entry = cat_result.scalar_one_or_none()
-        if entry:
-            color_name = entry.color_name
-            # The same row the spool form's colour picker reads, and it hands
-            # both of these to a spool added by hand — so a roll the AMS
-            # identified must not be drawn flatter than one typed in (b38022ec).
-            extra_colors = entry.extra_colors
-            effect_type = entry.effect_type
+    # Transparent filament (#1545): the AMS reports alpha=00 for clear spools,
+    # and the lookup answers "Clear" without asking the catalogue (it stores
+    # RGB only, so 000000 would resolve to "Black"). The lookup itself is
+    # shared with the Spoolman auto-create (services/color_catalog_lookup).
+    catalog_color = await resolve_bambu_color(db, rgba, tray_sub_brands)
+    if catalog_color is not None:
+        color_name = catalog_color.name
+        # The same row the spool form's colour picker reads, and it hands
+        # both of these to a spool added by hand — so a roll the AMS
+        # identified must not be drawn flatter than one typed in (b38022ec).
+        extra_colors = catalog_color.extra_colors
+        effect_type = catalog_color.effect_type
 
     # If tray_id_name is a human-readable name (no "-" code), fall back to it.
     if not color_name and tray_id_name and "-" not in tray_id_name:

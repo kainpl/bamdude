@@ -425,6 +425,7 @@ async def sync_printer_ams(
                     inventory_remaining=inv_remaining,
                     spoolman_spool_id_hint=hint,
                     auto_add_unknown_rfid=auto_add_unknown_rfid,
+                    db=db,
                 )
                 if sync_result:
                     synced += 1
@@ -632,6 +633,7 @@ async def sync_all_printers(
                         inventory_remaining=inv_remaining,
                         spoolman_spool_id_hint=hint,
                         auto_add_unknown_rfid=auto_add_unknown_rfid,
+                        db=db,
                     )
                     if sync_result:
                         total_synced += 1
@@ -1290,6 +1292,7 @@ async def create_spool_from_slot(
         printer.name,
         disable_weight_sync=True,
         auto_add_unknown_rfid=True,
+        db=db,
     )
     if not sync_result:
         raise HTTPException(status_code=500, detail="Spoolman did not create a spool from the slot")
