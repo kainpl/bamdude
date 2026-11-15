@@ -72,7 +72,10 @@ class SpoolBase(BaseModel):
 
 
 class SpoolCreate(SpoolBase):
-    pass
+    # Bounded on the way IN only (SpoolResponse shares the base and must still
+    # serialise an old stored value): a negative used weight makes remaining
+    # exceed the label and feeds the stock forecast (upstream f7bd06641).
+    weight_used: float = Field(default=0, ge=0)
 
 
 class SpoolBulkCreate(BaseModel):
@@ -92,7 +95,7 @@ class SpoolUpdate(BaseModel):
     label_weight: int | None = None
     core_weight: int | None = None
     core_weight_catalog_id: int | None = None
-    weight_used: float | None = None
+    weight_used: float | None = Field(default=None, ge=0)
     weight_used_baseline: float | None = None  # PATCH-able for "Reset usage to 0" parity (#1390)
     slicer_filament: str | None = None
     slicer_filament_name: str | None = None

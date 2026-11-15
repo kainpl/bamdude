@@ -536,6 +536,10 @@ async def parse_and_validate(
             continue
 
         spool_data = spool.model_dump()
+        # The file is the operator's statement: a used weight it states is kept
+        # against the AMS remain% sync. The CSV has no lock column of its own.
+        if (spool_data.get("weight_used") or 0) > 0:
+            spool_data["weight_locked"] = True
         if last_used is not None:
             # last_used isn't a SpoolCreate field; graft it onto the persisted
             # dict so the ORM object carries it.

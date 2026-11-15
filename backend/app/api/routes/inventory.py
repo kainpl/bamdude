@@ -2038,6 +2038,7 @@ async def create_spool(
     """Create a new spool."""
     try:
         payload = await prepare_internal_spool_payload(db, spool_data.model_dump(), set(spool_data.model_fields_set))
+        inventory_service.lock_entered_weight(payload, set(spool_data.model_fields_set))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     await _derive_family_from_slicer(db, payload)
@@ -2068,6 +2069,7 @@ async def bulk_create_spools(
     spools = []
     try:
         template = await prepare_internal_spool_payload(db, data.spool.model_dump(), set(data.spool.model_fields_set))
+        inventory_service.lock_entered_weight(template, set(data.spool.model_fields_set))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     await _derive_family_from_slicer(db, template)

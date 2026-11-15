@@ -4,7 +4,6 @@ import asyncio
 import logging
 import weakref
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from typing import Literal
 
 import httpx
@@ -445,7 +444,12 @@ class SpoolmanClient:
         clear_location: bool = False,
         extra: dict | None = None,
     ) -> dict:
-        """Update an existing spool in Spoolman, always setting last_used."""
+        """Update an existing spool in Spoolman.
+
+        ``last_used`` is NOT stamped (upstream f7bd06641): a sync, a location
+        change and a weighing are not use. Print usage goes through ``/use``,
+        which sets it itself.
+        """
         data: dict = {}
         if remaining_weight is not None:
             data["remaining_weight"] = remaining_weight
@@ -456,7 +460,6 @@ class SpoolmanClient:
         if extra:
             data["extra"] = extra
             await self._ensure_extra_fields(extra)
-        data["last_used"] = datetime.now(timezone.utc).isoformat()
 
         response = await self._request_spool("PATCH", spool_id, json_body=data, operation="update")
         return response.json()
