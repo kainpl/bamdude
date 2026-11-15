@@ -3875,9 +3875,12 @@ async def _spoolman_bidirectional_weight_sync(client, db, printer_id: int, ams_i
     if not tray_uuid or set(tray_uuid) == {"0"}:
         return  # untagged — #1119 territory, weight stays per-print-owned
 
-    filament = spool.get("filament") or {}
-    ref_weight = filament.get("weight")
-    if not ref_weight or ref_weight <= 0:
+    # The spool's own net weight before its filament's: a 250 g refill of a
+    # 1000 g filament is 250 g at 100 % (upstream #3194).
+    from backend.app.services.spoolman_weights import spool_net_weight
+
+    ref_weight = spool_net_weight(spool)
+    if ref_weight is None:
         return
 
     remain_raw = tray_data.get("remain")

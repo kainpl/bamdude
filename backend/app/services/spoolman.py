@@ -1,7 +1,9 @@
 """Spoolman integration service for syncing AMS filament data."""
 
 import asyncio
+import json
 import logging
+import math
 import weakref
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -14,6 +16,11 @@ from backend.app.utils.color_utils import color_match_key, spoolman_color_hex
 logger = logging.getLogger(__name__)
 
 BAMBU_RFID_TAG_LENGTH = 32
+
+# Spool.extra key holding the consumed-counter baseline. Declared here so the
+# client does not import from the routes package; ``_spoolman_helpers`` names
+# the same key for the read side and a test pins the two equal.
+BAMBU_WEIGHT_USED_BASELINE_KEY = "bambu_weight_used_baseline"
 
 
 @dataclass
@@ -401,9 +408,14 @@ class SpoolmanClient:
         lot_nr: str | None = None,
         comment: str | None = None,
         extra: dict | None = None,
+        initial_weight: float | None = None,
     ) -> dict:
         """Create a new spool in Spoolman."""
         data: dict = {"filament_id": filament_id}
+        # The spool's own net weight. Left off, Spoolman copies the filament's
+        # weight, which is wrong for a spool of another size (upstream #3194).
+        if initial_weight is not None:
+            data["initial_weight"] = initial_weight
         if remaining_weight is not None:
             data["remaining_weight"] = remaining_weight
         if location:
@@ -670,22 +682,39 @@ class SpoolmanClient:
         )
         return response.json()
 
-    async def reset_spool_usage(self, spool_id: int) -> dict:
-        """Reset a spool's ``used_weight`` to 0 in Spoolman.
+    async def reset_spool_consumed_counter(self, spool_id: int) -> dict:
+        """Zero the shown consumed counter by recording a baseline in ``spool.extra``.
 
-        Used by the per-spool / bulk "Reset usage to 0" actions on the
-        Inventory page so the "Total Consumed" stat can be cleared
-        without touching the rest of the spool's data. Spoolman keeps
-        ``remaining_weight`` as a separate field, so remaining is
-        preserved (upstream Bambuddy #1390).
+        This used to PATCH ``used_weight = 0``, which is not a baseline:
+        Spoolman derives ``remaining_weight`` from initial minus used, so the
+        spool went back to full and its measured remainder was lost (upstream
+        #2906). Writing the baseline into ``extra`` touches no native Spoolman
+        field; ``_map_spoolman_spool`` folds it back into the baseline it
+        reports — the mechanism internal mode has in its
+        ``weight_used_baseline`` column.
+
+        Stored as a JSON *string* of the number: Spoolman registers an unseen
+        extra key as a ``text`` field, which refuses a value that does not
+        decode to a string, and a field's type cannot be changed afterwards.
+
+        Serialised on the per-spool lock ``merge_spool_extra`` uses, so a
+        concurrent tag or colour write cannot read the extra dict between
+        this fetch and its PATCH and put the old one back.
         """
-        response = await self._request_spool(
-            "PATCH",
-            spool_id,
-            json_body={"used_weight": 0},
-            operation="reset-usage",
-        )
-        return response.json()
+        async with self.extra_lock(spool_id):
+            current = await self.get_spool(spool_id)  # raises on error
+            used_weight = current.get("used_weight")
+            try:
+                baseline = float(used_weight) if used_weight is not None else 0.0
+            except (TypeError, ValueError):
+                baseline = 0.0
+            if not math.isfinite(baseline) or baseline < 0:
+                baseline = 0.0
+            merged = {
+                **(current.get("extra") or {}),
+                BAMBU_WEIGHT_USED_BASELINE_KEY: json.dumps(str(baseline)),
+            }
+            return await self.update_spool_full(spool_id=spool_id, extra=merged)
 
     async def update_spool_full(
         self,
@@ -700,11 +729,16 @@ class SpoolmanClient:
         extra: dict | None = None,
         spool_weight: float | None = None,
         clear_spool_weight: bool = False,
+        initial_weight: float | None = None,
     ) -> dict:
         """Update a spool with full field support; unlike update_spool, does not auto-set last_used."""
         data: dict = {}
         if filament_id is not None:
             data["filament_id"] = filament_id
+        # Spoolman applies ``initial_weight`` before ``remaining_weight``, so a
+        # remaining weight in the same PATCH is measured against the new size.
+        if initial_weight is not None:
+            data["initial_weight"] = initial_weight
         if remaining_weight is not None:
             data["remaining_weight"] = remaining_weight
         if comment is not None:

@@ -66,6 +66,7 @@ import {
   spoolDisplayNameMatches,
 } from '../utils/spoolName';
 import { compareByOrder, parseSpoolSortOrder } from '../utils/spoolSort';
+import { bulkResetOutcome } from '../utils/bulkResetOutcome';
 // filterSpoolsByQuery — imported from utils/inventorySearch by Spoolman-mode upstream PR #1241; reserved for future Spoolman-side filtering paths.
 
 type SortDirection = 'asc' | 'desc';
@@ -1476,7 +1477,17 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
         : api.bulkResetSpoolConsumedCounter(ids),
     onSuccess: (data) => {
       refreshSpoolQueries();
-      showToast(t('inventory.allConsumedCountersReset', { count: data.reset }), 'success');
+      // A spool Spoolman refused is not a reset one: say all / some / none,
+      // as the other bulk actions do, and never a green "0 reset".
+      const { kind, ok, failed } = bulkResetOutcome(data);
+      const action = t('inventory.resetConsumedCounter');
+      if (kind === 'ok') {
+        showToast(t('inventory.allConsumedCountersReset', { count: ok }), 'success');
+      } else if (kind === 'partial') {
+        showToast(t('inventory.bulk.partial', { action, ok, failed }), 'warning');
+      } else {
+        showToast(t('inventory.bulk.failed', { action, count: failed }), 'error');
+      }
     },
     onError: () => {
       showToast(t('inventory.resetConsumedCounterFailed'), 'error');

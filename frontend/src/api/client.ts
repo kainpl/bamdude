@@ -2123,6 +2123,16 @@ export interface SpoolmanBulkResult {
   errors: { id: number; status: number; detail: string }[];
 }
 
+/**
+ * A bulk "Reset counter" answer. Spoolman lists the spools it refused in
+ * `errors`; the built-in route names ids that matched nothing in `not_found`.
+ */
+export interface BulkResetResult {
+  reset: number;
+  errors?: { id: number; status: number; detail: string }[];
+  not_found?: number[];
+}
+
 // Timeline Types
 export interface TimelineEvent {
   event_type: string;
@@ -13150,7 +13160,7 @@ export const api = {
   resetSpoolConsumedCounter: (id: number) =>
     request<InventorySpool>(`/inventory/spools/${id}/reset-consumed-counter`, { method: 'POST' }),
   bulkResetSpoolConsumedCounter: (spoolIds: number[]) =>
-    request<{ reset: number }>(`/inventory/spools/reset-consumed-counter-bulk`, {
+    request<BulkResetResult>(`/inventory/spools/reset-consumed-counter-bulk`, {
       method: 'POST',
       body: JSON.stringify({ spool_ids: spoolIds }),
     }),
@@ -13232,7 +13242,7 @@ export const api = {
       body: JSON.stringify({ spool_ids: spoolIds }),
     }),
   bulkResetSpoolmanInventorySpoolConsumedCounter: (spoolIds: number[]) =>
-    request<{ reset: number }>(`/spoolman/inventory/spools/reset-consumed-counter-bulk`, {
+    request<BulkResetResult>(`/spoolman/inventory/spools/reset-consumed-counter-bulk`, {
       method: 'POST',
       body: JSON.stringify({ spool_ids: spoolIds }),
     }),

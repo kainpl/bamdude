@@ -33,6 +33,7 @@ from backend.app.services.spoolman import (
     init_spoolman_client,
 )
 from backend.app.services.spoolman_kprofile_link import resolve_spoolman_slot_kprofile
+from backend.app.services.spoolman_weights import spool_net_weight
 from backend.app.utils.slot_nozzle import slot_nozzle
 
 logger = logging.getLogger(__name__)
@@ -860,11 +861,12 @@ async def get_linked_spools(
             # Remove quotes if present (JSON encoded string)
             clean_tag = tag.strip('"').upper()
             if clean_tag:
-                filament = spool.get("filament") or {}
                 linked[clean_tag] = {
                     "id": spool["id"],
                     "remaining_weight": spool.get("remaining_weight"),
-                    "filament_weight": filament.get("weight"),
+                    # The spool's own net weight, falling back to the
+                    # filament's; the key predates ``initial_weight``.
+                    "filament_weight": spool_net_weight(spool),
                 }
 
     return {"linked": linked}

@@ -18,7 +18,7 @@ from __future__ import annotations
 from backend.app.api.routes._spoolman_helpers import _map_spoolman_spool
 
 
-def _base_spool(*, used_weight: float, remaining_weight: float | None) -> dict:
+def _base_spool(*, used_weight: float, remaining_weight: float | None, extra: dict | None = None) -> dict:
     spool: dict = {
         "id": 7,
         "filament": {
@@ -29,7 +29,7 @@ def _base_spool(*, used_weight: float, remaining_weight: float | None) -> dict:
             "weight": 1000,
             "vendor": {"name": "Bambu Lab"},
         },
-        "extra": {},
+        "extra": extra or {},
         "registered": "2026-01-01T00:00:00Z",
         "used_weight": used_weight,
     }
@@ -52,10 +52,21 @@ class TestSyntheticWeightUsed:
         assert mapped["label_weight"] - (mapped["weight_used"] or 0) == 544.0
 
     def test_post_reset_consumed_0_remaining_544(self):
-        """After "Reset usage to 0" on Spoolman: used_weight=0,
-        remaining_weight=544 (preserved). FE must see consumed=0 AND
-        remaining=544 — the synthetic mapping is what guarantees this."""
-        mapped = _map_spoolman_spool(_base_spool(used_weight=0.0, remaining_weight=544.0))
+        """After "Reset counter": Spoolman's own numbers are untouched
+        (used_weight=456, remaining_weight=544) and the baseline sits in
+        ``extra``. FE must see consumed=0 AND remaining=544.
+
+        This case used to stage ``used_weight=0`` beside ``remaining_weight=544``
+        — a state Spoolman never returns, because it derives the remainder from
+        initial minus used: zeroing ``used_weight`` put the spool back to full
+        (upstream #2906)."""
+        mapped = _map_spoolman_spool(
+            _base_spool(
+                used_weight=456.0,
+                remaining_weight=544.0,
+                extra={"bambu_weight_used_baseline": '"456.0"'},
+            )
+        )
         assert mapped["weight_used"] == 456.0, "weight_used must mirror label - remaining (544 less than 1000)"
         assert mapped["weight_used_baseline"] == 456.0, "baseline absorbs the reset so consumed = 0"
         # Visible consumed = weight_used - baseline = 0
