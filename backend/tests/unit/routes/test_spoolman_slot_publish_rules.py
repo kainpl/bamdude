@@ -161,3 +161,94 @@ class TestReadBackVerification:
             mqtt = await run_route(db_session, route, printer, raw_spool=spoolman_spool(), tray=live_tray())
 
         mqtt.request_status_update.assert_not_called()
+
+
+async def link_calibration(db_session, printer: Printer, filament_id: str) -> None:
+    from backend.app.models.filament_calibration import FilamentCalibration
+    from backend.app.models.spoolman_k_profile import SpoolmanKProfile
+
+    fc = FilamentCalibration(
+        printer_id=printer.id,
+        filament_id=filament_id,
+        nozzle_diameter=0.4,
+        nozzle_volume_type="standard",
+        extruder_id=0,
+        cali_mode="pa",
+        source="printer_sync",
+        name=filament_id,
+    )
+    db_session.add(fc)
+    await db_session.commit()
+    await db_session.refresh(fc)
+    db_session.add(
+        SpoolmanKProfile(spoolman_spool_id=SPOOL_ID, printer_id=printer.id, extruder=0, filament_calibration_id=fc.id)
+    )
+    await db_session.commit()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route", ROUTES)
+class TestTheSlotsFilamentFamily:
+    """Linked calibration's family → the spool's stored preset → a stand-in.
+
+    A Spoolman spool's preset (``extra.bambu_slicer_filament`` — set in the
+    spool form, or taken from the tray when the sync created the spool) was read
+    by the form alone: without a calibration linked for that printer and nozzle
+    the slot was configured as the GENERIC family of the material, so a Bambu
+    PETG HF spool went out as Generic PETG and AMS Backup grouped it by the
+    wrong profile (upstream 5e3a2f278 / 53ef17dc5, issue #3433).
+    """
+
+    async def test_the_stored_preset_is_the_slots_family_when_no_calibration_is_linked(self, db_session, route):
+        printer = await make_printer(db_session, f"01P00A0000005{ROUTES.index(route)}")
+
+        mqtt = await run_route(
+            db_session,
+            route,
+            printer,
+            raw_spool=spoolman_spool(bambu_slicer_filament='"GFG02"'),
+            tray=live_tray(),
+        )
+
+        sent = mqtt.ams_set_filament_setting.call_args.kwargs
+        assert sent["tray_info_idx"] == "GFG02"
+        assert sent["tray_type"] == "PETG"
+        assert mqtt.register_assignment_verification.call_args.kwargs["tray_info_idx"] == "GFG02"
+
+    async def test_a_linked_calibrations_family_still_wins(self, db_session, route):
+        printer = await make_printer(db_session, f"01P00A0000006{ROUTES.index(route)}")
+        await link_calibration(db_session, printer, "GFG00")  # Bambu PETG Basic
+
+        mqtt = await run_route(
+            db_session,
+            route,
+            printer,
+            raw_spool=spoolman_spool(bambu_slicer_filament='"GFG02"'),
+            tray=live_tray(),
+        )
+
+        assert mqtt.ams_set_filament_setting.call_args.kwargs["tray_info_idx"] == "GFG00"
+
+    async def test_a_preset_nothing_resolves_falls_back_to_the_stand_in_and_keeps_the_spools_type(
+        self, db_session, route
+    ):
+        printer = await make_printer(db_session, f"01P00A0000007{ROUTES.index(route)}")
+
+        mqtt = await run_route(
+            db_session,
+            route,
+            printer,
+            raw_spool=spoolman_spool(bambu_slicer_filament='"no-such-preset"'),
+            tray=live_tray(),
+        )
+
+        sent = mqtt.ams_set_filament_setting.call_args.kwargs
+        assert sent["tray_info_idx"] == "GFG99"
+        assert sent["tray_type"] == "PETG"
+
+    async def test_no_preset_and_no_calibration_is_the_stand_in_as_before(self, db_session, route):
+        printer = await make_printer(db_session, f"01P00A0000008{ROUTES.index(route)}")
+
+        mqtt = await run_route(db_session, route, printer, raw_spool=spoolman_spool(), tray=live_tray())
+
+        assert mqtt.ams_set_filament_setting.call_args.kwargs["tray_info_idx"] == "GFG99"

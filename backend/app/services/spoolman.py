@@ -1205,6 +1205,7 @@ class SpoolmanClient:
             existing = await self.find_spool_by_tag(spool_tag, cached_spools=cached_spools)
             if existing:
                 logger.info("Updating existing spool %s for tag %s...", existing["id"], spool_tag[:16])
+                await self._fill_missing_tray_preset(existing, tray)
                 return await self.update_spool(
                     spool_id=existing["id"],
                     remaining_weight=None if disable_weight_sync else remaining,
@@ -1251,7 +1252,7 @@ class SpoolmanClient:
                 filament_id=filament_id,
                 remaining_weight=remaining,
                 comment="Created by BamDude",
-                extra={"tag": json.dumps(spool_tag)},
+                extra={"tag": json.dumps(spool_tag), **_tray_preset_extra(tray)},
             )
 
         # No-RFID fallback: use the spool ID resolved from the local slot-assignment table.
@@ -1280,6 +1281,20 @@ class SpoolmanClient:
             tray.tray_id,
         )
         return None
+
+    async def _fill_missing_tray_preset(self, spool: dict, tray: AMSTray) -> None:
+        """Give a tag-matched spool the tray's filament preset when it has none.
+
+        Once: a preset already set — by this, or by hand in the spool form —
+        stays. Best-effort; a refusal must not break the sync it rides on.
+        """
+        preset = _tray_preset_extra(tray)
+        if not preset or ((spool.get("extra") or {}).get("bambu_slicer_filament") or "").strip('"'):
+            return
+        try:
+            await self.merge_spool_extra(spool["id"], preset)
+        except (SpoolmanNotFoundError, SpoolmanUnavailableError, SpoolmanClientError) as exc:
+            logger.info("Could not store the tray's preset on Spoolman spool %s: %s", spool.get("id"), exc)
 
     async def _find_or_create_filament(self, tray: AMSTray) -> dict | None:
         """Return a Bambu Lab filament matching the tray's material/color, creating it if absent."""
@@ -1358,6 +1373,30 @@ class SpoolmanClient:
             # 1.24 inside create_filament (#1330).
             density=external.get("density"),
         )
+
+
+def _tray_preset_extra(tray: AMSTray) -> dict:
+    """The tray's filament preset as Spoolman spool extras (JSON-encoded), or nothing.
+
+    ``bambu_slicer_filament`` is what the slot plan reads when no calibration
+    is linked (upstream 5e3a2f278, issue #3433): without it a Bambu spool the
+    sync created was configured as the generic of its material on any slot
+    without a reader. The name comes from our family catalogue, the tray's own
+    wording otherwise.
+    """
+    import json
+
+    from backend.app.utils import filament_catalog
+
+    preset_id = (tray.tray_info_idx or "").strip()
+    if not preset_id:
+        return {}
+    family = filament_catalog.get_family(preset_id)
+    name = (family.alias if family else "") or (tray.tray_sub_brands or "").strip()
+    extra = {"bambu_slicer_filament": json.dumps(preset_id)}
+    if name:
+        extra["bambu_slicer_filament_name"] = json.dumps(name)
+    return extra
 
 
 def _normalized_spool_tag(spool: dict) -> str:

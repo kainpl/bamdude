@@ -1649,7 +1649,8 @@ async def assign_spoolman_slot(
 
             # ONE identity path (spec A §5.2): the family catalog builds the
             # payload — family from the linked calibration when one exists,
-            # else the generic family of the material, inside the builder.
+            # else the preset stored on the spool, else a stand-in for the
+            # material; the precedence lives inside the builder.
             from backend.app.services.ams_backup_compatibility import (  # noqa: PLC0415
                 kprofile_allowed,
                 live_tray_for,
@@ -1663,6 +1664,7 @@ async def assign_spoolman_slot(
             plan = await build_slot_assignment(
                 db,
                 family_id=matching_fc.filament_id if matching_fc else None,
+                stored_preset=mapped.get("slicer_filament"),
                 material_override=tray_type,
                 color_rgba=tray_color,
                 temp_overrides=(mapped.get("nozzle_temp_min"), None),

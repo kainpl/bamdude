@@ -1003,9 +1003,9 @@ async def link_spool(
 
                 # ONE identity path (spec A §5.2): the family catalog builds the
                 # payload. The Spoolman spool's identity is the family of its
-                # linked calibration when one exists; otherwise the generic
-                # family of the material — resolved inside the builder, no
-                # hand-rolled realignment.
+                # linked calibration when one exists; otherwise the preset
+                # stored on the spool, otherwise a stand-in for the material —
+                # resolved inside the builder, no hand-rolled realignment.
                 from backend.app.services.ams_backup_compatibility import (  # noqa: PLC0415
                     kprofile_allowed,
                     live_tray_for,
@@ -1021,6 +1021,7 @@ async def link_spool(
                 plan = await build_slot_assignment(
                     db,
                     family_id=matching_fc.filament_id if matching_fc else None,
+                    stored_preset=mapped.get("slicer_filament"),
                     material_override=tray_type,
                     color_rgba=tray_color,
                     temp_overrides=(mapped.get("nozzle_temp_min"), None),
