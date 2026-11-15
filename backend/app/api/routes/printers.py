@@ -2955,6 +2955,10 @@ async def start_drying(
     )
     if not success:
         raise HTTPException(400, "Printer not connected")
+    # The cycle on this unit is now the operator's, whoever armed the timer it replaces.
+    from backend.app.services.print_scheduler import scheduler as print_scheduler
+
+    print_scheduler.release_auto_dry_claim(printer_id, ams_id)
     return {"status": "drying_started", "ams_id": ams_id, "temp": temp, "duration": duration}
 
 

@@ -24,6 +24,8 @@ name = "spool_last_dried"
 
 
 async def upgrade(conn):
-    await add_column(conn, "spool", "last_dried_at DATETIME")
+    # PostgreSQL has no DATETIME type, and ``add_column`` sends the text as written.
+    timestamp = "DATETIME" if conn.dialect.name == "sqlite" else "TIMESTAMP"
+    await add_column(conn, "spool", f"last_dried_at {timestamp}")
     await add_column(conn, "spool", "last_dried_temp INTEGER")
     await add_column(conn, "spool", "last_dried_hours FLOAT")

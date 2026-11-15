@@ -2402,6 +2402,16 @@ class PrintScheduler:
         # A stopped cycle spends the streak that armed it, as a finished one does.
         self._auto_dry_above.pop((printer_id, ams_id), None)
 
+    def release_auto_dry_claim(self, printer_id: int, ams_id: int) -> None:
+        """A person started a cycle on this unit: whatever runs there now is theirs.
+
+        The claim is keyed by unit and lives while the unit shows a timer, so a
+        start sent over a timer auto-drying armed (a parked one — the card
+        offers a start there) would inherit it, and the next dispatch would stop
+        the operator's cycle as ours.
+        """
+        self._armed_dry_cycles.pop((printer_id, ams_id), None)
+
     def drying_remaining_seconds(self, printer_id: int) -> int:
         """Seconds left in the drying cycle THIS scheduler runs on ``printer_id`` — 0 when it runs none.
 

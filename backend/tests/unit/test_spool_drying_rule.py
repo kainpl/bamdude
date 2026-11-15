@@ -59,3 +59,14 @@ def test_a_cycle_started_at_the_printer_has_no_temperature():
 
 def test_a_parked_timer_cleared_by_stop_dried_nothing():
     assert drying_record(_cycle(720, 720, temp=65, hours=12)) is None
+
+
+def test_a_start_the_printer_did_not_apply_dries_nothing():
+    """A longer cycle asked for over a timer the printer keeps (and does not run): the countdown that was
+    watched is the length, not the request — or a stop would read as two thirds of a cycle that never heated."""
+    assert drying_record(_cycle(240, 240, start_seen=True, temp=55, hours=12)) is None
+
+
+def test_a_refused_restart_does_not_lengthen_the_cycle_that_ran():
+    """Parked at 300 of 480, a 12-hour restart refused, then stopped: 37 % of the real cycle, not 58 %."""
+    assert drying_record(_cycle(300, 480, start_seen=True, temp=55, hours=12)) is None

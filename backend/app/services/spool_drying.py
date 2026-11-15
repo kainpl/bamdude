@@ -56,14 +56,17 @@ class DryingRecord:
 def drying_record(cycle: DryingCycleEnd) -> DryingRecord | None:
     """What a finished cycle says about its spools, or None when it does not count.
 
-    The cycle's length is the requested duration when BamDude started it, else
-    the highest countdown seen. When the start was not watched and nothing was
+    The cycle's length is the countdown itself when its start was watched —
+    never the request: a start sent over a timer the printer keeps and does not
+    run would otherwise read, at the stop, as most of a long cycle that never
+    heated. Met already counting, the length is the requested duration when
+    BamDude started the cycle, else the highest countdown seen; with nothing
     requested that peak understates the length, so the elapsed share is a lower
     bound and the hours are left unknown rather than understated. A cycle that
     ran to term counts either way.
     """
     requested = (cycle.target_hours or 0) * 60
-    length = max(cycle.peak_minutes, requested)
+    length = cycle.peak_minutes if cycle.start_seen else max(cycle.peak_minutes, requested)
     elapsed = max(0, length - cycle.remaining_minutes)
     ran_to_term = cycle.remaining_minutes <= RAN_TO_TERM_MINUTES
     if not ran_to_term and (length <= 0 or elapsed / length < DRIED_MIN_FRACTION):
