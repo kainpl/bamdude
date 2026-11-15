@@ -247,13 +247,52 @@ def _gate_dependencies(route: APIRoute) -> list[str]:
     """
     names = []
     for dependency in route.dependant.dependencies:
-        call = dependency.call
-        name = getattr(call, "__qualname__", None) or getattr(call, "__name__", None) or type(call).__name__
+        name = _call_name(dependency.call)
         # Both own the same request DB; get_auth_db only maps storage outages
         # and never authenticates a caller or grants access to the route.
         if name.split(".")[0] not in {"get_db", "get_auth_db"}:
             names.append(name)
     return names
+
+
+def _call_name(call) -> str:
+    return getattr(call, "__qualname__", None) or getattr(call, "__name__", None) or type(call).__name__
+
+
+def _reachable_dependencies(dependant) -> list:
+    """Every dependency FastAPI solves for this route, at any depth, as its ``Dependant``.
+
+    A route may take its gate through a wrapper of its own — the archive
+    pictures do (``_archive_media_read``: the media gate, then a note for the
+    live proof that print history is not printer-scoped). FastAPI solves a
+    wrapper's sub-dependencies before it calls the wrapper, and a gate that
+    refuses there ends the request, so a gate at any depth of this tree is a
+    gate of the route.
+
+    ⚠️ The wrapper's NAME proves nothing and is never accepted: what is matched
+    is the factory closure found inside it. A wrapper that loses its
+    ``Depends(...)``, or trades the media gate for an ordinary permission, has
+    no such closure in its tree and fails exactly as a bare route would.
+    """
+    found = []
+    for dependency in dependant.dependencies:
+        found.append(dependency)
+        found.extend(_reachable_dependencies(dependency))
+    return found
+
+
+def _gate_problem(route: APIRoute, gate: str, label: str) -> str | None:
+    """Why this route does not carry the gate its entry names — ``None`` when it does."""
+    deps = _gate_dependencies(route)
+    if gate in _DEPENDENCY_GATES:
+        factories = _GATE_DEPENDENCY[gate]
+        reachable = [_call_name(d.call) for d in _reachable_dependencies(route.dependant)]
+        if any(name.split(".")[0] in factories for name in reachable):
+            return None
+        return f"{label}: tagged {gate}, so it must carry one of {factories} — it carries {deps or 'no gate'}"
+    if deps:
+        return f"{label}: tagged {gate}, but {deps} now gates it — retag the entry"
+    return None
 
 
 def _api_routes() -> list[APIRoute]:
@@ -315,14 +354,103 @@ def test_every_listed_route_carries_the_gate_its_entry_names():
     """
     for path, (gate, why) in PUBLIC_ROUTES.items():
         assert gate in _GATES, f"{path}: unknown gate {gate!r}"
-        deps = _gate_dependencies(_intended(path))
-        if gate in _DEPENDENCY_GATES:
-            factories = _GATE_DEPENDENCY[gate]
-            assert any(name.split(".")[0] in factories for name in deps), (
-                f"{path} ({why}): tagged {gate}, so it must carry one of {factories} — it carries {deps or 'no gate'}"
-            )
-        else:
-            assert not deps, f"{path} ({why}): tagged {gate}, but {deps} now gates it — retag the entry"
+        problem = _gate_problem(_intended(path), gate, f"{path} ({why})")
+        assert problem is None, problem
+
+
+def _probe_route(dependency) -> APIRoute:
+    """A route of a throwaway app that takes ``dependency`` — what the guard would be shown."""
+    from fastapi import Depends, FastAPI
+
+    probe = FastAPI()
+
+    @probe.get("/probe")
+    async def handler(auth=Depends(dependency)):
+        return None
+
+    return next(r for r in probe.routes if isinstance(r, APIRoute))
+
+
+def test_a_gate_inside_a_wrapper_counts_only_while_the_real_factory_is_in_it():
+    """The guard looks through a wrapper dependency, and only for the gate itself.
+
+    The archive pictures take their media gate through ``_archive_media_read``.
+    Reading only a route's direct dependencies called that "no gate"; accepting
+    the wrapper by name would call anything "a gate". Each wrapper below is one
+    way the protection could be lost while the route still names a wrapper.
+    """
+    from fastapi import Depends
+
+    from backend.app.core.auth import require_media_ownership_permission, require_ownership_permission
+    from backend.app.core.permissions import Permission
+
+    media = require_media_ownership_permission(Permission.ARCHIVES_READ_ALL, Permission.ARCHIVES_READ_OWN)
+    headers_only = require_ownership_permission(Permission.ARCHIVES_READ_ALL, Permission.ARCHIVES_READ_OWN)
+
+    async def wrapped(auth=Depends(media)):
+        return auth
+
+    async def wrapped_twice(auth=Depends(wrapped)):
+        return auth
+
+    async def emptied():
+        # The Depends is gone; calling the factory in the body gates nothing.
+        require_media_ownership_permission(Permission.ARCHIVES_READ_ALL, Permission.ARCHIVES_READ_OWN)
+
+    async def traded(auth=Depends(headers_only)):
+        return auth
+
+    # Named like the real gate's wrapper: a name is not a gate.
+    async def _archive_media_read():
+        return None
+
+    assert _gate_problem(_probe_route(media), "media-token", "direct") is None
+    assert _gate_problem(_probe_route(wrapped), "media-token", "wrapped") is None
+    assert _gate_problem(_probe_route(wrapped_twice), "media-token", "wrapped twice") is None
+
+    for name, lost in (("emptied", emptied), ("traded", traded), ("name only", _archive_media_read)):
+        problem = _gate_problem(_probe_route(lost), "media-token", name)
+        assert problem is not None and "must carry one of" in problem, f"{name}: the guard accepted a lost gate"
+
+    # A wrapper holding a token gate is still a gate on a route tagged as having none.
+    assert "now gates it" in _gate_problem(_probe_route(wrapped), "anonymous", "anonymous")
+    # ...and one gate is not another: the media gate does not satisfy a stream-token entry.
+    assert _gate_problem(_probe_route(wrapped), "stream-token", "stream") is not None
+
+
+def test_the_archive_media_wrapper_holds_the_archive_ownership_gate():
+    """What ``_archive_media_read`` is trusted for, read off the routes that use it.
+
+    Every archive picture and the timelapse video take the wrapper; inside it
+    must sit the media OWNERSHIP gate for the two archive read permissions —
+    the pair that lets an owner see their own print and nobody else's. A
+    wrapper re-pointed at another permission pair would still "carry a media
+    gate"; this is the test that says which one.
+    """
+    import inspect
+
+    from backend.app.core.permissions import Permission
+
+    checked = []
+    for route in _api_routes():
+        for dependency in route.dependant.dependencies:
+            if _call_name(dependency.call) != "_archive_media_read":
+                continue
+            gates = [
+                d.call
+                for d in _reachable_dependencies(dependency)
+                if _call_name(d.call).split(".")[0] == "require_media_ownership_permission"
+            ]
+            assert len(gates) == 1, f"{route.path}: the wrapper holds {len(gates)} media ownership gates"
+            bound = inspect.getclosurevars(gates[0]).nonlocals
+            assert (bound["all_perm"], bound["own_perm"]) == (
+                Permission.ARCHIVES_READ_ALL.value,
+                Permission.ARCHIVES_READ_OWN.value,
+            ), f"{route.path}: the wrapper's gate asks {bound['all_perm']} / {bound['own_perm']}"
+            checked.append(route.path)
+
+    assert "/api/v1/archives/{archive_id}/thumbnail" in checked
+    assert "/api/v1/archives/{archive_id}/timelapse" in checked
 
 
 def test_every_pattern_earns_its_place():

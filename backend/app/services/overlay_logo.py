@@ -66,7 +66,7 @@ class Logo:
 
 
 def directory() -> Path:
-    return Path(settings.base_dir) / DIRECTORY_NAME
+    return Path(settings.base_dir) / DIRECTORY_NAME  # SEC-PATH-OK: a fixed module constant, never request input
 
 
 def _path() -> Path:
