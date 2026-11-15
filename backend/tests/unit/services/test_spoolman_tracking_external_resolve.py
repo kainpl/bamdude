@@ -58,13 +58,14 @@ class TestResolveGlobalTrayIdExternalSpool:
         ams_trays = {0: {}, 1: {}, 254: {}}
         assert _resolve_global_tray_id(1, slot_to_tray=[2], ams_trays=ams_trays) == 2
 
-    def test_minus_one_without_external_in_ams_falls_through_to_position_default(self):
-        """If ``-1`` is set but ``ams_trays`` doesn't actually have 254 or 255
-        (e.g. printer reconnect mid-print where AMS state is stale), fall
-        through to the position-based default rather than crashing."""
+    def test_minus_one_without_external_in_ams_is_still_the_external_holder(self):
+        """If ``-1`` is set but ``ams_trays`` lists neither 254 nor 255 (the
+        holder was empty or unconfigured at print start), it is still the
+        external holder — 254, as the internal writer resolves it — and never
+        the AMS tray at the slot's position, whose spool fed nothing
+        (upstream fb69a665d; this test pinned the positional fall-through)."""
         ams_trays = {0: {}, 1: {}}
-        # slot_id=1 → position-default picks sorted_tray_ids[0] = 0
-        assert _resolve_global_tray_id(1, slot_to_tray=[-1], ams_trays=ams_trays) == 0
+        assert _resolve_global_tray_id(1, slot_to_tray=[-1], ams_trays=ams_trays) == 254
 
     def test_minus_one_without_ams_trays_uses_legacy_fallback(self):
         """No ``ams_trays`` supplied → legacy ``slot_id - 1`` fallback."""

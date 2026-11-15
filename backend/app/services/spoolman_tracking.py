@@ -144,7 +144,8 @@ def _resolve_global_tray_id(slot_id: int, slot_to_tray: list | None, ams_trays: 
     ``ams_trays`` rather than falling through to the position-based
     default (which would map ``slot_id=1`` to the first AMS tray and
     credit an unrelated spool — upstream Bambuddy #1276, regression of
-    #853).
+    #853). With no external holder listed in ``ams_trays`` it is 254 all
+    the same — the internal writer's answer — never a positional tray.
 
     Position-based default: uses sorted ``ams_trays`` keys so external
     spools (ID 254 / 255) naturally follow standard AMS trays, matching
@@ -173,6 +174,13 @@ def _resolve_global_tray_id(slot_id: int, slot_to_tray: list | None, ams_trays: 
             for ext_id in (254, 255):
                 if ext_id in ams_trays:
                     return ext_id
+            # The marker says "the external holder" and the printer listed none
+            # at print start (empty, or never configured). It is still the
+            # holder — never the AMS tray that happens to sit at this slot's
+            # position, whose spool fed nothing (upstream fb69a665d). The
+            # internal writer resolves the same slot to 254; the charge then
+            # goes to a spool bound to the holder, or is reported not recorded.
+            return 254
     # Position-based default: sort available tray IDs so external spools
     # (254 / 255) come after standard AMS trays, matching the slicer's
     # slot assignment order.
@@ -945,7 +953,12 @@ async def _report_spool_usage_for_slots(
 
         global_tray_id = _resolve_global_tray_id(slot_id, slot_to_tray, ams_trays)
         tray_info = ams_trays.get(global_tray_id)
-        if not tray_info:
+        if not tray_info and global_tray_id >= 254:
+            # An external holder the printer did not list at print start (empty, or never
+            # configured there): no tag to read, but a spool may be bound to the holder —
+            # and if none is, the grams are reported, not dropped (audit D4).
+            tray_info = {}
+        elif not tray_info:
             logger.debug("[SPOOLMAN] Slot %s: no tray at global_tray_id %s", slot_id, global_tray_id)
             continue
 
