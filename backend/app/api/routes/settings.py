@@ -908,7 +908,13 @@ async def clear_stray_builtin_assignments(db: AsyncSession) -> int:
         return 0
     result = await db.execute(delete(SpoolAssignment))
     await db.commit()
-    return int(result.rowcount or 0)
+    removed = int(result.rowcount or 0)
+    if removed:
+        # What was advertised for those rows goes with them, as on the switch.
+        from backend.app.services import ams_advertised_overlay as overlay
+
+        overlay.forget_all()
+    return removed
 
 
 @router.put("/spoolman", dependencies=[RequireAdmin()])

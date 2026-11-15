@@ -135,6 +135,39 @@ class TestStrayRowsGoAtStartUp:
         assert await clear_stray_builtin_assignments(db_session) == 1
         assert await _row_count(db_session) == 0
 
+    async def test_what_was_advertised_for_those_rows_is_forgotten_with_them(
+        self, printer_factory, db_session: AsyncSession
+    ):
+        """An overlay entry for a row that no longer exists would go on masking
+        the slot — the mode switch forgets them for the same reason (review slots M-2)."""
+        from backend.app.api.routes.settings import clear_stray_builtin_assignments
+        from backend.app.services.ams_advertised_overlay import OverlayEntry
+
+        printer = await printer_factory(name="X1C")
+        spool = await _spool(db_session)
+        db_session.add(SpoolAssignment(spool_id=spool.id, printer_id=printer.id, ams_id=0, tray_id=1))
+        await _spoolman_mode(db_session)
+        overlay.replace_printer(
+            printer.id, {(0, 1): OverlayEntry("PLA", "FF0000FF", "GFL99", (), "000000FF", "GFL99", "internal")}
+        )
+
+        await clear_stray_builtin_assignments(db_session)
+
+        assert overlay.entries_for(printer.id) == {}
+
+    def test_start_up_removes_them_before_any_printer_connects(self):
+        """After the printers connect, a first AMS push could rebuild the
+        overlay from rows the clean-up was about to delete."""
+        from pathlib import Path
+
+        import backend.app.main as main
+
+        source = Path(main.__file__).read_text(encoding="utf-8")
+        assert source.count("await clear_stray_builtin_assignments(db)") == 1
+        assert source.index("await clear_stray_builtin_assignments(db)") < source.index(
+            "await init_printer_connections(db)"
+        )
+
     async def test_the_built_in_modes_rows_are_left_alone(self, printer_factory, db_session: AsyncSession):
         from backend.app.api.routes.settings import clear_stray_builtin_assignments
 

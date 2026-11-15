@@ -11902,6 +11902,22 @@ async def _application_lifespan(app: FastAPI):
 
     await printer_manager.load_awaiting_plate_clear_from_db()
 
+    # Built-in slot rows written while Spoolman mode was on (a hole closed
+    # since) — nothing else ever clears them. Best-effort, and BEFORE any
+    # printer connects: nothing writes the slot ledger yet, so no assignment
+    # lock is needed, and no first AMS push can rebuild the advertised overlay
+    # from rows this is about to delete.
+    async with async_session() as db:
+        try:
+            from backend.app.api.routes.settings import clear_stray_builtin_assignments
+
+            _stray = await clear_stray_builtin_assignments(db)
+            if _stray:
+                logging.warning("Startup: removed %d built-in slot assignment(s) left in Spoolman mode", _stray)
+        except Exception:  # noqa: BLE001 — never block startup on a clean-up
+            await db.rollback()
+            logging.exception("Startup: could not remove built-in slot assignments left in Spoolman mode")
+
     # Connect to all active printers
     async with async_session() as db:
         await init_printer_connections(db)
@@ -11912,18 +11928,6 @@ async def _application_lifespan(app: FastAPI):
 
         spoolman_enabled = await get_setting(db, "spoolman_enabled")
         spoolman_url = await get_setting(db, "spoolman_url")
-
-        # Built-in slot rows written while Spoolman mode was on (a hole closed
-        # since) — nothing else ever clears them. Best-effort.
-        try:
-            from backend.app.api.routes.settings import clear_stray_builtin_assignments
-
-            _stray = await clear_stray_builtin_assignments(db)
-            if _stray:
-                logging.warning("Startup: removed %d built-in slot assignment(s) left in Spoolman mode", _stray)
-        except Exception:  # noqa: BLE001 — never block startup on a clean-up
-            await db.rollback()
-            logging.exception("Startup: could not remove built-in slot assignments left in Spoolman mode")
 
         if spoolman_enabled and spoolman_enabled.lower() == "true" and spoolman_url:
             try:
