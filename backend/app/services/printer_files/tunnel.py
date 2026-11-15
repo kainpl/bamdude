@@ -49,11 +49,9 @@ from backend.app.services.printer_files.base import (
     RemoteFile,
     TransferOutcome,
 )
+from backend.app.services.printer_files.staging import ReserveSchedule, discard_staging
 
 logger = logging.getLogger(__name__)
-
-#: How often a streamed download re-reads the destination volume's free space.
-_RESERVE_CHECK_EVERY = 8 * 1024 * 1024
 
 
 class _Stop(Exception):
@@ -61,6 +59,48 @@ class _Stop(Exception):
         super().__init__(reason)
         self.status = status
         self.reason = reason
+
+
+def _finish(handle) -> None:
+    """Flush and close a completed download's file: one step, on one thread."""
+    try:
+        handle.flush()
+    finally:
+        handle.close()
+
+
+def _discard(handle, destination: Path) -> None:
+    """Close a failed download's file, then remove it — one step, so no cancel can fall between."""
+    try:
+        if not handle.closed:
+            handle.close()
+    except OSError:
+        pass  # a close that cannot flush still releases the descriptor; the file goes next
+    finally:
+        discard_staging(destination)
+
+
+async def _settle(awaitable):
+    """Run cleanup to its end through any number of cancels; raise the cancel afterwards.
+
+    A failure of the cleanup itself outranks the cancel: a file left behind must
+    be seen, not hidden behind "cancelled".
+    """
+    task = asyncio.ensure_future(awaitable)
+    cancelled = False
+    while not task.done():
+        try:
+            await asyncio.wait({task})
+        except asyncio.CancelledError:
+            cancelled = True
+    if task.cancelled():
+        raise asyncio.CancelledError
+    error = task.exception()
+    if error is not None:
+        raise error
+    if cancelled:
+        raise asyncio.CancelledError
+    return task.result()
 
 
 class TunnelTransport:
@@ -161,47 +201,64 @@ class TunnelTransport:
     ) -> TransferOutcome:
         """Stream one whole file to ``destination``: each frame's body goes to disk as it comes.
 
-        Disk writes run off the loop; the frame bounds, offsets, total and the
-        printer's ``file_md5`` are checked by the client. Anything short of a
-        completed, checked file removes the destination.
+        Disk work runs off the loop; the frame bounds, offsets, total and the
+        printer's ``file_md5`` are checked by the client. The volume's reserve
+        is checked before the first write, every 8 MiB and for the unchecked
+        tail (review A5).
+
+        ⚠️ The file is owned from the open to its removal (review A2), inside
+        the lane-owned task: a cancel during the open still leaves this code the
+        handle the open's thread returns, and the cleanup — close, then remove,
+        one step on one thread — runs to its end through any number of further
+        cancels before the task, and with it the lane, lets go. Anything short
+        of a completed, checked file removes the destination; one that cannot
+        be removed raises :class:`StagingNotRemoved` instead of an outcome.
         """
         from backend.app.services.preview_artifacts import owned
 
         received = 0
-        checked_at = 0
+        reserve = ReserveSchedule(reserve_bytes)
+        volume = destination.parent
+
+        async def free_space() -> int:
+            return (await owned(asyncio.to_thread(shutil.disk_usage, volume))).free
 
         async def operation() -> TransferOutcome:
-            nonlocal received, checked_at
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            handle = await owned(asyncio.to_thread(open, destination, "wb"))
+            nonlocal received
+            handle = None
+            completed = False
+
+            async def open_staging() -> None:
+                nonlocal handle
+                await asyncio.to_thread(volume.mkdir, parents=True, exist_ok=True)
+                # Assigned the moment the thread returns, even when a cancel came
+                # in the meantime: ``owned`` waits for this task to end.
+                handle = await asyncio.to_thread(open, destination, "wb")
+
             try:
+                await owned(open_staging())
 
                 async def sink(chunk) -> None:
-                    nonlocal received, checked_at
+                    nonlocal received
                     received += len(chunk)
                     if byte_budget is not None and received > byte_budget:
                         raise _Stop(TRANSFER_LIMIT_EXCEEDED, "byte_budget")
-                    if reserve_bytes and received - checked_at >= _RESERVE_CHECK_EVERY:
-                        checked_at = received
-                        free = (await owned(asyncio.to_thread(shutil.disk_usage, destination.parent))).free
-                        if free - len(chunk) < reserve_bytes:
-                            raise _Stop(TRANSFER_INSUFFICIENT_STORAGE, "reserve")
+                    if reserve.due_before(received) and not reserve.fits(await free_space(), len(chunk)):
+                        raise _Stop(TRANSFER_INSUFFICIENT_STORAGE, "reserve")
                     await owned(asyncio.to_thread(handle.write, chunk))
                     if progress is not None:
                         progress(received)
 
                 async with self._client() as client:
                     receipt = await client.download_into(path, sink)
-                await owned(asyncio.to_thread(handle.flush))
-            except BaseException:
-                # Inside the owned task, so the lane is released only after this:
-                # the file is closed before it is removed (Windows refuses to
-                # remove an open file), and a cancel cannot leave half of it.
-                await owned(asyncio.to_thread(handle.close))
-                await owned(asyncio.to_thread(destination.unlink, missing_ok=True))
-                raise
-            await owned(asyncio.to_thread(handle.close))
-            return TransferOutcome(TRANSFER_COMPLETED, receipt.total, receipt.checksum)
+                await owned(asyncio.to_thread(_finish, handle))
+                if reserve.due_final(received) and not reserve.fits(await free_space()):
+                    raise _Stop(TRANSFER_INSUFFICIENT_STORAGE, "reserve")
+                completed = True
+                return TransferOutcome(TRANSFER_COMPLETED, receipt.total, receipt.checksum)
+            finally:
+                if handle is not None and not completed:
+                    await _settle(asyncio.to_thread(_discard, handle, destination))
 
         try:
             return await self._on_lane("fetch", operation)

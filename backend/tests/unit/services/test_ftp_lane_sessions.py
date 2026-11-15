@@ -294,3 +294,131 @@ class TestListYearAgainstUtc:
     def test_a_naive_now_is_never_used_as_local_time(self):
         """The reference is UTC whatever the host zone is (upstream 27003de36)."""
         assert bambu_ftp._parse_list_mtime.__defaults__ is None
+
+
+# A completed LIST line the parser cannot read as an entry: an .mp4 whose size column
+# is not a number (Codex review A3's probe row).
+UNREADABLE_ROW = "-rw-r--r-- 1 root root BADSIZE Nov 15 12:00 old.mp4"
+
+
+@pytest.fixture
+def extra_list_lines(monkeypatch):
+    """LIST answers the real entries plus whatever lines the test appends, in that order."""
+    extra: list[str] = []
+    original = mock._ControlSession._cmd_list
+
+    def _list(self, argument):
+        if not extra:
+            return original(self, argument)
+        target = self._listing_target(argument)
+        if target is None or not target.is_dir():
+            return original(self, argument)
+        lines = [self._format_entry(child) for child in sorted(target.iterdir(), key=lambda p: p.name)]
+        payload = "".join(f"{line}\r\n" for line in [*lines, *extra]).encode("utf-8", "replace")
+        self._send_data(payload)
+
+    monkeypatch.setattr(mock._ControlSession, "_cmd_list", _list)
+    return extra
+
+
+class _FakeListFtp:
+    def __init__(self, lines: dict[str, list[str]], refuse: set[str] = frozenset()):
+        self.lines = lines
+        self.refuse = refuse
+        self.where = "/"
+
+    def cwd(self, path):
+        if path in self.refuse:
+            raise bambu_ftp.ftplib.error_perm("550 Failed to change directory.")
+        self.where = path
+
+    def retrlines(self, command, callback):
+        for line in self.lines.get(self.where, []):
+            callback(line)
+
+
+def _listing_client(lines, refuse=frozenset()):
+    client = bambu_ftp.BambuFTPClient(IP, CODE)
+    client._ftp = _FakeListFtp(lines, set(refuse))
+    return client
+
+
+VALID_ROW = "-rw-r--r-- 1 root root 2048 Nov 15 12:00 new.mp4"
+
+
+class TestAnUnreadableLineIsNoAnswer:
+    """Codex review A3: a LIST with a line we cannot read is not an authoritative namespace."""
+
+    def test_a_lone_unreadable_row_is_not_an_empty_directory(self):
+        listing = _listing_client({"/timelapse": [UNREADABLE_ROW]}).list_directory("/timelapse")
+        assert (listing.status, listing.reason, listing.unparsed) == (LISTING_UNAVAILABLE, "unparsed_entries", 1)
+        assert listing.entries == ()
+
+    def test_a_mixed_listing_is_not_complete_and_keeps_what_it_read_for_legacy_callers(self):
+        client = _listing_client({"/timelapse": [VALID_ROW, UNREADABLE_ROW]})
+        listing = client.list_directory("/timelapse")
+        assert listing.status == LISTING_UNAVAILABLE
+        assert [e["name"] for e in listing.entries] == ["new.mp4"]
+        # The legacy best-effort shape returns what it read, as before G10.
+        assert [e["name"] for e in client.list_files("/timelapse")] == ["new.mp4"]
+
+    @pytest.mark.parametrize("noise", ["total 8", "total 0", "", "   "])
+    def test_known_noise_is_not_a_lost_entry(self, noise):
+        listing = _listing_client({"/timelapse": [noise, VALID_ROW]}).list_directory("/timelapse")
+        assert listing.status == LISTING_COMPLETE
+        assert [e["name"] for e in listing.entries] == ["new.mp4"]
+
+    def test_a_banner_that_merely_looks_like_noise_is_still_a_lost_entry(self):
+        listing = _listing_client({"/timelapse": ["total eight", VALID_ROW]}).list_directory("/timelapse")
+        assert listing.status == LISTING_UNAVAILABLE
+
+    def test_a_parent_with_an_unreadable_row_proves_no_absence(self):
+        client = _listing_client({"/": [VALID_ROW, UNREADABLE_ROW]}, refuse={"/record"})
+        assert client.list_directory_proving("/record").status == LISTING_UNREADABLE
+
+    def test_a_fully_read_parent_still_proves_absence(self):
+        client = _listing_client({"/": [VALID_ROW, "total 4"]}, refuse={"/record"})
+        assert client.list_directory_proving("/record").status == LISTING_MISSING
+
+
+@pytest.mark.asyncio
+class TestAnUnreadableLineReachesEveryConsumer:
+    async def test_the_checked_listing_says_no_answer(self, patch_ftp_port, extra_list_lines):
+        server = patch_ftp_port
+        server.add_file("timelapse/new.mp4", b"v")
+        extra_list_lines.append(UNREADABLE_ROW)
+        entries, answered = await list_files_checked_async(IP, CODE, "/timelapse")
+        assert answered is False
+        assert [e["name"] for e in entries] == ["new.mp4"]
+        # The legacy list keeps its best-effort shape.
+        assert [e["name"] for e in await bambu_ftp.list_files_async(IP, CODE, "/timelapse")] == ["new.mp4"]
+
+    async def test_the_coalesced_listing_shows_the_last_complete_one_as_stale(self, patch_ftp_port, extra_list_lines):
+        from types import SimpleNamespace
+
+        from backend.app.services.printer_files.ftp import FtpTransport
+        from backend.app.services.printer_files.listing import ListingCoalescer
+
+        server = patch_ftp_port
+        server.add_file("timelapse/a.mp4", b"v")
+        printer = SimpleNamespace(id=7, connector_identity="p-7", ip_address=IP, access_code=CODE, model="X1C")
+        coalescer = ListingCoalescer()
+        transport = FtpTransport(printer)
+        first = await coalescer.list(printer, "external", "/timelapse", "model", transport, wait=10)
+        assert (first.status, [f.name for f in first.files]) == (LISTING_COMPLETE, ["a.mp4"])
+        extra_list_lines.append(UNREADABLE_ROW)
+        second = await coalescer.list(printer, "external", "/timelapse", "model", transport, wait=10)
+        assert (second.status, second.reason, second.stale) == (LISTING_UNAVAILABLE, "unparsed_entries", True)
+        assert [f.name for f in second.files] == ["a.mp4"]
+
+    async def test_the_timelapse_baseline_is_not_trusted(self, patch_ftp_port, extra_list_lines, monkeypatch):
+        from types import SimpleNamespace
+
+        from backend.app.services import timelapse_files
+
+        monkeypatch.setattr(timelapse_files, "_supports_internal_timelapse", lambda printer: False)
+        extra_list_lines.append(UNREADABLE_ROW)
+        printer = SimpleNamespace(id=4343, ip_address=IP, access_code=CODE, model="X1C", name="probe")
+        videos, _source = await timelapse_files.list_timelapse_videos(printer)
+        assert videos == []
+        assert timelapse_files.last_listing_answered(4343) is False

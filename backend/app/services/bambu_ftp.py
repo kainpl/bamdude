@@ -3,6 +3,7 @@ import ftplib  # nosec B402
 import functools
 import logging
 import os
+import re
 import shutil
 import socket
 import ssl
@@ -24,6 +25,7 @@ from backend.app.services.printer_file_lanes import (
     ftp_key,
     printer_file_runtime,
 )
+from backend.app.services.printer_files.staging import ReserveSchedule, StagingNotRemoved, discard_staging
 
 logger = logging.getLogger(__name__)
 
@@ -217,16 +219,28 @@ def _end_session(worker: LaneWorker, client: "BambuFTPClient") -> None:
     client.disconnect()
 
 
-#: How often a streamed download re-reads the destination volume's free space.
-_RESERVE_CHECK_EVERY = 8 * 1024 * 1024
+def _cancel_caused(worker: LaneWorker, error: BaseException) -> bool:
+    """Whether a download's error is what its own cancel did, and may be answered as ``cancelled``.
+
+    A cancel closes the sockets under the transfer, and what ftplib or ssl raise
+    then is not a printer's answer. Without a cancel the error is raised again;
+    a partial file that could not be removed is raised in every case.
+    """
+    if not worker.cancel_requested or isinstance(error, StagingNotRemoved):
+        return False
+    logger.debug("FTP %s ended by its cancel (%s)", worker.name, type(error).__name__)
+    return True
+
+
 #: Bytes per recv for a streamed download (ftplib's default is 8 KiB).
 _FETCH_BLOCK = 64 * 1024
 
 # The outcome of listing one directory (G10 CR2). ``complete`` is the only answer
 # that says what the directory holds; ``missing`` is absence PROVEN by a complete
 # parent namespace; ``unreadable`` is a 550 (missing OR forbidden); ``unavailable``
-# is no session or a failed/partial LIST; ``slow`` is the caller's wait running out
-# while the listing may still be running.
+# is no session, a failed/partial LIST, or a LIST with a line we could not read as
+# an entry (review A3: that line may be a file); ``slow`` is the caller's wait
+# running out while the listing may still be running.
 LISTING_COMPLETE = "complete"
 LISTING_MISSING = "missing"
 LISTING_UNREADABLE = "unreadable"
@@ -240,8 +254,10 @@ class DirectoryListing:
     status: str
     entries: tuple[dict, ...] = ()
     reason: str | None = None
-    # Lines a complete LIST returned that could not be read as entries: the
-    # namespace is then not authoritative for an absence proof.
+    # Lines a finished LIST returned that could not be read as entries. Such a
+    # listing is ``unavailable`` (reason ``unparsed_entries``), never complete:
+    # its ``entries`` are what WAS read, kept for the legacy best-effort callers,
+    # and prove nothing about what the directory holds.
     unparsed: int = 0
 
 
@@ -283,6 +299,16 @@ def _parse_list_mtime(month: str, day: str, time_or_year: str, now: datetime) ->
         return datetime(int(time_or_year), month_number, day_number), "date_only"
     except (KeyError, ValueError):
         return None, "unknown"
+
+
+#: Lines a LIST may carry that describe no entry, and are therefore not a lost one:
+#: a blank line, and the ``total N`` block count some servers print first (vsftpd
+#: prints none). Every other line that does not read as an entry may be a file.
+_LIST_NOISE = re.compile(r"\s*(?:total\s+\d+\s*)?")
+
+
+def _is_list_noise(item: str) -> bool:
+    return _LIST_NOISE.fullmatch(item) is not None
 
 
 def _parse_list_line(item: str, directory: str, now: datetime) -> dict | None:
@@ -680,6 +706,13 @@ class BambuFTPClient:
 
         The owner of the lane still waits for the worker thread to end; this only
         makes that end come now instead of at the next socket timeout.
+
+        ⚠️ The plain socket's ``shutdown``, never ``SSLSocket.shutdown``: the SSL
+        one also drops the socket's TLS object under the worker, whose blocked
+        read then returns EOF and whose ``unwrap`` raises ``ValueError("No SSL
+        wrapper around …")`` — an error no transfer handler expected (review A2,
+        captured on loopback FTPS). Shutting the descriptor alone ends the read
+        the same way and leaves the worker an ordinary socket error.
         """
         ftp = self._ftp
         if ftp is None:
@@ -688,7 +721,7 @@ class BambuFTPClient:
             if sock is None:
                 continue
             try:
-                sock.shutdown(socket.SHUT_RDWR)
+                socket.socket.shutdown(sock, socket.SHUT_RDWR)
             except (OSError, ValueError):
                 pass  # already closed, or never connected
 
@@ -709,13 +742,13 @@ class BambuFTPClient:
                 logger.debug("FTP session to %s closed (QUIT acknowledged), held %s", self.ip_address, held)
 
     def list_files(self, path: str = "/") -> list[dict]:
-        """List a directory: its entries after a COMPLETE listing, else ``[]`` (legacy shape).
+        """List a directory: the entries a finished LIST could read, else ``[]`` (legacy shape).
 
-        ⚠️ ``[]`` here is "empty" and "could not tell" at once; :meth:`list_directory`
-        says which.
+        ⚠️ Best effort, as before G10: ``[]`` is "empty" and "could not tell" at
+        once, and a LIST with an unreadable line still returns the lines it read.
+        :meth:`list_directory` says which.
         """
-        listing = self.list_directory(path)
-        return list(listing.entries) if listing.status == LISTING_COMPLETE else []
+        return list(self.list_directory(path).entries)
 
     def list_directory(self, path: str = "/", *, now: datetime | None = None) -> "DirectoryListing":
         """List ``path`` and say what the answer proves (G10 CR2).
@@ -724,6 +757,12 @@ class BambuFTPClient:
         CWD or LIST means missing OR forbidden (``unreadable`` — the printers
         word both the same), any other failure or a LIST cut short means
         ``unavailable``, and a partial listing is never published.
+
+        ⚠️ A finished LIST is ``complete`` only when every line it returned is an
+        entry or known noise (:data:`_LIST_NOISE`). A line we cannot read may be
+        a file, so such a listing is ``unavailable`` with reason
+        ``unparsed_entries`` (review A3): an empty-looking directory must never
+        hide a video the baseline would later take for new.
         """
         if not self._ftp:
             return DirectoryListing(path, LISTING_UNAVAILABLE, reason="not_connected")
@@ -746,13 +785,22 @@ class BambuFTPClient:
         entries: list[dict] = []
         unparsed = 0
         for item in items:
+            if _is_list_noise(item):
+                continue
             entry = _parse_list_line(item, path, reference)
             if entry is None:
                 unparsed += 1
             else:
                 entries.append(entry)
+        if unparsed:
+            logger.info(
+                "FTP LIST of %s returned %d line(s) that are not entries — not a complete listing", path, unparsed
+            )
+            return DirectoryListing(
+                path, LISTING_UNAVAILABLE, tuple(entries), reason="unparsed_entries", unparsed=unparsed
+            )
         logger.debug("Listed %s files in %s", len(entries), path)
-        return DirectoryListing(path, LISTING_COMPLETE, tuple(entries), unparsed=unparsed)
+        return DirectoryListing(path, LISTING_COMPLETE, tuple(entries))
 
     def list_directory_proving(self, path: str, *, max_ancestors: int = 3) -> "DirectoryListing":
         """:meth:`list_directory`, and turn an ambiguous 550 into a PROVEN absence where possible.
@@ -775,8 +823,8 @@ class BambuFTPClient:
                 break
             parent_listing = self.list_directory(str(parent))
             if parent_listing.status == LISTING_COMPLETE:
-                if parent_listing.unparsed:
-                    return listing  # not an authoritative namespace
+                # Complete means fully parsed: a parent with an unreadable line is
+                # ``unavailable`` and proves nothing (the branch below).
                 names = {entry["name"] for entry in parent_listing.entries}
                 if child.name in names:
                     return listing  # present but refused: unreadable, not missing
@@ -824,12 +872,23 @@ class BambuFTPClient:
 
         The G10 download-to-file contract on one session (see printer_files.base
         TRANSFER_*). One chunk at a time reaches the disk; a budget, a disk
-        reserve or a cancel stops the transfer; the partial file never stays.
+        reserve or a cancel stops the transfer.
+
+        ⚠️ Every way out but a completed, checked file removes the file this call
+        created (review A2) — including an error nobody listed, which a cancel's
+        socket abort can raise from deep inside ftplib or ssl; that error is
+        raised again once the file is gone. A file that cannot be removed raises
+        :class:`StagingNotRemoved` instead of any outcome. The volume's reserve
+        is checked before the first write, every 8 MiB and for the unchecked
+        tail (:class:`ReserveSchedule`, review A5).
         """
         if not self._ftp:
             return "unavailable", 0, None, "not_connected"
         received = 0
-        checked_at = 0
+        created = False
+        result: tuple[str, int, str | None, str | None] | None = None
+        reserve = ReserveSchedule(reserve_bytes)
+        volume = local_path.parent
 
         class _Stop(Exception):
             def __init__(self, status: str, reason: str):
@@ -837,25 +896,19 @@ class BambuFTPClient:
                 self.status = status
                 self.reason = reason
 
-        def _discard() -> None:
-            try:
-                local_path.unlink(missing_ok=True)
-            except OSError:
-                pass
-
-        try:
-            local_path.parent.mkdir(parents=True, exist_ok=True)
+        def transfer() -> tuple[str, int, str | None, str | None]:
+            nonlocal received, created
+            volume.mkdir(parents=True, exist_ok=True)
             with open(local_path, "wb") as handle:
+                created = True
 
                 def write(chunk: bytes) -> None:
-                    nonlocal received, checked_at
+                    nonlocal received
                     received += len(chunk)
                     if byte_budget is not None and received > byte_budget:
                         raise _Stop("limit_exceeded", "byte_budget")
-                    if reserve_bytes and received - checked_at >= _RESERVE_CHECK_EVERY:
-                        checked_at = received
-                        if shutil.disk_usage(local_path.parent).free - len(chunk) < reserve_bytes:
-                            raise _Stop("insufficient_storage", "reserve")
+                    if reserve.due_before(received) and not reserve.fits(shutil.disk_usage(volume).free, len(chunk)):
+                        raise _Stop("insufficient_storage", "reserve")
                     handle.write(chunk)
                     if progress is not None:
                         progress(received)
@@ -863,44 +916,56 @@ class BambuFTPClient:
                 self._ftp.retrbinary(f"RETR {remote_path}", write, blocksize=_FETCH_BLOCK)
                 handle.flush()
                 os.fsync(handle.fileno())
+            if reserve.due_final(received) and not reserve.fits(shutil.disk_usage(volume).free):
+                raise _Stop("insufficient_storage", "reserve")
+            server_size = self.get_file_size(remote_path)
+            if server_size is not None and server_size >= 0:
+                if received != server_size:
+                    return "short_read", received, None, f"{received}/{server_size}"
+                return "completed", received, "size_verified", None
+            return "completed", received, "size_unknown", None
+
+        try:
+            result = transfer()
         except _Stop as stop:
-            _discard()
-            return stop.status, received, None, stop.reason
+            result = stop.status, received, None, stop.reason
         except ftplib.error_perm as e:
-            _discard()
             code = _reply_code(e)
-            return ("not_readable" if code == "550" else "protocol_failed"), received, None, code
+            result = ("not_readable" if code == "550" else "protocol_failed"), received, None, code
         except TimeoutError:
-            _discard()
-            return "stalled", received, None, "socket_timeout"
+            result = "stalled", received, None, "socket_timeout"
         except (OSError, EOFError, ftplib.Error) as e:
-            _discard()
-            return "unavailable", received, None, type(e).__name__
-        server_size = self.get_file_size(remote_path)
-        if server_size is not None and server_size >= 0:
-            if received != server_size:
-                _discard()
-                return "short_read", received, None, f"{received}/{server_size}"
-            return "completed", received, "size_verified", None
-        return "completed", received, "size_unknown", None
+            result = "unavailable", received, None, type(e).__name__
+        finally:
+            # ``result`` is None while an unexpected error propagates: discard first.
+            if created and (result is None or result[0] != "completed"):
+                discard_staging(local_path)
+        return result
 
     def download_to_file(self, remote_path: str, local_path: Path) -> bool:
-        """Download a file from the printer to local filesystem."""
+        """Download a file from the printer to local filesystem.
+
+        ⚠️ Anything but a successful download removes the file this call created
+        (review A2): a refusal, a short read, a dead socket and an unexpected
+        error alike, which is then raised again. A 550 still raises
+        :class:`FileNotOnPrinterError`, after the empty file ``open`` made is gone.
+        """
         if not self._ftp:
             logger.warning("download_to_file called but FTP not connected")
             return False
 
+        created = False
+        downloaded = False
         try:
             local_path.parent.mkdir(parents=True, exist_ok=True)
             with open(local_path, "wb") as f:
+                created = True
                 self._ftp.retrbinary(f"RETR {remote_path}", f.write)
                 f.flush()
                 os.fsync(f.fileno())
             file_size = local_path.stat().st_size if local_path.exists() else 0
             if file_size == 0:
                 logger.warning("FTP download returned 0 bytes for %s", remote_path)
-                if local_path.exists():
-                    local_path.unlink()
                 return False
             # A short read is a failed download, not a file (upstream 55cc64c8):
             # a truncated 3MF attached to an archive fails far from the cause.
@@ -915,9 +980,9 @@ class BambuFTPClient:
                     file_size,
                     server_size,
                 )
-                local_path.unlink(missing_ok=True)
                 return False
             logger.info("Successfully downloaded %s to %s (%s bytes)", remote_path, local_path, file_size)
+            downloaded = True
             return True
         except (OSError, ftplib.Error) as e:
             # 550 means the file is not at this path. Surface as a sentinel so
@@ -929,13 +994,10 @@ class BambuFTPClient:
                 raise FileNotOnPrinterError(f"{remote_path}: {e}") from e
             # Log at INFO level so we can see failures in normal logs
             logger.info("FTP download failed for %s: %s", remote_path, e)
-            # Clean up partial file if it exists
-            if local_path.exists():
-                try:
-                    local_path.unlink()
-                except OSError:
-                    pass  # Best-effort partial file cleanup; not critical if removal fails
             return False
+        finally:
+            if created and not downloaded:
+                discard_staging(local_path)
 
     def diagnose_storage(self) -> dict:
         """Run storage diagnostics and return results. For debugging upload issues."""
@@ -1513,6 +1575,10 @@ async def download_file_async(
                 if result:
                     BambuFTPClient.cache_mode(ip_address, mode_str)
                 return result
+            except Exception as exc:
+                if _cancel_caused(worker, exc):
+                    return False
+                raise
             finally:
                 _end_session(worker, client)
 
@@ -1646,6 +1712,12 @@ async def download_first_path(
                     # 550: not readable at this path — try the next candidate on the same session.
                     not_readable.append(remote_path)
                     continue
+                except Exception as exc:
+                    if _cancel_caused(worker, exc):
+                        return FirstPathResult(None, tuple(not_readable), reason="cancelled")
+                    raise
+                if worker.cancel_requested:
+                    return FirstPathResult(None, tuple(not_readable), reason="cancelled")
                 # The transfer started and failed (short read, dropped data channel, stall): the
                 # session may be dead, and walking on would cost a socket timeout per candidate.
                 return FirstPathResult(None, tuple(not_readable), transfer_failed=remote_path, reason="transfer_failed")
@@ -1823,6 +1895,11 @@ async def download_to_path_async(
             if status != "completed" and worker.cancel_requested:
                 return TransferOutcome(TRANSFER_CANCELLED, received, reason=worker.cancel_reason)
             return TransferOutcome(status, received, check, reason)
+        except Exception as exc:
+            # The file is already gone (fetch_to_file discards before it raises).
+            if _cancel_caused(worker, exc):
+                return TransferOutcome(TRANSFER_CANCELLED, reason=worker.cancel_reason)
+            raise
         finally:
             _end_session(worker, client)
 

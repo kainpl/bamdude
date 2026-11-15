@@ -311,3 +311,100 @@ class TestTunnelDownloadToFile:
 
 def test_the_cancelled_status_is_part_of_the_contract():
     assert TRANSFER_CANCELLED == "cancelled"
+
+
+# ------------------------------------------------------------- the reserve, short and long ------
+# Codex review A5: the reserve is checked before the first write, every 8 MiB and
+# for the unchecked tail — on both transports, never skipped for a short file and
+# never asked per chunk.
+
+
+class FreeSpace:
+    """``shutil.disk_usage`` that reports the given free bytes, one per call (the last repeats)."""
+
+    def __init__(self, *free: int):
+        self.free = list(free)
+        self.calls = 0
+
+    def __call__(self, path):
+        value = self.free[min(self.calls, len(self.free) - 1)]
+        self.calls += 1
+        return SimpleNamespace(total=1 << 40, used=0, free=value)
+
+
+RESERVE = 8192
+
+
+@pytest.fixture(params=["ftp", "tunnel"])
+def reserve_download(request, patch_ftp_port, streaming_retr, tunnel, tmp_path, monkeypatch):
+    """``run(size, space, reserve)`` → ``(target, awaitable outcome)`` on the transport of this run."""
+    from backend.app.services.printer_files import tunnel as tunnel_transport
+
+    def run(size: int, space: FreeSpace, reserve: int = RESERVE):
+        target = tmp_path / "r.bin"
+        if request.param == "ftp":
+            patch_ftp_port.add_file("cache/r.bin", _blob(size))
+            monkeypatch.setattr(bambu_ftp.shutil, "disk_usage", space)
+            return target, download_to_path_async(IP, CODE, "/cache/r.bin", target, reserve_bytes=reserve)
+        tunnel.server.file_bytes["/userdata/r.bin"] = _blob(size)
+        tunnel.server.download_chunk_size = 64 * 1024
+        monkeypatch.setattr(tunnel_transport.shutil, "disk_usage", space)
+        return target, tunnel.transport.download_to_file("/userdata/r.bin", target, reserve_bytes=reserve)
+
+    return run
+
+
+@pytest.mark.asyncio
+class TestTheReserveOnBothTransports:
+    async def test_a_short_file_under_the_reserve_is_refused_before_its_first_write(self, reserve_download):
+        # Codex's probe: 4 KiB free, 8 KiB reserve, a 1 KiB file — room for the file, not for the reserve.
+        space = FreeSpace(4096)
+        target, download = reserve_download(1024, space)
+        outcome = await download
+        assert outcome.status == TRANSFER_INSUFFICIENT_STORAGE
+        assert not target.exists()
+        assert space.calls >= 1
+
+    async def test_exactly_the_reserve_left_is_enough(self, reserve_download):
+        space = FreeSpace(RESERVE + 1024)
+        target, download = reserve_download(1024, space)
+        outcome = await download
+        assert outcome.status == TRANSFER_COMPLETED
+        assert target.stat().st_size == 1024
+        # One chunk: checked once before it is written, no tail left unchecked.
+        assert space.calls == 1
+
+    async def test_one_byte_short_of_the_reserve_is_refused(self, reserve_download):
+        space = FreeSpace(RESERVE + 1023)
+        target, download = reserve_download(1024, space)
+        assert (await download).status == TRANSFER_INSUFFICIENT_STORAGE
+        assert not target.exists()
+
+    async def test_a_short_file_of_many_chunks_checks_its_tail(self, reserve_download):
+        # Enough for the first chunk, not for the rest of the file.
+        space = FreeSpace(RESERVE + 64 * 1024, RESERVE - 1)
+        target, download = reserve_download(1 * MIB, space)
+        assert (await download).status == TRANSFER_INSUFFICIENT_STORAGE
+        assert not target.exists()
+        assert space.calls == 2
+
+    async def test_a_long_file_is_checked_per_interval_never_per_chunk(self, reserve_download):
+        space = FreeSpace(1 << 40)
+        target, download = reserve_download(20 * MIB, space)
+        outcome = await download
+        assert outcome.status == TRANSFER_COMPLETED
+        # Before the first write, after 8 and 16 MiB, and the tail.
+        assert space.calls == 4
+
+    async def test_space_lost_while_writing_stops_and_leaves_nothing(self, reserve_download):
+        space = FreeSpace(1 << 40, 1024)
+        target, download = reserve_download(10 * MIB, space)
+        assert (await download).status == TRANSFER_INSUFFICIENT_STORAGE
+        assert not target.exists()
+        assert space.calls == 2
+
+    async def test_no_reserve_asks_the_disk_nothing(self, reserve_download):
+        space = FreeSpace(0)
+        target, download = reserve_download(1024, space, reserve=0)
+        assert (await download).status == TRANSFER_COMPLETED
+        assert space.calls == 0

@@ -75,20 +75,33 @@ RESULT_FILE_EXIST = 19
 # 255 KiB — the fragment size BambuStudio uses on the wire.
 CHUNK_SIZE = 261120
 
-# ⚠️ Our policy, not the protocol's maximum (G10 CR3/CR5): BambuStudio's own code
-# sets no limit on a download frame (its DLL allocates), and the printer was only
-# ever seen sending 255 KiB fragments. A header announcing more is refused BEFORE
-# anything is allocated for it.
-MAX_FRAME_PAYLOAD = 8 * 1024 * 1024
+# ⚠️ Memory is OUR policy, not the protocol's maximum (G10 CR3/CR5, spec r4 §12):
+# BambuStudio's own code sets no limit on a download frame (its DLL allocates),
+# and the printer was only ever seen sending 255 KiB fragments.
+#
+# One envelope bounds every Python buffer a client holds for its one active file
+# (review A4): the payload of the frame it is working on and what reading and
+# parsing it costs, every parked frame, and a copy it hands out. A frame is
+# admitted — or refused — from its header, BEFORE anything is allocated for it.
+#: Spec r4 §12: ≤ 8 MiB of Python transfer buffers per active file.
+TRANSFER_BUFFER_ENVELOPE = 8 * 1024 * 1024
+#: What working on one frame costs beside its payload, charged while it is live:
+#: one read chunk and the stream's own buffer, the envelope's bytes and text, and
+#: the objects its JSON becomes — a 64 KiB envelope of empty lists measured 1.5 MiB.
+FRAME_OVERHEAD = 3 * 1024 * 1024
+#: The largest frame, envelope included (r4 allows ≤ 8 MiB): 8× the observed
+#: fragment, and small enough that a live frame and a copy of its body fit the
+#: envelope together (2 + 3 + 2 MiB), with room for parked frames beside a fragment.
+MAX_FRAME_PAYLOAD = 2 * 1024 * 1024
 #: The envelope is a few hundred bytes; past this a JSON that never closes is refused.
 MAX_ENVELOPE_SCAN = 64 * 1024
-#: Frames of other sequences kept for their own waiters, by count …
+#: Frames of other sequences kept for their own waiters, by count; their bytes are
+#: charged to the same envelope.
 MAX_PARKED_FRAMES = 32
-#: … and every byte the client holds for a frame — the one being read and the parked
-#: ones — shares this one credit, so parked frames cannot grow beside a big frame.
-BUFFER_CREDIT = 2 * MAX_FRAME_PAYLOAD
 #: How much of a payload is read per call, so a frame is never held twice whole.
 READ_CHUNK = 256 * 1024
+#: How long a graceful close may take before the connection is aborted.
+CLOSE_GRACE = 5.0
 
 # ⚠️ Three wire names for two media, and which one applies depends on the
 # operation. Reading the internal medium is ``internal`` and the external one is
@@ -121,6 +134,43 @@ class TunnelProtocolError(TunnelError):
         self.category = category
 
 
+class _Frame:
+    """One received frame's payload, charged to its client's envelope until released.
+
+    The payload is kept as received — never copied to park it. While the frame
+    is live its charge also covers :data:`FRAME_OVERHEAD` (its parsed envelope);
+    a parked frame drops that envelope and is charged its payload alone, and
+    the envelope is parsed again when its waiter claims it.
+    """
+
+    __slots__ = ("_payload", "charge", "start")
+
+    def __init__(self, payload: bytearray, start: int, charge: int):
+        self._payload: bytearray | None = payload
+        self.start = start
+        self.charge = charge
+
+    @property
+    def payload_len(self) -> int:
+        return len(self._payload) if self._payload is not None else 0
+
+    @property
+    def body_len(self) -> int:
+        return self.payload_len - self.start if self._payload is not None else 0
+
+    def body(self) -> memoryview:
+        """A view of the body, valid until the caller releases it — never kept past the frame."""
+        return memoryview(self._payload)[self.start :]
+
+    def envelope(self) -> dict:
+        envelope, body = split_envelope_view(self._payload, MAX_ENVELOPE_SCAN)
+        body.release()
+        return envelope
+
+    def drop(self) -> None:
+        self._payload = None
+
+
 class DownloadReceipt:
     """What a streamed download proved: how many bytes, and how they were checked."""
 
@@ -149,6 +199,36 @@ def _tls_context() -> ssl.SSLContext:
     return context
 
 
+async def _close_writer(writer, grace: float) -> None:
+    """Close ``writer`` and wait until its transport reports the connection lost (review A1).
+
+    Gracefully first; a cancel — any number of them — or ``grace`` running out
+    aborts the transport instead, and the wait goes on until the loss is
+    reported. A writer without an abortable transport is simply waited for.
+    The cancel is raised once the connection is really gone.
+    """
+    loop = asyncio.get_running_loop()
+    writer.close()
+    closed = asyncio.ensure_future(writer.wait_closed())
+    deadline = loop.time() + grace
+    cancelled = aborted = False
+    while not closed.done():
+        try:
+            await asyncio.wait({closed}, timeout=None if aborted else max(0.0, deadline - loop.time()))
+        except asyncio.CancelledError:
+            cancelled = True
+        if not closed.done() and not aborted and (cancelled or loop.time() >= deadline):
+            aborted = True
+            transport = getattr(writer, "transport", None)
+            if transport is not None:
+                transport.abort()
+    error = None if closed.cancelled() else closed.exception()
+    if error is not None and not isinstance(error, (OSError, ssl.SSLError)):
+        raise error
+    if cancelled:
+        raise asyncio.CancelledError
+
+
 class BambuTunnelClient:
     def __init__(
         self,
@@ -158,11 +238,13 @@ class BambuTunnelClient:
         port: int = DEFAULT_PORT,
         timeout: float = 8.0,
         connector=None,
+        close_grace: float = CLOSE_GRACE,
     ):
         self._ip = ip
         self._access_code = access_code
         self._port = port
         self._timeout = timeout
+        self._close_grace = close_grace
         # Tests inject a plain-TCP connector so no certificate is involved;
         # production leaves this None and we build the TLS connection here.
         self._connector = connector
@@ -172,12 +254,19 @@ class BambuTunnelClient:
         # ⚠️ A LIST of frames per sequence, not one. A download answers a single
         # request with many frames that all carry the same sequence, and a plain
         # dict would keep only the last — silently dropping the middle of a file.
-        self._parked: dict[int, list[tuple[dict, bytes]]] = {}
+        self._parked: dict[int, list[_Frame]] = {}
         self._parked_count = 0
         self._parked_bytes = 0
+        # Every byte charged to this client's envelope: live frames and parked ones.
+        self._held = 0
 
     async def __aenter__(self) -> BambuTunnelClient:
-        await self.connect()
+        try:
+            await self.connect()
+        except BaseException:
+            # A connect cut short after the socket opened still owns that socket.
+            await self.close()
+            raise
         return self
 
     async def __aexit__(self, *_exc) -> None:
@@ -220,17 +309,30 @@ class BambuTunnelClient:
         )
 
     async def close(self) -> None:
-        if self._writer is not None:
-            self._writer.close()
-            try:
-                await self._writer.wait_closed()
-            except (OSError, ssl.SSLError):
-                pass
-        self._writer = None
-        self._reader = None
-        self._parked.clear()
-        self._parked_count = 0
-        self._parked_bytes = 0
+        """Close the connection; return only once the transport has let go of the socket.
+
+        ⚠️ A cancel does not shorten this (review A1). The operation that owns
+        this client also owns its printer lane, and it is the end of this call
+        that lets the lane go: returning on a second cancel — a restore's, after
+        the caller's — left the lane free over a socket still closing. So a
+        cancel, or :data:`CLOSE_GRACE` running out, only turns the graceful
+        close into an abort of the transport, and this still waits until the
+        transport reports the connection lost; the cancel is raised afterwards.
+        A transport that cannot be aborted is waited for, and the owner stays.
+        """
+        writer = self._writer
+        try:
+            if writer is not None:
+                await _close_writer(writer, self._close_grace)
+        finally:
+            self._writer = None
+            self._reader = None
+            for frames in self._parked.values():
+                for frame in frames:
+                    self._release(frame)
+            self._parked.clear()
+            self._parked_count = 0
+            self._parked_bytes = 0
 
     async def handshake(self) -> dict:
         """``cmdtype 7`` — what this printer says it can do.
@@ -311,7 +413,9 @@ class BambuTunnelClient:
         of the file as the body. BambuStudio writes each slice to disk as it
         comes and checks the final ``file_md5`` (``PrinterFileSystem::
         DownloadNextFile``); so do we. ``sink`` is awaited per slice and may
-        raise to stop the transfer.
+        raise to stop the transfer. ⚠️ The slice is a view of the frame, valid
+        only while ``sink`` runs: it is released, with the frame and its charge,
+        before the next frame is admitted, so two frames are never held at once.
 
         Every frame is checked: its ``offset`` is where we are, its ``size`` is
         its body, the ``total`` never changes, nothing runs past it. A gap, an
@@ -333,31 +437,42 @@ class BambuTunnelClient:
         file_md5: str | None = None
 
         while True:
-            envelope, body = await self._await_sequence(sequence)
-            result = envelope.get("result", 0)
-            # ⚠️ ``1`` is CONTINUE, not a refusal. Only something else is.
-            if result not in (0, RESULT_CONTINUE):
-                raise TunnelError(f"tunnel refused the download of {path} with result={result}", result)
+            envelope, frame = await self._await_sequence(sequence)
+            try:
+                result = envelope.get("result", 0)
+                # ⚠️ ``1`` is CONTINUE, not a refusal. Only something else is.
+                if result not in (0, RESULT_CONTINUE):
+                    raise TunnelError(f"tunnel refused the download of {path} with result={result}", result)
 
-            reply = envelope.get("reply") or {}
-            frame_total = int(reply.get("total") or 0)
-            if total is None:
-                total = frame_total
-            elif frame_total and frame_total != total:
-                raise TunnelProtocolError("total_mismatch", f"tunnel changed the total of {path} mid-transfer")
-            if "offset" in reply and int(reply.get("offset") or 0) != received:
-                raise TunnelProtocolError("offset_mismatch", f"tunnel sent {path} out of order")
-            if "size" in reply and int(reply.get("size") or 0) != len(body):
-                raise TunnelProtocolError("offset_mismatch", f"tunnel frame of {path} is not its stated size")
-            if total and received + len(body) > total:
-                raise TunnelProtocolError("overrun", f"tunnel sent more of {path} than its total")
-            if reply.get("file_md5"):
-                file_md5 = str(reply["file_md5"])
+                reply = envelope.get("reply") or {}
+                size = frame.body_len
+                frame_total = int(reply.get("total") or 0)
+                if total is None:
+                    total = frame_total
+                elif frame_total and frame_total != total:
+                    raise TunnelProtocolError("total_mismatch", f"tunnel changed the total of {path} mid-transfer")
+                if "offset" in reply and int(reply.get("offset") or 0) != received:
+                    raise TunnelProtocolError("offset_mismatch", f"tunnel sent {path} out of order")
+                if "size" in reply and int(reply.get("size") or 0) != size:
+                    raise TunnelProtocolError("offset_mismatch", f"tunnel frame of {path} is not its stated size")
+                if total and received + size > total:
+                    raise TunnelProtocolError("overrun", f"tunnel sent more of {path} than its total")
+                if reply.get("file_md5"):
+                    file_md5 = str(reply["file_md5"])
 
-            if len(body):
-                digest.update(body)
-                await sink(body)
-            received += len(body)
+                if size:
+                    body = frame.body()
+                    try:
+                        digest.update(body)
+                        await sink(body)
+                    finally:
+                        body.release()
+                received += size
+            finally:
+                # Before the next frame is admitted (review A4): its envelope's
+                # objects and its payload go with its charge.
+                envelope = reply = None
+                self._release(frame)
 
             if total and received >= total:
                 break
@@ -421,7 +536,8 @@ class BambuTunnelClient:
                 }
             ).encode(),
         )
-        answer, _body = await self._await_sequence(sequence)
+        answer, frame = await self._await_sequence(sequence)
+        self._release(frame)
         opened = answer.get("result", 0)
         # ⚠️ The printer answers the open with CONTINUE (1), not SUCCESS.
         # BambuStudio accepts SUCCESS, CONTINUE and FILE_EXIST here and treats
@@ -505,7 +621,8 @@ class BambuTunnelClient:
         # would be read as the completion. No capture shows the printer sending
         # any, and this log line is what will tell us if one ever does.
         logger.debug("[%s] upload of %s: %d fragment(s) sent, awaiting completion", self._ip, remote_name, frag_id)
-        answer, _body = await self._await_sequence(sequence)
+        answer, frame = await self._await_sequence(sequence)
+        self._release(frame)
         finished = answer.get("result", 0)
         if finished not in (RESULT_SUCCESS, RESULT_FILE_EXIST):
             raise TunnelError(f"tunnel rejected the uploaded {remote_name} with result={finished}", finished)
@@ -529,15 +646,28 @@ class BambuTunnelClient:
         sequence = self._next_sequence()
         envelope = {"mtype": MTYPE_FILE, "cmdtype": cmdtype, "sequence": sequence, "req": request}
         self._send(TYPE_DATA_REQUEST, sequence, json.dumps(envelope).encode())
-        answer, body = await self._await_sequence(sequence)
-        result = answer.get("result", 0)
-        if result != 0:
-            raise TunnelError(f"tunnel command {cmdtype} refused with result={result}", result)
-        # Frames are read as views of their payload buffer; callers here get bytes.
-        return answer.get("reply") or {}, bytes(body)
+        answer, frame = await self._await_sequence(sequence)
+        try:
+            result = answer.get("result", 0)
+            if result != 0:
+                raise TunnelError(f"tunnel command {cmdtype} refused with result={result}", result)
+            reply = answer.get("reply") or {}
+            # Callers here get bytes, so the body is copied once — and the copy
+            # shares the envelope with the frame it is made from (review A4).
+            if self._held + frame.body_len > TRANSFER_BUFFER_ENVELOPE:
+                raise TunnelProtocolError("buffer_credit", f"{self._ip} reply does not fit beside its own copy")
+            body = frame.body()
+            try:
+                data = bytes(body)
+            finally:
+                body.release()
+        finally:
+            answer = None
+            self._release(frame)
+        return reply, data
 
-    async def _await_sequence(self, sequence: int) -> tuple[dict, bytes]:
-        """Read frames until the one carrying OUR sequence turns up.
+    async def _await_sequence(self, sequence: int) -> tuple[dict, _Frame]:
+        """Read frames until the one carrying OUR sequence turns up — a live frame the caller releases.
 
         Anything else is parked rather than dropped: it belongs to a caller that
         has not asked yet, and discarding it would make the next command read a
@@ -545,53 +675,90 @@ class BambuTunnelClient:
         """
         waiting = self._parked.get(sequence)
         if waiting:
-            envelope, body = waiting.pop(0)
+            frame = waiting.pop(0)
+            if not waiting:
+                del self._parked[sequence]
             self._parked_count -= 1
-            self._parked_bytes -= len(body)
-            return envelope, body
+            self._parked_bytes -= frame.payload_len
+            try:
+                # Live again: its envelope is parsed once more, under the overhead.
+                self._charge(frame, FRAME_OVERHEAD)
+                return frame.envelope(), frame
+            except BaseException:
+                self._release(frame)
+                raise
 
         while True:
-            frame = await self._read_frame()
-            if frame is None:
+            read = await self._read_frame()
+            if read is None:
                 continue  # a bare control ack, no envelope to match
-            envelope, body = frame
+            envelope, frame = read
             found = envelope.get("sequence")
             if found == sequence:
-                return envelope, body
+                return envelope, frame
+            envelope = None
             if isinstance(found, int):
-                self._park(found, envelope, body)
+                self._park(found, frame)
+            else:
+                self._release(frame)
 
-    def _park(self, sequence: int, envelope: dict, body) -> None:
-        """Keep a frame of another sequence for its own waiter — within the bounds (CR5)."""
+    def _park(self, sequence: int, frame: _Frame) -> None:
+        """Keep a frame of another sequence for its own waiter — within the bounds (CR5, review A4)."""
         if self._parked_count >= MAX_PARKED_FRAMES:
+            self._release(frame)
             raise TunnelProtocolError("too_many_parked", f"{self._ip} sent too many frames nobody asked for")
-        if self._parked_bytes + len(body) > BUFFER_CREDIT:
-            raise TunnelProtocolError("buffer_credit", f"{self._ip} sent more unclaimed data than the client holds")
-        # A parked body outlives the payload buffer it views: keep its own bytes.
-        self._parked.setdefault(sequence, []).append((envelope, bytes(body)))
+        # Its payload stays as received (no copy); its parsed envelope is dropped.
+        self._uncharge(frame, FRAME_OVERHEAD)
+        self._parked.setdefault(sequence, []).append(frame)
         self._parked_count += 1
-        self._parked_bytes += len(body)
+        self._parked_bytes += frame.payload_len
 
-    async def _read_frame(self) -> tuple[dict, memoryview] | None:
-        """One frame, or ``None`` when it carried no JSON envelope.
+    def _charge(self, frame: _Frame, amount: int) -> None:
+        if self._held + amount > TRANSFER_BUFFER_ENVELOPE:
+            raise TunnelProtocolError("buffer_credit", f"{self._ip} frame does not fit beside the data held")
+        frame.charge += amount
+        self._held += amount
 
-        The header's length is checked BEFORE anything is read for it: over the
-        frame cap, or over what the parked frames leave of the buffer credit, it
-        is refused (G10 CR5). The payload is read in chunks into one buffer of
-        its exact size, so a frame is never held twice whole.
+    def _uncharge(self, frame: _Frame, amount: int) -> None:
+        amount = min(amount, frame.charge)
+        frame.charge -= amount
+        self._held -= amount
+
+    def _release(self, frame: _Frame) -> None:
+        """Give a frame's charge back and drop its payload. Releasing twice changes nothing."""
+        self._uncharge(frame, frame.charge)
+        frame.drop()
+
+    async def _read_frame(self) -> tuple[dict, _Frame] | None:
+        """One live frame, or ``None`` when it carried no JSON envelope.
+
+        The header's length is checked BEFORE anything is read for it (G10 CR5,
+        review A4): over the frame cap, or over what the frames already held
+        leave of the envelope together with the cost of working on this one, it
+        is refused. The payload is read in chunks into one buffer of its exact
+        size, so a frame is never held twice whole.
         """
         if self._reader is None:
             raise TunnelError("tunnel is not connected")
         try:
             header = await asyncio.wait_for(self._reader.readexactly(HEADER_SIZE), timeout=self._timeout)
             payload_len, _type_word, _sequence = parse_header(header)
-            if payload_len > MAX_FRAME_PAYLOAD:
-                raise TunnelProtocolError(
-                    "oversized_frame", f"{self._ip} announced a {payload_len}-byte frame (limit {MAX_FRAME_PAYLOAD})"
-                )
-            if self._parked_bytes + payload_len > BUFFER_CREDIT:
-                raise TunnelProtocolError("buffer_credit", f"{self._ip} frame does not fit beside the parked data")
-            payload = bytearray(payload_len)
+        except (TimeoutError, asyncio.IncompleteReadError, ConnectionResetError, OSError) as exc:
+            # The usual cause is that this is not a tunnel at all — see the
+            # module docstring on port 6000.
+            raise TunnelError(f"no tunnel answer from {self._ip}: {exc!r}") from exc
+        if payload_len > MAX_FRAME_PAYLOAD:
+            raise TunnelProtocolError(
+                "oversized_frame", f"{self._ip} announced a {payload_len}-byte frame (limit {MAX_FRAME_PAYLOAD})"
+            )
+        cost = payload_len + FRAME_OVERHEAD
+        if self._held + cost > TRANSFER_BUFFER_ENVELOPE:
+            raise TunnelProtocolError("buffer_credit", f"{self._ip} frame does not fit beside the data held")
+        # Charged before it is allocated, so nothing else can be admitted in between.
+        self._held += cost
+        frame = _Frame(bytearray(payload_len), 0, cost)
+        try:
+            payload = frame._payload
             filled = 0
             while filled < payload_len:
                 chunk = await asyncio.wait_for(
@@ -599,17 +766,23 @@ class BambuTunnelClient:
                 )
                 payload[filled : filled + len(chunk)] = chunk
                 filled += len(chunk)
+                chunk = None
+            try:
+                envelope, body = split_envelope_view(payload, MAX_ENVELOPE_SCAN)
+            except EnvelopeTooLong as exc:
+                raise TunnelProtocolError("envelope_unbounded", f"{self._ip}: {exc}") from exc
+            except ValueError:
+                # ⚠️ Expected, not exceptional: the session acknowledgement is four
+                # zero bytes with no JSON in it.
+                logger.debug("[%s] tunnel frame with no envelope (%d bytes), skipped", self._ip, payload_len)
+                self._release(frame)
+                return None
+            frame.start = payload_len - len(body)
+            body.release()
+            return envelope, frame
         except (TimeoutError, asyncio.IncompleteReadError, ConnectionResetError, OSError) as exc:
-            # The usual cause is that this is not a tunnel at all — see the
-            # module docstring on port 6000.
+            self._release(frame)
             raise TunnelError(f"no tunnel answer from {self._ip}: {exc!r}") from exc
-
-        try:
-            return split_envelope_view(payload, MAX_ENVELOPE_SCAN)
-        except EnvelopeTooLong as exc:
-            raise TunnelProtocolError("envelope_unbounded", f"{self._ip}: {exc}") from exc
-        except ValueError:
-            # ⚠️ Expected, not exceptional: the session acknowledgement is four
-            # zero bytes with no JSON in it.
-            logger.debug("[%s] tunnel frame with no envelope (%d bytes), skipped", self._ip, len(payload))
-            return None
+        except BaseException:
+            self._release(frame)
+            raise
