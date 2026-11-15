@@ -1,11 +1,13 @@
 import { useState, useEffect, useId, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { Loader2, Save, Beaker, Palette, Zap, Tag, Unlink, History } from 'lucide-react';
+import { Loader2, Save, Beaker, Palette, Zap, Tag, Unlink, Link2, History } from 'lucide-react';
 import { type FilamentFamily, api, ApiError } from '../api/client';
 import type { InventorySpool, SlicerSetting, SpoolCatalogEntry, LocalPreset, SpoolmanBulkCreateResult, SpoolKProfileInput, SpoolmanFilamentEntry } from '../api/client';
 import { Button } from './Button';
 import { Modal } from './Modal';
+import { AssignToSlotModal } from './AssignToSlotModal';
+import { formatSpoolDisplayName } from '../utils/spoolName';
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
 import type { SpoolFormData, PrinterWithCalibrations, ColorPreset, SpoolFormMode } from './spool-form/types';
@@ -89,6 +91,13 @@ export function SpoolFormModal({
   const [errors, setErrors] = useState<Partial<Record<keyof SpoolFormData, string>>>({});
   const [activeTab, setActiveTab] = useState<TabId>('filament');
   const [weightTouched, setWeightTouched] = useState(false);
+  const [showAssignToSlot, setShowAssignToSlot] = useState(false);
+  // The spool is named in the assignment dialogs the way every list names it.
+  const { data: uiPreferences } = useQuery({
+    queryKey: ['ui-preferences'],
+    queryFn: () => api.getUiPreferences(),
+    enabled: showAssignToSlot,
+  });
   const [coreWeightTouched, setCoreWeightTouched] = useState(false);
   const [locationIdTouched, setLocationIdTouched] = useState(false);
   // Sent only when changed, so saving an unrelated edit cannot put back a
@@ -1132,6 +1141,14 @@ export function SpoolFormModal({
               <Unlink className="w-4 h-4" />
               {t('inventory.unassignSpool', 'Unassign')}
             </Button>
+            {/* A spool in no slot can be put into one from here: pick the slot,
+                then the usual assignment dialog takes over (AssignToSlotModal). */}
+            {spool && !spoolAssignment && !spool.archived_at && (
+              <Button variant="secondary" onClick={() => setShowAssignToSlot(true)} disabled={isPending}>
+                <Link2 className="w-4 h-4" />
+                {t('inventory.assignToSlot')}
+              </Button>
+            )}
           </div>
         )}
         <div className="flex gap-2 ml-auto">
@@ -1156,6 +1173,24 @@ export function SpoolFormModal({
         </Button>
         </div>
       </div>
+      {showAssignToSlot && spool && (
+        <AssignToSlotModal
+          spool={{
+            id: spool.id,
+            displayName: formatSpoolDisplayName(spool, uiPreferences?.spool_display_template),
+            source: spoolmanMode ? 'spoolman' : 'inventory',
+          }}
+          spoolmanMode={spoolmanMode}
+          onClose={() => setShowAssignToSlot(false)}
+          onAssigned={() => {
+            // The form's own «is it in a slot» reads — the assignment dialog
+            // refreshes the lists it knows about.
+            queryClient.invalidateQueries({ queryKey: ['spool-assignments'] });
+            queryClient.invalidateQueries({ queryKey: ['spoolman-slot-assignments-all'] });
+            refreshSpoolQueries();
+          }}
+        />
+      )}
     </Modal>
   );
 }

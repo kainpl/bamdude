@@ -42,6 +42,9 @@ vi.mock('../../api/client', () => ({
     updateSpoolmanInventorySpool: vi.fn().mockResolvedValue({ id: 1 }),
     saveSpoolKProfiles: vi.fn().mockResolvedValue([]),
     saveSpoolmanKProfiles: vi.fn().mockResolvedValue([]),
+    getAssignments: vi.fn().mockResolvedValue([]),
+    getSpoolmanSlotAssignments: vi.fn().mockResolvedValue([]),
+    getPrinterStatus: vi.fn(),
   },
 }));
 
@@ -127,5 +130,36 @@ describe('SpoolFormModal — the spool\'s own empty weight', () => {
     fireEvent.click(screen.getByRole('button', { name: /copy spool/i }));
     await waitFor(() => expect(api.createSpoolmanInventorySpool).toHaveBeenCalledTimes(1));
     expect(vi.mocked(api.createSpoolmanInventorySpool).mock.calls[0][0]).not.toHaveProperty('core_weight');
+  });
+});
+
+describe('SpoolFormModal — «Assign to slot»', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(api.getAssignments).mockResolvedValue([] as never);
+  });
+
+  it('a spool in no slot can be sent to one: the slot chooser opens', async () => {
+    open(spoolWith({}));
+    fireEvent.click(await screen.findByRole('button', { name: 'Assign to slot' }));
+    expect(await screen.findByRole('combobox', { name: 'Printer' })).toBeInTheDocument();
+    expect(screen.getAllByText('#1').length).toBeGreaterThan(0);
+  });
+
+  it('a spool already in a slot is offered Unassign, not a second slot', async () => {
+    vi.mocked(api.getAssignments).mockResolvedValue([{ id: 3, spool_id: 1, printer_id: 7, ams_id: 0, tray_id: 0 }] as never);
+    open(spoolWith({}));
+    await waitFor(() => expect(screen.getByRole('button', { name: /Unassign/ })).toBeEnabled());
+    expect(screen.queryByRole('button', { name: 'Assign to slot' })).toBeNull();
+  });
+
+  it('an archived spool and a new one have no such action', async () => {
+    const { unmount } = open(spoolWith({ archived_at: '2026-01-01T00:00:00Z' }));
+    await tareInput();
+    expect(screen.queryByRole('button', { name: 'Assign to slot' })).toBeNull();
+    unmount();
+    render(<SpoolFormModal isOpen onClose={vi.fn()} currencySymbol="$" />);
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Add Spool' })).toBeInTheDocument());
+    expect(screen.queryByRole('button', { name: 'Assign to slot' })).toBeNull();
   });
 });
