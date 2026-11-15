@@ -161,6 +161,7 @@ import { HeaterHistoryModal } from '../components/HeaterHistoryModal';
 import { PlugPowerHistoryModal } from '../components/PlugPowerHistoryModal';
 import { HeaterThermometer } from '../components/HeaterThermometer';
 import { FilamentHoverCard, EmptySlotHoverCard } from '../components/FilamentHoverCard';
+import { builtinAssignments, slotInventoryMode } from '../utils/slotInventoryMode';
 import { LinkSpoolModal } from '../components/LinkSpoolModal';
 import { AssignSpoolModal } from '../components/AssignSpoolModal';
 import { ConfigureAmsSlotModal } from '../components/ConfigureAmsSlotModal';
@@ -1960,6 +1961,7 @@ const PrinterCard = memo(function PrinterCard({
   cardSize = 2,
   amsThresholds,
   spoolmanEnabled = false,
+  spoolmanUnreachable = false,
   linkedSpools,
   spoolmanUrl,
   spoolmanSyncMode,
@@ -1996,6 +1998,8 @@ const PrinterCard = memo(function PrinterCard({
     tempFair: number;
   };
   spoolmanEnabled?: boolean;
+  /** Spoolman is the inventory but does not answer: neither ledger takes an assignment. */
+  spoolmanUnreachable?: boolean;
   hasUnlinkedSpools?: boolean;
   linkedSpools?: Record<string, LinkedSpoolInfo>;
   spoolmanUrl?: string | null;
@@ -5545,6 +5549,7 @@ const PrinterCard = memo(function PrinterCard({
                                               onUnassignSpool: spoolmanSpool ? () => onUnassignSpoolmanSpool?.(spoolmanSpool.id) : undefined,
                                             };
                                           }
+                                          if (spoolmanUnreachable) return { assignedSpool: null, unavailableReason: t('inventory.spoolmanUnreachableAssign') };
                                           const assignment = onGetAssignment?.(printer.id, ams.id, slotIdx);
                                           return {
                                             assignedSpool: assignment?.spool ? {
@@ -5992,6 +5997,7 @@ const PrinterCard = memo(function PrinterCard({
                                           onUnassignSpool: spoolmanSpool ? () => onUnassignSpoolmanSpool?.(spoolmanSpool.id) : undefined,
                                         };
                                       }
+                                      if (spoolmanUnreachable) return { assignedSpool: null, unavailableReason: t('inventory.spoolmanUnreachableAssign') };
                                       const assignment = onGetAssignment?.(printer.id, ams.id, htSlotId);
                                       return {
                                         assignedSpool: assignment?.spool ? {
@@ -6330,6 +6336,7 @@ const PrinterCard = memo(function PrinterCard({
                                             onUnassignSpool: spoolmanSpool ? () => onUnassignSpoolmanSpool?.(spoolmanSpool.id) : undefined,
                                           };
                                         }
+                                        if (spoolmanUnreachable) return { assignedSpool: null, unavailableReason: t('inventory.spoolmanUnreachableAssign') };
                                         const assignment = onGetAssignment?.(printer.id, 255, slotTrayId);
                                         return {
                                           assignedSpool: assignment?.spool ? {
@@ -9529,6 +9536,10 @@ export function PrintersPage() {
     staleTime: 60 * 1000, // 1 minute
   });
   const spoolmanEnabled = spoolmanStatus?.enabled && spoolmanStatus?.connected;
+  // On-but-unreachable is NOT the built-in inventory (upstream 62fad59fd): the
+  // card must not fall back to the built-in ledger or its Assign dialog.
+  const inventoryMode = slotInventoryMode(spoolmanStatus);
+  const spoolmanUnreachable = inventoryMode === 'spoolman-unreachable';
 
   // Fetch Spoolman settings to get sync mode
   const { data: spoolmanSettings } = useQuery({
@@ -9643,10 +9654,10 @@ export function PrintersPage() {
   // to every PrinterCard as the onGetAssignment prop, and a fresh function
   // every render would defeat that card's React.memo.
   const getAssignment = useCallback((printerId: number, amsId: number | string, trayId: number | string): SpoolAssignment | undefined => {
-    return spoolAssignments?.find(
+    return builtinAssignments(inventoryMode !== 'builtin', spoolAssignments)?.find(
       (a) => a.printer_id === printerId && a.ams_id === Number(amsId) && a.tray_id === Number(trayId)
     );
-  }, [spoolAssignments]);
+  }, [spoolAssignments, inventoryMode]);
 
   // Create a map of printer_id -> maintenance info for quick lookup. Memoised
   // for the same reason as ``smartPlugByPrinter`` below — without this, the
@@ -10464,6 +10475,7 @@ export function PrintersPage() {
       viewMode={viewMode}
       cardSize={cardSize}
       spoolmanEnabled={spoolmanEnabled}
+      spoolmanUnreachable={spoolmanUnreachable}
       hasUnlinkedSpools={hasUnlinkedSpools}
       linkedSpools={linkedSpools}
       spoolmanUrl={spoolmanStatus?.url}
@@ -10726,6 +10738,7 @@ export function PrintersPage() {
               cardSize={2}
               onCollapse={() => setExpandedPrinterId(null)}
               spoolmanEnabled={spoolmanEnabled}
+              spoolmanUnreachable={spoolmanUnreachable}
               hasUnlinkedSpools={hasUnlinkedSpools}
               linkedSpools={linkedSpools}
               spoolmanUrl={spoolmanStatus?.url}

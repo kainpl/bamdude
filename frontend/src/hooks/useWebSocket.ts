@@ -584,6 +584,10 @@ export function useWebSocket() {
   const invalidateSlotQueries = useCallback(() => {
     queryClient.invalidateQueries({ queryKey: ['spool-assignments'] });
     queryClient.invalidateQueries({ queryKey: ['spoolman-slot-assignments'] });
+    // The whole ledger, read by the Inventory page's location column, the
+    // assign dialog's "occupied" list and the spool form — a key of its own
+    // that the card's prefix does not match.
+    queryClient.invalidateQueries({ queryKey: ['spoolman-slot-assignments-all'] });
   }, [queryClient]);
 
   /**
@@ -970,6 +974,10 @@ export function useWebSocket() {
           'inventory-spools',
           'spoolman-inventory-spools',
           'spool-assignments',
+          // A tag linked or unlinked elsewhere (upstream 6c2731a6d): the card's
+          // tag → spool map and the link dialog's list.
+          'linked-spools',
+          'unlinked-spools',
           inventoryLocationsQueryKey,
           ...forecastQueryKeys,
         );

@@ -267,7 +267,8 @@ async def iter_slot_projections(db, printer) -> SlotWalk:
             # Already 8 chars: ``_map_spoolman_spool`` validates the hex and
             # appends the alpha itself, so there is no 6-char form to pad here.
             color = (mapped.get("rgba") or "808080FF").upper()
-            # The family is the BRANDED one of the slot's linked calibration —
+            # The family is the BRANDED one of the slot's linked calibration
+            # (else the preset stored on the spool, inside the builder) —
             # the same resolver both Spoolman assign routes use, so a revert
             # republishes the plan the slot actually had and the K re-push
             # carries the id those routes key K off.
@@ -285,6 +286,7 @@ async def iter_slot_projections(db, printer) -> SlotWalk:
                 actual = await build_slot_assignment(
                     db,
                     family_id=linked.filament_id if linked else None,
+                    stored_preset=mapped.get("slicer_filament"),
                     material_override=tray_type,
                     color_rgba=color,
                     temp_overrides=(mapped.get("nozzle_temp_min"), None),

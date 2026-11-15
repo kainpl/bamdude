@@ -496,3 +496,40 @@ async def test_a_live_colour_we_could_never_have_advertised_is_not_ours(db_sessi
     assert overlay.entries_for(printer.id) == {}
     row = next(r for r in preview["rows"] if (r["ams_id"], r["tray_id"]) == (0, 0))
     assert row["action"] == "skip" and row["reasons"] == ["policy_off"]
+
+
+@pytest.mark.asyncio
+async def test_a_spoolman_slot_without_a_link_is_built_from_the_spools_stored_preset(db_session):
+    """The same precedence as the two assign routes (linked calibration → the
+    spool's stored preset → a stand-in), so a revert republishes the plan the
+    slot was assigned with — not the generic the preset replaced."""
+    printer, state = await _farm(db_session)
+    await _spoolman_slot(db_session, printer, state, with_kprofile=False)
+    stub = SimpleNamespace(
+        get_spool=AsyncMock(return_value={**SPOOLMAN_RAW, "extra": {"bambu_slicer_filament": '"GFG02"'}})
+    )
+    with (
+        patch("backend.app.services.ams_backup_compatibility_apply.printer_manager") as pm,
+        patch("backend.app.services.spoolman.get_spoolman_client", new=AsyncMock(return_value=stub)),
+    ):
+        pm.get_status.return_value = state
+        walk = await bulk.iter_slot_projections(db_session, printer)
+    candidate = next(c for c in walk.candidates if (c.ams_id, c.tray_id) == (0, 3))
+    assert candidate.projection.actual.tray_info_idx == "GFG02"
+
+
+@pytest.mark.asyncio
+async def test_a_spoolman_slots_linked_calibration_outranks_its_stored_preset(db_session):
+    printer, state = await _farm(db_session)
+    await _spoolman_slot(db_session, printer, state, with_kprofile=True)  # links GFG02
+    stub = SimpleNamespace(
+        get_spool=AsyncMock(return_value={**SPOOLMAN_RAW, "extra": {"bambu_slicer_filament": '"GFG00"'}})
+    )
+    with (
+        patch("backend.app.services.ams_backup_compatibility_apply.printer_manager") as pm,
+        patch("backend.app.services.spoolman.get_spoolman_client", new=AsyncMock(return_value=stub)),
+    ):
+        pm.get_status.return_value = state
+        walk = await bulk.iter_slot_projections(db_session, printer)
+    candidate = next(c for c in walk.candidates if (c.ams_id, c.tray_id) == (0, 3))
+    assert candidate.projection.actual.tray_info_idx == "GFG02"

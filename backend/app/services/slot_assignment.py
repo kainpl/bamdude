@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.services.filament_identity import (
     bambu_preset_id,
     family_user_presets,
+    resolve_raw,
     resolve_spool,
     resolve_tray,
 )
@@ -143,6 +144,7 @@ async def build_slot_assignment(
     *,
     spool=None,
     family_id: str | None = None,
+    stored_preset: str | None = None,
     preset_setting_id: str | None = None,
     printer_model: str | None = None,
     nozzle_diameter: str = "0.4",
@@ -171,6 +173,13 @@ async def build_slot_assignment(
 
     if resolved is None or not resolved.family:
         resolved = await resolve_tray(db, family_id) if family_id else None
+    # A caller without a Spool row (Spoolman) names the family it has — the
+    # linked calibration's — and the preset stored ON the spool. The family
+    # wins; the stored preset answers only where there is none, in place of
+    # the stand-in below: a Bambu PETG HF spool with no calibration on this
+    # printer went out as Generic PETG (upstream 5e3a2f278, issue #3433).
+    if (resolved is None or not resolved.family) and stored_preset:
+        resolved = await resolve_raw(db, stored_preset)
     fam_type = (resolved.filament_type if resolved and resolved.family else None) or (material_override or "")
 
     # No family -> a system profile for the spool's material, warning-logged.

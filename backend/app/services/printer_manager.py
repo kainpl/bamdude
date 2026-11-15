@@ -2823,7 +2823,10 @@ def printer_state_to_dict(
         "ext_has_filament": dict(state.ext_has_filament),
         "timelapse_capability": timelapse_capability_for(model, state),
         "airduct_fans": [f.model_dump() for f in _airduct_fans(model, state)],
-        "airduct_mode": state.airduct_mode,
+        # The EFFECTIVE mode, as the REST shaper sends (-1 for a printer that
+        # reports no mode lists): the raw default 0 flipped the page's value
+        # at the first push (tests/integration/test_ws_status_carries_rest_fields).
+        "airduct_mode": airduct_mode_effective(state),
         "airduct_sub_mode": state.airduct_sub_mode,
         # Active extruder for dual-nozzle printers (0=right, 1=left)
         "active_extruder": state.active_extruder,
@@ -2840,6 +2843,9 @@ def printer_state_to_dict(
                 "serial_number": n.get("serial_number", ""),
                 "filament_color": n.get("filament_color", ""),
                 "filament_id": n.get("filament_id", ""),
+                # A push replaces the whole rack, so without this every one
+                # dropped the slot's material label (upstream 808e461c5).
+                "filament_type": n.get("filament_type", ""),
             }
             for n in (state.nozzle_rack or [])
         ],

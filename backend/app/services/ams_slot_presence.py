@@ -58,3 +58,22 @@ def spool_present(tray: Mapping[str, Any] | None) -> bool | None:
         return None
     exists = tray.get("exists")
     return exists if isinstance(exists, bool) else None
+
+
+def firmware_says_empty(present: bool | None, state: int | None) -> bool:
+    """Is the slot DEFINITELY empty: state 9 / 10 and no presence bit saying otherwise?
+
+    The assign path's question — "will the printer echo back what we are about
+    to configure?". ``state`` alone cannot answer it (see above), so the bit
+    overrules a 9; a bit reading EMPTY deliberately does not make a slot empty
+    on its own (a wrong bit position would silently stop a slot configuring).
+    """
+    return present is not True and state in (9, 10)
+
+
+def tray_definitely_empty(tray: Mapping[str, Any] | None) -> bool:
+    """``firmware_says_empty`` for a live tray dict; an unknown tray is not empty."""
+    if not isinstance(tray, Mapping):
+        return False
+    state = tray.get("state")
+    return firmware_says_empty(spool_present(tray), state if isinstance(state, int) else None)

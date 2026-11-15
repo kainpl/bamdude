@@ -874,6 +874,7 @@
   "Spoolman did not create a spool from the slot": "Spoolman не створив котушку зі слота",
   "Spoolman integration is not enabled": "Інтеграцію зі Spoolman не ввімкнено",
   "Spoolman is not reachable": "Spoolman недоступний",
+  "Spoolman is the inventory: assign spools to slots from Spoolman": "Облік котушок веде Spoolman: призначайте котушки на слоти зі Spoolman",
   "Spoolman not reachable": "Spoolman недоступний",
   "Spoolman rejected the request": "Spoolman відхилив запит",
   "Spoolman rename failed; local rename rolled back": "Не вдалося перейменувати у Spoolman; локальне перейменування скасовано",

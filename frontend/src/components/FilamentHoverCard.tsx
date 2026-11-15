@@ -141,6 +141,12 @@ interface InventoryConfig {
     displayName: string;
   } | null;
   isAssigned?: boolean;
+  /**
+   * Why no inventory can take an assignment for this slot right now (Spoolman
+   * mode with Spoolman unreachable). Assign is then shown disabled with this
+   * text — a control that vanishes reads as a permissions problem.
+   */
+  unavailableReason?: string;
 }
 
 interface ConfigureSlotConfig {
@@ -579,6 +585,17 @@ export function FilamentHoverCard({ data, children, disabled, className = '', sp
                           {t('inventory.unassignSpool')}
                         </button>
                       )}
+                    </>
+                  ) : inventory.unavailableReason ? (
+                    <>
+                      <button
+                        disabled
+                        className="w-full flex items-center justify-center gap-1.5 px-2 py-1.5 text-xs font-medium rounded bg-bambu-blue/20 text-bambu-blue opacity-50 cursor-not-allowed"
+                      >
+                        <Package className="w-3.5 h-3.5" />
+                        {t('inventory.assignSpool')}
+                      </button>
+                      <p className="text-[10px] text-bambu-gray">{inventory.unavailableReason}</p>
                     </>
                   ) : inventory.onAssignSpool ? (
                     <button

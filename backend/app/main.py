@@ -3774,6 +3774,7 @@ async def _on_ams_change(printer_id: int, ams_data: list):
                             cached_spools=cached_spools,
                             inventory_remaining=inv_remaining,
                             auto_add_unknown_rfid=auto_add_unknown_rfid,
+                            db=db,
                         )
                         if result is None and spool_tag and not auto_add_unknown_rfid:
                             # Spoolman skipped auto-create per user setting — surface
@@ -11906,6 +11907,18 @@ async def _application_lifespan(app: FastAPI):
 
         spoolman_enabled = await get_setting(db, "spoolman_enabled")
         spoolman_url = await get_setting(db, "spoolman_url")
+
+        # Built-in slot rows written while Spoolman mode was on (a hole closed
+        # since) — nothing else ever clears them. Best-effort.
+        try:
+            from backend.app.api.routes.settings import clear_stray_builtin_assignments
+
+            _stray = await clear_stray_builtin_assignments(db)
+            if _stray:
+                logging.warning("Startup: removed %d built-in slot assignment(s) left in Spoolman mode", _stray)
+        except Exception:  # noqa: BLE001 — never block startup on a clean-up
+            await db.rollback()
+            logging.exception("Startup: could not remove built-in slot assignments left in Spoolman mode")
 
         if spoolman_enabled and spoolman_enabled.lower() == "true" and spoolman_url:
             try:

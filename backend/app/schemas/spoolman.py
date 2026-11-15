@@ -1,4 +1,22 @@
-from pydantic import BaseModel, Field, model_validator
+from typing import Annotated
+
+from pydantic import AfterValidator, BaseModel, Field, model_validator
+
+
+def _slot_ams_id(value: int) -> int:
+    """The units ``spoolman_slot_assignments`` accepts (its CHECK is the authority).
+
+    0–7 standard AMS, 128–191 AMS-HT, 255 the external holder. Anything else
+    reached the INSERT and came back as a 500 — after Spoolman had already been
+    written on the link route (upstream c2bc41a5e).
+    """
+    if 0 <= value <= 7 or 128 <= value <= 191 or value == 255:
+        return value
+    raise ValueError("ams_id must be 0-7 (AMS), 128-191 (AMS-HT) or 255 (external)")
+
+
+SlotAmsId = Annotated[int, AfterValidator(_slot_ams_id)]
+SlotTrayId = Annotated[int, Field(ge=0, le=3)]
 
 
 class SpoolmanFilamentPatch(BaseModel):

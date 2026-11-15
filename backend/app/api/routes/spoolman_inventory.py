@@ -47,8 +47,14 @@ from backend.app.models.spoolman_k_profile import SpoolmanKProfile
 from backend.app.models.spoolman_slot_assignment import SpoolmanSlotAssignment
 from backend.app.models.user import User
 from backend.app.schemas.spool import SpoolKProfileBase, naive_utc
-from backend.app.schemas.spoolman import SpoolmanFilamentPatch, SpoolmanSlotAssignmentEnriched
+from backend.app.schemas.spoolman import (
+    SlotAmsId,
+    SlotTrayId,
+    SpoolmanFilamentPatch,
+    SpoolmanSlotAssignmentEnriched,
+)
 from backend.app.services import spool_drying
+from backend.app.services.ams_slot_presence import tray_definitely_empty
 from backend.app.services.location_service import (
     enrich_spool_dicts_with_location_id,
     maybe_sync_spoolman_locations,
@@ -450,9 +456,10 @@ class SpoolTagLinkRequest(BaseModel):
 class SpoolSlotAssignmentRequest(BaseModel):
     spoolman_spool_id: int = Field(..., gt=0)
     printer_id: int = Field(..., gt=0)
-    # ams_id 0–7 for physical AMS units; 255 = external/virtual spool extruder slot
-    ams_id: int = Field(..., ge=0, le=255)
-    tray_id: int = Field(..., ge=0, le=3)
+    # The slot ledger's own range (schemas/spoolman.SlotAmsId): refused here,
+    # before the journal or Spoolman is touched.
+    ams_id: SlotAmsId
+    tray_id: SlotTrayId
     # The human answered the mid-pause prompt with "this is a replacement" —
     # journal a manual runout boundary (see inventory.SpoolAssignmentCreate).
     mid_print_replacement: bool = False
@@ -1546,6 +1553,9 @@ async def sync_spoolman_ams_weights(
                 )
             skipped += 1
 
+    if synced:
+        # The Inventory page shows the weight this just changed.
+        await ws_manager.broadcast({"type": "inventory_changed"})
     return {"synced": synced, "skipped": skipped}
 
 
@@ -1571,6 +1581,10 @@ async def assign_spoolman_slot(
     # This prevents ghost rows pointing at non-existent spool IDs.
     async with _translate_spoolman_errors():
         spool = await client.get_spool(body.spoolman_spool_id)
+    # As the built-in route refuses: the ledger must not name a spool that is
+    # out of use — tag-less usage would be charged to it (upstream c2bc41a5e).
+    if spool.get("archived"):
+        raise HTTPException(status_code=400, detail="Cannot assign an archived spool")
 
     from backend.app.main import _get_ams_assignment_lock
     from backend.app.services.print_usage_journal import journal_lock
@@ -1740,7 +1754,8 @@ async def assign_spoolman_slot(
 
             # ONE identity path (spec A §5.2): the family catalog builds the
             # payload — family from the linked calibration when one exists,
-            # else the generic family of the material, inside the builder.
+            # else the preset stored on the spool, else a stand-in for the
+            # material; the precedence lives inside the builder.
             from backend.app.services.ams_backup_compatibility import (  # noqa: PLC0415
                 kprofile_allowed,
                 live_tray_for,
@@ -1754,6 +1769,7 @@ async def assign_spoolman_slot(
             plan = await build_slot_assignment(
                 db,
                 family_id=matching_fc.filament_id if matching_fc else None,
+                stored_preset=mapped.get("slicer_filament"),
                 material_override=tray_type,
                 color_rgba=tray_color,
                 temp_overrides=(mapped.get("nozzle_temp_min"), None),
@@ -1770,7 +1786,12 @@ async def assign_spoolman_slot(
             # masked — the one helper all three assignment paths share. The
             # actual plan stays the spool's truth; only what the printer is told
             # changes.
-            _, projection = await publish_projected_slot(
+            # A slot the firmware calls empty will not echo the filament back, so it is
+            # published (this path has no replay on insert) but not verified; and a
+            # publish that went out asks for a fresh report, so the verification has
+            # current telemetry instead of an idle printer's next push (upstream 53ef17dc5).
+            slot_live_tray = live_tray_for(state, body.ams_id, body.tray_id)
+            sent, projection = await publish_projected_slot(
                 db,
                 mqtt_client,
                 printer=printer,
@@ -1778,7 +1799,7 @@ async def assign_spoolman_slot(
                 ams_id=body.ams_id,
                 tray_id=body.tray_id,
                 actual_plan=plan,
-                live_tray=live_tray_for(state, body.ams_id, body.tray_id),
+                live_tray=slot_live_tray,
                 spool_tag_uid=mapped.get("tag_uid"),
                 spool_tray_uuid=mapped.get("tray_uuid"),
                 material=tray_type,
@@ -1789,7 +1810,10 @@ async def assign_spoolman_slot(
                 tray_sub_brands=tray_sub_brands,
                 tray_type_fallback=tray_type,
                 source="spoolman",
+                verify=not tray_definitely_empty(slot_live_tray),
             )
+            if sent:
+                mqtt_client.request_status_update()
 
             from backend.app.services.calibration_service import (  # noqa: PLC0415
                 apply_active_calibration_to_slot,
@@ -1951,7 +1975,7 @@ async def unassign_spoolman_slot(
 @router.get("/slot-assignments")
 async def get_spoolman_slot_assignment(
     printer_id: int = Query(..., gt=0),
-    ams_id: int = Query(..., ge=0, le=7),
+    ams_id: SlotAmsId = Query(...),
     tray_id: int = Query(..., ge=0, le=3),
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.INVENTORY_READ),

@@ -752,6 +752,54 @@ describe('useWebSocket hook', () => {
       vi.unstubAllGlobals();
     });
 
+    // The Inventory page's location column, the assign dialog's "occupied"
+    // list and the spool form read the WHOLE Spoolman ledger under a key of
+    // their own, which the card's prefix never matched — a slot change reached
+    // them only through a 30 s poll.
+    it('a slot assignment change also refreshes the whole-ledger key the Inventory page reads', async () => {
+      const { useWebSocket } = await import('../../hooks/useWebSocket');
+      const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries');
+
+      renderHook(() => useWebSocket(), { wrapper: createWrapper(queryClient) });
+      const ws = await waitForWs();
+      act(() => ws.open());
+
+      act(() => {
+        ws.simulateMessage({ type: 'spool_assignment_changed', printer_id: 1, ams_id: 0, tray_id: 1 });
+      });
+
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['spoolman-slot-assignments-all'] });
+      vi.unstubAllGlobals();
+    });
+
+    // A tag linked or unlinked in another tab (upstream 6c2731a6d): the card's
+    // tag → spool map and the link dialog's list follow `inventory_changed`.
+    it('an inventory change refreshes the tag map and the unlinked-spool list', async () => {
+      vi.useFakeTimers();
+      const { useWebSocket, INVALIDATION_DEBOUNCE_MS, INVALIDATION_STAGGER_MS } = await import(
+        '../../hooks/useWebSocket'
+      );
+      const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries');
+
+      renderHook(() => useWebSocket(), { wrapper: createWrapper(queryClient) });
+      const ws = await waitForWs();
+      act(() => ws.open());
+
+      act(() => {
+        ws.simulateMessage({ type: 'inventory_changed' });
+      });
+
+      await act(async () => {
+        vi.advanceTimersByTime(INVALIDATION_DEBOUNCE_MS + 12 * INVALIDATION_STAGGER_MS);
+      });
+
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['linked-spools'], refetchType: 'none' });
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['unlinked-spools'], refetchType: 'none' });
+
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    });
+
     // The RFID auto-assign rewrites the slot's assignment row too; it used to
     // wait out the same debounce, which any further event restarted (upstream
     // 7363d5fd). The spool list stays debounced.

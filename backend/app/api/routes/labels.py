@@ -409,7 +409,9 @@ async def render_spoolman_labels(
         raise HTTPException(503, "Spoolman not reachable")
 
     try:
-        all_spools = await client.get_spools()
+        # Archived ones too: the Inventory page shows and selects them, and one
+        # in the batch failed the whole print with a 404 (upstream c2bc41a5e).
+        all_spools = await client.get_all_spools(allow_archived=True)
     except Exception as exc:
         logger.warning("Spoolman fetch failed during label render: %s", exc)
         raise HTTPException(502, "Failed to fetch spools from Spoolman") from exc

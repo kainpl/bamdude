@@ -5,7 +5,7 @@ functionality that controls whether remaining_weight is updated.
 Also includes tests for is_bambu_lab_spool RFID detection.
 """
 
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
 
@@ -462,3 +462,149 @@ class TestSpoolmanClient:
             mock_close.assert_not_called()
             # Should sleep once (after first failed attempt)
             assert mock_sleep.call_count == 1
+
+
+class TestUpdateSpoolDoesNotStampLastUsed:
+    """Spoolman's ``last_used`` means print use (upstream f7bd06641).
+
+    ``update_spool`` stamped it on every call — and the AMS sync calls it for
+    every tray it recognises, so the Inventory page's Last Used column showed
+    when an AMS report was last processed. Print usage goes through ``/use``,
+    which sets it (measured on Spoolman 0.27.1; a plain PATCH leaves it alone).
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "kwargs",
+        [{}, {"remaining_weight": 420.0}, {"clear_location": True}, {"location": "Shelf A"}],
+    )
+    async def test_no_call_sends_it(self, kwargs):
+        client = SpoolmanClient("http://localhost:7912")
+        response = MagicMock()
+        response.json.return_value = {"id": 42}
+        with patch.object(client, "_request_spool", AsyncMock(return_value=response)) as request:
+            await client.update_spool(42, **kwargs)
+
+        assert "last_used" not in request.call_args.kwargs["json_body"]
+
+    @pytest.mark.asyncio
+    async def test_a_sync_of_a_recognised_tray_writes_nothing_but_what_it_was_asked(self):
+        client = SpoolmanClient("http://localhost:7912")
+        tray = AMSTray(
+            ams_id=0,
+            tray_id=0,
+            tray_type="PLA",
+            tray_sub_brands="PLA Basic",
+            tray_color="FF0000FF",
+            remain=50,
+            tag_uid="",
+            tray_uuid="A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4",
+            tray_info_idx="GFA00",
+            tray_weight=1000,
+        )
+        existing = {"id": 42, "extra": {"tag": '"A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4"'}}
+        response = MagicMock()
+        response.json.return_value = existing
+        with patch.object(client, "_request_spool", AsyncMock(return_value=response)) as request:
+            await client.sync_ams_tray(tray, "X1C", disable_weight_sync=True, cached_spools=[existing])
+
+        assert request.call_args.kwargs["json_body"] == {}
+
+
+def _bambu_tray(**over) -> AMSTray:
+    values = {
+        "ams_id": 0,
+        "tray_id": 0,
+        "tray_type": "PLA",
+        "tray_sub_brands": "PLA Basic",
+        "tray_color": "FF0000FF",
+        "remain": 50,
+        "tag_uid": "",
+        "tray_uuid": "A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4",
+        "tray_info_idx": "GFA00",
+        "tray_weight": 1000,
+        **over,
+    }
+    return AMSTray(**values)
+
+
+class TestABambuSpoolKeepsTheTraysPreset:
+    """The tray's filament preset travels with the Spoolman spool (upstream 5e3a2f278, #3433).
+
+    The slot plan reads ``extra.bambu_slicer_filament`` when no calibration is
+    linked; a spool the sync created carried only its tag, so assigning it to a
+    reader-less slot or the external holder configured Generic PLA.
+    """
+
+    @pytest.mark.asyncio
+    async def test_auto_create_stores_the_trays_preset_and_its_catalogue_name(self):
+        client = SpoolmanClient("http://localhost:7912")
+        with (
+            patch.object(client, "find_spool_by_tag", AsyncMock(return_value=None)),
+            patch.object(client, "_find_or_create_filament", AsyncMock(return_value={"id": 1})),
+            patch.object(client, "create_spool", AsyncMock(return_value={"id": 99})) as create,
+        ):
+            await client.sync_ams_tray(_bambu_tray(), "X1C", disable_weight_sync=True)
+
+        extra = create.call_args.kwargs["extra"]
+        assert extra["tag"] == '"A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4"'
+        assert extra["bambu_slicer_filament"] == '"GFA00"'
+        assert extra["bambu_slicer_filament_name"] == '"Bambu PLA Basic"'
+
+    @pytest.mark.asyncio
+    async def test_auto_create_without_a_preset_on_the_tray_stores_none(self):
+        client = SpoolmanClient("http://localhost:7912")
+        with (
+            patch.object(client, "find_spool_by_tag", AsyncMock(return_value=None)),
+            patch.object(client, "_find_or_create_filament", AsyncMock(return_value={"id": 1})),
+            patch.object(client, "create_spool", AsyncMock(return_value={"id": 99})) as create,
+        ):
+            await client.sync_ams_tray(_bambu_tray(tray_info_idx=""), "X1C", disable_weight_sync=True)
+
+        assert set(create.call_args.kwargs["extra"]) == {"tag"}
+
+    @pytest.mark.asyncio
+    async def test_a_tag_match_fills_a_missing_preset_once(self):
+        client = SpoolmanClient("http://localhost:7912")
+        existing = {"id": 42, "extra": {"tag": '"A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4"'}}
+        with (
+            patch.object(client, "merge_spool_extra", AsyncMock(return_value=existing)) as merge,
+            patch.object(client, "update_spool", AsyncMock(return_value=existing)),
+        ):
+            await client.sync_ams_tray(_bambu_tray(), "X1C", disable_weight_sync=True, cached_spools=[existing])
+
+        merge.assert_awaited_once_with(
+            42, {"bambu_slicer_filament": '"GFA00"', "bambu_slicer_filament_name": '"Bambu PLA Basic"'}
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("stored", ['"GFA01"', '"PFUS1234"'])
+    async def test_a_preset_already_set_is_left_alone(self, stored):
+        client = SpoolmanClient("http://localhost:7912")
+        existing = {
+            "id": 42,
+            "extra": {"tag": '"A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4"', "bambu_slicer_filament": stored},
+        }
+        with (
+            patch.object(client, "merge_spool_extra", AsyncMock()) as merge,
+            patch.object(client, "update_spool", AsyncMock(return_value=existing)),
+        ):
+            await client.sync_ams_tray(_bambu_tray(), "X1C", disable_weight_sync=True, cached_spools=[existing])
+
+        merge.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_fill_spoolman_refuses_does_not_break_the_sync(self):
+        from backend.app.services.spoolman import SpoolmanClientError
+
+        client = SpoolmanClient("http://localhost:7912")
+        existing = {"id": 42, "extra": {"tag": '"A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4"'}}
+        with (
+            patch.object(client, "merge_spool_extra", AsyncMock(side_effect=SpoolmanClientError("no", 400))),
+            patch.object(client, "update_spool", AsyncMock(return_value=existing)),
+        ):
+            result = await client.sync_ams_tray(
+                _bambu_tray(), "X1C", disable_weight_sync=True, cached_spools=[existing]
+            )
+
+        assert result == existing

@@ -15,6 +15,7 @@ import {
 import { ForecastPanel } from '../components/ForecastPanel';
 import { ListViewToggle } from '../components/ListViewToggle';
 import { shownView } from '../utils/viewModes';
+import { builtinAssignments } from '../utils/slotInventoryMode';
 import { SpoolUsageHistoryPanel } from '../components/SpoolUsageHistoryPanel';
 import { api, ApiError } from '../api/client';
 import type {
@@ -1371,11 +1372,16 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
     [showToast, t],
   );
 
-  const { data: assignments } = useQuery({
+  // Built-in slot rows are neither fetched nor used in Spoolman mode: their
+  // spool ids collide with Spoolman's and put a slot badge on an unrelated
+  // spool (upstream 62fad59fd, issue #3430).
+  const { data: fetchedAssignments } = useQuery({
     queryKey: ['spool-assignments'],
     queryFn: () => api.getAssignments(),
+    enabled: !spoolmanMode,
     refetchInterval: 30000,
   });
+  const assignments = builtinAssignments(spoolmanMode, fetchedAssignments);
 
   // Spoolman-mode slot assignments. spool.id IS the spoolman_spool_id, so this
   // feeds into the same assignmentMap that the LOCATION column reads.

@@ -7,14 +7,23 @@ import math
 import time
 import weakref
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from typing import Literal
 
 import httpx
 
+from backend.app.services.color_catalog_lookup import (
+    CatalogColor,
+    best_product_line_match,
+    resolve_bambu_color,
+    tray_product_line,
+)
 from backend.app.utils.color_utils import color_match_key, spoolman_color_hex
 
 logger = logging.getLogger(__name__)
+
+# "The caller asked no colour catalogue" — distinct from None, which is the
+# catalogue's own answer "no row for this colour".
+_COLOUR_NOT_RESOLVED = object()
 
 BAMBU_RFID_TAG_LENGTH = 32
 
@@ -555,7 +564,12 @@ class SpoolmanClient:
         clear_location: bool = False,
         extra: dict | None = None,
     ) -> dict:
-        """Update an existing spool in Spoolman, always setting last_used."""
+        """Update an existing spool in Spoolman.
+
+        ``last_used`` is NOT stamped (upstream f7bd06641): a sync, a location
+        change and a weighing are not use. Print usage goes through ``/use``,
+        which sets it itself.
+        """
         data: dict = {}
         if remaining_weight is not None:
             data["remaining_weight"] = remaining_weight
@@ -566,7 +580,6 @@ class SpoolmanClient:
         if extra:
             data["extra"] = extra
             await self._ensure_extra_fields(extra)
-        data["last_used"] = datetime.now(timezone.utc).isoformat()
 
         response = await self._request_spool("PATCH", spool_id, json_body=data, operation="update")
         return response.json()
@@ -1517,8 +1530,15 @@ class SpoolmanClient:
         inventory_remaining: float | None = None,
         spoolman_spool_id_hint: int | None = None,
         auto_add_unknown_rfid: bool = True,
+        db=None,
     ) -> dict | None:
-        """Sync one AMS tray to Spoolman; creates the spool on first sight, updates weight otherwise."""
+        """Sync one AMS tray to Spoolman; creates the spool on first sight, updates weight otherwise.
+
+        ``db`` is a session for the colour catalogue: with it a NEW Bambu roll is
+        matched to the filament of its own product line and its catalogue
+        colour name is stored on the spool (upstream cb924e5c4). Without one
+        the catalogue cannot be asked and the pick is material + colour alone.
+        """
         logger.debug(
             f"Processing {printer_name} AMS {tray.ams_id} tray {tray.tray_id}: "
             f"type={tray.tray_type}, idx={tray.tray_info_idx or 'none'}, "
@@ -1571,6 +1591,7 @@ class SpoolmanClient:
             if existing:
                 logger.info("Updating existing spool %s for tag %s...", existing["id"], spool_tag[:16])
                 await self.add_native_tags(existing, reel_uids, tag_format)
+                await self._fill_missing_tray_preset(existing, tray)
                 return await self.update_spool(
                     spool_id=existing["id"],
                     remaining_weight=None if disable_weight_sync else remaining,
@@ -1605,8 +1626,13 @@ class SpoolmanClient:
                 return None
 
             logger.info("Creating new spool in Spoolman for %s (tag: %s...)", tray.tray_sub_brands, spool_tag[:16])
+            catalog_color = _COLOUR_NOT_RESOLVED
             if is_bambu:
-                filament = await self._find_or_create_filament(tray)
+                if db is not None:
+                    catalog_color = await resolve_bambu_color(
+                        db, tray.tray_color, tray_product_line(tray.tray_sub_brands, tray.tray_info_idx)
+                    )
+                filament = await self._find_or_create_filament(tray, catalog_color)
                 filament_id = filament["id"] if filament else None
             else:
                 # Non-BL spool with custom RFID: use generic vendor lookup
@@ -1633,7 +1659,19 @@ class SpoolmanClient:
                 filament_id=filament_id,
                 remaining_weight=remaining,
                 comment="Created by BamDude",
-                extra={"tag": json.dumps(spool_tag)},
+                extra={
+                    "tag": json.dumps(spool_tag),
+                    **_tray_preset_extra(tray),
+                    # A Spoolman filament has no colour name; ours lives on the
+                    # spool, where the mapper reads it first. Without it the
+                    # list fell back to a hex-only lookup that cannot tell
+                    # Jade White (Basic) from Ivory White (Matte).
+                    **(
+                        {"bambu_color_name": json.dumps(catalog_color.name)}
+                        if isinstance(catalog_color, CatalogColor)
+                        else {}
+                    ),
+                },
             )
             # extra.tag stays written beside the native tags: an older Spoolman
             # reads nothing else, and a downgrade loses nothing.
@@ -1667,8 +1705,36 @@ class SpoolmanClient:
         )
         return None
 
-    async def _find_or_create_filament(self, tray: AMSTray) -> dict | None:
-        """Return a Bambu Lab filament matching the tray's material/color, creating it if absent."""
+    async def _fill_missing_tray_preset(self, spool: dict, tray: AMSTray) -> None:
+        """Give a tag-matched spool the tray's filament preset when it has none.
+
+        Once: a preset already set — by this, or by hand in the spool form —
+        stays. Best-effort; a refusal must not break the sync it rides on.
+        """
+        preset = _tray_preset_extra(tray)
+        if not preset or ((spool.get("extra") or {}).get("bambu_slicer_filament") or "").strip('"'):
+            return
+        try:
+            await self.merge_spool_extra(spool["id"], preset)
+        except (SpoolmanNotFoundError, SpoolmanUnavailableError, SpoolmanClientError) as exc:
+            logger.info("Could not store the tray's preset on Spoolman spool %s: %s", spool.get("id"), exc)
+
+    async def _find_or_create_filament(self, tray: AMSTray, catalog_color=_COLOUR_NOT_RESOLVED) -> dict | None:
+        """Return the Bambu Lab filament for this tray's product line, creating it if absent.
+
+        Material plus colour is not an identity: PLA Basic Black and PLA Matte
+        Charcoal are both PLA at ``000000``, so a Matte roll was hung on the
+        Basic filament and read as Basic everywhere (upstream cb924e5c4, #2907).
+        The line is in the filament's NAME, ranked by ``product_line_rank``.
+
+        ``catalog_color`` is what the colour catalogue says about the roll —
+        ``None`` when it has no row — resolved by the caller so this client stays
+        HTTP-only. A caller that asked no catalogue at all (no session) leaves
+        it out and gets the pick as it was: the first material + colour match.
+        """
+        resolved = catalog_color is not _COLOUR_NOT_RESOLVED
+        color_name = catalog_color.name if isinstance(catalog_color, CatalogColor) else None
+        product_line = tray_product_line(tray.tray_sub_brands, tray.tray_info_idx)
         bambu_vendor_id = await self.ensure_bambu_vendor()
         material_upper = tray.tray_type.upper()
         # The match key is the stored shape (#2912): an opaque tray still finds
@@ -1678,13 +1744,19 @@ class SpoolmanClient:
 
         # Search internal filaments — only match Bambu Lab vendor.
         filaments = await self.get_filaments()
+        same_colour: list[dict] = []
         for filament in filaments:
             fil_vendor_id = filament.get("vendor_id") or filament.get("vendor", {}).get("id")
             if fil_vendor_id != bambu_vendor_id:
                 continue
             fil_material = filament.get("material") or ""
             if fil_material.upper() == material_upper and color_match_key(filament.get("color_hex")) == color:
-                return filament
+                if not resolved:
+                    return filament
+                same_colour.append(filament)
+        existing = best_product_line_match(same_colour, color_name, product_line, tray.tray_type)
+        if existing is not None:
+            return existing
 
         # Search external filaments (SpoolmanDB) — restrict to Bambu Lab.
         # The ``/api/v1/external/filament`` endpoint returns the full multi-
@@ -1708,7 +1780,16 @@ class SpoolmanClient:
             if fil_material.upper() == material_upper and color_match_key(filament.get("color_hex")) == color:
                 bambu_candidates.append(filament)
 
-        if bambu_candidates:
+        if resolved:
+            # The library folds the line into the name ("Matte Charcoal") or
+            # gives the bare colour ("Black"); the same ranking picks the entry
+            # of the roll's own line. No ranked entry means the library cannot
+            # say what this roll is — it is then built from what the printer
+            # reported, below, never from whichever candidate came first.
+            chosen = best_product_line_match(bambu_candidates, color_name, product_line, tray.tray_type)
+            if chosen is not None:
+                return await self._create_filament_from_external(chosen, tray)
+        elif bambu_candidates:
             # Prefer the entry whose ``name`` matches the AMS
             # ``tray_sub_brands`` (e.g. "PLA Basic", "Support for PLA/PETG
             # Black") so the more specific variant wins over a generic
@@ -1722,7 +1803,7 @@ class SpoolmanClient:
         # Not found in either source — create a new Bambu Lab filament from
         # scratch.
         return await self.create_filament(
-            name=tray.tray_sub_brands or tray.tray_type,
+            name=product_line or tray.tray_type,
             vendor_id=bambu_vendor_id,
             material=tray.tray_type,
             color_hex=color,
@@ -1730,10 +1811,17 @@ class SpoolmanClient:
         )
 
     async def _create_filament_from_external(self, external: dict, tray: AMSTray) -> dict | None:
-        """Create an internal Spoolman filament from an external library entry."""
+        """Create an internal Spoolman filament from an external library entry.
+
+        The entry supplies what the printer cannot (density, label weight); the
+        NAME is the tray's product line, as for a filament built from scratch,
+        so both read the same subtype. The library's own name ("Matte
+        Charcoal") is a colour with the line folded in, and the colour name is
+        stored on the spool instead.
+        """
         vendor_id = await self.ensure_bambu_vendor()
         return await self.create_filament(
-            name=external.get("name", tray.tray_sub_brands),
+            name=tray_product_line(tray.tray_sub_brands, tray.tray_info_idx) or external.get("name") or tray.tray_type,
             vendor_id=vendor_id,
             material=external.get("material", tray.tray_type),
             # `or`, not a two-argument get: an entry carrying the key with an
@@ -1744,6 +1832,28 @@ class SpoolmanClient:
             # 1.24 inside create_filament (#1330).
             density=external.get("density"),
         )
+
+
+def _tray_preset_extra(tray: AMSTray) -> dict:
+    """The tray's filament preset as Spoolman spool extras (JSON-encoded), or nothing.
+
+    ``bambu_slicer_filament`` is what the slot plan reads when no calibration
+    is linked (upstream 5e3a2f278, issue #3433): without it a Bambu spool the
+    sync created was configured as the generic of its material on any slot
+    without a reader. The name comes from our family catalogue, the tray's own
+    wording otherwise.
+    """
+    from backend.app.utils import filament_catalog
+
+    preset_id = (tray.tray_info_idx or "").strip()
+    if not preset_id:
+        return {}
+    family = filament_catalog.get_family(preset_id)
+    name = (family.alias if family else "") or (tray.tray_sub_brands or "").strip()
+    extra = {"bambu_slicer_filament": json.dumps(preset_id)}
+    if name:
+        extra["bambu_slicer_filament_name"] = json.dumps(name)
+    return extra
 
 
 class ArchivedTagIndex:

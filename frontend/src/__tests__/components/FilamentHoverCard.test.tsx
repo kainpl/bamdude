@@ -336,6 +336,25 @@ describe('FilamentHoverCard', () => {
     expect(assign.compareDocumentPosition(configure)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
   });
 
+  // Spoolman mode with Spoolman unreachable: neither inventory can take an
+  // assignment, and a control that vanishes reads as a permissions problem.
+  it('shows Assign disabled with the reason when no inventory can take it', async () => {
+    renderWithHover(
+      <FilamentHoverCard
+        data={baseFilamentData}
+        inventory={{ assignedSpool: null, unavailableReason: 'Spoolman is unreachable' }}
+      >
+        <div>trigger</div>
+      </FilamentHoverCard>
+    );
+    vi.advanceTimersByTime(100);
+    await waitFor(() => expect(screen.getByText(/assign spool/i)).toBeInTheDocument());
+
+    expect(screen.getByText(/assign spool/i).closest('button')).toBeDisabled();
+    expect(screen.getByText('Spoolman is unreachable')).toBeInTheDocument();
+    expect(screen.queryByText(/unassign/i)).not.toBeInTheDocument();
+  });
+
   it('lists Assign Spool above Configure on an empty slot too', async () => {
     const result = render(
       <EmptySlotHoverCard
