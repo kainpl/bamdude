@@ -6,6 +6,7 @@ import { api } from '../api/client';
 import type { SpoolUsageListItem } from '../api/client';
 import { PaginationBar } from './PaginationBar';
 import { useToast } from '../contexts/ToastContext';
+import { useAuth } from '../contexts/AuthContext';
 import { getSwatchStyle, resolveSpoolColorName } from '../utils/colors';
 import { getCurrencySymbol } from '../utils/currency';
 import { formatDateTime, type DateFormat, type TimeFormat } from '../utils/date';
@@ -136,6 +137,7 @@ export function SpoolUsageHistoryPanel({ search = '', onClearSearch, onOpenSpool
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { showToast } = useToast();
+  const { hasPermission } = useAuth();
 
   const [debouncedSearch, setDebouncedSearch] = useState(search);
   const [statuses, setStatuses] = useState<string[]>([]);
@@ -387,14 +389,17 @@ export function SpoolUsageHistoryPanel({ search = '', onClearSearch, onOpenSpool
               url: source?.previous_url ?? '',
             })}
           </span>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => keepPreviousMutation.mutate()}
-            disabled={keepPreviousMutation.isPending}
-          >
-            {t('inventory.usageView.keepPreviousSource')}
-          </Button>
+          {/* Saying "it is the same database" is a settings decision. */}
+          {hasPermission('settings:update') && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => keepPreviousMutation.mutate()}
+              disabled={keepPreviousMutation.isPending}
+            >
+              {t('inventory.usageView.keepPreviousSource')}
+            </Button>
+          )}
         </div>
       )}
       {/* Filter chips row — segmented groups, chip dropdowns, hairline
