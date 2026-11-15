@@ -17,6 +17,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from backend.app.services.print_execution import StartDecision
+
 
 class TestPrintStartLogic:
     """Test print start callback logic without database integration."""
@@ -29,15 +31,30 @@ class TestPrintStartLogic:
             patch("backend.app.main.notification_service") as mock_notif,
             patch("backend.app.main.smart_plug_manager") as mock_plug,
             patch("backend.app.main.ws_manager") as mock_ws,
+            # The start is first decided against the durable executions; a
+            # mocked session has none to read, so the decision is given: a
+            # print nobody dispatched, with nothing older to close.
+            patch(
+                "backend.app.services.print_execution.decide_start",
+                new=AsyncMock(
+                    return_value=StartDecision(
+                        current_id=None, current_identity=None, old=(), reason="new", epoch=0, observation=None
+                    )
+                ),
+            ),
+            patch("backend.app.services.print_execution.recheck_start", new=AsyncMock()),
         ):
             mock_notif.on_print_start = AsyncMock()
             mock_plug.on_print_start = AsyncMock()
             mock_ws.send_print_start = AsyncMock()
 
-            # Mock the database session
+            # Mock the database session. ``__aexit__`` answers False: a bare
+            # AsyncMock() answers a truthy mock, which SWALLOWS whatever is
+            # raised inside ``async with`` and lets the callback run on with
+            # half its work undone.
             mock_session = AsyncMock()
             mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-            mock_session.__aexit__ = AsyncMock()
+            mock_session.__aexit__ = AsyncMock(return_value=False)
             mock_session.execute = AsyncMock(return_value=MagicMock(scalar_one_or_none=MagicMock(return_value=None)))
             mock_session_maker.return_value = mock_session
 

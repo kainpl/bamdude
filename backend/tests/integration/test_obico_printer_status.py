@@ -69,21 +69,44 @@ class TestWhatItExposes:
 
         assert body["monitored_printers"] is None
 
-    async def test_the_error_string_stays_behind_settings_read(self, quiet_service) -> None:
-        """Error strings embed configured URLs — the ML API base, the external
-        URL — so they are configuration wearing a different hat."""
+    async def test_the_error_stays_behind_settings_read(self, quiet_service) -> None:
+        """What went wrong is configuration wearing a different hat, so only a
+        reader of the settings is told there is an error at all."""
         as_operator = await obico_routes.get_printer_status(user=_user("printers:read"))
         as_admin = await obico_routes.get_printer_status(user=_user("printers:read", "settings:read"))
 
         assert as_operator["last_error"] is None
-        assert "ml.internal" in as_admin["last_error"]
+        assert as_admin["last_error"]
+
+    async def test_no_reader_is_handed_a_configured_address(self, quiet_service) -> None:
+        """The raw error embeds the ML API base and whatever the peer answered.
+        Even a settings reader gets the category, never that text: the answer is
+        cached by browsers and proxies the configuration never passes through."""
+        for user in (_user("printers:read", "settings:read"), None):
+            body = await obico_routes.get_printer_status(user=user)
+
+            assert body["last_error"] == "Obico failure detection is temporarily unavailable."
+            assert "ml.internal" not in body["last_error"]
+
+    async def test_an_actionable_error_keeps_its_category(self, monkeypatch, quiet_service) -> None:
+        """A failed ML call still says which printer and what to check — without the address."""
+        monkeypatch.setattr(
+            obico_detection_service,
+            "_last_error",
+            "ML API call failed for printer 3: connect to http://ml.internal:3333",
+        )
+
+        body = await obico_routes.get_printer_status(user=_user("printers:read", "settings:read"))
+
+        assert body["last_error"].startswith("ML API call failed for printer 3.")
+        assert "ml.internal" not in body["last_error"]
 
     async def test_an_unauthenticated_deployment_still_sees_the_error(self, quiet_service) -> None:
         """With auth off there is nobody to withhold it from, and hiding it would
         make a single-user install harder to debug for no gain."""
         body = await obico_routes.get_printer_status(user=None)
 
-        assert "ml.internal" in body["last_error"]
+        assert body["last_error"]
 
 
 class TestTheContract:
