@@ -12480,6 +12480,8 @@ export default {
     safetyMarginHintGApprox: ' ≈ {{days}}d at current rate.',
     individualSpools: 'Individual spools',
     individualSpoolsFailed: 'Could not load the spools of this SKU',
+    loadFailed: 'Could not load the forecast',
+    spoolmanUnreachable: 'Spoolman is not answering, so there is no forecast to show: the stock is kept there',
     retry: 'Retry',
     labelWeight: 'Label',
     spoolCount_one: '{{count}} spool',

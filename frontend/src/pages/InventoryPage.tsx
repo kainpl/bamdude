@@ -838,14 +838,14 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
   const queryClient = useQueryClient();
   const { showToast } = useToast();
   const { hasPermission, loading: authLoading } = useAuth();
-  // Forecast tab gated on perm + non-Spoolman mode (Spoolman proxies spools, so we
-  // can't read spool_usage_history through the iframe). `spoolmanModeReady` keeps
-  // the answer NO until the mode is actually known — on a cold load spoolmanMode
-  // reads false while the settings are still in flight, and that window must not
-  // mount the ForecastPanel (whose local-inventory feed would fire once) in a
-  // session that turns out to be Spoolman (task-5 review, Minor 1).
+  // Forecast tab gated on the permission, in both inventories: the server's
+  // engine forecasts the Spoolman spools in Spoolman mode and the built-in ones
+  // otherwise. `spoolmanModeReady` keeps the answer NO until the mode is
+  // actually known — on a cold load spoolmanMode reads false while the settings
+  // are still in flight, and the panel must not mount (and ask the built-in
+  // spool lookups) in a session that turns out to be Spoolman.
   const canViewForecast =
-    !authLoading && spoolmanModeReady && !spoolmanMode && hasPermission('inventory:forecast_read');
+    !authLoading && spoolmanModeReady && hasPermission('inventory:forecast_read');
   const [searchParams, setSearchParams] = useSearchParams();
   const [formModal, setFormModal] = useState<{ spool?: InventorySpool | null; mode: SpoolFormMode } | null>(null);
   const deepLinkHandled = useRef(false);
@@ -2308,8 +2308,6 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
             { value: 'cards', icon: LayoutGrid, label: t('inventory.cards') },
             ...(spoolmanModeReady ? [
               { value: 'history' as const, icon: History, label: t('inventory.usageHistoryTab') },
-            ] : []),
-            ...(!spoolmanMode && spoolmanModeReady ? [
               { value: 'forecast' as const, icon: canViewForecast ? TrendingUp : Lock, label: t('forecast.title'), disabled: !canViewForecast, hint: t('forecast.noReadAccess') },
             ] : []),
           ]} />
@@ -2888,11 +2886,11 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
            mounted, and therefore fetching /inventory/forecast, only while
            this tab is open. The canViewForecast guard keeps a stale
            PERSISTED viewMode from mounting the panel where the tab itself
-           is unreachable — above all Spoolman mode, where the forecast
-           endpoints would compute over the LOCAL inventory under a Spoolman
-           UI (task-5 review, Minor 1); it falls back to the table below
-           instead. */
-        <ForecastPanel />
+           is unreachable; it falls back to the table below instead. In
+           Spoolman mode the same endpoints forecast the Spoolman spools
+           (the server picks the inventory), and the panel's own spool
+           lookups go to the Spoolman list. */
+        <ForecastPanel spoolmanMode={spoolmanMode} />
       ) : historyViewActive ? (
         /* The farm-wide usage ledger. Server-driven end to end — page, order,
            filters, search and totals all decided by the active inventory's

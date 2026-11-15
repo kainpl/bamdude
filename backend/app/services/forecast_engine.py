@@ -12,6 +12,17 @@ finishing (decay-weighted rate, variance, safety stock, ROP, dates, alert
 flags). The post-aggregation set is tens of rows, so "finishing in Python" is
 honest, not lazy.
 
+Two spool sources feed that one pipeline (upstream 1d86cff5a, #3407). The
+built-in inventory: SQL over ``spool`` + ``spool_usage_history``
+(``_internal_groups``). Spoolman mode: the Spoolman spool list for stock and
+consumption, ``spoolman_usage_history`` for the day buckets
+(``_spoolman_groups``). Both fill the same ``_Group`` and are finished by the
+same functions — there is no second engine, and no forecast math in the
+browser. The engine decides the source itself (``spoolman_is_inventory``), so
+every consumer — list, chart, logistics, CSV, alert tick — follows the mode
+without knowing it. The sources never mix: the two inventories number their
+spools independently (upstream 704919339).
+
 Contract of record: ``backend/tests/test_forecast_engine.py`` (Task 1) — the
 frozen ``forecast_vectors/rate_vectors.json`` is the arbiter for the rate math
 (measured by executing the pre-refactor implementation); the finishing
@@ -565,20 +576,10 @@ class _Group:
         self.last_usage_at: datetime | None = None
 
 
-async def compute_forecast_full(
-    db: AsyncSession, *, now: datetime | None = None, reserved: Needs | None = None
-) -> ForecastResult:
-    """Every SKU's forecast, fully finished, plus the reserved need no SKU could take.
-
-    ``reserved`` is the farm's need (``filament_needs.needs_grams_of_farm``);
-    ``None`` loads it, an explicit ``Needs()`` means "no orders" - the tests'
-    way of pinning the zero invariant. Consumers: the forecast list endpoint
-    (this), and ``compute_forecast`` for everything that only wants rows.
-    """
-    now = _as_utc(now) or now_utc()
-    now_naive = now.astimezone(timezone.utc).replace(tzinfo=None)
-    window_start = now_naive - timedelta(days=USAGE_WINDOW_DAYS)
-
+async def _internal_groups(
+    db: AsyncSession, *, now: datetime, window_start: datetime
+) -> dict[tuple[str, str, str, str], _Group]:
+    """The SKU groups of the built-in inventory: SQL over ``spool`` and its usage history."""
     # ── SQL layer ────────────────────────────────────────────────────────────
     # Per-spool clamps stay INSIDE the SUM: clamping after summing would let an
     # over-reset spool's negative eat a healthy spool's grams (the frozen
@@ -662,10 +663,6 @@ async def compute_forecast_full(
 
     history_rows = (await db.execute(_day_bucket_query(window_start, exclude_reset_spools=True))).all()
 
-    global_lead_time = await _global_lead_time_days(db)
-    settings_rows = list((await db.execute(select(FilamentSkuSettings))).scalars().all())
-    settings_by_key = {sku_key(r.material, r.subtype, r.brand, r.color_name): r for r in settings_rows}
-
     # ── Merge the raw-tuple aggregates into collapsed groups ─────────────────
     groups: dict[tuple[str, str, str, str], _Group] = {}
 
@@ -717,6 +714,229 @@ async def compute_forecast_full(
         g = _group(row.material, row.subtype, row.brand, row.color_name)
         day = date.fromisoformat(str(row.day))
         g.buckets[day] = g.buckets.get(day, 0.0) + float(row.grams or 0.0)
+
+    return groups
+
+
+class ForecastSourceUnavailable(Exception):
+    """Spoolman is the inventory and did not hand its spools over.
+
+    Raised instead of forecasting an empty shelf: "no stock, no rate" would read
+    as a farm with nothing to reorder. Routes answer 503 ``spoolman_unreachable``;
+    the alert tick sends nothing and stamps nothing.
+    """
+
+
+async def spoolman_is_inventory(db: AsyncSession) -> bool:
+    """Whether Spoolman, not the local ``spool`` table, is the inventory the operator manages."""
+    raw = (await db.execute(select(Settings.value).where(Settings.key == "spoolman_enabled"))).scalar_one_or_none()
+    return (raw or "").lower() == "true"
+
+
+async def _fetch_spoolman_spools(db: AsyncSession) -> list[dict]:
+    """Every Spoolman spool, archived included — the Spoolman source's one remote read."""
+    from backend.app.services.spoolman import (  # noqa: PLC0415
+        SpoolmanClientError,
+        SpoolmanUnavailableError,
+        get_spoolman_client,
+        init_spoolman_client,
+    )
+
+    url = (
+        (await db.execute(select(Settings.value).where(Settings.key == "spoolman_url"))).scalar_one_or_none() or ""
+    ).strip()
+    if not url:
+        raise ForecastSourceUnavailable("Spoolman URL is not configured")
+    try:
+        client = await get_spoolman_client()
+        if not client or client.base_url != url.rstrip("/"):
+            client = await init_spoolman_client(url)
+        spools = await client.get_all_spools(allow_archived=True)
+    except (SpoolmanUnavailableError, SpoolmanClientError, ValueError, OSError) as exc:
+        raise ForecastSourceUnavailable(str(exc) or type(exc).__name__) from exc
+    if not isinstance(spools, list):
+        raise ForecastSourceUnavailable("Spoolman returned no spool list")
+    return spools
+
+
+def _spoolman_instant(value) -> datetime | None:
+    """A Spoolman timestamp as naive UTC (what the SQL side hands over), or None."""
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed.astimezone(timezone.utc).replace(tzinfo=None) if parsed.tzinfo is not None else parsed
+
+
+class _SpoolmanSpool(NamedTuple):
+    """One Spoolman spool, reduced to what the forecast reads."""
+
+    id: int
+    key: tuple[str, str, str, str]
+    registered: str | None
+    reset: bool
+
+
+async def _spoolman_stock(db: AsyncSession) -> list[tuple[dict, dict]]:
+    """``(raw spool, mapped spool)`` for every Spoolman spool, id-ordered.
+
+    Mapped by the inventory list's own function, so a spool's material, brand,
+    colour, weights and "consumed since reset" are the figures the Filaments
+    page shows for it — never a second reading of Spoolman's fields.
+    """
+    from backend.app.api.routes._spoolman_helpers import _map_spoolman_spool  # noqa: PLC0415
+
+    stock: list[tuple[dict, dict]] = []
+    for raw in await _fetch_spoolman_spools(db):
+        if not isinstance(raw, dict):
+            continue
+        try:
+            stock.append((raw, _map_spoolman_spool(raw)))
+        except (ValueError, TypeError, AttributeError):
+            continue  # a malformed spool is skipped by the list too
+    stock.sort(key=lambda pair: pair[1]["id"])
+    return stock
+
+
+async def _own_spoolman_rows(
+    db: AsyncSession, spools: dict[int, _SpoolmanSpool]
+) -> list[tuple[_SpoolmanSpool, datetime, float]]:
+    """The usage rows that belong to the spools Spoolman holds NOW.
+
+    Only the current source's rows (a previous Spoolman address is another
+    database), only for ids that still exist there, and only the rows
+    ``spoolman_usage_history.belongs_to`` gives the spool holding the id — an
+    earlier holder's prints are not its own. Never ``spool_usage_history``:
+    that table is keyed by built-in spool ids (upstream 704919339).
+    """
+    from backend.app.models.spoolman_usage_history import SpoolmanUsageHistory  # noqa: PLC0415
+    from backend.app.services import spoolman_usage_history  # noqa: PLC0415
+
+    token = await spoolman_usage_history.source_token(db)
+    if token is None or not spools:
+        return []
+    rows = (
+        await db.execute(
+            select(
+                SpoolmanUsageHistory.spoolman_spool_id,
+                SpoolmanUsageHistory.spool_registered,
+                SpoolmanUsageHistory.created_at,
+                SpoolmanUsageHistory.weight_used,
+            ).where(SpoolmanUsageHistory.source_token == token)
+        )
+    ).all()
+    own: list[tuple[_SpoolmanSpool, datetime, float]] = []
+    for spool_id, row_registered, created_at, grams in rows:
+        spool = spools.get(spool_id)
+        if spool is None or created_at is None:
+            continue
+        if not spoolman_usage_history.belongs_to(row_registered, created_at, spool.registered):
+            continue
+        own.append((spool, created_at, float(grams or 0.0)))
+    return own
+
+
+async def _spoolman_groups(
+    db: AsyncSession, *, now: datetime, window_start: datetime
+) -> dict[tuple[str, str, str, str], _Group]:
+    """The SKU groups of the Spoolman inventory — the same ``_Group`` the SQL source fills.
+
+    Stock and consumption come from the Spoolman spool list; the day buckets
+    and the retention mark from the Spoolman spools' own usage rows. Every rule
+    mirrors ``_internal_groups``: remaining and label weight count live spools
+    only, consumption is clamped per spool, a reset spool leaves the history
+    tier, first use is Spoolman's ``first_used``, else the spool's earliest own
+    row, else its registration.
+    """
+    stock = await _spoolman_stock(db)
+    groups: dict[tuple[str, str, str, str], _Group] = {}
+    by_id: dict[int, _SpoolmanSpool] = {}
+    for raw, mapped in stock:
+        fields = (mapped.get("material") or None, mapped.get("subtype"), mapped.get("brand"), mapped.get("color_name"))
+        key = sku_key(*fields)
+        used = float(mapped.get("weight_used") or 0.0)
+        baseline = float(mapped.get("weight_used_baseline") or 0.0)
+        by_id[mapped["id"]] = _SpoolmanSpool(
+            id=mapped["id"], key=key, registered=raw.get("registered") or None, reset=baseline != 0.0
+        )
+
+        g = groups.setdefault(key, _Group())
+        if g.fields is None:
+            g.fields = fields
+        label = float(mapped.get("label_weight") or 0)
+        archived_at = _spoolman_instant(mapped.get("archived_at"))
+        live = not raw.get("archived")
+        g.all_spools += 1
+        g.all_label_g += label
+        g.used_g += max(0.0, used - baseline)
+        rgba = mapped.get("rgba")
+        if live:
+            g.live_spools += 1
+            g.label_g += label
+            g.remaining_g += max(0.0, label - used)
+            g.spool_ids.append(mapped["id"])
+            if g.rgba_live is None and rgba:
+                g.rgba_live = rgba
+        else:
+            if g.rgba_archived is None and rgba:
+                g.rgba_archived = rgba
+            if archived_at is not None:
+                g.newest_archived_at = (
+                    archived_at if g.newest_archived_at is None else max(g.newest_archived_at, archived_at)
+                )
+
+    own_rows = await _own_spoolman_rows(db, by_id)
+    first_row: dict[int, datetime] = {}
+    for spool, created_at, grams in own_rows:
+        g = groups[spool.key]
+        g.last_usage_at = created_at if g.last_usage_at is None else max(g.last_usage_at, created_at)
+        first_row[spool.id] = min(first_row.get(spool.id, created_at), created_at)
+        if created_at >= window_start and not spool.reset:
+            day = created_at.date()
+            g.buckets[day] = g.buckets.get(day, 0.0) + grams
+
+    for raw, mapped in stock:
+        span = usage_span(
+            float(mapped.get("weight_used") or 0.0) - float(mapped.get("weight_used_baseline") or 0.0),
+            first_use=_spoolman_instant(raw.get("first_used")) or first_row.get(mapped["id"]),
+            created_at=_spoolman_instant(mapped.get("created_at")),
+            last_used=_spoolman_instant(raw.get("last_used")),
+            archived_at=_spoolman_instant(mapped.get("archived_at")) if raw.get("archived") else None,
+            now=now,
+        )
+        if span is not None:
+            groups[by_id[mapped["id"]].key].spans.append(span)
+
+    return groups
+
+
+async def compute_forecast_full(
+    db: AsyncSession, *, now: datetime | None = None, reserved: Needs | None = None
+) -> ForecastResult:
+    """Every SKU's forecast, fully finished, plus the reserved need no SKU could take.
+
+    ``reserved`` is the farm's need (``filament_needs.needs_grams_of_farm``);
+    ``None`` loads it, an explicit ``Needs()`` means "no orders" - the tests'
+    way of pinning the zero invariant. Consumers: the forecast list endpoint
+    (this), and ``compute_forecast`` for everything that only wants rows.
+    """
+    now = _as_utc(now) or now_utc()
+    now_naive = now.astimezone(timezone.utc).replace(tzinfo=None)
+    window_start = now_naive - timedelta(days=USAGE_WINDOW_DAYS)
+
+    # ── One of two spool sources, the same groups either way ─────────────────
+    # Spoolman mode reads Spoolman's spools and their own usage rows; the
+    # built-in inventory reads the local tables. Neither reads the other's.
+    if await spoolman_is_inventory(db):
+        groups = await _spoolman_groups(db, now=now, window_start=window_start)
+    else:
+        groups = await _internal_groups(db, now=now, window_start=window_start)
+
+    global_lead_time = await _global_lead_time_days(db)
+    settings_rows = list((await db.execute(select(FilamentSkuSettings))).scalars().all())
+    settings_by_key = {sku_key(r.material, r.subtype, r.brand, r.color_name): r for r in settings_rows}
 
     # ── Project what active orders have promised onto the live groups ────────
     if reserved is None:
@@ -851,6 +1071,26 @@ async def usage_day_series(
 
     wanted = {sku_key(*key): key for key in sku_keys}
     series: dict[tuple, dict[date, float]] = {key: {} for key in sku_keys}
+
+    if await spoolman_is_inventory(db):
+        spools = {
+            mapped["id"]: _SpoolmanSpool(
+                id=mapped["id"],
+                key=sku_key(
+                    mapped.get("material") or None, mapped.get("subtype"), mapped.get("brand"), mapped.get("color_name")
+                ),
+                registered=raw.get("registered") or None,
+                reset=False,
+            )
+            for raw, mapped in await _spoolman_stock(db)
+        }
+        for spool, created_at, grams in await _own_spoolman_rows(db, spools):
+            target = wanted.get(spool.key)
+            if target is None or created_at < window_start:
+                continue
+            bucket = series[target]
+            bucket[created_at.date()] = bucket.get(created_at.date(), 0.0) + grams
+        return {key: sorted(buckets.items()) for key, buckets in series.items()}
 
     rows = (await db.execute(_day_bucket_query(window_start, exclude_reset_spools=False))).all()
     for row in rows:

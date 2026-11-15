@@ -26,9 +26,12 @@ panel was right and the service was the bug):
   a stored ``kg`` as *days*;
 * the delta-tier rate runs over ALL spools including archived, and the usage
   window is 90 days of time rather than the newest 5000 rows globally;
-* under Spoolman the tick exits early — the whole Inventory tab (Forecast
-  included) is a Spoolman iframe then, and the local tables this forecast
-  reads are not the inventory the operator manages.
+* under Spoolman the tick forecasts the SPOOLMAN inventory (upstream 1d86cff5a,
+  #3407): the engine reads Spoolman's spools and their own usage rows there,
+  never the local tables, which are not the inventory the operator manages.
+  It used to exit early, when no forecast existed in that mode. A Spoolman
+  that does not answer is not a recovery: the tick sends nothing and clears
+  no stamp.
 """
 
 from __future__ import annotations
@@ -43,10 +46,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.database import async_session
 from backend.app.models.filament_sku_settings import FilamentSkuSettings
-from backend.app.models.settings import Settings
 from backend.app.services.forecast_engine import (
     DEFAULT_SAFETY_MARGIN_UNIT,
     DEFAULT_SAFETY_MARGIN_VALUE,
+    ForecastSourceUnavailable,
     compute_forecast,
     sku_key,
 )
@@ -91,11 +94,6 @@ class SkuAlert(NamedTuple):
     rate_g_day: float
     days_left: int
     lead_time_days: int
-
-
-async def _spoolman_is_enabled(db: AsyncSession) -> bool:
-    raw = (await db.execute(select(Settings.value).where(Settings.key == "spoolman_enabled"))).scalar_one_or_none()
-    return (raw or "").lower() == "true"
 
 
 async def find_stock_alerts(db: AsyncSession, now: datetime | None = None) -> list[SkuAlert]:
@@ -168,15 +166,16 @@ class StockForecastAlerts:
 
     async def tick(self) -> None:
         async with async_session() as db:
-            if await _spoolman_is_enabled(db):
-                # Under Spoolman the local spool tables are not the inventory —
-                # forecasting them would alert on a parallel universe (spec §2.5;
-                # the pre-refactor task only survived because the table stayed
-                # empty, which is a coincidence, not a guard).
-                return
-
             now = datetime.now(timezone.utc)
-            alerts = await find_stock_alerts(db, now)
+            try:
+                # The engine picks the inventory: under Spoolman it forecasts
+                # Spoolman's spools, never the local tables (a parallel universe).
+                alerts = await find_stock_alerts(db, now)
+            except ForecastSourceUnavailable as exc:
+                # Not "no alerts": nothing is known. Clearing the stamps here
+                # would re-announce every standing break once Spoolman answers.
+                logger.info("Stock-forecast alerts skipped: Spoolman did not answer (%s)", exc)
+                return
             active: dict[AlertKind, set[tuple[str, str, str, str]]] = {
                 "break": {a.key for a in alerts if a.kind == "break"},
                 "reorder": {a.key for a in alerts if a.kind == "reorder"},

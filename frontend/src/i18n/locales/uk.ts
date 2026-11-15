@@ -12686,6 +12686,8 @@ export default {
     safetyMarginHintGApprox: ' ≈ {{days}}д за поточного темпу.',
     individualSpools: 'Окремі котушки',
     individualSpoolsFailed: 'Не вдалося завантажити котушки цього SKU',
+    loadFailed: 'Не вдалося завантажити прогноз',
+    spoolmanUnreachable: 'Spoolman не відповідає, тому прогнозу немає: залишки зберігаються там',
     retry: 'Повторити',
     labelWeight: 'Номінал',
     spoolCount_one: '{{count}} котушка',

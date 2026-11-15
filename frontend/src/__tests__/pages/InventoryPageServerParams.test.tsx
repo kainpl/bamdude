@@ -729,11 +729,14 @@ describe('InventoryPage — the Forecast tab renders server-computed rows', () =
     expect(fullSetRequests().length).toBe(fullSetBefore);
   });
 
-  it('Spoolman mode + a stale persisted forecast viewMode never mounts the panel — zero local-inventory traffic (task-6 guard, T5 review Minor 1)', async () => {
-    // The Forecast tab is unreachable in Spoolman mode (the button is hidden),
-    // but viewMode persists in localStorage: use Forecast in local mode, turn
-    // Spoolman on, revisit — without the render-branch guard the panel would
-    // mount and fetch the LOCAL inventory under a Spoolman UI.
+  it('Spoolman mode + a persisted forecast viewMode mounts the panel over the Spoolman doors — zero local-inventory traffic (task-6 guard, T5 review Minor 1)', async () => {
+    // Until 2026-11-15 the Forecast tab did not exist in Spoolman mode and this
+    // test pinned that a persisted viewMode never mounted the panel — because a
+    // mounted panel would have forecast the LOCAL inventory under a Spoolman
+    // UI. The tab now works there (upstream 1d86cff5a): the server's engine
+    // forecasts the Spoolman spools, and the panel's own spool lookups go to
+    // the Spoolman list. What the guard was FOR is unchanged and still pinned:
+    // not one request reaches the local spool table.
     localStorage.setItem('bamdude-inventory-filters', JSON.stringify({ viewMode: 'forecast' }));
     server.use(
       // Enabled with NO url = the proxied-inventory Spoolman flavor — the
@@ -746,33 +749,20 @@ describe('InventoryPage — the Forecast tab renders server-computed rows', () =
     );
     render(<InventoryPageRouter />);
 
-    // The guard falls back to the (Spoolman-fed) table view…
-    await waitFor(() => expect(screen.getAllByLabelText('Select this spool').length).toBe(2));
-    expect(screen.getByRole('button', { name: 'Table' })).toHaveAttribute('aria-pressed', 'true');
-    expect(screen.getByRole('button', { name: 'Columns' })).toBeInTheDocument();
+    // The panel is what renders — a PANEL-ONLY control is the marker, not the
+    // joined "brand material colour" label the Spoolman table also composes.
+    expect(await screen.findByText('Shopping List')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Forecast' })).toHaveAttribute('aria-pressed', 'true');
     expect(JSON.parse(localStorage.getItem('bamdude-inventory-filters') ?? '{}').viewMode).toBe('forecast');
-    // …the panel never rendered. ⚠️ The marker is a PANEL-ONLY control, not
-    // the joined "brand material colour" label: the Spoolman table's own
-    // display_name column composes the very same string, so that assertion
-    // only ever passed on a timing accident (the content area happened to be
-    // showing "Loading…" at this instant). Gating the page-level list feed on
-    // the forecast verdict — final review F4 — removed the flicker that
-    // produced the accident, and the table now legitimately reaches its
-    // steady state here.
-    expect(screen.queryByText('Shopping List')).toBeNull();
-    expect(screen.queryByText('Global lead time:')).toBeNull();
-    // …and the panel's feed never fired: since task 4 that feed is
-    // GET /inventory/forecast, and a mounted panel would have called it.
-    // The cold-load flicker this test used to tolerate (spoolmanMode reads
-    // false for the first tick, so the page-level flat list fired once) is
-    // GONE: final review F4 gates that feed on the forecast verdict, so a
-    // stored forecast viewMode fetches nothing at all until the verdict is in.
-    expect(forecastRequests.length).toBe(0);
-    // Task 5: zero, not "at most one". No full-table fetch survives a visit
-    // in EITHER mode — the flicker can no longer cost the whole inventory,
-    // because nothing on the render path asks for it any more.
+    // Its feed is the one forecast endpoint; the server picks the inventory.
+    await waitFor(() => expect(forecastRequests.length).toBeGreaterThan(0));
+    // …and NOTHING asked the local spool table for spools: no list (the
+    // cold-load flicker is gated on the verdict — final review F4) and no full
+    // set. The local table is not the inventory in this mode. (The page's own
+    // filter-options query fires once before the mode is known; the PANEL's
+    // lookups are pinned in ForecastPanelSpoolman.test.tsx.)
     expect(fullSetRequests()).toEqual([]);
-    expect(listRequests.length).toBeLessThanOrEqual(2);
+    expect(listRequests).toEqual([]);
   });
 });
 

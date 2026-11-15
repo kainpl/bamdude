@@ -268,4 +268,52 @@ describe('InventoryPage first paint', () => {
     });
     expect(screen.queryByText('19000g')).not.toBeInTheDocument();
   });
+
+  it('offers History and Forecast in Spoolman mode too, each fed by the Spoolman doors', async () => {
+    // Upstream 1d86cff5a (#3407): both views exist in Spoolman mode. They must
+    // read the Spoolman spools' own usage rows — never the built-in feed, whose
+    // spool ids are another numbering (upstream 704919339).
+    localStorage.setItem(FILTERS_KEY, JSON.stringify({ ...DEFAULT_FILTERS, viewMode: 'history' }));
+    setupHandlers();
+    const asked: string[] = [];
+    server.use(
+      // Enabled with NO url: the flavour that renders OUR page in Spoolman mode
+      // (with a url the router shows Spoolman's own UI in an iframe instead).
+      http.get('/api/v1/settings/spoolman', () =>
+        HttpResponse.json({ spoolman_enabled: 'true', spoolman_url: '' })
+      ),
+      http.get('/api/v1/spoolman/inventory/spools', () => HttpResponse.json([])),
+      http.get('/api/v1/spoolman/inventory/slot-assignments/all', () => HttpResponse.json([])),
+      http.get('/api/v1/spoolman/inventory/usage/facets', () =>
+        HttpResponse.json({ statuses: [], printers: [], materials: [], brands: [] })
+      ),
+      http.get('/api/v1/spoolman/inventory/usage/source', () =>
+        HttpResponse.json({ has_source: true, rows: 0, previous_url: null, previous_rows: 0 })
+      ),
+      http.get('/api/v1/spoolman/inventory/usage', () => {
+        asked.push('spoolman-usage');
+        return HttpResponse.json({
+          items: [],
+          meta: { total: 0, current_page: 1, per_page: 50, last_page: 1 },
+          totals: { weight_used: 0, cost: null },
+        });
+      }),
+      http.get('/api/v1/inventory/usage', () => {
+        asked.push('built-in-usage');
+        return HttpResponse.json({
+          items: [],
+          meta: { total: 0, current_page: 1, per_page: 50, last_page: 1 },
+          totals: { weight_used: 0, cost: null },
+        });
+      }),
+    );
+    render(<InventoryPageRouter />);
+
+    const history = await screen.findByRole('button', { name: 'History' });
+    await waitFor(() => expect(history).toHaveAttribute('aria-pressed', 'true'));
+    expect(screen.getByRole('button', { name: 'Forecast' })).toBeEnabled();
+    await waitFor(() => expect(asked).toContain('spoolman-usage'));
+    expect(asked).not.toContain('built-in-usage');
+    expect(await screen.findByText(/BamDude records each print it charges to Spoolman/)).toBeInTheDocument();
+  });
 });

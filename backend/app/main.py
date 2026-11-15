@@ -120,6 +120,7 @@ from backend.app.services.archive import ArchiveService, resolve_display_stem
 from backend.app.services.auto_queue_scheduler import auto_queue_scheduler
 from backend.app.services.background_dispatch import background_dispatch, delete_internal_by_name
 from backend.app.services.bambu_mqtt import HMS_SEVERITY_NOTIFY_THRESHOLD, PrinterState
+from backend.app.services.forecast_engine import ForecastSourceUnavailable
 from backend.app.services.git_backup import git_backup_service
 from backend.app.services.ha_sensor_manager import ha_sensor_manager
 from backend.app.services.hms_catalogue import device_of as hms_device_of
@@ -12603,6 +12604,15 @@ async def farm_startup_refused_handler(request, exc):
     return JSONResponse(
         status_code=503 if exc.reason == "storage_unavailable" else 409, content={"detail": routing_detail(exc.reason)}
     )
+
+
+@app.exception_handler(ForecastSourceUnavailable)
+async def forecast_source_unavailable_handler(request, exc):
+    # Spoolman is the inventory and did not answer: every forecast route says so
+    # with one typed refusal, never an empty forecast (services/forecast_engine).
+    from backend.app.i18n.api_errors import json_error
+
+    return json_error(503, {"error": "spoolman_unreachable", "message": "Spoolman server is not reachable"})
 
 
 # Every ``HTTPException`` answers in the system language: the English sentence
