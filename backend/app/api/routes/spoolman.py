@@ -937,11 +937,6 @@ async def link_spool(
         except Exception:
             await client.take_back_native_tags(spool_id, added_native)
             raise
-        # The spool is THIS reel now: the reel it was linked to before no
-        # longer resolves to it. A 16-character value names no physical tag
-        # here (nothing was added for it), so it takes nothing away.
-        if before is not None:
-            await client.drop_previous_reel_tags(before, [spool_tag], bambu_reel=True)
     except NativeTagConflict as conflict:
         raise native_tag_refused("tray_uuid", conflict) from conflict
     except SpoolmanNotFoundError:
@@ -968,6 +963,10 @@ async def link_spool(
             await db.commit()
         except Exception as e:
             await db.rollback()
+            # The native tag goes back (the previous reel's are still there —
+            # they are dropped only below); extra.tag stays, as the message
+            # says, and the retry it asks for links the reel again.
+            await client.take_back_native_tags(spool_id, added_native)
             logger.error(
                 "Linked spool %s in Spoolman but failed to persist local slot assignment "
                 "(printer=%s ams=%s tray=%s): %s",
@@ -984,6 +983,13 @@ async def link_spool(
                     "Please re-open the link dialog to retry."
                 ),
             ) from e
+
+    # The spool is THIS reel now: the reel it was linked to before no longer
+    # resolves to it. A 16-character value names no physical tag here (nothing
+    # was added for it), so it takes nothing away. Last, once the slot row is
+    # saved: a link that failed half way keeps the spool's previous reel.
+    if before is not None:
+        await client.drop_previous_reel_tags(before, [spool_tag], bambu_reel=True)
 
     logger.info("Linked Spoolman spool %s to tag %s", spool_id, spool_tag)
 

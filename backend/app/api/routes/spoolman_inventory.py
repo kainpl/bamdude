@@ -67,6 +67,7 @@ from backend.app.services.spoolman import (
     SpoolmanClientError,
     SpoolmanNotFoundError,
     SpoolmanUnavailableError,
+    ams_chip_uid,
     get_spoolman_client,
     init_spoolman_client,
     native_tag_uids,
@@ -1276,12 +1277,17 @@ async def link_tag_to_spoolman_spool(
         # first: a uid Spoolman holds elsewhere — on an archived spool too —
         # is refused naming the holder, and extra.tag is left as it was.
         try:
+            # The chip's uid in the form the sync and the copy store it — the
+            # chip's own, without the AMS's padding — which is what a reader sees.
+            chip_uid = ams_chip_uid(
+                (data.tag_uid or "").upper(), client.is_bambu_lab_spool(data.tray_uuid or "", data.tag_uid or "")
+            )
             async with _translate_spoolman_errors():
                 added_native = await client.link_native_tags(
-                    spool_id, [data.tray_uuid, data.tag_uid], "bambu" if data.tray_uuid else None
+                    spool_id, [data.tray_uuid, chip_uid], "bambu" if data.tray_uuid else None
                 )
         except NativeTagConflict as conflict:
-            held_field = "tag_uid" if data.tag_uid and conflict.uid == data.tag_uid.upper() else "tray_uuid"
+            held_field = "tag_uid" if chip_uid and conflict.uid == chip_uid else "tray_uuid"
             raise native_tag_refused(held_field, conflict) from conflict
 
         try:
@@ -1292,14 +1298,14 @@ async def link_tag_to_spoolman_spool(
             cur_extra["tag"] = tag_json
             async with _translate_spoolman_errors():
                 updated = await client.update_spool_full(spool_id=spool_id, extra=cur_extra)
-        except HTTPException:
+        except Exception:
             await client.take_back_native_tags(spool_id, added_native)
             raise
 
         # The spool is THIS reel now: the reel it was linked to before no longer
         # resolves to it (``current`` still carries the previous extra.tag).
         if native_tag_uids(current) and await client.drop_previous_reel_tags(
-            current, [data.tray_uuid, data.tag_uid], bambu_reel=bool(data.tray_uuid)
+            current, [data.tray_uuid, chip_uid], bambu_reel=bool(data.tray_uuid)
         ):
             async with _translate_spoolman_errors():
                 updated = await client.get_spool(spool_id)

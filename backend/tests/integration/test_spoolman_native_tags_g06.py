@@ -261,6 +261,67 @@ class TestTheTagRoute:
         assert _extra_tag(old_spoolman, 42) == TRAY_UUID
         assert _tag_writes(old_spoolman) == []
 
+    async def test_the_amss_padded_chip_uid_is_stored_as_the_chips_own(self, async_client: AsyncClient, spoolman):
+        """As the sync and the copy store it — the form a reader sees (review slots M-3)."""
+        spoolman.add_spool(42, 7)
+
+        response = await async_client.patch(
+            f"{INVENTORY}/spools/42/tag", json={"tray_uuid": TRAY_UUID, "tag_uid": PADDED_CHIP_UID}
+        )
+
+        assert response.status_code == 200
+        assert spoolman.tags_of(42) == sorted([TRAY_UUID, CHIP_UID])
+
+    async def test_any_failure_after_the_native_link_takes_it_back(self, async_client: AsyncClient, spoolman):
+        """Not only a translated Spoolman refusal (review slots M-7)."""
+        from backend.app.services.spoolman import SpoolmanClient
+
+        spoolman.add_spool(42, 7)
+
+        with (
+            patch.object(SpoolmanClient, "update_spool_full", AsyncMock(side_effect=RuntimeError("boom"))),
+            pytest.raises(RuntimeError),
+        ):
+            await async_client.patch(f"{INVENTORY}/spools/42/tag", json={"tray_uuid": TRAY_UUID, "tag_uid": CHIP_UID})
+
+        assert spoolman.tags_of(42) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+class TestALinkWhoseSlotRowCannotBeSaved:
+    async def test_the_native_tag_is_taken_back(self, async_client: AsyncClient, spoolman, printer_factory):
+        """The route answers 500 and asks for a retry; the reel must not stay
+        half linked in Spoolman meanwhile (review slots M-7)."""
+        printer = await printer_factory()
+        spoolman.add_spool(42, 7)
+
+        with patch("backend.app.api.routes.spoolman.text", side_effect=RuntimeError("database is locked")):
+            response = await async_client.post(
+                f"{SPOOLMAN}/spools/42/link",
+                json={"spool_tag": TRAY_UUID, "printer_id": printer.id, "ams_id": 0, "tray_id": 1},
+            )
+
+        assert response.status_code == 500
+        assert spoolman.tags_of(42) == []
+
+    async def test_and_the_previous_reel_keeps_resolving_to_the_spool(
+        self, async_client: AsyncClient, spoolman, printer_factory
+    ):
+        printer = await printer_factory()
+        spoolman.add_spool(42, 7, extra={"tag": json.dumps(OTHER_UUID)})
+        spoolman.registered.add("tag")
+        spoolman.tag_spool(42, OTHER_UUID, "bambu")
+
+        with patch("backend.app.api.routes.spoolman.text", side_effect=RuntimeError("database is locked")):
+            response = await async_client.post(
+                f"{SPOOLMAN}/spools/42/link",
+                json={"spool_tag": TRAY_UUID, "printer_id": printer.id, "ams_id": 0, "tray_id": 1},
+            )
+
+        assert response.status_code == 500
+        assert spoolman.tags_of(42) == [OTHER_UUID]
+
 
 @pytest.mark.asyncio
 @pytest.mark.integration
