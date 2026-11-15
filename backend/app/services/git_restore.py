@@ -179,6 +179,25 @@ _PROTECTED_SETTING_PREFIXES = ("ldap_",)
 _KNOWN_NOZZLES = {"0.2", "0.4", "0.6", "0.8"}
 
 
+# Spool bookkeeping a backup carries since the record was widened (upstream
+# 71d4b2f70). Restored only when the backup names the key.
+_SPOOL_LATE_FIELDS = (
+    "weight_used_baseline",
+    "category",
+    "low_stock_threshold_pct",
+    "storage_location",
+    "purchase_location",
+    "lot",
+    "material_number",
+    "extra_colors",
+    "effect_type",
+    "filament_diameter",
+    "last_dried_temp",
+    "last_dried_hours",
+)
+_SPOOL_LATE_DATES = ("purchase_date", "last_dried_at")
+
+
 def _parse_dt(value) -> datetime | None:
     """Best-effort parse of a datetime the backup wrote via ``str(...)``.
 
@@ -1739,6 +1758,19 @@ class GitRestoreService:
                 "tag_type": entry.get("tag_type"),
                 "archived_at": _parse_dt(entry.get("archived_at")),
             }
+            # Bookkeeping a newer backup carries. Applied only when the file
+            # names the key: a backup written before it existed says nothing
+            # about it, and must not wipe a live value on overwrite.
+            for key in _SPOOL_LATE_FIELDS:
+                if key in entry:
+                    fields[key] = entry[key]
+            for key in _SPOOL_LATE_DATES:
+                if key in entry:
+                    fields[key] = _parse_dt(entry[key])
+            if fields.get("filament_diameter") not in ("1.75", "2.85"):
+                fields.pop("filament_diameter", None)
+            if "weight_used_baseline" in fields and not isinstance(fields["weight_used_baseline"], (int, float)):
+                fields.pop("weight_used_baseline")
 
             if existing is not None:
                 if old_id is not None:
@@ -1747,6 +1779,10 @@ class GitRestoreService:
                     tally.skipped += 1
                     continue
                 tags_kept += await self._guard_tag_overwrite(db, existing, fields, matched_on)
+                if existing.location_id is not None:
+                    # Filed under a structured location here: locations are not
+                    # backed up, so the backup's text must not contradict the link.
+                    fields.pop("storage_location", None)
                 for key, value in fields.items():
                     setattr(existing, key, value)
                 tally.restored += 1
