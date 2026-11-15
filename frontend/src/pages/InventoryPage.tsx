@@ -205,6 +205,7 @@ const DEFAULT_COLUMNS: ColumnConfig[] = [
   { id: 'humidity', label: 'Humidity', visible: false },
   { id: 'battery', label: 'Battery', visible: false },
   { id: 'purchase_location', label: 'Purchase Location', visible: false },
+  { id: 'material_number', label: 'Material number', visible: false },
   { id: 'label_weight', label: 'Label', visible: true },
   { id: 'net', label: 'Net', visible: true },
   { id: 'gross', label: 'Gross', visible: false },
@@ -392,6 +393,7 @@ const columnHeaders: Record<string, (t: TFn) => string> = {
   humidity: (t) => t('inventory.humidity'),
   battery: (t) => t('inventory.battery'),
   purchase_location: (t) => t('inventory.purchaseLocation'),
+  material_number: (t) => t('inventory.materialNumber'),
   label_weight: (t) => t('inventory.columns.label_weight'),
   net: (t) => t('inventory.columns.net'),
   gross: (t) => t('inventory.columns.gross'),
@@ -524,6 +526,11 @@ const columnCells: Record<string, (ctx: CellCtx) => ReactNode> = {
       </span>
     );
   },
+  material_number: ({ spool }) => (
+    spool.material_number
+      ? <span className="text-sm font-mono text-white">{spool.material_number}</span>
+      : <span className="text-sm text-bambu-gray">-</span>
+  ),
   label_weight: ({ spool }) => (
     <span className="text-sm text-white">{formatWeight(spool.label_weight)}</span>
   ),
@@ -721,6 +728,7 @@ const columnSortValues: Record<string, (spool: InventorySpool, assignmentMap: Re
   },
   storage_location: (s) => (s.storage_location || '').toLowerCase(),
   purchase_location: (s) => (s.purchase_location || '').toLowerCase(),
+  material_number: (s) => (s.material_number || '').toLowerCase(),
   label_weight: (s) => s.label_weight,
   net: (s) => Math.max(0, s.label_weight - s.weight_used),
   gross: (s) => Math.max(0, s.label_weight - s.weight_used) + s.core_weight,
@@ -878,6 +886,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true, spoolma
   // Re-resolve colour-name options once the colour catalog finishes loading.
   const colorCatalogVersion = useColorCatalogVersion();
   const [categoryFilter, setCategoryFilter] = useState(storedFilters.categoryFilter);
+  const [materialNumberFilter, setMaterialNumberFilter] = useState(storedFilters.materialNumberFilter);
   const [spoolFilter, setSpoolFilter] = useState(storedFilters.spoolFilter);
   const [stockFilter, setStockFilter] = useState<StockFilter>(storedFilters.stockFilter);
   const [assignedFilter, setAssignedFilter] = useState<AssignedFilter>(storedFilters.assignedFilter);
@@ -1025,7 +1034,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true, spoolma
   // that skipped it and left the bulk bar armed over invisible rows.
   const listResetSignature = JSON.stringify([
     archiveFilter, usageFilter, materialFilter, brandFilter, colorFilter, categoryFilter,
-    spoolFilter, storageLocationFilter, stockFilter, assignedFilter,
+    materialNumberFilter, spoolFilter, storageLocationFilter, stockFilter, assignedFilter,
     serverMode ? debouncedSearch : search, groupSimilar, spoolmanMode, sortState,
   ]);
   const [prevListResetSignature, setPrevListResetSignature] = useState(listResetSignature);
@@ -1071,6 +1080,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true, spoolma
       }
     }
     if (categoryFilter) p.category = categoryFilter;
+    if (materialNumberFilter) p.material_number = materialNumberFilter;
     if (spoolFilter) p.catalog_id = Number(spoolFilter);
     if (storageLocationFilter) p.location_id = storageLocationFilter;
     if (stockFilter !== 'all') p.stock = stockFilter;
@@ -1078,7 +1088,8 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true, spoolma
     if (debouncedSearch.trim()) p.q = debouncedSearch.trim();
     return p;
   }, [archiveFilter, usageFilter, materialFilter, brandFilter, colorFilter, colorFacetGroups,
-      categoryFilter, spoolFilter, storageLocationFilter, stockFilter, assignedFilter, debouncedSearch]);
+      categoryFilter, materialNumberFilter, spoolFilter, storageLocationFilter, stockFilter, assignedFilter,
+      debouncedSearch]);
 
   const displayedView = shownView(viewMode, (mode) => {
     if (mode === 'forecast') return canViewForecast;
@@ -1759,6 +1770,13 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true, spoolma
       }
     }
 
+    // Material number — '__none__' picks spools without one.
+    if (materialNumberFilter) {
+      filtered = materialNumberFilter === '__none__'
+        ? filtered.filter((s) => !s.material_number)
+        : filtered.filter((s) => s.material_number === materialNumberFilter);
+    }
+
     // Spool name dropdown
     if (spoolFilter) {
       const catalogId = Number(spoolFilter);
@@ -1823,7 +1841,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true, spoolma
     }
 
     return filtered;
-  }, [spoolmanMode, spools, archiveFilter, usageFilter, materialFilter, brandFilter, colorFilter, categoryFilter, spoolFilter, storageLocationFilter, stockFilter, assignedFilter, assignmentMap, search, spoolDisplayTemplate, lowStockThreshold, storageLocations, colorCatalogVersion]);
+  }, [spoolmanMode, spools, archiveFilter, usageFilter, materialFilter, brandFilter, colorFilter, categoryFilter, materialNumberFilter, spoolFilter, storageLocationFilter, stockFilter, assignedFilter, assignmentMap, search, spoolDisplayTemplate, lowStockThreshold, storageLocations, colorCatalogVersion]);
 
   // Reset page on filter changes
   const resetPage = () => setPageIndex(0);
@@ -1877,6 +1895,9 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true, spoolma
   const uniqueCategories = spoolmanMode
     ? [...new Set((spools?.map((s) => s.category?.trim()).filter(Boolean) as string[]) || [])].sort()
     : [...(facets?.categories ?? [])].sort();
+  const uniqueMaterialNumbers = spoolmanMode
+    ? [...new Set((spools?.map((s) => s.material_number?.trim()).filter(Boolean) as string[]) || [])].sort()
+    : [...(facets?.material_numbers ?? [])].sort();
   // The "None"/"Unfiled" bucket options: the facets contract carries exactly
   // five keys — hasUncategorized/hasUnsetStorageLocation are deliberately
   // NOT in it (task 2 ruling), so server mode offers both buckets
@@ -1890,7 +1911,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true, spoolma
     : true;
 
   // Check if any filters are non-default
-  const hasActiveFilters = archiveFilter !== 'active' || usageFilter !== 'all' || !!materialFilter || !!brandFilter || !!colorFilter || !!categoryFilter || !!spoolFilter || !!storageLocationFilter || stockFilter !== 'all' || assignedFilter !== 'all' || !!search;
+  const hasActiveFilters = archiveFilter !== 'active' || usageFilter !== 'all' || !!materialFilter || !!brandFilter || !!colorFilter || !!categoryFilter || !!materialNumberFilter || !!spoolFilter || !!storageLocationFilter || stockFilter !== 'all' || assignedFilter !== 'all' || !!search;
 
   const handleColumnConfigSave = (config: ColumnConfig[]) => {
     setColumnConfig(config);
@@ -2121,10 +2142,10 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true, spoolma
   useEffect(() => {
     saveFilters({
       archiveFilter, usageFilter, materialFilter, brandFilter, colorFilter,
-      categoryFilter, spoolFilter, stockFilter, assignedFilter, search, viewMode,
+      categoryFilter, materialNumberFilter, spoolFilter, stockFilter, assignedFilter, search, viewMode,
     });
   }, [archiveFilter, usageFilter, materialFilter, brandFilter, colorFilter,
-      categoryFilter, spoolFilter, stockFilter, assignedFilter, search, viewMode]);
+      categoryFilter, materialNumberFilter, spoolFilter, stockFilter, assignedFilter, search, viewMode]);
 
   // (The selection-clearing effect that lived here moved into the
   // render-phase `listResetSignature` block above — an effect landed one
@@ -2259,6 +2280,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true, spoolma
     setBrandFilter('');
     setColorFilter('');
     setCategoryFilter('');
+    setMaterialNumberFilter('');
     setSpoolFilter('');
     setStorageLocationFilter('');
     setStockFilter('all');
@@ -2773,6 +2795,23 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true, spoolma
             {(hasUncategorized || categoryFilter === '__none__') && (
               <option value="__none__">{t('inventory.categoryNone')}</option>
             )}
+          </Select>
+        )}
+
+        {/* Material number chip — only once a spool carries one. */}
+        {(uniqueMaterialNumbers.length > 0 || materialNumberFilter) && (
+          <Select
+            value={materialNumberFilter}
+            onChange={(e) => { setMaterialNumberFilter(e.target.value); resetPage(); }}
+            tone="filter"
+            active={!!materialNumberFilter}
+            aria-label={t('inventory.materialNumber')}
+          >
+            <option value="">{t('inventory.materialNumber')}</option>
+            {withCurrentValue(uniqueMaterialNumbers, materialNumberFilter === '__none__' ? '' : materialNumberFilter).map((n) => (
+              <option key={n} value={n}>{n}</option>
+            ))}
+            <option value="__none__">{t('inventory.materialNumberNone')}</option>
           </Select>
         )}
 

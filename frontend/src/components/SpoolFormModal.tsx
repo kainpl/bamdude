@@ -390,6 +390,7 @@ export function SpoolFormModal({
           low_stock_threshold_pct: spool.low_stock_threshold_pct != null ? String(spool.low_stock_threshold_pct) : '',
           location_id: spool.location_id ?? null,
           purchase_location: spool.purchase_location || '',
+          material_number: spool.material_number || '',
           last_dried_at: (() => {
             const dried = isCopying ? null : parseUTCDate(spool.last_dried_at);
             return dried ? toDateTimeLocalValue(dried) : '';
@@ -652,6 +653,7 @@ export function SpoolFormModal({
     enabled: isOpen && hasPermission('inventory:read'),
   });
   const knownCategories = categoryFacets?.categories ?? [];
+  const knownMaterialNumbers = categoryFacets?.material_numbers ?? [];
 
   // Resolve a legacy P-preset's family (via cloud base_id) so an old-style
   // spool derives its filament_family_id at submit. Shares the react-query
@@ -832,6 +834,8 @@ export function SpoolFormModal({
         ? parseInt(formData.low_stock_threshold_pct, 10)
         : null,
       purchase_location: formData.purchase_location.trim() || null,
+      // Spoolman's article number belongs to the filament and is edited there.
+      ...(spoolmanMode ? {} : { material_number: formData.material_number.trim() || null }),
       ...(spoolmanMode ? { spoolman_filament_id: formData.spoolman_filament_id } : {}),
     };
 
@@ -1064,6 +1068,7 @@ export function SpoolFormModal({
                 currencySymbol={currencySymbol}
                 quickAdd={quickAdd}
                 categories={knownCategories}
+                materialNumbers={knownMaterialNumbers}
                 availableLocations={storageLocations}
                 showLastDried={isEditing}
                 onCreateLocation={async (name) => {

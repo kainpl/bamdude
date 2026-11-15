@@ -1887,6 +1887,8 @@ export interface AggregateMaterialRow {
   failed: number;
 }
 export interface AggregateColorRow { color: string; prints: number; grams: number }
+/** Filament drawn from the spools sharing one material number, and its cost. */
+export interface AggregateMaterialNumberRow { material_number: string; grams: number; cost: number; spools: number }
 export interface AggregateDurationRow { bucket: string; prints: number }
 export interface AggregateTotals {
   prints: number;
@@ -1918,6 +1920,7 @@ export interface ArchiveAggregate {
   by_printer: AggregatePrinterRow[];
   by_material: AggregateMaterialRow[];
   by_color: AggregateColorRow[];
+  by_material_number?: AggregateMaterialNumberRow[];
   by_duration: AggregateDurationRow[];
   totals: AggregateTotals;
   records: AggregateRecords;
@@ -8318,6 +8321,9 @@ export interface InventorySpool {
   storage_location?: string | null;
   location_id?: number | null;
   purchase_location?: string | null;
+  /** The operator's own article code for the filament. In Spoolman mode it is
+   *  the filament's ``article_number`` and is edited in Spoolman. */
+  material_number?: string | null;
   /** Nested K-profiles. `null` on paged list rows unless the request sent
    *  `include_k_profiles=true` (task 4) — "not requested", distinct from
    *  "requested, none" (`[]`). Legacy flat responses always carry the array. */
@@ -8350,6 +8356,8 @@ export interface SpoolListParams {
   color_rgbas?: string[];
   /** Exact category, or '__none__' for uncategorised. */
   category?: string;
+  /** Exact material number, or '__none__' for spools without one. */
+  material_number?: string;
   catalog_id?: number;
   /** Location id digits, or '__none__' for no location. */
   location_id?: string;
@@ -8435,6 +8443,7 @@ export interface SpoolFacets {
   materials: string[];
   brands: string[];
   categories: string[];
+  material_numbers?: string[];
   catalog_ids: number[];
   colors: SpoolFacetColor[];
 }
@@ -8473,6 +8482,7 @@ function spoolListSearchParams(params: SpoolListParams): URLSearchParams {
   for (const c of params.colors ?? []) qs.append('colors', c);
   for (const r of params.color_rgbas ?? []) qs.append('color_rgbas', r);
   if (params.category) qs.set('category', params.category);
+  if (params.material_number) qs.set('material_number', params.material_number);
   if (params.catalog_id !== undefined) qs.set('catalog_id', String(params.catalog_id));
   if (params.location_id) qs.set('location_id', params.location_id);
   if (params.stock) qs.set('stock', params.stock);

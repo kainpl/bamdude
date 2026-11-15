@@ -40,6 +40,7 @@ const EXTRACTORS: Record<string, Extractor> = {
   storage_location: (s) => text(s.storage_location),
   cost_per_kg: (s) => shownCostPerKg(s).rate ?? 0,
   lot: (s) => s.lot ?? 0,
+  material_number: (s) => text(s.material_number),
   id: (s) => s.id,
 };
 

@@ -62,6 +62,7 @@ export interface SpoolFormData {
   // derives the denormalized free-text ``storage_location`` from this id.
   location_id: number | null;
   purchase_location: string;
+  material_number: string;
   // Last drying, as a datetime-local value in the browser's time zone. Empty
   // means never dried. Shown and sent only when editing.
   last_dried_at: string;
@@ -95,6 +96,7 @@ export const defaultFormData: SpoolFormData = {
   low_stock_threshold_pct: '',
   location_id: null,
   purchase_location: '',
+  material_number: '',
   last_dried_at: '',
   spoolman_filament_id: null,
 };
@@ -190,6 +192,8 @@ export interface AdditionalSectionProps extends SectionProps {
   // B.8 — categories already in use across the inventory; the form
   // autocompletes from this list so users converge on consistent labels.
   categories?: string[];
+  /** Material numbers already in use — suggestions for the field. */
+  materialNumbers?: string[];
   // Structured storage-location catalog (upstream #1505). The Additional
   // section renders a dropdown over these plus an inline "create location"
   // affordance backed by ``onCreateLocation``.
