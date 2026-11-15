@@ -1313,7 +1313,12 @@ async def _report_partial_usage(
 
     # The print's journal: runout boundaries on any slot's tray, and — for a one-slot print —
     # the tray chronology's unknown feeds and identities. Read whatever the slot count.
-    from backend.app.utils.usage_attribution import chronology_splits, chronology_with_journal, normalize_tray_changes
+    from backend.app.utils.usage_attribution import (
+        chronology_splits,
+        chronology_with_journal,
+        normalize_tray_changes,
+        sole_feeding_tray,
+    )
 
     partial_journal: list = []
     try:
@@ -1325,11 +1330,35 @@ async def _report_partial_usage(
     # internal writer: an AMS backup's takeover splits the grams, and a stretch nobody saw fed
     # is reported as not recorded — never charged to the mapped reel (post-rebuild F2-R1).
     partial_tray_changes: list[tuple[int, int]] = []
+    partial_sole_tray: int | None = None
     if len([u for u in filament_usage if u.get("used_g", 0) > 0]) == 1:
         # The journal's unknown feed governs a memory that never heard of it (post-rebuild F5) —
         # and with no printer state at all, the journal is the chronology (F6).
         memory = list(getattr(state, "tray_change_log", []) or []) if state is not None else None
-        partial_tray_changes = normalize_tray_changes(chronology_with_journal(memory, partial_journal))
+        partial_raw_log = chronology_with_journal(memory, partial_journal)
+        partial_tray_changes = normalize_tray_changes(partial_raw_log)
+        partial_sole_tray = sole_feeding_tray(partial_raw_log)
+
+    # Which tray each slot came from — the completion writer's own ladder, so a print charges
+    # the same spool whether it finished or stopped (upstream 991d2caca): the dispatched / queue
+    # mapping from print start wins; without one, a one-slot print takes the tray the printer
+    # named. A positional default is a guess: charged, and said at WARNING.
+    slot_to_tray, mapping_source = _completion_slot_to_tray(
+        slot_to_tray, filament_usage, partial_tray_changes, state, partial_sole_tray
+    )
+    if mapping_source in ("tray-log", "printer-tray"):
+        logger.info(
+            "[SPOOLMAN] Archive %s (stopped): charging the tray the printer named (%s): %s",
+            partial_archive_id,
+            mapping_source,
+            slot_to_tray,
+        )
+    elif mapping_source == "positional" and any(u.get("used_g", 0) > 0 for u in filament_usage):
+        logger.warning(
+            "[SPOOLMAN] Archive %s (stopped): no mapping and no tray named by the printer — charging by tray "
+            "position (right only for an AMS loaded in slicer order)",
+            partial_archive_id,
+        )
 
     async def _charge(usage_items: list[tuple[int, float]], label: str, split_layer_usage) -> int:
         if chronology_splits(partial_tray_changes):
