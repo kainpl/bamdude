@@ -858,6 +858,54 @@ async def _resolve_spool_id_via_slot_assignment(printer_id: int, ams_id: int, tr
         return result.scalar_one_or_none()
 
 
+def _usage_by_tray(
+    usage_items: list[tuple[int, float]], slot_to_tray: list | None, ams_trays: dict[int, dict]
+) -> list[tuple[int, float]]:
+    """``(global tray id, grams)`` for every slot that used something — the shape of "not recorded"."""
+    return [
+        (_resolve_global_tray_id(slot_id, slot_to_tray, ams_trays), round(float(grams), 2))
+        for slot_id, grams in usage_items
+        if grams > 0
+    ]
+
+
+async def _say_usage_lost(printer_id: int, archive_id: int | None, lost: list[tuple[int, float]], db) -> None:
+    """Spoolman did not answer at the end of a print: say which print lost what (upstream fb69a665d).
+
+    The tracking row is already gone and nothing retries, so this is the only trace the
+    usage leaves: a WARNING naming the printer, the archive, each tray — with the Spoolman
+    spool a local slot assignment binds to it, the one spool identity knowable without
+    Spoolman — and its grams; and the "usage not recorded" notice both backends already
+    raise for filament that reached no spool. Never raises.
+    """
+    try:
+        parts = []
+        for tray, grams in lost:
+            ams_id, tray_id = _global_tray_id_to_ams_slot(tray)
+            try:
+                spool_id = await _resolve_spool_id_via_slot_assignment(printer_id, ams_id, tray_id)
+            except Exception:  # noqa: BLE001 — the id only decorates the log line
+                spool_id = None
+            parts.append(
+                f"tray {tray} (spool {spool_id}): {grams:.2f} g"
+                if spool_id is not None
+                else f"tray {tray}: {grams:.2f} g"
+            )
+        logger.warning(
+            "[SPOOLMAN] Not reachable at the end of the print (printer=%s archive=%s) — its usage is NOT recorded "
+            "and is not retried: %s",
+            printer_id,
+            archive_id,
+            ", ".join(parts) if parts else "no per-slot weight could be worked out without Spoolman",
+        )
+        if lost:
+            from backend.app.services import spool_assignment_notifications
+
+            await spool_assignment_notifications.notify_usage_not_recorded(printer_id, lost, db, logger)
+    except Exception as exc:  # noqa: BLE001 — reporting a loss must not raise another
+        logger.warning("[SPOOLMAN] Could not report the lost usage of archive %s: %s", archive_id, exc)
+
+
 async def _report_spool_usage_for_slots(
     client,
     filament_usage_items: list[tuple[int, float]],
@@ -1289,7 +1337,14 @@ async def _report_partial_usage(
     # Filament read and not charged to any spool — from every branch below, said once.
     uncharged: list[tuple[int, float]] = []
 
+    # What Spoolman, not answering, was never told — said once, with the print's name.
+    lost: list[tuple[int, float]] = []
+
     async def _settle_archive() -> None:
+        if client is None:
+            async with async_session() as notify_db:
+                await _say_usage_lost(printer_id, partial_archive_id, lost, notify_db)
+            return
         async with async_session() as settle_db:
             await _settle_charges(settle_db, partial_archive_id, print_cost, status="failed")
         if uncharged:
@@ -1306,10 +1361,9 @@ async def _report_partial_usage(
     tray_remain_start = tracking.tray_remain_start or {}
     printer_serial = await _get_printer_serial(printer_id)
 
-    client = await _get_spoolman_client_with_fallback()
-    if not client:
-        logger.warning("[SPOOLMAN] Not reachable for partial usage reporting")
-        return
+    # Not reachable: nothing can be charged, but what the print used is still worked out
+    # below, so the loss can be named (``_say_usage_lost``) instead of dropped.
+    client = await _get_spoolman_client_with_fallback() or None
 
     # The print's journal: runout boundaries on any slot's tray, and — for a one-slot print —
     # the tray chronology's unknown feeds and identities. Read whatever the slot count.
@@ -1361,6 +1415,9 @@ async def _report_partial_usage(
         )
 
     async def _charge(usage_items: list[tuple[int, float]], label: str, split_layer_usage) -> int:
+        if client is None:
+            lost.extend(_usage_by_tray(usage_items, slot_to_tray, ams_trays))
+            return 0
         if chronology_splits(partial_tray_changes):
             updated, _handled = await _report_spool_usage_split_by_tray_changes(
                 client,
@@ -1410,6 +1467,9 @@ async def _report_partial_usage(
     # Write it the same way report_usage's fallback does, then return —
     # there's no 3MF-derived partial to layer on top.
     if not filament_usage and tray_remain_start:
+        if client is None:
+            await _settle_archive()
+            return
         current_lookup = _snapshot_tray_remain(state.raw_data) if state and state.raw_data else {}
         # Journal trays are off-limits to the delta here too (a runout's
         # substitute tray must not be charged twice on an abort).
@@ -1473,6 +1533,8 @@ async def _report_partial_usage(
             total_layers,
             last_progress,
         )
+        if client is None:
+            await _settle_archive()
         return
 
     logger.info("[SPOOLMAN] Falling back to linear interpolation (%s)", progress_ratio)
@@ -1629,9 +1691,6 @@ async def report_usage(printer_id: int, archive_id: int, completion: CompletionS
             return
 
         client = await _get_spoolman_client_with_fallback()
-        if not client:
-            logger.warning("[SPOOLMAN] Not reachable for usage reporting")
-            return
 
         # Consult the live printer state for the tray-change log written by
         # ``bambu_mqtt.py`` on every mid-print ``tray_now`` change. When there's
@@ -1694,6 +1753,19 @@ async def report_usage(printer_id: int, archive_id: int, completion: CompletionS
             slot_to_tray, filament_usage, tray_changes, _state, sole_tray
         )
         mapping_is_guess = mapping_source == "positional" and bool(nonzero_slots)
+
+        if not client:
+            # The tracking row is gone and nothing retries: name the print and what it used
+            # — by the trays the mapping just resolved — instead of dropping it silently.
+            await _say_usage_lost(
+                printer_id,
+                archive_id,
+                _usage_by_tray(
+                    [(u.get("slot_id", 0), u.get("used_g", 0)) for u in filament_usage], slot_to_tray, ams_trays
+                ),
+                db,
+            )
+            return
         if mapping_source == "tray-log":
             logger.info(
                 "[SPOOLMAN] Archive %s: tray change log collapses to one tray; charging it: %s",
