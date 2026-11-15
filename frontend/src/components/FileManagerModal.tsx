@@ -24,7 +24,13 @@ import {
   Eraser,
 } from 'lucide-react';
 import { SelectionBox } from './SelectionBox';
-import { api, withMediaToken, type PrinterFileType, type PrinterStorage } from '../api/client';
+import {
+  api,
+  withMediaToken,
+  type PrinterFileType,
+  type PrinterListingStatus,
+  type PrinterStorage,
+} from '../api/client';
 import { parseUTCDate } from '../utils/date';
 import { Button } from './Button';
 import { ConfirmModal } from './ConfirmModal';
@@ -300,6 +306,13 @@ const SORT_OPTIONS: { value: SortOption; label: string }[] = [
   { value: 'date-desc', label: 'Date (newest)' },
 ];
 
+/** Which listing message applies: a failed request is ``unavailable``, an empty complete one ``empty``. */
+function listingState(isError: boolean, status: PrinterListingStatus | undefined): string {
+  if (isError) return 'unavailable';
+  if (!status || status === 'complete') return 'empty';
+  return status;
+}
+
 export function FileManagerModal({ printerId, printerName, onClose }: FileManagerModalProps) {
   const { t } = useTranslation();
   const headingId = useId();
@@ -415,7 +428,7 @@ export function FileManagerModal({ printerId, printerName, onClose }: FileManage
   // together while this modal sat open (#1480). A printer's file list only
   // changes on upload / delete (the mutations below invalidate the query)
   // or when a print finishes; the manual Refresh button covers the rest.
-  const { data, isLoading, refetch } = useQuery({
+  const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ['printerFiles', printerId, storage, fileType, currentPath],
     queryFn: () =>
       api.getPrinterFiles(printerId, currentPath, storage ?? undefined, isInternal ? fileType : undefined),
@@ -760,11 +773,26 @@ export function FileManagerModal({ printerId, printerName, onClose }: FileManage
                 <Loader2 className="w-8 h-8 text-bambu-green animate-spin" />
               </div>
             ) : !data?.files?.length ? (
-              <div className="text-center py-12 text-bambu-gray">
-                No files in this directory
+              <div className="text-center py-12 text-bambu-gray" data-testid="printer-files-listing-state">
+                {/* A failed listing is not an empty folder (G10 A): the status
+                    says which, and an unknown one from an older server reads
+                    as complete. */}
+                {t(`printerFiles.listing.${listingState(isError, data?.status)}`)}
+                {data?.status === 'slow' && (
+                  <div className="mt-2 text-xs">{t('printerFiles.listing.channelBusy')}</div>
+                )}
               </div>
             ) : (
               <div className="space-y-1">
+                {data.stale && (
+                  <div
+                    className="mb-2 rounded-md border border-yellow-500/40 bg-yellow-500/10 px-3 py-2 text-xs text-yellow-200"
+                    data-testid="printer-files-stale"
+                  >
+                    {t(`printerFiles.listing.${listingState(isError, data.status)}`)}{' '}
+                    {t('printerFiles.listing.stale')}
+                  </div>
+                )}
                 {/* Filter and sort: directories first, then files with selected sort */}
                 {[...data.files]
                   .filter((file) =>

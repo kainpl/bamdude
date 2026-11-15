@@ -4693,6 +4693,15 @@ export default {
       confirm: 'Import',
       cancel: 'Cancel'
     },
+    listing: {
+      empty: 'No files in this directory',
+      unavailable: "The printer's file service did not answer, so this folder could not be listed. Check that the printer is on and try again.",
+      slow: 'The printer is taking longer than usual to list this folder. Refresh joins the listing that is already running.',
+      unreadable: 'The printer refused to list this folder. It may not exist, or the printer may not allow it.',
+      missing: 'This folder is not on the printer.',
+      stale: 'Showing the last complete listing of this folder.',
+      channelBusy: "The printer's file service handles one transfer at a time, so a long download makes other requests wait until it finishes.",
+    },
     toast: {
       filesDeleted: 'Deleted {{count}} file(s)',
       deleteFailed: 'Delete failed: {{error}}',
