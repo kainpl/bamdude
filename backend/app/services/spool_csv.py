@@ -57,6 +57,8 @@ CSV_COLUMNS = [
     "storage_location",
     "category",
     "low_stock_threshold_pct",
+    "material_number",
+    "purchase_location",
 ]
 
 # Upload ceiling for the import endpoint. A spool inventory CSV is a few KB
@@ -425,7 +427,16 @@ async def parse_and_validate(
         row_error: str | None = None
 
         # Plain text passthrough columns.
-        for field in ("subtype", "effect_type", "extra_colors", "note", "storage_location", "category"):
+        for field in (
+            "subtype",
+            "effect_type",
+            "extra_colors",
+            "note",
+            "storage_location",
+            "category",
+            "material_number",
+            "purchase_location",
+        ):
             value = cell(raw_row, field)
             if value:
                 data[field] = value

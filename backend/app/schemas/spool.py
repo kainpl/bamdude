@@ -17,6 +17,13 @@ def naive_utc(value: datetime | None) -> datetime | None:
     return value
 
 
+def normalize_material_number(value: Any) -> Any:
+    """A material number is trimmed text, and a blank one is no number."""
+    if isinstance(value, str):
+        return value.strip() or None
+    return value
+
+
 class SpoolBase(BaseModel):
     material: str = Field(..., min_length=1, max_length=50)
     subtype: str | None = None
@@ -69,6 +76,10 @@ class SpoolBase(BaseModel):
     storage_location: str | None = Field(default=None, max_length=255)
     location_id: int | None = Field(default=None, gt=0)
     purchase_location: str | None = Field(default=None, max_length=255)
+    # The operator's article code for the filament; trimmed, blank = none.
+    material_number: str | None = Field(default=None, max_length=64)
+
+    _material_number = field_validator("material_number", mode="before")(normalize_material_number)
 
 
 class SpoolCreate(SpoolBase):
@@ -119,6 +130,7 @@ class SpoolUpdate(BaseModel):
     storage_location: str | None = Field(default=None, max_length=255)
     location_id: int | None = Field(default=None, gt=0)
     purchase_location: str | None = Field(default=None, max_length=255)
+    material_number: str | None = Field(default=None, max_length=64)
     # Set by hand for a spool dried outside an AMS; null clears it. Not on
     # SpoolCreate: a new or duplicated spool starts with no drying record.
     last_dried_at: datetime | None = None
@@ -127,6 +139,8 @@ class SpoolUpdate(BaseModel):
     @classmethod
     def _last_dried_at_in_utc(cls, value: datetime | None) -> datetime | None:
         return naive_utc(value)
+
+    _material_number = field_validator("material_number", mode="before")(normalize_material_number)
 
 
 class SpoolBulkIds(BaseModel):
@@ -324,6 +338,7 @@ class SpoolListItem(BaseModel):
     storage_location: str | None = None
     location_id: int | None = None
     purchase_location: str | None = None
+    material_number: str | None = None
     archived_at: datetime | None = None
     created_at: datetime
     updated_at: datetime

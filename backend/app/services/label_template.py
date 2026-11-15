@@ -108,6 +108,12 @@ PLACEHOLDERS: tuple[Placeholder, ...] = (
         example="1.75",
     ),
     Placeholder(key="lot", label="Lot", description="Position inside a purchase bundle / batch", example="3"),
+    Placeholder(
+        key="material_number",
+        label="Material number",
+        description="Your own article code for the filament",
+        example="15",
+    ),
     # ── Label-only, with no meaning in a spool's name ──
     Placeholder(
         key="display_name",

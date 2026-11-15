@@ -119,6 +119,15 @@ class Records(BaseModel):
     success_streak: int = 0
 
 
+class MaterialNumberRow(BaseModel):
+    """Consumption of the spools sharing one material number (article code)."""
+
+    material_number: str
+    grams: float = 0.0
+    cost: float = 0.0
+    spools: int = 0
+
+
 class ArchiveAggregate(BaseModel):
     timezone: str
     granularity: str
@@ -127,6 +136,7 @@ class ArchiveAggregate(BaseModel):
     by_printer: list[PrinterRow]
     by_material: list[MaterialRow]
     by_color: list[ColorRow]
+    by_material_number: list[MaterialNumberRow] = []
     by_duration: list[DurationRow]
     totals: Totals
     records: Records

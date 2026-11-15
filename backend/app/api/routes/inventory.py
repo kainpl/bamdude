@@ -1315,6 +1315,7 @@ def _spool_to_list_item(
         storage_location=s.storage_location,
         location_id=s.location_id,
         purchase_location=s.purchase_location,
+        material_number=s.material_number,
         archived_at=s.archived_at,
         created_at=s.created_at,
         updated_at=s.updated_at,
@@ -1375,6 +1376,7 @@ async def list_spools(
     ),
     color_rgbas: list[str] = Query(default_factory=list, description="Raw rgba values, paired with a NULL color_name"),
     category: str | None = Query(None, description="Exact match, or '__none__' for uncategorised"),
+    material_number: str | None = Query(None, description="Exact match, or '__none__' for spools without one"),
     catalog_id: int | None = Query(None),
     location_id: str | None = Query(
         None,
@@ -1485,6 +1487,7 @@ async def list_spools(
         colors=colors or None,
         color_rgbas=color_rgbas or None,
         category=category,
+        material_number=material_number,
         catalog_id=catalog_id,
         location_id=location_id,
         stock=stock,
@@ -1595,6 +1598,7 @@ class SpoolFacetsResponse(BaseModel):
     materials: list[str]
     brands: list[str]
     categories: list[str]
+    material_numbers: list[str]
     catalog_ids: list[int]
     colors: list[SpoolColorFacet]
 
@@ -1608,6 +1612,7 @@ async def list_spool_ids(
     colors: list[str] = Query(default_factory=list, description="Raw color_name values"),
     color_rgbas: list[str] = Query(default_factory=list, description="Raw rgba values, paired with a NULL color_name"),
     category: str | None = Query(None, description="Exact match, or '__none__' for uncategorised"),
+    material_number: str | None = Query(None, description="Exact match, or '__none__' for spools without one"),
     catalog_id: int | None = Query(None),
     location_id: str | None = Query(
         None,
@@ -1641,6 +1646,7 @@ async def list_spool_ids(
         colors=colors or None,
         color_rgbas=color_rgbas or None,
         category=category,
+        material_number=material_number,
         catalog_id=catalog_id,
         location_id=location_id,
         stock=stock,
@@ -1906,6 +1912,7 @@ async def export_spools_csv(
     colors: list[str] = Query(default_factory=list),
     color_rgbas: list[str] = Query(default_factory=list),
     category: str | None = Query(None),
+    material_number: str | None = Query(None),
     catalog_id: int | None = Query(None),
     location_id: str | None = Query(None, pattern=_LOCATION_ID_PATTERN),
     stock: Literal["stock", "configured"] | None = Query(None),
@@ -1933,6 +1940,7 @@ async def export_spools_csv(
         colors=colors or None,
         color_rgbas=color_rgbas or None,
         category=category,
+        material_number=material_number,
         catalog_id=catalog_id,
         location_id=location_id,
         stock=stock,
@@ -2087,6 +2095,7 @@ async def create_spool(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     await _derive_family_from_slicer(db, payload)
     await _validate_family_id(db, payload.get("filament_family_id"))
+    await inventory_service.inherit_material_number(db, payload)
     spool = Spool(**payload)
     db.add(spool)
     await db.commit()
@@ -2118,6 +2127,7 @@ async def bulk_create_spools(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     await _derive_family_from_slicer(db, template)
     await _validate_family_id(db, template.get("filament_family_id"))
+    await inventory_service.inherit_material_number(db, template)
     base_lot = template.get("lot")
     start_lot = base_lot if isinstance(base_lot, int) and base_lot > 0 else 1
     for i in range(data.quantity):

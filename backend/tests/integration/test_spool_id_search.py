@@ -119,3 +119,22 @@ async def test_the_picker_says_why_a_numbered_spool_is_not_offered(async_client,
     assert replaced.json()["miss"]["reason"] == "this_slot"
     # A text search that finds nothing has no single cause to name.
     assert await miss("Unobtainium") is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_a_hash_the_template_writes_before_another_field_stays_text(async_client, db_session):
+    """``#{lot}`` on screen is text the operator reads; ``#{id}`` is the id itself."""
+    from backend.app.models.settings import Settings
+
+    spools = await _seed(db_session)  # spools[1].lot == spools[11].id
+    setting = Settings(key="spool_display_template", value="{brand} #{lot}")
+    db_session.add(setting)
+    await db_session.commit()
+    twelve = spools[11]
+
+    assert _ids(await async_client.get(f"{LIST}&q=%23{twelve.id}")) == {twelve.id, spools[1].id}
+
+    setting.value = "#{id} {brand}"
+    await db_session.commit()
+    assert _ids(await async_client.get(f"{LIST}&q=%23{spools[0].id}")) == {spools[0].id}

@@ -41,6 +41,7 @@ class MappedSpoolFields(TypedDict):
     core_weight: int | None
     core_weight_is_inherited: bool
     core_weight_catalog_id: None
+    material_number: str | None
     weight_used: float | None
     weight_used_baseline: float | None
     weight_locked: bool
@@ -450,6 +451,9 @@ def _map_spoolman_spool(spool: dict) -> MappedSpoolFields:
         # above is its filament's, its vendor's or the 250 g fallback.
         "core_weight_is_inherited": _own_tare(spool) is None,
         "core_weight_catalog_id": None,
+        # Spoolman's native article number of the FILAMENT is the material
+        # number (upstream 71d4b2f70); it is edited in Spoolman.
+        "material_number": (str(filament.get("article_number") or "").strip() or None),
         "weight_used": used_weight,
         "weight_used_baseline": weight_used_baseline,
         "weight_locked": False,
