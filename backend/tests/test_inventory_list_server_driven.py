@@ -941,7 +941,8 @@ class TestFacetsEndpoint:
         assert resp.status_code == 200
         body = resp.json()
 
-        assert set(body.keys()) == {"materials", "brands", "categories", "catalog_ids", "colors"}
+        assert set(body.keys()) == {"materials", "brands", "categories", "material_numbers", "catalog_ids", "colors"}
+        assert body["material_numbers"] == []
         assert set(body["materials"]) == {"PLA", "PETG"}
         assert set(body["brands"]) == {"SUNLU", "eSun"}
         assert set(body["categories"]) == {"Prod", "Proto"}

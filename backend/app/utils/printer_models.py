@@ -274,6 +274,23 @@ def has_external_storage(model: str | None) -> bool:
     return normalized not in NO_EXTERNAL_STORAGE_MODELS
 
 
+# Models of Bambu's older MQTT protocol, on which BambuStudio re-reads an AMS
+# tag with the ``M620 R`` gcode rather than ``ams_get_rfid`` (upstream 1cc4bae5d,
+# #3206). ⚠️ This list does NOT choose the command — the printer's own
+# capability flags do, as in BambuStudio (``bambu_mqtt._rfid_first_command``).
+# It only keeps the gcode FALLBACK, sent after an explicit refusal, away from
+# machines of the newer protocol. Short display names, uppercase, no spaces.
+LEGACY_RFID_REFRESH_MODELS = frozenset({"X1", "X1C", "X1E", "P1P", "P1S", "A1", "A1MINI"})
+
+
+def uses_legacy_rfid_refresh(model: str | None) -> bool:
+    """Whether a refused ``ams_get_rfid`` may be retried as ``M620 R`` on this model."""
+    if not model:
+        return False
+    short = normalize_model_name(model) or model
+    return short.strip().upper().replace(" ", "").replace("-", "") in LEGACY_RFID_REFRESH_MODELS
+
+
 def is_dual_nozzle_model(model: str | None) -> bool:
     """Return True if the printer model has two nozzles (H2D family / X2D)."""
     if not model:

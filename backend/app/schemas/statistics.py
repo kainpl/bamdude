@@ -5,7 +5,9 @@ time» on a 48-printer farm is about a thousand rows here, against ten thousand
 truncated archive rows before.
 """
 
-from pydantic import BaseModel
+from datetime import date
+
+from pydantic import BaseModel, model_validator
 
 
 class BucketMetrics(BaseModel):
@@ -119,6 +121,15 @@ class Records(BaseModel):
     success_streak: int = 0
 
 
+class MaterialNumberRow(BaseModel):
+    """Consumption of the spools sharing one material number (article code)."""
+
+    material_number: str
+    grams: float = 0.0
+    cost: float = 0.0
+    spools: int = 0
+
+
 class ArchiveAggregate(BaseModel):
     timezone: str
     granularity: str
@@ -127,6 +138,7 @@ class ArchiveAggregate(BaseModel):
     by_printer: list[PrinterRow]
     by_material: list[MaterialRow]
     by_color: list[ColorRow]
+    by_material_number: list[MaterialNumberRow] = []
     by_duration: list[DurationRow]
     totals: Totals
     records: Records
@@ -190,3 +202,33 @@ class ArchiveStats(BaseModel):
     # incomplete snapshot history - e.g. right after a fresh upgrade before the
     # hourly snapshot loop has built up a baseline. Frontend shows a tooltip.
     energy_data_warming_up: bool = False
+
+
+class UsageRepriceRequest(BaseModel):
+    """What to re-price: one spool, one period, or one spool within a period — never everything."""
+
+    spool_id: int | None = None
+    date_from: date | None = None
+    date_to: date | None = None
+    # A preview unless the caller says otherwise: applying rewrites recorded costs.
+    dry_run: bool = True
+
+    @model_validator(mode="after")
+    def _scoped(self):
+        if (self.date_from is None) != (self.date_to is None):
+            raise ValueError("A period needs both its first and its last day")
+        if self.date_from is not None and self.date_to is not None and self.date_to < self.date_from:
+            raise ValueError("The period ends before it starts")
+        if self.spool_id is None and self.date_from is None:
+            raise ValueError("Choose a spool, a period, or both")
+        return self
+
+
+class UsageRepriceResult(BaseModel):
+    dry_run: bool
+    rows: int
+    rows_changed: int
+    archives_changed: int
+    orders_changed: int
+    cost_before: float
+    cost_after: float

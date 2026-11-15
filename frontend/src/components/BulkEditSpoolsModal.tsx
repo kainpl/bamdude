@@ -57,6 +57,7 @@ const FIELDS: FieldDef[] = [
   // Not a value to set: ticking it releases the hand-weight lock of the selected
   // spools, so AMS weight syncs may write them again. The weights stay as they are.
   { key: 'weight_locked', labelKey: 'inventory.bulkEdit.unlockWeight', type: 'unlock' },
+  { key: 'material_number', labelKey: 'inventory.materialNumber', type: 'datalist' },
 ];
 
 const NUMERIC = new Set(['label_weight', 'cost_per_kg', 'low_stock_threshold_pct']);
@@ -205,6 +206,7 @@ export function BulkEditSpoolsModal({ isOpen, spools, allSpools, catalogEntries,
       category: uniq(distinct((s) => s.category)),
       storage_location: uniq(distinct((s) => s.storage_location)),
       purchase_location: uniq(distinct((s) => s.purchase_location)),
+      material_number: uniq(distinct((s) => s.material_number)),
     } as Record<string, string[]>;
   }, [allSpools, cloudPresets, localPresets, colorCatalog]);
 

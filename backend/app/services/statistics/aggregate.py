@@ -120,6 +120,12 @@ def duration_bucket(seconds: float | None) -> str | None:
     return DURATION_BUCKETS[-1][0]
 
 
+# ``filament_type`` is split on the comma alone and trimmed: its writers join
+# with ", " but the row created at print start used a bare comma for years, and
+# those rows are still there.
+MATERIAL_SEPARATOR = ","
+
+
 def split_multi(
     rows: list[dict[str, Any]],
     *,
@@ -147,7 +153,9 @@ def split_multi(
     for row in rows:
         raw = (row.get("key") or "").strip()
         if raw:
-            parts = [p.strip() for p in raw.split(sep) if p.strip()]
+            # A repeated part counts once: counts are credited whole to each
+            # part, so "PLA,PLA" would otherwise be two PLA prints.
+            parts = list(dict.fromkeys(p.strip() for p in raw.split(sep) if p.strip()))
         else:
             parts = []
         if not parts:
@@ -410,6 +418,57 @@ async def _success_streak(db, filters: list) -> int:
     return int((await db.execute(select(func.coalesce(func.max(islands.c.run), 0)))).scalar_one() or 0)
 
 
+async def _by_material_number(
+    db, tz: ZoneInfo, date_from: date | None, date_to: date | None, user_id: int | None
+) -> list[dict]:
+    """Filament consumed and what it cost, grouped by the spools' material number.
+
+    One more grouping of the page's range, read off the built-in usage ledger
+    (``spool_usage_history`` — written by the usage tracker, only read here):
+    the archive row names materials and colours but not the spools a print
+    drew from. The range is the usage rows' own ``created_at`` in the caller's
+    days; with ``user_id`` (an own-prints reader) only rows of that user's
+    archives count. Spools without a number are left out — "no number" is not a
+    group anyone costs by. Under Spoolman the ledger is empty and so is this.
+    """
+    from backend.app.models.spool import Spool
+    from backend.app.models.spool_usage_history import SpoolUsageHistory
+
+    number = func.trim(Spool.material_number)
+    query = (
+        select(
+            number.label("material_number"),
+            func.sum(func.coalesce(SpoolUsageHistory.weight_used, 0.0)).label("grams"),
+            func.sum(func.coalesce(SpoolUsageHistory.cost, 0.0)).label("cost"),
+            func.count(func.distinct(SpoolUsageHistory.spool_id)).label("spools"),
+        )
+        .join(Spool, Spool.id == SpoolUsageHistory.spool_id)
+        .where(Spool.material_number.is_not(None), number != "")
+        .group_by(number)
+    )
+    if date_from:
+        query = query.where(SpoolUsageHistory.created_at >= day_bounds(date_from, tz)[0])
+    if date_to:
+        query = query.where(SpoolUsageHistory.created_at < day_bounds(date_to, tz)[1])
+    if user_id is not None:
+        query = query.join(PrintArchive, PrintArchive.id == SpoolUsageHistory.archive_id).where(
+            PrintArchive.created_by_id == user_id
+        )
+    rows = (await db.execute(query)).all()
+    return sorted(
+        (
+            {
+                "material_number": row[0],
+                "grams": round(float(row[1] or 0.0), 2),
+                "cost": round(float(row[2] or 0.0), 2),
+                "spools": int(row[3] or 0),
+            }
+            for row in rows
+        ),
+        key=lambda r: (-r["grams"], r["material_number"]),
+    )
+
+
 async def collect(
     db: AsyncSession,
     *,
@@ -435,7 +494,7 @@ async def collect(
 
     materials = split_multi(
         await _grouped_by_text(db, filters, PrintArchive.filament_type, with_seconds=True),
-        sep=", ",
+        sep=MATERIAL_SEPARATOR,
         default="Unknown",
         divide=("grams", "seconds"),
         whole=("prints", "completed", "failed"),
@@ -458,6 +517,7 @@ async def collect(
             ({"material": r.pop("key"), **r} for r in materials), key=lambda r: r["grams"], reverse=True
         ),
         "by_color": sorted(({"color": r.pop("key"), **r} for r in colours), key=lambda r: r["grams"], reverse=True),
+        "by_material_number": await _by_material_number(db, tz, date_from, date_to, user_id),
         "by_duration": await _by_duration(db, filters),
         "totals": await _totals(db, filters),
         "records": {

@@ -29,7 +29,14 @@ from backend.app.core.timezones import client_timezone, day_bounds
 from backend.app.models.archive import PrintArchive
 from backend.app.models.spool_usage_history import SpoolUsageHistory
 from backend.app.models.user import User
-from backend.app.schemas.statistics import ArchiveAggregate, ArchiveStats, DefectsByPrinter
+from backend.app.schemas.statistics import (
+    ArchiveAggregate,
+    ArchiveStats,
+    DefectsByPrinter,
+    UsageRepriceRequest,
+    UsageRepriceResult,
+)
+from backend.app.services import usage_reprice
 from backend.app.services.filament_cost import default_rate_per_kg
 from backend.app.services.statistics import aggregate as archive_aggregate
 from backend.app.services.statistics.energy import sum_live_plug_totals, sum_snapshot_deltas
@@ -499,3 +506,37 @@ async def recalculate_all_costs(
     if preserved:
         message += f"; kept {preserved} priced from Spoolman"
     return {"message": message, "updated": updated, "preserved": preserved}
+
+
+@router.post("/reprice-usage", response_model=UsageRepriceResult)
+async def reprice_usage(
+    body: UsageRepriceRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.ARCHIVES_UPDATE_ALL),
+):
+    """Re-price the recorded usage of one spool and / or one period at the spools' current prices.
+
+    A stored cost is a snapshot, and "Recalculate Costs" keeps it one. This is
+    the door for a price that was typed wrong: it previews (``dry_run``, the
+    default) how many usage rows, archives and orders would move, and applies
+    only when asked to. Grams and energy are never touched — see
+    ``services/usage_reprice``.
+    """
+    # The built-in ledger only. In Spoolman mode a print is priced from the
+    # spool in Spoolman and its rows live in another table; re-pricing those
+    # needs Spoolman's prices and is not offered here.
+    from backend.app.api.routes.settings import get_setting
+
+    spoolman_setting = await get_setting(db, "spoolman_enabled")
+    if spoolman_setting and spoolman_setting.lower() == "true":
+        raise HTTPException(409, "Usage can be re-priced only with the built-in inventory")
+
+    if body.spool_id is not None and not await usage_reprice.spool_exists(db, body.spool_id):
+        raise HTTPException(404, "Spool not found")
+
+    tz = client_timezone(request)
+    start = day_bounds(body.date_from, tz)[0] if body.date_from else None
+    end = day_bounds(body.date_to, tz)[1] if body.date_to else None
+    result = await usage_reprice.reprice(db, spool_id=body.spool_id, start=start, end=end, apply=not body.dry_run)
+    return UsageRepriceResult(**result.as_dict())

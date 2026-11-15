@@ -50,8 +50,12 @@ class InboxChannel:
 INBOX_CHANNEL = InboxChannel()
 
 
-async def recipients(db: AsyncSession, event_type: str) -> list[int]:
+async def recipients(db: AsyncSession, event_type: str, unless_subscribed_to: str | None = None) -> list[int]:
     """Active users whose subscription (NULL = defaults) contains ``event_type``; columns read by name.
+
+    ``unless_subscribed_to`` leaves out the users who also subscribe to that
+    other event — for a message that stands in for it (a "reorder" copy of a
+    stock break goes only to those who did not ask for the break itself).
 
     ⚠️ Under ``no_autoflush``, for the reason ``_get_providers_for_event`` and
     ``_get_template`` give: a caller routinely holds pending writes when it
@@ -64,7 +68,13 @@ async def recipients(db: AsyncSession, event_type: str) -> list[int]:
     """
     with db.no_autoflush:
         rows = (await db.execute(select(User.id, User.is_active, User.inbox_events))).all()
-    return [r.id for r in rows if r.is_active and wants_inbox_event(r.inbox_events, event_type)]
+    return [
+        r.id
+        for r in rows
+        if r.is_active
+        and wants_inbox_event(r.inbox_events, event_type)
+        and not (unless_subscribed_to and wants_inbox_event(r.inbox_events, unless_subscribed_to))
+    ]
 
 
 async def has_subscriber(db: AsyncSession, event_type: str) -> bool:
@@ -232,6 +242,7 @@ async def deliver(
     printer_id: int | None = None,
     printer_name: str | None = None,
     extra_data: dict | None = None,
+    unless_subscribed_to: str | None = None,
 ) -> list[int]:
     """Fan the rendered event out to every subscribed user; one commit; then one live update each.
 
@@ -241,7 +252,7 @@ async def deliver(
     here would lose a notification over a long filename.
     """
     meta = event_meta(event_type)
-    user_ids = await recipients(db, event_type)
+    user_ids = await recipients(db, event_type, unless_subscribed_to)
     if not user_ids:
         return []
 

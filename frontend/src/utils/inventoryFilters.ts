@@ -45,6 +45,7 @@ export type StoredFilters = {
   brandFilter: string;
   colorFilter: string;
   categoryFilter: string;
+  materialNumberFilter: string;
   spoolFilter: string;
   stockFilter: StockFilter;
   assignedFilter: AssignedFilter;
@@ -59,6 +60,7 @@ export const DEFAULT_FILTERS: StoredFilters = {
   brandFilter: '',
   colorFilter: '',
   categoryFilter: '',
+  materialNumberFilter: '',
   spoolFilter: '',
   stockFilter: 'all',
   assignedFilter: 'all',
@@ -95,6 +97,7 @@ export function loadFilters(): StoredFilters {
       brandFilter: text(raw.brandFilter),
       colorFilter: text(raw.colorFilter),
       categoryFilter: text(raw.categoryFilter),
+      materialNumberFilter: text(raw.materialNumberFilter),
       spoolFilter: text(raw.spoolFilter),
       stockFilter: oneOf(raw.stockFilter, STOCK_FILTERS, 'all'),
       assignedFilter: oneOf(raw.assignedFilter, ASSIGNED_FILTERS, 'all'),

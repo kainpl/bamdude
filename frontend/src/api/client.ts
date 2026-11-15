@@ -121,6 +121,23 @@ export interface PrintStateAudit {
   process_ended?: boolean;
 }
 
+// Re-pricing recorded usage — mirrors backend/app/schemas/statistics.py.
+export interface UsageRepriceRequest {
+  spool_id: number | null;
+  date_from: string | null;
+  date_to: string | null;
+  dry_run: boolean;
+}
+export interface UsageRepriceResult {
+  dry_run: boolean;
+  rows: number;
+  rows_changed: number;
+  archives_changed: number;
+  orders_changed: number;
+  cost_before: number;
+  cost_after: number;
+}
+
 export class ApiError extends Error {
   printerId?: number;
   archiveId?: number;
@@ -1890,6 +1907,8 @@ export interface AggregateMaterialRow {
   failed: number;
 }
 export interface AggregateColorRow { color: string; prints: number; grams: number }
+/** Filament drawn from the spools sharing one material number, and its cost. */
+export interface AggregateMaterialNumberRow { material_number: string; grams: number; cost: number; spools: number }
 export interface AggregateDurationRow { bucket: string; prints: number }
 export interface AggregateTotals {
   prints: number;
@@ -1921,6 +1940,7 @@ export interface ArchiveAggregate {
   by_printer: AggregatePrinterRow[];
   by_material: AggregateMaterialRow[];
   by_color: AggregateColorRow[];
+  by_material_number?: AggregateMaterialNumberRow[];
   by_duration: AggregateDurationRow[];
   totals: AggregateTotals;
   records: AggregateRecords;
@@ -8265,6 +8285,10 @@ export interface InventorySpool {
   brand: string | null;
   label_weight: number;
   core_weight: number;
+  /** Spoolman mode: false when the spool carries an empty weight of its own,
+   *  true when ``core_weight`` is its filament's, its vendor's or the 250 g
+   *  fallback. Absent in built-in mode. */
+  core_weight_is_inherited?: boolean;
   core_weight_catalog_id: number | null;
   weight_used: number;
   /** Baseline anchor for the resettable "Total Consumed" display. The
@@ -8322,6 +8346,9 @@ export interface InventorySpool {
   storage_location?: string | null;
   location_id?: number | null;
   purchase_location?: string | null;
+  /** The operator's own article code for the filament. In Spoolman mode it is
+   *  the filament's ``article_number`` and is edited in Spoolman. */
+  material_number?: string | null;
   /** Nested K-profiles. `null` on paged list rows unless the request sent
    *  `include_k_profiles=true` (task 4) — "not requested", distinct from
    *  "requested, none" (`[]`). Legacy flat responses always carry the array. */
@@ -8354,6 +8381,8 @@ export interface SpoolListParams {
   color_rgbas?: string[];
   /** Exact category, or '__none__' for uncategorised. */
   category?: string;
+  /** Exact material number, or '__none__' for spools without one. */
+  material_number?: string;
   catalog_id?: number;
   /** Location id digits, or '__none__' for no location. */
   location_id?: string;
@@ -8380,6 +8409,20 @@ export type SpoolListItem = InventorySpool & { k_profile_count: number };
 export interface SpoolListPage {
   items: SpoolListItem[];
   meta: PaginationMeta;
+}
+
+/** Why ``#<id>`` found nothing in the slot-assignment picker. */
+export interface SpoolPickerMiss {
+  reason: 'not_found' | 'archived' | 'other_slot' | 'this_slot';
+  spool_id: number;
+  printer_id?: number | null;
+  printer_name?: string | null;
+  ams_id?: number | null;
+  tray_id?: number | null;
+}
+
+export interface SpoolPickerPage extends SpoolListPage {
+  miss?: SpoolPickerMiss | null;
 }
 
 /** One grouped-mode row (`group_similar=true`, task 3). Text key fields come
@@ -8425,6 +8468,7 @@ export interface SpoolFacets {
   materials: string[];
   brands: string[];
   categories: string[];
+  material_numbers?: string[];
   catalog_ids: number[];
   colors: SpoolFacetColor[];
 }
@@ -8463,6 +8507,7 @@ function spoolListSearchParams(params: SpoolListParams): URLSearchParams {
   for (const c of params.colors ?? []) qs.append('colors', c);
   for (const r of params.color_rgbas ?? []) qs.append('color_rgbas', r);
   if (params.category) qs.set('category', params.category);
+  if (params.material_number) qs.set('material_number', params.material_number);
   if (params.catalog_id !== undefined) qs.set('catalog_id', String(params.catalog_id));
   if (params.location_id) qs.set('location_id', params.location_id);
   if (params.stock) qs.set('stock', params.stock);
@@ -11397,6 +11442,9 @@ export const api = {
     }),
   recalculateCosts: () =>
     request<{ message: string; updated: number; preserved?: number }>('/statistics/recalculate-costs', { method: 'POST' }),
+  // A preview unless `dry_run` is false — see RepriceUsageModal.
+  repriceUsage: (body: UsageRepriceRequest) =>
+    request<UsageRepriceResult>('/statistics/reprice-usage', { method: 'POST', body: JSON.stringify(body) }),
   getFailureAnalysis: (options?: { days?: number; dateFrom?: string; dateTo?: string; printerId?: number; projectId?: number }) => {
     const params = new URLSearchParams();
     if (options?.days) params.set('days', String(options.days));
@@ -13182,7 +13230,7 @@ export const api = {
     Object.entries(params).forEach(([key, value]) => {
       if (value !== undefined && value !== '') query.set(key, String(value));
     });
-    return request<SpoolListPage>(`/inventory/spools/picker?${query}`, { signal });
+    return request<SpoolPickerPage>(`/inventory/spools/picker?${query}`, { signal });
   },
   /** The stats bar, aggregated server-side (task 5). Farm-wide and
    *  unfiltered — the memo it replaced read the whole feed, not the filter. */

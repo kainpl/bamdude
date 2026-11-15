@@ -216,6 +216,10 @@ async def create_spool_from_tray(db: AsyncSession, tray_data: dict) -> Spool:
         data_origin="rfid_auto",
         tag_type="bambulab",
     )
+    # A spool of an already-numbered filament arrives with its material number.
+    from backend.app.services import inventory_service
+
+    await inventory_service.inherit_material_number(db, spool)
     # Initialize relationships BEFORE db.add() to prevent lazy loads.
     # Setting them after flush() would trigger a lazy load because SQLAlchemy
     # loads the current collection before replacing it on a persistent object.

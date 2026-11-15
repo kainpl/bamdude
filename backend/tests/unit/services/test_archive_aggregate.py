@@ -153,3 +153,33 @@ def test_colours_are_split_on_a_bare_comma_and_trimmed():
 )
 def test_duration_buckets_match_the_frontend_boundaries(seconds, expected):
     assert agg.duration_bucket(seconds) == expected
+
+
+def test_materials_split_on_the_comma_alone_and_a_repeated_part_counts_once():
+    """The row created at print start joined types with a bare comma, and a
+    two-slot PLA job is one PLA print, not two (upstream 30b7513bf)."""
+    rows = [
+        {"key": "PLA,PETG", "prints": 1, "grams": 60.0, "seconds": 600.0, "completed": 1, "failed": 0},
+        {"key": "PLA, PETG", "prints": 1, "grams": 40.0, "seconds": 400.0, "completed": 1, "failed": 0},
+        {"key": "PLA,PLA", "prints": 1, "grams": 30.0, "seconds": 300.0, "completed": 0, "failed": 1},
+        {"key": " PLA , ", "prints": 1, "grams": 10.0, "seconds": 100.0, "completed": 1, "failed": 0},
+        {"key": "PLA+", "prints": 1, "grams": 5.0, "seconds": 50.0, "completed": 1, "failed": 0},
+        {"key": "PLA/PHA", "prints": 1, "grams": 7.0, "seconds": 70.0, "completed": 1, "failed": 0},
+    ]
+    out = {
+        r["key"]: r
+        for r in agg.split_multi(
+            rows,
+            sep=agg.MATERIAL_SEPARATOR,
+            default="Unknown",
+            divide=("grams", "seconds"),
+            whole=("prints", "completed", "failed"),
+        )
+    }
+    assert set(out) == {"PLA", "PETG", "PLA+", "PLA/PHA"}
+    assert out["PLA"]["prints"] == 4  # the PLA,PLA job once
+    assert out["PLA"]["failed"] == 1
+    assert out["PLA"]["grams"] == pytest.approx(30.0 + 20.0 + 30.0 + 10.0)  # PLA,PLA keeps its grams whole
+    assert out["PETG"]["prints"] == 2
+    assert out["PETG"]["grams"] == pytest.approx(50.0)
+    assert sum(r["grams"] for r in out.values()) == pytest.approx(152.0)

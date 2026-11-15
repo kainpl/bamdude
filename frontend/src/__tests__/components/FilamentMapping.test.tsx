@@ -48,6 +48,9 @@ function createStatus(overrides: Partial<PrinterStatus>): PrinterStatus {
   } as PrinterStatus;
 }
 
+/** A slot's entry in the picker's list (the chosen slot is also named on the row). */
+const slotEntry = (name: RegExp) => screen.getByRole('option', { name, hidden: true });
+
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
@@ -96,15 +99,15 @@ describe('FilamentMapping — FTS routing', () => {
     // being empty and the requirement asking for nozzle 1. Without the FTS guard
     // the dropdown would render only the "-- Select slot --" placeholder.
     await waitFor(() => {
-      expect(screen.getByText(/Bambu PLA/)).toBeInTheDocument();
+      expect(slotEntry(/Bambu PLA/)).toBeInTheDocument();
     });
-    expect(screen.getByText(/Bambu PETG/)).toBeInTheDocument();
+    expect(slotEntry(/Bambu PETG/)).toBeInTheDocument();
 
     // Each slot is badged with the switch INLET its AMS is plumbed into — its
     // own letter, never a nozzle side: an inlet reaches both nozzles. Both
     // slots are in AMS 0, which is on IN-A (upstream 7a42e0a7).
-    expect(screen.getByText(/Bambu PETG/).textContent).toMatch(/\[IN-A\]/);
-    expect(screen.getByText(/Bambu PLA/).textContent).toMatch(/\[IN-A\]/);
+    expect(slotEntry(/Bambu PETG/).textContent).toMatch(/\[IN-A\]/);
+    expect(slotEntry(/Bambu PLA/).textContent).toMatch(/\[IN-A\]/);
   });
 
   it('does not badge slots whose AMS has no inlet binding yet', async () => {
@@ -136,9 +139,9 @@ describe('FilamentMapping — FTS routing', () => {
     );
 
     await waitFor(() => {
-      expect(screen.getByText(/Bambu PETG/)).toBeInTheDocument();
+      expect(slotEntry(/Bambu PETG/)).toBeInTheDocument();
     });
-    expect(screen.getByText(/Bambu PETG/).textContent).not.toMatch(/\[[LR]\]/);
+    expect(slotEntry(/Bambu PETG/).textContent).not.toMatch(/\[[LR]\]/);
   });
 
   it('renders the per-slot force-color-match checkbox when a handler is wired (#1717)', async () => {
@@ -238,7 +241,7 @@ describe('FilamentMapping — FTS routing', () => {
     );
     await waitFor(() => expect(screen.getAllByText(/Color mismatch/i)).toHaveLength(2));
     expect(screen.getByTitle(/Color mismatch/i)).toBeInTheDocument();
-    expect((screen.getByRole('combobox') as HTMLSelectElement).value).toBe('');
+    expect(document.querySelector('[data-slot-picker]')?.getAttribute('data-value')).toBe('');
   });
 
   it('keeps a different profile family incompatible until base matching is enabled', async () => {
@@ -493,5 +496,55 @@ describe('FilamentMapping — Filament Track Switch arrangement advice', () => {
     renderWith({ '0': 'A', '1': 'A' }, { installed: false });
     await waitForSlots();
     expect(screen.queryByText(/Recommended filament arrangement/)).not.toBeInTheDocument();
+  });
+});
+
+describe('FilamentMapping — the slot picker', () => {
+  beforeEach(() => {
+    server.use(
+      http.get('/api/v1/printers/:id/spool-assignments', () => HttpResponse.json([])),
+      http.get('/api/v1/printers/:id/status', () =>
+        HttpResponse.json(createStatus({ fila_switch: null, ams_extruder_map: { '0': 1 } })),
+      ),
+    );
+  });
+
+  const renderMapping = () =>
+    render(
+      <FilamentMapping
+        printerId={1}
+        filamentReqs={mockFilamentReqs}
+        manualMappings={{}}
+        onManualMappingChange={() => {}}
+        currencySymbol="$"
+        defaultCostPerKg={0}
+        defaultExpanded
+      />,
+    );
+
+  it('names the chosen slot with its swatch and hex, and marks the slot of the file\'s own colour', async () => {
+    renderMapping();
+    const picker = await screen.findByTitle('Auto-matched');
+    await waitFor(() => expect(picker).toHaveAttribute('data-value', '1'));
+    // The row: the auto-matched green PETG, drawn and spelled out.
+    expect(picker).toHaveTextContent('#00FF00');
+    expect(picker.querySelector('[data-testid="filament-swatch"]')).not.toBeNull();
+    // The list: every slot its own colour; only the PETG one is the exact match.
+    const petg = slotEntry(/Bambu PETG/);
+    const pla = slotEntry(/Bambu PLA/);
+    expect(petg).toHaveTextContent('#00FF00');
+    expect(pla).toHaveTextContent('#FF0000');
+    expect(petg.querySelector('[aria-label="Same material and colour as the file asks for"]')).not.toBeNull();
+    expect(pla.querySelector('[aria-label="Same material and colour as the file asks for"]')).toBeNull();
+  });
+
+  it('puts the picker on a line of its own on a phone held upright', async () => {
+    renderMapping();
+    const picker = await screen.findByTitle('Auto-matched');
+    const row = screen.getByTestId('filament-mapping-row');
+    // Three columns and two lines below `sm`; the single five-column line from `sm` up.
+    expect(row).toHaveClass('grid-cols-[16px_minmax(0,1fr)_16px]', 'sm:grid-cols-[16px_minmax(70px,1fr)_auto_2fr_16px]');
+    expect(row.getAttribute('style')).toBeNull();
+    expect(picker.parentElement!.parentElement).toHaveClass('max-sm:col-span-3', 'max-sm:row-start-2');
   });
 });

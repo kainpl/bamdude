@@ -57,6 +57,8 @@ from backend.app.schemas.spool import (
     SpoolKProfileResponse,
     SpoolListItem,
     SpoolListPage,
+    SpoolPickerMiss,
+    SpoolPickerPage,
     SpoolResponse,
     SpoolUpdate,
 )
@@ -1313,6 +1315,7 @@ def _spool_to_list_item(
         storage_location=s.storage_location,
         location_id=s.location_id,
         purchase_location=s.purchase_location,
+        material_number=s.material_number,
         archived_at=s.archived_at,
         created_at=s.created_at,
         updated_at=s.updated_at,
@@ -1373,6 +1376,7 @@ async def list_spools(
     ),
     color_rgbas: list[str] = Query(default_factory=list, description="Raw rgba values, paired with a NULL color_name"),
     category: str | None = Query(None, description="Exact match, or '__none__' for uncategorised"),
+    material_number: str | None = Query(None, description="Exact match, or '__none__' for spools without one"),
     catalog_id: int | None = Query(None),
     location_id: str | None = Query(
         None,
@@ -1483,6 +1487,7 @@ async def list_spools(
         colors=colors or None,
         color_rgbas=color_rgbas or None,
         category=category,
+        material_number=material_number,
         catalog_id=catalog_id,
         location_id=location_id,
         stock=stock,
@@ -1593,6 +1598,7 @@ class SpoolFacetsResponse(BaseModel):
     materials: list[str]
     brands: list[str]
     categories: list[str]
+    material_numbers: list[str]
     catalog_ids: list[int]
     colors: list[SpoolColorFacet]
 
@@ -1606,6 +1612,7 @@ async def list_spool_ids(
     colors: list[str] = Query(default_factory=list, description="Raw color_name values"),
     color_rgbas: list[str] = Query(default_factory=list, description="Raw rgba values, paired with a NULL color_name"),
     category: str | None = Query(None, description="Exact match, or '__none__' for uncategorised"),
+    material_number: str | None = Query(None, description="Exact match, or '__none__' for spools without one"),
     catalog_id: int | None = Query(None),
     location_id: str | None = Query(
         None,
@@ -1639,6 +1646,7 @@ async def list_spool_ids(
         colors=colors or None,
         color_rgbas=color_rgbas or None,
         category=category,
+        material_number=material_number,
         catalog_id=catalog_id,
         location_id=location_id,
         stock=stock,
@@ -1720,7 +1728,36 @@ async def spool_family_colors(
     return [SpoolFamilyColor(hex_color=f"#{color}", color_name=name or "") for color, name in rows.all()]
 
 
-@router.get("/spools/picker", response_model=SpoolListPage)
+async def _picker_miss(
+    db: AsyncSession, spool_id: int, *, printer_id: int, ams_id: int, tray_id: int
+) -> SpoolPickerMiss:
+    """Why the picker offers nothing for ``#<spool_id>`` — read after the miss."""
+    spool = await db.get(Spool, spool_id) if spool_id <= 2**31 - 1 else None
+    if spool is None:
+        return SpoolPickerMiss(reason="not_found", spool_id=spool_id)
+    if spool.archived_at is not None:
+        return SpoolPickerMiss(reason="archived", spool_id=spool_id)
+    rows = await db.execute(
+        select(SpoolAssignment, Printer.name)
+        .outerjoin(Printer, Printer.id == SpoolAssignment.printer_id)
+        .where(SpoolAssignment.spool_id == spool_id)
+        .order_by(SpoolAssignment.id)
+    )
+    held = rows.all()
+    for assignment, printer_name in held:
+        if (assignment.printer_id, assignment.ams_id, assignment.tray_id) != (printer_id, ams_id, tray_id):
+            return SpoolPickerMiss(
+                reason="other_slot",
+                spool_id=spool_id,
+                printer_id=assignment.printer_id,
+                printer_name=printer_name,
+                ams_id=assignment.ams_id,
+                tray_id=assignment.tray_id,
+            )
+    return SpoolPickerMiss(reason="this_slot", spool_id=spool_id)
+
+
+@router.get("/spools/picker", response_model=SpoolPickerPage)
 async def spool_picker(
     printer_id: int,
     ams_id: int,
@@ -1734,9 +1771,13 @@ async def spool_picker(
     per_page: int = Query(50, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.INVENTORY_READ),
-) -> SpoolListPage:
+) -> SpoolPickerPage:
     """Server-filtered local assignment picker; legacy spool list is unchanged."""
     filters = [Spool.archived_at.is_(None)]
+    # ``#123`` asks for one spool by its number: the slot's material / profile
+    # filter steps aside (the mismatch confirmation still asks on assign), the
+    # other-slot and archived rules stay (upstream f652d3e0a).
+    asked_id = inventory_service.exact_spool_id(q)
     if replacing_spool_id is not None:
         filters.append(Spool.id != replacing_spool_id)
 
@@ -1756,7 +1797,7 @@ async def spool_picker(
         filters.append(~other_slot)
         profile = tray_profile.split("@", 1)[0].strip().upper()
         material = tray_material.strip().upper()
-        if profile or material:
+        if (profile or material) and asked_id is None:
             spool_profile = func.upper(
                 func.trim(
                     func.coalesce(func.nullif(func.trim(Spool.slicer_filament_name), ""), Spool.slicer_filament, "")
@@ -1817,7 +1858,10 @@ async def spool_picker(
             .group_by(SpoolKProfile.spool_id)
         )
         profile_counts = dict(rows.all())
-    return SpoolListPage(
+    miss = None
+    if asked_id is not None and total == 0:
+        miss = await _picker_miss(db, asked_id, printer_id=printer_id, ams_id=ams_id, tray_id=tray_id)
+    return SpoolPickerPage(
         items=[_spool_to_list_item(s, k_profile_count_override=profile_counts.get(s.id, 0)) for s in spools],
         meta=PaginationMeta(
             total=total,
@@ -1825,6 +1869,7 @@ async def spool_picker(
             per_page=per_page,
             last_page=max(1, math.ceil(total / per_page)),
         ),
+        miss=miss,
     )
 
 
@@ -1867,6 +1912,7 @@ async def export_spools_csv(
     colors: list[str] = Query(default_factory=list),
     color_rgbas: list[str] = Query(default_factory=list),
     category: str | None = Query(None),
+    material_number: str | None = Query(None),
     catalog_id: int | None = Query(None),
     location_id: str | None = Query(None, pattern=_LOCATION_ID_PATTERN),
     stock: Literal["stock", "configured"] | None = Query(None),
@@ -1894,6 +1940,7 @@ async def export_spools_csv(
         colors=colors or None,
         color_rgbas=color_rgbas or None,
         category=category,
+        material_number=material_number,
         catalog_id=catalog_id,
         location_id=location_id,
         stock=stock,
@@ -2048,6 +2095,7 @@ async def create_spool(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     await _derive_family_from_slicer(db, payload)
     await _validate_family_id(db, payload.get("filament_family_id"))
+    await inventory_service.inherit_material_number(db, payload)
     spool = Spool(**payload)
     db.add(spool)
     await db.commit()
@@ -2079,6 +2127,7 @@ async def bulk_create_spools(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     await _derive_family_from_slicer(db, template)
     await _validate_family_id(db, template.get("filament_family_id"))
+    await inventory_service.inherit_material_number(db, template)
     base_lot = template.get("lot")
     start_lot = base_lot if isinstance(base_lot, int) and base_lot > 0 else 1
     for i in range(data.quantity):
@@ -2735,13 +2784,10 @@ async def list_assignments(
 
     # Fetch all relevant AMS labels keyed by serial number
     all_serials = set(serial_map.values())
-    # Also include synthetic fallback keys for assignments without a known serial
-    synthetic_keys: dict[str, tuple[int, int]] = {}
+    # Also the position keys: a label saved while the unit reported no serial
+    # lives there, and stays the unit's name until one is saved under the serial.
     for a in assignments:
-        if (a.printer_id, a.ams_id) not in serial_map:
-            synthetic = f"p{a.printer_id}a{a.ams_id}"
-            synthetic_keys[synthetic] = (a.printer_id, a.ams_id)
-            all_serials.add(synthetic)
+        all_serials.add(f"p{a.printer_id}a{a.ams_id}")
 
     label_by_serial: dict[str, str] = {}
     if all_serials:
@@ -2756,9 +2802,8 @@ async def list_assignments(
         sn = serial_map.get((a.printer_id, a.ams_id))
         if sn and sn in label_by_serial:
             resp.ams_label = label_by_serial[sn]
-        elif not sn:
-            synthetic = f"p{a.printer_id}a{a.ams_id}"
-            resp.ams_label = label_by_serial.get(synthetic)
+        else:
+            resp.ams_label = label_by_serial.get(f"p{a.printer_id}a{a.ams_id}")
         responses.append(resp)
 
     return responses

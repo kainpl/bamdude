@@ -55,3 +55,16 @@ def cost_of(grams: float | None, rate_per_kg: float) -> float | None:
     if not grams or rate_per_kg <= 0:
         return None
     return round((grams / 1000.0) * rate_per_kg, 2)
+
+
+def usage_cost(grams: float | None, spool_rate_per_kg: float | None, default_rate_per_kg: float) -> float | None:
+    """What a usage row costs: at the spool's own price, else at the farm's rate.
+
+    The rule the usage tracker books every row with — a spool priced 0 is a
+    free spool, not "use the default"; only a spool with NO price falls back.
+    ``usage_reprice`` re-prices recorded rows with it, so a re-priced row costs
+    what the tracker would book today
+    (``tests/unit/test_usage_cost_is_the_trackers_rule.py``).
+    """
+    rate = spool_rate_per_kg if spool_rate_per_kg is not None else default_rate_per_kg
+    return cost_of(grams, rate or 0.0)

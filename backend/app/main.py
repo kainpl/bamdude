@@ -1745,7 +1745,9 @@ def _extract_filament_data_from_mqtt(data: dict, ams_mapping: list[int] | None =
     else:
         filaments = [loaded[g] for g in sorted(loaded.keys())]
 
-    types_joined = ",".join(f[0] for f in filaments)
+    # Comma + space, each material once — the form every other writer of the
+    # column uses (a two-slot PLA job is "PLA", not "PLA,PLA").
+    types_joined = ", ".join(dict.fromkeys(f[0] for f in filaments))
     colors_joined = ",".join(f[1] for f in filaments if f[1])
 
     # Column limits per backend/app/models/archive.py: filament_type=50,
@@ -1820,14 +1822,28 @@ async def _bump_library_file_usage_if_completed(db, item, queue_status: str) -> 
     await _bump_library_file_usage(db, item.library_file_id)
 
 
-def mark_printer_stopped_by_user(printer_id: int) -> None:
+def mark_printer_stopped_by_user(printer_id: int, *, unless_idle: bool = False) -> None:
     """Mark that the active print on this printer was stopped by the user from the queue UI.
 
     When on_print_complete fires with status 'failed' for a printer in this set we
     reclassify it as 'cancelled' so the correct 'print stopped' notification is sent
     rather than a 'print failed' notification.
+
+    ``unless_idle`` is the printer card's Stop: on a printer that REPORTS a state
+    with no print loaded the stop stops nothing, and its mark would wait for the
+    failure of some later print (upstream ab5ccc108). An unknown state is not
+    idle and still marks. The queue's Stop has a row behind it and always marks.
     """
     from backend.app.services.print_run_binding import current_print_run
+
+    if unless_idle:
+        status = printer_manager.get_status(printer_id)
+        state = getattr(status, "state", None)
+        if state and state != "unknown" and state not in printer_manager.ACTIVE_PRINT_STATES:
+            logging.getLogger(__name__).info(
+                "Stop on printer %s in state %s: nothing is printing, no user-stopped mark", printer_id, state
+            )
+            return
 
     run = current_print_run(printer_manager, printer_id)
     _user_stopped_printers[printer_id] = run.archive_id if run is not None else None
@@ -1836,6 +1852,16 @@ def mark_printer_stopped_by_user(printer_id: int) -> None:
         printer_id,
         _user_stopped_printers[printer_id],
     )
+
+
+def _forget_unbound_user_stop(printer_id: int) -> None:
+    """A mark that could name no run does not outlive the next run bound to the printer.
+
+    ``None`` matches any archive, so it ends before a later print can meet it;
+    a mark that names its archive is that run's own and stays.
+    """
+    if printer_id in _user_stopped_printers and _user_stopped_printers[printer_id] is None:
+        _user_stopped_printers.pop(printer_id, None)
 
 
 def _normalise_user_stopped_terminal(printer_id: int, archive_id: int | None, data: dict) -> dict:
@@ -2344,6 +2370,10 @@ def _printer_status_effect_key(state: PrinterState) -> str:
         else None
     )
     fts_key = _fts_status_key(state)
+    nozzles_key = tuple(
+        (n.nozzle_type, getattr(n, "nozzle_flow", ""), n.nozzle_diameter)
+        for n in (getattr(state, "nozzles", None) or [])
+    )
     return (
         f"{state.connected}:{state.state}:{state.progress}:{state.layer_num}:{state.total_layers}:"
         f"{nozzle_temp}:{bed_temp}:{nozzle_2_temp}:{chamber_temp}:"
@@ -2384,7 +2414,12 @@ def _printer_status_effect_key(state: PrinterState) -> str:
         f"{sorted(state.axis_at_home.items())}:{sorted(state.ext_has_filament.items())}:"
         # Whether a timelapse is possible changes when a card is pulled or
         # fills up — moments nothing else in this key notices.
-        f"{state.sdcard_state}:{state.has_timelapse_kit}:{sorted(state.timelapse_storage.items())}"
+        f"{state.sdcard_state}:{state.has_timelapse_kit}:{sorted(state.timelapse_storage.items())}:"
+        # Pushed since the status shapers were made to agree, and each moves
+        # exactly when nothing else here does: a nozzle swapped on an idle
+        # printer, a macro the server started or finished, developer mode
+        # switched on the printer's screen.
+        f"{nozzles_key}:{getattr(state, 'macro_executing', None)}:{getattr(state, 'developer_mode', None)}"
     )
 
 
@@ -4359,6 +4394,7 @@ def _bind_print_file_analysis_context(
         client_generation=getattr(printer_manager, "current_client_generation", lambda _printer_id: None)(printer_id),
         origin=origin,
     )
+    _forget_unbound_user_stop(printer_id)
     from backend.app.services.layer_projection import bind_layer_grant
 
     bind_layer_grant(

@@ -12,6 +12,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import { screen, waitFor, cleanup } from '@testing-library/react';
 import { http, HttpResponse } from 'msw';
 import { render } from '../utils';
+import { offeredSlots } from '../helpers/slotPicker';
 import { server } from '../mocks/server';
 import { FilamentMapping } from '../../components/PrintModal/FilamentMapping';
 
@@ -107,7 +108,7 @@ describe('FilamentMapping slot price and grams left', () => {
   it("offers the slot with the bound Spoolman spool's grams left", async () => {
     renderDialog({ spoolman: true, spool: { cost_per_kg: 48, effective_cost_per_kg: 48 } });
     await waitFor(() => expect(screen.getByText('$4.80')).toBeInTheDocument());
-    const options = screen.getAllByRole('combobox')[0].textContent;
+    const options = offeredSlots(document.querySelector('[data-slot-picker]') as HTMLElement);
     expect(options).toContain('187g left');
     expect(options).not.toContain('1000g left');
   });
@@ -115,6 +116,6 @@ describe('FilamentMapping slot price and grams left', () => {
   it('keeps pricing from the built-in assignment in built-in mode', async () => {
     renderDialog({ spoolman: false });
     await waitFor(() => expect(screen.getByText('$9.90')).toBeInTheDocument());
-    expect(screen.getAllByRole('combobox')[0].textContent).toContain('1000g left');
+    expect(offeredSlots(document.querySelector('[data-slot-picker]') as HTMLElement)).toContain('1000g left');
   });
 });

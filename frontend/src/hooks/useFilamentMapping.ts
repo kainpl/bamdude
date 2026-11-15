@@ -12,6 +12,7 @@ import {
   filamentColorMatches,
   declaredColor,
   declaredTrayInfoIdx,
+  isAmsHtUnit,
 } from '../utils/amsHelpers';
 import { api } from '../api/client';
 import type { PrinterStatus } from '../api/client';
@@ -43,7 +44,7 @@ export function buildLoadedFilaments(printerStatus: PrinterStatus | undefined): 
 
   // Add filaments from all AMS units (regular and HT)
   printerStatus?.ams?.forEach((amsUnit) => {
-    const isHt = amsUnit.tray.length === 1; // AMS-HT has single tray
+    const isHt = isAmsHtUnit(amsUnit.id); // the unit id, not how many trays it listed
     amsUnit.tray.forEach((tray) => {
       if (tray.tray_type) {
         // The spool, not the advertisement: under the backup-compatibility

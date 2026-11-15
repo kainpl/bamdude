@@ -175,7 +175,9 @@ _install_paho_publish_guard()
 #   "ams/<id>"  – original AMS (X1C, X1E, P1S, …)
 #   "n3f/<id>"  – AMS 2 Pro (H2D Pro and similar)
 #   "n3s/<id>"  – AMS HT (H2D Pro and similar; IDs typically start at 128)
-_AMS_MODULE_PREFIXES = ("ams/", "n3f/", "n3s/")
+#   "ams_f1/<id>" – AMS Lite (A1 / A1 mini as unit 0; the A2L names it 16,
+#                   which is filed under the normalised unit — upstream 5eae04359)
+_AMS_MODULE_PREFIXES = ("ams/", "n3f/", "n3s/", "ams_f1/")
 
 # The band of ``sequence_id`` values that means "this reply is to something WE
 # sent". BS carves out the same one (``DevUtil.h``: ``STUDIO_START_SEQ_ID``
@@ -406,6 +408,28 @@ def _fts_int(value: object, previous: int) -> int:
         return int(value)
     except (TypeError, ValueError):
         return previous
+
+
+def change_filament_wire_ids(tray_id: int) -> tuple[int, int, int]:
+    """``(ams_id, slot_id, target)`` of a LOAD ``ams_change_filament`` for an AMS tray.
+
+    As BambuStudio builds them (``MachineObject::command_ams_change_filament``,
+    DeviceManager.cpp): a unit id below 16 is addressed by unit and local slot
+    with the global tray ``ams_id * 4 + slot`` as ``target``; for any other
+    unit the ``target`` is the unit id itself. That covers an AMS-HT — one
+    tray, numbered by its unit id 128-135, slot 0 — and the A2L AMS-Lite, whose
+    physical unit id is 16 (upstream 5a9415e2e).
+
+    The A2L ``target`` of 16 is read from BambuStudio's source, not captured
+    off an A2L; it replaces 64-67, which had no source at all. The
+    ``extrusion_cali`` ``tray_id`` that ``a2l_lite_wire_ids`` also returns is a
+    different value and is not decided here.
+    """
+    if 128 <= tray_id <= 135:
+        return tray_id, 0, tray_id
+    if (a2l := a2l_lite_wire_ids(tray_id // 4, tray_id)) is not None:
+        return a2l[0], a2l[1], a2l[0]
+    return tray_id // 4, tray_id % 4, tray_id
 
 
 def a2l_lite_wire_ids(ams_id: int, tray_id: int) -> tuple[int, int, int] | None:
@@ -1748,6 +1772,9 @@ class PrinterState:
     # ``has_extra_flow_type`` — a nozzle frame that also carried ``flag3``
     # (``DeviceManager.cpp:3314-3321``).
     has_extra_flow_type: bool = False
+    # BS ``is_enable_ams_np`` — ``flag3`` bit 9 (``DeviceManager.cpp``). With
+    # ``enable_np`` it chooses the RFID re-read command; sticky like the two above.
+    enable_ams_np: bool = False
     # AI detection and print options
     print_options: PrintOptions = field(default_factory=PrintOptions)
     # Calibration stage tracking (from stg_cur and stg fields)
@@ -2701,6 +2728,12 @@ class BambuMQTTClient:
         # acknowledgement can retire that packet from paho's retry queue
         # (see _drop_queued_message). Emptied on connect with the queue itself.
         self._mid_by_sequence: dict[str, int] = {}
+        # RFID re-read verdicts (see ``await_rfid_refresh``): ``ams_get_rfid`` answers
+        # keyed by the sequence id we sent (``None`` = not answered yet), the legacy
+        # gcode's ack listener by its own, and the one attempt a route is waiting on.
+        self._pending_rfid_acks: dict[str, dict | None] = {}
+        self._rfid_gcode_acks: dict[str, tuple[threading.Event, dict]] = {}
+        self._rfid_attempt: tuple[int, int, str, str] | None = None
 
         # Xcam hold timers - OrcaSlicer pattern: ignore incoming data for 3 seconds after command
         # Key: module_name, Value: timestamp when command was sent
@@ -3750,6 +3783,7 @@ class BambuMQTTClient:
             self._parse_print_option_support(print_data)
 
             self._latch_flow_type_flags(print_data)
+            self._latch_ams_np(print_data)
             if "auto_recovery" in print_data and not _ps_hold("auto_recovery"):
                 po.auto_recovery_step_loss = bool(print_data["auto_recovery"])
             if "sound_enable" in print_data and not _ps_hold("sound_enable"):
@@ -3903,6 +3937,8 @@ class BambuMQTTClient:
                 # INFO level so the body lands in support bundles by default.
                 elif cmd == "ams_filament_drying":
                     logger.info("[%s] ams_filament_drying response: %s", self.serial_number, print_data)
+                elif cmd == "ams_get_rfid":
+                    self._route_rfid_ack(print_data)
                 # Check for developer mode probe response
                 if (
                     cmd == "ams_filament_setting"
@@ -4057,7 +4093,7 @@ class BambuMQTTClient:
             if not any(name.startswith(prefix) for prefix in _AMS_MODULE_PREFIXES):
                 continue
             try:
-                ams_id = int(name.split("/", 1)[1])
+                ams_id = normalize_am_unit_id(int(name.split("/", 1)[1]))
             except (ValueError, IndexError):
                 continue
             sw_ver = module.get("sw_ver", "")
@@ -10918,6 +10954,14 @@ class BambuMQTTClient:
         ):
             self.state.has_extra_flow_type = True
 
+    def _latch_ams_np(self, print_data: dict) -> None:
+        """BS ``is_enable_ams_np``: ``flag3`` bit 9, latched like the flags above."""
+        if self.state.enable_ams_np:
+            return
+        flag3 = print_data.get("flag3")
+        if isinstance(flag3, int) and not isinstance(flag3, bool) and (flag3 >> 9) & 1:
+            self.state.enable_ams_np = True
+
     def _route_ack(self, print_data: dict) -> None:
         """Deliver an ``extrusion_cali_set`` / ``_del`` verdict to its waiter.
 
@@ -12047,7 +12091,8 @@ class BambuMQTTClient:
         """Load filament from a specific AMS tray.
 
         Args:
-            tray_id: Global tray ID — 0..15 for AMS slots, 254 for external
+            tray_id: Global tray ID — 0..15 for AMS slots, 24..27 for the A2L
+                AMS-Lite, 128..135 for an AMS-HT (its unit id), 254 for external
                 spool (single-external printers and Ext-L on dual-nozzle H2D),
                 255 for Ext-R on dual-nozzle H2D.
             extruder_id: Which hotend to feed (0 = right/main, 1 = left/deputy).
@@ -12066,7 +12111,8 @@ class BambuMQTTClient:
             return False
 
         # Build the ams_change_filament command. Encoding differs by target type:
-        #   - AMS slots (0..15): slot_id is the local slot, curr/tar_temp = -1.
+        #   - AMS slots (0..15, A2L 24..27, AMS-HT 128..135): see
+        #     change_filament_wire_ids; curr/tar_temp = -1.
         #   - External spool (tray_id=254): legacy capture from a single-extruder
         #     printer used slot_id=254, curr/tar_temp=-1; preserved here.
         #   - Ext-R on dual-nozzle H2D (tray_id=255): captured shape from
@@ -12088,16 +12134,10 @@ class BambuMQTTClient:
             slot_id = 254
             curr_temp = -1
             tar_temp = -1
-        elif (_a2l := a2l_lite_wire_ids(tray_id // 4, tray_id)) is not None:
-            # A2L AMS-Lite: physical unit 16 + local slot confirmed; the wire
-            # ``target`` (physical global 64-67) is extrapolated (no A2L load
-            # capture yet). See a2l_lite_wire_ids.
-            ams_id, slot_id, wire_target = _a2l
-            curr_temp = -1
-            tar_temp = -1
         else:
-            ams_id = tray_id // 4  # AMS unit (0, 1, 2, 3...)
-            slot_id = tray_id % 4  # Slot within AMS (0, 1, 2, 3)
+            # A regular AMS, the A2L AMS-Lite (physical unit 16) or an AMS-HT
+            # (128-135), each as BambuStudio addresses it.
+            ams_id, slot_id, wire_target = change_filament_wire_ids(tray_id)
             curr_temp = -1
             tar_temp = -1
 
@@ -12121,9 +12161,13 @@ class BambuMQTTClient:
         logger.info("[%s] Loading filament from tray %s (AMS %s slot %s)", self.serial_number, tray_id, ams_id, slot_id)
 
         # Track this load request for H2D dual-nozzle disambiguation
-        # H2D reports only slot number (0-3) in tray_now, so we use our tracked value
-        self.state.pending_tray_target = tray_id
-        logger.info("[%s] Set pending_tray_target=%s for H2D disambiguation", self.serial_number, tray_id)
+        # H2D reports only slot number (0-3) in tray_now, so we use our tracked value.
+        # Not for an AMS-HT: the tracked value is matched by ``target % 4``, which
+        # reads 129-135 as slots 1-3 of some AMS, while the hotend's own ``snow``
+        # already names an AMS-HT tray by its unit id.
+        if not 128 <= tray_id <= 135:
+            self.state.pending_tray_target = tray_id
+            logger.info("[%s] Set pending_tray_target=%s for H2D disambiguation", self.serial_number, tray_id)
 
         return True
 
@@ -12153,13 +12197,11 @@ class BambuMQTTClient:
         logger.info("[%s] Unload requested, tray_now=%s, tray_id=%s", self.serial_number, tray_now, tray_id)
 
         # Determine source ams_id for the unload command
-        _a2l = None
         if source_tray == 255 or source_tray == 254:
             ams_id = 255  # No filament or external spool
-        elif (_a2l := a2l_lite_wire_ids(source_tray // 4, source_tray)) is not None:
-            ams_id = _a2l[0]  # A2L AMS-Lite: normalised 6 → physical 16
         else:
-            ams_id = source_tray // 4  # Source AMS
+            # Source AMS: the A2L AMS-Lite as physical 16, an AMS-HT as its unit id.
+            ams_id = change_filament_wire_ids(source_tray)[0]
 
         # The holder check exists only to tell two hotends apart. On one hotend
         # tray_now already names the loaded slot, and a single-nozzle ``snow``
@@ -12169,7 +12211,7 @@ class BambuMQTTClient:
         # at least one single-nozzle machine dual (#1386). 254/255 are not
         # ams*4+slot, so the local-slot arithmetic cannot describe them.
         if tray_id is not None and tray_id not in (254, 255) and self._is_dual_nozzle and self.state.extruder_slots:
-            local_slot = _a2l[1] if _a2l is not None else tray_id % 4
+            local_slot = change_filament_wire_ids(tray_id)[1]
             holder = next(
                 (ext for ext, slot in self.state.extruder_slots.items() if slot.holds(ams_id, local_slot)),
                 None,
@@ -12236,8 +12278,154 @@ class BambuMQTTClient:
         logger.info("[%s] AMS control: %s", self.serial_number, action)
         return True
 
+    def _rfid_refresh_refusal(self) -> str | None:
+        """Why an RFID re-read cannot start now, or ``None``.
+
+        The AMS has to move the filament to read a tag, which it cannot do with
+        one loaded — BambuStudio refuses up front for the same reason
+        (``StatusPanel``: "the filament is loaded to the toolhead").
+        """
+        tray_now = self.state.tray_now
+        if tray_now == 255:
+            return None
+        if tray_now == 254:
+            loaded_tray = "external spool"
+        elif tray_now >= 0 and tray_now < 128:
+            loaded_tray = f"AMS {tray_now // 4 + 1} slot {tray_now % 4 + 1}"
+        else:
+            loaded_tray = f"tray {tray_now}"
+        logger.warning("[%s] Cannot refresh AMS tray: filament loaded from %s", self.serial_number, loaded_tray)
+        return f"Please unload filament first. Currently loaded: {loaded_tray}"
+
+    def _rfid_gcode_allowed(self, ams_id: int, tray_id: int) -> bool:
+        """Whether the legacy ``M620 R`` may be sent for this slot right now.
+
+        A ``gcode_line`` runs inside whatever the printer is doing, so never
+        with a job loaded; and the gcode's tray index is ``ams * 4 + slot``,
+        which names only the regular units 0-3 — never an AMS-HT, the A2L
+        AMS-Lite or the external holder.
+        """
+        return self.state.state not in _ACTIVE_PRINT_STATES and 0 <= ams_id <= 3 and 0 <= tray_id <= 3
+
+    def _rfid_first_command(self, ams_id: int, tray_id: int) -> str:
+        """``"rfid"`` (``ams_get_rfid``) or ``"gcode"`` (``M620 R``), chosen as BambuStudio chooses.
+
+        BambuStudio decides by capability BEFORE sending, never by a refusal
+        (``StatusPanel.cpp`` / ``AmsControlWeb/ViewModelActions.cpp``):
+        ``is_enable_np || is_enable_ams_np`` → ``command_ams_refresh_rfid2``
+        (``ams_get_rfid``), otherwise ``command_ams_refresh_rfid`` (the gcode).
+
+        Both flags latch from status frames, so right after a connect "not
+        latched" may only mean "not reported yet". Until the printer has
+        reported its state the answer is ``ams_get_rfid`` — the command we
+        always sent — and the gcode stays a fallback.
+        """
+        new_protocol = self.state.enable_np or self.state.enable_ams_np
+        reported = self.state.state not in (None, "", "unknown")
+        if not new_protocol and reported and self._rfid_gcode_allowed(ams_id, tray_id):
+            return "gcode"
+        return "rfid"
+
+    def _publish_rfid_get(self, ams_id: int, tray_id: int) -> str:
+        """Publish ``ams_get_rfid`` as BambuStudio builds it; return its sequence id."""
+        # A2L AMS-Lite: physical unit 16 + local slot (matches ams_mapping2).
+        wire_ams_id, wire_slot_id = ams_id, tray_id
+        if (_a2l := a2l_lite_wire_ids(ams_id, tray_id)) is not None:
+            wire_ams_id, wire_slot_id, _ = _a2l
+        self._sequence_id += 1
+        seq = str(self._sequence_id)
+        # Registered before the publish, so a fast answer cannot arrive first.
+        self._pending_rfid_acks[seq] = None
+        command = {
+            "print": {
+                "command": "ams_get_rfid",
+                "sequence_id": seq,
+                "ams_id": wire_ams_id,
+                "slot_id": wire_slot_id,
+                # BambuStudio always sends it (``command_ams_refresh_rfid2``); 0 = this slot's own tag.
+                "mode": 0,
+            }
+        }
+        self._client.publish(self.topic_publish, json.dumps(command), qos=1)
+        logger.info("[%s] RFID re-read: ams_get_rfid AMS %s slot %s seq=%s", self.serial_number, ams_id, tray_id, seq)
+        return seq
+
+    def _publish_rfid_gcode(self, ams_id: int, tray_id: int) -> str:
+        """Publish the legacy re-read gcode exactly as BambuStudio writes it; return its sequence id."""
+        tray_index = ams_id * 4 + tray_id
+        seq = str(self._sequence_id + 1)
+        event, result = threading.Event(), {"success": False, "reason": ""}
+        self.register_ack_listener(seq, event, result)
+        self._rfid_gcode_acks[seq] = (event, result)
+        # ``command_ams_refresh_rfid``: "M620 R%1% \n" — the space and the newline are BambuStudio's.
+        self.send_gcode(f"M620 R{tray_index} \n")
+        logger.info(
+            "[%s] RFID re-read: M620 R%s (AMS %s slot %s) seq=%s", self.serial_number, tray_index, ams_id, tray_id, seq
+        )
+        return seq
+
+    def _route_rfid_ack(self, print_data: dict) -> None:
+        """Deliver an ``ams_get_rfid`` verdict to its waiter and say it in the log.
+
+        Runs on the MQTT thread; ``await_rfid_refresh`` only reads the slot.
+        """
+        logger.info(
+            "[%s] ams_get_rfid response: result=%s reason=%s seq=%s",
+            self.serial_number,
+            print_data.get("result"),
+            print_data.get("reason", ""),
+            print_data.get("sequence_id"),
+        )
+        ack_seq = str(print_data.get("sequence_id", ""))
+        # Only a slot somebody is waiting on — the topic is shared with the
+        # printer's screen and the Bambu app.
+        if ack_seq in self._pending_rfid_acks:
+            self._pending_rfid_acks[ack_seq] = print_data
+
+    async def _await_rfid_verdict(self, command: str, seq: str, timeout: float) -> tuple[bool, str]:
+        """``(accepted, reason)`` for one published re-read command.
+
+        Silence is acceptance: no answer is not evidence of a refusal, and some
+        firmware sends none. Only an explicit non-success verdict is a refusal.
+        """
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        try:
+            while loop.time() < deadline:
+                if command == "rfid":
+                    ack = self._pending_rfid_acks.get(seq)
+                    if ack is not None:
+                        result = str(ack.get("result", "")).lower()
+                        if result in ("success", "ok", ""):
+                            return True, ""
+                        return False, str(ack.get("reason", "") or "").strip() or result
+                else:
+                    event, outcome = self._rfid_gcode_acks[seq]
+                    if event.is_set():
+                        logger.info(
+                            "[%s] M620 R response: success=%s reason=%s seq=%s",
+                            self.serial_number,
+                            outcome["success"],
+                            outcome["reason"],
+                            seq,
+                        )
+                        if outcome["success"]:
+                            return True, ""
+                        return False, str(outcome["reason"] or "").strip() or "fail"
+                await asyncio.sleep(0.05)
+            logger.info("[%s] RFID re-read: no answer to seq=%s within %ss", self.serial_number, seq, timeout)
+            return True, ""
+        finally:
+            self._pending_rfid_acks.pop(seq, None)
+            if self._rfid_gcode_acks.pop(seq, None) is not None:
+                self._ack_listeners.pop(seq, None)
+
     def ams_refresh_tray(self, ams_id: int, tray_id: int) -> tuple[bool, str]:
         """Trigger RFID re-read for a specific AMS tray.
+
+        Sends the command BambuStudio would send to this printer (see
+        ``_rfid_first_command``) and returns once it is published. The
+        printer's answer is read by :meth:`await_rfid_refresh`.
 
         Args:
             ams_id: AMS unit ID (0-3, or 128 for H2D external tray)
@@ -12246,40 +12434,73 @@ class BambuMQTTClient:
         Returns:
             Tuple of (success, message)
         """
+        self._rfid_attempt = None
         if not self._client or not self.state.connected:
             logger.warning("[%s] Cannot refresh AMS tray: not connected", self.serial_number)
             return False, "Printer not connected"
 
         # Check if filament is currently loaded (tray_now != 255)
         # RFID refresh requires the AMS to move filament, which can't happen if one is loaded
-        tray_now = self.state.tray_now
-        if tray_now != 255:
-            # Decode which tray is loaded for the message
-            if tray_now == 254:
-                loaded_tray = "external spool"
-            elif tray_now >= 0 and tray_now < 128:
-                loaded_ams = tray_now // 4
-                loaded_slot = tray_now % 4
-                loaded_tray = f"AMS {loaded_ams + 1} slot {loaded_slot + 1}"
-            else:
-                loaded_tray = f"tray {tray_now}"
-            logger.warning("[%s] Cannot refresh AMS tray: filament loaded from %s", self.serial_number, loaded_tray)
-            return False, f"Please unload filament first. Currently loaded: {loaded_tray}"
+        refusal = self._rfid_refresh_refusal()
+        if refusal is not None:
+            return False, refusal
 
-        # A2L AMS-Lite: physical unit 16 + local slot (matches ams_mapping2).
-        wire_ams_id, wire_slot_id = ams_id, tray_id
-        if (_a2l := a2l_lite_wire_ids(ams_id, tray_id)) is not None:
-            wire_ams_id, wire_slot_id, _ = _a2l
-
-        # Use ams_get_rfid command to trigger RFID re-read
-        # This command is used by Bambu Studio to re-read the RFID tag
-        command = {
-            "print": {"command": "ams_get_rfid", "ams_id": wire_ams_id, "slot_id": wire_slot_id, "sequence_id": "0"}
-        }
-        self._client.publish(self.topic_publish, json.dumps(command), qos=1)
-        logger.info("[%s] Triggering RFID re-read: AMS %s, slot %s", self.serial_number, ams_id, tray_id)
+        command = self._rfid_first_command(ams_id, tray_id)
+        seq = (
+            self._publish_rfid_gcode(ams_id, tray_id) if command == "gcode" else self._publish_rfid_get(ams_id, tray_id)
+        )
+        self._rfid_attempt = (ams_id, tray_id, command, seq)
 
         return True, f"Refreshing AMS {ams_id} tray {tray_id}"
+
+    async def await_rfid_refresh(self, ams_id: int, tray_id: int, timeout: float = 3.0) -> tuple[bool, str]:
+        """The printer's verdict on the re-read :meth:`ams_refresh_tray` just sent.
+
+        On an explicit refusal the other command is tried once, and its verdict
+        is read too (upstream 1cc4bae5d, owner's Р10):
+
+        * ``ams_get_rfid`` refused → the legacy ``M620 R``, only on a model
+          BambuStudio's older protocol covers, only with no job loaded, only for
+          the regular units 0-3;
+        * ``M620 R`` refused → ``ams_get_rfid``, the command every printer was
+          sent before.
+
+        Returns ``(accepted, reason)``; ``reason`` is the printer's own word.
+        """
+        attempt, self._rfid_attempt = self._rfid_attempt, None
+        if attempt is None or attempt[:2] != (ams_id, tray_id):
+            return True, ""
+        _, _, command, seq = attempt
+        accepted, reason = await self._await_rfid_verdict(command, seq, timeout)
+        if accepted:
+            return True, ""
+
+        from backend.app.utils.printer_models import uses_legacy_rfid_refresh
+
+        if command == "rfid":
+            if not (uses_legacy_rfid_refresh(self.model) and self._rfid_gcode_allowed(ams_id, tray_id)):
+                return False, reason
+            fallback = "gcode"
+        else:
+            fallback = "rfid"
+        if not self._client or not self.state.connected or self._rfid_refresh_refusal() is not None:
+            return False, reason
+        logger.info(
+            "[%s] RFID re-read refused (%s: %s); trying %s",
+            self.serial_number,
+            command,
+            reason or "no reason",
+            fallback,
+        )
+        seq = (
+            self._publish_rfid_gcode(ams_id, tray_id)
+            if fallback == "gcode"
+            else self._publish_rfid_get(ams_id, tray_id)
+        )
+        accepted, fallback_reason = await self._await_rfid_verdict(fallback, seq, timeout)
+        if accepted:
+            return True, ""
+        return False, fallback_reason or reason
 
     def ams_set_filament_setting(
         self,

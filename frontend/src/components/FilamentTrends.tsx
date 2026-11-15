@@ -16,6 +16,7 @@ import type { ArchiveAggregate } from '../api/client';
 import { MetricToggle, type Metric } from './MetricToggle';
 import { localDateOfBucket } from '../utils/date';
 import { formatWeight } from '../utils/weight';
+import { MaterialNumberBreakdown } from './MaterialNumberBreakdown';
 
 interface FilamentTrendsProps {
   /**
@@ -481,6 +482,8 @@ export function FilamentTrends({ aggregate, currency = '$', dateFrom, dateTo }: 
           )}
         </div>
       </div>
+
+      <MaterialNumberBreakdown rows={aggregate?.by_material_number ?? []} currency={currency} />
     </div>
   );
 }

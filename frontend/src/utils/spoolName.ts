@@ -38,6 +38,7 @@ export interface SpoolNameFields {
   purchase_date?: string | null;
   filament_diameter?: string | null;
   lot?: number | null;
+  material_number?: string | null;
 }
 
 export interface SpoolPlaceholder {
@@ -185,6 +186,13 @@ export const SPOOL_PLACEHOLDERS: SpoolPlaceholder[] = [
     description: 'Position inside a purchase bundle / batch',
     example: '3',
     format: (s) => (s.lot != null ? String(s.lot) : ''),
+  },
+  {
+    key: 'material_number',
+    label: 'Material number',
+    description: 'Your own article code for the filament',
+    example: '15',
+    format: (s) => s.material_number ?? '',
   },
 ];
 

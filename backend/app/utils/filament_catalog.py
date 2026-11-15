@@ -216,15 +216,28 @@ def generic_family_ids() -> frozenset[str]:
     return frozenset(ids)
 
 
+# Spellings of plain nylon the catalogue files under ``PA``. Only the bare name
+# borrows: "PA6-GF" or "Nylon CF" is another material and still answers nothing.
+# The base each stands for is read off the shared alias table, never restated.
+_NYLON_SPELLINGS = ("NYLON", "PA6", "PA12")
+
+
 def generic_family_for_material(material: str) -> CatalogFamily | None:
     """The Generic family of a material's BASE — the name cut at the first hyphen
     or space, so ``PETG-CF`` answers Generic PETG-CF but ``PLA-AERO`` answers
     Generic PLA. That is a base to inherit from, not the material: a slot is
-    configured through :func:`family_for_material`, which never changes the type."""
+    configured through :func:`family_for_material`, which never changes the type.
+
+    A bare nylon spelling (:data:`_NYLON_SPELLINGS`) answers Generic PA."""
+    from backend.app.utils.material_keys import MATERIAL_KEY_ALIASES
+
     mat = (material or "").strip().upper()
     if not mat:
         return None
-    for candidate in (mat, mat.split("-")[0].split(" ")[0]):
+    candidates = [mat, mat.split("-")[0].split(" ")[0]]
+    if mat in _NYLON_SPELLINGS:
+        candidates.append(MATERIAL_KEY_ALIASES[mat])
+    for candidate in candidates:
         for eco in _ECOSYSTEMS:
             for fam in _load(eco).families.values():
                 if fam.alias.upper() == f"GENERIC {candidate}":

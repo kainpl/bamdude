@@ -327,9 +327,9 @@ class SpoolmanInventoryCreate(BaseModel):
     color_name: str | None = Field(None, max_length=64)
     rgba: str | None = Field(None, max_length=8, description="6-digit hex (RRGGBB) or 8-digit (RRGGBBAA)")
     label_weight: int = Field(1000, ge=1, le=100_000)
-    core_weight: int = Field(
-        250, ge=0, le=10_000
-    )  # Accepted for schema parity but not persisted to Spoolman (stored on filament type, not spool)
+    # Written to the spool's own ``spool_weight`` only when the caller names it;
+    # left off, Spoolman stamps the filament's (or the vendor's) empty weight.
+    core_weight: int = Field(250, ge=0, le=10_000)
     weight_used: float = Field(0.0, ge=0.0, le=100_000.0)
     note: str | None = Field(None, max_length=1000)
     cost_per_kg: float | None = Field(None, ge=0.0, le=1_000_000.0)
@@ -378,9 +378,8 @@ class SpoolmanInventoryUpdate(BaseModel):
     color_name: str | None = Field(None, max_length=64)
     rgba: str | None = Field(None, max_length=8, description="6-digit hex (RRGGBB) or 8-digit (RRGGBBAA)")
     label_weight: int | None = Field(None, ge=1, le=100_000)
-    core_weight: int | None = Field(
-        None, ge=0, le=10_000
-    )  # Accepted for schema parity but not persisted to Spoolman (stored on filament type, not spool)
+    # The spool's own empty weight (``spool_weight``); omitted = left alone.
+    core_weight: int | None = Field(None, ge=0, le=10_000)
     weight_used: float | None = Field(None, ge=0.0, le=100_000.0)
     note: str | None = Field(None, max_length=1000)
     cost_per_kg: float | None = Field(None, ge=0.0, le=1_000_000.0)
@@ -648,6 +647,12 @@ async def _resolve_filament_id(data: SpoolmanInventoryCreate, client: SpoolmanCl
         )
 
 
+def _named_tare(data: SpoolmanInventoryCreate) -> float | None:
+    """The empty weight a create request named, or None to let Spoolman choose.
+    0 g is a real tare; the schema default is not a named one."""
+    return float(data.core_weight) if "core_weight" in data.model_fields_set else None
+
+
 @router.post("/spools")
 async def create_spool(
     data: SpoolmanInventoryCreate,
@@ -682,6 +687,7 @@ async def create_spool(
                 # the filament's weight, the right size for a caller that did
                 # not say (upstream #3194).
                 initial_weight=(float(data.label_weight) if "label_weight" in data.model_fields_set else None),
+                spool_weight=_named_tare(data),
             )
     except HTTPException as exc:
         if exc.status_code == 404 and data.spoolman_filament_id is not None:
@@ -773,6 +779,7 @@ async def bulk_create_spools(
                 comment=data.note or None,
                 location=storage_location or None,
                 initial_weight=(float(data.label_weight) if "label_weight" in data.model_fields_set else None),
+                spool_weight=_named_tare(data),
             )
         except (SpoolmanUnavailableError, SpoolmanClientError, SpoolmanNotFoundError) as exc:
             logger.warning("Bulk spool creation: one spool failed: %s", exc)
@@ -1030,6 +1037,7 @@ async def update_spool(
                 comment=note or "",
                 price=new_price,
                 initial_weight=new_initial_weight,
+                spool_weight=(float(data.core_weight) if data.core_weight is not None else None),
                 extra=extra,
                 location=storage_location or None,
                 clear_location=storage_location_changed and not storage_location,
@@ -1477,9 +1485,10 @@ async def get_all_spoolman_slot_assignments(
 
     # Add synthetic fallback key (f"p{pid}a{ams_id}") for slots without a serial.
     all_serials: set[str] = set(serial_map.values())
+    # Every unit's position key, known serial or not: a label saved before the
+    # serial was read lives there (upstream 5eae04359).
     for s in slots:
-        if (s.printer_id, s.ams_id) not in serial_map:
-            all_serials.add(f"p{s.printer_id}a{s.ams_id}")
+        all_serials.add(f"p{s.printer_id}a{s.ams_id}")
 
     label_by_serial: dict[str, str] = {}
     if all_serials:
@@ -1491,9 +1500,7 @@ async def get_all_spoolman_slot_assignments(
         sn = serial_map.get((pid, ams_id))
         if sn and sn in label_by_serial:
             return label_by_serial[sn]
-        if not sn:
-            return label_by_serial.get(f"p{pid}a{ams_id}")
-        return None
+        return label_by_serial.get(f"p{pid}a{ams_id}")
 
     enriched: list[SpoolmanSlotAssignmentEnriched] = []
     for s in slots:

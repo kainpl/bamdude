@@ -199,17 +199,24 @@ class StockForecastAlerts:
                     continue
 
                 if row is None:
-                    # No settings row yet: create one carrying exactly the
-                    # defaults the UI already assumes for a missing row, so the
-                    # operator sees no change beyond the alert itself.
+                    # No settings row yet: create one carrying exactly what the
+                    # forecast just used for this SKU, so the operator sees no
+                    # change beyond the alert itself. That is the colourless row
+                    # of the same product when one exists (the engine falls back
+                    # to it for a coloured SKU) — a stamp row with lead time 0
+                    # would shadow it from the next pass on, turning a 10-day
+                    # lead time into none (upstream 318430f0f) — and otherwise
+                    # the defaults the UI assumes for a missing row. The stamp is
+                    # this colour's own: the colourless row answers for others.
+                    inherited = by_key.get((entry.key[0], entry.key[1], entry.key[2], "")) if entry.key[3] else None
                     row = FilamentSkuSettings(
                         material=entry.material,
                         subtype=entry.subtype,
                         brand=entry.brand,
                         color_name=entry.color_name,
-                        lead_time_days=0,
-                        safety_margin_value=DEFAULT_SAFETY_MARGIN_VALUE,
-                        safety_margin_unit=DEFAULT_SAFETY_MARGIN_UNIT,
+                        lead_time_days=inherited.lead_time_days if inherited else 0,
+                        safety_margin_value=inherited.safety_margin_value if inherited else DEFAULT_SAFETY_MARGIN_VALUE,
+                        safety_margin_unit=inherited.safety_margin_unit if inherited else DEFAULT_SAFETY_MARGIN_UNIT,
                         alerts_snoozed=False,
                     )
                     db.add(row)
@@ -233,6 +240,8 @@ class StockForecastAlerts:
 
         common = {
             "material": entry.material,
+            "subtype": entry.subtype,
+            "color": entry.color_name,
             "brand": entry.brand,
             "stock_g": entry.stock_g,
             "rate_g_day": entry.rate_g_day,
