@@ -1148,6 +1148,46 @@ class SpoolmanClient:
             raise
         return added
 
+    async def drop_previous_reel_tags(self, spool: dict, kept: list[str | None], *, bambu_reel: bool) -> list[str]:
+        """After a MANUAL re-link: remove the native tags of the reel the spool was linked to before.
+
+        ``spool`` is the spool as it was before ``extra.tag`` was replaced;
+        ``kept`` the uids of the new link. With ``extra.tag`` alone a re-link
+        replaced the value; native tags pile up, and a reader asks them first,
+        so the reel linked by mistake went on resolving to this spool.
+
+        Removed: the previous ``extra.tag`` (and the chip's own form of an
+        AMS-padded one), and — when the new link is a Bambu reel — every other
+        tag of a Bambu reel, because one spool is one reel. A tag of any other
+        kind is somebody else's (Spoolman's UI, a reader) and stays. Nothing is
+        removed when the new link names no physical tag (a slot's generated
+        id). Best-effort: what cannot be removed is logged. Returns what went.
+        """
+        keep = {uid for raw in kept if (uid := normalize_tag_uid(raw))}
+        tags = spool.get("tags")
+        if not keep or not isinstance(tags, list):
+            return []
+        previous = extra_tag(spool)
+        stale = {previous}
+        if len(previous) == 16 and previous.endswith(AMS_CHIP_UID_PADDING):
+            stale.add(previous[:8])
+        removed: list[str] = []
+        for tag in tags:
+            uid = normalize_tag_uid(tag.get("uid")) if isinstance(tag, dict) else ""
+            if not uid or uid in keep:
+                continue
+            if uid not in stale and not (bambu_reel and tag.get("format") == "bambu"):
+                continue
+            try:
+                await self.unlink_native_tag(int(spool["id"]), uid)
+            except (SpoolmanClientError, SpoolmanUnavailableError) as exc:
+                logger.warning("Could not remove the previous tag %s from spool %s: %s", uid, spool.get("id"), exc)
+                continue
+            removed.append(uid)
+        if removed:
+            logger.info("Re-linked Spoolman spool %s: removed its previous tags %s", spool.get("id"), removed)
+        return removed
+
     async def add_native_tags(self, spool: dict, uids: list[str | None], tag_format: str | None = None) -> int:
         """Link the given uids to a spool as native tags — the AUTOMATIC path: best-effort.
 

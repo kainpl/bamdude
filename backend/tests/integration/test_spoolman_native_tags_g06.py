@@ -264,6 +264,94 @@ class TestTheTagRoute:
 
 @pytest.mark.asyncio
 @pytest.mark.integration
+class TestAManualRelinkForgetsThePreviousReel:
+    """Spool 42 was linked to reel A by mistake and is corrected to reel B.
+
+    With ``extra.tag`` alone the re-link replaced the value and reel A was a
+    stranger again. Native tags accumulate, and the reader asks them first: reel
+    A in an AMS still resolved to spool 42 and its prints were charged to it
+    (review slots I-3).
+    """
+
+    def _linked_to_reel_a(self, spoolman: WeighingSpoolman) -> None:
+        spoolman.add_spool(42, 7, extra={"tag": json.dumps(TRAY_UUID)})
+        spoolman.registered.add("tag")
+        spoolman.tag_spool(42, TRAY_UUID, "bambu")
+        spoolman.tag_spool(42, CHIP_UID, "bambu")
+
+    async def test_the_tag_route_drops_reel_a(self, async_client: AsyncClient, spoolman):
+        self._linked_to_reel_a(spoolman)
+
+        response = await async_client.patch(
+            f"{INVENTORY}/spools/42/tag", json={"tray_uuid": OTHER_UUID, "tag_uid": "A1B2C3D4"}
+        )
+
+        assert response.status_code == 200
+        assert spoolman.tags_of(42) == sorted([OTHER_UUID, "A1B2C3D4"])
+        assert _extra_tag(spoolman, 42) == OTHER_UUID
+
+    async def test_the_link_route_drops_reel_a(self, async_client: AsyncClient, spoolman):
+        self._linked_to_reel_a(spoolman)
+
+        response = await async_client.post(f"{SPOOLMAN}/spools/42/link", json={"spool_tag": OTHER_UUID})
+
+        assert response.status_code == 200
+        assert spoolman.tags_of(42) == [OTHER_UUID]
+
+    async def test_reel_a_can_then_be_linked_to_its_own_spool(self, async_client: AsyncClient, spoolman):
+        self._linked_to_reel_a(spoolman)
+        spoolman.add_spool(43, 7)
+        await async_client.post(f"{SPOOLMAN}/spools/42/link", json={"spool_tag": OTHER_UUID})
+
+        response = await async_client.patch(
+            f"{INVENTORY}/spools/43/tag", json={"tray_uuid": TRAY_UUID, "tag_uid": CHIP_UID}
+        )
+
+        assert response.status_code == 200
+        assert spoolman.tags_of(43) == sorted([TRAY_UUID, CHIP_UID])
+
+    async def test_a_previous_tag_that_was_no_bambu_reel_goes_too(self, async_client: AsyncClient, spoolman):
+        spoolman.add_spool(42, 7, extra={"tag": json.dumps("A1B2C3D4E5F6")})
+        spoolman.registered.add("tag")
+        spoolman.tag_spool(42, "A1B2C3D4E5F6")
+
+        response = await async_client.patch(f"{INVENTORY}/spools/42/tag", json={"tag_uid": "0A0B0C0D0E0F"})
+
+        assert response.status_code == 200
+        assert spoolman.tags_of(42) == ["0A0B0C0D0E0F"]
+
+    async def test_a_tag_another_tool_gave_the_spool_is_left(self, async_client: AsyncClient, spoolman):
+        """Not the previous link and not a Bambu reel: nothing says BamDude put it there."""
+        self._linked_to_reel_a(spoolman)
+        spoolman.tag_spool(42, "0A0B0C0D0E0F", "ntag")
+
+        response = await async_client.post(f"{SPOOLMAN}/spools/42/link", json={"spool_tag": OTHER_UUID})
+
+        assert response.status_code == 200
+        assert spoolman.tags_of(42) == sorted([OTHER_UUID, "0A0B0C0D0E0F"])
+
+    async def test_linking_the_same_reel_again_keeps_its_tags(self, async_client: AsyncClient, spoolman):
+        self._linked_to_reel_a(spoolman)
+
+        response = await async_client.patch(
+            f"{INVENTORY}/spools/42/tag", json={"tray_uuid": TRAY_UUID, "tag_uid": CHIP_UID}
+        )
+
+        assert response.status_code == 200
+        assert spoolman.tags_of(42) == sorted([TRAY_UUID, CHIP_UID])
+
+    async def test_a_slots_generated_id_takes_no_reel_tag_away(self, async_client: AsyncClient, spoolman):
+        """A reel put on a holder without a reader is linked by the slot's id: it is still that reel."""
+        self._linked_to_reel_a(spoolman)
+
+        response = await async_client.post(f"{SPOOLMAN}/spools/42/link", json={"spool_tag": "00AA11BB22CC33DD"})
+
+        assert response.status_code == 200
+        assert spoolman.tags_of(42) == sorted([TRAY_UUID, CHIP_UID])
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
 class TestLinkedMap:
     async def test_a_natively_tagged_spool_is_linked(self, async_client: AsyncClient, spoolman):
         spoolman.add_spool(41, 7, extra={"tag": json.dumps(OTHER_UUID)})

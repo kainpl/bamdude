@@ -69,6 +69,7 @@ from backend.app.services.spoolman import (
     SpoolmanUnavailableError,
     get_spoolman_client,
     init_spoolman_client,
+    native_tag_uids,
 )
 from backend.app.services.spoolman_kprofile_link import resolve_spoolman_slot_kprofile
 from backend.app.services.spoolman_native_tags import copy_extra_tags_to_native
@@ -1294,6 +1295,14 @@ async def link_tag_to_spoolman_spool(
         except HTTPException:
             await client.take_back_native_tags(spool_id, added_native)
             raise
+
+        # The spool is THIS reel now: the reel it was linked to before no longer
+        # resolves to it (``current`` still carries the previous extra.tag).
+        if native_tag_uids(current) and await client.drop_previous_reel_tags(
+            current, [data.tray_uuid, data.tag_uid], bambu_reel=bool(data.tray_uuid)
+        ):
+            async with _translate_spoolman_errors():
+                updated = await client.get_spool(spool_id)
 
     logger.info("Linked tag %s to Spoolman spool %s", tag, spool_id)
     await ws_manager.broadcast({"type": "inventory_changed"})

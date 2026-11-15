@@ -930,10 +930,18 @@ async def link_spool(
         # and stay in extra.tag alone.
         added_native = await client.link_native_tags(spool_id, [spool_tag] if len(spool_tag) == 32 else [], "bambu")
         try:
+            # A reel newly linked to the spool: read it while it still carries
+            # the previous extra.tag, to know which reel it was before.
+            before = await client.get_spool(spool_id) if added_native else None
             await client.merge_spool_extra(spool_id, {"tag": json.dumps(spool_tag)})
         except Exception:
             await client.take_back_native_tags(spool_id, added_native)
             raise
+        # The spool is THIS reel now: the reel it was linked to before no
+        # longer resolves to it. A 16-character value names no physical tag
+        # here (nothing was added for it), so it takes nothing away.
+        if before is not None:
+            await client.drop_previous_reel_tags(before, [spool_tag], bambu_reel=True)
     except NativeTagConflict as conflict:
         raise native_tag_refused("tray_uuid", conflict) from conflict
     except SpoolmanNotFoundError:
