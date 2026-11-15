@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, useMemo } from 'react';
 import { Scale } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useToast } from '../../contexts/ToastContext';
+import { toDateTimeLocalValue } from '../../utils/date';
 import { FILAMENT_EFFECT_OPTIONS } from '../filamentSwatchHelpers';
 import { FilamentSwatch } from '../FilamentSwatch';
 import type { AdditionalSectionProps } from './types';
@@ -182,6 +183,7 @@ export function AdditionalSection({
   onCreateLocation,
   errors = {},
   spoolmanMode = false,
+  showLastDried = false,
 }: AdditionalSectionProps) {
   const { t } = useTranslation();
   const { showToast } = useToast();
@@ -307,6 +309,33 @@ export function AdditionalSection({
           className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:outline-none focus:border-bambu-green"
         />
       </div>
+
+      {/* Last dried. Stamped by an AMS drying cycle; set here for a spool
+          dried elsewhere. */}
+      {showLastDried && (
+        <div>
+          <label className="block text-sm font-medium text-bambu-gray mb-1" htmlFor="spool-last-dried">
+            {t('inventory.lastDried')}
+          </label>
+          <div className="flex gap-2">
+            <input
+              id="spool-last-dried"
+              type="datetime-local"
+              value={formData.last_dried_at}
+              onChange={(e) => updateField('last_dried_at', e.target.value)}
+              className="flex-1 min-w-0 px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:outline-none focus:border-bambu-green"
+            />
+            <button
+              type="button"
+              onClick={() => updateField('last_dried_at', toDateTimeLocalValue(new Date()))}
+              className="px-3 py-2 text-sm rounded-lg bg-bambu-dark-tertiary text-white hover:bg-bambu-dark-tertiary/70 flex-shrink-0"
+            >
+              {t('inventory.lastDriedNow')}
+            </button>
+          </div>
+          <p className="text-xs text-bambu-gray mt-1">{t('inventory.lastDriedHelp')}</p>
+        </div>
+      )}
 
       {/* Filament diameter */}
       <div>
