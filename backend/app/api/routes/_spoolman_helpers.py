@@ -50,6 +50,10 @@ class MappedSpoolFields(TypedDict):
     note: str | None
     added_full: None
     last_used: str | None
+    # Last drying, stored under the bambu_last_dried_* extra keys.
+    last_dried_at: str | None
+    last_dried_temp: int | None
+    last_dried_hours: float | None
     encode_time: str | None
     tag_uid: str | None
     tray_uuid: str | None
@@ -276,6 +280,10 @@ def _map_spoolman_spool(spool: dict) -> MappedSpoolFields:
     color_name: str | None = stored_color_name or subtype or None
     color_name_is_synthesized: bool = stored_color_name is None and color_name is not None
 
+    # The drying record (services/spool_drying): JSON strings, empty = unknown.
+    dried_temp = _safe_optional_float(_extract_extra_str(extra, "bambu_last_dried_temp") or None)
+    dried_hours = _safe_optional_float(_extract_extra_str(extra, "bambu_last_dried_hours") or None)
+
     nozzle_temp_raw = filament.get("settings_extruder_temp")
     nozzle_temp_min: int | None = _safe_int(nozzle_temp_raw, 0) or None
 
@@ -307,6 +315,9 @@ def _map_spoolman_spool(spool: dict) -> MappedSpoolFields:
         "note": spool.get("comment") or None,
         "added_full": None,
         "last_used": spool.get("last_used"),
+        "last_dried_at": _extract_extra_str(extra, "bambu_last_dried_at") or None,
+        "last_dried_temp": int(round(dried_temp)) if dried_temp else None,
+        "last_dried_hours": dried_hours or None,
         "encode_time": spool.get("first_used"),
         "tag_uid": tag_uid,
         "tray_uuid": tray_uuid,

@@ -1181,6 +1181,26 @@ def _print_error_severity(error: int) -> int:
     return HMS_LEVEL_COMMON
 
 
+@dataclass(frozen=True)
+class DryingCycleEnd:
+    """What was seen of one AMS drying cycle, reported when it ends (upstream 84f320b85).
+
+    ``peak_minutes`` is the highest ``dry_time`` a status frame showed during
+    the cycle and ``remaining_minutes`` the last one before it fell to 0.
+    ``start_seen`` says the countdown was watched rising from an observed 0;
+    when it was not (the cycle was met already counting) the peak is only a
+    lower bound on the length. ``target_temp`` / ``target_hours`` are known
+    only for a cycle BamDude started — the printer never reports them.
+    """
+
+    ams_id: int
+    remaining_minutes: int
+    peak_minutes: int
+    start_seen: bool
+    target_temp: int | None = None
+    target_hours: int | None = None
+
+
 @dataclass
 class HMSError:
     """Health Management System error from printer."""
@@ -2267,6 +2287,7 @@ class BambuMQTTClient:
         on_kprofiles_changed: Callable[[], None] | None = None,
         on_first_status: Callable[[str, str, str, str], None] | None = None,
         on_drying_complete: Callable[[int], None] | None = None,
+        on_drying_cycle_end: Callable[[DryingCycleEnd], None] | None = None,
         on_print_running_observed: Callable[[dict], None] | None = None,
         on_finish_photo_moment: Callable[[dict], None] | None = None,
         on_assignment_verified: Callable[[int, int, bool, dict], None] | None = None,
@@ -2312,6 +2333,9 @@ class BambuMQTTClient:
         # — i.e. the drying cycle just finished (queue-triggered, ambient,
         # or manual). Receives the AMS id of the unit that finished drying.
         self.on_drying_complete = on_drying_complete
+        # Fired when a drying cycle's countdown falls to 0, with what was seen
+        # of the cycle, so the spools of that unit can be marked as dried.
+        self.on_drying_cycle_end = on_drying_cycle_end
         # #1485 follow-up: fired the first time we see RUNNING state in a
         # session WHEN on_print_start was suppressed (BamDude started mid-
         # print, the #1304 first-push guard skipped the start event). Lets
@@ -2386,6 +2410,12 @@ class BambuMQTTClient:
         # — only the dry_time countdown — so we cache what we sent to drive the
         # UI badge. Cleared on stop (mode=0) or when dry_time returns to 0.
         self._drying_targets: dict[int, dict[str, object]] = {}
+        # Per-AMS record of the drying cycle a STATUS frame last showed: a key
+        # means the unit's countdown has been observed, ``None`` that it was
+        # idle, a dict the cycle in progress (highest and last countdown,
+        # whether its start was watched, the target we sent for it). See
+        # ``_observe_dry_cycles``.
+        self._dry_cycles: dict[int, dict[str, object] | None] = {}
         # Fires when the printer's K-profile push contains content that
         # differs from the last seen hash — covers MQTT (re)connect (first
         # push fills empty hash), set/edit/delete from extrusion_cali_*
@@ -5105,6 +5135,13 @@ class BambuMQTTClient:
                         previous,
                     )
                     self.on_drying_complete(ams_id)
+
+        # The drying-cycle record behind "last dried" on a spool. A command's
+        # acknowledgement is not the printer's status, so only a status frame
+        # is read; before the cached targets are dropped below, because a
+        # cycle's record copies its target when the countdown starts.
+        if presence_is_status:
+            self._observe_dry_cycles(merged_ams)
 
         # Drop cached drying-target params for any AMS that has stopped drying
         # (dry_time back to 0), so the badge stops advertising a finished cycle.
@@ -9650,6 +9687,65 @@ class BambuMQTTClient:
             logger.exception("[%s] publish_raw failed for topic=%s", self.serial_number, topic)
             return False
 
+    def _observe_dry_cycles(self, ams_units: list) -> None:
+        """Keep the per-unit drying-cycle record and report a cycle that ended.
+
+        Called for status frames only. A frame without ``dry_time`` says
+        nothing, and a 0 inside a live phase is the firmware's transient zero —
+        the same two readings the drying-complete edge refuses. The report is
+        what the printer showed of the cycle, whoever started it: BamDude, the
+        printer's screen or the slicer.
+        """
+        for ams_unit in ams_units:
+            try:
+                ams_id = int(ams_unit.get("id", -1))
+                raw_dry_time = ams_unit.get("dry_time")
+                current = int(raw_dry_time) if raw_dry_time is not None else None
+            except (TypeError, ValueError, AttributeError):
+                continue
+            if ams_id < 0 or current is None:
+                continue
+            if current <= 0 and ams_unit.get("dry_status") in _ACTIVE_DRY_STATUSES:
+                continue
+            seen_before = ams_id in self._dry_cycles
+            cycle = self._dry_cycles.get(ams_id)
+            if current > 0:
+                if cycle is None:
+                    self._dry_cycles[ams_id] = {
+                        "peak": current,
+                        "last": current,
+                        # A rise from an observed 0 is the cycle's first minute;
+                        # a first sighting already counting down is not.
+                        "start_seen": seen_before,
+                        "target": self._drying_targets.get(ams_id),
+                    }
+                else:
+                    cycle["last"] = current
+                    if current > int(cycle["peak"]):
+                        cycle["peak"] = current
+                continue
+            self._dry_cycles[ams_id] = None
+            if cycle is None or not self.on_drying_cycle_end:
+                continue
+            target = cycle.get("target")
+            target_temp = target_hours = None
+            if isinstance(target, dict):
+                try:
+                    target_temp = int(target.get("temp") or 0) or None
+                    target_hours = int(target.get("duration_hours") or 0) or None
+                except (TypeError, ValueError):
+                    target_temp = target_hours = None
+            self.on_drying_cycle_end(
+                DryingCycleEnd(
+                    ams_id=ams_id,
+                    remaining_minutes=int(cycle["last"]),
+                    peak_minutes=int(cycle["peak"]),
+                    start_seen=bool(cycle["start_seen"]),
+                    target_temp=target_temp,
+                    target_hours=target_hours,
+                )
+            )
+
     def send_drying_command(
         self, ams_id: int, temp: int, duration: int, mode: int = 1, filament: str = "", rotate_tray: bool = False
     ):
@@ -9701,7 +9797,16 @@ class BambuMQTTClient:
         # Cache the active-cycle target so the badge can show "PETG @ 65°C"
         # while drying — Bambu only echoes dry_time on subsequent pushes.
         if mode == 1:
-            self._drying_targets[ams_id] = {"filament": filament or "", "temp": int(temp)}
+            self._drying_targets[ams_id] = {
+                "filament": filament or "",
+                "temp": int(temp),
+                "duration_hours": int(duration),
+            }
+            # A start sent over a cycle still counting replaces it without the
+            # countdown passing through 0: the next status frame begins a fresh
+            # record, so the new target and length are the ones reported.
+            if self._dry_cycles.get(ams_id) is not None:
+                self._dry_cycles[ams_id] = None
         else:
             self._drying_targets.pop(ams_id, None)
         return True
