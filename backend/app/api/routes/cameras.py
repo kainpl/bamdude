@@ -174,6 +174,17 @@ async def _require_free_name(db: AsyncSession, name: str, exclude_id: int | None
         raise HTTPException(409, "A camera with this name already exists.")
 
 
+def _drop_snapshot_url_that_is_the_stream(camera: Camera) -> bool:
+    """A snapshot URL equal to the stream URL is no still of its own: every one-shot would fetch the stream's
+    address beside the live view, and a single-client source drops the viewer for it. Saved as "none"."""
+    from backend.app.services.camera_credentials import same_camera_address
+
+    if not same_camera_address(camera.snapshot_url, camera.url):
+        return False
+    camera.snapshot_url = None
+    return True
+
+
 # ---------------------------------------------------------------- CRUD
 
 
@@ -199,6 +210,7 @@ async def create_camera(
     await _require_free_name(db, payload.name)
     await _require_known_location(db, payload.location_id)
     camera = Camera(**data)
+    _drop_snapshot_url_that_is_the_stream(camera)
     db.add(camera)
     await db.commit()
     await db.refresh(camera)
@@ -247,6 +259,8 @@ async def update_camera(
 
     for key, value in data.items():
         setattr(camera, key, value)
+    if _drop_snapshot_url_that_is_the_stream(camera):
+        data["snapshot_url"] = None  # the source changed: the running stream and the caches go, below
     await db.commit()
     await db.refresh(camera)
 
@@ -507,7 +521,10 @@ async def camera_snapshot(
         url, camera_type, snapshot_url = camera.url, camera.camera_type, camera.snapshot_url
         bind_camera(request, camera)
 
-    frame = _live_frame(camera_id) or _cached_snapshot(camera_id)
+    # A camera with its own snapshot URL answers with that still even while it is watched — ``capture`` fetches
+    # it beside the stream and falls back to the view's frame itself (owner, 2026-11-15). The short cache
+    # stays in front, so a wall of tiles costs the camera one request per window.
+    frame = _cached_snapshot(camera_id) if snapshot_url else _live_frame(camera_id) or _cached_snapshot(camera_id)
     if frame is None:
         from backend.app.services.camera_runtime import CameraCaptureRequest, CameraWorkerUnavailable, capture
 

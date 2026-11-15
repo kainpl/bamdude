@@ -1,7 +1,7 @@
 /**
  * Long-lived camera-stream tokens (#1108).
  *
- * Drop-in panel for Settings → API Keys: list + create + revoke UI for
+ * Drop-in panel for Settings → Camera: list + create + revoke UI for
  * the long-lived counterpart to the 60-minute ephemeral camera-stream
  * token. Designed to live inside an existing card without page chrome of
  * its own.
@@ -374,7 +374,7 @@ function TokenTable({ tokens, showOwner, userIdToName, onRevoke, emptyMessage }:
 /**
  * The actual UI block: create form + my-tokens table + admin all-tokens table.
  * Renders without any outer page chrome so it can be embedded inside
- * Settings → API Keys (the canonical home). `refreshKey` makes it read the
+ * Settings → Camera (the canonical home). `refreshKey` makes it read the
  * list again when its owner knows a token was created elsewhere.
  */
 export default function CameraTokensPanel({ refreshKey = 0 }: { refreshKey?: number } = {}) {

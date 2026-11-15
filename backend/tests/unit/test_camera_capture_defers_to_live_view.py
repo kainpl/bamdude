@@ -182,16 +182,19 @@ class TestWhichViewCounts:
 
         assert result.frame == WORKER and len(worker.requests) == 1
 
-    async def test_a_snapshot_url_camera_still_takes_the_live_frame_when_there_is_one(self, worker) -> None:
+    async def test_a_snapshot_url_camera_is_fetched_from_its_url_while_it_is_watched(self, worker) -> None:
+        """The owner's decision on audit Unsure 1 (2026-11-15): the camera's own still answers, not the view's
+        frame. Until then this test pinned the opposite. The rest of the rule: ``test_camera_own_still.py``."""
         _watch_printer("external")
 
         result = await capture(_external(printer_id=PRINTER, snapshot_url="http://192.0.2.50/frame.jpg"))
 
-        assert result.frame == LIVE and worker.requests == []
+        assert result.frame == WORKER and len(worker.requests) == 1
+        assert worker.requests[0].snapshot_url == "http://192.0.2.50/frame.jpg", "never a stream reader"
 
     async def test_a_snapshot_url_camera_is_fetched_from_its_url_while_the_view_starts(self, worker) -> None:
-        """Unchanged behaviour, left for the owner (audit Unsure 1): the snapshot URL is a plain HTTP GET, not
-        a second reader of the stream, so an empty view does not hold it back."""
+        """The snapshot URL is a plain HTTP GET, not a second reader of the stream, so an empty view does not
+        hold it back."""
         _watch_printer("external", None)
 
         result = await capture(_external(printer_id=PRINTER, snapshot_url="http://192.0.2.50/frame.jpg"))

@@ -68,6 +68,7 @@ from backend.app.api.routes import (
     notifications,
     obico,
     orca_cloud,
+    overlay_branding,
     part_images as part_images_routes,
     print_options_preferences,
     print_queue,
@@ -4077,14 +4078,11 @@ async def _maybe_bank_inprint_frame(printer_id: int, layer_num: int) -> None:
         # when a second socket opens. Same discipline as
         # ``obico_detection._capture_frame``. An external camera competes just the same: a USB device has
         # one handle (#2707), so the question is asked for both kinds. Only a camera with its own snapshot
-        # URL is let through, as before: that is an HTTP GET beside the stream (camera_runtime.capture).
-        from backend.app.api.routes.camera import live_frame_for_capture
+        # URL is let through: that is an HTTP GET beside the stream (camera_runtime.capture).
+        from backend.app.api.routes.camera import live_frame_for_picture
 
-        has_snapshot_url = bool(
-            printer.external_camera_enabled and printer.external_camera_url and printer.external_camera_snapshot_url
-        )
-        defer_live, buffered_live = live_frame_for_capture(printer_id)
-        if defer_live and buffered_live is None and not has_snapshot_url:
+        defer_live, buffered_live = live_frame_for_picture(printer_id, printer)
+        if defer_live and buffered_live is None:
             return
         # Reuses the notification snapshot path, which honours the
         # ``capture_finish_photo`` setting (returns None when disabled) so we
@@ -7183,9 +7181,10 @@ async def on_finish_photo_moment(printer_id: int, data: dict):
         # attached — so an empty buffer during a live view fell through to a
         # competing handle on a single-reader device.
         if frame_bytes is None:
-            from backend.app.api.routes.camera import live_frame_for_capture
+            from backend.app.api.routes.camera import live_frame_for_picture
 
-            defer, buffered_live = live_frame_for_capture(printer_id)
+            # A camera with its own snapshot URL is not deferred: the capture below fetches that still.
+            defer, buffered_live = live_frame_for_picture(printer_id, printer)
             if defer:
                 if buffered_live:
                     frame_bytes = buffered_live
@@ -9825,9 +9824,10 @@ async def _on_print_complete_impl(
                 # the stream registries; the external branch had none at all, so
                 # a watched print with a USB camera opened a competing handle
                 # and got nothing. Kept above both so neither can drift again.
-                from backend.app.api.routes.camera import live_frame_for_capture
+                # A camera with its own snapshot URL is not deferred: its capture below fetches that still.
+                from backend.app.api.routes.camera import live_frame_for_picture
 
-                defer_live, buffered_live = live_frame_for_capture(printer_id)
+                defer_live, buffered_live = live_frame_for_picture(printer_id, printer)
                 if defer_live and buffered_live:
                     photos_dir = archive_dir / "photos"
                     photos_dir.mkdir(parents=True, exist_ok=True)
@@ -12711,6 +12711,10 @@ PUBLIC_API_PATTERNS: tuple[re.Pattern[str], ...] = (
     # token in the URL instead of a JWT. The route's own RequireOverlayToken
     # gate is what authenticates it; this entry only lets it be reached.
     re.compile(r"^/api/v1/printers/\d+/overlay-status$"),
+    # The installation's logo that overlay draws, under the SAME overlay token (RequireOverlayToken) — the one
+    # picture a long-lived token opens, by the owner's decision (2026-11-15): branding, not a user's resource.
+    # This one file only: the upload / remove routes live under /settings/overlay-logo and are not public.
+    re.compile(r"^/api/v1/overlay-branding/logo$"),
     # Cam Wall kiosk feed (upstream #2531). Same reasoning as the overlay feed
     # above: a TV or Pi has no login session, so the wall carries a long-lived
     # ``camwall``-scoped token in the URL, checked by RequireCamWallToken.
@@ -13263,6 +13267,7 @@ app.include_router(macros.router, prefix=app_settings.api_prefix)
 app.include_router(maintenance.router, prefix=app_settings.api_prefix)
 app.include_router(camera.router, prefix=app_settings.api_prefix)
 app.include_router(camwall.router, prefix=app_settings.api_prefix)
+app.include_router(overlay_branding.router, prefix=app_settings.api_prefix)
 app.include_router(cameras.router, prefix=app_settings.api_prefix)
 app.include_router(monitor.router, prefix=app_settings.api_prefix)
 app.include_router(external_links.router, prefix=app_settings.api_prefix)

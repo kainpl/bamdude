@@ -4,7 +4,7 @@ export default {
       "counts": "Retired at this upgrade: {{owned}} owned API keys, {{ownerless}} ownerless API keys and {{tokens}} camera/monitor tokens.",
       "notificationPending": "Administrator inbox notice: pending.",
       "notificationCompleted": "Administrator inbox notice: completed. Subscription opt-outs are respected.",
-      "checklist": "Create new credentials in Settings → API Keys. Replace secrets in HA, webhooks/scripts, bridge, MCP/AI host settings and OrcaBamDude; reconnect API-key cameras. Regenerate saved camera streams, camera wall, overlay, monitor, TV, OBS, kiosk and launcher links using new camera/monitor tokens. Sign in again in each browser and regenerate its derived links.",
+      "checklist": "Create new credentials in Settings → API Keys. Replace secrets in HA, webhooks/scripts, bridge, MCP/AI host settings and OrcaBamDude; reconnect API-key cameras. Regenerate saved camera streams, camera wall, overlay, monitor, TV, OBS, kiosk and launcher links using new camera/monitor tokens from Settings → Camera. Sign in again in each browser and regenerate its derived links.",
       "safety": "Browser sign-in alone does not reconnect integrations. Choose the minimum scopes, test one allowed operation and do not blindly retry a print. Old credentials cannot be restored or re-enabled.",
       "needsReissue": "Needs reissue",
       "ownerless": "This legacy key has no owner. Create a new key while signed in as its intended owner.",
@@ -573,7 +573,7 @@ export default {
     "forecastUnavailable": "Queue estimate unavailable or out of date",
     "orderHeld": "Order held while interacting",
     "tokenInvalid": "TV access is invalid or expired",
-    "tokenHelp": "Create a new Status monitor token in Settings → API Keys, then open its TV link.",
+    "tokenHelp": "Create a new Status monitor token in Settings → Camera → Camera and monitor tokens, then open its TV link.",
     "accessDenied": "This view is unavailable",
     "accessHelp": "Sign in with an account that can read these printers and queues, then reload the monitor.",
     "signInRequired": "Sign in to continue",
@@ -3289,6 +3289,7 @@ export default {
       general: 'General',
       slicing: 'Slicing',
       printing: 'Printing',
+      camera: 'Camera',
       smartPlugs: 'Smart Plugs',
       notifications: 'Notifications',
       filament: 'Filament',
@@ -3503,6 +3504,41 @@ export default {
       resetDefault: 'Reset to default',
       saved: 'Template saved',
       saveFailed: 'Failed to save template'
+    },
+    spoolSortOrder: {
+      title: 'Spool order',
+      description: 'The order spools are offered in when you put one into a slot, and the order of the Filaments page while no column is chosen. Levels apply top to bottom: the second one orders spools the first one leaves equal.',
+      empty: 'No levels: the slot dialog orders by material, brand and colour, and the Filaments page by spool number.',
+      addLevel: 'Add a level…',
+      ascending: 'Ascending',
+      descending: 'Descending',
+      moveUp: 'Move up',
+      moveDown: 'Move down',
+      remove: 'Remove level',
+      save: 'Save order',
+      clear: 'Reset to built-in',
+      saved: 'Order saved',
+      saveFailed: 'Failed to save the order',
+      activeHint: 'Order from settings: {{order}}',
+      fields: {
+        display_name: 'Name (by template)',
+        material: 'Material',
+        subtype: 'Subtype',
+        brand: 'Brand',
+        color_name: 'Colour name',
+        slicer_filament: 'Slicer profile',
+        net: 'Remaining, g',
+        remaining: 'Remaining, %',
+        used: 'Used, g',
+        label_weight: 'Label weight',
+        added_time: 'Added',
+        purchase_date: 'Purchased',
+        last_used_time: 'Last used',
+        storage_location: 'Storage location',
+        cost_per_kg: 'Cost per kg',
+        lot: 'Lot',
+        id: 'Spool number'
+      }
     },
     disableFilamentWarnings: 'Disable filament warnings',
     disableFilamentWarningsDesc: 'Don\'t show warnings about insufficient filament when printing or queueing',
@@ -4281,6 +4317,8 @@ export default {
     },
     // Camera
     camera: 'Camera',
+    cameraTokensMoved: 'Tokens for cameras, the Cam Wall, the streaming overlay and the status monitor (TV links) are created and revoked on the Camera tab, next to the overlay builder.',
+    openCameraSettings: 'Open camera settings',
     cameraViewMode: 'Camera View Mode',
     cameraOverlayDescription: 'Camera opens in a resizable overlay on the main screen',
     cameraWindowDescription: 'Camera opens in a separate browser window',
@@ -4999,6 +5037,22 @@ export default {
       replaceTokenMessage:
         'The token you created on this page cannot be shown again once it is replaced. Copy the address first if you still need it.',
       replaceTokenConfirm: 'Replace token',
+      logoTitle: 'Logo',
+      logoShow: 'Show the logo on the overlay',
+      logoUpload: 'Upload a logo',
+      logoReplace: 'Replace the logo',
+      logoRemove: 'Remove logo',
+      logoRemoveTitle: 'Remove the logo?',
+      logoRemoveMessage:
+        'Every overlay that shows the logo stops drawing it, including the ones already in a scene.',
+      logoNone: 'No logo is saved yet. An overlay asked to show it draws none until one is uploaded.',
+      logoHint:
+        'One logo for the whole installation, drawn above the BamDude mark in the corner of the overlay. PNG, JPEG or WebP up to 2 MiB; it is saved without its metadata and scaled down to 512 pixels. Anyone with an overlay address can see it.',
+      logoNoPermission: 'Only somebody who may change settings can upload, replace or remove the logo.',
+      logoPreviewAlt: 'The saved logo',
+      logoSaved: 'Logo saved',
+      logoRemoved: 'Logo removed',
+      logoFailed: 'The logo could not be saved',
     },
     invalidPrinterId: 'Invalid printer ID',
     cameraStream: 'Camera stream',
@@ -11993,7 +12047,8 @@ export default {
     resetZoom: 'Reset zoom',
     zoomIn: 'Zoom in',
     dragToResize: 'Drag to resize',
-    reconnectingIn: 'Reconnecting in {{countdown}}s...'
+    reconnectingIn: 'Reconnecting in {{countdown}}s...',
+    pausedHidden: 'Paused while this tab is in the background'
   },
 
   // Timelapse Viewer
@@ -12220,7 +12275,7 @@ export default {
   camWall: {
     temporarilyUnavailable: 'Connection temporarily unavailable. Retrying automatically…',
     pageTitle: 'Cam Wall',
-    tokenRejected: 'This Cam Wall link was rejected. The token may have expired or been revoked - create a new one under Settings > API Keys with the "Cam Wall" scope.',
+    tokenRejected: 'This Cam Wall link was rejected. The token may have expired or been revoked - create a new one under Settings > Camera with the "Cam Wall" scope.',
   },
   cameraTokens: {
     title: 'Camera and monitor tokens',

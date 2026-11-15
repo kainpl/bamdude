@@ -117,7 +117,15 @@ async def test_stalled_or_mismatched_source_defers_without_competing_reader(live
         observer[0](b"\xff\xd8wrong-source-new-frame\xff\xd9")
     with pytest.raises(asyncio.TimeoutError):
         await asyncio.wait_for(task, 0.2)
-    capture.assert_not_awaited()
+    if change == "snapshot-url":
+        # Owner, 2026-11-15: a camera with its own snapshot URL is asked for that still even while its view
+        # runs — an HTTP GET, not a reader of the stream. Until then this case pinned "no capture at all".
+        # What the capture door answered here is not a still fetched for this check (a mock), so the check
+        # goes on waiting for the view, and the wrong-source frame still does not pass.
+        capture.assert_awaited_once()
+        assert capture.await_args.args[0].snapshot_url == "http://snapshot-b.invalid"
+    else:
+        capture.assert_not_awaited()
     assert len(calls) == 1
 
 

@@ -28,6 +28,7 @@ import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
 import { Select } from './Select';
 import { ConfirmModal } from './ConfirmModal';
+import { OverlayLogoControls } from './OverlayLogoControls';
 import {
   DEFAULT_OVERLAY_CHOICES,
   OVERLAY_CANVAS,
@@ -150,6 +151,10 @@ export function StreamOverlayBuilder({ onTokenCreated }: StreamOverlayBuilderPro
   const [design, setDesign] = useState<BuilderDesign>(remembered.design);
   const [transparency, setTransparency] = useState(remembered.transparency);
   const [layout, setLayout] = useState<BuilderLayout>(remembered.layout);
+  const [showLogo, setShowLogo] = useState(remembered.showLogo);
+  // The saved logo's revision: not a choice and not in the address — an open
+  // preview is redrawn when the logo itself is replaced or removed.
+  const [logoRevision, setLogoRevision] = useState<string | null>(null);
   // Memory only — see the note at the top of the file.
   const [token, setTokenValue] = useState('');
   const [revealToken, setRevealToken] = useState(false);
@@ -191,12 +196,13 @@ export function StreamOverlayBuilder({ onTokenCreated }: StreamOverlayBuilderPro
     setDesign(choices.design);
     setTransparency(choices.transparency);
     setLayout(choices.layout);
+    setShowLogo(choices.showLogo);
   };
 
   // Every choice, and only the choices: this is what is remembered.
   const choices = useMemo<OverlayChoices>(
-    () => ({ printerId, fields, size, fps, showCamera, customColours, progressFrom, progressTo, design, transparency, layout }),
-    [printerId, fields, size, fps, showCamera, customColours, progressFrom, progressTo, design, transparency, layout],
+    () => ({ printerId, fields, size, fps, showCamera, customColours, progressFrom, progressTo, design, transparency, layout, showLogo }),
+    [printerId, fields, size, fps, showCamera, customColours, progressFrom, progressTo, design, transparency, layout, showLogo],
   );
   const lastSaved = useRef(JSON.stringify(remembered));
   useEffect(() => {
@@ -259,10 +265,11 @@ export function StreamOverlayBuilder({ onTokenCreated }: StreamOverlayBuilderPro
       if (transparency > 0) params.set('backgroundTransparency', String(transparency));
     }
     if (target) params.set('layout', target);
+    if (showLogo) params.set('logo', '1');
     if (tokenText) params.set('token', tokenText);
     // Always this server: an imported address contributes its parameters only.
     return `${window.location.origin}/overlay/${id}?${params.toString()}`;
-  }, [printerId, fields, size, fps, showCamera, customColours, progressFrom, progressTo, design, transparency]);
+  }, [printerId, fields, size, fps, showCamera, customColours, progressFrom, progressTo, design, transparency, showLogo]);
 
   // One address per output: one, or a landscape and a portrait one for "both".
   // `url` is the real one (copied, opened, previewed); `shown` is what the
@@ -712,6 +719,8 @@ export function StreamOverlayBuilder({ onTokenCreated }: StreamOverlayBuilderPro
         </p>
       </div>
 
+      <OverlayLogoControls showLogo={showLogo} onShowLogoChange={setShowLogo} onRevisionChange={setLogoRevision} />
+
       <div className="mt-4">
         <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
           <p className="text-sm font-medium text-white">
@@ -854,7 +863,9 @@ export function StreamOverlayBuilder({ onTokenCreated }: StreamOverlayBuilderPro
           <div className="mt-3 flex flex-wrap items-start gap-3">
             {settled.map((output) => (
               <iframe
-                key={output.url}
+                // The address, and the saved logo: a logo replaced while the
+                // preview is open is drawn at once, not at the overlay's next read.
+                key={`${output.url}#${logoRevision ?? ''}`}
                 src={output.url}
                 title={output.layout
                   ? `${t('streamOverlay.builder.previewTitle', 'Overlay preview')} — ${layoutName(output.layout)}`

@@ -34,6 +34,36 @@ const MAX_RECONNECT_ATTEMPTS = 5;
 const INITIAL_RECONNECT_DELAY = 2000;
 const MAX_RECONNECT_DELAY = 30000;
 const STALL_CHECK_INTERVAL = 5000;
+/** How long the tab may stay hidden before the window lets its stream go.
+ *  The window is on every page of the app, so a tab forgotten in the
+ *  background would otherwise hold a stream — and behind it the printer's one
+ *  camera connection and the chamber-light lease — until the browser closes.
+ *  Long enough that looking something up in another tab restarts nothing. */
+export const CAMERA_HIDDEN_RELEASE_MS = 5 * 60_000;
+
+/** True once the page has been hidden for `ms` in one stretch; false again the
+ *  moment it is shown. A page that is ALREADY hidden when this mounts — the
+ *  window is restored from storage in a tab opened in the background — starts
+ *  true: a tab nobody has looked at yet opens no stream, and gets its camera
+ *  when it is first shown. */
+function useHiddenFor(ms: number): boolean {
+  const [hiddenLong, setHiddenLong] = useState(() => document.hidden);
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const update = () => {
+      clearTimeout(timer);
+      if (document.hidden) timer = setTimeout(() => setHiddenLong(true), ms);
+      else setHiddenLong(false);
+    };
+    update();
+    document.addEventListener('visibilitychange', update);
+    return () => {
+      clearTimeout(timer);
+      document.removeEventListener('visibilitychange', update);
+    };
+  }, [ms]);
+  return hiddenLong;
+}
 
 
 export function EmbeddedCameraViewer({ source: sourceProp, name, onClose }: EmbeddedCameraViewerProps) {
@@ -93,7 +123,10 @@ export function EmbeddedCameraViewer({ source: sourceProp, name, onClose }: Embe
   const [reconnectCountdown, setReconnectCountdown] = useState(0);
 
   const containerRef = useRef<HTMLDivElement>(null);
-  const { granted, ready, protocol, limit } = useCameraLiveBudget(isMinimized ? 0 : 1);
+  // Released like a minimised window: the img goes, and the hook that owns its
+  // src closes the connection. The slot in the live budget goes back as well.
+  const released = useHiddenFor(CAMERA_HIDDEN_RELEASE_MS);
+  const { granted, ready, protocol, limit } = useCameraLiveBudget(isMinimized || released ? 0 : 1);
   const isLive = granted > 0;
   // One id per stream opened: the status read below asks about THIS viewer,
   // because the upstream is shared with every other view of the camera.
@@ -764,7 +797,9 @@ export function EmbeddedCameraViewer({ source: sourceProp, name, onClose }: Embe
             onLoad={handleStreamLoad}
             onMouseDown={handleImageMouseDown}
             draggable={false}
-          /> : ready ? <>
+          /> : released ? (
+            <p className="px-3 text-center text-xs text-bambu-gray">{t('embeddedCameraViewer.pausedHidden')}</p>
+          ) : ready ? <>
             <CameraSnapshotImage source={source} name={name} intervalMs={5000}
               style={fillStyle(videoArea, rotation, `scale(${zoomLevel})`)} />
             <span className="absolute top-1 left-1 right-1 bg-black/70 px-2 py-1 text-xs text-white">

@@ -1,5 +1,6 @@
 /**
- * The one floating camera the Printers page keeps open, as the browser
+ * The one floating camera the app shell keeps open (contexts/
+ * EmbeddedCameraContext — on every page, not only Printers), as the browser
  * remembers it — and whether a remembered one may be shown.
  *
  * Browser storage outlives what it describes: the user may have lost

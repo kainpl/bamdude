@@ -144,7 +144,7 @@ import { CardActionMenu, CardActionMenuItem } from '../components/CardActionMenu
 import { Modal } from '../components/Modal';
 import { ConfirmModal } from '../components/ConfirmModal';
 import { FileManagerModal } from '../components/FileManagerModal';
-import { EmbeddedCameraViewer } from '../components/EmbeddedCameraViewer';
+import { useEmbeddedCamera } from '../contexts/EmbeddedCameraContext';
 import { CameraWall } from '../components/CameraWall';
 import { CAM_WALL_TILE_SIZE_KEY, DEFAULT_CAM_WALL_TILE_SIZE } from '../utils/camWallTileSize';
 import { MQTTDebugModal } from '../components/MQTTDebugModal';
@@ -235,10 +235,6 @@ import { openCameraWindow, printerSource } from '../utils/cameraSource';
 import {
   cameraViewModes, rememberCameraViewMode, resolveCameraViewMode, storedCameraViewMode, type CameraViewMode,
 } from '../utils/cameraViewMode';
-import {
-  checkEmbeddedCamera, embeddedCameraName, readStoredEmbeddedCamera, storeEmbeddedCamera,
-  type EmbeddedCameraSelection,
-} from '../utils/embeddedCameraSelection';
 import { PrinterConditions } from '../components/zigbee/PrinterConditions';
 import { PrinterHASensorRow } from '../components/PrinterHASensorRow';
 import { AirductModal } from '../components/AirductModal';
@@ -9359,27 +9355,12 @@ export function PrintersPage() {
   // for the picked printer so all M-card affordances work identically.
   const [expandedPrinterId, setExpandedPrinterId] = useState<number | null>(null);
 
-  // One floating camera. Read the old array format but restore only its last
-  // valid selection, so upgrading cannot reopen a fleet of live connections.
-  // ⚠️ `kind` distinguishes a printer's camera from a camera of its own: both
-  // open the same window, and an id alone names neither. An entry saved by an
-  // older version has no kind and is read as a printer, which is what it was.
-  const [embeddedCamera, setEmbeddedCamera] = useState<EmbeddedCameraSelection | null>(readStoredEmbeddedCamera);
-  // ⚠️ What the browser remembered is not shown until it is vouched for: the
-  // user may have lost `camera:view`, the printer may be gone (and its id
-  // handed to the next one), the camera switched off. A camera opened by a
-  // click on this page needs no such check — it came off a live card.
-  const [restoreUnchecked, setRestoreUnchecked] = useState(() => embeddedCamera !== null);
-  const openEmbeddedCamera = useCallback((selection: EmbeddedCameraSelection) => {
-    setRestoreUnchecked(false);
-    setEmbeddedCamera(selection);
-  }, []);
+  // The one floating camera is the app shell's (contexts/EmbeddedCameraContext):
+  // this page only asks for it, so the window outlives the page. Opening
+  // another camera replaces the one it shows.
+  const { open: openEmbeddedCamera } = useEmbeddedCamera();
 
-  useEffect(() => {
-    storeEmbeddedCamera(embeddedCamera);
-  }, [embeddedCamera]);
-
-  const { data: printers, isLoading, isFetching: printersFetching } = useQuery({
+  const { data: printers, isLoading } = useQuery({
     queryKey: ['printers'],
     queryFn: api.getPrinters,
   });
@@ -9397,42 +9378,10 @@ export function PrintersPage() {
 
   // Cameras that belong to no printer. Shared cache key with the location
   // header's buttons and with Settings, so the three ask once between them.
-  const { data: allCameras, isFetching: camerasFetching } = useQuery({
+  const { data: allCameras } = useQuery({
     queryKey: ['cameras'],
     queryFn: api.getCameras,
   });
-
-  // A list still being fetched cannot vouch for a remembered camera: the copy
-  // in the cache may predate the printer's deletion. An OPEN window is checked
-  // against every answer the lists give after that — its printer deleted, its
-  // camera switched off or `camera:view` taken away while it is on screen
-  // closes and forgets it — but is never hidden while a list is merely being
-  // read again (that would restart its stream on every refetch). A list that
-  // fails leaves a remembered window unshown and unforgotten until it answers:
-  // nothing else waits on it, and neither showing it unvouched nor forgetting
-  // it over a network blip is better.
-  const embeddedVerdict = !embeddedCamera
-    ? 'show'
-    : authLoading
-      ? 'wait'
-      : checkEmbeddedCamera(embeddedCamera, {
-          canView: hasPermission('camera:view'),
-          printers: restoreUnchecked && printersFetching ? undefined : printers,
-          cameras: restoreUnchecked && camerasFetching ? undefined : allCameras,
-        });
-  const restoreCheck = restoreUnchecked || embeddedVerdict === 'drop' ? embeddedVerdict : 'show';
-  // The name the list gives the source now, not the one the browser kept.
-  const embeddedName = embeddedCamera && embeddedCameraName(embeddedCamera, { printers, cameras: allCameras });
-  useEffect(() => {
-    if (!embeddedCamera || embeddedVerdict === 'wait') return;
-    // Dropped silently: the stored entry goes with the selection.
-    if (embeddedVerdict === 'drop') {
-      setEmbeddedCamera(null);
-    } else if (embeddedName && embeddedName !== embeddedCamera.name) {
-      setEmbeddedCamera({ ...embeddedCamera, name: embeddedName });
-    }
-    if (restoreUnchecked) setRestoreUnchecked(false);
-  }, [embeddedCamera, embeddedVerdict, embeddedName, restoreUnchecked]);
   const wallCameras = useMemo(
     () => (allCameras ?? []).filter((camera) => camera.enabled),
     [allCameras],
@@ -10688,16 +10637,6 @@ export function PrintersPage() {
           onClose={() => setShowAddModal(false)}
           onAdd={(data) => addMutation.mutate(data)}
           existingSerials={printers?.map(p => p.serial_number) || []}
-        />
-      )}
-
-      {/* The printer key unmounts/cancels the old camera before its replacement. */}
-      {embeddedCamera && restoreCheck === 'show' && (
-        <EmbeddedCameraViewer
-          key={`${embeddedCamera.kind}-${embeddedCamera.id}`}
-          source={{ kind: embeddedCamera.kind, id: embeddedCamera.id }}
-          name={embeddedName || embeddedCamera.name}
-          onClose={() => setEmbeddedCamera(null)}
         />
       )}
 

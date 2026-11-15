@@ -65,6 +65,7 @@ import {
   formatSpoolDisplayName,
   spoolDisplayNameMatches,
 } from '../utils/spoolName';
+import { compareByOrder, parseSpoolSortOrder } from '../utils/spoolSort';
 // filterSpoolsByQuery — imported from utils/inventorySearch by Spoolman-mode upstream PR #1241; reserved for future Spoolman-side filtering paths.
 
 type SortDirection = 'asc' | 'desc';
@@ -894,7 +895,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
   const [assignedFilter, setAssignedFilter] = useState<AssignedFilter>(storedFilters.assignedFilter);
   const [search, setSearch] = useState(storedFilters.search);
   const [viewMode, setViewMode] = useState<ViewMode>(storedFilters.viewMode);
-  const [sortState, setSortState] = useState<SortState>(loadSortState);
+  const [rawSortState, setSortState] = useState<SortState>(loadSortState);
   const [columnConfig, setColumnConfig] = useState<ColumnConfig[]>(loadColumnConfig);
   const [showColumnModal, setShowColumnModal] = useState(false);
   const [groupSimilar, setGroupSimilar] = useState(() => {
@@ -978,6 +979,20 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
   // server (the archives pattern); the client filter/sort/group/slice
   // pipeline below survives ONLY for Spoolman mode.
   const serverMode = !spoolmanMode;
+
+  // The operator's own order (Settings → Filament) is this list's order while
+  // no column is chosen: the built-in default (by spool number) steps aside
+  // for it, the request carries no sort key and the server applies the chain —
+  // Spoolman's whole list is ordered by the same chain in `compareSpools`.
+  // The server's grouped list has orders of its own and is left alone.
+  const spoolSortLevels = useMemo(
+    () => parseSpoolSortOrder(settings?.spool_sort_order),
+    [settings?.spool_sort_order],
+  );
+  const usesSettingsOrder = spoolSortLevels.length > 0
+    && !(serverMode && groupSimilar)
+    && (rawSortState === null || rawSortState === DEFAULT_SORT);
+  const sortState: SortState = usesSettingsOrder ? null : rawSortState;
 
   // Search goes to the server as `q` — debounced so it doesn't fire one
   // request per keystroke. Spoolman mode keeps filtering on the raw value.
@@ -1915,25 +1930,34 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
 
   const handleSort = (colId: string) => {
     if (!isColumnSortable(colId)) return; // Not sortable (here and now)
-    setSortState((prev) => {
-      let next: SortState;
-      if (prev?.column === colId) {
-        // Toggle direction, and on the third click go back to the DEFAULT
-        // order rather than to no order at all: the table is always sorted by
-        // something, so leaving every header arrowless would just hide which.
-        next = prev.direction === 'asc' ? { column: colId, direction: 'desc' } : DEFAULT_SORT;
-      } else {
-        next = { column: colId, direction: 'asc' };
-      }
-      saveSortState(next);
-      return next;
-    });
+    // Decided from the sort the table SHOWS: under the settings order no
+    // header is active, so a first click on any column sorts it ascending.
+    let next: SortState;
+    if (sortState?.column === colId) {
+      // Toggle direction, and on the third click go back to the DEFAULT
+      // order rather than to no order at all: the table is always sorted by
+      // something, so leaving every header arrowless would just hide which.
+      next = sortState.direction === 'asc' ? { column: colId, direction: 'desc' } : DEFAULT_SORT;
+    } else {
+      next = { column: colId, direction: 'asc' };
+    }
+    // The default is remembered as «nothing chosen», so it stays the default
+    // when the settings order is added or removed later.
+    saveSortState(next === DEFAULT_SORT ? null : next);
+    setSortState(next);
     resetPage();
   };
 
+  const settingsOrderCompare = useMemo(
+    () => compareByOrder(spoolSortLevels, spoolDisplayTemplate),
+    [spoolSortLevels, spoolDisplayTemplate],
+  );
+
   // Shared by the flat client list, group headers and expanded group members.
   const compareSpools = useCallback((a: InventorySpool, b: InventorySpool): number => {
-    if (!sortState) return 0;
+    if (!sortState) {
+      return usesSettingsOrder ? settingsOrderCompare(a, b) : 0;
+    }
     // display_name sorts via the synthesised name (user-configurable template)
     // rather than any raw column — locale-aware so "Ясен" sorts cyrillically
     // and digits within a name (e.g. "100% PLA") compare numerically where
@@ -1951,7 +1975,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
     if (va < vb) return sortState.direction === 'asc' ? -1 : 1;
     if (va > vb) return sortState.direction === 'asc' ? 1 : -1;
     return b.id - a.id;
-  }, [sortState, assignmentMap, spoolDisplayTemplate]);
+  }, [sortState, assignmentMap, spoolDisplayTemplate, usesSettingsOrder, settingsOrderCompare]);
   const sortedSpools = useMemo(() => [...filteredSpools].sort(compareSpools), [filteredSpools, compareSpools]);
 
   // Group similar spools when toggle is active — Spoolman's CLIENT-side
@@ -3000,6 +3024,17 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
                 {t('inventory.bulk.clear')}
               </button>
             </div>
+          )}
+          {usesSettingsOrder && (
+            // No header carries an arrow under the settings order, so the
+            // table says in words what it is sorted by.
+            <p className="text-xs text-bambu-gray">
+              {t('settings.spoolSortOrder.activeHint', {
+                order: spoolSortLevels
+                  .map((level) => `${t(`settings.spoolSortOrder.fields.${level.field}`)} ${level.direction === 'asc' ? '↑' : '↓'}`)
+                  .join(', '),
+              })}
+            </p>
           )}
           <div className="bg-bambu-dark-secondary rounded-lg overflow-hidden border border-bambu-dark-tertiary">
             <div className="overflow-x-auto">

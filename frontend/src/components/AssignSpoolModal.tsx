@@ -11,6 +11,7 @@ import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
 import { DEFAULT_SPOOL_DISPLAY_TEMPLATE, formatSpoolDisplayName } from '../utils/spoolName';
 import { filterSpoolsByQuery } from '../utils/inventorySearch';
+import { compareByOrder, parseSpoolSortOrder } from '../utils/spoolSort';
 import { getSwatchStyle, resolveSpoolColorName } from '../utils/colors';
 
 interface AssignSpoolModalProps {
@@ -103,11 +104,19 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
 
   useEffect(() => setPickerPage(1), [disableFiltering, trayInfo?.type, trayInfo?.profile]);
 
+  const { data: settings } = useQuery({
+    queryKey: ['ui-preferences'],
+    queryFn: () => api.getUiPreferences(),
+    enabled: isOpen,
+  });
+
   // The server applies the assignment/tray/search predicates before paging.
   const { data: spoolPage, isLoading } = useQuery({
     queryKey: ['inventory-spools', 'assign-modal', 'local', printerId, amsId, trayId,
       trayInfo?.type, trayInfo?.profile, disableFiltering,
-      currentSpool?.source === 'inventory' ? currentSpool.id : null, debouncedSearch, pickerPage],
+      currentSpool?.source === 'inventory' ? currentSpool.id : null, debouncedSearch, pickerPage,
+      // The server orders by the operator's setting; a changed setting is a different list.
+      settings?.spool_sort_order ?? ''],
     queryFn: ({ signal }) => api.getSpoolPicker({
       printer_id: printerId,
       ams_id: amsId,
@@ -132,12 +141,6 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
   const { data: assignments } = useQuery({
     queryKey: ['spool-assignments'],
     queryFn: () => api.getAssignments(),
-    enabled: isOpen,
-  });
-
-  const { data: settings } = useQuery({
-    queryKey: ['ui-preferences'],
-    queryFn: () => api.getUiPreferences(),
     enabled: isOpen,
   });
 
@@ -349,11 +352,19 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
   // never assignable, a spool bound to another slot is never offered (picking
   // it here would pull it out of another printer), and in replace mode the
   // spool being replaced goes too.
+  //
+  // Spoolman hands the list over whole and unordered; the operator's order
+  // (Settings → Filament) is applied here. The local picker needs no such
+  // step — its server sorts before it pages.
+  const spoolSortLevels = parseSpoolSortOrder(settings?.spool_sort_order);
   const availableSpoolmanSpools = (spoolmanSpools || []).filter((spool: InventorySpool) =>
     !spool.archived_at
     && !assignedSpoolmanSpoolIds.has(spool.id)
     && !(currentSpool?.source === 'spoolman' && spool.id === currentSpool.id)
   );
+  if (spoolSortLevels.length > 0) {
+    availableSpoolmanSpools.sort(compareByOrder(spoolSortLevels, spoolDisplayTemplate));
+  }
 
   // The single funnel every assignment goes through. Inside either
   // replacement window with no answer yet, ask first; the answer re-enters
@@ -520,7 +531,10 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
                         : 'bg-bambu-dark border-bambu-dark-tertiary hover:border-bambu-gray'
                     }`}
                   >
-                    <p className="text-white text-sm font-medium truncate">
+                    <p
+                      className="text-white text-sm font-medium truncate"
+                      title={formatSpoolDisplayName(spool, spoolDisplayTemplate)}
+                    >
                       {formatSpoolDisplayName(spool, spoolDisplayTemplate)}
                     </p>
                     <div className="flex items-center gap-1.5 mt-1">
@@ -607,7 +621,10 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
                                 : 'bg-bambu-dark border-bambu-dark-tertiary hover:border-bambu-gray'
                             }`}
                           >
-                            <p className="text-white text-sm font-medium truncate">
+                            <p
+                              className="text-white text-sm font-medium truncate"
+                              title={formatSpoolDisplayName(spool, spoolDisplayTemplate)}
+                            >
                               {formatSpoolDisplayName(spool, spoolDisplayTemplate)}
                             </p>
                             <div className="flex items-center gap-1.5 mt-1">

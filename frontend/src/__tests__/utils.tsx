@@ -10,6 +10,7 @@ import { BrowserRouter } from 'react-router';
 import { ThemeProvider } from '../contexts/ThemeContext';
 import { ToastProvider } from '../contexts/ToastContext';
 import { AuthProvider } from '../contexts/AuthContext';
+import { EmbeddedCameraProvider } from '../contexts/EmbeddedCameraContext';
 import { setAuthToken } from '../api/client';
 
 // BamDude has always-on auth (see CLAUDE.md). AuthContext will not load a user
@@ -53,7 +54,10 @@ function AllProviders({ children }: AllProvidersProps) {
       <BrowserRouter>
         <ThemeProvider>
           <AuthProvider>
-            <ToastProvider>{children}</ToastProvider>
+            {/* In the app the floating camera window is the shell's (Layout).
+                A page rendered on its own gets the same owner here, so its
+                camera buttons open the window they open in the app. */}
+            <ToastProvider><EmbeddedCameraProvider>{children}</EmbeddedCameraProvider></ToastProvider>
           </AuthProvider>
         </ThemeProvider>
       </BrowserRouter>

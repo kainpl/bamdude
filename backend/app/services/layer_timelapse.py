@@ -78,7 +78,9 @@ class TimelapseSession:
             # exists for, and one nobody reports as a camera bug.
             from backend.app.api.routes.camera import live_frame_for_capture
 
-            defer, buffered = live_frame_for_capture(self.printer_id)
+            # A camera with its own snapshot URL records that still, watched or not: ``capture`` fetches it
+            # beside the stream and falls back to the view's frame itself (owner, 2026-11-15).
+            defer, buffered = (False, None) if self.snapshot_url else live_frame_for_capture(self.printer_id)
             if defer:
                 if not buffered:
                     # Viewer attached, buffer momentarily empty: skip this layer

@@ -758,6 +758,7 @@ _UI_PREFERENCE_FIELDS: tuple[str, ...] = (
     # The Workshop's prices (WS-13 E13 T17): its readers are not settings readers.
     "currency",
     "spool_display_template",
+    "spool_sort_order",
     "check_printer_firmware",
     "use_slicer_api",
     "drying_presets",

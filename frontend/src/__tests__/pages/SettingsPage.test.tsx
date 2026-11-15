@@ -672,7 +672,7 @@ describe('SettingsPage', () => {
         }),
       );
       render(<SettingsPage />);
-      await openTab('Printing');
+      await openTab('Camera');
       const light = await waitFor(() => toggleFor('Light for the camera'), { timeout: 5000 });
       expect(light.checked).toBe(false);
       expect(screen.queryByText('Also for Obico failure detection')).not.toBeInTheDocument();
@@ -701,7 +701,7 @@ describe('SettingsPage', () => {
         }),
       );
       render(<SettingsPage />);
-      await openTab('Printing');
+      await openTab('Camera');
       const select = (await screen.findByLabelText('Light for the camera', {}, { timeout: 5000 })) as HTMLSelectElement;
       expect(select.value).toBe('inherit');
       await userEvent.setup().selectOptions(select, 'off');
@@ -715,8 +715,8 @@ describe('SettingsPage', () => {
         status({ has_chamber_light: false }),
       );
       render(<SettingsPage />);
-      await openTab('Printing');
-      await screen.findByText('Mini by the window', {}, { timeout: 5000 });
+      await openTab('Camera');
+      await waitFor(() => expect(within(document.getElementById('card-camera')!).getByText('Mini by the window')).toBeInTheDocument(), { timeout: 5000 });
       await waitFor(() => expect(screen.queryByLabelText('Light for the camera')).not.toBeInTheDocument(), { timeout: 5000 });
     }, 15000);
 
@@ -727,8 +727,8 @@ describe('SettingsPage', () => {
         status({ has_chamber_light: true }),
       );
       render(<SettingsPage />);
-      await openTab('Printing');
-      await screen.findByText('Mini by the window', {}, { timeout: 5000 });
+      await openTab('Camera');
+      await waitFor(() => expect(within(document.getElementById('card-camera')!).getByText('Mini by the window')).toBeInTheDocument(), { timeout: 5000 });
       expect(screen.queryByLabelText('Light for the camera')).not.toBeInTheDocument();
     }, 15000);
   });
@@ -762,15 +762,15 @@ describe('SettingsPage', () => {
     };
 
     /**
-     * The External Cameras section sits inside the Printing tab in our layout
-     * (different from upstream's tab arrangement). Each test must switch to
-     * Printing first before asserting on snapshot-URL UI.
+     * The External Cameras section sits on the Camera tab (it was under
+     * Printing until the camera cards got a tab of their own). Each test
+     * must switch to it first before asserting on snapshot-URL UI.
      */
-    const switchToPrintingTab = async () => {
+    const switchToCameraTab = async () => {
       const user = userEvent.setup();
       const tabButton = await waitFor(() => {
         const buttons = screen
-          .getAllByText('Printing')
+          .getAllByText('Camera')
           .filter((el) => el.tagName === 'BUTTON');
         expect(buttons.length).toBeGreaterThan(0);
         return buttons[0];
@@ -784,7 +784,7 @@ describe('SettingsPage', () => {
       );
 
       render(<SettingsPage />);
-      await switchToPrintingTab();
+      await switchToCameraTab();
 
       await waitFor(() => {
         expect(screen.getByPlaceholderText(/api\/frame\.jpeg\?src=printer/)).toBeInTheDocument();
@@ -808,7 +808,7 @@ describe('SettingsPage', () => {
         }),
       );
       render(<SettingsPage />);
-      await switchToPrintingTab();
+      await switchToCameraTab();
       const input = await screen.findByPlaceholderText('Configured — enter a new URL to replace');
       expect(input).toHaveValue('');
       const testButtons = within(input.parentElement!).getAllByRole('button', { name: 'Test' });
@@ -832,7 +832,7 @@ describe('SettingsPage', () => {
         }),
       );
       render(<SettingsPage />);
-      await switchToPrintingTab();
+      await switchToCameraTab();
       const user = userEvent.setup();
       await user.click(await screen.findByRole('button', { name: 'Clear saved URL' }));
       await waitFor(() => expect(body).toEqual({
@@ -848,13 +848,13 @@ describe('SettingsPage', () => {
       );
 
       render(<SettingsPage />);
-      await switchToPrintingTab();
+      await switchToCameraTab();
 
       // Wait for the printer name (rendered alongside the camera section) so
-      // we know the printing tab finished mounting before asserting absence
+      // we know the camera tab finished mounting before asserting absence
       // of the snapshot input.
       await waitFor(() => {
-        expect(screen.getByText('go2rtc Cam')).toBeInTheDocument();
+        expect(within(document.getElementById('card-camera')!).getByText('go2rtc Cam')).toBeInTheDocument();
       });
       expect(screen.queryByPlaceholderText(/api\/frame\.jpeg\?src=printer/)).not.toBeInTheDocument();
     });
@@ -872,7 +872,7 @@ describe('SettingsPage', () => {
         );
 
         render(<SettingsPage />);
-        await switchToPrintingTab();
+        await switchToCameraTab();
 
         const input = await waitFor(() =>
           screen.getByPlaceholderText(/api\/frame\.jpeg\?src=printer/),
@@ -1151,6 +1151,147 @@ describe('SettingsPage', () => {
       expect(toggleFor(LABEL)).toBeDisabled();
       expect(toggleFor(LABEL)).not.toBeChecked();
     }, 15000);
+  });
+
+  describe('Camera tab', () => {
+    const tabButton = async (label: string) =>
+      waitFor(() => {
+        const buttons = screen.getAllByText(label).filter((el) => el.tagName === 'BUTTON');
+        expect(buttons.length).toBeGreaterThan(0);
+        return buttons[0];
+      });
+    const openTab = async (label: string) => userEvent.setup().click(await tabButton(label));
+    const overlayToken = (id: number, name: string) => ({
+      id, user_id: 1, name, scope: 'overlay', lookup_prefix: `0000000${id}`, token: null,
+      token_identity: `identity-${id}`, created_at: '2026-01-01T00:00:00', expires_at: '2099-01-01T00:00:00', last_used_at: null,
+    });
+
+    beforeEach(() => {
+      server.use(
+        http.get('/api/v1/auth/tokens', () => HttpResponse.json([])),
+        http.get('/api/v1/auth/tokens/all', () => HttpResponse.json([])),
+        http.get('/api/v1/users/slim', () => HttpResponse.json([])),
+      );
+    });
+
+    it('holds every camera card: view mode, light, external and other cameras, tokens, overlay builder', async () => {
+      render(<SettingsPage />);
+      await openTab('Camera');
+      expect(await screen.findByText('Camera View Mode', {}, { timeout: 5000 })).toBeInTheDocument();
+      expect(toggleFor('Light for the camera')).toBeInTheDocument();
+      expect(screen.getByRole('heading', { name: 'External Cameras' })).toBeInTheDocument();
+      expect(screen.getByText('Other cameras')).toBeInTheDocument();
+      expect(screen.getByRole('heading', { name: 'Camera and monitor tokens' })).toBeInTheDocument();
+      expect(screen.getByRole('heading', { name: 'Streaming Overlay' })).toBeInTheDocument();
+      // The cards the search and old links address by id.
+      for (const id of ['card-camera', 'card-camera-tokens', 'card-stream-overlay']) {
+        expect(document.getElementById(id), id).not.toBeNull();
+      }
+      expect(new URL(window.location.href).searchParams.get('tab')).toBe('camera');
+    }, 15000);
+
+    it('leaves no camera card on Printing', async () => {
+      render(<SettingsPage />);
+      await openTab('Printing');
+      await screen.findByText('Saved Print Profiles', {}, { timeout: 5000 });
+      expect(screen.queryByText('Camera View Mode')).not.toBeInTheDocument();
+      expect(screen.queryByText('Other cameras')).not.toBeInTheDocument();
+    }, 15000);
+
+    it('API Keys keeps a pointer to the tokens, and the pointer opens the Camera tab', async () => {
+      render(<SettingsPage />);
+      await openTab('API Keys');
+      await screen.findByText('Create Key', {}, { timeout: 5000 });
+      expect(screen.queryByRole('heading', { name: 'Streaming Overlay' })).not.toBeInTheDocument();
+      expect(document.getElementById('card-camera-tokens')).toBeNull();
+      const pointer = document.getElementById('card-camera-tokens-pointer');
+      expect(pointer).not.toBeNull();
+      expect(within(pointer!).getByText(/status monitor/i)).toBeInTheDocument();
+      await userEvent.setup().click(within(pointer!).getByRole('button', { name: 'Open camera settings' }));
+      expect(await screen.findByRole('heading', { name: 'Streaming Overlay' })).toBeInTheDocument();
+      expect(document.getElementById('card-camera-tokens')).not.toBeNull();
+      expect(new URL(window.location.href).searchParams.get('tab')).toBe('camera');
+    }, 15000);
+
+    it.each([
+      ['/settings?tab=apikeys#card-camera-tokens', 'card-camera-tokens'],
+      ['/settings?tab=apikeys#card-stream-overlay', 'card-stream-overlay'],
+      ['/settings?tab=printing#card-camera', 'card-camera'],
+      ['/settings?tab=camera', 'card-camera'],
+    ])('an old address %s lands on its card in the Camera tab', async (address, cardId) => {
+      window.history.replaceState({}, '', address);
+      const seen: string[] = [];
+      const original = Element.prototype.scrollIntoView;
+      Element.prototype.scrollIntoView = function scrollIntoView(this: Element) { seen.push(this.id); };
+      try {
+        render(<SettingsPage />);
+        await waitFor(() => expect(document.getElementById(cardId)).not.toBeNull(), { timeout: 5000 });
+        expect(await screen.findByText('Camera View Mode')).toBeInTheDocument();
+        if (address.includes('#')) await waitFor(() => expect(seen).toContain(cardId));
+      } finally {
+        Element.prototype.scrollIntoView = original;
+      }
+    }, 15000);
+
+    it('an API Keys address that names no camera card still opens API Keys', async () => {
+      window.history.replaceState({}, '', '/settings?tab=apikeys#card-mcp');
+      render(<SettingsPage />);
+      expect(await screen.findByText('Create Key', {}, { timeout: 5000 })).toBeInTheDocument();
+      expect(screen.queryByText('Camera View Mode')).not.toBeInTheDocument();
+    }, 15000);
+
+    it('finds the moved cards through the settings search, under Camera', async () => {
+      const user = userEvent.setup();
+      render(<SettingsPage />);
+      const search = await screen.findByPlaceholderText(/search/i);
+      await user.type(search, 'overlay');
+      const hit = (await screen.findAllByText('Streaming Overlay')).map((el) => el.closest('button')).find(Boolean)!;
+      expect(within(hit).getByText('Camera')).toBeInTheDocument();
+      await user.click(hit);
+      expect(await screen.findByRole('heading', { name: 'Streaming Overlay' })).toBeInTheDocument();
+      await user.type(search, 'token');
+      const tokens = (await screen.findAllByText('Camera and monitor tokens')).map((el) => el.closest('button')).find(Boolean)!;
+      expect(within(tokens).getByText('Camera')).toBeInTheDocument();
+    }, 15000);
+
+    it('a settings reader with no camera right still sees the tab and its camera card, but no door to create a token', async () => {
+      server.use(
+        http.get('/api/v1/auth/me', () => HttpResponse.json({ id: 25, username: 'delegated', role: 'user', is_admin: false, is_active: true, groups: [], permissions: ['settings:read'] })),
+      );
+      function Actor() { return <span>{useAuth().user?.username}</span>; }
+      render(<><Actor /><SettingsPage /></>);
+      await screen.findByText('delegated');
+      await openTab('Camera');
+      expect(await screen.findByText('Camera View Mode', {}, { timeout: 5000 })).toBeInTheDocument();
+      expect(screen.getByRole('heading', { name: 'Camera and monitor tokens' })).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Create token' })).not.toBeInTheDocument();
+    }, 15000);
+
+    it('a token the overlay builder creates appears in the token list above it', async () => {
+      let tokens = [overlayToken(1, 'Wall display')];
+      let reads = 0;
+      server.use(
+        http.get('/api/v1/auth/tokens', () => { reads += 1; return HttpResponse.json(tokens); }),
+        http.get('/api/v1/printers', () => HttpResponse.json([{ id: 1, name: 'X1 Carbon', ip_address: '192.168.1.100', serial_number: '00M09A350100001', model: 'X1C' }])),
+        http.get('/api/v1/printers/', () => HttpResponse.json([{ id: 1, name: 'X1 Carbon', ip_address: '192.168.1.100', serial_number: '00M09A350100001', model: 'X1C' }])),
+        http.post('/api/v1/auth/tokens', async () => {
+          tokens = [...tokens, overlayToken(2, 'OBS scene')];
+          return HttpResponse.json({ ...overlayToken(2, 'OBS scene'), token: 'bblt_0a1b2c3d_SECRETSECRETSECRETSECRETSECRET00' }, { status: 201 });
+        }),
+      );
+      const actor = userEvent.setup();
+      render(<SettingsPage />);
+      await openTab('Camera');
+      const tokensCard = (await screen.findByRole('heading', { name: 'Camera and monitor tokens' }, { timeout: 5000 })).closest<HTMLElement>('[class*="card-shadow"]')!;
+      await within(tokensCard).findByText('Wall display');
+      const before = reads;
+      const builderCard = screen.getByRole('heading', { name: 'Streaming Overlay' }).closest<HTMLElement>('[class*="card-shadow"]')!;
+      await actor.click(await within(builderCard).findByRole('button', { name: 'Create token' }, { timeout: 5000 }));
+      await actor.type(within(builderCard).getByLabelText('Token name'), 'OBS scene');
+      await actor.click(within(builderCard).getByRole('button', { name: 'Create' }));
+      await within(tokensCard).findByText('OBS scene', {}, { timeout: 5000 });
+      expect(reads).toBe(before + 1);
+    }, 20000);
   });
 
 });

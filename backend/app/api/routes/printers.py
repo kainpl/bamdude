@@ -88,7 +88,11 @@ from backend.app.services.bambu_mqtt import (
     airduct_mode_effective,
     airduct_parts_effective,
 )
-from backend.app.services.camera_credentials import CAMERA_SECRET_FIELDS, resolve_camera_credentials
+from backend.app.services.camera_credentials import (
+    CAMERA_SECRET_FIELDS,
+    resolve_camera_credentials,
+    same_camera_address,
+)
 from backend.app.services.cloud_link.service import cloud_link_service
 from backend.app.services.mqtt_recorder import mqtt_recorder
 from backend.app.services.plate_answers import FilingRefused, InvalidPlateAssessment, answer_plate_run
@@ -304,6 +308,8 @@ async def create_printer(
         if patch.auto_stock_spool and patch.auto_stock_spool.enabled:
             await creds.check(_may_change_stock_policy)
     printer = Printer(**data)
+    if same_camera_address(printer.external_camera_snapshot_url, printer.external_camera_url):
+        printer.external_camera_snapshot_url = None  # the stream's own address is no still (camera_credentials)
 
     # Probe MQTT connectivity BEFORE persisting so a mistyped access code or
     # wrong IP doesn't leave a permanently-empty card on the dashboard
@@ -649,6 +655,8 @@ async def update_printer(
     camera_before = camera_source_of(printer)
     for field, value in update_data.items():
         setattr(printer, field, value)
+    if same_camera_address(printer.external_camera_snapshot_url, printer.external_camera_url):
+        printer.external_camera_snapshot_url = None  # the stream's own address is no still (camera_credentials)
 
     await db.commit()
     await db.refresh(printer)
@@ -1829,6 +1837,18 @@ async def get_overlay_status(
     from backend.app.api.routes.camera import stream_liveness
 
     camera = stream_liveness(printer_id, viewer)
+    # Whether the installation has a logo for `logo=1`, and which: the overlay then asks for that revision
+    # under this same token instead of probing a route that answers 404 (routes/overlay_branding).
+    from backend.app.services import overlay_logo
+
+    # Branding never takes the feed down: an overlay that asked for no logo reads this answer too, and it
+    # carries the broadcast's progress, temperatures and camera liveness.
+    try:
+        saved_logo = await overlay_logo.current()
+    except Exception as exc:
+        logger.warning("Stream overlay feed answers without a logo (%s)", type(exc).__name__)
+        saved_logo = None
+    logo = {"revision": saved_logo.revision} if saved_logo else None
 
     if not state:
         # Never connected this run — mirror get_printer_status()'s disconnected
@@ -1851,6 +1871,7 @@ async def get_overlay_status(
             "temperatures": {},
             "time_format": time_format,
             "camera": camera,
+            "logo": logo,
         }
 
     from backend.app.services.layer_projection import resolve_layer_pair
@@ -1876,6 +1897,7 @@ async def get_overlay_status(
         "temperatures": display_temperatures(state.temperatures, printer.model),
         "time_format": time_format,
         "camera": camera,
+        "logo": logo,
     }
 
 
