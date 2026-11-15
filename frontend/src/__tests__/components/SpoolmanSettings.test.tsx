@@ -32,12 +32,14 @@ vi.mock('../../api/client', () => ({
     syncPrinterAms: vi.fn(),
     getPrinters: vi.fn(),
     getSpoolmanModeSwitchPreview: vi.fn(),
+    migrateSpoolmanTags: vi.fn(),
     getAuthStatus: vi.fn().mockResolvedValue({ auth_enabled: false }),
   },
 }));
 
 // Import mocked module
 import { api } from '../../api/client';
+import type { SpoolmanTagMigrationReport } from '../../api/client';
 
 describe('SpoolmanSettings', () => {
   beforeEach(() => {
@@ -408,6 +410,95 @@ describe('SpoolmanSettings', () => {
 
       expect(screen.queryByText('Switch filament tracking?')).not.toBeInTheDocument();
       expect(api.getSpoolmanModeSwitchPreview).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('native tags', () => {
+    const preview: SpoolmanTagMigrationReport = {
+      dry_run: true,
+      moved: [
+        { spool_id: 41, tag: '0123456789ABCDEF0123456789ABCD01', format: 'bambu' },
+        { spool_id: 42, tag: 'D3E68F32', format: 'bambu' },
+      ],
+      already: 5,
+      slot_ids: 2,
+      archived: 1,
+      conflicts: [
+        { spool_id: 43, tag: 'AAAAAAAA', reason: 'held_by_spool', holder: 7, holder_archived: true, holder_filament: null },
+        { spool_id: 44, tag: 'BBBBBBBB', reason: 'shared_extra_tag', holder: 45, holder_archived: false, holder_filament: null },
+        { spool_id: 46, tag: 'CCCCCCCC', reason: 'held_by_filament', holder: null, holder_archived: false, holder_filament: 3 },
+      ],
+    };
+
+    const connected = (nativeTags: boolean) => {
+      vi.mocked(api.getSpoolmanSettings).mockResolvedValue({
+        spoolman_enabled: 'true',
+        spoolman_url: 'http://localhost:7912',
+        spoolman_sync_mode: 'auto',
+        spoolman_disable_weight_sync: 'false',
+        spoolman_report_partial_usage: 'true',
+        auto_add_unknown_rfid: 'false',
+      });
+      vi.mocked(api.getSpoolmanStatus).mockResolvedValue({
+        enabled: true,
+        connected: true,
+        url: 'http://localhost:7912',
+        native_tags: nativeTags,
+      });
+    };
+
+    it('is not offered on a Spoolman without native tags', async () => {
+      connected(false);
+      render(<SpoolmanSettings />);
+
+      await screen.findByText('Connected');
+      expect(screen.queryByText('Spoolman native tags')).not.toBeInTheDocument();
+    });
+
+    it('previews what would be copied before anything is changed', async () => {
+      connected(true);
+      vi.mocked(api.migrateSpoolmanTags).mockResolvedValue(preview);
+      const user = userEvent.setup();
+      render(<SpoolmanSettings />);
+
+      await user.click(await screen.findByRole('button', { name: 'Check tags' }));
+
+      expect(api.migrateSpoolmanTags).toHaveBeenCalledWith(true);
+      expect(await screen.findByText('Spool #41: 0123456789ABCDEF0123456789ABCD01')).toBeInTheDocument();
+      expect(screen.getByText('Spool #42: D3E68F32')).toBeInTheDocument();
+      // Every conflict names who holds the tag; none is settled for the operator.
+      expect(
+        screen.getByText('Spool #43: tag AAAAAAAA already belongs to archived spool #7 in Spoolman.')
+      ).toBeInTheDocument();
+      expect(screen.getByText(/Spool #44: spool #45 has the same tag BBBBBBBB/)).toBeInTheDocument();
+      expect(screen.getByText(/Spool #46: tag CCCCCCCC is linked to a filament/)).toBeInTheDocument();
+      expect(api.migrateSpoolmanTags).toHaveBeenCalledTimes(1);
+    });
+
+    it('copies only when asked to, and shows what was copied', async () => {
+      connected(true);
+      vi.mocked(api.migrateSpoolmanTags).mockImplementation(async (dryRun: boolean) => ({ ...preview, dry_run: dryRun }));
+      const user = userEvent.setup();
+      render(<SpoolmanSettings />);
+      await user.click(await screen.findByRole('button', { name: 'Check tags' }));
+
+      await user.click(await screen.findByRole('button', { name: 'Copy tags' }));
+
+      await waitFor(() => expect(api.migrateSpoolmanTags).toHaveBeenLastCalledWith(false));
+      expect(await screen.findByText('Copied')).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Copy tags' })).not.toBeInTheDocument();
+    });
+
+    it('says so when there is nothing to copy', async () => {
+      connected(true);
+      vi.mocked(api.migrateSpoolmanTags).mockResolvedValue({ ...preview, moved: [], conflicts: [] });
+      const user = userEvent.setup();
+      render(<SpoolmanSettings />);
+
+      await user.click(await screen.findByRole('button', { name: 'Check tags' }));
+
+      expect(await screen.findByText('Nothing to copy: every tag is already in Spoolman.')).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Copy tags' })).not.toBeInTheDocument();
     });
   });
 });

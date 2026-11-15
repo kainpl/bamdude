@@ -8115,6 +8115,31 @@ export interface SpoolmanStatus {
   enabled: boolean;
   connected: boolean;
   url: string | null;
+  /** This Spoolman links tags to spools itself; the server asks it, never a version. */
+  native_tags?: boolean;
+}
+
+export type SpoolmanTagConflictReason =
+  | 'shared_extra_tag'
+  | 'held_by_spool'
+  | 'held_by_filament'
+  | 'held_elsewhere';
+
+export interface SpoolmanTagMigrationReport {
+  dry_run: boolean;
+  /** What the preview would link, or what the run linked. */
+  moved: Array<{ spool_id: number; tag: string; format: string | null }>;
+  already: number;
+  slot_ids: number;
+  archived: number;
+  conflicts: Array<{
+    spool_id: number;
+    tag: string;
+    reason: SpoolmanTagConflictReason;
+    holder: number | null;
+    holder_archived: boolean;
+    holder_filament: number | null;
+  }>;
 }
 
 export interface SkippedSpool {
@@ -12762,6 +12787,10 @@ export const api = {
 
   // Spoolman Integration
   getSpoolmanStatus: () => request<SpoolmanStatus>('/spoolman/status'),
+  migrateSpoolmanTags: (dryRun: boolean) =>
+    request<SpoolmanTagMigrationReport>(`/spoolman/inventory/tags/migrate?dry_run=${dryRun}`, {
+      method: 'POST',
+    }),
   connectSpoolman: () =>
     request<{ success: boolean; message: string }>('/spoolman/connect', {
       method: 'POST',

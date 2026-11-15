@@ -1,9 +1,9 @@
 import { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Loader2, Check, X, RefreshCw, Link2, Database, Info, AlertTriangle, Package, ExternalLink } from 'lucide-react';
+import { Loader2, Check, X, RefreshCw, Link2, Database, Info, AlertTriangle, Package, ExternalLink, Tags } from 'lucide-react';
 import { api, ApiError } from '../api/client';
-import type { SpoolmanSyncResult, Printer } from '../api/client';
+import type { SpoolmanSyncResult, SpoolmanTagMigrationReport, Printer } from '../api/client';
 import { invalidateSpoolViews } from '../utils/queryInvalidation';
 import { Card, CardContent, CardHeader } from './Card';
 import { Button } from './Button';
@@ -218,6 +218,34 @@ export function SpoolmanSettings() {
       setShowSpoolmanAmsSyncConfirm(false);
     },
   });
+
+  // Native tags: a preview first, the copy only from its report. The server
+  // decides what is a conflict; nothing here settles one.
+  const [tagReport, setTagReport] = useState<SpoolmanTagMigrationReport | null>(null);
+  const tagMigrationMutation = useMutation({
+    mutationFn: (dryRun: boolean) => api.migrateSpoolmanTags(dryRun),
+    onSuccess: (report) => {
+      setTagReport(report);
+      if (!report.dry_run) {
+        queryClient.invalidateQueries({ queryKey: ['spoolman-inventory-spools'] });
+        showToast(t('settings.nativeTagsMoved', { count: report.moved.length }), 'success');
+      }
+    },
+    onError: () => {
+      showToast(t('settings.nativeTagsError'), 'error');
+    },
+  });
+  const tagConflictText = (conflict: SpoolmanTagMigrationReport['conflicts'][number]) => {
+    const values = { spool: conflict.spool_id, tag: conflict.tag, holder: conflict.holder };
+    if (conflict.reason === 'shared_extra_tag') return t('settings.nativeTagsConflictShared', values);
+    if (conflict.reason === 'held_by_filament') return t('settings.nativeTagsConflictFilament', values);
+    if (conflict.reason === 'held_by_spool' && conflict.holder !== null) {
+      return conflict.holder_archived
+        ? t('settings.nativeTagsConflictArchived', values)
+        : t('settings.nativeTagsConflictSpool', values);
+    }
+    return t('settings.nativeTagsConflictElsewhere', values);
+  };
 
   // Combine mutation states
   const isSyncing = syncAllMutation.isPending || syncPrinterMutation.isPending;
@@ -588,6 +616,96 @@ export function SpoolmanSettings() {
                       {spoolmanAmsSyncMutation.isPending ? t('settings.spoolmanAmsSyncing') : t('settings.spoolmanAmsSyncButton')}
                     </Button>
                   </div>
+                </div>
+              )}
+
+              {/* Native tags: copy extra.tag into them */}
+              {status?.connected && status.native_tags && (
+                <div className="mt-4 pt-4 border-t border-bambu-dark-tertiary space-y-3">
+                  <div className="flex items-center justify-between gap-4">
+                    <div>
+                      <p className="text-sm text-white">{t('settings.nativeTagsTitle')}</p>
+                      <p className="text-xs text-bambu-gray">{t('settings.nativeTagsDesc')}</p>
+                    </div>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => tagMigrationMutation.mutate(true)}
+                      disabled={tagMigrationMutation.isPending}
+                      className="flex-shrink-0 whitespace-nowrap"
+                    >
+                      {tagMigrationMutation.isPending && tagMigrationMutation.variables === true ? (
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                      ) : (
+                        <Tags className="w-4 h-4" />
+                      )}
+                      {t('settings.nativeTagsCheck')}
+                    </Button>
+                  </div>
+
+                  {tagReport && (
+                    <div className="p-2 bg-bambu-dark border border-bambu-dark-tertiary rounded text-sm space-y-2">
+                      <dl className="grid grid-cols-[1fr_auto] gap-x-4 gap-y-0.5 text-xs">
+                        <dt className="text-bambu-gray">
+                          {tagReport.dry_run ? t('settings.nativeTagsToMove') : t('settings.nativeTagsCopied')}
+                        </dt>
+                        <dd className="text-white text-right">{tagReport.moved.length}</dd>
+                        <dt className="text-bambu-gray">{t('settings.nativeTagsAlready')}</dt>
+                        <dd className="text-white text-right">{tagReport.already}</dd>
+                        <dt className="text-bambu-gray">{t('settings.nativeTagsSlotIds')}</dt>
+                        <dd className="text-white text-right">{tagReport.slot_ids}</dd>
+                        <dt className="text-bambu-gray">{t('settings.nativeTagsArchived')}</dt>
+                        <dd className="text-white text-right">{tagReport.archived}</dd>
+                        <dt className="text-bambu-gray">{t('settings.nativeTagsConflicts')}</dt>
+                        <dd className="text-white text-right">{tagReport.conflicts.length}</dd>
+                      </dl>
+
+                      {tagReport.moved.length > 0 && (
+                        <ul className="max-h-40 overflow-y-auto text-xs text-bambu-gray space-y-0.5 font-mono break-all">
+                          {tagReport.moved.map((row) => (
+                            <li key={`${row.spool_id}-${row.tag}`}>
+                              {t('settings.nativeTagsRow', { spool: row.spool_id, tag: row.tag })}
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+
+                      {tagReport.conflicts.length > 0 && (
+                        <div className="p-2 bg-amber-50 dark:bg-amber-500/10 border border-amber-300 dark:border-amber-500/30 rounded text-xs text-amber-700 dark:text-amber-400 space-y-1">
+                          <ul className="max-h-40 overflow-y-auto space-y-0.5">
+                            {tagReport.conflicts.map((conflict) => (
+                              <li key={`${conflict.spool_id}-${conflict.tag}`} className="flex items-start gap-1.5">
+                                <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0 mt-px" />
+                                <span className="break-all">{tagConflictText(conflict)}</span>
+                              </li>
+                            ))}
+                          </ul>
+                          <p>{t('settings.nativeTagsConflictsHint')}</p>
+                        </div>
+                      )}
+
+                      {tagReport.dry_run && tagReport.moved.length > 0 && (
+                        <Button
+                          size="sm"
+                          onClick={() => tagMigrationMutation.mutate(false)}
+                          disabled={tagMigrationMutation.isPending}
+                        >
+                          {tagMigrationMutation.isPending && tagMigrationMutation.variables === false ? (
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                          ) : (
+                            <Tags className="w-4 h-4" />
+                          )}
+                          {t('settings.nativeTagsMove')}
+                        </Button>
+                      )}
+                      {tagReport.moved.length === 0 && tagReport.conflicts.length === 0 && (
+                        <p className="flex items-center gap-1 text-xs text-green-600 dark:text-green-400">
+                          <Check className="w-3.5 h-3.5" />
+                          {t('settings.nativeTagsNothing')}
+                        </p>
+                      )}
+                    </div>
+                  )}
                 </div>
               )}
 

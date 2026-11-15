@@ -14,6 +14,7 @@ from typing import Any
 from typing_extensions import TypedDict
 
 from backend.app.api.routes._url_safety import assert_safe_lan_service_url
+from backend.app.services.spoolman import native_tag_uids
 from backend.app.services.spoolman_weights import spool_net_weight, spool_price_per_gram
 
 logger = logging.getLogger(__name__)
@@ -322,6 +323,15 @@ def _map_spoolman_spool(spool: dict) -> MappedSpoolFields:
     _raw_is_hex = bool(_TAG_HEX_RE.match(raw_tag))
     tag_uid = raw_tag if _raw_is_hex and 8 <= len(raw_tag) <= 30 else None
     tray_uuid = raw_tag if _raw_is_hex and len(raw_tag) == 32 else None
+    # Native tags (Spoolman 0.27+) fill whichever of the two extra.tag left
+    # empty, so a spool linked in Spoolman itself shows as tagged here too.
+    for native_uid in native_tag_uids(spool):
+        if not _TAG_HEX_RE.match(native_uid):
+            continue
+        if len(native_uid) == 32:
+            tray_uuid = tray_uuid or native_uid
+        elif 8 <= len(native_uid) <= 30:
+            tag_uid = tag_uid or native_uid
 
     material: str = (filament.get("material") or "").strip()
     filament_name: str = (filament.get("name") or "").strip()

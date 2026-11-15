@@ -83,6 +83,8 @@ def _client(spools: list[dict]) -> MagicMock:
     client.get_all_spools = AsyncMock(return_value=spools)
     client.get_spool = AsyncMock(return_value=_spoolman_spool(99, {}))
     client.extra_lock = MagicMock(return_value=__import__("asyncio").Lock())
+    # A Spoolman from before native tags (0.27): nothing is linked there.
+    client.link_native_tags = AsyncMock(return_value=[])
     return client
 
 

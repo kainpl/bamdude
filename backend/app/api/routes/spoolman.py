@@ -25,15 +25,18 @@ from backend.app.services.ams_slot_presence import spool_present
 from backend.app.services.printer_manager import printer_manager
 from backend.app.services.spoolman import (
     ArchivedTagIndex,
+    NativeTagConflict,
     SpoolmanClientError,
     SpoolmanNotFoundError,
     SpoolmanUnavailableError,
     close_spoolman_client,
     get_spoolman_client,
     init_spoolman_client,
+    native_tag_uids,
 )
 from backend.app.services.spoolman_kprofile_link import resolve_spoolman_slot_kprofile
 from backend.app.services.spoolman_weights import spool_net_weight
+from backend.app.services.tag_conflict import native_tag_refused
 from backend.app.utils.slot_nozzle import slot_nozzle
 
 logger = logging.getLogger(__name__)
@@ -47,6 +50,9 @@ class SpoolmanStatus(BaseModel):
     enabled: bool
     connected: bool
     url: str | None
+    # This Spoolman links tags natively (0.27+): Settings offers the copy of
+    # extra.tag into them. Decided by asking the server, never by a version.
+    native_tags: bool = False
 
 
 class SkippedSpool(BaseModel):
@@ -116,6 +122,7 @@ async def get_spoolman_status(
     enabled, url = sm["enabled"], sm["url"]
 
     connected = False
+    native_tags = False
     if enabled and url:
         client = await get_spoolman_client()
         if not client or client.base_url != url.rstrip("/"):
@@ -133,11 +140,14 @@ async def get_spoolman_status(
                 client = None
         if client:
             connected = await client.health_check()
+            # Asked once per client and remembered: the 30-second poll costs nothing more.
+            native_tags = bool(connected) and await client.has_tag_api() is True
 
     return SpoolmanStatus(
         enabled=enabled,
         connected=connected,
         url=url if url else None,
+        native_tags=native_tags,
     )
 
 
@@ -869,6 +879,15 @@ async def get_linked_spools(
                     "filament_weight": spool_net_weight(spool),
                 }
 
+    # Native tags (Spoolman 0.27+) outrank extra.tag, as in find_spool_by_tag.
+    for spool in spools:
+        for uid in native_tag_uids(spool):
+            linked[uid] = {
+                "id": spool["id"],
+                "remaining_weight": spool.get("remaining_weight"),
+                "filament_weight": spool_net_weight(spool),
+            }
+
     return {"linked": linked}
 
 
@@ -932,7 +951,19 @@ async def link_spool(
         printer_context = (request.printer_id, request.ams_id, request.tray_id)
 
     try:
-        await client.merge_spool_extra(spool_id, {"tag": json.dumps(spool_tag)})
+        # A tray UUID also becomes a native tag (Spoolman 0.27+), linked first:
+        # it is the step Spoolman can refuse, so a refusal leaves extra.tag
+        # untouched. The 16-character values this route takes — a slot's
+        # fallback id, the AMS's padded chip uid — are not what a reader sees
+        # and stay in extra.tag alone.
+        added_native = await client.link_native_tags(spool_id, [spool_tag] if len(spool_tag) == 32 else [], "bambu")
+        try:
+            await client.merge_spool_extra(spool_id, {"tag": json.dumps(spool_tag)})
+        except Exception:
+            await client.take_back_native_tags(spool_id, added_native)
+            raise
+    except NativeTagConflict as conflict:
+        raise native_tag_refused("tray_uuid", conflict) from conflict
     except SpoolmanNotFoundError:
         raise HTTPException(status_code=404, detail="Spool not found in Spoolman")
     except SpoolmanClientError:
@@ -1185,7 +1216,9 @@ async def unlink_spool(
     # this call in another `async with client.extra_lock(spool_id)` would
     # deadlock (asyncio.Lock is not reentrant).
     try:
-        await client.merge_spool_extra(spool_id, {"tag": json.dumps("")})
+        unlinked = await client.merge_spool_extra(spool_id, {"tag": json.dumps("")})
+        # And its native tags, or the spool would still be found by each of them.
+        await client.unlink_all_native_tags(unlinked)
     except SpoolmanNotFoundError:
         raise HTTPException(status_code=404, detail="Spool not found in Spoolman")
     except SpoolmanClientError:

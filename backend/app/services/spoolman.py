@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import math
+import time
 import weakref
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -16,6 +17,69 @@ from backend.app.utils.color_utils import color_match_key, spoolman_color_hex
 logger = logging.getLogger(__name__)
 
 BAMBU_RFID_TAG_LENGTH = 32
+
+# How long a Spoolman without native tags is believed before it is asked
+# again, so a Spoolman upgraded underneath needs no BamDude restart.
+TAG_API_RECHECK_SECONDS = 600
+
+# How long a native tag Spoolman refused for a spool is left alone: the AMS
+# sync runs on every AMS update and would otherwise ask each time.
+TAG_REFUSAL_RETRY_SECONDS = 600
+
+# The AMS reports a Bambu chip's 4-byte UID padded to 8 bytes
+# ("D3E68F32" arrives as "D3E68F3200000100"); a reader sees the 4 bytes.
+AMS_CHIP_UID_PADDING = "00000100"
+
+# What Spoolman strips from a tag uid before it stores or compares one
+# (measured on 0.27.1); it upper-cases the rest.
+_TAG_UID_SEPARATORS = str.maketrans("", "", ":-_ ")
+
+
+def normalize_tag_uid(value: object) -> str:
+    """A tag uid the way Spoolman stores it: quotes and separators off, upper case."""
+    if not isinstance(value, str):
+        return ""
+    return value.strip().strip('"').translate(_TAG_UID_SEPARATORS).upper()
+
+
+def is_linkable_tag_uid(uid: str) -> bool:
+    """Whether a normalised uid may become a native tag.
+
+    Spoolman takes only hex — and takes an all-zero uid, which is the AMS's
+    "no tag read" and must never identify a spool.
+    """
+    return bool(uid) and all(ch in "0123456789ABCDEF" for ch in uid) and set(uid) != {"0"}
+
+
+def native_tag_uids(spool: dict) -> list[str]:
+    """The uids of a spool's native tags (Spoolman 0.27+), in Spoolman's order; none on an older server."""
+    tags = spool.get("tags")
+    if not isinstance(tags, list):
+        return []
+    return [uid for tag in tags if isinstance(tag, dict) and (uid := normalize_tag_uid(tag.get("uid")))]
+
+
+def extra_tag(spool: dict) -> str:
+    """The spool's ``extra.tag``, unquoted and upper-cased; anything that is not a string reads as no tag."""
+    extra = spool.get("extra")
+    raw = extra.get("tag") if isinstance(extra, dict) else None
+    return raw.strip('"').upper() if isinstance(raw, str) else ""
+
+
+def spool_tag_uids(spool: dict) -> set[str]:
+    """Every identifier a spool is known by: its native tags and its ``extra.tag``."""
+    uids = set(native_tag_uids(spool))
+    if tag := extra_tag(spool):
+        uids.add(tag)
+    return uids
+
+
+def ams_chip_uid(tag_uid: str, is_bambu: bool) -> str:
+    """The chip's own uid out of what the AMS reports: a Bambu chip's padding comes off."""
+    if is_bambu and tag_uid and len(tag_uid) == 16:
+        return tag_uid[:8]
+    return tag_uid
+
 
 # Spool.extra key holding the consumed-counter baseline. Declared here so the
 # client does not import from the routes package; ``_spoolman_helpers`` names
@@ -84,6 +148,32 @@ class SpoolmanClientError(Exception):
         self.response_text = response_text
 
 
+class NativeTagConflict(Exception):
+    """Spoolman refused a native tag: something else already holds that uid.
+
+    ``spool_id`` names a spool holder (``archived`` says whether it is one the
+    lists hide), ``filament_id`` a filament; both ``None`` is a holder
+    Spoolman did not name.
+    """
+
+    def __init__(
+        self, uid: str, *, spool_id: int | None = None, filament_id: int | None = None, archived: bool = False
+    ) -> None:
+        self.uid = uid
+        self.spool_id = spool_id
+        self.filament_id = filament_id
+        self.archived = archived
+        super().__init__(f"Tag {uid} belongs to {self.holder}")
+
+    @property
+    def holder(self) -> str:
+        if self.spool_id is not None:
+            return f"{'archived ' if self.archived else ''}spool {self.spool_id}"
+        if self.filament_id is not None:
+            return f"filament {self.filament_id}"
+        return "something else in Spoolman"
+
+
 def _filament_subtype_part(name: str, material: str) -> str:
     """Return the subtype portion of a filament name, lowercased.
 
@@ -123,6 +213,14 @@ class SpoolmanClient:
         # Whether the extra-field LISTING has been read once — a separate
         # question from the set above ("have we asked" vs "what exists").
         self._extra_fields_listed = False
+        # Whether this server links tags natively (Spoolman 0.27+); None until
+        # asked. Per instance: a client for another URL asks for itself.
+        self._tag_api: bool | None = None
+        self._tag_api_asked_at = 0.0
+        # (spool id, uid) -> when Spoolman last refused that tag for that spool.
+        self._refused_tags: dict[tuple[int, str], float] = {}
+        # tag -> when a spool the sync's list hides was found holding that reel.
+        self._known_reels: dict[str, float] = {}
 
     async def _get_client(self) -> httpx.AsyncClient:
         """Get or create the HTTP client with connection pooling limits."""
@@ -893,8 +991,232 @@ class SpoolmanClient:
             logger.error("Failed to record spool usage in Spoolman: %s", e)
             raise SpoolmanUnavailableError(f"Failed to record usage for spool {spool_id}") from e
 
+    async def has_tag_api(self) -> bool:
+        """Whether this Spoolman links tags natively (0.27+).
+
+        The tag routes themselves are asked, not a version number. A yes is
+        kept for the client's life; a no is asked again after
+        ``TAG_API_RECHECK_SECONDS``; a Spoolman that did not answer, or
+        answered with a server error, is not remembered at all.
+        """
+        stale = self._tag_api is False and time.monotonic() - self._tag_api_asked_at > TAG_API_RECHECK_SECONDS
+        if self._tag_api is None or stale:
+            try:
+                client = await self._get_client()
+                response = await client.get(f"{self.api_url}/tag/reader")
+            except httpx.HTTPError as e:
+                logger.debug("Spoolman native-tag probe failed: %s", e)
+                return False
+            if response.status_code >= 500:
+                return False
+            capable = response.status_code == 200
+            if capable:
+                try:
+                    capable = isinstance(response.json(), list)
+                except ValueError:
+                    capable = False
+            self._tag_api = capable
+            self._tag_api_asked_at = time.monotonic()
+            logger.info("Spoolman native tags: %s", "available" if capable else "not available")
+        return bool(self._tag_api)
+
+    async def _tag_request(self, method: str, path: str, **kwargs) -> httpx.Response:
+        """A request to Spoolman's tag routes, failures as the typed exceptions.
+
+        400 and 409 come back as responses: they are answers the callers act on.
+        """
+        try:
+            client = await self._get_client()
+            response = await client.request(method, f"{self.api_url}{path}", **kwargs)
+        except httpx.HTTPError as e:
+            raise SpoolmanUnavailableError(f"Cannot reach Spoolman for {method} {path}") from e
+        if response.status_code in (400, 409) or response.status_code < 400:
+            return response
+        if response.status_code == 404:
+            raise SpoolmanNotFoundError(f"Spoolman answered 404 for {method} {path}")
+        if response.status_code < 500:
+            raise SpoolmanClientError(
+                f"Spoolman rejected {method} {path} (HTTP {response.status_code})",
+                response.status_code,
+                response.text[:500],
+            )
+        raise SpoolmanUnavailableError(f"Spoolman failed {method} {path} (HTTP {response.status_code})")
+
+    async def find_spool_by_native_tag(self, uid: str, *, allow_archived: bool = False) -> dict | None:
+        """The spool a native tag is linked to, asked of the server, or None.
+
+        Only a spool that really carries the uid counts: a server that does
+        not know ``?tag=`` ignores it and answers every spool.
+        """
+        wanted = normalize_tag_uid(uid)
+        if not wanted:
+            return None
+        params = {"tag": wanted}
+        if allow_archived:
+            params["allow_archived"] = "true"
+        response = await self._tag_request("GET", "/spool", params=params)
+        if response.status_code == 400:
+            return None  # not a hex uid: no spool can hold it
+        try:
+            spools = response.json()
+        except ValueError:
+            return None
+        if not isinstance(spools, list):
+            return None
+        return next((s for s in spools if isinstance(s, dict) and wanted in native_tag_uids(s)), None)
+
+    async def link_native_tag(self, spool_id: int, uid: str, tag_format: str | None = None) -> None:
+        """Link one native tag to a spool; ``NativeTagConflict`` when something else holds the uid."""
+        body: dict = {"uid": uid}
+        if tag_format:
+            body["format"] = tag_format
+        response = await self._tag_request("POST", f"/spool/{spool_id}/tag", json=body)
+        if response.status_code == 400:
+            raise SpoolmanClientError(f"Spoolman refused tag {uid!r}", 400, response.text[:500])
+        if response.status_code != 409:
+            return
+        try:
+            answer = response.json()
+        except ValueError:
+            answer = {}
+        holder = answer.get("spool_id") if isinstance(answer, dict) else None
+        filament = answer.get("filament_id") if isinstance(answer, dict) else None
+        if not isinstance(holder, int) or isinstance(holder, bool):
+            raise NativeTagConflict(uid, filament_id=filament if isinstance(filament, int) else None)
+        archived = False
+        try:
+            archived = bool((await self.get_spool(holder)).get("archived"))
+        except (SpoolmanNotFoundError, SpoolmanClientError, SpoolmanUnavailableError):
+            pass  # the holder is still named; only "archived" is left unsaid
+        raise NativeTagConflict(uid, spool_id=holder, archived=archived)
+
+    async def unlink_native_tag(self, spool_id: int, uid: str) -> None:
+        """Remove a native tag from a spool; a tag the spool does not hold is not an error."""
+        try:
+            await self._tag_request("DELETE", f"/spool/{spool_id}/tag/{uid}")
+        except SpoolmanNotFoundError:
+            pass
+
+    async def unlink_all_native_tags(self, spool: dict) -> None:
+        """Remove every native tag a spool carries. A spool without any costs no request."""
+        for uid in native_tag_uids(spool):
+            await self.unlink_native_tag(int(spool["id"]), uid)
+
+    async def take_back_native_tags(self, spool_id: int, uids: list[str]) -> None:
+        """Undo native tags a half-done link added. Best-effort: what cannot be removed is logged."""
+        for uid in uids:
+            try:
+                await self.unlink_native_tag(spool_id, uid)
+            except (SpoolmanClientError, SpoolmanUnavailableError) as exc:
+                logger.warning("Could not take back native tag %s from spool %s: %s", uid, spool_id, exc)
+
+    async def link_native_tags(self, spool_id: int, uids: list[str | None], tag_format: str | None = None) -> list[str]:
+        """Link the given uids to a spool as native tags — the MANUAL path: all of them or none.
+
+        Returns the uids this call added (to take back if a later step of the
+        caller fails); nothing on a Spoolman without native tags. A uid held
+        elsewhere — by an active spool, an ARCHIVED one or a filament — raises
+        ``NativeTagConflict`` after what this call had added is taken back:
+        the holder keeps its tag and the operator is told who it is.
+        """
+        wanted = list(dict.fromkeys(u for raw in uids if is_linkable_tag_uid(u := normalize_tag_uid(raw))))
+        if not wanted or not await self.has_tag_api():
+            return []
+        had = set(native_tag_uids(await self.get_spool(spool_id)))
+        added: list[str] = []
+        try:
+            for uid in wanted:
+                if uid in had:
+                    continue
+                await self.link_native_tag(spool_id, uid, tag_format)
+                added.append(uid)
+        except (NativeTagConflict, SpoolmanNotFoundError, SpoolmanClientError, SpoolmanUnavailableError):
+            await self.take_back_native_tags(spool_id, added)
+            raise
+        return added
+
+    async def add_native_tags(self, spool: dict, uids: list[str | None], tag_format: str | None = None) -> int:
+        """Link the given uids to a spool as native tags — the AUTOMATIC path: best-effort.
+
+        A uid something else holds, or a failed request, is logged with the
+        holder and skipped, so the sync never loses its result over this — and
+        never makes another spool for the reel: ``extra.tag`` is written
+        beside the native tags and still finds this one. A refused uid is not
+        asked for again for ``TAG_REFUSAL_RETRY_SECONDS`` and warned about
+        once. Returns how many tags were added.
+        """
+        wanted = list(dict.fromkeys(u for raw in uids if is_linkable_tag_uid(u := normalize_tag_uid(raw))))
+        have = set(native_tag_uids(spool))
+        missing = [uid for uid in wanted if uid not in have]
+        if not missing or not await self.has_tag_api():
+            return 0
+        spool_id = int(spool["id"])
+        now = time.monotonic()
+        added = 0
+        for uid in missing:
+            refused_at = self._refused_tags.get((spool_id, uid))
+            if refused_at is not None and now - refused_at < TAG_REFUSAL_RETRY_SECONDS:
+                continue
+            try:
+                await self.link_native_tag(spool_id, uid, tag_format)
+            except NativeTagConflict as conflict:
+                log = logger.debug if refused_at is not None else logger.warning
+                log("Native tag %s belongs to %s, not added to spool %s", uid, conflict.holder, spool_id)
+                self._refused_tags[(spool_id, uid)] = now
+                continue
+            except (SpoolmanNotFoundError, SpoolmanClientError, SpoolmanUnavailableError) as e:
+                logger.warning("Could not add native tag %s to spool %s: %s", uid, spool_id, e)
+                continue
+            added += 1
+            self._refused_tags.pop((spool_id, uid), None)
+            # Keep the caller's copy (the sync's cached list) true to Spoolman.
+            if isinstance(spool.get("tags"), list):
+                spool["tags"].append({"uid": uid, **({"format": tag_format} if tag_format else {})})
+            else:
+                spool["tags"] = [{"uid": uid, **({"format": tag_format} if tag_format else {})}]
+            logger.info("Added native tag %s to Spoolman spool %s", uid, spool_id)
+        return added
+
+    async def _holder_outside_the_list(self, uids: list[str | None]) -> dict | None:
+        """A spool the sync's list did not show that holds one of these uids natively.
+
+        Asked before a spool is created for a reel nobody matched: the listing
+        hides archived spools, and an archived spool's reel is a known reel.
+        """
+        if not await self.has_tag_api():
+            return None
+        for uid in dict.fromkeys(u for raw in uids if is_linkable_tag_uid(u := normalize_tag_uid(raw))):
+            try:
+                holder = await self.find_spool_by_native_tag(uid, allow_archived=True)
+            except (SpoolmanNotFoundError, SpoolmanClientError, SpoolmanUnavailableError) as e:
+                logger.debug("Could not ask Spoolman who holds tag %s: %s", uid, e)
+                continue
+            if holder is not None:
+                return holder
+        return None
+
     async def find_spool_by_tag(self, tag_uid: str, cached_spools: list[dict] | None = None) -> dict | None:
-        """Return the spool matching the given RFID tag UID, or None if not found."""
+        """Return the spool matching the given RFID tag UID, or None if not found.
+
+        Native tags (Spoolman 0.27+) are asked first — out of the cached list
+        when there is one, otherwise with one server-side query — and
+        ``extra.tag`` after them, for spools linked before and for older
+        servers.
+        """
+        native_tag = normalize_tag_uid(tag_uid)
+        if native_tag and cached_spools is not None:
+            for spool in cached_spools:
+                if native_tag in native_tag_uids(spool):
+                    return spool
+        elif native_tag and await self.has_tag_api():
+            try:
+                spool = await self.find_spool_by_native_tag(native_tag)
+            except (SpoolmanNotFoundError, SpoolmanClientError, SpoolmanUnavailableError) as e:
+                logger.warning("Native tag lookup failed, falling back to extra.tag: %s", e)
+                spool = None
+            if spool is not None:
+                return spool
+
         # Use cached spools if provided, otherwise fetch from API
         spools = cached_spools if cached_spools is not None else await self.get_spools()
         # Normalize tag_uid for comparison (uppercase, strip quotes)
@@ -1234,8 +1556,21 @@ class SpoolmanClient:
         if spool_tag:
             # Primary path: match by RFID tag
             existing = await self.find_spool_by_tag(spool_tag, cached_spools=cached_spools)
+            is_bambu = self.is_bambu_lab_spool(tray.tray_uuid, tray.tag_uid, tray.tray_info_idx)
+            tag_format = "bambu" if is_bambu else None
+            has_chip = bool(tray.tag_uid) and tray.tag_uid != zero_tag
+            chip_uid = ams_chip_uid(tray.tag_uid, is_bambu) if has_chip else ""
+            # A spool linked by its chip alone — by a reader, in Spoolman's own
+            # UI — is found by that too: a reader stores the chip's own uid, a
+            # link made from the AMS the padded one.
+            for uid in dict.fromkeys((chip_uid, tray.tag_uid if has_chip else "")):
+                if existing is None and uid and uid != spool_tag:
+                    existing = await self.find_spool_by_tag(uid, cached_spools=cached_spools)
+            # What the AMS reads of this reel: the tray UUID and the chip's uid.
+            reel_uids = [tray.tray_uuid if tray.tray_uuid != zero_uuid else "", chip_uid]
             if existing:
                 logger.info("Updating existing spool %s for tag %s...", existing["id"], spool_tag[:16])
+                await self.add_native_tags(existing, reel_uids, tag_format)
                 return await self.update_spool(
                     spool_id=existing["id"],
                     remaining_weight=None if disable_weight_sync else remaining,
@@ -1253,8 +1588,24 @@ class SpoolmanClient:
                 )
                 return None
 
+            # A reel found to belong to a spool the list hides is left alone for
+            # a while: the sync runs on every AMS update.
+            known_at = self._known_reels.get(spool_tag.upper())
+            if known_at is not None and time.monotonic() - known_at < TAG_REFUSAL_RETRY_SECONDS:
+                return None
+            holder = await self._holder_outside_the_list([spool_tag, *reel_uids, tray.tag_uid if has_chip else ""])
+            if holder is not None:
+                self._known_reels[spool_tag.upper()] = time.monotonic()
+                logger.warning(
+                    "Tag %s... already belongs to %sspool %s in Spoolman — no new spool created",
+                    spool_tag[:16],
+                    "archived " if holder.get("archived") else "",
+                    holder.get("id"),
+                )
+                return None
+
             logger.info("Creating new spool in Spoolman for %s (tag: %s...)", tray.tray_sub_brands, spool_tag[:16])
-            if self.is_bambu_lab_spool(tray.tray_uuid, tray.tag_uid, tray.tray_info_idx):
+            if is_bambu:
                 filament = await self._find_or_create_filament(tray)
                 filament_id = filament["id"] if filament else None
             else:
@@ -1278,12 +1629,16 @@ class SpoolmanClient:
 
             import json
 
-            return await self.create_spool(
+            created = await self.create_spool(
                 filament_id=filament_id,
                 remaining_weight=remaining,
                 comment="Created by BamDude",
                 extra={"tag": json.dumps(spool_tag)},
             )
+            # extra.tag stays written beside the native tags: an older Spoolman
+            # reads nothing else, and a downgrade loses nothing.
+            await self.add_native_tags(created, reel_uids, tag_format)
+            return created
 
         # No-RFID fallback: use the spool ID resolved from the local slot-assignment table.
         # Never create new spools without a tag to avoid duplicates.
@@ -1391,11 +1746,6 @@ class SpoolmanClient:
         )
 
 
-def _normalized_spool_tag(spool: dict) -> str:
-    """The spool's ``extra.tag`` the way ``find_spool_by_tag`` compares it (unquoted, upper case)."""
-    return ((spool.get("extra") or {}).get("tag") or "").strip('"').upper()
-
-
 class ArchivedTagIndex:
     """Answers "is this tray an ARCHIVED spool's reel?" for one AMS sync.
 
@@ -1416,8 +1766,10 @@ class ArchivedTagIndex:
         self._archived_tags: set[str] | None = None
 
     async def holds_archived_reel(self, spool_tag: str, cached_spools: list[dict]) -> bool:
+        # Native tags count as much as extra.tag: an archived spool tagged in
+        # Spoolman itself is the same known reel.
         wanted = spool_tag.strip('"').upper()
-        if not wanted or any(_normalized_spool_tag(s) == wanted for s in cached_spools):
+        if not wanted or any(wanted in spool_tag_uids(s) for s in cached_spools):
             return False
         if self._archived_tags is None:
             try:
@@ -1425,7 +1777,7 @@ class ArchivedTagIndex:
             except Exception as exc:  # noqa: BLE001 — a guard must never break the sync it guards
                 logger.debug("Could not list archived Spoolman spools for the AMS sync: %s", exc)
                 spools = []
-            self._archived_tags = {tag for s in spools if s.get("archived") and (tag := _normalized_spool_tag(s))}
+            self._archived_tags = {tag for s in spools if s.get("archived") for tag in spool_tag_uids(s)}
         return wanted in self._archived_tags
 
 

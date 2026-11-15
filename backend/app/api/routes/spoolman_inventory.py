@@ -56,6 +56,7 @@ from backend.app.services.location_service import (
 )
 from backend.app.services.printer_manager import printer_manager
 from backend.app.services.spoolman import (
+    NativeTagConflict,
     SpoolmanClient,
     SpoolmanClientError,
     SpoolmanNotFoundError,
@@ -64,9 +65,10 @@ from backend.app.services.spoolman import (
     init_spoolman_client,
 )
 from backend.app.services.spoolman_kprofile_link import resolve_spoolman_slot_kprofile
+from backend.app.services.spoolman_native_tags import copy_extra_tags_to_native
 from backend.app.services.spoolman_tracking import get_fallback_spool_tag_for_slot
 from backend.app.services.spoolman_weights import spool_net_weight
-from backend.app.services.tag_conflict import tag_already_linked
+from backend.app.services.tag_conflict import native_tag_refused, tag_already_linked
 from backend.app.utils.color_utils import spoolman_color_hex
 from backend.app.utils.filament_remaining import grams_remaining
 
@@ -941,6 +943,16 @@ async def update_spool(
                 clear_location=storage_location_changed and not storage_location,
             )
 
+        # The native tags (Spoolman 0.27+) go with it, or the spool would still
+        # be found by each of them after "Clear RFID Tag". Only once the update
+        # went through; a failure here is reported, and clearing again removes
+        # what is left.
+        if tag_nulled:
+            async with _translate_spoolman_errors():
+                await client.unlink_all_native_tags(fresh)
+            if isinstance(updated, dict) and "tags" in updated:
+                updated = {**updated, "tags": []}
+
     # Persist BambuStudio slicer preset AND color_name under spool.extra.
     # Spoolman has no native fields for these — color_name was confirmed
     # absent from the FilamentUpdateParameters schema in 0.23.1 (#1357),
@@ -1252,17 +1264,63 @@ async def link_tag_to_spoolman_spool(
         if holders:
             raise tag_already_linked("tray_uuid" if data.tray_uuid else "tag_uid", holders[0]["id"])
 
-        # Re-fetch inside the lock so cur_extra reflects any concurrent update.
-        async with _translate_spoolman_errors():
-            current = await client.get_spool(spool_id)
-        cur_extra = dict(current.get("extra") or {})
-        cur_extra["tag"] = tag_json
-        async with _translate_spoolman_errors():
-            updated = await client.update_spool_full(spool_id=spool_id, extra=cur_extra)
+        # Both identifiers also become native tags (Spoolman 0.27+), linked
+        # first: a uid Spoolman holds elsewhere — on an archived spool too —
+        # is refused naming the holder, and extra.tag is left as it was.
+        try:
+            async with _translate_spoolman_errors():
+                added_native = await client.link_native_tags(
+                    spool_id, [data.tray_uuid, data.tag_uid], "bambu" if data.tray_uuid else None
+                )
+        except NativeTagConflict as conflict:
+            held_field = "tag_uid" if data.tag_uid and conflict.uid == data.tag_uid.upper() else "tray_uuid"
+            raise native_tag_refused(held_field, conflict) from conflict
+
+        try:
+            # Re-fetch inside the lock so cur_extra reflects any concurrent update.
+            async with _translate_spoolman_errors():
+                current = await client.get_spool(spool_id)
+            cur_extra = dict(current.get("extra") or {})
+            cur_extra["tag"] = tag_json
+            async with _translate_spoolman_errors():
+                updated = await client.update_spool_full(spool_id=spool_id, extra=cur_extra)
+        except HTTPException:
+            await client.take_back_native_tags(spool_id, added_native)
+            raise
 
     logger.info("Linked tag %s to Spoolman spool %s", tag, spool_id)
     await ws_manager.broadcast({"type": "inventory_changed"})
     return _map_spoolman_spool(updated)
+
+
+@router.post("/tags/migrate")
+async def copy_tags_to_native(
+    dry_run: bool = Query(True, description="Only report what would be linked; change nothing"),
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.INVENTORY_UPDATE),
+) -> dict:
+    """Copy the tags kept in Spoolman's ``extra.tag`` into its native tags.
+
+    ``extra.tag`` is left as it is. Conflicts — two active spools sharing one
+    tag, a uid Spoolman already holds on another spool (an archived one
+    included) or on a filament — are reported and never settled here. The
+    rules live in ``services/spoolman_native_tags``.
+    """
+    client = await _get_client(db)
+    if not await client.has_tag_api():
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "spoolman_without_native_tags",
+                "message": "This Spoolman server has no native tags",
+            },
+        )
+    serials = (await db.execute(select(Printer.serial_number))).scalars().all()
+    async with _translate_spoolman_errors():
+        report = await copy_extra_tags_to_native(client, serials, dry_run=dry_run)
+    if not dry_run and report["moved"]:
+        await ws_manager.broadcast({"type": "inventory_changed"})
+    return report
 
 
 @router.get("/slot-assignments/all", response_model=list[SpoolmanSlotAssignmentEnriched])
