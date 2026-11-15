@@ -1238,7 +1238,7 @@
   "tag_uid or tray_uuid is required": "tag_uid або tray_uuid обовʼязковий",
   "that AMS firmware is already selected": "цю прошивку AMS уже вибрано",
   "the printer is busy and cannot switch AMS type": "принтер зайнятий і не може змінити тип AMS",
-  "tray_id must be 0..15 (AMS slot), 24..27 (A2L AMS-Lite), 254 (external / Ext-L), or 255 (Ext-R)": "tray_id має бути 0..15 (слот AMS), 24..27 (A2L AMS-Lite), 254 (зовнішня котушка / Ext-L) або 255 (Ext-R)",
+  "tray_id must be 0..15 (AMS slot), 24..27 (A2L AMS-Lite), 128..135 (AMS-HT), 254 (external / Ext-L), or 255 (Ext-R)": "tray_id має бути 0..15 (слот AMS), 24..27 (A2L AMS-Lite), 128..135 (AMS-HT), 254 (зовнішня котушка / Ext-L) або 255 (Ext-R)",
   "tray_uuid cannot be set via this endpoint; use PATCH /spools/{id}/tag to write tags": "tray_uuid не можна встановити через цей ендпоінт; для запису тегів використовуйте PATCH /spools/{id}/tag",
   "unknown action": "невідома дія",
   "unknown filament family": "невідома сімʼя філаменту",

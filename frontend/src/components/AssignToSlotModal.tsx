@@ -8,7 +8,7 @@ import { Button } from './Button';
 import { Modal } from './Modal';
 import { Select } from './Select';
 import { AssignSpoolModal } from './AssignSpoolModal';
-import { formatSlotLabel, getAmsLabel, isBambuLabSpool } from '../utils/amsHelpers';
+import { formatSlotLabel, getAmsLabel, isAmsHtUnit, isBambuLabSpool } from '../utils/amsHelpers';
 import { getSwatchStyle } from '../utils/colors';
 import { DEFAULT_SPOOL_DISPLAY_TEMPLATE, formatSpoolDisplayName } from '../utils/spoolName';
 
@@ -86,7 +86,7 @@ export function AssignToSlotModal({ spool, spoolmanMode, onClose, onAssigned }: 
   const units = useMemo<Unit[]>(() => {
     if (!status) return [];
     const list: Unit[] = (status.ams ?? []).map((ams) => {
-      const isHt = ams.is_ams_ht || ams.tray.length === 1;
+      const isHt = isAmsHtUnit(ams.id);
       return {
         amsId: ams.id,
         label: getAmsLabel(ams.id, ams.tray.length),

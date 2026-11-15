@@ -25,7 +25,8 @@ interface SlotInfo {
 }
 
 // Get proper AMS label (handles HT AMS with ID 128+)
-function getAmsLabel(amsId: number, trayCount: number): string {
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept so the call sites need not change
+function getAmsLabel(amsId: number, _trayCount?: number): string {
   // External spool
   if (amsId === 255) return 'External';
 
@@ -38,9 +39,9 @@ function getAmsLabel(amsId: number, trayCount: number): string {
     isHt = true;
   } else if (amsId >= 0 && amsId <= 3) {
     // Regular AMS range: 0-3 → A-D
+    // A regular AMS whatever it listed: the unit id decides, never the
+    // tray count (a regular AMS can report only some of its trays).
     normalizedId = amsId;
-    // Check tray count as secondary indicator
-    isHt = trayCount === 1;
   } else {
     // Unknown range - fallback to A
     normalizedId = 0;

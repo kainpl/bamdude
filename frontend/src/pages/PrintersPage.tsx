@@ -184,7 +184,7 @@ import type { SequencedFile } from '../components/QueueSequencer';
 import { PrintModal } from '../components/PrintModal';
 import { PrinterInfoModal } from '../components/PrinterInfoModal';
 import { ConnectionDiagnosticModal, DiagnosticChecklist } from '../components/ConnectionDiagnostic';
-import { getGlobalTrayId, getFillBarColor, getSpoolmanFillLevel, getFallbackSpoolTag, isBambuLabSpool, getEmptySlotKind, resolveSlotNozzleDiameter, resolveSlotNozzleFlow, amsSideBadge, formatSlotLabel } from '../utils/amsHelpers';
+import { getGlobalTrayId, getFillBarColor, getSpoolmanFillLevel, getFallbackSpoolTag, isBambuLabSpool, getEmptySlotKind, resolveSlotNozzleDiameter, resolveSlotNozzleFlow, amsSideBadge, formatSlotLabel, isAmsHtUnit, trayForSlot, amsHasLoadedTray } from '../utils/amsHelpers';
 import { FeedDirectionModal } from '../components/FeedDirectionModal';
 import { getPrinterImage, getWifiStrength, hasDoorSensor, isPrinterCurrentlyDispatchable, mapModelCode } from '../utils/printer';
 import { modelCompatibility } from '../utils/modelCompatibility';
@@ -995,13 +995,15 @@ function TemperatureIndicator({ temp, goodThreshold = 28, fairThreshold = 35, on
 }
 
 // Get AMS label: AMS-A/B/C/D for regular AMS, HT-A/B for AMS-HT (single spool)
-// Always use tray count as the source of truth (1 tray = AMS-HT, 4 trays = regular AMS)
-// AMS-HT uses IDs 128+ while regular AMS uses 0-3
-function getAmsLabel(amsId: number | string, trayCount: number): string {
+// The unit id is the source of truth (128-135 = AMS-HT), never how many trays a
+// unit listed: a regular AMS can report only some of them. The second argument
+// is kept so the call sites need not change.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept so the call sites need not change
+function getAmsLabel(amsId: number | string, _trayCount?: number): string {
   // Ensure amsId is a number (backend might send string)
   const id = typeof amsId === 'string' ? parseInt(amsId, 10) : amsId;
   const safeId = isNaN(id) ? 0 : id;
-  const isHt = trayCount === 1;
+  const isHt = isAmsHtUnit(safeId);
   // AMS-HT uses IDs starting at 128, regular AMS uses 0-3
   const normalizedId = safeId >= 128 ? safeId - 128 : safeId;
   const letter = String.fromCharCode(65 + normalizedId); // 0=A, 1=B, 2=C, 3=D
@@ -3137,7 +3139,9 @@ const PrinterCard = memo(function PrinterCard({
     slotLabel: string;
   } | null>(null);
   const startAmsSlotLoad = (amsId: number, slotId: number) => {
-    const trayId = amsId * 4 + slotId;
+    // An AMS-HT tray is its unit id (128-135), as tray_now reports it — not
+    // unit * 4 + slot, which is 512 for HT-A (upstream 5a9415e2e).
+    const trayId = getGlobalTrayId(amsId, slotId, false);
     if (!status?.fila_switch?.installed) {
       amsLoadMutation.mutate({ trayId });
       return;
@@ -3148,7 +3152,7 @@ const PrinterCard = memo(function PrinterCard({
       showToast(t('printers.ams.switchNotReady'), 'warning');
       return;
     }
-    setFeedDirectionRequest({ trayId, amsId, slotId, slotLabel: formatSlotLabel(amsId, slotId, false, false) });
+    setFeedDirectionRequest({ trayId, amsId, slotId, slotLabel: formatSlotLabel(amsId, slotId, isAmsHtUnit(amsId), false) });
   };
 
   // Plate references state
@@ -5006,9 +5010,11 @@ const PrinterCard = memo(function PrinterCard({
 
             {/* AMS Units - 2-Column Grid Layout */}
             {(amsData?.length > 0 || status.vt_tray.length > 0) && viewMode === 'expanded' && (() => {
-              // Separate regular AMS (4-tray) from HT AMS (1-tray)
-              const regularAms = amsData.filter(ams => ams.tray.length > 1);
-              const htAms = amsData.filter(ams => ams.tray.length === 1);
+              // Separate regular AMS from AMS-HT by the unit id (128-135), not by
+              // how many trays a unit listed: a regular AMS that listed one tray
+              // was drawn in the HT column, and one that listed none vanished.
+              const regularAms = amsData.filter(ams => !isAmsHtUnit(ams.id));
+              const htAms = amsData.filter(ams => isAmsHtUnit(ams.id));
               // ⚠️ The external spool can only be hidden while some AMS remains
               // to fill the row. On an A1 mini or a bare P1P it IS the whole
               // filament section, so the toggle is not offered there — and a
@@ -5232,9 +5238,10 @@ const PrinterCard = memo(function PrinterCard({
                             {/* Slots grid: 4 columns - always render 4 slots */}
                             <div className="grid grid-cols-4 gap-1.5">
                               {[0, 1, 2, 3].map((slotIdx) => {
-                                // Find tray data for this slot (may be undefined if data incomplete)
-                                // Use array index if available, as tray.id may not always be set
-                                const tray = ams.tray[slotIdx] || ams.tray.find(t => t.id === slotIdx);
+                                // The tray of this slot by its id (may be undefined if the
+                                // unit listed only some); the position decides only when
+                                // the ids do not tell the trays apart — see trayForSlot.
+                                const tray = trayForSlot(ams.tray, slotIdx);
                                 const hasFillLevel = tray?.tray_type && tray.remain >= 0;
                                 const isEmpty = !tray?.tray_type;
                                 // A loaded-but-unconfigured slot (spool present, no type) shows
@@ -5931,6 +5938,42 @@ const PrinterCard = memo(function PrinterCard({
                                     >
                                       <RefreshCw className={`w-[var(--pc-i3,0.75rem)] h-[var(--pc-i3,0.75rem)] ${isHtRefreshing ? 'animate-spin' : ''}`} />
                                       {t('printers.rfid.reread')}
+                                    </button>
+                                    <button
+                                      className={`w-full px-3 py-1.5 text-left text-xs flex items-center gap-2 ${
+                                        hasPermission('printers:control')
+                                          ? 'text-white hover:bg-bambu-dark-tertiary'
+                                          : 'text-bambu-gray/50 cursor-not-allowed'
+                                      }`}
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        if (!hasPermission('printers:control')) return;
+                                        startAmsSlotLoad(ams.id, htSlotId);
+                                        setAmsSlotMenu(null);
+                                      }}
+                                      disabled={amsLoadMutation.isPending || !hasPermission('printers:control')}
+                                      title={!hasPermission('printers:control') ? t('printers.permission.noControl') : undefined}
+                                    >
+                                      <ArrowDownToLine className="w-[var(--pc-i3,0.75rem)] h-[var(--pc-i3,0.75rem)]" />
+                                      {amsLoadMutation.isPending ? t('printers.ams.loading') : t('printers.ams.load')}
+                                    </button>
+                                    <button
+                                      className={`w-full px-3 py-1.5 text-left text-xs flex items-center gap-2 ${
+                                        hasPermission('printers:control')
+                                          ? 'text-white hover:bg-bambu-dark-tertiary'
+                                          : 'text-bambu-gray/50 cursor-not-allowed'
+                                      }`}
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        if (!hasPermission('printers:control')) return;
+                                        amsUnloadMutation.mutate(globalTrayId);
+                                        setAmsSlotMenu(null);
+                                      }}
+                                      disabled={amsUnloadMutation.isPending || !hasPermission('printers:control')}
+                                      title={!hasPermission('printers:control') ? t('printers.permission.noControl') : undefined}
+                                    >
+                                      <ArrowUpFromLine className="w-[var(--pc-i3,0.75rem)] h-[var(--pc-i3,0.75rem)]" />
+                                      {amsUnloadMutation.isPending ? t('printers.ams.unloading') : t('printers.ams.unload')}
                                     </button>
                                   </div>
                                 )}
@@ -7515,7 +7558,7 @@ const PrinterCard = memo(function PrinterCard({
         // when any tray in it is threaded/loaded (state 11). Disable the rotate
         // option in that case so we don't send a command the printer will refuse.
         const targetAms = amsData.find(a => a.id === dryingPopoverAmsId);
-        const anyTrayLoaded = targetAms?.tray?.some(tr => tr.state === 11) ?? false;
+        const anyTrayLoaded = amsHasLoadedTray(targetAms, status?.tray_now, status?.extruder_slots);
         // Why "Now" cannot run on this unit right now; the other modes wait for it.
         const nowBlocked = !targetAms
           ? null

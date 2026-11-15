@@ -9,7 +9,7 @@ import zlib
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import Response
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -124,6 +124,7 @@ from backend.app.services.printer_manager import (
     get_derived_status_name,
     get_stage_name,
     is_printer_busy,
+    nozzle_wiring,
     printer_manager,
     resolve_expected_tray,
     resolve_plate_id,
@@ -1530,6 +1531,8 @@ async def _build_printer_status(
                 state.tray_tar,
                 [(u.id, u.is_ams_ht) for u in ams_units],
                 raw_data.get("mapping"),
+                state.active_extruder,
+                nozzle_wiring(state),
             )
             if state.state == "PAUSE"
             else None
@@ -1539,6 +1542,8 @@ async def _build_printer_status(
                 state.tray_pre,
                 [(u.id, u.is_ams_ht) for u in ams_units],
                 raw_data.get("mapping"),
+                state.active_extruder,
+                nozzle_wiring(state),
             )
             if state.state == "PAUSE"
             else None
@@ -3274,6 +3279,13 @@ async def save_ams_label(
     else:
         db.add(AmsLabel(ams_serial_number=serial_key, ams_id=ams_id, label=body.label))
 
+    # A label saved while the unit reported no serial lives under the position
+    # key. The serial's row replaces it, or the old name would come back the day
+    # the serial is not known (upstream 5eae04359).
+    position_key = f"p{printer_id}a{ams_id}"
+    if serial_key != position_key:
+        await db.execute(delete(AmsLabel).where(AmsLabel.ams_serial_number == position_key))
+
     await db.commit()
     return {"ams_id": ams_id, "label": body.label}
 
@@ -3288,14 +3300,14 @@ async def delete_ams_label(
 ):
     """Delete the friendly name for a specific AMS unit, reverting to the auto label."""
     stripped = ams_serial.strip() if ams_serial else ""
-    serial_key = stripped if stripped else f"p{printer_id}a{ams_id}"
+    # Both keys: the serial's row and the one a label was saved under while
+    # the unit reported no serial, which the card falls back to.
+    keys = {f"p{printer_id}a{ams_id}"}
+    if stripped:
+        keys.add(stripped)
 
-    result = await db.execute(select(AmsLabel).where(AmsLabel.ams_serial_number == serial_key))
-    existing = result.scalar_one_or_none()
-
-    if existing:
-        await db.delete(existing)
-        await db.commit()
+    await db.execute(delete(AmsLabel).where(AmsLabel.ams_serial_number.in_(keys)))
+    await db.commit()
 
     return {"success": True}
 
@@ -4717,17 +4729,18 @@ async def refresh_ams_slot(
     return {"success": True, "message": message}
 
 
-_LOAD_TRAY_ID_ERROR = "tray_id must be 0..15 (AMS slot), 24..27 (A2L AMS-Lite), 254 (external / Ext-L), or 255 (Ext-R)"
+_LOAD_TRAY_ID_ERROR = (
+    "tray_id must be 0..15 (AMS slot), 24..27 (A2L AMS-Lite), 128..135 (AMS-HT), 254 (external / Ext-L), or 255 (Ext-R)"
+)
 
 
 def _is_valid_load_tray_id(tray_id: int) -> bool:
     """Whether ``tray_id`` names a slot the load/unload commands can address.
 
-    24-27 are the A2L AMS-Lite slots (normalised unit 6). An AMS-HT unit
-    (128-135) is addressed by its unit id, not ams*4+slot, so these commands
-    cannot name it.
+    24-27 are the A2L AMS-Lite slots (normalised unit 6). An AMS-HT holds
+    one tray, numbered by its unit id 128-135 — as ``tray_now`` reports it.
     """
-    return tray_id in range(16) or tray_id in range(24, 28) or tray_id in (254, 255)
+    return tray_id in range(16) or tray_id in range(24, 28) or tray_id in range(128, 136) or tray_id in (254, 255)
 
 
 @router.post("/{printer_id}/ams/load")
@@ -4735,7 +4748,10 @@ async def ams_load_filament(
     printer_id: int,
     tray_id: int = Query(
         ...,
-        description="0..15 = AMS slot; 24..27 = A2L AMS-Lite; 254 = ext spool / Ext-L; 255 = Ext-R (H2D)",
+        description=(
+            "0..15 = AMS slot; 24..27 = A2L AMS-Lite; 128..135 = AMS-HT (its unit id); "
+            "254 = ext spool / Ext-L; 255 = Ext-R (H2D)"
+        ),
     ),
     extruder_id: int | None = Query(
         None,

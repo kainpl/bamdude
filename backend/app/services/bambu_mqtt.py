@@ -175,7 +175,9 @@ _install_paho_publish_guard()
 #   "ams/<id>"  – original AMS (X1C, X1E, P1S, …)
 #   "n3f/<id>"  – AMS 2 Pro (H2D Pro and similar)
 #   "n3s/<id>"  – AMS HT (H2D Pro and similar; IDs typically start at 128)
-_AMS_MODULE_PREFIXES = ("ams/", "n3f/", "n3s/")
+#   "ams_f1/<id>" – AMS Lite (A1 / A1 mini as unit 0; the A2L names it 16,
+#                   which is filed under the normalised unit — upstream 5eae04359)
+_AMS_MODULE_PREFIXES = ("ams/", "n3f/", "n3s/", "ams_f1/")
 
 # The band of ``sequence_id`` values that means "this reply is to something WE
 # sent". BS carves out the same one (``DevUtil.h``: ``STUDIO_START_SEQ_ID``
@@ -406,6 +408,28 @@ def _fts_int(value: object, previous: int) -> int:
         return int(value)
     except (TypeError, ValueError):
         return previous
+
+
+def change_filament_wire_ids(tray_id: int) -> tuple[int, int, int]:
+    """``(ams_id, slot_id, target)`` of a LOAD ``ams_change_filament`` for an AMS tray.
+
+    As BambuStudio builds them (``MachineObject::command_ams_change_filament``,
+    DeviceManager.cpp): a unit id below 16 is addressed by unit and local slot
+    with the global tray ``ams_id * 4 + slot`` as ``target``; for any other
+    unit the ``target`` is the unit id itself. That covers an AMS-HT — one
+    tray, numbered by its unit id 128-135, slot 0 — and the A2L AMS-Lite, whose
+    physical unit id is 16 (upstream 5a9415e2e).
+
+    The A2L ``target`` of 16 is read from BambuStudio's source, not captured
+    off an A2L; it replaces 64-67, which had no source at all. The
+    ``extrusion_cali`` ``tray_id`` that ``a2l_lite_wire_ids`` also returns is a
+    different value and is not decided here.
+    """
+    if 128 <= tray_id <= 135:
+        return tray_id, 0, tray_id
+    if (a2l := a2l_lite_wire_ids(tray_id // 4, tray_id)) is not None:
+        return a2l[0], a2l[1], a2l[0]
+    return tray_id // 4, tray_id % 4, tray_id
 
 
 def a2l_lite_wire_ids(ams_id: int, tray_id: int) -> tuple[int, int, int] | None:
@@ -4004,7 +4028,7 @@ class BambuMQTTClient:
             if not any(name.startswith(prefix) for prefix in _AMS_MODULE_PREFIXES):
                 continue
             try:
-                ams_id = int(name.split("/", 1)[1])
+                ams_id = normalize_am_unit_id(int(name.split("/", 1)[1]))
             except (ValueError, IndexError):
                 continue
             sw_ver = module.get("sw_ver", "")
@@ -11834,7 +11858,8 @@ class BambuMQTTClient:
         """Load filament from a specific AMS tray.
 
         Args:
-            tray_id: Global tray ID — 0..15 for AMS slots, 254 for external
+            tray_id: Global tray ID — 0..15 for AMS slots, 24..27 for the A2L
+                AMS-Lite, 128..135 for an AMS-HT (its unit id), 254 for external
                 spool (single-external printers and Ext-L on dual-nozzle H2D),
                 255 for Ext-R on dual-nozzle H2D.
             extruder_id: Which hotend to feed (0 = right/main, 1 = left/deputy).
@@ -11853,7 +11878,8 @@ class BambuMQTTClient:
             return False
 
         # Build the ams_change_filament command. Encoding differs by target type:
-        #   - AMS slots (0..15): slot_id is the local slot, curr/tar_temp = -1.
+        #   - AMS slots (0..15, A2L 24..27, AMS-HT 128..135): see
+        #     change_filament_wire_ids; curr/tar_temp = -1.
         #   - External spool (tray_id=254): legacy capture from a single-extruder
         #     printer used slot_id=254, curr/tar_temp=-1; preserved here.
         #   - Ext-R on dual-nozzle H2D (tray_id=255): captured shape from
@@ -11875,16 +11901,10 @@ class BambuMQTTClient:
             slot_id = 254
             curr_temp = -1
             tar_temp = -1
-        elif (_a2l := a2l_lite_wire_ids(tray_id // 4, tray_id)) is not None:
-            # A2L AMS-Lite: physical unit 16 + local slot confirmed; the wire
-            # ``target`` (physical global 64-67) is extrapolated (no A2L load
-            # capture yet). See a2l_lite_wire_ids.
-            ams_id, slot_id, wire_target = _a2l
-            curr_temp = -1
-            tar_temp = -1
         else:
-            ams_id = tray_id // 4  # AMS unit (0, 1, 2, 3...)
-            slot_id = tray_id % 4  # Slot within AMS (0, 1, 2, 3)
+            # A regular AMS, the A2L AMS-Lite (physical unit 16) or an AMS-HT
+            # (128-135), each as BambuStudio addresses it.
+            ams_id, slot_id, wire_target = change_filament_wire_ids(tray_id)
             curr_temp = -1
             tar_temp = -1
 
@@ -11908,9 +11928,13 @@ class BambuMQTTClient:
         logger.info("[%s] Loading filament from tray %s (AMS %s slot %s)", self.serial_number, tray_id, ams_id, slot_id)
 
         # Track this load request for H2D dual-nozzle disambiguation
-        # H2D reports only slot number (0-3) in tray_now, so we use our tracked value
-        self.state.pending_tray_target = tray_id
-        logger.info("[%s] Set pending_tray_target=%s for H2D disambiguation", self.serial_number, tray_id)
+        # H2D reports only slot number (0-3) in tray_now, so we use our tracked value.
+        # Not for an AMS-HT: the tracked value is matched by ``target % 4``, which
+        # reads 129-135 as slots 1-3 of some AMS, while the hotend's own ``snow``
+        # already names an AMS-HT tray by its unit id.
+        if not 128 <= tray_id <= 135:
+            self.state.pending_tray_target = tray_id
+            logger.info("[%s] Set pending_tray_target=%s for H2D disambiguation", self.serial_number, tray_id)
 
         return True
 
@@ -11940,13 +11964,11 @@ class BambuMQTTClient:
         logger.info("[%s] Unload requested, tray_now=%s, tray_id=%s", self.serial_number, tray_now, tray_id)
 
         # Determine source ams_id for the unload command
-        _a2l = None
         if source_tray == 255 or source_tray == 254:
             ams_id = 255  # No filament or external spool
-        elif (_a2l := a2l_lite_wire_ids(source_tray // 4, source_tray)) is not None:
-            ams_id = _a2l[0]  # A2L AMS-Lite: normalised 6 → physical 16
         else:
-            ams_id = source_tray // 4  # Source AMS
+            # Source AMS: the A2L AMS-Lite as physical 16, an AMS-HT as its unit id.
+            ams_id = change_filament_wire_ids(source_tray)[0]
 
         # The holder check exists only to tell two hotends apart. On one hotend
         # tray_now already names the loaded slot, and a single-nozzle ``snow``
@@ -11956,7 +11978,7 @@ class BambuMQTTClient:
         # at least one single-nozzle machine dual (#1386). 254/255 are not
         # ams*4+slot, so the local-slot arithmetic cannot describe them.
         if tray_id is not None and tray_id not in (254, 255) and self._is_dual_nozzle and self.state.extruder_slots:
-            local_slot = _a2l[1] if _a2l is not None else tray_id % 4
+            local_slot = change_filament_wire_ids(tray_id)[1]
             holder = next(
                 (ext for ext, slot in self.state.extruder_slots.items() if slot.holds(ams_id, local_slot)),
                 None,

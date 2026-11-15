@@ -2,6 +2,7 @@ import asyncio
 import concurrent.futures
 import contextvars
 import logging
+import math
 import re
 import secrets
 import time
@@ -2292,10 +2293,51 @@ def resolve_plate_id(state: PrinterState) -> int | None:
     return parse_plate_id(state.gcode_file)
 
 
+def nozzle_wiring(state: PrinterState) -> dict | None:
+    """Which nozzle each AMS is wired to, for the runout hint (upstream cacaaf4da).
+
+    ``None`` with a Filament Track Switch fitted: behind it an AMS can feed
+    either nozzle, and the map can still hold an AMS's wiring from before it
+    moved onto the switch.
+    """
+    if state.fila_switch and state.fila_switch.installed:
+        return None
+    return state.ams_extruder_map
+
+
+def _trays_on_extruder(
+    raw_slot: int,
+    ams_layout: list[tuple[int, bool]],
+    active_extruder: int | None,
+    ams_extruder_map: dict | None,
+) -> set[int] | None:
+    """The global trays a local ``raw_slot`` can be on the AMS units wired to ``active_extruder``.
+
+    An AMS-HT's one tray answers for slot 0. ``None`` when the wiring is
+    unknown — and an AMS the map does not name makes it unknown too.
+    """
+    if active_extruder is None or not ams_extruder_map:
+        return None
+    trays: set[int] = set()
+    for ams_id, is_ht in ams_layout:
+        nozzle = ams_extruder_map.get(str(ams_id))
+        if nozzle is None:
+            return None
+        if nozzle != active_extruder:
+            continue
+        if not is_ht:
+            trays.add(ams_id * 4 + raw_slot)
+        elif raw_slot == 0:
+            trays.add(ams_id)
+    return trays
+
+
 def resolve_expected_tray(
     raw_slot: int | None,
     ams_layout: list[tuple[int, bool]],
     mapping_raw: object,
+    active_extruder: int | None = None,
+    ams_extruder_map: dict | None = None,
 ) -> int | None:
     """Globalise a raw firmware ``tray_tar``/``tray_pre`` value for the runout UI.
 
@@ -2312,8 +2354,10 @@ def resolve_expected_tray(
     - ``0``-``3`` local slot:
         * exactly one regular AMS → ``ams_id*4 + slot``
         * several regular AMS → resolved via the snow-encoded ``mapping`` field
-          (each entry = ``ams_hw_id*256 + slot``; ``65535`` = unmapped), or
-          ``None`` when it stays ambiguous (honest "can't determine")
+          (each entry = ``ams_hw_id*256 + slot``; ``65535`` = unmapped), then
+          narrowed to the AMS wired to ``active_extruder`` (``ams_extruder_map``
+          — see ``nozzle_wiring``), or ``None`` when it stays ambiguous (honest
+          "can't determine")
         * no regular AMS → ``None``
     - ``4``-``15`` → already a global regular-AMS ID, returned as-is
 
@@ -2331,10 +2375,8 @@ def resolve_expected_tray(
         if len(regular) == 1:
             return regular[0] * 4 + raw_slot
         if len(regular) > 1:
-            if not isinstance(mapping_raw, list):
-                return None
             candidates: set[int] = set()
-            for value in mapping_raw:
+            for value in mapping_raw if isinstance(mapping_raw, list) else []:
                 if not isinstance(value, int) or value >= 65535:
                     continue
                 ams_hw_id = value >> 8
@@ -2343,7 +2385,16 @@ def resolve_expected_tray(
                     candidates.add(ams_hw_id * 4 + raw_slot)
                 elif 128 <= ams_hw_id <= 135 and raw_slot == 0:
                     candidates.add(ams_hw_id)
-            return candidates.pop() if len(candidates) == 1 else None
+            if len(candidates) == 1:
+                return candidates.pop()
+            # The print paused on the active nozzle, so the slot is on an AMS
+            # that feeds it.
+            narrowed = _trays_on_extruder(raw_slot, ams_layout, active_extruder, ams_extruder_map)
+            if narrowed is None:
+                return None
+            if candidates:
+                narrowed &= candidates
+            return narrowed.pop() if len(narrowed) == 1 else None
         return None
     if 4 <= raw_slot <= 15:
         return raw_slot
@@ -2475,6 +2526,22 @@ def _tray_colours(tray: dict, fallback_colour: str | None) -> tuple[list[str], i
     return cols, ctype
 
 
+def _ams_temp(raw: object) -> float | None:
+    """The AMS unit temperature as a finite number, or ``None`` when it is not one.
+
+    The printer sends it as text. NaN or infinity would put a token in the
+    WebSocket frame that the browser's ``JSON.parse`` rejects, dropping the
+    whole status push (upstream 113f08a1a).
+    """
+    if isinstance(raw, bool) or not isinstance(raw, (int, float, str)):
+        return None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    return value if math.isfinite(value) else None
+
+
 def _tag_or_none(value: object, blank: str) -> str | None:
     """An RFID field, or ``None`` for the firmware's "no tag" values."""
     if value in (None, "", blank):
@@ -2569,8 +2636,9 @@ def ams_units_for(state: PrinterState, printer_id: int | None, drying_targets: d
         humidity_pct = ams_humidity_percent(ams_data)
         humidity_value = int(round(humidity_pct)) if humidity_pct is not None else None
 
-        # AMS-HT has 1 tray, regular AMS has 4 trays
-        is_ams_ht = len(trays) == 1
+        # An AMS-HT is its unit id 128-135, never "a unit that listed one tray":
+        # a regular AMS that listed one of its trays was drawn as an AMS-HT.
+        is_ams_ht = 128 <= ams_id_int <= 135
 
         # Active-cycle filament + target temperature for the drying badge:
         # the cached target of the last send_drying_command first, then the
@@ -2601,7 +2669,7 @@ def ams_units_for(state: PrinterState, printer_id: int | None, drying_targets: d
             AMSUnit(
                 id=ams_id_int,
                 humidity=humidity_value,
-                temp=ams_data.get("temp"),
+                temp=_ams_temp(ams_data.get("temp")),
                 is_ams_ht=is_ams_ht,
                 tray=trays,
                 # Serial number: Bambu MQTT uses "sn" key on AMS unit objects
@@ -2788,6 +2856,8 @@ def printer_state_to_dict(
                 state.tray_tar,
                 [(u["id"], u.get("is_ams_ht", False)) for u in ams_units],
                 raw_data.get("mapping"),
+                state.active_extruder,
+                nozzle_wiring(state),
             )
             if state.state == "PAUSE"
             else None
@@ -2797,6 +2867,8 @@ def printer_state_to_dict(
                 state.tray_pre,
                 [(u["id"], u.get("is_ams_ht", False)) for u in ams_units],
                 raw_data.get("mapping"),
+                state.active_extruder,
+                nozzle_wiring(state),
             )
             if state.state == "PAUSE"
             else None

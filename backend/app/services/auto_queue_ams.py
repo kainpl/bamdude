@@ -54,7 +54,7 @@ def build_loaded_filaments(status, printer_id: int | None = None) -> list[dict]:
     for ams_unit in raw.get("ams", []) or []:
         ams_id = int(ams_unit.get("id", 0))
         trays = ams_unit.get("tray", [])
-        is_ht = len(trays) == 1
+        is_ht = 128 <= ams_id <= 135  # the unit id, not how many trays it listed
         for tray in trays:
             tray_type = tray.get("tray_type")
             if not tray_type:
