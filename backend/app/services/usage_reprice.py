@@ -85,6 +85,21 @@ def _naive(value: datetime | None) -> datetime | None:
     return value.replace(tzinfo=None) if value is not None and value.tzinfo is not None else value
 
 
+def _booked_at_this_price(grams: float | None, booked: float, spool_price, default_rate: float) -> bool:
+    """Whether ``booked`` is what the row's grams cost at today's price already.
+
+    A row keeps its weight to 0.1 g, but its cost was booked from the exact
+    grams: 2.16 g at 25 /kg is 0.05, and the stored 2.2 g prices at 0.06. Any
+    cost the weights that round to this row's could have had is "this price" —
+    without it a re-price moved rows by a cent when no price had changed.
+    """
+    if grams is None:
+        return False
+    low = usage_cost(max(grams - 0.05, 0.0), spool_price, default_rate) or 0.0
+    high = usage_cost(grams + 0.05, spool_price, default_rate) or 0.0
+    return round(low, 2) <= round(booked, 2) <= round(high, 2)
+
+
 async def reprice(
     db: AsyncSession,
     *,
@@ -140,6 +155,8 @@ async def reprice(
         result.rows += 1
         before = row.cost
         after = usage_cost(row.weight_used, spool_price, default_rate)
+        if before is not None and _booked_at_this_price(row.weight_used, before, spool_price, default_rate):
+            after = before
         result.cost_before += before or 0.0
         result.cost_after += after or 0.0
         if round(after or 0.0, 2) == round(before or 0.0, 2):

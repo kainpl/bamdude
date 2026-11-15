@@ -272,6 +272,27 @@ class TestStatisticsByMaterialNumber:
         all_time = (await async_client.get("/api/v1/statistics/aggregate")).json()["by_material_number"]
         assert all_time[0] == {"material_number": "15", "grams": 550.0, "cost": 13.5, "spools": 2}
 
+    async def test_a_weight_correction_is_not_a_prints_consumption(self, async_client, db_session):
+        """An AMS weight sync or a runout tail corrects the spool's own ledger: 80 g printed, and the
+        120 g correction used to be counted as consumed too (200 g) -- every other figure of the page
+        leaves such rows out."""
+        from backend.app.models.spool_usage_history import AMS_SYNC_STATUS, RUNOUT_STATUS
+
+        spool = await _create(async_client, material_number="15")
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        db_session.add_all(
+            [
+                SpoolUsageHistory(spool_id=spool["id"], weight_used=80.0, cost=2.0, status="completed", created_at=now),
+                SpoolUsageHistory(spool_id=spool["id"], weight_used=100.0, status=AMS_SYNC_STATUS, created_at=now),
+                SpoolUsageHistory(spool_id=spool["id"], weight_used=20.0, status=RUNOUT_STATUS, created_at=now),
+            ]
+        )
+        await db_session.commit()
+
+        body = (await async_client.get("/api/v1/statistics/aggregate")).json()
+
+        assert body["by_material_number"] == [{"material_number": "15", "grams": 80.0, "cost": 2.0, "spools": 1}]
+
 
 @pytest.mark.asyncio
 @pytest.mark.integration

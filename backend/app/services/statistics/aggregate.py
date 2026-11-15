@@ -443,7 +443,9 @@ async def _by_material_number(
             func.count(func.distinct(SpoolUsageHistory.spool_id)).label("spools"),
         )
         .join(Spool, Spool.id == SpoolUsageHistory.spool_id)
-        .where(Spool.material_number.is_not(None), number != "")
+        # Prints only: an AMS weight sync or a runout tail corrects the spool's
+        # own ledger and is no print's consumption — as every other figure reads it.
+        .where(Spool.material_number.is_not(None), number != "", SpoolUsageHistory.print_contribution_filter())
         .group_by(number)
     )
     if date_from:

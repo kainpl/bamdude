@@ -274,3 +274,44 @@ async def test_recalculate_costs_still_keeps_recorded_prices(async_client: Async
 
     assert response.status_code == 200
     assert {a.cost for a in await _fresh(db_session, PrintArchive, archive_ids)} == {20.0}
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+class TestNoPriceChangeMovesNothing:
+    async def test_a_row_booked_from_the_exact_grams_is_not_moved_by_its_rounded_weight(
+        self, async_client: AsyncClient, db_session, printer_factory, archive_factory
+    ):
+        """2.16 g at 25 /kg was booked 0.05; the row keeps the weight to 0.1 g (2.2), which prices at
+        0.06. With the price untouched a re-price moved the row and its archive by a cent."""
+        printer = await printer_factory()
+        spool = await _spool(db_session, 25.0, weight_used=2.16)
+        archive = await archive_factory(printer.id, print_name="Clip", filament_used_grams=2.16, cost=0.05)
+        row = await _row(db_session, spool, archive, 2.2, 0.05)
+        await db_session.commit()
+        spool_id, archive_id, row_id = spool.id, archive.id, row.id
+
+        response = await async_client.post(URL, json={"spool_id": spool_id, "dry_run": False})
+
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert (body["rows"], body["rows_changed"], body["archives_changed"]) == (1, 0, 0)
+        assert (body["cost_before"], body["cost_after"]) == (0.05, 0.05)
+        assert [a.cost for a in await _fresh(db_session, PrintArchive, [archive_id])] == [0.05]
+        assert [r.cost for r in await _fresh(db_session, SpoolUsageHistory, [row_id])] == [0.05]
+
+    async def test_a_real_price_change_on_the_same_row_still_moves_it(
+        self, async_client: AsyncClient, db_session, printer_factory, archive_factory
+    ):
+        printer = await printer_factory()
+        spool = await _spool(db_session, 250.0, weight_used=2.16)
+        archive = await archive_factory(printer.id, print_name="Clip", filament_used_grams=2.16, cost=0.54)
+        row = await _row(db_session, spool, archive, 2.2, 0.54)
+        spool.cost_per_kg = 25.0
+        await db_session.commit()
+        spool_id, row_id = spool.id, row.id
+
+        response = await async_client.post(URL, json={"spool_id": spool_id, "dry_run": False})
+
+        assert response.json()["rows_changed"] == 1
+        assert [r.cost for r in await _fresh(db_session, SpoolUsageHistory, [row_id])] == [0.06]
