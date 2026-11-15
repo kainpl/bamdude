@@ -273,3 +273,10 @@ class TestThePushedFieldsReachTheBrowser:
         assert self._shape(data, "printers:read", "archives:read_own")["current_archive_id"] == 42
         assert "current_archive_id" not in self._shape(data, "printers:read", "archives:read_own", row_owner=99)
         assert self._shape({"current_archive_id": None}, "printers:read")["current_archive_id"] is None
+
+    def test_an_archive_id_of_another_run_than_the_one_judged_is_not_sent(self):
+        """The producer reads the bound run a second time; the viewer's right was judged for the
+        run the event was prepared with (42). An id read after the run changed is not that run's."""
+        shaped = self._shape({"current_archive_id": 43}, "printers:read", "archives:read_own")
+
+        assert "current_archive_id" not in shaped

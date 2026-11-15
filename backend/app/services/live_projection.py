@@ -302,9 +302,13 @@ def shape(event: PreparedEvent, access: Entitlements, *, personal=False, credent
         )
         for key in ("current_print", "subtask_name", "gcode_file", "cover_url"):
             result[key] = None
-        if "current_archive_id" in data and (visible or data["current_archive_id"] is None):
+        if "current_archive_id" in data and (
+            (visible and data["current_archive_id"] == event.run_archive) or data["current_archive_id"] is None
+        ):
             # The id of the running print's archive, for a viewer who may see
             # that print; ``None`` (nothing is printing) is nobody's secret.
+            # Only the id of the run the right was judged for: the producer read
+            # the bound run on its own, and it may have changed in between.
             result["current_archive_id"] = data["current_archive_id"]
         if visible:
             # A delayed payload cannot borrow a newer run's ownership to
