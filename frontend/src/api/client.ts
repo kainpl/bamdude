@@ -8140,6 +8140,8 @@ export interface SpoolmanTagMigrationReport {
     holder_archived: boolean;
     holder_filament: number | null;
   }>;
+  /** Links a run could not make; each is one spool's, and the run went on. */
+  failed?: Array<{ spool_id: number; tag: string; reason: 'spool_gone' | 'refused' | 'unreachable' }>;
 }
 
 /**

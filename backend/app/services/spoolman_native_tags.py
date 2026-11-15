@@ -28,6 +28,9 @@ from backend.app.services.spoolman import (
     BAMBU_RFID_TAG_LENGTH,
     NativeTagConflict,
     SpoolmanClient,
+    SpoolmanClientError,
+    SpoolmanNotFoundError,
+    SpoolmanUnavailableError,
     extra_tag,
     is_linkable_tag_uid,
     native_tag_uids,
@@ -41,6 +44,12 @@ SHARED = "shared_extra_tag"  # another active spool has the same extra.tag
 HELD_BY_SPOOL = "held_by_spool"  # another spool holds the uid natively
 HELD_BY_FILAMENT = "held_by_filament"  # a filament holds it
 HELD_ELSEWHERE = "held_elsewhere"  # Spoolman refused without naming a holder
+
+# Why a link the plan called for did not happen. A failure is one spool's: the
+# run records it and goes on, and always answers with its report.
+SPOOL_GONE = "spool_gone"  # the spool was deleted since the listing
+REFUSED = "refused"  # Spoolman would not take this uid
+UNREACHABLE = "unreachable"  # Spoolman stopped answering; nothing after it was tried
 
 
 def is_slot_fallback_tag(tag: str, printer_serials) -> bool:
@@ -91,6 +100,7 @@ async def copy_extra_tags_to_native(client: SpoolmanClient, printer_serials, *, 
         "slot_ids": 0,
         "archived": 0,
         "conflicts": [],
+        "failed": [],
     }
 
     # What each active spool would link, and who else wants the same uid.
@@ -110,6 +120,7 @@ async def copy_extra_tags_to_native(client: SpoolmanClient, printer_serials, *, 
         wanted.append((spool["id"], uid, tag_format))
         claimants.setdefault(uid, []).append(spool["id"])
 
+    unreachable = False
     for spool_id, uid, tag_format in wanted:
         holder = spool_holder.get(uid)
         if holder == spool_id:
@@ -128,8 +139,23 @@ async def copy_extra_tags_to_native(client: SpoolmanClient, printer_serials, *, 
             report["conflicts"].append(_conflict(spool_id, uid, SHARED, holder=others[0]))
             continue
         if not dry_run:
+            if unreachable:
+                report["failed"].append({"spool_id": spool_id, "tag": uid, "reason": UNREACHABLE})
+                continue
             try:
                 await client.link_native_tag(spool_id, uid, tag_format)
+            except SpoolmanNotFoundError:
+                report["failed"].append({"spool_id": spool_id, "tag": uid, "reason": SPOOL_GONE})
+                continue
+            except SpoolmanClientError as refused:
+                logger.warning("Spoolman refused native tag %s for spool %s: %s", uid, spool_id, refused)
+                report["failed"].append({"spool_id": spool_id, "tag": uid, "reason": REFUSED})
+                continue
+            except SpoolmanUnavailableError as down:
+                logger.warning("Native tag copy stopped at spool %s: %s", spool_id, down)
+                unreachable = True
+                report["failed"].append({"spool_id": spool_id, "tag": uid, "reason": UNREACHABLE})
+                continue
             except NativeTagConflict as refused:
                 if refused.spool_id is not None:
                     row = _conflict(spool_id, uid, HELD_BY_SPOOL, holder=refused.spool_id, archived=refused.archived)
@@ -142,12 +168,13 @@ async def copy_extra_tags_to_native(client: SpoolmanClient, printer_serials, *, 
         report["moved"].append({"spool_id": spool_id, "tag": uid, "format": tag_format})
 
     logger.info(
-        "Native tag copy (dry_run=%s): %d to link, %d already, %d slot ids, %d archived, %d conflicts",
+        "Native tag copy (dry_run=%s): %d to link, %d already, %d slot ids, %d archived, %d conflicts, %d failed",
         dry_run,
         len(report["moved"]),
         report["already"],
         report["slot_ids"],
         report["archived"],
         len(report["conflicts"]),
+        len(report["failed"]),
     )
     return report

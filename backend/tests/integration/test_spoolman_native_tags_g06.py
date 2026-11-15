@@ -583,6 +583,67 @@ class TestCopyExtraTagsToNativeTags:
         assert (done["moved"], done["conflicts"]) == ([], [])
         assert spoolman.tags == {}
 
+    @pytest.mark.parametrize(
+        ("error", "reason"),
+        [("not_found", "spool_gone"), ("client", "refused")],
+    )
+    async def test_one_spool_spoolman_will_not_link_does_not_stop_the_rest(
+        self, async_client: AsyncClient, spoolman, error, reason
+    ):
+        """A spool deleted since the listing (404) or a uid Spoolman refuses
+        (400) ended the request: the report of what was linked was lost and no
+        spool after it was ever copied (review slots M-4)."""
+        from backend.app.services.spoolman import SpoolmanClient, SpoolmanClientError, SpoolmanNotFoundError
+
+        spoolman.add_spool(41, 7, extra=_tag(TRAY_UUID))
+        spoolman.add_spool(42, 7, extra=_tag(OTHER_UUID))
+        real = SpoolmanClient.link_native_tag
+
+        async def link(self, spool_id, uid, tag_format=None):
+            if spool_id == 41:
+                raise SpoolmanNotFoundError("gone") if error == "not_found" else SpoolmanClientError("no", 400)
+            return await real(self, spool_id, uid, tag_format)
+
+        with patch.object(SpoolmanClient, "link_native_tag", link):
+            response = await async_client.post(self.URL, params={"dry_run": "false"})
+
+        assert response.status_code == 200
+        done = response.json()
+        assert [m["spool_id"] for m in done["moved"]] == [42]
+        assert done["failed"] == [{"spool_id": 41, "tag": TRAY_UUID, "reason": reason}]
+        assert spoolman.tags_of(42) == [OTHER_UUID]
+
+    async def test_a_spoolman_that_stops_answering_ends_the_run_with_its_report(
+        self, async_client: AsyncClient, spoolman
+    ):
+        from backend.app.services.spoolman import SpoolmanClient, SpoolmanUnavailableError
+
+        spoolman.add_spool(41, 7, extra=_tag(TRAY_UUID))
+        spoolman.add_spool(42, 7, extra=_tag(OTHER_UUID))
+        spoolman.add_spool(43, 7, extra=_tag("A1B2C3D4E5F6"))
+        real = SpoolmanClient.link_native_tag
+        asked: list[int] = []
+
+        async def link(self, spool_id, uid, tag_format=None):
+            asked.append(spool_id)
+            if spool_id >= 42:
+                raise SpoolmanUnavailableError("down")
+            return await real(self, spool_id, uid, tag_format)
+
+        with patch.object(SpoolmanClient, "link_native_tag", link):
+            response = await async_client.post(self.URL, params={"dry_run": "false"})
+
+        assert response.status_code == 200
+        done = response.json()
+        assert [m["spool_id"] for m in done["moved"]] == [41]
+        assert [(f["spool_id"], f["reason"]) for f in done["failed"]] == [(42, "unreachable"), (43, "unreachable")]
+        assert asked == [41, 42], "a Spoolman that is down is not asked for every remaining spool"
+
+    async def test_the_preview_reports_no_failures(self, async_client: AsyncClient, spoolman):
+        spoolman.add_spool(41, 7, extra=_tag(TRAY_UUID))
+
+        assert (await async_client.post(self.URL)).json()["failed"] == []
+
     async def test_an_older_spoolman_is_refused_with_a_code(self, async_client: AsyncClient, old_spoolman):
         response = await async_client.post(self.URL)
 

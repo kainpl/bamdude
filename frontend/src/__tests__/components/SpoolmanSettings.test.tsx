@@ -18,6 +18,15 @@ import { SpoolmanSettings } from '../../components/SpoolmanSettings';
 vi.mock('../../api/client', () => ({
   setAuthToken: vi.fn(),
   getAuthToken: vi.fn(() => 'test-admin-token'),
+  ApiError: class ApiError extends Error {
+    status: number;
+    code?: string;
+    constructor(message: string, status: number, code?: string) {
+      super(message);
+      this.status = status;
+      this.code = code;
+    }
+  },
   api: {
     getSettings: vi.fn().mockResolvedValue({}),
     getUiPreferences: vi.fn().mockResolvedValue({}),
@@ -40,12 +49,13 @@ vi.mock('../../api/client', () => ({
 }));
 
 // Import mocked module
-import { api } from '../../api/client';
+import { api, ApiError } from '../../api/client';
 import type { SpoolmanSizeMismatch, SpoolmanTagMigrationReport } from '../../api/client';
 
 describe('SpoolmanSettings', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(api.getCurrentUser).mockResolvedValue({ id: 1, is_admin: true, permissions: [] } as never);
 
     // Default API mocks - Spoolman disabled (Built-in Inventory mode)
     vi.mocked(api.getSpoolmanSettings).mockResolvedValue({
@@ -489,6 +499,66 @@ describe('SpoolmanSettings', () => {
       await waitFor(() => expect(api.migrateSpoolmanTags).toHaveBeenLastCalledWith(false));
       expect(await screen.findByText('Copied')).toBeInTheDocument();
       expect(screen.queryByRole('button', { name: 'Copy tags' })).not.toBeInTheDocument();
+    });
+
+    it('is not offered to someone who may not change the inventory', async () => {
+      connected(true);
+      vi.mocked(api.getCurrentUser).mockResolvedValue({
+        id: 2,
+        is_admin: false,
+        permissions: ['inventory:read', 'settings:read'],
+      } as never);
+      render(<SpoolmanSettings />);
+
+      await screen.findByText('Connected');
+      await waitFor(() => expect(api.getCurrentUser).toHaveBeenCalled());
+      await waitFor(() => expect(screen.queryByText('Spoolman native tags')).not.toBeInTheDocument());
+    });
+
+    it('says so when this Spoolman turns out to have no native tags', async () => {
+      connected(true);
+      const refusal = new ApiError('This Spoolman server has no native tags', 409, 'spoolman_without_native_tags');
+      vi.mocked(api.migrateSpoolmanTags).mockRejectedValue(refusal);
+      const user = userEvent.setup();
+      render(<SpoolmanSettings />);
+
+      await user.click(await screen.findByRole('button', { name: 'Check tags' }));
+
+      expect(await screen.findByText('This Spoolman has no native tags, so there is nothing to copy the tags into.')).toBeInTheDocument();
+    });
+
+    it("shows the server's own sentence for any other refusal", async () => {
+      connected(true);
+      vi.mocked(api.migrateSpoolmanTags).mockRejectedValue(new ApiError('Spoolman server is not reachable', 503));
+      const user = userEvent.setup();
+      render(<SpoolmanSettings />);
+
+      await user.click(await screen.findByRole('button', { name: 'Check tags' }));
+
+      expect(await screen.findByText('Spoolman server is not reachable')).toBeInTheDocument();
+    });
+
+    it('names the spools a run could not copy, beside the ones it did', async () => {
+      connected(true);
+      vi.mocked(api.migrateSpoolmanTags).mockResolvedValue({
+        ...preview,
+        dry_run: false,
+        conflicts: [],
+        failed: [
+          { spool_id: 51, tag: 'DDDDDDDD', reason: 'spool_gone' },
+          { spool_id: 52, tag: 'EEEEEEEE', reason: 'refused' },
+          { spool_id: 53, tag: 'FFFFFFFF', reason: 'unreachable' },
+        ],
+      });
+      const user = userEvent.setup();
+      render(<SpoolmanSettings />);
+
+      await user.click(await screen.findByRole('button', { name: 'Check tags' }));
+
+      expect(await screen.findByText('Spool #51: it is no longer in Spoolman.')).toBeInTheDocument();
+      expect(screen.getByText('Spool #52: Spoolman refused tag EEEEEEEE.')).toBeInTheDocument();
+      expect(screen.getByText('Spool #53: Spoolman stopped answering before tag FFFFFFFF was copied.')).toBeInTheDocument();
+      expect(screen.getByText('Spool #41: 0123456789ABCDEF0123456789ABCD01')).toBeInTheDocument();
     });
 
     it('says so when there is nothing to copy', async () => {

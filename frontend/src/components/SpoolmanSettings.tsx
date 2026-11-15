@@ -16,6 +16,8 @@ import { SpoolmanSizeMismatches } from './SpoolmanSizeMismatches';
 export function SpoolmanSettings() {
   const { isAdmin, hasPermission } = useAuth();
   const canConfigure = isAdmin && hasPermission('settings:update');
+  // Copying tags writes to Spoolman spools: the route asks the inventory right.
+  const canCopyTags = hasPermission('inventory:update');
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { showToast } = useToast();
@@ -232,10 +234,22 @@ export function SpoolmanSettings() {
         showToast(t('settings.nativeTagsMoved', { count: report.moved.length }), 'success');
       }
     },
-    onError: () => {
-      showToast(t('settings.nativeTagsError'), 'error');
+    onError: (error: Error) => {
+      // The refusal's own sentence: a Spoolman that turned out to have no
+      // native tags by its code, anything else as the server worded it.
+      if (error instanceof ApiError && error.code === 'spoolman_without_native_tags') {
+        showToast(t('settings.nativeTagsUnavailable'), 'error');
+      } else {
+        showToast(error.message || t('settings.nativeTagsError'), 'error');
+      }
     },
   });
+  const tagFailureText = (failure: NonNullable<SpoolmanTagMigrationReport['failed']>[number]) => {
+    const values = { spool: failure.spool_id, tag: failure.tag };
+    if (failure.reason === 'spool_gone') return t('settings.nativeTagsFailedGone', values);
+    if (failure.reason === 'unreachable') return t('settings.nativeTagsFailedUnreachable', values);
+    return t('settings.nativeTagsFailedRefused', values);
+  };
   const tagConflictText = (conflict: SpoolmanTagMigrationReport['conflicts'][number]) => {
     const values = { spool: conflict.spool_id, tag: conflict.tag, holder: conflict.holder };
     if (conflict.reason === 'shared_extra_tag') return t('settings.nativeTagsConflictShared', values);
@@ -621,7 +635,7 @@ export function SpoolmanSettings() {
               )}
 
               {/* Native tags: copy extra.tag into them */}
-              {status?.connected && status.native_tags && (
+              {status?.connected && status.native_tags && canCopyTags && (
                 <div className="mt-4 pt-4 border-t border-bambu-dark-tertiary space-y-3">
                   <div className="flex items-center justify-between gap-4">
                     <div>
@@ -682,6 +696,19 @@ export function SpoolmanSettings() {
                             ))}
                           </ul>
                           <p>{t('settings.nativeTagsConflictsHint')}</p>
+                        </div>
+                      )}
+
+                      {(tagReport.failed?.length ?? 0) > 0 && (
+                        <div className="p-2 bg-red-50 dark:bg-red-500/10 border border-red-300 dark:border-red-500/30 rounded text-xs text-red-700 dark:text-red-400 space-y-1">
+                          <p className="font-medium">{t('settings.nativeTagsFailed')}</p>
+                          <ul className="max-h-40 overflow-y-auto space-y-0.5">
+                            {tagReport.failed?.map((failure) => (
+                              <li key={`${failure.spool_id}-${failure.tag}`} className="break-all">
+                                {tagFailureText(failure)}
+                              </li>
+                            ))}
+                          </ul>
                         </div>
                       )}
 
