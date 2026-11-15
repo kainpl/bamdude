@@ -13,11 +13,69 @@ Full end-to-end tests require the actual database setup.
 """
 
 import asyncio
+from contextlib import asynccontextmanager, contextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from backend.app.services.print_execution import StartDecision
+
+
+@contextmanager
+def _finishing_archive(session, printer_id: int, archive_id: int, *, swap_compatible: bool | None = None):
+    """Give ``on_print_complete`` the archive this print belongs to.
+
+    The callback takes its archive from a bound run or from the durable
+    executions -- a printing row it resolves once and then proves under the
+    archive's write guard. A filename alias in ``_active_prints`` selects
+    nothing any more, and a mocked session can answer neither read, so both
+    answers are supplied here: the resolution, and the row it is proven by.
+    Without them the callback finishes as an archive-less print, which arms no
+    gate and credits no stock by design.
+    """
+    from backend.app import main as main_mod
+    from backend.app.models.archive import PrintArchive
+
+    archive = MagicMock(name="finishing_archive")
+    archive.id = archive_id
+    archive.printer_id = printer_id
+    archive.status = "printing"
+    archive.recovery_identity = f"identity-{archive_id}"
+    # No declaration record: only a strictly True column declares a baked swap sequence.
+    archive.extra_data = {}
+    archive.swap_compatible = swap_compatible
+
+    async def get(model, _id, *args, **kwargs):
+        return archive if model is PrintArchive else MagicMock()
+
+    session.get = AsyncMock(side_effect=get)
+
+    @asynccontextmanager
+    async def no_guard(*_args, **_kwargs):
+        yield
+
+    resolution = main_mod._LiveArchiveResolution(archive_id, None, "unambiguous_name", archive.recovery_identity)
+    with (
+        patch("backend.app.main._live_archive_for_running_print", AsyncMock(return_value=resolution)),
+        patch("backend.app.services.archive_write_scope.archive_write_scope", no_guard),
+        patch(
+            "backend.app.services.archive_write_scope.load_active_archive_for_write",
+            AsyncMock(return_value=archive),
+        ),
+    ):
+        yield archive
+
+
+def _gate_manager() -> MagicMock:
+    """A printer manager whose gate is armed the way production arms it:
+    ``arm_awaiting_plate_clear`` is awaited with the printer and the archive
+    the gate waits on (the synchronous setter is only the old adapters'
+    fallback)."""
+    manager = MagicMock()
+    manager.arm_awaiting_plate_clear = AsyncMock(return_value="gate-token")
+    manager.set_awaiting_plate_clear = MagicMock()
+    manager.get_printer.return_value = None
+    return manager
 
 
 class TestPrintStartLogic:
@@ -420,7 +478,9 @@ class TestPlateClearGate:
 
         mock_session = AsyncMock()
         mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session.__aexit__ = AsyncMock()
+        # False: a bare ``AsyncMock()`` is truthy, which tells ``async with``
+        # the exception was handled -- the callback would run on half done.
+        mock_session.__aexit__ = AsyncMock(return_value=False)
         mock_session.execute = AsyncMock(side_effect=execute_side_effect)
 
         # Snapshot tasks so we can cancel any background work the call spawns.
@@ -433,6 +493,7 @@ class TestPlateClearGate:
             patch("backend.app.main.ws_manager") as mock_ws,
             patch("backend.app.main.mqtt_relay") as mock_relay,
             patch("backend.app.main.printer_manager", mock_pm),
+            _finishing_archive(mock_session, printer_id, 999),
         ):
             mock_notif.on_print_complete = AsyncMock()
             mock_plug.on_print_complete = AsyncMock()
@@ -477,10 +538,9 @@ class TestPlateClearGate:
         only holds at layer 1).
         ``failed`` / ``completed`` — the obvious cases.
         """
-        mock_pm = MagicMock()
-        mock_pm.set_awaiting_plate_clear = MagicMock()
+        mock_pm = _gate_manager()
         await self._drive_completion(printer_id=1, status=status, mock_pm=mock_pm)
-        mock_pm.set_awaiting_plate_clear.assert_any_call(1, True)
+        mock_pm.arm_awaiting_plate_clear.assert_awaited_once_with(1, 999)
 
     @pytest.mark.asyncio
     async def test_arms_gate_even_for_unrecognised_future_status(self):
@@ -492,10 +552,9 @@ class TestPlateClearGate:
         (better one extra "Clear Plate" click than auto-dispatching onto an
         ambiguous-state plate).
         """
-        mock_pm = MagicMock()
-        mock_pm.set_awaiting_plate_clear = MagicMock()
+        mock_pm = _gate_manager()
         await self._drive_completion(printer_id=1, status="foobared", mock_pm=mock_pm)
-        mock_pm.set_awaiting_plate_clear.assert_any_call(1, True)
+        mock_pm.arm_awaiting_plate_clear.assert_awaited_once_with(1, 999)
 
     # ------------------------------------------------------------------
     # Swap-on-failure regressions (operator-reported follow-up).
@@ -520,6 +579,7 @@ class TestPlateClearGate:
         """Same as ``_drive_completion`` but the archive reports
         ``swap_compatible=True`` so the auto-clear branch can fire."""
         from backend.app import main as main_mod
+        from backend.app.services.print_run_binding import bind_print_run
 
         subtask_name = "SwapCompatTest"
         main_mod._active_prints[(printer_id, f"{subtask_name}.3mf")] = 998
@@ -538,7 +598,9 @@ class TestPlateClearGate:
 
         mock_session = AsyncMock()
         mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session.__aexit__ = AsyncMock()
+        # False: a bare ``AsyncMock()`` is truthy, which tells ``async with``
+        # the exception was handled -- the callback would run on half done.
+        mock_session.__aexit__ = AsyncMock(return_value=False)
         mock_session.execute = AsyncMock(side_effect=execute_side_effect)
 
         tasks_before = set(asyncio.all_tasks())
@@ -549,7 +611,23 @@ class TestPlateClearGate:
             patch("backend.app.main.ws_manager") as mock_ws,
             patch("backend.app.main.mqtt_relay") as mock_relay,
             patch("backend.app.main.printer_manager", mock_pm),
+            # The archive DECLARES its own swap sequence -- what the bypass would lean on.
+            _finishing_archive(mock_session, printer_id, 998, swap_compatible=True) as archive,
+            # The run's durable acceptance (archive + its queue row) is the database's.
+            patch("backend.app.main._accept_bound_terminal_run", AsyncMock(return_value=41)),
         ):
+            # ...and a run BamDude dispatched itself: the one finish a baked sequence may clear the plate
+            # for. So nothing but the print's outcome stands between this archive and the bypass.
+            mock_pm._print_run_binding_sequence = 0
+            mock_pm._print_effect_sequence = 0
+            bind_print_run(
+                mock_pm,
+                printer_id=printer_id,
+                archive_id=998,
+                queue_item_id=41,
+                origin="dispatch",
+                archive_identity=archive.recovery_identity,
+            )
             mock_notif.on_print_complete = AsyncMock()
             mock_plug.on_print_complete = AsyncMock()
             mock_ws.send_print_complete = AsyncMock()
@@ -583,10 +661,9 @@ class TestPlateClearGate:
         state, the auto-clear bypass MUST NOT fire — the part is still on
         the bed and the operator has to inspect / clean / dismiss the gate
         before the next queue dispatch is allowed to run."""
-        mock_pm = MagicMock()
-        mock_pm.set_awaiting_plate_clear = MagicMock()
+        mock_pm = _gate_manager()
         await self._drive_with_swap_compatible(printer_id=1, status=status, mock_pm=mock_pm)
-        mock_pm.set_awaiting_plate_clear.assert_any_call(1, True)
+        mock_pm.arm_awaiting_plate_clear.assert_awaited_once_with(1, 998)
 
     # swap-source-lifecycle T7: a completed True archive found by an alias (as this mock drives it) no longer
     # clears the plate -- a name proves no run (spec r4 §10 D5). The bypass on a proven run, and its release of a
@@ -620,13 +697,13 @@ class TestPlateClearGate:
 
         mock_session = AsyncMock()
         mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session.__aexit__ = AsyncMock()
+        # False: a bare ``AsyncMock()`` is truthy, which tells ``async with``
+        # the exception was handled -- the callback would run on half done.
+        mock_session.__aexit__ = AsyncMock(return_value=False)
         mock_session.execute = AsyncMock(side_effect=execute_side_effect)
 
-        mock_pm = MagicMock()
-        mock_pm.set_awaiting_plate_clear = MagicMock()
+        mock_pm = _gate_manager()
         mock_pm.execute_macro_and_wait = AsyncMock(return_value=(True, ""))
-        mock_pm.get_printer.return_value = None
 
         tasks_before = set(asyncio.all_tasks())
         try:
@@ -638,6 +715,10 @@ class TestPlateClearGate:
                 patch("backend.app.main.mqtt_relay") as mock_relay,
                 patch("backend.app.main.printer_manager", mock_pm),
                 patch("backend.app.services.macro_executor.find_swap_macro", new_callable=AsyncMock) as mock_find,
+                _finishing_archive(mock_session, printer_id, 997),
+                # What a refused table swap does instead: the queue is held with a reason. Its rows are the
+                # database's, so the hold is observed here and pinned on a real one in the swap-terminal tests.
+                patch("backend.app.main._hold_for_owed_swap", new_callable=AsyncMock) as mock_hold,
             ):
                 mock_notif.on_print_complete = AsyncMock()
                 mock_plug.on_print_complete = AsyncMock()
@@ -666,8 +747,12 @@ class TestPlateClearGate:
                 # The macro lookup MAY have been called (find_swap_macro is
                 # cheap), but the physical execution must not have happened.
                 mock_pm.execute_macro_and_wait.assert_not_called()
+                # Not skipped by accident: the swap was owed, and it is held because the print did not complete.
+                mock_hold.assert_awaited_once()
+                assert mock_hold.await_args.args[:2] == (printer_id, 997)
+                assert mock_hold.await_args.args[3] == "swap_hold_not_completed"
                 # And the manual clear gate should have been raised.
-                mock_pm.set_awaiting_plate_clear.assert_any_call(printer_id, True)
+                mock_pm.arm_awaiting_plate_clear.assert_awaited_once_with(printer_id, 997)
         finally:
             main_mod._active_prints.pop((printer_id, f"{subtask_name}.3mf"), None)
             main_mod._active_swap_config.pop(printer_id, None)
@@ -701,8 +786,7 @@ class TestPlateClearGate:
     async def test_a_failed_swap_print_never_releases_the_gate(self, status: str):
         """The other half of the rule. The part is still on the bed, so the
         operator must clear it — the release must not fire here."""
-        mock_pm = MagicMock()
-        mock_pm.set_awaiting_plate_clear = MagicMock()
+        mock_pm = _gate_manager()
 
         await self._drive_with_swap_compatible(printer_id=1, status=status, mock_pm=mock_pm)
 
