@@ -903,6 +903,30 @@ def _reports_an_ams_unit(ams_exist_bits: str | int | None) -> bool:
     return mask > 0
 
 
+def unit_reported_absent(ams_id, ams_list: list, ams_exist_bits) -> bool:
+    """Whether a push that does not list AMS unit ``ams_id`` says it is unplugged.
+
+    ``ams_exist_bits`` (hex) carries bit n for AMS unit n — upstream's
+    measurement (ad62d1063: an X1C, unit 1 -> "2", unplugged -> "0" with an
+    empty list; an H2C, units 0-2 and HT 128 -> "17"), not ours. So an AMS 0-3
+    whose bit is clear is gone, and an EMPTY unit list with no bit set means no
+    unit at all. Everything else keeps the unit, as the merge always did: a
+    partial push lists only some units, the push may carry no bits, and the
+    bit of an AMS-HT or an AMS Lite beside other units is not read (all-zero
+    bits beside a listed unit are also the shutdown shape, #765).
+    """
+    if ams_exist_bits is None or isinstance(ams_exist_bits, bool):
+        return False
+    try:
+        bits = int(ams_exist_bits, 16) if isinstance(ams_exist_bits, str) else int(ams_exist_bits)
+        unit = int(ams_id)
+    except (TypeError, ValueError):
+        return False
+    if bits == 0 and not ams_list:
+        return True
+    return 0 <= unit <= 3 and not (bits >> unit) & 1
+
+
 def apply_tray_exist_bits(
     units: list,
     tray_exist_bits_str: str | int | None,
@@ -5382,6 +5406,18 @@ class BambuMQTTClient:
                     # unit to preserve tray, sn, sw_ver, and other accumulated data.
                     ams_unit = {**existing_unit, **ams_unit}
                 existing_by_id[ams_id] = ams_unit
+
+        # The merge keeps a unit the push does not list, so an AMS unplugged
+        # while we run stayed on the card until a restart (upstream ad62d1063,
+        # #3356). A unit goes only on the printer's own word in THIS push — and
+        # only when the push carried a unit list at all: a presence-only push
+        # reaches here with a list we made up.
+        if isinstance(ams_data, dict) and isinstance(ams_data.get("ams"), list):
+            listed = {unit.get("id") for unit in ams_list if isinstance(unit, dict)}
+            for gone_id in [uid for uid in existing_by_id if uid not in listed]:
+                if unit_reported_absent(gone_id, ams_list, ams_data.get("ams_exist_bits")):
+                    logger.info("[%s] AMS %s is no longer attached; leaving the card", self.serial_number, gone_id)
+                    del existing_by_id[gone_id]
 
         # Convert back to list, sorted by ID for consistent ordering
         merged_ams = sorted(existing_by_id.values(), key=lambda x: x.get("id", 0))

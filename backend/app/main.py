@@ -2954,6 +2954,19 @@ async def on_stock_spool_inserted(printer_id: int, event: dict):
             logger.exception("Stock insertion assignment failed for printer %s", printer_id)
 
 
+def _unit_reported(ams_data: list, ams_id: int) -> bool:
+    """Whether the AMS list names unit ``ams_id`` at all (its trays aside)."""
+    for unit in ams_data or []:
+        if not isinstance(unit, dict):
+            continue
+        try:
+            if int(unit.get("id", -1)) == ams_id:
+                return True
+        except (TypeError, ValueError):
+            continue
+    return False
+
+
 async def _recheck_held_unlinks(printer_id: int) -> None:
     """Run the AMS pass again for a printer with a held slot unlink (``slot_unlink_hold``).
 
@@ -3133,6 +3146,21 @@ async def _on_ams_change(printer_id: int, ams_data: list):
                 else:
                     current_tray = _find_tray_in_ams_data(ams_data, assignment.ams_id, assignment.tray_id)
                 if not current_tray:
+                    if assignment.ams_id != 255 and not _unit_reported(ams_data, assignment.ams_id):
+                        # The whole unit is absent — unplugged, or not reported
+                        # yet. That is no word about its slots: the spools stay
+                        # (owner decision Р9). They feed and route nothing while
+                        # the unit is away; back on, the same reels are found on
+                        # it and a different one is caught by the checks below.
+                        # A hold opened for such a slot is not renewed here, so
+                        # the unit going away never confirms it.
+                        logger.info(
+                            "Auto-unlink skipped: spool %d AMS%d-T%d - the unit is not attached",
+                            assignment.spool_id,
+                            assignment.ams_id,
+                            assignment.tray_id,
+                        )
+                        continue
                     if printing_now or partial_return:
                         # A running print may have run out. With stock loading
                         # enabled, keep a known partial spool too: removal alone
