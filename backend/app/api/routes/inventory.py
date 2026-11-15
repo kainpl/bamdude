@@ -540,8 +540,13 @@ async def _spool_counts_for_locations(
     spools sit at a location, so when it cannot be read the lenient fallback —
     counting built-in spools, of which there are none — said "empty" and the
     location was deleted from under them (upstream c2bc41a5e). Lists keep it.
+
+    Spoolman switched on with NO address is no Spoolman to ask: nothing was
+    ever read from one, so the delete is not held behind "not reachable" until
+    somebody types a URL — the built-in count answers, as with Spoolman off.
+    An address that is set and cannot be used is still a refusal.
     """
-    if _spoolman_is_enabled(settings):
+    if _spoolman_is_enabled(settings) and settings.get("spoolman_url", "").strip():
         client = await _ensure_spoolman_client(settings)
         if strict and not client:
             raise HTTPException(status_code=503, detail="Spoolman is not reachable")

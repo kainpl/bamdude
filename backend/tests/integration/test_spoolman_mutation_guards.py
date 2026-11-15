@@ -142,6 +142,22 @@ class TestLocationDeleteNeedsSpoolman:
         assert response.status_code == 503
         assert await db_session.scalar(select(func.count()).select_from(Location)) == 1
 
+    async def test_without_an_address_there_is_no_spoolman_to_ask(
+        self, async_client: AsyncClient, db_session: AsyncSession
+    ):
+        """Spoolman switched on with no address yet: there is no server whose
+        spools could sit at the location, so the delete is not held for ever
+        behind "Spoolman is not reachable" (review slots M-11)."""
+        db_session.add(Settings(key="spoolman_enabled", value="true"))
+        db_session.add(Settings(key="spoolman_url", value="  "))
+        await db_session.commit()
+        location = await self._location(db_session)
+
+        response = await async_client.delete(f"/api/v1/inventory/locations/{location.id}")
+
+        assert response.status_code == 200
+        assert await db_session.scalar(select(func.count()).select_from(Location)) == 0
+
     async def test_a_location_spoolman_spools_use_is_still_409(
         self, async_client: AsyncClient, db_session: AsyncSession, spoolman_enabled
     ):
