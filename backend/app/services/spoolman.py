@@ -1007,30 +1007,32 @@ class SpoolmanClient:
     async def has_tag_api(self) -> bool:
         """Whether this Spoolman links tags natively (0.27+).
 
-        The tag routes themselves are asked, not a version number. A yes is
-        kept for the client's life; a no is asked again after
-        ``TAG_API_RECHECK_SECONDS``; a Spoolman that did not answer, or
-        answered with a server error, is not remembered at all.
+        The tag routes themselves are asked, not a version number. An answer —
+        yes or no — is asked again after ``TAG_API_RECHECK_SECONDS``, so a
+        Spoolman upgraded or downgraded underneath needs no BamDude restart; a
+        Spoolman that did not answer, or answered with a server error, is not
+        remembered, and the last answer it gave stands meanwhile.
         """
-        stale = self._tag_api is False and time.monotonic() - self._tag_api_asked_at > TAG_API_RECHECK_SECONDS
+        stale = self._tag_api is not None and time.monotonic() - self._tag_api_asked_at > TAG_API_RECHECK_SECONDS
         if self._tag_api is None or stale:
             try:
                 client = await self._get_client()
                 response = await client.get(f"{self.api_url}/tag/reader")
             except httpx.HTTPError as e:
                 logger.debug("Spoolman native-tag probe failed: %s", e)
-                return False
+                return bool(self._tag_api)
             if response.status_code >= 500:
-                return False
+                return bool(self._tag_api)
             capable = response.status_code == 200
             if capable:
                 try:
                     capable = isinstance(response.json(), list)
                 except ValueError:
                     capable = False
+            if capable != self._tag_api:
+                logger.info("Spoolman native tags: %s", "available" if capable else "not available")
             self._tag_api = capable
             self._tag_api_asked_at = time.monotonic()
-            logger.info("Spoolman native tags: %s", "available" if capable else "not available")
         return bool(self._tag_api)
 
     async def _tag_request(self, method: str, path: str, **kwargs) -> httpx.Response:
@@ -1247,6 +1249,14 @@ class SpoolmanClient:
             if holder is not None:
                 return holder
         return None
+
+    async def reel_holder(self, tray: AMSTray) -> dict | None:
+        """The spool — an archived one included — that natively holds this tray's
+        reel by any of its identifiers, or None. For a route that must say WHY
+        no spool was made for a slot."""
+        return await self._holder_outside_the_list(
+            [tray.tray_uuid, tray.tag_uid, ams_chip_uid(tray.tag_uid or "", True)]
+        )
 
     async def find_spool_by_tag(self, tag_uid: str, cached_spools: list[dict] | None = None) -> dict | None:
         """Return the spool matching the given RFID tag UID, or None if not found.
@@ -1918,11 +1928,17 @@ class ArchivedTagIndex:
         self._client = client
         self._archived_tags: set[str] | None = None
 
-    async def holds_archived_reel(self, spool_tag: str, cached_spools: list[dict]) -> bool:
+    async def holds_archived_reel(self, spool_tag: str, cached_spools: list[dict], tag_uid: str = "") -> bool:
         # Native tags count as much as extra.tag: an archived spool tagged in
-        # Spoolman itself is the same known reel.
-        wanted = spool_tag.strip('"').upper()
-        if not wanted or any(wanted in spool_tag_uids(s) for s in cached_spools):
+        # Spoolman itself is the same known reel — and so is one that holds the
+        # reel by its chip alone (``tag_uid``: the AMS's reading and the chip's
+        # own form of it), as a reader or Spoolman's UI links it.
+        chip = normalize_tag_uid(tag_uid)
+        wanted = {spool_tag.strip('"').upper()}
+        if is_linkable_tag_uid(chip):
+            wanted |= {chip, ams_chip_uid(chip, True)}
+        wanted.discard("")
+        if not wanted or any(wanted & spool_tag_uids(s) for s in cached_spools):
             return False
         if self._archived_tags is None:
             try:
@@ -1931,7 +1947,7 @@ class ArchivedTagIndex:
                 logger.debug("Could not list archived Spoolman spools for the AMS sync: %s", exc)
                 spools = []
             self._archived_tags = {tag for s in spools if s.get("archived") for tag in spool_tag_uids(s)}
-        return wanted in self._archived_tags
+        return bool(wanted & self._archived_tags)
 
 
 # Global client instance (initialized when settings are loaded)

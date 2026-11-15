@@ -413,6 +413,41 @@ class TestAManualRelinkForgetsThePreviousReel:
 
 @pytest.mark.asyncio
 @pytest.mark.integration
+class TestAddFromASlotWhoseReelAnArchivedSpoolHolds:
+    async def test_the_refusal_names_the_holder(self, async_client: AsyncClient, spoolman, printer_factory):
+        """Held through the chip uid alone: the click answered 500 "Spoolman did
+        not create a spool from the slot" (review slots M-1)."""
+        from types import SimpleNamespace
+
+        printer = await printer_factory()
+        spoolman.add_spool(42, 7, archived=True)
+        spoolman.tag_spool(42, CHIP_UID)
+        tray = {
+            "id": 1,
+            "tray_type": "PLA",
+            "tray_sub_brands": "PLA Basic",
+            "tray_color": "FF0000FF",
+            "tray_uuid": TRAY_UUID,
+            "tag_uid": PADDED_CHIP_UID,
+            "tray_info_idx": "GFA00",
+            "remain": 80,
+        }
+        state = SimpleNamespace(raw_data={"ams": [{"id": 0, "tray": [tray]}]})
+
+        with patch("backend.app.api.routes.spoolman.printer_manager") as pm:
+            pm.get_status.return_value = state
+            response = await async_client.post(
+                f"{SPOOLMAN}/spools/from-slot", json={"printer_id": printer.id, "ams_id": 0, "tray_id": 1}
+            )
+
+        assert response.status_code == 409
+        detail = response.json()["detail"]
+        assert (detail["error"], detail["spool_id"], detail["archived"]) == ("tag_already_linked", 42, True)
+        assert list(spoolman.spools) == [42]
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
 class TestLinkedMap:
     async def test_a_natively_tagged_spool_is_linked(self, async_client: AsyncClient, spoolman):
         spoolman.add_spool(41, 7, extra={"tag": json.dumps(OTHER_UUID)})

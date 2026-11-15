@@ -108,6 +108,30 @@ class TestTheSyncRecognisesANativelyTaggedSpool:
 
         assert await index.holds_archived_reel(TRAY_UUID, await client.get_spools()) is True
 
+    async def test_an_archived_spools_chip_uid_is_a_known_reel_too(self):
+        """Held through the chip alone (a reader, Spoolman's own UI): with
+        auto-add off the slot was still offered "+ Add" (review slots M-1)."""
+        fake = _fake()
+        fake.add_spool(42, 7, archived=True)
+        fake.tag_spool(42, CHIP_UID)
+        client = client_for(fake)
+
+        index = ArchivedTagIndex(client)
+
+        assert await index.holds_archived_reel(TRAY_UUID, await client.get_spools(), PADDED_CHIP_UID) is True
+        assert await index.holds_archived_reel(TRAY_UUID, await client.get_spools(), "A1B2C3D400000100") is False
+
+    async def test_a_chip_an_active_spool_holds_is_not_an_archived_reel(self):
+        fake = _fake()
+        fake.add_spool(41, 7)
+        fake.tag_spool(41, CHIP_UID)
+        fake.add_spool(42, 7, archived=True)
+        client = client_for(fake)
+
+        index = ArchivedTagIndex(client)
+
+        assert await index.holds_archived_reel(TRAY_UUID, await client.get_spools(), PADDED_CHIP_UID) is False
+
     async def test_a_reel_whose_chip_an_archived_spool_holds_gets_no_new_spool(self, caplog):
         fake = _fake()
         fake.add_spool(42, 7, archived=True)
@@ -252,6 +276,41 @@ class TestTheCapabilityProbe:
 
         fake.native_tags = True  # Spoolman was upgraded underneath
         clock[0] += spoolman_service.TAG_API_RECHECK_SECONDS + 1
+        assert await client.has_tag_api() is True
+
+    async def test_a_yes_is_asked_again_once_it_is_stale(self, monkeypatch):
+        """A Spoolman downgraded underneath: the manual link answered "Spool not
+        found" until BamDude restarted (review slots M-6)."""
+        fake = _fake()
+        client = client_for(fake)
+        clock = [1000.0]
+        monkeypatch.setattr(spoolman_service.time, "monotonic", lambda: clock[0])
+        assert await client.has_tag_api() is True
+
+        fake.native_tags = False
+        clock[0] += spoolman_service.TAG_API_RECHECK_SECONDS + 1
+
+        assert await client.has_tag_api() is False
+        assert self._probes(fake) == 2
+
+    async def test_a_stale_yes_is_kept_while_spoolman_does_not_answer(self, monkeypatch):
+        fake = _fake()
+        down = [False]
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            if down[0]:
+                raise httpx.ConnectError("down")
+            return await fake.handler(request)
+
+        client = SpoolmanClient("http://spoolman.test:7912")
+        client._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        clock = [1000.0]
+        monkeypatch.setattr(spoolman_service.time, "monotonic", lambda: clock[0])
+        assert await client.has_tag_api() is True
+
+        down[0] = True
+        clock[0] += spoolman_service.TAG_API_RECHECK_SECONDS + 1
+
         assert await client.has_tag_api() is True
 
     async def test_an_unreachable_spoolman_is_not_remembered_as_a_no(self):

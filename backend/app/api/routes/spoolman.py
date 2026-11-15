@@ -418,7 +418,7 @@ async def sync_printer_ams(
                 if tray.tray_uuid and tray.tray_uuid != "00000000000000000000000000000000"
                 else tray.tag_uid
             )
-            if spool_tag and await archived_reels.holds_archived_reel(spool_tag, cached_spools):
+            if spool_tag and await archived_reels.holds_archived_reel(spool_tag, cached_spools, tray.tag_uid or ""):
                 # A retired reel still in the slot — not new, not to be re-created.
                 continue
 
@@ -626,7 +626,7 @@ async def sync_all_printers(
                     if tray.tray_uuid and tray.tray_uuid != "00000000000000000000000000000000"
                     else tray.tag_uid
                 )
-                if spool_tag and await archived_reels.holds_archived_reel(spool_tag, cached_spools):
+                if spool_tag and await archived_reels.holds_archived_reel(spool_tag, cached_spools, tray.tag_uid or ""):
                     # A retired reel still in the slot — not new, not to be re-created.
                     continue
 
@@ -1354,6 +1354,17 @@ async def create_spool_from_slot(
         db=db,
     )
     if not sync_result:
+        # No spool was made. When the reel already belongs to a spool the lists
+        # hide — an archived one, held by its chip alone — say whose it is.
+        try:
+            holder = await client.reel_holder(tray)
+        except Exception:  # noqa: BLE001 — the reason is a courtesy; the refusal below stands without it
+            holder = None
+        if isinstance(holder, dict) and isinstance(holder.get("id"), int):
+            raise native_tag_refused(
+                "tray_uuid" if tray.tray_uuid and set(tray.tray_uuid) != {"0"} else "tag_uid",
+                NativeTagConflict("", spool_id=holder["id"], archived=bool(holder.get("archived"))),
+            )
         raise HTTPException(status_code=500, detail="Spoolman did not create a spool from the slot")
 
     # Persist the slot assignment so the new spool shows on the slot tile.

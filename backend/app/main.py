@@ -3752,7 +3752,9 @@ async def _on_ams_change(printer_id: int, ams_data: list):
                     )
                     if spool_tag:
                         current_tray_uuids.add(spool_tag.upper())
-                    if spool_tag and await archived_reels.holds_archived_reel(spool_tag, cached_spools):
+                    if spool_tag and await archived_reels.holds_archived_reel(
+                        spool_tag, cached_spools, tray.tag_uid or ""
+                    ):
                         # An archived spool's reel still in the slot — typically the
                         # one the runout close-out just retired after an auto-switch.
                         # It is not unknown: no auto-create, no "+ Add" prompt.
