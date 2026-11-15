@@ -26,7 +26,7 @@ interface Props {
   onSaved: () => void;
 }
 
-type FieldType = 'datalist' | 'text' | 'textarea' | 'number' | 'date' | 'diameter' | 'effect' | 'preset' | 'catalog' | 'color';
+type FieldType = 'datalist' | 'text' | 'textarea' | 'number' | 'date' | 'diameter' | 'effect' | 'preset' | 'catalog' | 'color' | 'dried';
 interface FieldDef {
   key: string; // spool column (or 'color' pseudo)
   labelKey: string;
@@ -43,6 +43,8 @@ const FIELDS: FieldDef[] = [
   { key: 'color', labelKey: 'inventory.color', type: 'color' },
   { key: 'core_weight_catalog_id', labelKey: 'inventory.coreWeight', type: 'catalog' },
   { key: 'purchase_date', labelKey: 'inventory.purchaseDate', type: 'date' },
+  // A batch dried in an external dryer: stamp «now», or clear a wrong date.
+  { key: 'last_dried_at', labelKey: 'inventory.lastDried', type: 'dried' },
   { key: 'filament_diameter', labelKey: 'inventory.filamentDiameter', type: 'diameter' },
   { key: 'cost_per_kg', labelKey: 'inventory.costPerKg', type: 'number' },
   { key: 'note', labelKey: 'inventory.note', type: 'textarea' },
@@ -231,7 +233,7 @@ export function BulkEditSpoolsModal({ isOpen, spools, allSpools, catalogEntries,
         const ty = FIELDS.find((f) => f.key === key)?.type;
         setValues((v) => ({
           ...v,
-          [key]: key === 'color' ? (shared.color ?? '#000000') : ty === 'datalist' ? '' : (shared[key] ?? ''),
+          [key]: key === 'color' ? (shared.color ?? '#000000') : ty === 'datalist' ? '' : ty === 'dried' ? 'now' : (shared[key] ?? ''),
           ...(key === 'color' ? { color_name: shared.color_name ?? '' } : {}),
         }));
       }
@@ -260,6 +262,9 @@ export function BulkEditSpoolsModal({ isOpen, spools, allSpools, catalogEntries,
           fields.slicer_filament = code;
           const opt = code ? presetOptions.find((o) => o.code === code) : null;
           fields.slicer_filament_name = opt?.displayName ?? code;
+        } else if (f.type === 'dried') {
+          // «Now» is the moment of applying, not of ticking the box.
+          fields.last_dried_at = raw === 'clear' ? null : new Date().toISOString();
         } else if (f.type === 'datalist') {
           // Not pre-filled → empty means "leave unchanged" (skip), so an enabled
           // brand/material/etc. with no pick doesn't wipe the column.
@@ -307,6 +312,14 @@ export function BulkEditSpoolsModal({ isOpen, spools, allSpools, catalogEntries,
           onChange={(e) => set(f.key, e.target.value)} className={inputCls} />;
       case 'date':
         return <input type="date" disabled={!on} value={val} onChange={(e) => set(f.key, e.target.value)} className={inputCls} />;
+      case 'dried':
+        return (
+          <Select size="sm" className="w-full" disabled={!on} value={val || 'now'}
+            aria-label={t('inventory.bulkEdit.lastDriedAction')} onChange={(e) => set(f.key, e.target.value)}>
+            <option value="now">{t('inventory.lastDriedNow')}</option>
+            <option value="clear">{t('inventory.bulkEdit.lastDriedClear')}</option>
+          </Select>
+        );
       case 'diameter':
         return (
           <Select size="sm" className="w-full" disabled={!on} value={val || '1.75'} onChange={(e) => set(f.key, e.target.value)}>

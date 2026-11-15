@@ -1,9 +1,20 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from backend.app.schemas.archive import PaginationMeta
+
+
+def naive_utc(value: datetime | None) -> datetime | None:
+    """A moment the way the spool's naive ``DateTime`` columns hold it: UTC.
+
+    A browser sends local time with its offset; dropping the offset without
+    converting would move the stored moment by that offset.
+    """
+    if value is not None and value.tzinfo is not None:
+        return value.astimezone(timezone.utc).replace(tzinfo=None)
+    return value
 
 
 class SpoolBase(BaseModel):
@@ -105,6 +116,14 @@ class SpoolUpdate(BaseModel):
     storage_location: str | None = Field(default=None, max_length=255)
     location_id: int | None = Field(default=None, gt=0)
     purchase_location: str | None = Field(default=None, max_length=255)
+    # Set by hand for a spool dried outside an AMS; null clears it. Not on
+    # SpoolCreate: a new or duplicated spool starts with no drying record.
+    last_dried_at: datetime | None = None
+
+    @field_validator("last_dried_at")
+    @classmethod
+    def _last_dried_at_in_utc(cls, value: datetime | None) -> datetime | None:
+        return naive_utc(value)
 
 
 class SpoolBulkIds(BaseModel):
@@ -210,6 +229,10 @@ class SpoolResponse(SpoolBase):
     rgba: str | None = None
     added_full: bool | None = None
     last_used: datetime | None = None
+    # Last drying. Only the date is writable, through SpoolUpdate.
+    last_dried_at: datetime | None = None
+    last_dried_temp: int | None = None
+    last_dried_hours: float | None = None
     encode_time: datetime | None = None
     tag_uid: str | None = None
     tray_uuid: str | None = None
@@ -282,6 +305,9 @@ class SpoolListItem(BaseModel):
     cost_per_kg: float | None = None
     purchase_date: datetime | None = None
     last_used: datetime | None = None
+    last_dried_at: datetime | None = None
+    last_dried_temp: int | None = None
+    last_dried_hours: float | None = None
     encode_time: datetime | None = None
     filament_diameter: str = "1.75"
     lot: int | None = None

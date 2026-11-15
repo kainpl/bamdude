@@ -23,7 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.models.color_catalog import ColorCatalogEntry
 from backend.app.models.spool import Spool
-from backend.app.schemas.spool import SpoolCreate
+from backend.app.schemas.spool import SpoolCreate, naive_utc
 
 # Fixed CSV header, in output order. Round-trips cleanly: export writes these
 # columns, import expects them. `material` is the only required field; the rest
@@ -33,7 +33,8 @@ from backend.app.schemas.spool import SpoolCreate
 # It's written out for human readability and round-trip clarity, but ignored on
 # import — `weight_used` is the source of truth, and accepting both would let
 # them contradict. `last_used` is a timestamp the model carries but SpoolCreate
-# does not, so import applies it to the ORM object directly (see persist path).
+# does not, so import applies it to the ORM object directly (see persist path);
+# `last_dried_at` travels the same way.
 # `storage_location`, `category` and `low_stock_threshold_pct` are SpoolCreate
 # fields included so a round-trip preserves them (they'd otherwise be lost).
 CSV_COLUMNS = [
@@ -51,6 +52,7 @@ CSV_COLUMNS = [
     "nozzle_temp_min",
     "nozzle_temp_max",
     "last_used",
+    "last_dried_at",
     "note",
     "storage_location",
     "category",
@@ -468,6 +470,13 @@ async def parse_and_validate(
                 last_used = _parse_datetime(last_used_cell)
                 if last_used is None:
                     row_error = f"last_used must be an ISO date/time (got '{last_used_cell}')"
+        last_dried_at: datetime | None = None
+        if row_error is None:
+            last_dried_cell = cell(raw_row, "last_dried_at")
+            if last_dried_cell:
+                last_dried_at = naive_utc(_parse_datetime(last_dried_cell))
+                if last_dried_at is None:
+                    row_error = f"last_dried_at must be an ISO date/time (got '{last_dried_cell}')"
 
         resolved_color = False
         cross_material_color = False
@@ -531,6 +540,8 @@ async def parse_and_validate(
             # last_used isn't a SpoolCreate field; graft it onto the persisted
             # dict so the ORM object carries it.
             spool_data["last_used"] = last_used
+        if last_dried_at is not None:
+            spool_data["last_dried_at"] = last_dried_at
 
         rows.append(
             ImportRowResult(

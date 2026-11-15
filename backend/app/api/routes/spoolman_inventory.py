@@ -13,6 +13,7 @@ import logging
 import re
 import time
 from contextlib import asynccontextmanager
+from datetime import datetime
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Path, Query, Response
 from fastapi.responses import JSONResponse
@@ -41,8 +42,9 @@ from backend.app.models.settings import Settings
 from backend.app.models.spoolman_k_profile import SpoolmanKProfile
 from backend.app.models.spoolman_slot_assignment import SpoolmanSlotAssignment
 from backend.app.models.user import User
-from backend.app.schemas.spool import SpoolKProfileBase
+from backend.app.schemas.spool import SpoolKProfileBase, naive_utc
 from backend.app.schemas.spoolman import SpoolmanFilamentPatch, SpoolmanSlotAssignmentEnriched
+from backend.app.services import spool_drying
 from backend.app.services.location_service import (
     enrich_spool_dicts_with_location_id,
     maybe_sync_spoolman_locations,
@@ -368,6 +370,9 @@ class SpoolmanInventoryUpdate(BaseModel):
     # schema). Pass an empty string to clear; null/omitted leaves unchanged.
     slicer_filament: str | None = Field(None, max_length=128)
     slicer_filament_name: str | None = Field(None, max_length=255)
+    # Set by hand for a spool dried outside an AMS; null clears it. Persisted
+    # to the spool's extra dict like the slicer preset.
+    last_dried_at: datetime | None = None
 
     @field_validator("rgba")
     @classmethod
@@ -378,6 +383,11 @@ class SpoolmanInventoryUpdate(BaseModel):
     @classmethod
     def validate_storage_location(cls, v: str | None) -> str | None:
         return _validate_storage_location(v)
+
+    @field_validator("last_dried_at")
+    @classmethod
+    def validate_last_dried_at(cls, v: datetime | None) -> datetime | None:
+        return naive_utc(v)
 
     @model_validator(mode="after")
     def validate_tag_fields(self) -> SpoolmanInventoryUpdate:
@@ -897,7 +907,8 @@ async def update_spool(
     sf_set = "slicer_filament" in data.model_fields_set
     sfn_set = "slicer_filament_name" in data.model_fields_set
     cn_set = "color_name" in data.model_fields_set
-    if sf_set or sfn_set or cn_set:
+    dried_set = "last_dried_at" in data.model_fields_set
+    if sf_set or sfn_set or cn_set or dried_set:
         # Ensure extra fields are registered (Spoolman rejects PATCHes
         # with unknown keys with HTTP 400). Idempotent if startup already
         # ran this.
@@ -914,6 +925,11 @@ async def update_spool(
             new_extra["bambu_slicer_filament_name"] = json.dumps(data.slicer_filament_name or "")
         if cn_set:
             new_extra["bambu_color_name"] = json.dumps(data.color_name or "")
+        if dried_set:
+            # A date set by hand is not the AMS cycle the temperature and hours
+            # describe, so they are cleared with it, as in internal mode. The
+            # three keys are registered by the write that carries them.
+            new_extra.update(spool_drying.spoolman_extra(data.last_dried_at))
         async with _translate_spoolman_errors():
             updated = await client.merge_spool_extra(spool_id, new_extra)
 

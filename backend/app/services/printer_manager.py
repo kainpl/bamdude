@@ -19,6 +19,7 @@ from backend.app.services import ams_advertised_overlay as _overlay
 from backend.app.services.bambu_mqtt import (
     FAN_CTRL,
     BambuMQTTClient,
+    DryingCycleEnd,
     PrinterState,
     airduct_fan_control,
     airduct_mode_effective,
@@ -758,6 +759,7 @@ class PrinterManager:
         # #1349: fires when an AMS on the connected printer finishes a
         # drying cycle. Receives ``(printer_id, ams_id)``.
         self._on_drying_complete: Callable[[int, int], None] | None = None
+        self._on_drying_cycle_end: Callable[[int, DryingCycleEnd], None] | None = None
         self._on_assignment_verified: Callable[[int, int, int, bool, dict], None] | None = None
         self._on_tray_change: Callable[[int, int, int, object], None] | None = None
         # Usage-journal events beyond tray changes (runout / spool_loaded).
@@ -1232,6 +1234,14 @@ class PrinterManager:
         """
         self._on_drying_complete = callback
 
+    def set_drying_cycle_end_callback(self, callback: Callable[[int, DryingCycleEnd], None]):
+        """Set callback for the end of an AMS drying cycle (upstream 84f320b85).
+
+        Receives ``(printer_id, DryingCycleEnd)`` when a unit's countdown falls
+        to 0, with what was seen of the cycle.
+        """
+        self._on_drying_cycle_end = callback
+
     def set_assignment_verified_callback(self, callback: Callable[[int, int, int, bool, dict], None]):
         """Set callback for spool-assignment read-back verification (upstream #2582).
 
@@ -1389,6 +1399,10 @@ class PrinterManager:
             if self._on_drying_complete:
                 self._schedule_for_client(printer_id, session_life, self._on_drying_complete(printer_id, ams_id))
 
+        def on_drying_cycle_end(cycle: DryingCycleEnd):
+            if self._on_drying_cycle_end:
+                self._schedule_for_client(printer_id, session_life, self._on_drying_cycle_end(printer_id, cycle))
+
         def on_assignment_verified(ams_id: int, tray_id: int, verified: bool, detail: dict):
             if self._on_assignment_verified:
                 self._schedule_for_client(
@@ -1479,6 +1493,7 @@ class PrinterManager:
             on_kprofiles_changed=on_kprofiles_changed,
             on_first_status=on_first_status,
             on_drying_complete=on_drying_complete,
+            on_drying_cycle_end=on_drying_cycle_end,
             on_print_running_observed=on_print_running_observed,
             on_finish_photo_moment=on_finish_photo_moment,
             on_assignment_verified=on_assignment_verified,

@@ -20,6 +20,7 @@ import { AdditionalSection } from './spool-form/AdditionalSection';
 import { SpoolmanFilamentPicker } from './spool-form/SpoolmanFilamentPicker';
 import { PAProfileSection } from './spool-form/PAProfileSection';
 import { SpoolUsageHistory } from './SpoolUsageHistory';
+import { parseUTCDate, toDateTimeLocalValue } from '../utils/date';
 import {
   invalidateInventoryLocations,
   invalidateSpoolAndLocationQueries,
@@ -90,6 +91,9 @@ export function SpoolFormModal({
   const [activeTab, setActiveTab] = useState<TabId>('filament');
   const [weightTouched, setWeightTouched] = useState(false);
   const [locationIdTouched, setLocationIdTouched] = useState(false);
+  // Sent only when changed, so saving an unrelated edit cannot put back a
+  // drying date an AMS cycle stamped while the form was open.
+  const [lastDriedTouched, setLastDriedTouched] = useState(false);
   const [quickAdd, setQuickAdd] = useState(false);
   const [quantity, setQuantity] = useState(1);
 
@@ -385,6 +389,10 @@ export function SpoolFormModal({
           low_stock_threshold_pct: spool.low_stock_threshold_pct != null ? String(spool.low_stock_threshold_pct) : '',
           location_id: spool.location_id ?? null,
           purchase_location: spool.purchase_location || '',
+          last_dried_at: (() => {
+            const dried = isCopying ? null : parseUTCDate(spool.last_dried_at);
+            return dried ? toDateTimeLocalValue(dried) : '';
+          })(),
           spoolman_filament_id: null,
         });
         setPickedFamily(null);
@@ -412,6 +420,7 @@ export function SpoolFormModal({
       setActiveTab('filament');
       setWeightTouched(false);
       setLocationIdTouched(false);
+      setLastDriedTouched(false);
     }
     // filamentOptions is read for its value at open time (the initial preset
   }, [isOpen, spool, resolvedMode, isCopying]);
@@ -455,6 +464,7 @@ export function SpoolFormModal({
     }));
     if (key === 'weight_used') setWeightTouched(true);
     if (key === 'location_id') setLocationIdTouched(true);
+    if (key === 'last_dried_at') setLastDriedTouched(true);
     if (errors[key]) {
       setErrors(prev => ({ ...prev, [key]: undefined }));
     }
@@ -828,6 +838,10 @@ export function SpoolFormModal({
       data.location_id = formData.location_id;
     }
 
+    if (isEditing && lastDriedTouched) {
+      data.last_dried_at = formData.last_dried_at ? new Date(formData.last_dried_at).toISOString() : null;
+    }
+
     if (isEditing) {
       updateMutation.mutate(data);
     } else if (quantity > 1) {
@@ -1041,6 +1055,7 @@ export function SpoolFormModal({
                 quickAdd={quickAdd}
                 categories={knownCategories}
                 availableLocations={storageLocations}
+                showLastDried={isEditing}
                 onCreateLocation={async (name) => {
                   try {
                     const created = await api.createLocation({ name });

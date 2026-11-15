@@ -247,7 +247,7 @@ def _weight_check_expr():
     return case((Spool.last_scale_weight.is_(None), -1), else_=func.abs(Spool.last_scale_weight - expected_gross))
 
 
-# The 3 nullable DATETIME sort columns — can't be ``func.coalesce(col, "")``
+# The nullable DATETIME sort columns — can't be ``func.coalesce(col, "")``
 # like the nullable TEXT columns below (a timestamp/text CASE type mismatch
 # 500s on PostgreSQL); the equivalent "NULL sorts as the smallest value" is
 # instead applied at ORDER BY time via ``.nulls_first()``/``.nulls_last()``
@@ -256,7 +256,7 @@ def _weight_check_expr():
 # ISO datetime string, so it always sorts first on asc / last on desc; NULL
 # pinned first/last is the identical outcome). ``added_time`` -> created_at is
 # NOT NULL (server_default), so it's deliberately excluded here.
-_DATETIME_NULLABLE_SORT_KEYS = frozenset({"purchase_date", "encode_time", "last_used_time"})
+_DATETIME_NULLABLE_SORT_KEYS = frozenset({"purchase_date", "encode_time", "last_used_time", "last_dried"})
 
 
 def _spool_sort_columns() -> dict[str, Any]:
@@ -290,6 +290,7 @@ def _spool_sort_columns() -> dict[str, Any]:
         "purchase_date": Spool.purchase_date,
         "encode_time": Spool.encode_time,
         "last_used_time": Spool.last_used,
+        "last_dried": Spool.last_dried_at,
         "material": Spool.material,
         "subtype": func.coalesce(Spool.subtype, ""),
         "color_name": func.coalesce(func.lower(Spool.color_name), ""),
@@ -417,6 +418,7 @@ SPOOL_ORDER_KEYS: tuple[str, ...] = (
     "added_time",
     "purchase_date",
     "last_used_time",
+    "last_dried",
     "storage_location",
     "cost_per_kg",
     "lot",
@@ -1170,6 +1172,11 @@ async def update_spool(db: AsyncSession, spool_id: int, spool_data: SpoolUpdate)
     # Auto-lock weight when user explicitly sets weight_used
     if "weight_used" in update_data and "weight_locked" not in update_data:
         update_data["weight_locked"] = True
+    # A drying date set by hand is not the AMS cycle the temperature and hours
+    # describe, so they go with it.
+    if "last_dried_at" in update_data:
+        update_data["last_dried_temp"] = None
+        update_data["last_dried_hours"] = None
 
     # A payload with a slicer code and no family gets its family here, through
     # the one resolver that understands every legacy format — the form used to

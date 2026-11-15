@@ -35,6 +35,7 @@ const EXTRACTORS: Record<string, Extractor> = {
   added_time: (s) => s.created_at || '',
   purchase_date: (s) => s.purchase_date || '',
   last_used_time: (s) => s.last_used || '',
+  last_dried: (s) => s.last_dried_at || '',
   storage_location: (s) => text(s.storage_location),
   cost_per_kg: (s) => s.cost_per_kg ?? 0,
   lot: (s) => s.lot ?? 0,

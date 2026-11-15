@@ -185,6 +185,8 @@ const DEFAULT_COLUMNS: ColumnConfig[] = [
   { id: 'added_time', label: 'Added', visible: false },
   { id: 'encode_time', label: 'Encoded', visible: false },
   { id: 'last_used_time', label: 'Last Used', visible: false },
+  // Hidden by default (owner, 2026-11-15): the default table is dense already.
+  { id: 'last_dried', label: 'Last dried', visible: false },
   { id: 'rgba', label: 'Color', visible: true },
   { id: 'material', label: 'Material', visible: true },
   { id: 'subtype', label: 'Subtype', visible: false },
@@ -321,6 +323,17 @@ const MATERIAL_COLORS: Record<string, string> = {
 
 type TFn = (key: string, opts?: Record<string, unknown>) => string;
 
+// «55 °C · 8 h» of the last drying; empty when neither is known — a date set
+// by hand, or a cycle BamDude neither started nor watched from its start.
+function formatLastDriedDetails(spool: InventorySpool, t: TFn): string {
+  const parts: string[] = [];
+  if (spool.last_dried_temp != null) parts.push(t('inventory.lastDriedTemp', { temp: spool.last_dried_temp }));
+  if (spool.last_dried_hours != null) {
+    parts.push(t('inventory.lastDriedHours', { hours: Number(spool.last_dried_hours.toFixed(1)) }));
+  }
+  return parts.join(' · ');
+}
+
 function formatInventoryDate(dateStr: string | null, dateFormat: DateFormat = 'system'): string {
   if (!dateStr) return '-';
   const date = parseUTCDate(dateStr);
@@ -360,6 +373,7 @@ const columnHeaders: Record<string, (t: TFn) => string> = {
   added_time: (t) => t('inventory.columns.added_time'),
   encode_time: (t) => t('inventory.columns.encode_time'),
   last_used_time: (t) => t('inventory.columns.last_used_time'),
+  last_dried: (t) => t('inventory.columns.last_dried'),
   rgba: (t) => t('inventory.columns.rgba'),
   material: (t) => t('inventory.columns.material'),
   subtype: (t) => t('inventory.columns.subtype'),
@@ -418,6 +432,16 @@ const columnCells: Record<string, (ctx: CellCtx) => ReactNode> = {
   last_used_time: ({ spool, dateFormat }) => (
     <span className="text-sm text-bambu-gray">{spool.last_used ? formatInventoryDate(spool.last_used, dateFormat) : 'Never'}</span>
   ),
+  last_dried: ({ spool, dateFormat, t }) => {
+    if (!spool.last_dried_at) return <span className="text-sm text-bambu-gray">-</span>;
+    const details = formatLastDriedDetails(spool, t);
+    return (
+      <div className="text-sm text-bambu-gray">
+        <div>{formatInventoryDate(spool.last_dried_at, dateFormat)}</div>
+        {details && <div className="text-xs text-bambu-gray/60">{details}</div>}
+      </div>
+    );
+  },
   rgba: ({ spool }) => (
     <div className="flex items-center justify-center">
       <span
@@ -654,6 +678,7 @@ const columnSortValues: Record<string, (spool: InventorySpool, assignmentMap: Re
   purchase_date: (s) => s.purchase_date || '',
   encode_time: (s) => s.encode_time || '',
   last_used_time: (s) => s.last_used || '',
+  last_dried: (s) => s.last_dried_at || '',
   material: (s) => (s.material || '').toLowerCase(),
   subtype: (s) => (s.subtype || '').toLowerCase(),
   // The NAME column sorts by name — alphabetical is what it says on the header.
@@ -2890,6 +2915,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
                       onCopySpool={(s) => void openSpoolEditor(s, 'copy')}
                       onPrintLabel={(id) => setLabelPickerSpoolIds([id])}
                       t={t}
+                      dateFormat={dateFormat}
                     />
                   );
                 }
@@ -2908,6 +2934,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
                     onPrintLabel={() => setLabelPickerSpoolIds([spool.id])}
                     onCopy={() => void openSpoolEditor(spool, 'copy')}
                     t={t}
+                    dateFormat={dateFormat}
                   />
                 );
               })}
@@ -3315,7 +3342,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
 
 /* Spool card for cards view */
 function SpoolCard({
-  spool, remaining, pct, colorStyle, onClick, onPrintLabel, onCopy, t,
+  spool, remaining, pct, colorStyle, onClick, onPrintLabel, onCopy, t, dateFormat,
 }: {
   spool: InventorySpool;
   remaining: number;
@@ -3325,6 +3352,7 @@ function SpoolCard({
   onPrintLabel?: () => void;
   onCopy?: () => void;
   t: (key: string, opts?: Record<string, unknown>) => string;
+  dateFormat: DateFormat;
 }) {
   return (
     <div
@@ -3388,6 +3416,14 @@ function SpoolCard({
           </div>
         </div>
         <div className="grid grid-cols-2 gap-2 text-xs">
+          {spool.last_dried_at && (
+            <div className="col-span-2">
+              <span className="text-bambu-gray/60">{t('inventory.lastDried')}: </span>
+              <span className="text-bambu-gray">
+                {[formatInventoryDate(spool.last_dried_at, dateFormat), formatLastDriedDetails(spool, t)].filter(Boolean).join(' · ')}
+              </span>
+            </div>
+          )}
           <div>
             <span className="text-bambu-gray/60">{t('inventory.labelWeight')}: </span>
             <span className="text-bambu-gray">{formatWeight(spool.label_weight)}</span>
@@ -3469,7 +3505,7 @@ function useGroupMembers(
  * (identity fields are the group key, shared by construction).
  */
 function SpoolCardGroup({
-  item, isExpanded, onToggle, onEditSpool, onCopySpool, onPrintLabel, t,
+  item, isExpanded, onToggle, onEditSpool, onCopySpool, onPrintLabel, t, dateFormat,
 }: {
   item: Extract<DisplayItem, { type: 'group' }>;
   isExpanded: boolean;
@@ -3478,6 +3514,7 @@ function SpoolCardGroup({
   onCopySpool: (spool: InventorySpool) => void;
   onPrintLabel: (id: number) => void;
   t: TFn;
+  dateFormat: DateFormat;
 }) {
   const members = useGroupMembers(item.ids, item.spools, isExpanded);
   const rep = item.representative;
@@ -3540,6 +3577,7 @@ function SpoolCardGroup({
                   onPrintLabel={() => onPrintLabel(spool.id)}
                   onCopy={() => onCopySpool(spool)}
                   t={t}
+                  dateFormat={dateFormat}
                 />
               );
             })}

@@ -62,6 +62,9 @@ export interface SpoolFormData {
   // derives the denormalized free-text ``storage_location`` from this id.
   location_id: number | null;
   purchase_location: string;
+  // Last drying, as a datetime-local value in the browser's time zone. Empty
+  // means never dried. Shown and sent only when editing.
+  last_dried_at: string;
   // Spoolman inventory UI: when set the spool links to a specific Spoolman
   // filament catalog entry; backend skips find_or_create_filament() and uses
   // this ID directly.
@@ -92,6 +95,7 @@ export const defaultFormData: SpoolFormData = {
   low_stock_threshold_pct: '',
   location_id: null,
   purchase_location: '',
+  last_dried_at: '',
   spoolman_filament_id: null,
 };
 
@@ -192,6 +196,9 @@ export interface AdditionalSectionProps extends SectionProps {
   availableLocations?: { id: number; name: string }[];
   onCreateLocation?: (name: string) => Promise<{ id: number; name: string } | null>;
   errors?: Partial<Record<keyof SpoolFormData, string>>;
+  // When true the «Last dried» field is shown. Edit mode only: a new or copied
+  // spool has no drying record to correct.
+  showLastDried?: boolean;
   // Spoolman inventory UI (upstream PR #1241): when true the empty-spool
   // weight is managed by Spoolman on the filament object, so
   // SpoolWeightPicker is hidden and an info notice is shown instead.
