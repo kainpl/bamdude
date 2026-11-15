@@ -1444,6 +1444,7 @@ async def apply_active_calibration_to_slot(
     nozzle_volume_type: str = "standard",
     extruder_id: int = 0,
     spool_id: int | None = None,
+    bound_cali_idx: int | None = None,
 ) -> tuple[bool, FilamentCalibration | None]:
     """Resolve the right calibration for a slot and fire ``extrusion_cali_sel``.
 
@@ -1462,6 +1463,13 @@ async def apply_active_calibration_to_slot(
     Returns ``(fired, cache_row)``. ``fired=True`` iff MQTT was published.
     Stale cache (live list lacks the profile) returns ``(False, cache_row)``
     so the caller can decide whether to fall back.
+
+    ``bound_cali_idx`` — the index the slot reports RIGHT NOW, for the one
+    caller that runs on every AMS change (``main.on_ams_change``). When it
+    already is the resolved profile's live index nothing is published and the
+    answer is ``(False, cache_row)``. Every other caller leaves it ``None`` and
+    publishes as before: a bind at assign or before a print is sent whatever
+    the slot holds.
     """
     if not filament_id:
         return False, None
@@ -1559,6 +1567,8 @@ async def apply_active_calibration_to_slot(
             live_match = kp
             break
     if live_match is None:
+        return False, cache_row
+    if bound_cali_idx is not None and bound_cali_idx >= 0 and int(live_match.slot_id) == bound_cali_idx:
         return False, cache_row
 
     try:

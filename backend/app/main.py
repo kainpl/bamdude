@@ -3507,17 +3507,20 @@ async def _on_ams_change(printer_id: int, ams_data: list):
                                             )
                                             await db.commit()
 
-                            # Re-apply stored K-profile when the live tray's
-                            # cali_idx drifted from the spool's stored profile.
-                            # Catches "reset slot → re-read" + any other path
-                            # where the firmware loses the user's K-profile
-                            # selection while the SpoolAssignment row persists.
-                            # Per upstream maintainer's rule (b30a2831): any time
-                            # a spool tag is identified and matches inventory,
-                            # the slot must be configured with the spool's
-                            # stored settings. Without this block the existing-
-                            # assignment branch only ran weight-sync and let the
-                            # firmware-default cali_idx win.
+                            # Re-bind the K-profile of a tagged spool that has
+                            # a K link, when the slot is not on it: the binder
+                            # resolves link → active calibration → its LIVE
+                            # index, and is handed the index this very push
+                            # reports for the tray, so a slot already on the
+                            # resolved profile gets nothing. Before that
+                            # comparison the block published on every AMS change
+                            # while idle — a remain% tick included — whatever
+                            # the slot held. It catches "reset slot → re-read"
+                            # and any other loss of the selection while the
+                            # SpoolAssignment row persists. Upstream removed its
+                            # counterpart (f45cc599f); ours stays: a profile
+                            # picked for the slot in Bambu Studio is replaced by
+                            # the linked one at the next AMS change, as before.
                             try:
                                 spool = existing_assignment.spool
                                 if (
@@ -3538,9 +3541,14 @@ async def _on_ams_change(printer_id: int, ams_data: list):
                                         spool=spool, slot_tray_info_idx=tray_info_idx or None, db=db
                                     )
                                     if effective_filament_id:
-                                        # Helper fires only when the live cali_idx
-                                        # disagrees with the cached row's stable
-                                        # identity, so steady-state pushes are no-ops.
+                                        # The tray's index from the SAME data this
+                                        # callback was handed — a cached snapshot
+                                        # could be a push behind and skip a bind
+                                        # that is needed. Unreported is not "equal".
+                                        try:
+                                            bound_cali_idx = int(tray.get("cali_idx"))
+                                        except (TypeError, ValueError):
+                                            bound_cali_idx = None
                                         fired, fc = await apply_active_calibration_to_slot(
                                             db=db,
                                             printer_id=printer_id,
@@ -3551,6 +3559,7 @@ async def _on_ams_change(printer_id: int, ams_data: list):
                                             nozzle_volume_type=nozzle.flow_or_standard,
                                             extruder_id=nozzle.extruder_or_default,
                                             spool_id=spool.id,
+                                            bound_cali_idx=bound_cali_idx,
                                         )
                                         if fired and fc:
                                             logger.info(
