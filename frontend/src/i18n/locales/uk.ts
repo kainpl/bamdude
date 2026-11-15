@@ -10629,6 +10629,8 @@ export default {
     autoMatched: 'Автопідбір',
     requiredFilament: 'Потрібно: {{type}} - {{color}}',
     selectSlot: '-- Виберіть слот --',
+    slotFor: 'Слот для {{filament}}',
+    slotExactColor: 'Той самий матеріал і колір, що просить файл',
     customSlotMapping: 'Власне призначення слотів',
     reRead: 'Перечитати',
     customMapping: 'Власне призначення',

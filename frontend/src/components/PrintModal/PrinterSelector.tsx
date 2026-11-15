@@ -21,7 +21,8 @@ import {
 import type { PrinterSelectorProps } from './types';
 import type { PrinterMappingResult, PerPrinterConfig } from '../../hooks/useMultiPrinterFilamentMapping';
 import type { FilamentRequirement } from '../../hooks/useFilamentMapping';
-import { useSlotSpoolNames } from '../../hooks/useSlotSpoolNames';
+import { useSlotSpoolNames, useSlotSpoolSwatches } from '../../hooks/useSlotSpoolNames';
+import { SlotPicker } from './SlotPicker';
 import { modelCompatibility } from '../../utils/modelCompatibility';
 
 interface PrinterSelectorWithMappingProps extends PrinterSelectorProps {
@@ -54,6 +55,7 @@ function InlineMappingEditor({
   const queryClient = useQueryClient();
   // Assigned slots are named after their spool (upstream d5c70477).
   const slotNames = useSlotSpoolNames(printerResult.printerId);
+  const slotSwatches = useSlotSpoolSwatches(printerResult.printerId);
   const [isRefreshing, setIsRefreshing] = useState(false);
 
   const handleSlotChange = (slotId: number, value: string) => {
@@ -130,8 +132,7 @@ function InlineMappingEditor({
       {slotAssignments.map(({ req, loaded, status, isManual }, idx) => (
         <div
           key={idx}
-          className="grid items-center gap-2 text-xs"
-          style={{ gridTemplateColumns: '16px minmax(70px, 1fr) auto 2fr 16px' }}
+          className="grid items-center gap-2 text-xs grid-cols-[16px_minmax(0,1fr)_16px] sm:grid-cols-[16px_minmax(70px,1fr)_auto_2fr_16px]"
         >
           <span title={t('printModal.requiredFilament', { type: req.type, color: getColorName(req.color) })}>
             <Circle className="w-3 h-3" fill={req.color} stroke={req.color} />
@@ -142,39 +143,48 @@ function InlineMappingEditor({
             <span className="truncate min-w-0" title={req.type}>{req.type}</span>
             <span className="text-bambu-gray shrink-0 whitespace-nowrap">({req.used_grams}g)</span>
           </span>
-          <span className="text-bambu-gray">→</span>
-          <select
-            value={loaded?.globalTrayId ?? ''}
-            onChange={(e) => handleSlotChange(req.slot_id || 0, e.target.value)}
-            className={`flex-1 px-2 py-1 rounded border text-xs bg-bambu-dark-secondary focus:outline-none focus:ring-1 focus:ring-bambu-green ${
-              status === 'match'
-                ? 'border-bambu-green/50 text-bambu-green'
-                : status === 'type_only'
-                ? 'border-yellow-500 dark:border-yellow-400/50 text-yellow-700 dark:text-yellow-400'
-                : 'border-orange-500 dark:border-orange-400/50 text-orange-700 dark:text-orange-400'
-            } ${isManual ? 'ring-1 ring-blue-400/50' : ''}`}
-            title={isManual ? t('printModal.manuallySelected') : t('printModal.autoMatched')}
-          >
-            <option value="" className="bg-bambu-dark text-bambu-gray">
-              {t('printModal.selectSlot')}
-            </option>
-            {(printerResult.status?.fila_switch?.installed
-              ? printerResult.loadedFilaments
-              : filterFilamentsByNozzle(printerResult.loadedFilaments, req.nozzle_id))
-              .map((f) => (
-              <option key={f.globalTrayId} value={f.globalTrayId} className="bg-bambu-dark text-white">
-                {f.label}: {slotNames.get(f.globalTrayId) ?? `${f.traySubBrands || f.type} (${f.colorName})`}
-              </option>
-            ))}
-          </select>
+          <span className="text-bambu-gray max-sm:hidden">→</span>
+          <div className="min-w-0 max-sm:col-span-3 max-sm:row-start-2">
+            <SlotPicker
+              value={loaded?.globalTrayId ?? null}
+              onChange={(value) => handleSlotChange(req.slot_id || 0, value == null ? '' : String(value))}
+              placeholder={t('printModal.selectSlot')}
+              ariaLabel={t('printModal.slotFor', { filament: req.type })}
+              exactLabel={t('printModal.slotExactColor')}
+              toneClass={`${
+                status === 'match'
+                  ? 'border-bambu-green/50 text-bambu-green'
+                  : status === 'type_only'
+                  ? 'border-yellow-500 dark:border-yellow-400/50 text-yellow-700 dark:text-yellow-400'
+                  : 'border-orange-500 dark:border-orange-400/50 text-orange-700 dark:text-orange-400'
+              } ${isManual ? 'ring-1 ring-blue-400/50' : ''}`}
+              title={isManual ? t('printModal.manuallySelected') : t('printModal.autoMatched')}
+              options={(printerResult.status?.fila_switch?.installed
+                ? printerResult.loadedFilaments
+                : filterFilamentsByNozzle(printerResult.loadedFilaments, req.nozzle_id))
+                .map((f) => {
+                  const bound = slotSwatches.get(f.globalTrayId);
+                  return {
+                    value: f.globalTrayId,
+                    slot: f.label,
+                    name: slotNames.get(f.globalTrayId) ?? `${f.traySubBrands || f.type} (${f.colorName})`,
+                    color: bound?.rgba ?? f.color,
+                    extraColors: bound?.extraColors,
+                    effectType: bound?.effectType,
+                    subtype: bound?.subtype,
+                    exact: filamentRequirementMatches(req, f) && filamentColorMatches(req, f),
+                  };
+                })}
+            />
+          </div>
           {status === 'match' ? (
-            <Check className="w-3 h-3 text-bambu-green" />
+            <Check className="w-3 h-3 text-bambu-green max-sm:col-start-3 max-sm:row-start-1" />
           ) : status === 'type_only' ? (
-            <span title={t('printModal.sameTypeDifferentColor')}>
+            <span className="max-sm:col-start-3 max-sm:row-start-1" title={t('printModal.sameTypeDifferentColor')}>
               <AlertTriangle className="w-3 h-3 text-yellow-600 dark:text-yellow-400" />
             </span>
           ) : (
-            <span title={printerResult.routingReason || t('printModal.filamentTypeNotLoaded')}>
+            <span className="max-sm:col-start-3 max-sm:row-start-1" title={printerResult.routingReason || t('printModal.filamentTypeNotLoaded')}>
               <AlertTriangle className="w-3 h-3 text-orange-600 dark:text-orange-400" />
             </span>
           )}

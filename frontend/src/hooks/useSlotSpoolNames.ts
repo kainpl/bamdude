@@ -1,7 +1,13 @@
 import { useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../api/client';
-import { slotSpoolFacts, slotSpoolNames, type SlotSpoolFacts } from '../utils/slotSpoolNames';
+import {
+  slotSpoolFacts,
+  slotSpoolNames,
+  slotSpoolSwatches,
+  type SlotSpoolFacts,
+  type SlotSpoolSwatch,
+} from '../utils/slotSpoolNames';
 
 /**
  * The spools bound to one printer's slots, from the ACTIVE inventory: the
@@ -61,6 +67,12 @@ export function useSlotSpoolNames(printerId: number | null | undefined): Map<num
     () => slotSpoolNames({ ...sources, template: settings?.spool_display_template }),
     [sources, settings?.spool_display_template],
   );
+}
+
+/** `{global tray id → the bound spool's colours}` — see `slotSpoolSwatches`. */
+export function useSlotSpoolSwatches(printerId: number | null | undefined): Map<number, SlotSpoolSwatch> {
+  const sources = useSlotSpoolSources(printerId);
+  return useMemo(() => slotSpoolSwatches(sources), [sources]);
 }
 
 /**

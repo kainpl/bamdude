@@ -10424,6 +10424,8 @@ export default {
     autoMatched: 'Auto-matched',
     requiredFilament: 'Required: {{type}} - {{color}}',
     selectSlot: '-- Select slot --',
+    slotFor: 'Slot for {{filament}}',
+    slotExactColor: 'Same material and colour as the file asks for',
     customSlotMapping: 'Custom slot mapping',
     reRead: 'Re-read',
     customMapping: 'Custom mapping',
