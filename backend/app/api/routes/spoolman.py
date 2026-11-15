@@ -196,6 +196,12 @@ async def disconnect_spoolman(
     return {"success": True, "message": "Disconnected from Spoolman"}
 
 
+async def _announce_slot(printer_id: int, ams_id: int, tray_id: int) -> None:
+    await ws_manager.broadcast(
+        {"type": "spool_assignment_changed", "printer_id": printer_id, "ams_id": ams_id, "tray_id": tray_id}
+    )
+
+
 async def _read_slot_ledger(db: AsyncSession, printer_id: int | None = None) -> dict[tuple[int, int, int], int] | None:
     """``(printer_id, ams_id, tray_id)`` → spool id, or ``None`` when it could not be read."""
     try:
@@ -243,14 +249,7 @@ async def _write_and_announce_sync(
             errors.append(f"Failed to persist slot assignments: {type(e).__name__}")
             continue
         for ams_id, tray_id in moved:
-            await ws_manager.broadcast(
-                {
-                    "type": "spool_assignment_changed",
-                    "printer_id": printer_id,
-                    "ams_id": ams_id,
-                    "tray_id": tray_id,
-                }
-            )
+            await _announce_slot(printer_id, ams_id, tray_id)
     return errors
 
 
@@ -1111,6 +1110,13 @@ async def link_spool(
                 t_id,
             )
 
+    # Sent last, like the assign route: everything a refetch reads — the tag,
+    # the slot row, the stale tag links taken off other spools — is settled
+    # (upstream 6c2731a6d). The tag → spool map hangs on ``inventory_changed``.
+    await ws_manager.broadcast({"type": "inventory_changed"})
+    if printer_context:
+        await _announce_slot(*printer_context)
+
     return {"success": True, "message": f"Spool {spool_id} linked to AMS tag"}
 
 
@@ -1155,14 +1161,36 @@ async def unlink_spool(
     except SpoolmanUnavailableError:
         raise HTTPException(status_code=503, detail="Spoolman is not reachable")
 
-    # Remove local slot assignment for this spool (all slots — a spool can only be in one at a time)
+    # Remove local slot assignment for this spool (all slots — a spool can only be in one at a time).
+    # The route is addressed by spool, so the slots are knowable only from the
+    # rows: read as plain values BEFORE the delete, as the unassign route does.
     try:
+        freed_slots = [
+            tuple(row)
+            for row in (
+                await db.execute(
+                    select(
+                        SpoolmanSlotAssignment.printer_id,
+                        SpoolmanSlotAssignment.ams_id,
+                        SpoolmanSlotAssignment.tray_id,
+                    ).where(SpoolmanSlotAssignment.spoolman_spool_id == spool_id)
+                )
+            ).all()
+        ]
         await db.execute(delete(SpoolmanSlotAssignment).where(SpoolmanSlotAssignment.spoolman_spool_id == spool_id))
         await db.commit()
     except Exception:
         await db.rollback()
         logger.exception("DB error removing slot assignment for spool %s", spool_id)
         raise HTTPException(status_code=500, detail="Failed to remove local slot assignment")
+
+    from backend.app.services import ams_advertised_overlay as overlay  # noqa: PLC0415
+
+    await ws_manager.broadcast({"type": "inventory_changed"})
+    for printer_id, ams_id, tray_id in freed_slots:
+        # With the assignment gone there is no spool left behind the mask.
+        overlay.forget(printer_id, ams_id, tray_id)
+        await _announce_slot(printer_id, ams_id, tray_id)
 
     logger.info("Unlinked Spoolman spool %s", spool_id)
     return {"success": True, "message": f"Spool {spool_id} unlinked from AMS"}
@@ -1280,5 +1308,10 @@ async def create_spool_from_slot(
                 status_code=500,
                 detail=f"Spool created in Spoolman but slot assignment failed: {exc}",
             ) from exc
+
+    # The caller's own tab refreshes itself; every other one needs to be told.
+    await ws_manager.broadcast({"type": "inventory_changed"})
+    if sync_result.get("id"):
+        await _announce_slot(req.printer_id, req.ams_id, req.tray_id)
 
     return {"success": True, "spool_id": sync_result.get("id")}

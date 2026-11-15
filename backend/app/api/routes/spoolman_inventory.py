@@ -1441,6 +1441,9 @@ async def sync_spoolman_ams_weights(
                 )
             skipped += 1
 
+    if synced:
+        # The Inventory page shows the weight this just changed.
+        await ws_manager.broadcast({"type": "inventory_changed"})
     return {"synced": synced, "skipped": skipped}
 
 
