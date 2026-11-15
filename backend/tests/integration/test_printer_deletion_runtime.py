@@ -464,6 +464,40 @@ async def test_queued_callbacks_of_a_deleted_life_never_reach_their_receivers(fa
 
 
 @pytest.mark.asyncio
+async def test_a_drying_cycle_end_of_a_deleted_life_stamps_nothing(fake_mqtt, monkeypatch):
+    """The end of an AMS drying cycle marks the unit's spools as dried: a deleted printer's queued report
+    must not mark the spools of the printer that took its id."""
+    from backend.app.services.bambu_mqtt import DryingCycleEnd
+
+    received = []
+
+    async def on_cycle_end(pid, cycle):
+        received.append((pid, cycle.ams_id))
+
+    printer_manager.set_drying_cycle_end_callback(on_cycle_end)
+    cycle = DryingCycleEnd(ams_id=1, remaining_minutes=0, peak_minutes=480, start_seen=True)
+    printer = _printer(4344)
+    try:
+        assert await printer_manager.connect_printer(printer)
+        client = fake_mqtt[-1]
+        client.kwargs["on_drying_cycle_end"](cycle)
+        await _settle()
+        assert received == [(4344, 1)]
+
+        received.clear()
+        life = printer_manager.begin_printer_deletion(printer.id)
+        client.kwargs["on_drying_cycle_end"](cycle)
+        await _settle()
+        printer_manager.end_printer_deletion(printer.id, life)
+        client.kwargs["on_drying_cycle_end"](cycle)
+        await _settle()
+        assert received == []
+    finally:
+        printer_manager.disconnect_printer(printer.id)
+        printer_manager._on_drying_cycle_end = None
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("deleted", [False, True], ids=["same-record-control", "next-record"])
 async def test_a_queued_plate_gate_write_never_lands_on_the_next_record(
     printer_factory, db_session, reconcile_db, deleted

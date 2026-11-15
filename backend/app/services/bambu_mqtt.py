@@ -26,7 +26,7 @@ import paho.mqtt.client as mqtt
 
 from backend.app.services.hms_actions import HMSAction, get_actions_for_error_code
 from backend.app.services.printer_feed_snapshot import FeedTelemetry, snapshot_from_state
-from backend.app.utils.ams_drying import ACTIVE_DRY_STATUSES
+from backend.app.utils.ams_drying import ACTIVE_DRY_STATUSES, DRY_COUNTDOWN_STALL_SECONDS
 from backend.app.utils.filename import subtask_name_from_remote_filename
 from backend.app.utils.paho_teardown import retire_paho_client
 from backend.app.utils.printer_models import is_dual_nozzle_model
@@ -1181,6 +1181,26 @@ def _print_error_severity(error: int) -> int:
     return HMS_LEVEL_COMMON
 
 
+@dataclass(frozen=True)
+class DryingCycleEnd:
+    """What was seen of one AMS drying cycle, reported when it ends (upstream 84f320b85).
+
+    ``peak_minutes`` is the highest ``dry_time`` a status frame showed during
+    the cycle and ``remaining_minutes`` the last one before it fell to 0.
+    ``start_seen`` says the countdown was watched rising from an observed 0;
+    when it was not (the cycle was met already counting) the peak is only a
+    lower bound on the length. ``target_temp`` / ``target_hours`` are known
+    only for a cycle BamDude started — the printer never reports them.
+    """
+
+    ams_id: int
+    remaining_minutes: int
+    peak_minutes: int
+    start_seen: bool
+    target_temp: int | None = None
+    target_hours: int | None = None
+
+
 @dataclass
 class HMSError:
     """Health Management System error from printer."""
@@ -2267,6 +2287,7 @@ class BambuMQTTClient:
         on_kprofiles_changed: Callable[[], None] | None = None,
         on_first_status: Callable[[str, str, str, str], None] | None = None,
         on_drying_complete: Callable[[int], None] | None = None,
+        on_drying_cycle_end: Callable[[DryingCycleEnd], None] | None = None,
         on_print_running_observed: Callable[[dict], None] | None = None,
         on_finish_photo_moment: Callable[[dict], None] | None = None,
         on_assignment_verified: Callable[[int, int, bool, dict], None] | None = None,
@@ -2312,6 +2333,9 @@ class BambuMQTTClient:
         # — i.e. the drying cycle just finished (queue-triggered, ambient,
         # or manual). Receives the AMS id of the unit that finished drying.
         self.on_drying_complete = on_drying_complete
+        # Fired when a drying cycle's countdown falls to 0, with what was seen
+        # of the cycle, so the spools of that unit can be marked as dried.
+        self.on_drying_cycle_end = on_drying_cycle_end
         # #1485 follow-up: fired the first time we see RUNNING state in a
         # session WHEN on_print_start was suppressed (BamDude started mid-
         # print, the #1304 first-push guard skipped the start event). Lets
@@ -2381,11 +2405,25 @@ class BambuMQTTClient:
         # Per-AMS previous ``dry_time``, used to detect the falling edge.
         # Seeded lazily as we observe each AMS unit.
         self._previous_dry_times: dict[int, int] = {}
+        # Per-AMS (last reported ``dry_time``, monotonic time it last CHANGED):
+        # how ``_observe_dry_countdowns`` tells a timer nobody is running from a
+        # cycle. Lives with the client, so a recreated client reads a parked
+        # timer as active again until the threshold has passed once more.
+        self._dry_countdown_seen: dict[int, tuple[int, float]] = {}
         # Per-AMS active-cycle target params (filament + temp) we sent on the
         # last drying start. Bambu does not echo these on the per-tick AMS push
         # — only the dry_time countdown — so we cache what we sent to drive the
         # UI badge. Cleared on stop (mode=0) or when dry_time returns to 0.
         self._drying_targets: dict[int, dict[str, object]] = {}
+        # Per-AMS record of the drying cycle a STATUS frame last showed: a key
+        # means the unit's countdown has been observed, ``None`` that it was
+        # idle, a dict the cycle in progress (highest and last countdown,
+        # whether its start was watched, the target we sent for it). See
+        # ``_observe_dry_cycles``.
+        self._dry_cycles: dict[int, dict[str, object] | None] = {}
+        # Units a status frame's unit mask said are gone. Their merged entry is
+        # what we remembered, so one is read again only from a frame of its own.
+        self._dry_cycle_gone: set[int] = set()
         # Fires when the printer's K-profile push contains content that
         # differs from the last seen hash — covers MQTT (re)connect (first
         # push fills empty hash), set/edit/delete from extrusion_cali_*
@@ -2584,11 +2622,6 @@ class BambuMQTTClient:
         # Key: module_name, Value: timestamp when command was sent
         self._xcam_hold_start: dict[str, float] = {}
         self._xcam_hold_time: float = 3.0  # Ignore incoming data for 3 seconds after command
-
-        # Track last requested tray ID for H2D dual-nozzle printers
-        # H2D only reports slot number (0-3) in tray_now, not global tray ID
-        # We use our tracked value to resolve the correct global ID
-        self._last_load_tray_id: int | None = None
 
         # Captured from a print command, on whichever topic carried it — the
         # slicer's own dispatch on the request topic, or the printer's echo of
@@ -4529,6 +4562,62 @@ class BambuMQTTClient:
         logger.debug("[%s] External spool identity changed, triggering sync callback", self.serial_number)
         self.on_ams_change(self.state.raw_data.get("ams") or [])
 
+    def _observe_dry_countdowns(self, merged_ams: list, reported: object) -> None:
+        """Stamp ``dry_countdown_stalled`` on each unit of a status frame.
+
+        A printer can take a drying command, keep its countdown and not heat
+        (upstream #2896 / #3096). A live countdown ticks once a minute, so a
+        ``dry_time`` above zero that has not CHANGED for longer than
+        ``DRY_COUNTDOWN_STALL_SECONDS``, in no live phase, is such a timer -
+        read through ``utils/ams_drying.is_countdown_parked``.
+
+        Only a unit whose own entry in THIS frame carried ``dry_time`` is
+        judged: the merged value of a tray-only partial is what we remembered,
+        not what the printer just said, and may neither raise the flag nor
+        restart the wait. A live phase clears it on any frame.
+        """
+        carried: set[int] = set()
+        for unit in reported if isinstance(reported, list) else []:
+            if isinstance(unit, dict) and unit.get("dry_time") is not None:
+                try:
+                    carried.add(int(unit.get("id", -1)))
+                except (TypeError, ValueError):
+                    continue
+        now = time.monotonic()
+        for unit in merged_ams:
+            try:
+                ams_id = int(unit.get("id", -1))
+            except (TypeError, ValueError):
+                continue
+            if unit.get("dry_status") in _ACTIVE_DRY_STATUSES:
+                unit["dry_countdown_stalled"] = False
+            if ams_id not in carried:
+                continue
+            try:
+                current = int(unit.get("dry_time"))
+            except (TypeError, ValueError):
+                continue
+            seen = self._dry_countdown_seen.get(ams_id)
+            if seen is None or seen[0] != current:
+                seen = (current, now)
+                self._dry_countdown_seen[ams_id] = seen
+            unit["dry_countdown_stalled"] = bool(
+                current > 0
+                and unit.get("dry_status") not in _ACTIVE_DRY_STATUSES
+                and now - seen[1] > DRY_COUNTDOWN_STALL_SECONDS
+            )
+
+    def _restart_dry_countdown_watch(self, ams_id: int) -> None:
+        """A drying command went out for this unit: what was parked is being replaced.
+
+        A start over a parked timer of the same length leaves the value as it
+        was, so without this the new cycle would read parked from its first report.
+        """
+        self._dry_countdown_seen.pop(ams_id, None)
+        for unit in self.state.raw_data.get("ams") or []:
+            if isinstance(unit, dict) and str(unit.get("id")) == str(ams_id):
+                unit["dry_countdown_stalled"] = False
+
     def _handle_ams_data(self, ams_data, *, presence_is_status=True, printer_status=None):
         """Handle AMS data changes for Spoolman integration.
 
@@ -5048,6 +5137,11 @@ class BambuMQTTClient:
                 else:
                     ams_unit["dry_sf_reason"] = []
 
+        # A command's echo is not the printer's status: only a status frame
+        # may say a countdown is - or is no longer - parked.
+        if presence_is_status:
+            self._observe_dry_countdowns(merged_ams, ams_list)
+
         # Detect AMS drying-complete falling edge per-unit (#1349). When an
         # AMS's ``dry_time`` transitions from >0 to 0 the cycle just
         # finished — fire the callback so smart-plug auto-off-after-drying
@@ -5105,6 +5199,15 @@ class BambuMQTTClient:
                         previous,
                     )
                     self.on_drying_complete(ams_id)
+
+        # The drying-cycle record behind "last dried" on a spool. A command's
+        # acknowledgement is not the printer's status, so only a status frame
+        # is read; before the cached targets are dropped below, because a
+        # cycle's record copies its target when the countdown starts.
+        if presence_is_status:
+            self._observe_dry_cycles(
+                merged_ams, ams_list, ams_data.get("ams_exist_bits") if isinstance(ams_data, dict) else None
+            )
 
         # Drop cached drying-target params for any AMS that has stopped drying
         # (dry_time back to 0), so the badge stops advertising a finished cycle.
@@ -9650,6 +9753,106 @@ class BambuMQTTClient:
             logger.exception("[%s] publish_raw failed for topic=%s", self.serial_number, topic)
             return False
 
+    def _observe_dry_cycles(self, ams_units: list, reported: object = None, ams_exist_bits: object = None) -> None:
+        """Keep the per-unit drying-cycle record and report a cycle that ended.
+
+        Called for status frames only. A frame without ``dry_time`` says
+        nothing, and a 0 inside a live phase is the firmware's transient zero —
+        the same two readings the drying-complete edge refuses. The report is
+        what the printer showed of the cycle, whoever started it: BamDude, the
+        printer's screen or the slicer.
+
+        A unit that left the printer while counting loses its record with no
+        report: whatever is seen under that id later is another cycle, and may
+        be another unit over other spools. "Left" is the frame's own unit mask
+        (``ams_exist_bits``) with the unit's bit clear - never a list that
+        merely does not name it, which is how the printer reports the active
+        unit during a print. Only a regular AMS (id 0-3, its own bit) is read,
+        or a mask naming no unit at all: the AMS-HT bits are not inferred, as
+        ``printer_feed_snapshot`` does not infer them.
+        """
+        mask: int | None = None
+        if ams_exist_bits is not None and not isinstance(ams_exist_bits, bool):
+            try:
+                mask = ams_exist_bits if isinstance(ams_exist_bits, int) else int(str(ams_exist_bits), 16)
+            except (TypeError, ValueError):
+                mask = None
+        if mask is not None and mask < 0:
+            mask = None
+
+        def gone(ams_id: int) -> bool:
+            return mask is not None and (mask == 0 or (0 <= ams_id < 4 and not mask & (1 << ams_id)))
+
+        for ams_id in [known for known in self._dry_cycles if gone(known)]:
+            del self._dry_cycles[ams_id]
+            self._drying_targets.pop(ams_id, None)
+            self._dry_cycle_gone.add(ams_id)
+        carried: set[int] = set()
+        for unit in reported if isinstance(reported, list) else []:
+            if isinstance(unit, dict) and unit.get("dry_time") is not None:
+                try:
+                    carried.add(int(unit.get("id", -1)))
+                except (TypeError, ValueError):
+                    continue
+        for ams_unit in ams_units:
+            try:
+                ams_id = int(ams_unit.get("id", -1))
+                raw_dry_time = ams_unit.get("dry_time")
+                current = int(raw_dry_time) if raw_dry_time is not None else None
+            except (TypeError, ValueError, AttributeError):
+                continue
+            if ams_id < 0 or current is None:
+                continue
+            if gone(ams_id):
+                self._dry_cycle_gone.add(ams_id)
+                continue
+            if ams_id in self._dry_cycle_gone:
+                # Back only when a frame names its countdown itself; until then
+                # the merged value is the old unit's.
+                if ams_id not in carried:
+                    continue
+                self._dry_cycle_gone.discard(ams_id)
+            if current <= 0 and ams_unit.get("dry_status") in _ACTIVE_DRY_STATUSES:
+                continue
+            seen_before = ams_id in self._dry_cycles
+            cycle = self._dry_cycles.get(ams_id)
+            if current > 0:
+                if cycle is None:
+                    self._dry_cycles[ams_id] = {
+                        "peak": current,
+                        "last": current,
+                        # A rise from an observed 0 is the cycle's first minute;
+                        # a first sighting already counting down is not.
+                        "start_seen": seen_before,
+                        "target": self._drying_targets.get(ams_id),
+                    }
+                else:
+                    cycle["last"] = current
+                    if current > int(cycle["peak"]):
+                        cycle["peak"] = current
+                continue
+            self._dry_cycles[ams_id] = None
+            if cycle is None or not self.on_drying_cycle_end:
+                continue
+            target = cycle.get("target")
+            target_temp = target_hours = None
+            if isinstance(target, dict):
+                try:
+                    target_temp = int(target.get("temp") or 0) or None
+                    target_hours = int(target.get("duration_hours") or 0) or None
+                except (TypeError, ValueError):
+                    target_temp = target_hours = None
+            self.on_drying_cycle_end(
+                DryingCycleEnd(
+                    ams_id=ams_id,
+                    remaining_minutes=int(cycle["last"]),
+                    peak_minutes=int(cycle["peak"]),
+                    start_seen=bool(cycle["start_seen"]),
+                    target_temp=target_temp,
+                    target_hours=target_hours,
+                )
+            )
+
     def send_drying_command(
         self, ams_id: int, temp: int, duration: int, mode: int = 1, filament: str = "", rotate_tray: bool = False
     ):
@@ -9701,9 +9904,19 @@ class BambuMQTTClient:
         # Cache the active-cycle target so the badge can show "PETG @ 65°C"
         # while drying — Bambu only echoes dry_time on subsequent pushes.
         if mode == 1:
-            self._drying_targets[ams_id] = {"filament": filament or "", "temp": int(temp)}
+            self._drying_targets[ams_id] = {
+                "filament": filament or "",
+                "temp": int(temp),
+                "duration_hours": int(duration),
+            }
+            # A start sent over a cycle still counting replaces it without the
+            # countdown passing through 0: the next status frame begins a fresh
+            # record, so the new target and length are the ones reported.
+            if self._dry_cycles.get(ams_id) is not None:
+                self._dry_cycles[ams_id] = None
         else:
             self._drying_targets.pop(ams_id, None)
+        self._restart_dry_countdown_watch(ams_id)
         return True
 
     @staticmethod
@@ -11621,7 +11834,6 @@ class BambuMQTTClient:
 
         # Track this load request for H2D dual-nozzle disambiguation
         # H2D reports only slot number (0-3) in tray_now, so we use our tracked value
-        self._last_load_tray_id = tray_id
         self.state.pending_tray_target = tray_id
         logger.info("[%s] Set pending_tray_target=%s for H2D disambiguation", self.serial_number, tray_id)
 
@@ -11709,7 +11921,6 @@ class BambuMQTTClient:
         logger.info("[%s] Unloading filament (tray_now was %s)", self.serial_number, tray_now)
 
         # Clear tracked load request since we're unloading
-        self._last_load_tray_id = None
         self.state.pending_tray_target = None
         logger.info("[%s] Cleared pending_tray_target (unload)", self.serial_number)
 

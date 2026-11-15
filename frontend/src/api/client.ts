@@ -1097,6 +1097,7 @@ export interface AMSUnit {
   serial_number: string;  // AMS unit serial number (from MQTT sn field)
   sw_ver: string;         // AMS firmware version (from get_version info.module ams/* entry)
   dry_time: number;       // Minutes remaining (0 = not drying, >0 = drying active)
+  dry_countdown_stalled?: boolean; // The timer is held but not running (a parked command) — read via utils/amsDrying
   dry_status: number;     // 0=Off, 1=Checking, 2=Drying, 3=Cooling, 4=Stopping, 5=Error
   dry_sub_status: number; // 0=Off, 1=Heating, 2=Dehumidify
   dry_sf_reason: number[]; // Cannot-dry reasons (1=InsufficientPower, 8=NeedPluginPower)
@@ -4948,6 +4949,7 @@ export interface AppSettings {
   queue_drying_block: boolean;  // Block queue until drying completes
   ambient_drying_enabled: boolean;  // Auto-dry idle printers based on humidity regardless of queue
   print_drying_enabled: boolean;  // Also auto-dry printers that are currently printing, on capable hardware (capped temp)
+  auto_drying_sustained_minutes: number;  // Minutes humidity must stay above the threshold before an unscheduled auto-dry starts (0 = off)
   drying_presets: string;  // JSON blob of drying presets per filament type
   ams_humidity_thresholds: string;  // JSON blob of per-filament humidity thresholds (#1605)
   // Auto-queue routing
@@ -8213,6 +8215,12 @@ export interface InventorySpool {
   note: string | null;
   added_full: boolean | null;
   last_used: string | null;
+  // Last drying: stamped when an AMS drying cycle that held the spool ran at
+  // least half its length, or set by hand. Temperature and hours are null
+  // when unknown (a date set by hand, a cycle BamDude did not start or watch).
+  last_dried_at?: string | null;
+  last_dried_temp?: number | null;
+  last_dried_hours?: number | null;
   encode_time: string | null;
   tag_uid: string | null;
   tray_uuid: string | null;

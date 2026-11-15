@@ -420,6 +420,34 @@ async def test_the_snapshot_carries_the_gates(db_session, farm):
 
 
 @pytest.mark.asyncio
+async def test_the_drying_wait_is_the_queue_gates_own_question(db_session, farm, monkeypatch):
+    """The queue is held by the block setting and a held cycle, whoever started it — background auto-drying
+    and a scheduled drying run hold it with «drying for the queue» off. The forecast charges that wait too."""
+    from backend.app.services.print_scheduler import scheduler
+
+    p1, _p2, _x1 = farm["printers"]
+    p1.require_plate_clear = False
+    await set_setting(db_session, "queue_drying_enabled", "false")
+    await set_setting(db_session, "queue_drying_block", "true")
+    await db_session.commit()
+    monkeypatch.setattr(scheduler, "drying_remaining_seconds", lambda pid: 1800 if pid == p1.id else 0)
+    snapshot = await farm_forecast.load_snapshot(db_session, NOW)
+    assert {m.printer_id: m for m in snapshot.printers}[p1.id].waiting_seconds == 1800
+    # No automatic drying mode is on, so nothing says drying may delay the queue later.
+    assert snapshot.assumptions == ()
+    # Background auto-drying can hold the queue as well as drying for scheduled jobs can.
+    await set_setting(db_session, "ambient_drying_enabled", "true")
+    await db_session.commit()
+    assert (await farm_forecast.load_snapshot(db_session, NOW)).assumptions == ("drying",)
+    # Without the block nothing holds, whatever dries.
+    await set_setting(db_session, "queue_drying_block", "false")
+    await db_session.commit()
+    snapshot = await farm_forecast.load_snapshot(db_session, NOW)
+    assert {m.printer_id: m for m in snapshot.printers}[p1.id].waiting_seconds == 0
+    assert snapshot.assumptions == ()
+
+
+@pytest.mark.asyncio
 async def test_the_running_head_is_marked_started(db_session, farm):
     p1, _p2, _x1 = farm["printers"]
     db_session.add(

@@ -61,6 +61,8 @@ def _settings(**overrides: str) -> dict:
         "print_drying_enabled": "false",
         "ams_humidity_fair": "60",
         "queue_drying_block": "false",
+        # The sustained-humidity wait has its own file; off here so a start is one tick.
+        "auto_drying_sustained_minutes": "0",
     }
     values.update(overrides)
     return values

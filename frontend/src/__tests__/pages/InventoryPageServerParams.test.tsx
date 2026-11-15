@@ -26,6 +26,7 @@ import InventoryPageRouter from '../../pages/InventoryPage';
 import { http, HttpResponse, delay } from 'msw';
 import { server } from '../mocks/server';
 import type { SkuForecastRow } from '../../api/client';
+import { formatDateInput, parseUTCDate } from '../../utils/date';
 
 const baseSpool = {
   subtype: null,
@@ -576,6 +577,78 @@ describe('InventoryPage — server-driven params (task 4)', () => {
     await waitFor(() =>
       expect(pageRequests().some((u) => u.searchParams.get('include_k_profiles') === 'true')).toBe(true)
     );
+  });
+});
+
+describe('InventoryPage — the «Last dried» column', () => {
+  const DRIED = {
+    ...baseSpool, id: 1, material: 'PLA', brand: 'eSun',
+    last_dried_at: '2026-10-06T11:05:01', last_dried_temp: 55, last_dried_hours: 8,
+  };
+  const BY_HAND = { ...baseSpool, id: 2, material: 'PETG', brand: 'SUNLU', last_dried_at: '2026-09-01T08:00:00' };
+  const NEVER = { ...baseSpool, id: 3, material: 'ABS', brand: 'Other', last_dried_at: null };
+
+  // The stored moments are UTC; the page shows them as the browser's own date.
+  const shown = (stored: string) => formatDateInput(parseUTCDate(stored)!);
+
+  const showColumn = () => localStorage.setItem(
+    'bamdude-inventory-columns',
+    JSON.stringify([
+      { id: 'id', label: '#', visible: true },
+      { id: 'material', label: 'Material', visible: true },
+      { id: 'last_dried', label: 'Last dried', visible: true },
+    ]),
+  );
+
+  beforeEach(() => {
+    localStorage.clear();
+    setupHandlers();
+    server.use(
+      http.get('/api/v1/inventory/spools', ({ request }) => {
+        listRequests.push(new URL(request.url));
+        return HttpResponse.json({
+          items: [DRIED, BY_HAND, NEVER].map((s) => ({ ...s, k_profile_count: 0, k_profiles: [] })),
+          meta: { total: 3, current_page: 1, per_page: 24, last_page: 1 },
+        });
+      }),
+    );
+  });
+
+  it('is hidden until the operator switches it on', async () => {
+    render(<InventoryPageRouter />);
+    await waitFor(() => expect(screen.getAllByRole('columnheader').length).toBeGreaterThan(3));
+    expect(screen.queryByRole('columnheader', { name: /Last dried/ })).toBeNull();
+  });
+
+  it('shows the date with what the cycle recorded, the date alone when set by hand, nothing when never', async () => {
+    showColumn();
+    render(<InventoryPageRouter />);
+    await waitFor(() => expect(screen.getByRole('columnheader', { name: /Last dried/ })).toBeInTheDocument());
+    const rows = await screen.findAllByRole('row');
+    const row = (id: number) => rows.find((r) => within(r).queryByText(String(id), { selector: 'span' }))!;
+    expect(within(row(1)).getByText(shown(DRIED.last_dried_at))).toBeInTheDocument();
+    expect(within(row(1)).getByText('55 °C · 8 h')).toBeInTheDocument();
+    expect(within(row(2)).getByText(shown(BY_HAND.last_dried_at))).toBeInTheDocument();
+    expect(within(row(2)).queryByText(/°C/)).toBeNull();
+    expect(within(row(3)).queryByText(/°C/)).toBeNull();
+    expect(within(row(3)).queryByText(/2026/)).toBeNull();
+  });
+
+  it('sorts on the server under its own key', async () => {
+    showColumn();
+    localStorage.setItem('bamdude-inventory-sort', JSON.stringify({ column: 'last_dried', direction: 'desc' }));
+    render(<InventoryPageRouter />);
+    await waitFor(() =>
+      expect(pageRequests().some((u) => u.searchParams.get('sort_by') === 'last_dried_desc')).toBe(true)
+    );
+  });
+
+  it('a card says when its spool was last dried, and says nothing for one never dried', async () => {
+    localStorage.setItem('bamdude-inventory-filters', JSON.stringify({ viewMode: 'cards' }));
+    render(<InventoryPageRouter />);
+    expect(await screen.findByText(`${shown(DRIED.last_dried_at)} · 55 °C · 8 h`)).toBeInTheDocument();
+    expect(screen.getByText(shown(BY_HAND.last_dried_at))).toBeInTheDocument();
+    expect(screen.getAllByText(/Last dried/)).toHaveLength(2);
   });
 });
 

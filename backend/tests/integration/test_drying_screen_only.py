@@ -114,3 +114,23 @@ async def test_stop_drying_still_works_on_a_normal_model(async_client: AsyncClie
     assert resp.status_code == 200
     assert resp.json()["status"] == "drying_stopped"
     mqtt_send.assert_called_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_a_start_by_hand_takes_the_unit_from_auto_drying(async_client: AsyncClient, mqtt_send, live_state):
+    """A cycle the operator starts over one auto-drying armed (a parked timer the card now offers a start on)
+    is the operator's: auto-drying's claim on that unit ends, or the next dispatch would stop it as its own."""
+    from backend.app.services.print_scheduler import scheduler
+
+    printer_id = await _add_printer(async_client, "X1C", "00M00A000000009")
+    scheduler._armed_dry_cycles[(printer_id, 0)] = 1.0
+    scheduler._armed_dry_cycles[(printer_id, 1)] = 1.0
+    try:
+        resp = await async_client.post(f"/api/v1/printers/{printer_id}/drying/start?ams_id=0&temp=55&duration=4")
+        assert resp.status_code == 200, resp.text
+        assert (printer_id, 0) not in scheduler._armed_dry_cycles
+        assert (printer_id, 1) in scheduler._armed_dry_cycles, "another unit's claim is untouched"
+    finally:
+        scheduler._armed_dry_cycles.pop((printer_id, 0), None)
+        scheduler._armed_dry_cycles.pop((printer_id, 1), None)

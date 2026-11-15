@@ -306,6 +306,12 @@ async def find_eligible_printer(
         return EligiblePrinter(reason=reason, facts=(fact("no_eligible_printer", message=reason),))
     policy = auto_policy(item)
     candidates, facts = [], []
+    # Printers whose queue a drying cycle holds («Wait for drying to complete»):
+    # the job would sit there until the cycle ends, so an equally fit printer
+    # that is not held wins. ⚠️ A RANK term, never a gate - a held printer
+    # still takes the job when it is the only fit one, and the wait then shows
+    # on its row (see the module docstring: routing is not dispatching).
+    drying_held = await scheduler.drying_held_printer_ids(db)
 
     def refuse(printer, code, message, params=None, *, uncertain=False):
         if code not in KNOWN_REASONS:
@@ -376,8 +382,10 @@ async def find_eligible_printer(
                 uncertain=result.status == "unknown" and result.reason != "printer_offline",
             )
             continue
-        ready = scheduler._is_printer_ready_for_dispatch(printer.id, require_plate_clear) and printer.id not in (
-            interlocked_printers or ()
+        ready = (
+            scheduler._is_printer_ready_for_dispatch(printer.id, require_plate_clear)
+            and printer.id not in (interlocked_printers or ())
+            and printer.id not in drying_held
         )
         candidates.append(
             (ready, verdict == "exact", result.plan.color_matches, -printer.id, printer, result.plan, snapshot)

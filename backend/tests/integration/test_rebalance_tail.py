@@ -135,7 +135,9 @@ async def test_returned_first_wave_matches_actual_router(
 async def _parity_farm(db_session, printer_factory, tmp_path, *, compatible=False):
     """Printers in every state the router ranks or refuses, and pending jobs of every kind.
 
-    P2S: A (PETG, ready), B (PETG, waiting for its plate clear), C (PLA). P1S: D (red PETG,
+    P2S: Dry (PETG, idle, a drying cycle holding its queue - created FIRST, so it would win
+    the router's id tie-break if it counted as ready), A (PETG, ready), B (PETG, waiting for
+    its plate clear), C (PLA). P1S: D (red PETG,
     ready), E (PETG, busy with a queued print), F (PETG, its queue in error — the router
     places there), G (PETG, behind an HA interlock), H (PETG, queue paused by the operator),
     I (PETG, claimed for a print whose archive does not exist yet), J (PETG, claimed, printing
@@ -152,9 +154,11 @@ async def _parity_farm(db_session, printer_factory, tmp_path, *, compatible=Fals
     async def printer(name, model):
         return (await _make_printer_with_queue(db_session, printer_factory, name=name, model=model))[0]
 
+    dry = await printer("P2S-Dry", "P2S")
     a, b, c = [await printer(f"P2S-{x}", "P2S") for x in "ABC"]
     d, e, f, g, h, i, j, k, fresh = [await printer(f"P1S-{x}", "P1S") for x in "DEFGHIJKL"]
     status = {
+        dry.id: _idle_status(["PETG"]),
         a.id: _idle_status(["PETG"]),
         b.id: _finished_status(["PETG"]),
         c.id: _idle_status(["PLA"]),
@@ -250,8 +254,8 @@ async def _parity_farm(db_session, printer_factory, tmp_path, *, compatible=Fals
         AutoQueueItem.__table__.update().where(AutoQueueItem.id == tied).values(waiting_reason=None)
     )
     await db_session.commit()
-    connected = {p.id for p in (a, b, c, d, e, f, g, h, i, j, k, fresh)} | set(fresh_ids)
-    return status, connected, awaiting, g.id
+    connected = {p.id for p in (dry, a, b, c, d, e, f, g, h, i, j, k, fresh)} | set(fresh_ids)
+    return status, connected, awaiting, g.id, dry.id, a.id
 
 
 def _finished_status(trays):
@@ -268,16 +272,23 @@ async def _first_wave_parity(
     location, queue and compatible-model rules; nothing the router leaves waiting is dealt out
     now. With SJF (T-A26 / T-A07), the jobs the router marks as jumped are the ones the
     forecast's rule marks (``rebalance_replay.jumps``), models sharing one pool included."""
+    import time
     from unittest.mock import AsyncMock
 
     from backend.app.models.print_queue import PrintQueueItem
     from backend.app.models.settings import Settings
     from backend.app.services.ha_sensor_manager import ha_sensor_manager
+    from backend.app.services.print_scheduler import scheduler as print_scheduler
     from backend.tests.integration.test_auto_queue_scheduler import _patch_printer_manager
 
-    status, connected, awaiting, interlocked = await _parity_farm(
+    status, connected, awaiting, interlocked, drying, first_free = await _parity_farm(
         db_session, printer_factory, tmp_path, compatible=compatible
     )
+    # «Wait for drying to complete»: the cycle holds the printer's queue, so the router ranks
+    # it below an equally fit free printer - and the forecast must deal the wave the same way.
+    db_session.add(Settings(key="queue_drying_block", value="true"))
+    await db_session.commit()
+    monkeypatch.setitem(print_scheduler._drying_in_progress, drying, time.monotonic())
     if edge == "returned":
         row = await db_session.scalar(select(AutoQueueItem).where(AutoQueueItem.position == 1))
         first = await db_session.scalar(select(Printer).where(Printer.name == "P2S-A"))
@@ -328,6 +339,9 @@ async def _first_wave_parity(
     placed = dict(rows)
     assert len(placed) >= 5, placed  # the farm exercises ranking, not an empty pass
     assert predicted == placed
+    # The drying hold is exercised, not merely present: the free P2S took a job the held one
+    # would have won on its id, and the held one still got work (a rank, never a gate).
+    assert {first_free, drying} <= set(placed.values()), placed
     if sjf:
         from backend.app.services.rebalance_replay import jumps
 

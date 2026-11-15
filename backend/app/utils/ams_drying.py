@@ -24,6 +24,49 @@ from typing import Any
 # when a high-temperature alarm has to reach the user (upstream #1802).
 ACTIVE_DRY_STATUSES = frozenset({1, 2, 3})  # Checking, Drying, Cooling
 
+# A live countdown ticks once a minute. A ``dry_time`` that has not changed for
+# this long, with no live phase vouching for it, is a timer with no cycle behind
+# it: the printer took the command and is not heating (its power budget is
+# spent, a print is running), or a cycle was paused partway. Two missed ticks
+# plus jitter (upstream #2896 / #3096, seen on an H2D with three AMS-HT).
+DRY_COUNTDOWN_STALL_SECONDS = 150
+
+
+def is_countdown_parked(ams_data: Any) -> bool:
+    """True when this AMS unit holds a drying timer that is not running.
+
+    ``dry_countdown_stalled`` is stamped by the MQTT client (the only place that
+    sees time pass between reports). Such a timer never reaches 0 by itself, so
+    nothing that waits for drying to end may wait on it, and nothing may take
+    it for heat somebody asked for.
+    """
+    if not isinstance(ams_data, Mapping) or not ams_data.get("dry_countdown_stalled"):
+        return False
+    try:
+        return int(ams_data.get("dry_time") or 0) > 0
+    except (TypeError, ValueError):
+        return False
+
+
+def running_dry_minutes(ams_data: Any) -> int:
+    """Minutes left on a countdown that is actually running - 0 for a parked one."""
+    if not isinstance(ams_data, Mapping) or is_countdown_parked(ams_data):
+        return 0
+    try:
+        return max(0, int(ams_data.get("dry_time") or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def only_parked_timers(ams_units: Any) -> bool:
+    """True when the only drying this printer shows is timers that are parked.
+
+    False when nothing shows a timer at all: a command just sent has not been
+    reported back yet, and that is drying about to begin.
+    """
+    units = [unit for unit in (ams_units or []) if isinstance(unit, Mapping)]
+    return any(is_countdown_parked(unit) for unit in units) and not any(is_drying_active(unit) for unit in units)
+
 
 def is_drying_active(ams_data: Any) -> bool:
     """True when this AMS unit reports a drying cycle in progress.
@@ -32,8 +75,13 @@ def is_drying_active(ams_data: Any) -> bool:
     minutes remaining and reads 0 through the cooling phase that closes a cycle;
     ``dry_status`` covers that phase but is present only when the firmware sent a
     parseable ``info`` field.
+
+    A parked timer (``is_countdown_parked``) is not a cycle: the unit is not
+    heating, so the alarm, the queue hold and a scheduled start read it as idle.
     """
     if not isinstance(ams_data, Mapping):
+        return False
+    if is_countdown_parked(ams_data):
         return False
     try:
         if int(ams_data.get("dry_time") or 0) > 0:

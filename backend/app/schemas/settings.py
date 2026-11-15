@@ -376,6 +376,17 @@ class AppSettings(BaseModel):
             "(floor 40 degC) to protect spools during print."
         ),
     )
+    auto_drying_sustained_minutes: int = Field(
+        default=15,
+        ge=0,
+        le=240,
+        description=(
+            "Minutes an AMS unit must read above its humidity threshold before auto-drying "
+            "starts a cycle no scheduled job is waiting for (rides out the spike from opening "
+            "the lid). 0 = start on the first reading. The scheduler's fallback is "
+            "print_scheduler.AUTO_DRY_SUSTAINED_DEFAULT_MINUTES - keep the two equal."
+        ),
+    )
     drying_presets: str = Field(
         default="",
         description="JSON blob of drying presets per filament type (empty = use built-in defaults)",
@@ -926,6 +937,7 @@ class AppSettingsUpdate(BaseModel):
     queue_drying_block: bool | None = None
     ambient_drying_enabled: bool | None = None
     print_drying_enabled: bool | None = None
+    auto_drying_sustained_minutes: int | None = Field(default=None, ge=0, le=240)
     drying_presets: str | None = None
     ams_humidity_thresholds: str | None = None
     zigbee_sensor_reporting: str | None = None

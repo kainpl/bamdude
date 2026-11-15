@@ -845,6 +845,7 @@ class _Gates:
     stage_on: int
     plate_clear: int
     drying_blocks: bool
+    drying_caveat: bool
 
     def prep_for(self, override: str | None) -> int:
         """Upload allowance plus the preheat stage a row with this override will run."""
@@ -872,12 +873,19 @@ async def _load_gates(db: AsyncSession) -> _Gates:
     async def _bool(key: str) -> bool:
         return ((await get_setting(db, key)) or "").strip().lower() == "true"
 
+    block = await _bool("queue_drying_block")
     return _Gates(
         upload=max(0, await _int("forecast_upload_seconds", 120)),
         stage_inherit=await planned_stage_seconds(db),
         stage_on=await planned_stage_seconds(db, override="on"),
         plate_clear=max(0, await _int("forecast_plate_clear_minutes", 10)) * 60,
-        drying_blocks=await _bool("queue_drying_enabled") and await _bool("queue_drying_block"),
+        # The queue gate's own question (``check_queue``): the block setting and
+        # a held cycle, whoever started it — background auto-drying and a
+        # scheduled drying run hold the queue with drying-for-the-queue off.
+        drying_blocks=block,
+        # The caveat is about what MAY come: said only while an automatic
+        # drying mode is on to start a cycle that the block would then hold for.
+        drying_caveat=block and (await _bool("queue_drying_enabled") or await _bool("ambient_drying_enabled")),
     )
 
 
@@ -1038,7 +1046,7 @@ async def load_snapshot(
             awaiting_operator=awaiting_operator,
         )
     staged = await _staged(db, exclude_auto_ids=exclude_auto_ids)
-    caveats: tuple[str, ...] = (("drying",) if gates.drying_blocks else ()) + (
+    caveats: tuple[str, ...] = (("drying",) if gates.drying_caveat else ()) + (
         ("operator_service_parallel",) if operator_hours else ()
     )
     if not machines:

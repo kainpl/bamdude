@@ -379,6 +379,7 @@ async def _load_settings(db: AsyncSession, *, effective_env: bool = True) -> App
                 "stagger_concurrent",
                 "stagger_interval_minutes",
                 "forecast_global_lead_time_days",
+                "auto_drying_sustained_minutes",
                 "location_sensor_poll_interval",
                 "forecast_upload_seconds",
                 "forecast_plate_clear_minutes",

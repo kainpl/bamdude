@@ -15,6 +15,7 @@ vi.mock('../../api/client', () => ({
   getAuthToken: vi.fn(() => 'test-admin-token'),
   api: {
     getSettings: vi.fn().mockResolvedValue({}),
+    getUiPreferences: vi.fn().mockResolvedValue({}),
     getAuthStatus: vi.fn().mockResolvedValue({ auth_enabled: false }),
     getFilamentPresets: vi.fn().mockResolvedValue([]),
     getLocalPresets: vi.fn().mockResolvedValue({ filament: [] }),
@@ -52,6 +53,49 @@ describe('BulkEditSpoolsModal', () => {
     const [ids, fields] = (api.bulkUpdateSpools as ReturnType<typeof vi.fn>).mock.calls[0];
     expect(ids).toEqual([1, 2]);
     expect(fields).toEqual({ brand: 'NewCo' }); // only the enabled field; no weight_used
+  });
+
+  it('marks the selection as dried now, the time taken when it is applied', async () => {
+    render(<BulkEditSpoolsModal isOpen spools={spools} allSpools={spools} catalogEntries={[]} spoolDisplayTemplate="{brand} {material} {color_name}" onClose={vi.fn()} onSaved={vi.fn()} />);
+    await waitFor(() => expect(screen.getByText('Bulk edit spools')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByLabelText('Last dried'));
+    const before = Date.now();
+    fireEvent.click(screen.getByText('Apply to 2'));
+
+    await waitFor(() => expect(api.bulkUpdateSpools).toHaveBeenCalledTimes(1));
+    const [ids, fields] = (api.bulkUpdateSpools as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(ids).toEqual([1, 2]);
+    expect(Object.keys(fields)).toEqual(['last_dried_at']);
+    expect(fields.last_dried_at).toMatch(/Z$/);
+    const sent = new Date(fields.last_dried_at).getTime();
+    expect(sent).toBeGreaterThanOrEqual(before - 1000);
+    expect(sent).toBeLessThanOrEqual(Date.now() + 1000);
+  });
+
+  it('clears the drying date of the selection', async () => {
+    render(<BulkEditSpoolsModal isOpen spools={spools} allSpools={spools} catalogEntries={[]} spoolDisplayTemplate="{brand} {material} {color_name}" onClose={vi.fn()} onSaved={vi.fn()} />);
+    await waitFor(() => expect(screen.getByText('Bulk edit spools')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByLabelText('Last dried'));
+    fireEvent.change(screen.getByLabelText('Last dried: what to set'), { target: { value: 'clear' } });
+    fireEvent.click(screen.getByText('Apply to 2'));
+
+    await waitFor(() => expect(api.bulkUpdateSpools).toHaveBeenCalledTimes(1));
+    const [, fields] = (api.bulkUpdateSpools as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(fields).toEqual({ last_dried_at: null });
+  });
+
+  it('leaves the drying date alone unless its box is ticked, and keeps the list read-only', async () => {
+    render(<BulkEditSpoolsModal isOpen spools={spools} allSpools={spools} catalogEntries={[]} spoolDisplayTemplate="{brand} {material} {color_name}" onClose={vi.fn()} onSaved={vi.fn()} />);
+    await waitFor(() => expect(screen.getByText('Bulk edit spools')).toBeInTheDocument());
+
+    expect(screen.getByLabelText('Last dried: what to set')).toBeDisabled();
+    // One checkbox per editable field and none per spool: the list of what will change is read-only.
+    expect(screen.getByText('2 spools will change')).toBeInTheDocument();
+    const boxes = screen.getAllByRole('checkbox');
+    expect(boxes.every((box) => box.getAttribute('aria-label'))).toBe(true);
+    expect(boxes.some((box) => /Acme PLA/.test(box.getAttribute('aria-label') ?? ''))).toBe(false);
   });
 
   it('shows "— varies —" for fields that differ across the selection', async () => {

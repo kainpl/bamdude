@@ -25,7 +25,7 @@ from backend.app.models.scheduled_drying import DryingSchedule, ScheduledDrying
 from backend.app.services import drying_preflight
 from backend.app.services.notification_service import notification_service
 from backend.app.services.printer_manager import find_ams_unit, printer_manager
-from backend.app.utils.ams_drying import is_drying_active
+from backend.app.utils.ams_drying import is_countdown_parked, is_drying_active
 
 logger = logging.getLogger(__name__)
 
@@ -614,6 +614,31 @@ async def _follow(db: AsyncSession, run: ScheduledDrying, now: datetime) -> None
     if unit is None:
         return
     printing = (state.state or "").upper() in _BUSY_STATES
+    if is_countdown_parked(unit):
+        # The printer holds the timer and is not heating. Under a print that is
+        # the print's doing: the cycle yields as any other and comes back after.
+        if printing:
+            await _yield_to_print(db, run, now)
+            return
+        # On an idle printer it is a refusal no retry fixes. The timer is taken
+        # off: left behind it could start heating later with no run, no hold and
+        # no word to anybody. Seen parked is evidence - no START_CONFIRM_SECONDS.
+        printer_manager.send_drying_command(run.printer_id, run.ams_id, 0, 0, mode=0)
+        _seen_active.discard(run.id)
+        if elapsed >= run.duration_hours * 3600 * COMPLETE_FRACTION:
+            # Parked in its last stretch: the filament is dried - done, not a failure.
+            _finish(run, "completed", now)
+            logger.info("Scheduled drying: run %s on printer %s completed (timer parked)", run.id, run.printer_id)
+            await _notify(db, "completed", run)
+            return
+        _finish(run, "failed", now, reason="not_started")
+        logger.info(
+            "Scheduled drying: run %s on printer %s - the printer holds the timer but is not drying; stopped",
+            run.id,
+            run.printer_id,
+        )
+        await _notify(db, "failed", run)
+        return
     if is_drying_active(unit):
         _seen_active.add(run.id)
         if printing:

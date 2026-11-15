@@ -937,11 +937,13 @@ async def load_printers(db: AsyncSession, busy: set[int], interlocked: set[int])
     home, nor receives — not waiting for it to come back.
 
     ``ready`` = outside the busy set, dispatch-ready with the plate-clear and
-    current-run gates honoured, and not held by a Home Assistant interlock of
-    THIS pass's set (C3-1) — the router's own rank: ⚠️ an empty queue on a
-    printer still waiting for its plate clear, or behind an alerting sensor, only
-    looks free.
+    current-run gates honoured, not held by a Home Assistant interlock of
+    THIS pass's set (C3-1) and not held by a drying cycle («Wait for drying to
+    complete», read once here for the pass) — the router's own rank: ⚠️ an empty
+    queue on a printer still waiting for its plate clear, behind an alerting
+    sensor or drying with its queue held only looks free.
     """
+    drying_held = await scheduler.drying_held_printer_ids(db)
     rows = (
         await db.execute(
             select(
@@ -972,6 +974,7 @@ async def load_printers(db: AsyncSession, busy: set[int], interlocked: set[int])
         ready = (
             printer_id not in busy
             and printer_id not in interlocked
+            and printer_id not in drying_held
             and scheduler._is_printer_ready_for_dispatch(printer_id, require_plate_clear=True)
         )
         dispatchable = queue_status not in ("paused", "error")
@@ -2211,6 +2214,8 @@ async def _still_holds(
     models = {printer_id: printer_manager.effective_model_for(printer_id, row[0]) for printer_id, row in rows.items()}
     allow_compatible = await _compatible_models_allowed(db)
     busy = await busy_printer_ids(db)
+    # Read again, unlike the interlocks: it is the scheduler's own memory and one setting.
+    drying_held = await scheduler.drying_held_printer_ids(db)
     policy = auto_policy(fresh)
     for printer_id in move.receivers:
         snapshot = printer_manager.get_feed_snapshot(printer_id)
@@ -2219,6 +2224,7 @@ async def _still_holds(
             or not snapshot.connected
             or printer_id in busy
             or printer_id in recheck.interlocked
+            or printer_id in drying_held
             or not scheduler._is_printer_ready_for_dispatch(printer_id, require_plate_clear=True)
         ):
             return "eligibility_changed"

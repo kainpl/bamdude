@@ -23,6 +23,7 @@ vi.mock('../../api/client', () => ({
     getFilamentFamilies: vi.fn().mockResolvedValue([]),
     triggerFilamentPresetSync: vi.fn().mockResolvedValue({ queued: true }),
     getSettings: vi.fn().mockResolvedValue({}),
+    getUiPreferences: vi.fn().mockResolvedValue({}),
     getAuthStatus: vi.fn().mockResolvedValue({ auth_enabled: false }),
     getCloudStatus: vi.fn().mockResolvedValue({ is_authenticated: false }),
     getFilamentPresets: vi.fn().mockResolvedValue([]),

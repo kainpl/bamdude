@@ -1279,6 +1279,9 @@ def _spool_to_list_item(
         cost_per_kg=s.cost_per_kg,
         purchase_date=s.purchase_date,
         last_used=s.last_used,
+        last_dried_at=s.last_dried_at,
+        last_dried_temp=s.last_dried_temp,
+        last_dried_hours=s.last_dried_hours,
         encode_time=s.encode_time,
         filament_diameter=s.filament_diameter,
         lot=s.lot,
@@ -2099,6 +2102,12 @@ async def bulk_update_spools(
         update_data = await prepare_internal_spool_payload(db, update_data, set(data.fields.model_fields_set))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    # Same rule as the per-spool PATCH: a drying date set by hand is not the
+    # AMS cycle the temperature and hours describe.
+    if "last_dried_at" in update_data:
+        update_data["last_dried_temp"] = None
+        update_data["last_dried_hours"] = None
 
     result = await db.execute(select(Spool).where(Spool.id.in_(data.spool_ids)))
     spools = list(result.scalars().all())

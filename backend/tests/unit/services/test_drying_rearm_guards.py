@@ -62,6 +62,9 @@ def _db(**overrides) -> AsyncMock:
         "print_drying_enabled": "false",
         "ams_humidity_fair": "14",
         "queue_drying_block": "false",
+        # The sustained-humidity wait is a separate guard with its own file
+        # (test_drying_sustained_humidity.py); off here so a round is one tick.
+        "auto_drying_sustained_minutes": "0",
     }
     values.update(overrides)
     db = AsyncMock()

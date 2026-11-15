@@ -2298,8 +2298,14 @@ def _printer_status_effect_key(state: PrinterState) -> str:
     # would report "never started" for a unit that did start. Upstream keys on dry_time
     # only and therefore inherits that false positive. dry_sub_status is deliberately
     # left out — it churns mid-cycle and nothing renders it.
+    # dry_countdown_stalled is here because it flips exactly when nothing else in
+    # this key moves — a frozen countdown is what raises it — so without it the
+    # card of an idle printer would never hear that its timer is parked.
     ams_dry_key = (
-        tuple((a.get("dry_time", 0), a.get("dry_status", 0)) for a in (state.raw_data.get("ams") or []))
+        tuple(
+            (a.get("dry_time", 0), a.get("dry_status", 0), bool(a.get("dry_countdown_stalled")))
+            for a in (state.raw_data.get("ams") or [])
+        )
         if state.raw_data
         else ()
     )
@@ -11645,6 +11651,20 @@ async def _application_lifespan(app: FastAPI):
                 )
 
     printer_manager.set_drying_complete_callback(on_drying_complete)
+
+    async def on_drying_cycle_end(printer_id: int, cycle):
+        """Mark the spools of an AMS unit whose drying cycle just ended as dried (upstream 84f320b85)."""
+        from backend.app.services.spool_drying import record_drying_cycle
+
+        try:
+            async with async_session() as db:
+                await record_drying_cycle(db, printer_id, cycle)
+        except Exception as e:
+            logging.getLogger(__name__).warning(
+                "Failed to record drying for printer %s (AMS %s): %s", printer_id, cycle.ams_id, e
+            )
+
+    printer_manager.set_drying_cycle_end_callback(on_drying_cycle_end)
 
     async def on_assignment_verified(printer_id: int, ams_id: int, tray_id: int, verified: bool, detail: dict):
         """Surface the read-back result of a spool assignment to the UI (upstream #2582).

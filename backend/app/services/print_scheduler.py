@@ -6,7 +6,7 @@ import logging
 import time
 from contextlib import suppress
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Literal
 
@@ -57,6 +57,7 @@ from backend.app.services.smart_plug_manager import smart_plug_manager
 from backend.app.services.source_io import SOURCE_FAILURES, SourceUnavailable, require_source_file
 from backend.app.services.stagger_groups import GroupKey, StaggerGroupResolver, StaggerSplit
 from backend.app.utils import failure_reasons
+from backend.app.utils.ams_drying import is_countdown_parked, only_parked_timers, running_dry_minutes
 from backend.app.utils.ams_humidity import ams_humidity_percent
 from backend.app.utils.filament_types import canonical_filament_type
 from backend.app.utils.material_keys import resolve_material_key
@@ -212,6 +213,18 @@ _DRYING_CLAIM_GRACE_SECONDS = 120.0
 # loop. ⚠️ Neither may ever stop a RUNNING cycle — both only gate starting one.
 _AUTO_DRY_REARM_COOLDOWN_SECONDS = 30 * 60
 _AUTO_DRY_MAX_UNPRODUCTIVE_CYCLES = 2
+# The sustained-humidity wait (upstream #2518): auto-drying arms a start nobody
+# scheduled only after the unit has read above its threshold for this long -
+# one reading is what opening the AMS lid looks like. The default must agree
+# with ``schemas/settings.AppSettings.auto_drying_sustained_minutes``.
+AUTO_DRY_SUSTAINED_DEFAULT_MINUTES = 15
+# A streak is unbroken only while some pass observed it: four missed passes,
+# with this floor so a fast loop does not void a streak on one hiccup.
+_AUTO_DRY_SUSTAINED_GAP_FLOOR_SECONDS = 120
+# Queue drying dries FOR a scheduled job only when the job is this close: the
+# longest preset cycle. A job scheduled for next week is no reason to keep its
+# printers drying all week (owner, 2026-11-15; upstream looks ahead without limit).
+_QUEUE_PREDRY_HORIZON_HOURS = 12
 
 
 def _drying_ams_ids(status) -> list[int]:
@@ -308,6 +321,14 @@ class PrintScheduler:
         #   best_end_humidity — the lowest reading any cycle here has ended at
         #   suspended         — we have stopped arming this unit, and said so
         self._dry_unit_history: dict[tuple[int, int], dict[str, object]] = {}
+        # ⚠️ A THIRD question, kept apart from the two above for the same
+        # reason: "how long has this unit read above its threshold". A unit that
+        # is only waiting out its streak is not ours to stop and has earned no
+        # judgement. In process memory on the monotonic clock: after a restart
+        # every streak starts over, so a start is only ever delayed, never early.
+        #   since - when the current unbroken above-threshold streak began
+        #   last  - the last pass that observed it
+        self._auto_dry_above: dict[tuple[int, int], dict[str, float]] = {}
         # Staggered start: rolling slots for electrical load management
         self._stagger_slots: list[_StaggerSlot] = []
         # Serialises check+register in ``acquire_stagger_slot`` so multiple
@@ -614,7 +635,7 @@ class PrintScheduler:
                     new_reason = "Printer offline"
                     reason_code = "printer_offline"
                 elif not printer_idle:
-                    if self._drying_in_progress.get(printer_id):
+                    if self._drying_holds_queue(printer_id):
                         new_reason = "Drying in progress"
                         reason_code = "drying"
                     elif rpc and printer_manager.is_awaiting_plate_clear(printer_id):
@@ -695,7 +716,9 @@ class PrintScheduler:
                 # the not-idle branch both of its answers led to the same skip,
                 # so all it ever decided was whether a cycle was needlessly
                 # killed on the way. Off by default.
-                if self._drying_in_progress.get(printer_id) and await self._get_bool_setting(db, "queue_drying_block"):
+                # A parked timer never ends by itself, so it holds nothing; the
+                # hold entry stays, and the stop below still reaches a unit we armed.
+                if self._drying_holds_queue(printer_id) and await self._get_bool_setting(db, "queue_drying_block"):
                     if set_wait_reason(item, "drying", "Drying in progress"):
                         await db.commit()
                     mark_busy(printer_id, "drying")
@@ -1646,6 +1669,14 @@ class PrintScheduler:
             return val.lower() == "true"
         return default
 
+    async def _get_int_setting(self, db: AsyncSession, key: str, default: int) -> int:
+        """Read an integer setting from the database; anything unreadable is the default."""
+        val = await self._get_setting_value(db, key)
+        try:
+            return int(val) if val is not None else default
+        except (TypeError, ValueError):
+            return default
+
     async def _get_drying_presets(self, db: AsyncSession) -> dict[str, dict[str, int]]:
         """Get drying presets (user-configured or built-in defaults)."""
         result = await db.execute(select(Settings).where(Settings.key == "drying_presets"))
@@ -1770,6 +1801,8 @@ class PrintScheduler:
         ambient_drying_enabled = await self._get_bool_setting(db, "ambient_drying_enabled")
         print_drying_enabled = await self._get_bool_setting(db, "print_drying_enabled")
         if not queue_drying_enabled and not ambient_drying_enabled:
+            # Nothing is watched while auto-drying is off, so no streak survives it.
+            self._auto_dry_above.clear()
             # Stop active drying on all printers if both features disabled
             if self._drying_in_progress:
                 # A scheduled cycle's hold is the schedule's: nothing of ours to stop there.
@@ -1777,6 +1810,15 @@ class PrintScheduler:
                     logger.info("Auto-drying: printer %d - stopping, auto-drying disabled", pid)
                     await self._stop_drying(pid)
             return
+        # How long a unit must read above its threshold before a start nobody
+        # scheduled is armed; 0 switches the wait off. Every streak goes the
+        # moment the wait is off, so switching it back on inherits none.
+        sustained_minutes = await self._get_int_setting(
+            db, "auto_drying_sustained_minutes", AUTO_DRY_SUSTAINED_DEFAULT_MINUTES
+        )
+        sustained_minutes = min(240, max(0, sustained_minutes))
+        if sustained_minutes == 0:
+            self._auto_dry_above.clear()
 
         # Update drying state from printer status (handles backend restart)
         self._sync_drying_state()
@@ -1788,14 +1830,38 @@ class PrintScheduler:
         except Exception as exc:  # noqa: BLE001 - an observation must never wedge the queue
             logger.warning("Queue: chamber sampling failed: %s", exc)
 
-        # Find printers with scheduled items (for queue drying mode)
+        # Find printers with scheduled items (for queue drying mode).
+        #
+        # Two different questions about a printer's pending rows:
+        #   scheduled - a job with a time is coming within the horizon, so queue
+        #               drying has something to dry FOR;
+        #   ready     - a row could start NOW, so under block mode a new cycle
+        #               would only stand in its way.
+        # ⚠️ "Any pending row" used to answer the second. Every scheduled row is
+        # a pending row, so queue drying with block mode on never started a
+        # cycle at all (upstream e05a91744).
+        now_utc = datetime.now(timezone.utc)
+        horizon = now_utc + timedelta(hours=_QUEUE_PREDRY_HORIZON_HOURS)
         printers_with_scheduled: set[int] = set()
-        printers_with_items: set[int] = set()
+        printers_with_ready_items: set[int] = set()
         for item in queue_items:
-            if item.queue_id:
-                printers_with_items.add(item.queue_id)
-                if item.scheduled_time and not item.manual_start:
-                    printers_with_scheduled.add(item.queue_id)
+            if not item.queue_id:
+                continue
+            sched = item.scheduled_time
+            if sched is not None and sched.tzinfo is None:
+                sched = sched.replace(tzinfo=timezone.utc)
+            if sched is not None and not item.manual_start and sched <= horizon:
+                printers_with_scheduled.add(item.queue_id)
+            if self._row_could_start_now(item, sched, now_utc):
+                printers_with_ready_items.add(item.queue_id)
+        # A scheduled «any printer of model X» job stands in no printer's queue
+        # until its time, so it counts for every printer it could run on. Only
+        # queue drying asks: nothing else dries FOR a job.
+        if queue_drying_enabled:
+            try:
+                printers_with_scheduled |= await self._scheduled_auto_queue_printers(db)
+            except Exception as exc:  # noqa: BLE001 - a lookup must never wedge the queue
+                logger.warning("Auto-drying: could not read the scheduled AutoQueue jobs: %s", exc)
 
         # If only queue mode is on and no printers have scheduled items, stop drying.
         # (But skip this short-circuit when print_drying_enabled is on — busy printers
@@ -1861,10 +1927,13 @@ class PrintScheduler:
                         await self._stop_drying(pid)
                     logger.debug("Auto-drying: printer %d skipped - no scheduled prints", pid)
                     continue
-                # When block mode is on, don't START new drying on printers with pending items.
+                # When block mode is on, don't START new drying on a printer with a
+                # row that could start now: the cycle would hold that row. A row
+                # that cannot start yet (scheduled for later, manual start, a
+                # paused queue) leaves the printer free to dry ahead of it.
                 # But allow already-drying printers through so humidity auto-stop logic still runs.
-                if block_for_drying and pid in printers_with_items and not self._drying_in_progress.get(pid):
-                    logger.debug("Auto-drying: printer %d skipped - has pending items (block mode)", pid)
+                if block_for_drying and pid in printers_with_ready_items and not self._drying_in_progress.get(pid):
+                    logger.debug("Auto-drying: printer %d skipped - a pending job could start now (block mode)", pid)
                     continue
             if not printer_manager.is_connected(pid):
                 logger.debug("Auto-drying: printer %d skipped - not connected", pid)
@@ -1927,7 +1996,36 @@ class PrintScheduler:
                 unit_key = (pid, ams_id)
                 unit_state = self._dry_unit_history.get(unit_key)
 
+                if dry_time > 0 and is_countdown_parked(ams_data):
+                    # The printer holds the timer and is not heating: no cycle to
+                    # adopt a hold from or to let run. One WE armed is stopped and
+                    # handed to the ordinary re-arm cooldown - left there, the unit
+                    # would be dead to auto-drying until somebody pressed Stop.
+                    # ⚠️ Never anybody else's: a manual timer stays as it is.
+                    if unit_key in self._armed_dry_cycles and printer_manager.send_drying_command(
+                        pid, ams_id, 0, 0, mode=0
+                    ):
+                        logger.info(
+                            "Auto-drying: printer %d AMS %d - the printer holds our drying timer (%dm) but is "
+                            "not drying; stopped, the re-arm cooldown decides the retry",
+                            pid,
+                            ams_id,
+                            dry_time,
+                        )
+                        self._armed_dry_cycles.pop(unit_key, None)
+                        self.forget_auto_dry_cycle(pid, ams_id)
+                        # ⚠️ Unlike a stop a person or a dispatch sent, this one IS a
+                        # strike: the printer would not run the cycle, and nothing
+                        # else ends a start + stop pair every cooldown for ever. Two
+                        # in a row suspend the unit and say so, as two cycles that
+                        # dried nothing do; a dry reading lifts it the same way.
+                        if unit_state is not None:
+                            unit_state["unproductive"] = int(unit_state.get("unproductive", 0)) + 1
+                    continue
+
                 if dry_time > 0:
+                    # A cycle is running, whoever started it: the streak is spent.
+                    self._auto_dry_above.pop(unit_key, None)
                     if pid not in self._drying_in_progress:
                         self._drying_in_progress[pid] = time.monotonic()
                     if unit_state is not None:
@@ -1957,6 +2055,9 @@ class PrintScheduler:
                 # values from reading as progress every other cycle.
                 if unit_state is not None and unit_state.pop("running", False):
                     unit_state["ended_at"] = time.monotonic()
+                    # The next streak starts fresh and runs THROUGH the re-arm
+                    # cooldown below: the two waits overlap, they never add up.
+                    self._auto_dry_above.pop(unit_key, None)
                     if humidity is not None and humidity > humidity_threshold:
                         best = unit_state.get("best_end_humidity")
                         if isinstance(best, int) and humidity < best:
@@ -2004,6 +2105,22 @@ class PrintScheduler:
                         unit_state.pop("suspended", None)
                         unit_state.pop("unproductive", None)
                         unit_state.pop("best_end_humidity", None)
+                    # One real reading at or below the threshold ends the
+                    # streak. A missing reading says nothing and leaves it; a
+                    # long silence is the observation gap's to judge.
+                    if humidity is not None:
+                        above = self._auto_dry_above.pop(unit_key, None)
+                        if above is not None:
+                            logger.info(
+                                "Auto-drying: printer %d AMS %d - humidity fell back to %d%% after %.0fs of the "
+                                "required %dm above the %d%% threshold; not drying",
+                                pid,
+                                ams_id,
+                                humidity,
+                                time.monotonic() - above["since"],
+                                sustained_minutes,
+                                humidity_threshold,
+                            )
                     logger.debug(
                         "Auto-drying: printer %d AMS %d skipped - humidity %s <= threshold %d",
                         pid,
@@ -2012,6 +2129,32 @@ class PrintScheduler:
                         humidity_threshold,
                     )
                     continue
+
+                # The streak is kept on every pass that reads the unit wet, and
+                # BEFORE the suspension and cooldown gates: a unit cooling off
+                # after a cycle is already serving its wait. A unit nobody
+                # observed for longer than the ceiling (printing without
+                # dry-through, offline, reserved by a schedule) starts over -
+                # the minutes in between prove nothing.
+                if sustained_minutes > 0:
+                    now_mono = time.monotonic()
+                    gap_ceiling = max(4 * self._check_interval, _AUTO_DRY_SUSTAINED_GAP_FLOOR_SECONDS)
+                    above = self._auto_dry_above.get(unit_key)
+                    if above is None:
+                        self._auto_dry_above[unit_key] = {"since": now_mono, "last": now_mono}
+                    elif now_mono - above["last"] > gap_ceiling:
+                        logger.info(
+                            "Auto-drying: printer %d AMS %d - nobody observed the unit for %.0fs (ceiling %ds); "
+                            "the %dm sustained-humidity wait starts over",
+                            pid,
+                            ams_id,
+                            now_mono - above["last"],
+                            gap_ceiling,
+                            sustained_minutes,
+                        )
+                        self._auto_dry_above[unit_key] = {"since": now_mono, "last": now_mono}
+                    else:
+                        above["last"] = now_mono
 
                 if unit_state is not None:
                     if unit_state.get("suspended"):
@@ -2068,6 +2211,27 @@ class PrintScheduler:
                     )
                     continue
 
+                # The sustained-humidity wait: a start nobody scheduled waits
+                # until the unit has read wet for the configured minutes - one
+                # reading is what opening the lid looks like. It covers the
+                # mid-print start too. Only a printer queue drying is preparing
+                # for a scheduled job starts at once: that drying has a deadline.
+                if sustained_minutes > 0 and not (queue_drying_enabled and pid in printers_with_scheduled):
+                    above = self._auto_dry_above.get(unit_key)
+                    waited = time.monotonic() - above["since"] if above else 0.0
+                    if waited < sustained_minutes * 60:
+                        logger.debug(
+                            "Auto-drying: printer %d AMS %d waiting - humidity %d%% above the %d%% threshold "
+                            "for %.0fs of the required %dm",
+                            pid,
+                            ams_id,
+                            humidity,
+                            humidity_threshold,
+                            waited,
+                            sustained_minutes,
+                        )
+                        continue
+
                 # Get conservative drying params for mixed filaments
                 trays = ams_data.get("tray", [])
                 params = self._get_conservative_drying_params(trays, module_type, presets)
@@ -2103,12 +2267,90 @@ class PrintScheduler:
                     pid, ams_id, temp, duration_hours, mode=1, filament=filament_type
                 )
                 if success:
+                    self._auto_dry_above.pop(unit_key, None)
                     self._drying_in_progress[pid] = time.monotonic()
                     self._armed_dry_cycles[(pid, ams_id)] = time.monotonic()
                     armed = self._dry_unit_history.setdefault(
                         unit_key, {"unproductive": 0, "suspended": False, "ended_at": None}
                     )
                     armed["running"] = True
+
+    @staticmethod
+    def _row_could_start_now(item: PrintQueueItem, scheduled: datetime | None, now: datetime) -> bool:
+        """Whether nothing but the printer stands between this pending row and its start.
+
+        The standing holds ``check_queue`` skips a row for without looking at
+        the printer: a time that has not come, a manual start, a queue paused
+        by the operator or by an error. None of them ends by itself within a
+        tick, so a drying cycle started meanwhile takes nothing from the row.
+        """
+        if item.manual_start:
+            return False
+        if scheduled is not None and scheduled > now:
+            return False
+        queue = getattr(item, "queue", None)
+        return not (queue is not None and (queue.is_paused or queue.status in ("paused", "error")))
+
+    async def _scheduled_auto_queue_printers(self, db: AsyncSession) -> set[int]:
+        """Printers a scheduled AutoQueue job within the pre-drying horizon could run on.
+
+        Asked of the ONE source of "which printers can this job run on"
+        (``auto_queue_eligibility.printers_for_item``: model, location subtree,
+        auto-distribute, order restrictions) and never by routing the job
+        early - *Routing is NOT dispatching* cuts both ways. A row without a
+        target model names no candidates until its file is read, and is left out.
+        """
+        from backend.app.models.auto_queue import AutoQueueItem
+        from backend.app.services.auto_queue_eligibility import printers_for_item
+
+        horizon = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(hours=_QUEUE_PREDRY_HORIZON_HOURS)
+        rows = await db.execute(
+            select(AutoQueueItem).where(
+                AutoQueueItem.status == "pending",
+                AutoQueueItem.cancelled_at.is_(None),
+                AutoQueueItem.manual_start.is_(False),
+                AutoQueueItem.target_model.is_not(None),
+                AutoQueueItem.scheduled_time.is_not(None),
+                AutoQueueItem.scheduled_time <= horizon,
+            )
+        )
+        printer_ids: set[int] = set()
+        candidates: dict[tuple, set[int]] = {}
+        for item in rows.scalars().all():
+            key = (item.target_model, item.target_location_id, item.project_id, item.project_line_id)
+            if key not in candidates:
+                printers, _model, _suffix = await printers_for_item(db, item)
+                candidates[key] = {printer.id for printer in printers}
+            printer_ids |= candidates[key]
+        return printer_ids
+
+    def _drying_holds_queue(self, printer_id: int) -> bool:
+        """Whether a cycle this scheduler tracks is one the printer's queue can wait on.
+
+        The hold entry alone is not enough: a printer whose only timers are
+        parked (``utils/ams_drying.only_parked_timers``) is not drying and the
+        wait would never end. The entry itself stays until the timer is gone,
+        so the stop paths still reach a unit we armed.
+        """
+        if not self._drying_in_progress.get(printer_id):
+            return False
+        state = printer_manager.get_status(printer_id)
+        return not only_parked_timers((getattr(state, "raw_data", None) or {}).get("ams") if state else None)
+
+    async def drying_held_printer_ids(self, db: AsyncSession) -> set[int]:
+        """Printers whose queue a drying cycle holds right now.
+
+        The same two facts ``check_queue`` holds a row on - a cycle this
+        scheduler tracks (auto or scheduled drying) and ``queue_drying_block``.
+        With block mode off a print simply takes the printer, so nothing is held.
+        For RANKING only (the AutoQueue router prefers an equally fit printer
+        that is not held): a held printer still gets work when it is the only
+        one - the wait is then visible on its row.
+        """
+        held = {pid for pid in self._drying_in_progress if self._drying_holds_queue(pid)}
+        if not held or not await self._get_bool_setting(db, "queue_drying_block"):
+            return set()
+        return held
 
     async def _notify_auto_drying_suspended(
         self,
@@ -2164,6 +2406,18 @@ class PrintScheduler:
         if state is not None:
             state.pop("running", None)
             state["ended_at"] = time.monotonic()
+        # A stopped cycle spends the streak that armed it, as a finished one does.
+        self._auto_dry_above.pop((printer_id, ams_id), None)
+
+    def release_auto_dry_claim(self, printer_id: int, ams_id: int) -> None:
+        """A person started a cycle on this unit: whatever runs there now is theirs.
+
+        The claim is keyed by unit and lives while the unit shows a timer, so a
+        start sent over a timer auto-drying armed (a parked one — the card
+        offers a start there) would inherit it, and the next dispatch would stop
+        the operator's cycle as ours.
+        """
+        self._armed_dry_cycles.pop((printer_id, ams_id), None)
 
     def drying_remaining_seconds(self, printer_id: int) -> int:
         """Seconds left in the drying cycle THIS scheduler runs on ``printer_id`` — 0 when it runs none.
@@ -2172,7 +2426,8 @@ class PrintScheduler:
         ``queue_drying_block`` in ``check_queue``): the same claim, timed by the
         AMS countdown the printer reports (``dry_time``, minutes; the longest
         unit wins). A cycle somebody started by hand is not ours and holds
-        nothing here, exactly as it holds nothing at the gate. Vault
+        nothing here, exactly as it holds nothing at the gate; a parked timer
+        is no cycle and counts for nothing. Vault
         60-specs/farm-forecast-v2-spec §6.
         """
         if not self._drying_in_progress.get(printer_id):
@@ -2180,8 +2435,8 @@ class PrintScheduler:
         state = printer_manager.get_status(printer_id)
         if not state:
             return 0
-        minutes = max((int(unit.get("dry_time") or 0) for unit in state.raw_data.get("ams", [])), default=0)
-        return max(0, minutes) * 60
+        minutes = max((running_dry_minutes(unit) for unit in state.raw_data.get("ams", [])), default=0)
+        return minutes * 60
 
     def _sync_drying_state(self):
         """Drop what is no longer true: printers that have stopped drying, and
@@ -2239,6 +2494,8 @@ class PrintScheduler:
         # suspension it never earned.
         for key in [k for k in self._dry_unit_history if printer_manager.get_status(k[0]) is None]:
             self._dry_unit_history.pop(key, None)
+        for key in [k for k in self._auto_dry_above if printer_manager.get_status(k[0]) is None]:
+            self._auto_dry_above.pop(key, None)
 
     async def _stop_drying(self, printer_id: int):
         """Stop the drying cycles WE armed on a printer.

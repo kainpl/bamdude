@@ -87,6 +87,7 @@ import {
   Info,
   Cable,
   Flame,
+  Hourglass,
   Gauge,
   LineChart,
   Move,
@@ -198,6 +199,7 @@ import {
   setExternalSpoolHidden as persistExternalSpoolHidden,
 } from '../utils/printerCardPrefs';
 import { resolveDryingPresetKey, type DryingPreset } from '../utils/dryingPresets';
+import { dryStartVerdict, isDryingParked, isDryingRunning } from '../utils/amsDrying';
 import { dryingBlockedKey } from '../utils/dryingBlockers';
 import { ALL_WEEKDAYS, DRYING_SCHEDULES_KEY, SCHEDULED_DRYINGS_KEY, WEEKDAY_BITS, WEEKDAY_NAMES, computeStartAfter, farmZoneDiffers, type DryingStartMode } from '../utils/scheduledDrying';
 import { ScheduledDryingStrip } from '../components/ScheduledDryingStrip';
@@ -211,12 +213,6 @@ const DRYING_POPOVER_ESTIMATED_HEIGHT = 460;
 // How long to wait after a drying command is acked before declaring that the AMS
 // never actually started (#2533). Generous: a unit runs its own pre-checks first.
 const DRY_START_CONFIRM_MS = 30_000;
-// AMSUnit.dry_status values that prove a cycle really began: 1=Checking, 2=Drying.
-// Deliberately NOT 3=Cooling / 4=Stopping — those are leftovers from a previous
-// cycle and would false-clear a watch armed right after one ended — and not
-// 5=Error, which is the failure the watch exists to report, not a success.
-const DRY_STATUS_STARTED = new Set([1, 2]);
-const DRY_STATUS_ERROR = 5;
 // A MODELS_WITH_CHAMBER_FAN set used to live here, deciding whether to draw the
 // chamber-fan badge. It is gone: the printer reporting a chamber fan is what
 // says it has one, and the backend now builds the whole fan list from that.
@@ -2139,7 +2135,8 @@ const PrinterCard = memo(function PrinterCard({
     setDryingDuration(moduleType === 'n3s' ? preset.n3s_hours : preset.n3f_hours);
     setDryingRotateTray(false);
     // Drying now: plan the next cycle on a schedule. Blocked now: go as soon as it can.
-    setDryingMode(ams.dry_time > 0 ? 'repeat' : ams.dry_sf_reason?.length ? 'when_free' : 'now');
+    // A parked timer is not drying: a start replaces it.
+    setDryingMode(isDryingRunning(ams) ? 'repeat' : ams.dry_sf_reason?.length ? 'when_free' : 'now');
     setDryingPopoverModuleType(ams.module_type);
     setDryingPopoverAmsId(ams.id);
     dryingTriggerRef.current = trigger;
@@ -2148,7 +2145,7 @@ const PrinterCard = memo(function PrinterCard({
   const dryingButtonTitle = (ams: AMSUnit) =>
     status?.drying_screen_only
       ? t('printers.drying.screenOnly')
-      : ams.dry_time > 0
+      : isDryingRunning(ams)
         ? t('printers.drying.scheduleNext')
         : ams.dry_sf_reason?.length
           ? t(dryingBlockedKey(ams.dry_sf_reason))
@@ -2171,7 +2168,9 @@ const PrinterCard = memo(function PrinterCard({
   // units, and starting a second cycle inside the window must not discard the
   // first unit's verdict — silently losing a verdict is the exact failure this
   // watch exists to remove.
-  const [dryStartWatch, setDryStartWatch] = useState<Record<number, true>>({});
+  // The value is the countdown the unit showed when the command went out: a
+  // start may replace a parked timer, and that timer still standing is no start.
+  const [dryStartWatch, setDryStartWatch] = useState<Record<number, number>>({});
   const dryStartTimersRef = useRef<Record<number, ReturnType<typeof setTimeout>>>({});
   const [isDraggingFile, setIsDraggingFile] = useState(false);
   const [isDropUploading, setIsDropUploading] = useState(false);
@@ -2718,14 +2717,14 @@ const PrinterCard = memo(function PrinterCard({
 
   // AMS drying mutations
   const startDryingMutation = useMutation({
-    mutationFn: ({ amsId, temp, duration, filament, rotateTray }: { amsId: number; temp: number; duration: number; filament: string; rotateTray: boolean }) =>
+    mutationFn: ({ amsId, temp, duration, filament, rotateTray }: { amsId: number; temp: number; duration: number; filament: string; rotateTray: boolean; standing: number }) =>
       api.startDrying(printer.id, amsId, temp, duration, filament, rotateTray),
-    onSuccess: (_data, { amsId }) => {
+    onSuccess: (_data, { amsId, standing }) => {
       setDryingPopoverAmsId(null);
       // "Command sent", not "drying started" — the ack proves only that the
       // printer took it. The watch below reports whether it actually began.
       showToast(t('printers.drying.toastCommandSent'), 'success');
-      setDryStartWatch(prev => ({ ...prev, [amsId]: true }));
+      setDryStartWatch(prev => ({ ...prev, [amsId]: standing }));
       queryClient.invalidateQueries({ queryKey: ['printerStatus', printer.id] });
     },
     onError: (error: Error) => showToast(error.message || t('printers.toast.failedToSendCommand'), 'error'),
@@ -2779,11 +2778,9 @@ const PrinterCard = memo(function PrinterCard({
       const amsId = Number(key);
       const unit = amsData?.find(u => u.id === amsId);
       if (!unit) continue;
-      if (unit.dry_time > 0 || DRY_STATUS_STARTED.has(unit.dry_status)) {
-        started.push(amsId);
-      } else if (unit.dry_status === DRY_STATUS_ERROR) {
-        failed.push(amsId);
-      }
+      const verdict = dryStartVerdict(unit, dryStartWatch[amsId]);
+      if (verdict === 'started') started.push(amsId);
+      else if (verdict === 'failed') failed.push(amsId);
     }
     if (started.length === 0 && failed.length === 0) return;
     failed.forEach(() => showToast(t('printers.drying.toastNotStarted'), 'warning'));
@@ -5151,7 +5148,7 @@ const PrinterCard = memo(function PrinterCard({
                                         }
                                       }}
                                       className={`flex items-center gap-0.5 px-1 py-0.5 rounded text-[length:var(--pc-t9,9px)] transition-colors ${
-                                        ams.dry_time > 0
+                                        isDryingRunning(ams)
                                           ? 'bg-amber-100 dark:bg-amber-500/20 text-amber-700 dark:text-amber-400'
                                           : status.drying_screen_only
                                             ? 'bg-bambu-dark-tertiary/30 text-bambu-gray/50 cursor-not-allowed'
@@ -5167,8 +5164,35 @@ const PrinterCard = memo(function PrinterCard({
                                 </div>
                               )}
                             </div>
+                            {/* A timer the printer holds without running it is not a cycle:
+                                grey, no countdown, and the timer can still be taken off. */}
+                            {isDryingParked(ams) && (
+                              <div
+                                data-testid={`ams-drying-parked-${ams.id}`}
+                                title={t('printers.drying.notRunningHint')}
+                                className="flex items-center gap-2 px-2 py-1 mb-1 bg-bambu-dark-tertiary/30 border border-bambu-dark-tertiary rounded text-[length:var(--pc-t9,9px)]"
+                              >
+                                <Hourglass className="w-[var(--pc-i3,0.75rem)] h-[var(--pc-i3,0.75rem)] text-bambu-gray shrink-0" />
+                                <span className="text-bambu-gray font-medium">{t('printers.drying.notRunning')}</span>
+                                {ams.dry_filament && ams.dry_target_temp != null && (
+                                  <span className="text-bambu-gray/70">
+                                    {t('printers.drying.targetSummary', { filament: ams.dry_filament, temp: ams.dry_target_temp })}
+                                  </span>
+                                )}
+                                {!status.drying_screen_only && (
+                                  <button
+                                    onClick={() => stopDryingMutation.mutate(ams.id)}
+                                    disabled={stopDryingMutation.isPending}
+                                    className="ml-auto text-bambu-gray hover:text-white transition-colors disabled:opacity-50"
+                                    title={t('printers.drying.stop')}
+                                  >
+                                    <X className="w-[var(--pc-i3,0.75rem)] h-[var(--pc-i3,0.75rem)]" />
+                                  </button>
+                                )}
+                              </div>
+                            )}
                             {/* Drying status bar */}
-                            {ams.dry_time > 0 && (
+                            {isDryingRunning(ams) && (
                               <div className="flex items-center gap-2 px-2 py-1 mb-1 bg-amber-500/10 border border-amber-500/20 rounded text-[length:var(--pc-t9,9px)]">
                                 <Flame className="w-[var(--pc-i3,0.75rem)] h-[var(--pc-i3,0.75rem)] text-amber-600 dark:text-amber-400 shrink-0" />
                                 <span className="text-amber-700 dark:text-amber-400 font-medium">{t('printers.drying.active')}</span>
@@ -5791,7 +5815,7 @@ const PrinterCard = memo(function PrinterCard({
                                       }
                                     }}
                                     className={`flex items-center gap-0.5 px-1 py-0.5 rounded text-[length:var(--pc-t9,9px)] transition-colors ${
-                                      ams.dry_time > 0
+                                      isDryingRunning(ams)
                                         ? 'bg-amber-100 dark:bg-amber-500/20 text-amber-700 dark:text-amber-400'
                                         : status.drying_screen_only
                                           ? 'bg-bambu-dark-tertiary/30 text-bambu-gray/50 cursor-not-allowed'
@@ -5804,8 +5828,29 @@ const PrinterCard = memo(function PrinterCard({
                                 </div>
                               )}
                             </div>
+                            {/* HT AMS: a parked timer, as on the standard AMS above */}
+                            {isDryingParked(ams) && (
+                              <div
+                                data-testid={`ams-drying-parked-${ams.id}`}
+                                title={t('printers.drying.notRunningHint')}
+                                className="flex items-center gap-1.5 px-2 py-1 mb-1 bg-bambu-dark-tertiary/30 border border-bambu-dark-tertiary rounded text-[length:var(--pc-t9,9px)] whitespace-nowrap overflow-hidden"
+                              >
+                                <Hourglass className="w-[var(--pc-i3,0.75rem)] h-[var(--pc-i3,0.75rem)] text-bambu-gray shrink-0" />
+                                <span className="text-bambu-gray font-medium text-[length:var(--pc-t8,8px)] truncate">{t('printers.drying.notRunning')}</span>
+                                {!status.drying_screen_only && (
+                                  <button
+                                    onClick={() => stopDryingMutation.mutate(ams.id)}
+                                    disabled={stopDryingMutation.isPending}
+                                    className="ml-auto text-bambu-gray hover:text-white transition-colors disabled:opacity-50 shrink-0"
+                                    title={t('printers.drying.stop')}
+                                  >
+                                    <X className="w-[var(--pc-i3,0.75rem)] h-[var(--pc-i3,0.75rem)]" />
+                                  </button>
+                                )}
+                              </div>
+                            )}
                             {/* HT AMS drying status bar */}
-                            {ams.dry_time > 0 && (
+                            {isDryingRunning(ams) && (
                               <div className="flex items-center gap-1.5 px-2 py-1 mb-1 bg-amber-500/10 border border-amber-500/20 rounded text-[length:var(--pc-t9,9px)] whitespace-nowrap overflow-hidden">
                                 <Flame className="w-[var(--pc-i3,0.75rem)] h-[var(--pc-i3,0.75rem)] text-amber-600 dark:text-amber-400 shrink-0" />
                                 {ams.dry_filament && ams.dry_target_temp != null && (
@@ -7461,7 +7506,7 @@ const PrinterCard = memo(function PrinterCard({
         // Why "Now" cannot run on this unit right now; the other modes wait for it.
         const nowBlocked = !targetAms
           ? null
-          : targetAms.dry_time > 0
+          : isDryingRunning(targetAms)
             ? t('printers.drying.dryingNow')
             : targetAms.dry_sf_reason?.length
               ? t(dryingBlockedKey(targetAms.dry_sf_reason))
@@ -7704,7 +7749,7 @@ const PrinterCard = memo(function PrinterCard({
                     if (dryingPopoverAmsId === null) return;
                     const rotateTray = dryingRotateTray && !anyTrayLoaded;
                     if (dryingMode === 'now') {
-                      startDryingMutation.mutate({ amsId: dryingPopoverAmsId, temp: dryingTemp, duration: dryingDuration, filament: dryingFilament, rotateTray });
+                      startDryingMutation.mutate({ amsId: dryingPopoverAmsId, temp: dryingTemp, duration: dryingDuration, filament: dryingFilament, rotateTray, standing: targetAms?.dry_time ?? 0 });
                       return;
                     }
                     const target = {

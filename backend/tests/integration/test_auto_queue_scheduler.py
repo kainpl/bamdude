@@ -83,11 +83,12 @@ def _idle_status(filament_types: list[str], colors: list[str] | None = None) -> 
 
 
 def _drying_status(filament_types: list[str], colors: list[str] | None = None) -> SimpleNamespace:
-    """Like ``_idle_status`` but reports a non-IDLE state — what a printer shows
-    while AMS auto-drying runs (so ``_is_printer_idle`` returns False). Trays stay
-    loaded; drying doesn't remove filament."""
+    """A printer whose AMS is drying, as it really reports: still ``IDLE``, with
+    a countdown on the unit. Drying is no part of ``_is_printer_idle`` — this
+    helper used to say ``RUNNING``, a state a drying idle printer never shows,
+    so the tests built on it proved "idle beats printing" instead."""
     s = _idle_status(filament_types, colors)
-    s.state = "RUNNING"
+    s.raw_data["ams"][0]["dry_time"] = 600
     return s
 
 
@@ -804,17 +805,47 @@ class TestAStalledQueueTellsTheOperator:
 
 
 class TestAutoQueueDryingPriority:
-    """Auto-queue divergence from upstream: a print takes priority over AMS
-    drying. A printer that is non-idle ONLY because it is auto-drying is still
-    eligible when ``queue_drying_block`` is False (the default), but a truly-idle
-    printer is always preferred. When ``queue_drying_block`` is True, drying
-    blocks the queue (parity with upstream's printer-specific path)."""
+    """Drying never keeps work off a printer — routing is not dispatching. With
+    ``queue_drying_block`` off a print simply takes the printer, so a drying
+    printer is as good as a free one. With it on, the cycle holds the printer's
+    queue: the job is still routed there when it is the only fit printer (the
+    wait shows on its row), but an equally fit printer that is NOT held wins —
+    a rank term, never a gate (upstream 1ffcfa260, adapted)."""
 
     @staticmethod
-    def _mark_drying(monkeypatch, printer_id: int) -> None:
+    def _mark_drying(monkeypatch, printer_id: int, *, scheduled: bool = False) -> None:
         from backend.app.services.print_scheduler import scheduler as print_scheduler_singleton
 
         monkeypatch.setitem(print_scheduler_singleton._drying_in_progress, printer_id, time.monotonic())
+        if scheduled:
+            # A scheduled-drying cycle holds through the same dict, plus its own set.
+            monkeypatch.setattr(print_scheduler_singleton, "_scheduled_drying_printers", {printer_id})
+
+    async def _route_one_job_between(
+        self, monkeypatch, db_session, scheduler, printer_factory, routing_item, *, scheduled: bool = False
+    ):
+        """Two fit A1 minis, the FIRST one (lower id — the tie-break's winner) drying.
+        Returns ``(drying queue id, free queue id, queue id the job landed in)``."""
+        drying_p, drying_pq = await _make_printer_with_queue(
+            db_session, printer_factory, name="A1m-dry", model="A1MINI"
+        )
+        free_p, free_pq = await _make_printer_with_queue(db_session, printer_factory, name="A1m-free", model="A1MINI")
+        self._mark_drying(monkeypatch, drying_p.id, scheduled=scheduled)
+
+        item = routing_item(target_model="A1MINI", status="pending", position=1)
+        db_session.add(item)
+        await db_session.commit()
+
+        status_map = {drying_p.id: _drying_status(["PLA"]), free_p.id: _idle_status(["PLA"])}
+        p_elig, p_sched = _patch_printer_manager({drying_p.id, free_p.id}, status_map)
+        with p_elig, p_sched:
+            await scheduler.tick()
+
+        await db_session.refresh(item)
+        assert item.status == "assigned"
+        pq_items = (await db_session.execute(select(PrintQueueItem))).scalars().all()
+        assert len(pq_items) == 1
+        return drying_pq.id, free_pq.id, pq_items[0].queue_id
 
     @pytest.mark.asyncio
     @pytest.mark.integration
@@ -828,7 +859,6 @@ class TestAutoQueueDryingPriority:
         db_session.add(item)
         await db_session.commit()
 
-        # Printer is connected (in idle_ids) but reports a non-idle (drying) state.
         p_elig, p_sched = _patch_printer_manager({printer.id}, {printer.id: _drying_status(["PLA"])})
         with p_elig, p_sched:
             await scheduler.tick()
@@ -862,34 +892,127 @@ class TestAutoQueueDryingPriority:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_idle_printer_preferred_over_drying(
+    @pytest.mark.parametrize("scheduled", [False, True], ids=["auto-drying", "scheduled-drying"])
+    async def test_a_free_printer_is_preferred_to_one_drying_and_holding_its_queue(
+        self, monkeypatch, db_session, scheduler, printer_factory, routing_item, scheduled
+    ) -> None:
+        """Both printers are IDLE and fit; the drying one would win the id
+        tie-break. Under block mode the job would sit behind its cycle for hours
+        while the free printer stood idle — and nothing moves a routed row back."""
+        db_session.add(Settings(key="queue_drying_block", value="true"))
+
+        _drying, free, landed = await self._route_one_job_between(
+            monkeypatch, db_session, scheduler, printer_factory, routing_item, scheduled=scheduled
+        )
+
+        assert landed == free
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_with_the_block_off_drying_is_no_reason_to_prefer_another_printer(
         self, monkeypatch, db_session, scheduler, printer_factory, routing_item
     ) -> None:
-        drying_p, drying_pq = await _make_printer_with_queue(
-            db_session, printer_factory, name="A1m-dry", model="A1MINI"
+        """The print takes the printer and the cycle yields: the drying printer
+        is exactly as ready as the free one, so the ordinary tie-break decides."""
+        drying, _free, landed = await self._route_one_job_between(
+            monkeypatch, db_session, scheduler, printer_factory, routing_item
         )
-        idle_p, idle_pq = await _make_printer_with_queue(db_session, printer_factory, name="A1m-idle", model="A1MINI")
-        self._mark_drying(monkeypatch, drying_p.id)
 
-        item = routing_item(target_model="A1MINI", status="pending", position=1)
-        db_session.add(item)
+        assert landed == drying
+
+
+class TestScheduledAutoQueueCandidates:
+    """Queue pre-drying asks which printers a scheduled «any printer of model X»
+    job could run on (upstream 1ffcfa260 leg 3) — of the router's own source of
+    candidates, without routing the job before its time."""
+
+    @staticmethod
+    def _in(hours: float) -> datetime:
+        return datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(hours=hours)
+
+    @staticmethod
+    async def _candidates(db_session) -> set[int]:
+        from backend.app.services.print_scheduler import PrintScheduler
+
+        return await PrintScheduler()._scheduled_auto_queue_printers(db_session)
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_every_printer_the_job_could_run_on_and_no_other(
+        self, db_session, printer_factory, routing_item
+    ) -> None:
+        from backend.app.models.printer_location import PrinterLocation
+
+        here = PrinterLocation(name="Here", name_key="here")
+        elsewhere = PrinterLocation(name="Elsewhere", name_key="elsewhere")
+        db_session.add_all([here, elsewhere])
         await db_session.commit()
 
-        status_map = {drying_p.id: _drying_status(["PLA"]), idle_p.id: _idle_status(["PLA"])}
-        p_elig, p_sched = _patch_printer_manager({drying_p.id, idle_p.id}, status_map)
-        with p_elig, p_sched:
-            await scheduler.tick()
+        fit_a, _ = await _make_printer_with_queue(db_session, printer_factory, model="A1MINI", location_id=here.id)
+        fit_b, _ = await _make_printer_with_queue(db_session, printer_factory, model="A1MINI", location_id=here.id)
+        await _make_printer_with_queue(db_session, printer_factory, model="X1C", location_id=here.id)
+        await _make_printer_with_queue(db_session, printer_factory, model="A1MINI", location_id=elsewhere.id)
+        _excluded, excluded_queue = await _make_printer_with_queue(
+            db_session, printer_factory, model="A1MINI", location_id=here.id
+        )
+        excluded_queue.auto_distribute_eligible = False
+        await _make_printer_with_queue(
+            db_session, printer_factory, model="A1MINI", location_id=here.id, is_active=False
+        )
 
-        await db_session.refresh(item)
-        assert item.status == "assigned"
+        db_session.add(
+            routing_item(
+                target_model="A1MINI",
+                target_location_id=here.id,
+                status="pending",
+                position=1,
+                scheduled_time=self._in(3),
+            )
+        )
+        await db_session.commit()
 
-        # The routed per-printer item must land on the IDLE printer, not the drying one.
-        from sqlalchemy import select
+        assert await self._candidates(db_session) == {fit_a.id, fit_b.id}
 
-        result = await db_session.execute(select(PrintQueueItem))
-        pq_items = result.scalars().all()
-        assert len(pq_items) == 1
-        assert pq_items[0].queue_id == idle_pq.id
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    @pytest.mark.parametrize(
+        "row",
+        [
+            {"scheduled_time": None},
+            {"scheduled_time": 13},
+            {"scheduled_time": 3, "manual_start": True},
+            {"scheduled_time": 3, "status": "assigned"},
+            {"scheduled_time": 3, "cancelled_at": -1},
+        ],
+        ids=["unscheduled", "beyond-twelve-hours", "manual-start", "already-routed", "cancelled"],
+    )
+    async def test_a_job_that_is_no_deadline_names_no_printer(
+        self, db_session, printer_factory, routing_item, row
+    ) -> None:
+        await _make_printer_with_queue(db_session, printer_factory, model="A1MINI")
+        fields = {"target_model": "A1MINI", "status": "pending", "position": 1, **row}
+        for key in ("scheduled_time", "cancelled_at"):
+            if fields.get(key) is not None:
+                fields[key] = self._in(fields[key])
+        db_session.add(routing_item(**fields))
+        await db_session.commit()
+
+        assert await self._candidates(db_session) == set()
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_a_job_whose_time_has_come_still_counts_until_it_is_routed(
+        self, db_session, printer_factory, routing_item
+    ) -> None:
+        """Otherwise the cycle dried FOR the job would be stopped in the gap
+        between its time coming and the router placing it."""
+        printer, _ = await _make_printer_with_queue(db_session, printer_factory, model="A1MINI")
+        db_session.add(
+            routing_item(target_model="A1MINI", status="pending", position=1, scheduled_time=self._in(-0.05))
+        )
+        await db_session.commit()
+
+        assert await self._candidates(db_session) == {printer.id}
 
 
 # ---------- rebalancing across models (spec 2026-09-10) ----------
