@@ -465,6 +465,37 @@ def resolve_external_spools_in_mapping(ams_mapping: object, ams_mapping2: object
     return resolved
 
 
+def resolve_lite_trays_in_mapping(ams_mapping: object, ams_mapping2: object) -> object:
+    """Give an A2L AMS-Lite tray of a captured flat ``ams_mapping`` its global id (upstream be0ad787b).
+
+    A ``project_file`` names a Lite tray as its LOCAL slot 0-3 in the flat list and as
+    ``{ams_id: 16, slot_id: n}`` in ``ams_mapping2`` -- the form ``start_print`` sends, measured against the
+    firmware's own mapping. Everything that reads a captured mapping reads global trays, where the Lite is
+    24-27 (``A2L_LITE_GLOBAL_BASE``); kept flat, Lite slot 2 read as tray 1 of AMS 0.
+
+    Only that measured form is rewritten: the entry's ``ams_mapping2`` names unit 16 with a slot 0-3 AND the
+    flat value is that very slot. Every other entry is left exactly as captured, and a mapping with no such
+    entry is returned as the same object.
+    """
+    if not isinstance(ams_mapping, list) or not isinstance(ams_mapping2, list):
+        return ams_mapping
+    if len(ams_mapping2) != len(ams_mapping):
+        return ams_mapping
+    resolved = None
+    for i, (flat, detail) in enumerate(zip(ams_mapping, ams_mapping2, strict=True)):
+        if not isinstance(detail, dict) or isinstance(flat, bool) or not isinstance(flat, int):
+            continue
+        ams_id, slot = detail.get("ams_id"), detail.get("slot_id")
+        if isinstance(ams_id, bool) or ams_id != A2L_LITE_PHYSICAL_AMS_ID:
+            continue
+        if isinstance(slot, bool) or not isinstance(slot, int) or not 0 <= slot <= 3 or flat != slot:
+            continue
+        if resolved is None:
+            resolved = list(ams_mapping)
+        resolved[i] = A2L_LITE_GLOBAL_BASE + slot
+    return ams_mapping if resolved is None else resolved
+
+
 def decode_filam_bak_groups(value: object) -> list[list[int]] | None:
     """Decode firmware ``filam_bak`` masks into global tray ids.
 
@@ -3408,8 +3439,10 @@ class BambuMQTTClient:
     def _resolve_captured_mapping(self, print_data: dict) -> object:
         """A ``project_file``'s ``ams_mapping`` with its external holders named again from its
         own ``ams_mapping2`` (``resolve_external_spools_in_mapping``). The dispatched mapping
-        stays the first authority for attribution — this only keeps it from losing WHICH holder."""
-        flat = print_data.get("ams_mapping")
+        stays the first authority for attribution — this only keeps it from losing WHICH holder.
+        An A2L AMS-Lite tray, flat on the wire as its local slot, gets its global id the same way
+        (``resolve_lite_trays_in_mapping``)."""
+        flat = resolve_lite_trays_in_mapping(print_data.get("ams_mapping"), print_data.get("ams_mapping2"))
         if not isinstance(flat, list) or -1 not in flat:
             return flat
         return resolve_external_spools_in_mapping(
