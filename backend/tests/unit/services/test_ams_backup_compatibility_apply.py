@@ -583,3 +583,138 @@ async def test_a_spoolman_slots_linked_calibration_outranks_its_stored_preset(db
         walk = await bulk.iter_slot_projections(db_session, printer)
     candidate = next(c for c in walk.candidates if (c.ams_id, c.tray_id) == (0, 3))
     assert candidate.projection.actual.tray_info_idx == "GFG02"
+
+
+async def _bulk_apply_spoolman_slot(db_session, *, calibration: dict | None, live_cali_idx: int | None, link=False):
+    """Bulk apply over a farm whose Spoolman slot 3 has no hand-made link (unless ``link``).
+
+    ``calibration`` is an ACTIVE calibration row to store; the printer's live
+    table files GFG99 under index 7 on the 0.4 nozzle of extruder 0.
+    """
+    printer, state = await _farm(db_session)
+    await _spoolman_slot(db_session, printer, state, with_kprofile=link)
+    if live_cali_idx is not None:
+        state.raw_data["ams"][0]["tray"][3]["cali_idx"] = live_cali_idx
+    state.connected = True
+    state.kprofiles = [_live_profile(7, "GFG99"), _live_profile(5, "GFA00")]
+    if calibration is not None:
+        db_session.add(
+            FilamentCalibration(
+                printer_id=printer.id,
+                cali_mode="pa",
+                source="printer_sync",
+                name="GFG99 K",
+                pa_k_value=0.02,
+                is_active=True,
+                **{
+                    "filament_id": "GFG99",
+                    "nozzle_diameter": 0.4,
+                    "nozzle_volume_type": "standard",
+                    "extruder_id": 0,
+                    **calibration,
+                },
+            )
+        )
+        await db_session.commit()
+    client = MagicMock()
+    client.ams_set_filament_setting.return_value = True
+    client.state = state
+    stub = SimpleNamespace(get_spool=AsyncMock(return_value=SPOOLMAN_RAW))
+    with (
+        patch("backend.app.services.ams_backup_compatibility_apply.printer_manager") as pm,
+        patch("backend.app.services.calibration_service.printer_manager") as k_pm,
+        patch("backend.app.services.spoolman.get_spoolman_client", new=AsyncMock(return_value=stub)),
+    ):
+        pm.get_status.return_value = state
+        k_pm.get_client.return_value = client
+        result = await bulk.bulk_apply(db_session, printer, client, dry_run=False)
+    row = next(r for r in result["rows"] if (r["ams_id"], r["tray_id"]) == (0, 3))
+    sent = [c.kwargs for c in client.extrusion_cali_sel.call_args_list if c.kwargs["tray_id"] == 3]
+    return row, sent
+
+
+@pytest.mark.asyncio
+async def test_a_spoolman_slot_without_a_link_gets_the_active_calibration_of_its_combo(db_session):
+    """As the two assign routes and the built-in inventory: the spool's K comes
+    by default through its filament — not the slot's stale live index."""
+    row, sent = await _bulk_apply_spoolman_slot(db_session, calibration={}, live_cali_idx=5)
+    assert row["published"] is True and row["kprofile"] == "applied"
+    assert sent == [{"ams_id": 0, "tray_id": 3, "cali_idx": 7, "filament_id": "GFG99", "nozzle_diameter": "0.4"}]
+
+
+@pytest.mark.asyncio
+async def test_the_default_is_selected_for_a_slot_with_no_live_index_too(db_session):
+    row, sent = await _bulk_apply_spoolman_slot(db_session, calibration={}, live_cali_idx=None)
+    assert row["kprofile"] == "applied" and [s["cali_idx"] for s in sent] == [7]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "other",
+    [{"nozzle_diameter": 0.6}, {"extruder_id": 1}, {"nozzle_volume_type": "high_flow"}, {"filament_id": "GFG00"}],
+    ids=["another-diameter", "another-extruder", "another-flow", "another-filament"],
+)
+async def test_a_calibration_of_another_combo_is_not_the_spoolman_slots_default(db_session, other):
+    row, sent = await _bulk_apply_spoolman_slot(db_session, calibration=other, live_cali_idx=None)
+    assert row["published"] is True and row["kprofile"] is None and sent == []
+
+
+@pytest.mark.asyncio
+async def test_a_spoolman_slot_with_no_active_calibration_keeps_its_live_index_as_before(db_session):
+    row, sent = await _bulk_apply_spoolman_slot(db_session, calibration=None, live_cali_idx=5)
+    assert row["kprofile"] == "kept"
+    assert sent == [{"ams_id": 0, "tray_id": 3, "cali_idx": 5, "filament_id": "GFG99", "nozzle_diameter": "0.4"}]
+
+
+@pytest.mark.asyncio
+async def test_a_hand_linked_spoolman_slot_is_re_pushed_as_before(db_session):
+    """The link's family (GFG02) with the slot's live index — never the
+    stand-in's default calibration."""
+    row, sent = await _bulk_apply_spoolman_slot(db_session, calibration={}, live_cali_idx=5, link=True)
+    assert row["kprofile"] == "kept"
+    assert sent == [{"ams_id": 0, "tray_id": 3, "cali_idx": 5, "filament_id": "GFG02", "nozzle_diameter": "0.4"}]
+
+
+@pytest.mark.asyncio
+async def test_the_skip_knob_keeps_the_default_off_a_slot_advertised_as_the_generic(db_session, monkeypatch):
+    from backend.app.services import ams_backup_compatibility as compat
+
+    monkeypatch.setattr(compat, "GENERIC_MODE_KPROFILE", "skip")
+    printer, state = await _farm(db_session)
+    printer.ams_policies = {"backup_compatibility": {"generic_base_material": True}}
+    await db_session.commit()
+    await _spoolman_slot(db_session, printer, state, with_kprofile=False)
+    state.connected = True
+    state.kprofiles = [_live_profile(7, "GFG02")]
+    db_session.add(
+        FilamentCalibration(
+            printer_id=printer.id,
+            filament_id="GFG02",
+            nozzle_diameter=0.4,
+            nozzle_volume_type="standard",
+            extruder_id=0,
+            cali_mode="pa",
+            source="printer_sync",
+            name="GFG02 K",
+            pa_k_value=0.02,
+            is_active=True,
+        )
+    )
+    await db_session.commit()
+    client = MagicMock()
+    client.ams_set_filament_setting.return_value = True
+    client.state = state
+    stub = SimpleNamespace(
+        get_spool=AsyncMock(return_value={**SPOOLMAN_RAW, "extra": {"bambu_slicer_filament": '"GFG02"'}})
+    )
+    with (
+        patch("backend.app.services.ams_backup_compatibility_apply.printer_manager") as pm,
+        patch("backend.app.services.calibration_service.printer_manager") as k_pm,
+        patch("backend.app.services.spoolman.get_spoolman_client", new=AsyncMock(return_value=stub)),
+    ):
+        pm.get_status.return_value = state
+        k_pm.get_client.return_value = client
+        result = await bulk.bulk_apply(db_session, printer, client, dry_run=False)
+    row = next(r for r in result["rows"] if (r["ams_id"], r["tray_id"]) == (0, 3))
+    assert row["action"] == "apply" and row["published"] is True and row["advertised"]["tray_info_idx"] == "GFG99"
+    assert [c for c in client.extrusion_cali_sel.call_args_list if c.kwargs["tray_id"] == 3] == []

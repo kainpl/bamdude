@@ -1134,6 +1134,21 @@ async def link_spool(
                         nozzle_volume_type=matching_fc.nozzle_volume_type,
                         extruder_id=slot_extruder,
                     )
+                elif not matching_fc and effective_tray_info_idx and kprofile_allowed(projection):
+                    # As the assign route: no link made by hand, so the spool
+                    # gets its K by default through its filament — the ACTIVE
+                    # calibration of the slot's combo, through the same helper
+                    # the built-in inventory uses.
+                    fired, _ = await apply_active_calibration_to_slot(
+                        db=db,
+                        printer_id=p_id,
+                        ams_id=a_id,
+                        slot_id=t_id,
+                        filament_id=effective_tray_info_idx,
+                        nozzle_diameter=nozzle_dia_float,
+                        nozzle_volume_type=nozzle.flow_or_standard,
+                        extruder_id=nozzle.extruder_or_default,
+                    )
                 if not fired:
                     from backend.app.api.routes.inventory import _find_tray_in_ams_data  # noqa: PLC0415
 

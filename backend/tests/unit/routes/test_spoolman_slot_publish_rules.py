@@ -70,9 +70,22 @@ async def make_printer(db_session, serial: str) -> Printer:
 
 
 async def run_route(
-    db_session, route: str, printer: Printer, *, raw_spool: dict, tray: dict, kprofiles: tuple = ()
+    db_session,
+    route: str,
+    printer: Printer,
+    *,
+    raw_spool: dict,
+    tray: dict,
+    kprofiles: tuple = (),
+    real_k: bool = False,
+    nozzles: tuple = (),
+    extruder_map: dict | None = None,
 ) -> MagicMock:
-    """Assign or link SPOOL_ID to AMS 0 slot 1; returns the MQTT client mock."""
+    """Assign or link SPOOL_ID to AMS 0 slot 1; returns the MQTT client mock.
+
+    ``real_k`` runs the real ``apply_active_calibration_to_slot`` against the
+    same printer state instead of the "nothing fired" stand-in.
+    """
     from backend.app.api.routes import spoolman as link_routes, spoolman_inventory as assign_routes
 
     stub = SimpleNamespace(
@@ -82,27 +95,35 @@ async def run_route(
         health_check=AsyncMock(return_value=True),
     )
     state = SimpleNamespace(
-        nozzles=[],
-        ams_extruder_map={},
+        nozzles=list(nozzles),
+        ams_extruder_map=extruder_map or {},
         support_user_preset=False,
         nozzle_volume_type="standard",
+        connected=True,
         kprofiles=list(kprofiles),
         raw_data={"ams": [{"id": 0, "tray": [tray]}]},
     )
     mqtt = MagicMock()
     mqtt.ams_set_filament_setting.return_value = True
     module = assign_routes if route == "assign" else link_routes
+    if real_k:
+        mqtt.state = state
+        k_half = patch("backend.app.services.calibration_service.printer_manager")
+    else:
+        k_half = patch(
+            "backend.app.services.calibration_service.apply_active_calibration_to_slot",
+            new=AsyncMock(return_value=(False, None)),
+        )
     with (
         patch.object(assign_routes, "_get_client", new=AsyncMock(return_value=stub)),
         patch.object(assign_routes, "_clear_stale_slot_fallback_tag_links", new=AsyncMock()),
         patch.object(link_routes, "get_spoolman_client", new=AsyncMock(return_value=stub)),
         patch.object(link_routes, "_clear_stale_tag_links", new=AsyncMock()),
         patch.object(module, "printer_manager") as pm,
-        patch(
-            "backend.app.services.calibration_service.apply_active_calibration_to_slot",
-            new=AsyncMock(return_value=(False, None)),
-        ),
+        k_half as k_pm,
     ):
+        if real_k:
+            k_pm.get_client.return_value = mqtt
         pm.get_client.return_value = mqtt
         pm.get_status.return_value = state
         pm.get_model.return_value = "P1S"
@@ -378,3 +399,224 @@ class TestKeepingTheSlotsLiveK:
         mqtt.extrusion_cali_sel.assert_called_once_with(
             ams_id=0, tray_id=1, cali_idx=3, filament_id="GFG00", nozzle_diameter="0.4"
         )
+
+
+async def active_calibration(
+    db_session,
+    printer: Printer,
+    filament_id: str,
+    *,
+    nozzle: float = 0.4,
+    flow: str = "standard",
+    extruder: int = 0,
+    linked: bool = False,
+) -> None:
+    """An ACTIVE calibration of the combo, named and valued as ``live_profile`` files it."""
+    from backend.app.models.filament_calibration import FilamentCalibration
+    from backend.app.models.spoolman_k_profile import SpoolmanKProfile
+
+    fc = FilamentCalibration(
+        printer_id=printer.id,
+        filament_id=filament_id,
+        nozzle_diameter=nozzle,
+        nozzle_volume_type=flow,
+        extruder_id=extruder,
+        cali_mode="pa",
+        source="printer_sync",
+        name=f"{filament_id} K",
+        pa_k_value=0.02,
+        is_active=True,
+    )
+    db_session.add(fc)
+    await db_session.commit()
+    if linked:
+        await db_session.refresh(fc)
+        db_session.add(
+            SpoolmanKProfile(
+                spoolman_spool_id=SPOOL_ID, printer_id=printer.id, extruder=extruder, filament_calibration_id=fc.id
+            )
+        )
+        await db_session.commit()
+
+
+def fitted(diameter: str, flow: str = "") -> SimpleNamespace:
+    return SimpleNamespace(nozzle_diameter=diameter, nozzle_flow=flow)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route", ROUTES)
+class TestTheDefaultKOfTheSlotsFilament:
+    """A spool gets its K by default through its filament: with no link made by
+    hand, the ACTIVE calibration of (printer, the slot's filament, the slot's
+    nozzle diameter, flow type, extruder) is selected — what the built-in
+    inventory does for a new spool of a filament the printer already knows."""
+
+    async def test_no_link_selects_the_active_calibration_of_the_slots_combo(self, db_session, route):
+        printer = await make_printer(db_session, f"01P00A0000021{ROUTES.index(route)}")
+        await active_calibration(db_session, printer, "GFG99")
+
+        mqtt = await run_route(
+            db_session,
+            route,
+            printer,
+            raw_spool=spoolman_spool(),
+            tray=live_tray(cali_idx=3),
+            kprofiles=(live_profile(7, "GFG99"), live_profile(3, "GFA00")),
+            real_k=True,
+        )
+
+        mqtt.extrusion_cali_sel.assert_called_once_with(
+            ams_id=0, tray_id=1, cali_idx=7, filament_id="GFG99", nozzle_diameter="0.4"
+        )
+
+    async def test_the_combo_is_the_nozzle_the_slot_feeds(self, db_session, route):
+        """AMS 0 feeds the LEFT hotend (extruder 1): a 0.6 High Flow nozzle."""
+        printer = await make_printer(db_session, f"01P00A0000022{ROUTES.index(route)}")
+        await active_calibration(db_session, printer, "GFG99")  # the right hotend's
+        await active_calibration(db_session, printer, "GFG99", nozzle=0.6, flow="high_flow", extruder=1)
+
+        mqtt = await run_route(
+            db_session,
+            route,
+            printer,
+            raw_spool=spoolman_spool(),
+            tray=live_tray(),
+            kprofiles=(live_profile(7, "GFG99"), live_profile(9, "GFG99", nozzle="0.6", extruder=1)),
+            real_k=True,
+            nozzles=(fitted("0.4", "standard"), fitted("0.6", "high_flow")),
+            extruder_map={"0": 1},
+        )
+
+        mqtt.extrusion_cali_sel.assert_called_once_with(
+            ams_id=0, tray_id=1, cali_idx=9, filament_id="GFG99", nozzle_diameter="0.6"
+        )
+
+    @pytest.mark.parametrize(
+        "other",
+        [
+            {"nozzle": 0.6},
+            {"extruder": 1},
+            {"flow": "high_flow"},
+            {"filament_id": "GFG00"},
+        ],
+        ids=["another-diameter", "another-extruder", "another-flow", "another-filament"],
+    )
+    async def test_a_calibration_of_another_combo_is_not_selected(self, db_session, route, other):
+        printer = await make_printer(db_session, f"01P00A0000023{ROUTES.index(route)}")
+        other = dict(other)
+        filament_id = other.pop("filament_id", "GFG99")
+        await active_calibration(db_session, printer, filament_id, **other)
+
+        mqtt = await run_route(
+            db_session,
+            route,
+            printer,
+            raw_spool=spoolman_spool(),
+            tray=live_tray(),  # no live index to keep either
+            kprofiles=(
+                live_profile(7, filament_id, nozzle=str(other.get("nozzle", "0.4")), extruder=other.get("extruder", 0)),
+            ),
+            real_k=True,
+            nozzles=(fitted("0.4", "standard"), fitted("0.4", "standard")),
+            extruder_map={"0": 0},
+        )
+
+        mqtt.extrusion_cali_sel.assert_not_called()
+
+    async def test_a_link_made_by_hand_wins_over_the_default(self, db_session, route):
+        printer = await make_printer(db_session, f"01P00A0000024{ROUTES.index(route)}")
+        await active_calibration(db_session, printer, "GFG99")  # the stand-in's default
+        await active_calibration(db_session, printer, "GFG00", linked=True)
+
+        mqtt = await run_route(
+            db_session,
+            route,
+            printer,
+            raw_spool=spoolman_spool(),
+            tray=live_tray(cali_idx=3),
+            kprofiles=(live_profile(7, "GFG99"), live_profile(9, "GFG00")),
+            real_k=True,
+        )
+
+        mqtt.extrusion_cali_sel.assert_called_once_with(
+            ams_id=0, tray_id=1, cali_idx=9, filament_id="GFG00", nozzle_diameter="0.4"
+        )
+
+    async def test_a_stored_presets_own_calibration_is_the_default(self, db_session, route):
+        """The live index was chosen under Generic PETG — not re-selected for
+        the preset's family — but the preset's own calibration is."""
+        printer = await make_printer(db_session, f"01P00A0000025{ROUTES.index(route)}")
+        await active_calibration(db_session, printer, "GFG02")
+
+        mqtt = await run_route(
+            db_session,
+            route,
+            printer,
+            raw_spool=spoolman_spool(bambu_slicer_filament='"GFG02"'),
+            tray=live_tray(cali_idx=3),
+            kprofiles=(live_profile(3, "GFG99"), live_profile(7, "GFG02")),
+            real_k=True,
+        )
+
+        mqtt.extrusion_cali_sel.assert_called_once_with(
+            ams_id=0, tray_id=1, cali_idx=7, filament_id="GFG02", nozzle_diameter="0.4"
+        )
+
+    async def test_a_calibration_the_live_table_lacks_keeps_the_live_index(self, db_session, route):
+        printer = await make_printer(db_session, f"01P00A0000026{ROUTES.index(route)}")
+        await active_calibration(db_session, printer, "GFG99")
+
+        mqtt = await run_route(
+            db_session,
+            route,
+            printer,
+            raw_spool=spoolman_spool(),
+            tray=live_tray(cali_idx=3),
+            kprofiles=(live_profile(3, "GFA00"),),
+            real_k=True,
+        )
+
+        mqtt.extrusion_cali_sel.assert_called_once_with(
+            ams_id=0, tray_id=1, cali_idx=3, filament_id="GFG99", nozzle_diameter="0.4"
+        )
+
+    async def test_no_active_calibration_keeps_the_live_index_as_before(self, db_session, route):
+        printer = await make_printer(db_session, f"01P00A0000027{ROUTES.index(route)}")
+
+        mqtt = await run_route(
+            db_session,
+            route,
+            printer,
+            raw_spool=spoolman_spool(),
+            tray=live_tray(cali_idx=3),
+            kprofiles=(live_profile(3, "GFA00"),),
+            real_k=True,
+        )
+
+        mqtt.extrusion_cali_sel.assert_called_once_with(
+            ams_id=0, tray_id=1, cali_idx=3, filament_id="GFG99", nozzle_diameter="0.4"
+        )
+
+    async def test_a_slot_advertised_as_the_generic_under_the_skip_knob_gets_no_default(
+        self, db_session, route, monkeypatch
+    ):
+        from backend.app.services import ams_backup_compatibility as compat
+
+        printer = await make_printer(db_session, f"01P00A0000028{ROUTES.index(route)}")
+        printer.ams_policies = {"backup_compatibility": {"generic_base_material": True}}
+        await db_session.commit()
+        await active_calibration(db_session, printer, "GFG02")
+        monkeypatch.setattr(compat, "GENERIC_MODE_KPROFILE", "skip")
+
+        mqtt = await run_route(
+            db_session,
+            route,
+            printer,
+            raw_spool=spoolman_spool(bambu_slicer_filament='"GFG02"'),
+            tray=live_tray(),
+            kprofiles=(live_profile(7, "GFG02"),),
+            real_k=True,
+        )
+
+        assert mqtt.ams_set_filament_setting.call_args.kwargs["tray_info_idx"] == "GFG99"
+        mqtt.extrusion_cali_sel.assert_not_called()

@@ -1938,6 +1938,21 @@ async def assign_spoolman_slot(
                         body.ams_id,
                         body.tray_id,
                     )
+            elif not matching_fc and effective_tray_info_idx and kprofile_allowed(projection):
+                # No link made by hand: the spool gets its K by default through
+                # its filament, as in the built-in inventory — the ACTIVE
+                # calibration of (printer, the slot's filament, this nozzle's
+                # diameter, flow type, extruder), through the same helper.
+                fired, _ = await apply_active_calibration_to_slot(
+                    db=db,
+                    printer_id=body.printer_id,
+                    ams_id=body.ams_id,
+                    slot_id=body.tray_id,
+                    filament_id=effective_tray_info_idx,
+                    nozzle_diameter=nozzle_dia_float,
+                    nozzle_volume_type=nozzle.flow_or_standard,
+                    extruder_id=nozzle.extruder_or_default,
+                )
             if not fired:
                 # No stored K-profile: preserve the slot's current live cali_idx
                 from backend.app.api.routes.inventory import _find_tray_in_ams_data

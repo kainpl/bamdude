@@ -1033,7 +1033,7 @@ export interface BackupCompatibilityApplyRow {
   action: 'apply' | 'revert' | 'skip';
   reasons: string[];
   published: boolean | null;
-  kprofile: 'kept' | 'skipped' | null;
+  kprofile: 'applied' | 'kept' | 'skipped' | null;
 }
 
 export interface BackupCompatibilityApplyResult {
