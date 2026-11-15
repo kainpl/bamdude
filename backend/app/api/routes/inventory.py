@@ -2660,6 +2660,29 @@ async def list_assignments(
     return responses
 
 
+async def _refuse_in_spoolman_mode(db: AsyncSession) -> None:
+    """The built-in slot ledger takes no write while Spoolman is the inventory.
+
+    The switch to Spoolman empties ``spool_assignments``, and no reader gates on
+    the mode because the table is meant to hold only the active one. A row
+    written here in Spoolman mode — the card offered the built-in dialog
+    whenever Spoolman was enabled but unreachable — was never cleared and
+    reached the card, the Inventory page, the print dialog, the journal's
+    restart seed and the missing-assignment warning (upstream 62fad59fd, #3430).
+    Decided by the setting, not by whether Spoolman answers.
+    """
+    from backend.app.api.routes.settings import get_setting  # noqa: PLC0415
+
+    if (await get_setting(db, "spoolman_enabled") or "").lower() == "true":
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "spoolman_mode",
+                "message": "Spoolman is the inventory: assign spools to slots from Spoolman",
+            },
+        )
+
+
 @router.post("/assignments", response_model=SpoolAssignmentResponse)
 async def assign_spool(
     data: SpoolAssignmentCreate,
@@ -2668,6 +2691,8 @@ async def assign_spool(
 ):
     """Assign a spool to an AMS slot and auto-configure via MQTT."""
     from backend.app.main import _get_ams_assignment_lock
+
+    await _refuse_in_spoolman_mode(db)
 
     # A manual answer must not race insertion/RFID reconciliation on this slot.
     async with _get_ams_assignment_lock(data.printer_id):
@@ -2944,6 +2969,7 @@ async def unassign_spool(
     _: User | None = RequirePermission(Permission.INVENTORY_UPDATE),
 ):
     """Unassign a spool from an AMS slot."""
+    await _refuse_in_spoolman_mode(db)
     result = await db.execute(
         select(SpoolAssignment).where(
             SpoolAssignment.printer_id == printer_id,

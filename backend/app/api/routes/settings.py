@@ -893,6 +893,24 @@ async def spoolman_mode_switch_preview(
     }
 
 
+async def clear_stray_builtin_assignments(db: AsyncSession) -> int:
+    """Remove built-in slot assignments an install in Spoolman mode still holds.
+
+    The switch below clears them, so in Spoolman mode the table is empty — except
+    on an install where the built-in assign route wrote one while Spoolman was
+    enabled but unreachable (closed since; upstream 62fad59fd). Nothing clears
+    such a row afterwards and mode-agnostic readers show and use it, so start-up
+    removes them once. A setting decides it, hence not a migration.
+    """
+    from backend.app.models.spool_assignment import SpoolAssignment
+
+    if (await get_setting(db, "spoolman_enabled") or "false").lower() != "true":
+        return 0
+    result = await db.execute(delete(SpoolAssignment))
+    await db.commit()
+    return int(result.rowcount or 0)
+
+
 @router.put("/spoolman", dependencies=[RequireAdmin()])
 async def update_spoolman_settings(
     settings: dict,
