@@ -2394,6 +2394,14 @@ async def _track_from_3mf(
                 pass  # Fall back to linear scaling
 
     results = []
+    # File slots this pass has charged (or split): every slot is charged its own grams exactly once.
+    # A multi-plate file whose plate is unknown lists a slot once per plate, and only its first listing
+    # counts. This, not the tray, is what a repeat is recognised by: two DIFFERENT slots may share one
+    # tray (a slicer-sent print with two filaments on one spool), and each is owed its own charge
+    # (upstream 384903328, #3230).
+    charged_slots: set[int] = set()
+    # Trays some earlier writer covered before this pass: never charged again here, whatever names them.
+    covered_before = frozenset(handled_trays)
 
     for usage in filament_usage:
         slot_id = usage.get("slot_id", 0)
@@ -2597,6 +2605,7 @@ async def _track_from_3mf(
             continue  # Skip normal single-tray processing for this slot
 
         # Map 3MF slot_id to physical (ams_id, tray_id) using resolved mapping
+        tray_is_a_guess = False
         if tray_now_override is not None:
             # Single-filament non-queue print: use actual tray from printer state
             global_tray_id = tray_now_override
@@ -2638,6 +2647,7 @@ async def _track_from_3mf(
             # Position-based default: sort available tray IDs so external spools (254/255)
             # naturally follow standard AMS trays, matching slicer slot numbering
             if global_tray_id is None:
+                tray_is_a_guess = True
                 _state = printer_manager.get_status(printer_id)
                 _raw = getattr(_state, "raw_data", None) if _state else None
                 if _raw:
@@ -2683,7 +2693,24 @@ async def _track_from_3mf(
         )
 
         key = (ams_id, tray_id)
-        if key in handled_trays:
+        if slot_id in charged_slots or key in covered_before:
+            continue  # the same file slot listed again, or a tray covered before this pass
+        tray_already_charged = key in handled_trays
+        if tray_already_charged and tray_is_a_guess:
+            # Nothing names this slot's tray; its position among the loaded trays is a guess, and the
+            # guess lands on a tray another slot was charged to. Not charged a second time on a guess --
+            # and said, instead of dropped.
+            missed_grams = layer_grams[slot_id] if layer_grams and slot_id in layer_grams else used_g * scale
+            logger.warning(
+                "[UsageTracker] 3MF: slot %d has no mapped tray and its position names AMS%d-T%d, already "
+                "charged for another slot — %.1f g not charged",
+                slot_id,
+                ams_id,
+                tray_id,
+                missed_grams,
+            )
+            if uncharged is not None and missed_grams > 0:
+                uncharged.append((global_tray_id, round(float(missed_grams), 2)))
             continue
 
         # --- Journal-driven split: a runout on this slot's tray ---
@@ -2709,6 +2736,7 @@ async def _track_from_3mf(
                 continue
 
             handled_trays.add(key)
+            charged_slots.add(slot_id)
             split = split_weight(
                 [start for start, _, _ in journal_segs], total_weight, slot_id, analysis.layer_usage, bound
             )
@@ -2730,7 +2758,12 @@ async def _track_from_3mf(
                 seg_grams = list(split.grams)
                 if split.unknown_start > 0 and uncharged is not None:
                     uncharged.append((global_tray_id, round(split.unknown_start, 2)))
-            _purge = _autoswitch_purge_for_tray(journal_events or [], global_tray_id, runout_purge_grams)
+            # The emergency-swap purge is the tray's, once: not again for a second slot sharing it.
+            _purge = (
+                0.0
+                if tray_already_charged
+                else _autoswitch_purge_for_tray(journal_events or [], global_tray_id, runout_purge_grams)
+            )
             if _purge > 0 and len(seg_grams) > 1:
                 seg_grams[1] += _purge
 
@@ -2869,6 +2902,7 @@ async def _track_from_3mf(
         db.add(history)
 
         handled_trays.add(key)
+        charged_slots.add(slot_id)
         results.append(
             {
                 "spool_id": spool.id,
