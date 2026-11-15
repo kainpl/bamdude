@@ -1852,6 +1852,15 @@ async def assign_spoolman_slot(
                         ams_raw = ams_raw.get("ams", [])
                     live_tray = _find_tray_in_ams_data(ams_raw, body.ams_id, body.tray_id)
                 live_cali_idx = (live_tray or {}).get("cali_idx")
+                # A family taken from the spool's stored preset is not what the
+                # slot's index was chosen under: it goes back only when the
+                # printer's own table files that index under this filament.
+                from backend.app.utils.kprofile_lookup import slot_profile_filament_ids  # noqa: PLC0415
+
+                if plan.from_stored_preset and slot_profile_filament_ids(
+                    state, live_cali_idx, body.ams_id, body.tray_id
+                ) != {effective_tray_info_idx}:
+                    live_cali_idx = None
                 if live_cali_idx is not None and live_cali_idx >= 0:
                     mqtt_client.extrusion_cali_sel(
                         ams_id=body.ams_id,

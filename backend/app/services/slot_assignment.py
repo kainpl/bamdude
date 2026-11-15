@@ -45,6 +45,11 @@ class SlotAssignmentPlan:
     nozzle_temp_min: int = 200
     nozzle_temp_max: int = 240
     warnings: list[str] = field(default_factory=list)
+    # The family came from the preset stored on a Spoolman spool — neither a
+    # linked calibration nor the material's stand-in. The callers that put a
+    # slot's previous K index back read it: that index was chosen under whatever
+    # the slot held before, and is this family's only when the printer says so.
+    from_stored_preset: bool = False
 
 
 def _candidate_printer_names(printer_model: str | None, nozzle_diameter: str) -> list[str]:
@@ -178,8 +183,10 @@ async def build_slot_assignment(
     # wins; the stored preset answers only where there is none, in place of
     # the stand-in below: a Bambu PETG HF spool with no calibration on this
     # printer went out as Generic PETG (upstream 5e3a2f278, issue #3433).
+    from_stored_preset = False
     if (resolved is None or not resolved.family) and stored_preset:
         resolved = await resolve_raw(db, stored_preset)
+        from_stored_preset = bool(resolved and resolved.family)
     fam_type = (resolved.filament_type if resolved and resolved.family else None) or (material_override or "")
 
     # No family -> a system profile for the spool's material, warning-logged.
@@ -264,4 +271,5 @@ async def build_slot_assignment(
         nozzle_temp_min=int(temp_min),
         nozzle_temp_max=int(temp_max),
         warnings=warnings,
+        from_stored_preset=from_stored_preset,
     )

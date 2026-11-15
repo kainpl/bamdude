@@ -30,6 +30,7 @@ from backend.app.services.printer_manager import printer_manager
 from backend.app.services.slot_assignment import SlotAssignmentPlan, build_slot_assignment
 from backend.app.services.slot_assignment_publish import publish_slot_plan
 from backend.app.services.spoolman_kprofile_link import resolve_spoolman_slot_kprofile
+from backend.app.utils.kprofile_lookup import slot_profile_filament_ids
 from backend.app.utils.slot_nozzle import slot_nozzle
 
 logger = logging.getLogger(__name__)
@@ -317,6 +318,17 @@ async def iter_slot_projections(db, printer) -> SlotWalk:
             label = " ".join(
                 p for p in (f"Spoolman #{row.spoolman_spool_id}", mapped.get("brand") or "", tray_type) if p
             )
+            kprofile_filament_id = linked.filament_id if linked else actual.tray_info_idx
+            # As the two assign routes: a family taken from the stored preset
+            # keeps the slot's live index only when the printer's own table
+            # files that index under this filament; otherwise no K is re-sent.
+            if (
+                not linked
+                and actual.from_stored_preset
+                and slot_profile_filament_ids(state, (live or {}).get("cali_idx"), row.ams_id, row.tray_id)
+                != {actual.tray_info_idx}
+            ):
+                kprofile_filament_id = None
             out.append(
                 SlotCandidate(
                     row.ams_id,
@@ -325,7 +337,7 @@ async def iter_slot_projections(db, printer) -> SlotWalk:
                     label,
                     projection,
                     live,
-                    linked.filament_id if linked else actual.tray_info_idx,
+                    kprofile_filament_id,
                     recovered,
                     nozzle_diameter=common["nozzle_diameter"],
                 )

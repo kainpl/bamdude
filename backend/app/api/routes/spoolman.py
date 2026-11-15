@@ -1130,6 +1130,15 @@ async def link_spool(
                             ams_raw = ams_raw.get("ams", [])
                         live_tray = _find_tray_in_ams_data(ams_raw, a_id, t_id)
                     live_cali_idx = (live_tray or {}).get("cali_idx")
+                    # As the assign route: a family from the stored preset keeps
+                    # the slot's index only when the printer's own table files
+                    # that index under this filament.
+                    from backend.app.utils.kprofile_lookup import slot_profile_filament_ids  # noqa: PLC0415
+
+                    if plan.from_stored_preset and slot_profile_filament_ids(state, live_cali_idx, a_id, t_id) != {
+                        effective_tray_info_idx
+                    }:
+                        live_cali_idx = None
                     if live_cali_idx is not None and live_cali_idx >= 0:
                         mqtt_client.extrusion_cali_sel(
                             ams_id=a_id,

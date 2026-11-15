@@ -518,6 +518,56 @@ async def test_a_spoolman_slot_without_a_link_is_built_from_the_spools_stored_pr
     assert candidate.projection.actual.tray_info_idx == "GFG02"
 
 
+def _live_profile(cali_idx: int, filament_id: str) -> SimpleNamespace:
+    return SimpleNamespace(
+        slot_id=cali_idx,
+        extruder_id=0,
+        nozzle_id="HS00-0.4",
+        nozzle_diameter="0.4",
+        filament_id=filament_id,
+        name=f"{filament_id} K",
+        k_value="0.020000",
+    )
+
+
+async def _preset_slot_candidate(db_session, live_filament: str, *, preset: bool = True):
+    """Spoolman slot 3 holds live ``cali_idx`` 5; the table files it under ``live_filament``."""
+    printer, state = await _farm(db_session)
+    await _spoolman_slot(db_session, printer, state, with_kprofile=False)
+    state.raw_data["ams"][0]["tray"][3]["cali_idx"] = 5
+    state.kprofiles = [_live_profile(5, live_filament)]
+    raw = {**SPOOLMAN_RAW, "extra": {"bambu_slicer_filament": '"GFG02"'}} if preset else SPOOLMAN_RAW
+    stub = SimpleNamespace(get_spool=AsyncMock(return_value=raw))
+    with (
+        patch("backend.app.services.ams_backup_compatibility_apply.printer_manager") as pm,
+        patch("backend.app.services.spoolman.get_spoolman_client", new=AsyncMock(return_value=stub)),
+    ):
+        pm.get_status.return_value = state
+        walk = await bulk.iter_slot_projections(db_session, printer)
+    return next(c for c in walk.candidates if (c.ams_id, c.tray_id) == (0, 3))
+
+
+@pytest.mark.asyncio
+async def test_a_stored_presets_slot_keeps_a_live_k_of_its_own_filament(db_session):
+    candidate = await _preset_slot_candidate(db_session, "GFG02")
+    assert candidate.projection.actual.tray_info_idx == "GFG02" and candidate.kprofile_filament_id == "GFG02"
+
+
+@pytest.mark.asyncio
+async def test_a_stored_presets_slot_does_not_reselect_another_filaments_k(db_session):
+    """The live index was chosen under Generic PETG; pairing it with the
+    preset's id would hand the firmware a K of another filament."""
+    candidate = await _preset_slot_candidate(db_session, "GFG99")
+    assert candidate.projection.actual.tray_info_idx == "GFG02"
+    assert candidate.kprofile_filament_id is None
+
+
+@pytest.mark.asyncio
+async def test_a_slot_without_a_stored_preset_reselects_as_before(db_session):
+    candidate = await _preset_slot_candidate(db_session, "GFA00", preset=False)
+    assert candidate.kprofile_filament_id == "GFG99"
+
+
 @pytest.mark.asyncio
 async def test_a_spoolman_slots_linked_calibration_outranks_its_stored_preset(db_session):
     printer, state = await _farm(db_session)

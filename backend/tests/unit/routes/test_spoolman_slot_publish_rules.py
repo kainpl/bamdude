@@ -69,7 +69,9 @@ async def make_printer(db_session, serial: str) -> Printer:
     return printer
 
 
-async def run_route(db_session, route: str, printer: Printer, *, raw_spool: dict, tray: dict) -> MagicMock:
+async def run_route(
+    db_session, route: str, printer: Printer, *, raw_spool: dict, tray: dict, kprofiles: tuple = ()
+) -> MagicMock:
     """Assign or link SPOOL_ID to AMS 0 slot 1; returns the MQTT client mock."""
     from backend.app.api.routes import spoolman as link_routes, spoolman_inventory as assign_routes
 
@@ -84,6 +86,7 @@ async def run_route(db_session, route: str, printer: Printer, *, raw_spool: dict
         ams_extruder_map={},
         support_user_preset=False,
         nozzle_volume_type="standard",
+        kprofiles=list(kprofiles),
         raw_data={"ams": [{"id": 0, "tray": [tray]}]},
     )
     mqtt = MagicMock()
@@ -253,3 +256,106 @@ class TestTheSlotsFilamentFamily:
         mqtt = await run_route(db_session, route, printer, raw_spool=spoolman_spool(), tray=live_tray())
 
         assert mqtt.ams_set_filament_setting.call_args.kwargs["tray_info_idx"] == "GFG99"
+
+
+def live_profile(cali_idx: int, filament_id: str, *, nozzle: str = "0.4", extruder: int = 0) -> SimpleNamespace:
+    """One row of the printer's own K table (``state.kprofiles``)."""
+    return SimpleNamespace(
+        slot_id=cali_idx,
+        extruder_id=extruder,
+        nozzle_id="HS00-0.4",
+        nozzle_diameter=nozzle,
+        filament_id=filament_id,
+        name=f"{filament_id} K",
+        k_value="0.020000",
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route", ROUTES)
+class TestKeepingTheSlotsLiveK:
+    """Re-sending the slot's filament may reset its K, so the slot's own live
+    ``cali_idx`` is selected again. A profile belongs to ONE filament: when the
+    spool's stored preset names the slot's family, the index goes back only if
+    the live profile under it is that filament's — otherwise nothing is sent, as
+    the built-in inventory sends nothing for a spool without a calibration."""
+
+    async def test_no_stored_preset_reselects_the_live_index_as_before(self, db_session, route):
+        printer = await make_printer(db_session, f"01P00A0000011{ROUTES.index(route)}")
+
+        mqtt = await run_route(
+            db_session,
+            route,
+            printer,
+            raw_spool=spoolman_spool(),
+            tray=live_tray(cali_idx=3),
+            kprofiles=(live_profile(3, "GFA00"),),  # whatever the table says: not consulted
+        )
+
+        mqtt.extrusion_cali_sel.assert_called_once_with(
+            ams_id=0, tray_id=1, cali_idx=3, filament_id="GFG99", nozzle_diameter="0.4"
+        )
+
+    async def test_a_stored_preset_keeps_a_live_profile_of_its_own_filament(self, db_session, route):
+        printer = await make_printer(db_session, f"01P00A0000012{ROUTES.index(route)}")
+
+        mqtt = await run_route(
+            db_session,
+            route,
+            printer,
+            raw_spool=spoolman_spool(bambu_slicer_filament='"GFG02"'),
+            tray=live_tray(cali_idx=3),
+            kprofiles=(live_profile(3, "GFG02"), live_profile(3, "GFG99", nozzle="0.6")),
+        )
+
+        mqtt.extrusion_cali_sel.assert_called_once_with(
+            ams_id=0, tray_id=1, cali_idx=3, filament_id="GFG02", nozzle_diameter="0.4"
+        )
+
+    async def test_a_stored_preset_does_not_carry_another_filaments_k(self, db_session, route):
+        printer = await make_printer(db_session, f"01P00A0000013{ROUTES.index(route)}")
+
+        mqtt = await run_route(
+            db_session,
+            route,
+            printer,
+            raw_spool=spoolman_spool(bambu_slicer_filament='"GFG02"'),
+            tray=live_tray(cali_idx=3),
+            kprofiles=(live_profile(3, "GFG99"),),  # the K was chosen under Generic PETG
+        )
+
+        assert mqtt.ams_set_filament_setting.call_args.kwargs["tray_info_idx"] == "GFG02"
+        mqtt.extrusion_cali_sel.assert_not_called()
+
+    async def test_a_stored_preset_and_a_table_that_does_not_know_the_index_sends_nothing(self, db_session, route):
+        printer = await make_printer(db_session, f"01P00A0000014{ROUTES.index(route)}")
+
+        mqtt = await run_route(
+            db_session,
+            route,
+            printer,
+            raw_spool=spoolman_spool(bambu_slicer_filament='"GFG02"'),
+            tray=live_tray(cali_idx=3),
+            kprofiles=(live_profile(3, "GFG02", nozzle="0.6"),),  # another nozzle's table
+        )
+
+        mqtt.extrusion_cali_sel.assert_not_called()
+
+    async def test_a_linked_calibrations_fallback_is_untouched(self, db_session, route):
+        """The link's own bind is patched to "not fired" here; what follows it is
+        the old re-select under the LINKED family, whatever the preset says."""
+        printer = await make_printer(db_session, f"01P00A0000015{ROUTES.index(route)}")
+        await link_calibration(db_session, printer, "GFG00")
+
+        mqtt = await run_route(
+            db_session,
+            route,
+            printer,
+            raw_spool=spoolman_spool(bambu_slicer_filament='"GFG02"'),
+            tray=live_tray(cali_idx=3),
+            kprofiles=(live_profile(3, "GFG99"),),
+        )
+
+        mqtt.extrusion_cali_sel.assert_called_once_with(
+            ams_id=0, tray_id=1, cali_idx=3, filament_id="GFG00", nozzle_diameter="0.4"
+        )
