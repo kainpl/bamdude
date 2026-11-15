@@ -20,6 +20,7 @@ flat in ``backend/tests/``, not in a package of its own.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 
 from backend.app.services.bambu_tunnel.codec import (
@@ -67,6 +68,15 @@ class FakeTunnelServer:
         # Small on purpose: every download of a non-trivial file must span
         # several frames in the tests.
         self.download_chunk_size = 64
+        # G10 A: what the last download frame says about the file's MD5 — None omits
+        # the key (as no capture has shown it present), True sends the real digest,
+        # a string sends that string.
+        self.download_md5: bool | str | None = None
+        # Seconds between download frames (0 = all at once), so a test can stop a
+        # transfer half way.
+        self.download_frame_delay = 0.0
+        # A test may build the whole download answer itself: (envelope, sequence) -> frames.
+        self.download_frames = None
         # What the printer dictates for an upload: fragment size in KB, and the
         # offset to resume from. 255 KB is what the live X2D asks for.
         self.upload_chunk_kb = 255
@@ -138,6 +148,9 @@ class FakeTunnelServer:
                 "result": 0 if is_last else 1,
                 "reply": {"offset": offset, "total": total, "size": len(piece)},
             }
+            if is_last and self.download_md5:
+                digest = hashlib.md5(data, usedforsecurity=False).hexdigest()
+                out["reply"]["file_md5"] = digest.upper() if self.download_md5 is True else self.download_md5
             frames.append(pack_frame(_TYPE_DATA_REPLY, sequence, json.dumps(out).encode() + ENVELOPE_SEPARATOR + piece))
             offset += len(piece)
             if total == 0:
@@ -179,8 +192,12 @@ class FakeTunnelServer:
                     await writer.drain()
 
                 if envelope.get("cmdtype") == 4:
-                    for frame in self._download_frames(envelope, envelope.get("sequence", 0)):
+                    build = self.download_frames or self._download_frames
+                    for frame in build(envelope, envelope.get("sequence", 0)):
                         writer.write(frame)
+                        if self.download_frame_delay:
+                            await writer.drain()
+                            await asyncio.sleep(self.download_frame_delay)
                     await writer.drain()
                     continue
 

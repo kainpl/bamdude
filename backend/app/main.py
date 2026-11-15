@@ -12292,6 +12292,14 @@ async def _application_lifespan(app: FastAPI):
         await start_library_file_runtime(Path(app_settings.base_dir))
     except Exception:
         logging.getLogger(__name__).exception("Library file service unavailable at startup")
+    from backend.app.services.printer_file_lanes import printer_file_runtime
+
+    # Only lifespan startup reopens printer file admission (a refused restore drain
+    # left it closed on purpose).
+    try:
+        printer_file_runtime.reopen()
+    except RuntimeError:
+        logging.getLogger(__name__).exception("Printer file operations still running at startup")
     from backend.app.services.part_render_scheduler import start_part_render, stop_part_render
 
     try:
@@ -12463,6 +12471,12 @@ async def _application_lifespan(app: FastAPI):
     from backend.app.services.library_scan import cancel_running_scans
 
     cancel_running_scans()
+    # Printer file workers own sessions until their threads end; a drain that is not
+    # proven keeps admission closed and is logged, never treated as done (G10 A).
+    if not await printer_file_runtime.quiesce(10):
+        logging.getLogger(__name__).warning(
+            "Printer file operations did not end before shutdown; admission stays closed"
+        )
     printer_manager.disconnect_all()
     await stop_library_file_runtime()
     await stop_assembly_runtime()

@@ -295,3 +295,27 @@ def test_the_global_bound_is_what_the_shared_executor_allowed():
     import os
 
     assert min(32, (os.cpu_count() or 1) + 4) == lanes.GLOBAL_FTP_WORKERS
+
+
+def test_restore_drains_printer_file_work_before_the_storage_guard_and_any_file_work():
+    import inspect
+
+    from backend.app.api.routes import settings as settings_routes
+
+    source = inspect.getsource(settings_routes._restore_backup)
+    gate = source.index("await printer_file_runtime.quiesce()")
+    assert source.index("obico_detection_service.quiesce()") < gate
+    assert gate < source.index("queue_sources.storage_mutation()") < source.index("files.prepare")
+    assert gate < source.index("files.apply")
+    assert "Printer file transfers have not stopped; retry restore after they finish" in source
+
+
+def test_lifespan_reopens_at_startup_and_drains_before_printers_disconnect():
+    import inspect
+
+    from backend.app import main
+
+    source = inspect.getsource(main._application_lifespan)
+    reopen = source.index("printer_file_runtime.reopen()")
+    shutdown = source.index("await printer_file_runtime.quiesce(10)")
+    assert reopen < source.index("yield") < shutdown < source.index("printer_manager.disconnect_all()")

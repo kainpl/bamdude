@@ -1308,6 +1308,13 @@ async def _restore_backup(file: UploadFile, db: AsyncSession, *, authority=None)
                     raise HTTPException(
                         409, "Obico readers and writers have not stopped; retry restore after they finish"
                     )
+                # Printer file transfers own sessions and local files until their threads end
+                # (G10 A): admission closes first, then every operation is asked to stop and
+                # its end is proven, or the restore is refused.
+                from backend.app.services.printer_file_lanes import printer_file_runtime
+
+                if not await printer_file_runtime.quiesce():
+                    raise HTTPException(409, "Printer file transfers have not stopped; retry restore after they finish")
                 if virtual_printer_manager.is_enabled:
                     await virtual_printer_manager.configure(enabled=False)
                 print_scheduler.stop()

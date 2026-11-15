@@ -648,6 +648,7 @@
   "OIDC provider changed during icon verification; reload and retry": "OIDC-провайдер змінився під час перевірки іконки; оновіть дані й повторіть дію",
   "Obico history is temporarily unavailable": "Історія Obico тимчасово недоступна",
   "Obico readers and writers have not stopped; retry restore after they finish": "Читачі й записувачі Obico ще не зупинилися; повторіть відновлення після їх завершення",
+  "Printer file transfers have not stopped; retry restore after they finish": "Передачі файлів принтерів ще не зупинилися; повторіть відновлення після їх завершення",
   "One or more group IDs are invalid": "Один або кілька ID груп недійсні",
   "One or more queue items not found": "Один або кілька елементів черги не знайдено",
   "Only 3MF files can be planned": "Планувати можна лише 3MF-файли",

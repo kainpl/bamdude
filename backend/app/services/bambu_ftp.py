@@ -3,6 +3,7 @@ import ftplib  # nosec B402
 import functools
 import logging
 import os
+import shutil
 import socket
 import ssl
 import time
@@ -215,6 +216,11 @@ def _end_session(worker: LaneWorker, client: "BambuFTPClient") -> None:
         worker.detach(abort)
     client.disconnect()
 
+
+#: How often a streamed download re-reads the destination volume's free space.
+_RESERVE_CHECK_EVERY = 8 * 1024 * 1024
+#: Bytes per recv for a streamed download (ftplib's default is 8 KiB).
+_FETCH_BLOCK = 64 * 1024
 
 # The outcome of listing one directory (G10 CR2). ``complete`` is the only answer
 # that says what the directory holds; ``missing`` is absence PROVEN by a complete
@@ -804,6 +810,79 @@ class BambuFTPClient:
             )
             return None
         return data
+
+    def fetch_to_file(
+        self,
+        remote_path: str,
+        local_path: Path,
+        *,
+        byte_budget: int | None = None,
+        reserve_bytes: int = 0,
+        progress: Callable[[int], None] | None = None,
+    ) -> tuple[str, int, str | None, str | None]:
+        """Stream ``remote_path`` to ``local_path``: ``(status, received, check, reason)``.
+
+        The G10 download-to-file contract on one session (see printer_files.base
+        TRANSFER_*). One chunk at a time reaches the disk; a budget, a disk
+        reserve or a cancel stops the transfer; the partial file never stays.
+        """
+        if not self._ftp:
+            return "unavailable", 0, None, "not_connected"
+        received = 0
+        checked_at = 0
+
+        class _Stop(Exception):
+            def __init__(self, status: str, reason: str):
+                super().__init__(reason)
+                self.status = status
+                self.reason = reason
+
+        def _discard() -> None:
+            try:
+                local_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+        try:
+            local_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(local_path, "wb") as handle:
+
+                def write(chunk: bytes) -> None:
+                    nonlocal received, checked_at
+                    received += len(chunk)
+                    if byte_budget is not None and received > byte_budget:
+                        raise _Stop("limit_exceeded", "byte_budget")
+                    if reserve_bytes and received - checked_at >= _RESERVE_CHECK_EVERY:
+                        checked_at = received
+                        if shutil.disk_usage(local_path.parent).free - len(chunk) < reserve_bytes:
+                            raise _Stop("insufficient_storage", "reserve")
+                    handle.write(chunk)
+                    if progress is not None:
+                        progress(received)
+
+                self._ftp.retrbinary(f"RETR {remote_path}", write, blocksize=_FETCH_BLOCK)
+                handle.flush()
+                os.fsync(handle.fileno())
+        except _Stop as stop:
+            _discard()
+            return stop.status, received, None, stop.reason
+        except ftplib.error_perm as e:
+            _discard()
+            code = _reply_code(e)
+            return ("not_readable" if code == "550" else "protocol_failed"), received, None, code
+        except TimeoutError:
+            _discard()
+            return "stalled", received, None, "socket_timeout"
+        except (OSError, EOFError, ftplib.Error) as e:
+            _discard()
+            return "unavailable", received, None, type(e).__name__
+        server_size = self.get_file_size(remote_path)
+        if server_size is not None and server_size >= 0:
+            if received != server_size:
+                _discard()
+                return "short_read", received, None, f"{received}/{server_size}"
+            return "completed", received, "size_verified", None
+        return "completed", received, "size_unknown", None
 
     def download_to_file(self, remote_path: str, local_path: Path) -> bool:
         """Download a file from the printer to local filesystem."""
@@ -1708,6 +1787,51 @@ async def upload_file_async(
         return await _run(True)
 
     return False
+
+
+async def download_to_path_async(
+    ip_address: str,
+    access_code: str,
+    remote_path: str,
+    local_path: Path,
+    *,
+    socket_timeout: float | None = None,
+    printer_model: str | None = None,
+    admission_timeout: float | None = None,
+    byte_budget: int | None = None,
+    reserve_bytes: int = 0,
+    progress: Callable[[int], None] | None = None,
+):
+    """Stream one file to ``local_path`` on the printer's FTP lane; a typed :class:`TransferOutcome`.
+
+    No cap on a healthy transfer: a stall is the socket idle deadline
+    (``socket_timeout``). ``admission_timeout`` bounds only the wait for the lane
+    and a worker slot. A cancelled caller asks the worker to stop; the lane is
+    released when its thread has ended.
+    """
+    from backend.app.services.printer_files.base import TRANSFER_BUSY, TRANSFER_CANCELLED, TransferOutcome
+
+    def target(worker: LaneWorker):
+        client = BambuFTPClient(ip_address, access_code, timeout=socket_timeout, printer_model=printer_model)
+        if not _session(worker, client):
+            kind = client.failure.kind if client.failure else "connect"
+            return TransferOutcome("unavailable", reason=kind)
+        try:
+            status, received, check, reason = client.fetch_to_file(
+                remote_path, local_path, byte_budget=byte_budget, reserve_bytes=reserve_bytes, progress=progress
+            )
+            if status != "completed" and worker.cancel_requested:
+                return TransferOutcome(TRANSFER_CANCELLED, received, reason=worker.cancel_reason)
+            return TransferOutcome(status, received, check, reason)
+        finally:
+            _end_session(worker, client)
+
+    try:
+        return await _on_lane(ip_address, "fetch", target, admission_timeout=admission_timeout)
+    except LaneRefused as refused:
+        return TransferOutcome(TRANSFER_BUSY, reason=refused.reason)
+    except WorkerCancelled as cancelled:
+        return TransferOutcome(TRANSFER_CANCELLED, reason=str(cancelled))
 
 
 async def list_directory_async(
