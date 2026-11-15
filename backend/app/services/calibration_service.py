@@ -1418,14 +1418,18 @@ def _hotend_unknown(printer_id: int, state, ams_id: int, slot_id: int) -> bool:
     """Whether a dual-nozzle printer leaves it open which hotend an AMS slot feeds.
 
     True only for an AMS slot on a dual-nozzle model whose extruder map does not
-    name that AMS (it reports 0xE right after connect, or sits behind a Filament
-    Track Switch). A single-nozzle printer has one hotend, and the external
-    holder names its side itself.
+    name that AMS (it reports 0xE right after connect). A single-nozzle printer
+    has one hotend, and the external holder names its side itself. Behind a
+    Filament Track Switch 0xE is the steady state of every AMS, never resolved
+    by a later frame: there the binders keep their old default instead of
+    binding nothing for good.
     """
     from backend.app.utils.printer_models import is_dual_nozzle_model
     from backend.app.utils.slot_nozzle import slot_extruder
 
     if ams_id == 255:
+        return False
+    if getattr(getattr(state, "fila_switch", None), "installed", False) is True:
         return False
     model = printer_manager.get_model(printer_id)
     if not isinstance(model, str) or not is_dual_nozzle_model(model):

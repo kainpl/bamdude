@@ -99,3 +99,41 @@ async def test_the_external_holder_names_its_own_side(db_session, printer_factor
     fired, client = await _bind(db_session, printer_factory, model="H2D", extruder_map={"0": 1}, ams_id=255, slot_id=1)
     assert fired is True
     client.extrusion_cali_sel.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_behind_a_filament_track_switch_the_slot_is_bound_as_before(db_session, printer_factory):
+    """With a switch installed "no fixed hotend" is the steady state of every AMS, not a moment
+    after connect: skipping there would leave the printer with no K bind at all, ever."""
+    printer = await printer_factory(model="H2D")
+    db_session.add(
+        FilamentCalibration(
+            printer_id=printer.id,
+            filament_id=GENERIC_PETG,
+            nozzle_diameter=0.4,
+            nozzle_volume_type="standard",
+            extruder_id=0,
+            pa_k_value=0.032,
+            cali_mode="pa_line",
+            source="printer_sync",
+            is_active=True,
+            name="Generic PETG K0.032",
+        )
+    )
+    await db_session.commit()
+    client = _client({})
+    client.state.fila_switch = SimpleNamespace(installed=True)
+    with patch("backend.app.services.calibration_service.printer_manager") as pm:
+        pm.get_client.return_value = client
+        pm.get_model.return_value = "H2D"
+        fired, _row = await apply_active_calibration_to_slot(
+            db=db_session,
+            printer_id=printer.id,
+            ams_id=1,
+            slot_id=0,
+            filament_id=GENERIC_PETG,
+            nozzle_diameter=0.4,
+            extruder_id=0,
+        )
+    assert fired is True
+    client.extrusion_cali_sel.assert_called_once()
