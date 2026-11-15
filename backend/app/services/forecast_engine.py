@@ -29,6 +29,10 @@ ruling:
   misread a stored ``kg`` as *days*);
 * the delta tier runs over ALL spools including archived (the old alert
   service fed it live spools only);
+* the delta tier spreads each spool's consumption from its first use to its
+  last and counts what falls inside the 90-day window (upstream 1d86cff5a,
+  #3407) — it used to divide every gram ever consumed by the days since the
+  oldest spool row was created, so shelf time counted as use;
 * dates are UTC calendar days (``now.date()`` in UTC) — the panel anchored
   "today" at local midnight; the server has no viewer timezone.
 """
@@ -36,7 +40,7 @@ ruling:
 from __future__ import annotations
 
 import math
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from typing import NamedTuple
@@ -171,26 +175,82 @@ def history_rate(day_buckets: list[tuple[date, float]], now: datetime) -> RateEs
     return RateEstimate(rate=mean, std_dev=math.sqrt(variance))
 
 
-def delta_rate(total_used_g: float, oldest_created_at: datetime | None, now: datetime) -> float | None:
-    """Fallback g/day: consumption over the group's age.
+class UsageSpan(NamedTuple):
+    """One spool's consumption and the stretch of time it was used over."""
 
-    Takes the aggregates SQL delivers: ``total_used_g`` is
-    ``Σ max(0, weight_used − weight_used_baseline)`` clamped PER SPOOL over ALL
-    spools of the SKU (archived included — the client passes
-    ``group.allSpools``), ``oldest_created_at`` the group's oldest spool (naive
-    UTC as the DB stores it). Baseline-aware, so "Reset usage to 0" means the
-    rate describes post-reset consumption rather than the spool's whole life.
+    consumed_g: float
+    start: datetime
+    end: datetime
+
+
+def usage_span(
+    consumed_g: float,
+    *,
+    first_use: datetime | None,
+    created_at: datetime | None,
+    last_used: datetime | None,
+    archived_at: datetime | None,
+    now: datetime,
+) -> UsageSpan | None:
+    """A spool's span for :func:`delta_rate`, or None when it consumed nothing.
+
+    ``consumed_g`` is ``max(0, weight_used − weight_used_baseline)`` — clamped
+    PER SPOOL, so an over-reset spool contributes nothing rather than a
+    negative, and "Reset usage to 0" leaves only post-reset grams. The span
+    runs from the spool's first use (``first_use``: its earliest usage record,
+    or the inventory's own stamp; else its creation) to its last
+    (``last_used``, else its archiving, else now). Timestamps are naive UTC as
+    the DB stores them, or aware.
     """
-    if total_used_g <= 0:
-        return None
-    oldest = _as_utc(oldest_created_at)
-    if oldest is None:
+    if consumed_g <= 0:
         return None
     now = _as_utc(now)
-    days_since_oldest = (now - oldest).total_seconds() / 86400.0
-    if days_since_oldest < 1:
+    end = _as_utc(last_used or archived_at)
+    end = min(end, now) if end is not None else now
+    start = _as_utc(first_use or created_at)
+    start = min(start, end) if start is not None else end
+    return UsageSpan(consumed_g, start, end)
+
+
+def delta_rate(spans: Sequence[UsageSpan], now: datetime) -> float | None:
+    """Fallback g/day when there is too little usage history to measure a trend.
+
+    A spool's total is all there is, so it is spread evenly over the time the
+    spool was in use (its :class:`UsageSpan`). What falls inside the last
+    ``USAGE_WINDOW_DAYS`` is divided by the days of that window, which starts
+    no earlier than the SKU's first use — so the grams and the days cover the
+    same stretch. A span shorter than a day (a spool used up in one go) counts
+    whole at its end.
+
+    ``spans`` are those of ALL the SKU's spools, archived included: a spool
+    used up before the window contributes no grams, and says the SKU was in
+    use all along, so the window is not shortened to the newest spool's life.
+
+    None with nothing consumed, or with under a day to divide by. A SKU whose
+    every use ended before the window measures 0.0 — nothing was used lately.
+
+    Before upstream 1d86cff5a (#3407) this was "every gram ever consumed / days
+    since the oldest spool row was created": months on the shelf counted as
+    use, and a SKU printed for two years was averaged over two years.
+    """
+    if not spans:
         return None
-    return total_used_g / days_since_oldest
+    now = _as_utc(now)
+    window_start = now - timedelta(days=USAGE_WINDOW_DAYS)
+    observed_from = max(window_start, min(span.start for span in spans))
+    days = (now - observed_from).total_seconds() / 86400.0
+    if days < 1:
+        return None
+    grams = 0.0
+    for consumed, start, end in spans:
+        length = (end - start).total_seconds()
+        if length < 86400.0:
+            grams += consumed if end >= observed_from else 0.0
+            continue
+        inside = (end - max(start, observed_from)).total_seconds()
+        if inside > 0:
+            grams += consumed * inside / length
+    return grams / days
 
 
 @dataclass
@@ -479,7 +539,7 @@ class _Group:
         "label_g",
         "all_label_g",
         "used_g",
-        "oldest_created_at",
+        "spans",
         "newest_archived_at",
         "spool_ids",
         "rgba_live",
@@ -496,7 +556,7 @@ class _Group:
         self.label_g = 0.0
         self.all_label_g = 0.0
         self.used_g = 0.0
-        self.oldest_created_at: datetime | None = None
+        self.spans: list[UsageSpan] = []
         self.newest_archived_at: datetime | None = None
         self.spool_ids: list[int] = []
         self.rgba_live: str | None = None
@@ -543,7 +603,6 @@ async def compute_forecast_full(
                 # SKU's property, not the shelf's (see ``avg_spool_label_g``).
                 func.sum(func.coalesce(Spool.label_weight, 0)).label("all_label_g"),
                 func.sum(case((used_expr > 0, used_expr), else_=0.0)).label("used_g"),
-                func.min(Spool.created_at).label("oldest_created_at"),
                 func.max(Spool.archived_at).label("newest_archived_at"),
             ).group_by(Spool.material, Spool.subtype, Spool.brand, Spool.color_name)
         )
@@ -563,9 +622,25 @@ async def compute_forecast_full(
                 Spool.color_name,
                 Spool.rgba,
                 Spool.archived_at,
+                # The delta tier's span, per spool (see ``usage_span``).
+                Spool.weight_used,
+                Spool.weight_used_baseline,
+                Spool.created_at,
+                Spool.last_used,
             ).order_by(Spool.id)
         )
     ).all()
+
+    # When each spool was first used: its earliest usage record, kept or not by
+    # the rate — a reset drops records from the trend, not from when use began.
+    first_use_rows = (
+        await db.execute(
+            select(SpoolUsageHistory.spool_id, func.min(SpoolUsageHistory.created_at)).group_by(
+                SpoolUsageHistory.spool_id
+            )
+        )
+    ).all()
+    first_use_by_spool: dict[int, datetime] = {row[0]: row[1] for row in first_use_rows}
 
     # Retention needs an UN-windowed newest-usage mark: an archived-only SKU
     # whose newest event sits at day 91 must be dropped because the mark is OLD
@@ -605,12 +680,6 @@ async def compute_forecast_full(
         g.label_g += float(row.label_g or 0.0)
         g.all_label_g += float(row.all_label_g or 0.0)
         g.used_g += float(row.used_g or 0.0)
-        if row.oldest_created_at is not None:
-            g.oldest_created_at = (
-                row.oldest_created_at
-                if g.oldest_created_at is None
-                else min(g.oldest_created_at, row.oldest_created_at)
-            )
         if row.newest_archived_at is not None:
             g.newest_archived_at = (
                 row.newest_archived_at
@@ -628,6 +697,16 @@ async def compute_forecast_full(
                 g.rgba_live = row.rgba
         elif g.rgba_archived is None and row.rgba:
             g.rgba_archived = row.rgba
+        span = usage_span(
+            float(row.weight_used or 0.0) - float(row.weight_used_baseline or 0.0),
+            first_use=first_use_by_spool.get(row.id),
+            created_at=row.created_at,
+            last_used=row.last_used,
+            archived_at=row.archived_at,
+            now=now,
+        )
+        if span is not None:
+            g.spans.append(span)
 
     for row in last_usage_rows:
         g = _group(row.material, row.subtype, row.brand, row.color_name)
@@ -673,7 +752,7 @@ async def compute_forecast_full(
             std_dev: float | None = estimate.std_dev
             tier = "history"
         else:
-            fallback = delta_rate(g.used_g, g.oldest_created_at, now)
+            fallback = delta_rate(g.spans, now)
             if fallback is not None:
                 rate, std_dev, tier = fallback, None, "delta"
             else:
