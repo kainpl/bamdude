@@ -10,6 +10,7 @@ import traceback
 from collections.abc import Callable
 from contextlib import contextmanager
 
+from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -2564,7 +2565,27 @@ def _tag_or_none(value: object, blank: str) -> str | None:
     return value
 
 
-def ams_units_for(state: PrinterState, printer_id: int | None, drying_targets: dict[int, dict] | None) -> list[AMSUnit]:
+def _status_tray(**fields) -> AMSTray:
+    """An ``AMSTray`` that survives a value the schema cannot read.
+
+    The push used to copy whatever the printer sent; built through the model, one
+    uncoercible value would raise and drop the printer's whole status push. Such
+    a field falls back to its default instead — the rest of the tray stands.
+    """
+    try:
+        return AMSTray(**fields)
+    except ValidationError as error:
+        unreadable = {str(item["loc"][0]) for item in error.errors() if item.get("loc")} - {"id"}
+        logger.debug("status tray %s: unreadable %s", fields.get("id"), sorted(unreadable))
+        return AMSTray(**{name: value for name, value in fields.items() if name not in unreadable})
+
+
+def ams_units_for(
+    state: PrinterState,
+    printer_id: int | None,
+    drying_targets: dict[int, dict] | None,
+    resolve_slot_k=None,
+) -> list[AMSUnit]:
     """Every AMS unit of a printer state, as BOTH status payloads carry it.
 
     The REST status and the WebSocket push describe the same card, and the page
@@ -2587,8 +2608,9 @@ def ams_units_for(state: PrinterState, printer_id: int | None, drying_targets: d
         return []
 
     # K value for a slot's bound profile, resolved against the nozzle the slot
-    # feeds — see kprofile_lookup.
-    resolve_slot_k = build_slot_k_resolver(state)
+    # feeds — see kprofile_lookup. A caller that shapes the external holder too
+    # hands in the one it built.
+    resolve_slot_k = resolve_slot_k or build_slot_k_resolver(state)
     units: list[AMSUnit] = []
     for ams_data in raw_units:
         if not isinstance(ams_data, dict):
@@ -2610,7 +2632,7 @@ def ams_units_for(state: PrinterState, printer_id: int | None, drying_targets: d
             # whenever nothing was masked on this slot.
             entry = _overlay.effective(printer_id, ams_id_int, tray_id, tray) if printer_id is not None else None
             trays.append(
-                AMSTray(
+                _status_tray(
                     id=tray_id,
                     actual=(
                         AmsTrayActual(
@@ -2709,7 +2731,7 @@ def ams_units_for(state: PrinterState, printer_id: int | None, drying_targets: d
     return units
 
 
-def vt_trays_for(state: PrinterState) -> list[AMSTray]:
+def vt_trays_for(state: PrinterState, resolve_slot_k=None) -> list[AMSTray]:
     """The external spool holder(s) of a printer state, as both status payloads carry them."""
     raw_data = state.raw_data or {}
     vt_tray_raw = raw_data.get("vt_tray")
@@ -2718,7 +2740,7 @@ def vt_trays_for(state: PrinterState) -> list[AMSTray]:
     elif not isinstance(vt_tray_raw, list):
         return []
 
-    resolve_slot_k = build_slot_k_resolver(state)
+    resolve_slot_k = resolve_slot_k or build_slot_k_resolver(state)
     trays: list[AMSTray] = []
     for vt_data in vt_tray_raw:
         # Get K value: first try tray's k field, then lookup from K-profiles
@@ -2734,7 +2756,7 @@ def vt_trays_for(state: PrinterState) -> list[AMSTray]:
         # external holder is not a different case.
         cols, ctype = _tray_colours(vt_data, vt_data.get("tray_color"))
         trays.append(
-            AMSTray(
+            _status_tray(
                 id=tray_id,
                 # External slots are excluded from projection (spec §6.2), so
                 # ``actual`` is always None here.
@@ -2782,8 +2804,9 @@ def printer_state_to_dict(
     layer_pair = layer_pair or resolve_layer_pair(printer_manager, printer_id, state)
     raw_data = state.raw_data or {}
     # One serialiser for both payloads: see ``ams_units_for``.
-    ams_units = [unit.model_dump() for unit in ams_units_for(state, printer_id, drying_targets)]
-    vt_tray = [tray.model_dump() for tray in vt_trays_for(state)]
+    resolve_slot_k = build_slot_k_resolver(state)
+    ams_units = [unit.model_dump() for unit in ams_units_for(state, printer_id, drying_targets, resolve_slot_k)]
+    vt_tray = [tray.model_dump() for tray in vt_trays_for(state, resolve_slot_k)]
 
     # The state attribute first, as the REST shaper reads it: ``raw_data`` is
     # replaced during MQTT updates and the map is briefly missing from it.

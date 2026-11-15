@@ -2730,10 +2730,10 @@ class BambuMQTTClient:
         self._mid_by_sequence: dict[str, int] = {}
         # RFID re-read verdicts (see ``await_rfid_refresh``): ``ams_get_rfid`` answers
         # keyed by the sequence id we sent (``None`` = not answered yet), the legacy
-        # gcode's ack listener by its own, and the one attempt a route is waiting on.
+        # gcode's ack listener by its own, and the attempt a route is waiting on, per slot.
         self._pending_rfid_acks: dict[str, dict | None] = {}
         self._rfid_gcode_acks: dict[str, tuple[threading.Event, dict]] = {}
-        self._rfid_attempt: tuple[int, int, str, str] | None = None
+        self._rfid_attempts: dict[tuple[int, int], tuple[str, str]] = {}
 
         # Xcam hold timers - OrcaSlicer pattern: ignore incoming data for 3 seconds after command
         # Key: module_name, Value: timestamp when command was sent
@@ -12448,7 +12448,7 @@ class BambuMQTTClient:
         Returns:
             Tuple of (success, message)
         """
-        self._rfid_attempt = None
+        self._rfid_attempts.pop((ams_id, tray_id), None)
         if not self._client or not self.state.connected:
             logger.warning("[%s] Cannot refresh AMS tray: not connected", self.serial_number)
             return False, "Printer not connected"
@@ -12463,7 +12463,7 @@ class BambuMQTTClient:
         seq = (
             self._publish_rfid_gcode(ams_id, tray_id) if command == "gcode" else self._publish_rfid_get(ams_id, tray_id)
         )
-        self._rfid_attempt = (ams_id, tray_id, command, seq)
+        self._rfid_attempts[(ams_id, tray_id)] = (command, seq)
 
         return True, f"Refreshing AMS {ams_id} tray {tray_id}"
 
@@ -12481,10 +12481,10 @@ class BambuMQTTClient:
 
         Returns ``(accepted, reason)``; ``reason`` is the printer's own word.
         """
-        attempt, self._rfid_attempt = self._rfid_attempt, None
-        if attempt is None or attempt[:2] != (ams_id, tray_id):
+        attempt = self._rfid_attempts.pop((ams_id, tray_id), None)
+        if attempt is None:
             return True, ""
-        _, _, command, seq = attempt
+        command, seq = attempt
         accepted, reason = await self._await_rfid_verdict(command, seq, timeout)
         if accepted:
             return True, ""

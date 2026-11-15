@@ -271,3 +271,19 @@ async def test_the_route_accepts_and_schedules_the_pa_reapply(async_client, prin
     assert response.status_code == 200, response.text
     assert len(spawned) == 1
     client.await_rfid_refresh.assert_awaited_once_with(0, 1)
+
+
+@pytest.mark.asyncio
+async def test_two_slots_refreshed_together_each_read_their_own_answer():
+    """Two operators (or two tabs) refresh two slots of one printer: the second send used to replace
+    the first one's record, so the first was answered "accepted" without reading its refusal."""
+    client = _client("H2D", new_protocol=True)
+
+    assert client.ams_refresh_tray(0, 1)[0]
+    assert client.ams_refresh_tray(0, 2)[0]
+    first, second = (s["sequence_id"] for s in _sent(client))
+    _answer(client, "ams_get_rfid", first, "fail", "busy")
+    _answer(client, "ams_get_rfid", second, "success")
+
+    assert await client.await_rfid_refresh(0, 1, timeout=0.3) == (False, "busy")
+    assert await client.await_rfid_refresh(0, 2, timeout=0.3) == (True, "")
