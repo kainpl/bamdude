@@ -46,6 +46,10 @@ class TestSpoolmanAPI:
         mock_client.create_spool = AsyncMock(return_value={"id": 1})
         mock_client.update_spool = AsyncMock(return_value={"id": 1})
         mock_client.merge_spool_extra = AsyncMock(return_value={"id": 1, "extra": {}})
+        # A Spoolman from before native tags (0.27): nothing to link or unlink.
+        mock_client.has_tag_api = AsyncMock(return_value=False)
+        mock_client.link_native_tags = AsyncMock(return_value=[])
+        mock_client.unlink_all_native_tags = AsyncMock()
         mock_client.close = AsyncMock()
 
         with (

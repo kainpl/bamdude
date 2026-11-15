@@ -47,7 +47,14 @@ from backend.app.schemas.auth import (
     UserSlim,
     UserUpdate,
 )
-from backend.app.services import finished_stock, order_journal, part_stock, stock_issues
+from backend.app.services import (
+    finished_stock,
+    order_journal,
+    part_stock,
+    spool_usage_service,
+    spoolman_usage_history,
+    stock_issues,
+)
 from backend.app.services.email_service import (
     create_welcome_email_from_template,
     generate_secure_password,
@@ -503,6 +510,12 @@ async def delete_user(
             (await db.execute(select(PrintArchive.id).where(PrintArchive.created_by_id == user_id))).scalars().all()
         )
         await part_stock.detach_archives(db, list(_doomed_archive_ids))
+        # Both usage histories keep their rows — a spool's consumption record —
+        # and lose the link: their ``archive_id`` has no ON DELETE at all, so
+        # PostgreSQL refused this delete and SQLite left the id to the next
+        # archive that takes it.
+        await spool_usage_service.detach_archives(db, list(_doomed_archive_ids))
+        await spoolman_usage_history.detach_archives(db, list(_doomed_archive_ids))
         await db.execute(delete(PrintArchive).where(PrintArchive.created_by_id == user_id))
         # Detach print_queue back-references before the bulk delete — SQLite
         # foreign_keys=OFF means ON DELETE clauses won't fire on their own.

@@ -432,6 +432,7 @@ def import_all_models() -> None:
         spool_usage_history,
         spoolman_k_profile,
         spoolman_slot_assignment,
+        spoolman_usage_history,
         stock_issue,
         swap_source_declaration_audit,
         telegram_chat,

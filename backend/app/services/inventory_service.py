@@ -1150,6 +1150,18 @@ async def count_spool_groups(db: AsyncSession, *, filters: list) -> int:
     return int((await db.execute(select(func.count()).select_from(sub))).scalar_one())
 
 
+def lock_entered_weight(payload: dict, fields_set: set[str]) -> dict:
+    """A used weight entered for a NEW spool is the operator's statement — keep it.
+
+    Only an edit locked the weight, so the AMS remain% sync overwrote what was
+    typed at create with its own estimate on the first tray report (upstream
+    f7bd06641). An explicit ``weight_locked`` from the client wins.
+    """
+    if (payload.get("weight_used") or 0) > 0 and "weight_locked" not in fields_set:
+        payload["weight_locked"] = True
+    return payload
+
+
 async def update_spool(db: AsyncSession, spool_id: int, spool_data: SpoolUpdate) -> Spool:
     """Update a spool.
 

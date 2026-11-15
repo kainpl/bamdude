@@ -1033,7 +1033,7 @@ export interface BackupCompatibilityApplyRow {
   action: 'apply' | 'revert' | 'skip';
   reasons: string[];
   published: boolean | null;
-  kprofile: 'kept' | 'skipped' | null;
+  kprofile: 'applied' | 'kept' | 'skipped' | null;
 }
 
 export interface BackupCompatibilityApplyResult {
@@ -2121,6 +2121,16 @@ export interface SpoolmanBulkResult {
   archived?: number;
   restored?: number;
   errors: { id: number; status: number; detail: string }[];
+}
+
+/**
+ * A bulk "Reset counter" answer. Spoolman lists the spools it refused in
+ * `errors`; the built-in route names ids that matched nothing in `not_found`.
+ */
+export interface BulkResetResult {
+  reset: number;
+  errors?: { id: number; status: number; detail: string }[];
+  not_found?: number[];
 }
 
 // Timeline Types
@@ -8105,6 +8115,59 @@ export interface SpoolmanStatus {
   enabled: boolean;
   connected: boolean;
   url: string | null;
+  /** This Spoolman links tags to spools itself; the server asks it, never a version. */
+  native_tags?: boolean;
+}
+
+export type SpoolmanTagConflictReason =
+  | 'shared_extra_tag'
+  | 'held_by_spool'
+  | 'held_by_filament'
+  | 'held_elsewhere';
+
+export interface SpoolmanTagMigrationReport {
+  dry_run: boolean;
+  /** What the preview would link, or what the run linked. */
+  moved: Array<{ spool_id: number; tag: string; format: string | null }>;
+  already: number;
+  slot_ids: number;
+  archived: number;
+  conflicts: Array<{
+    spool_id: number;
+    tag: string;
+    reason: SpoolmanTagConflictReason;
+    holder: number | null;
+    holder_archived: boolean;
+    holder_filament: number | null;
+  }>;
+  /** Links a run could not make; each is one spool's, and the run went on. */
+  failed?: Array<{ spool_id: number; tag: string; reason: 'spool_gone' | 'refused' | 'unreachable' }>;
+}
+
+/**
+ * A Spoolman spool whose own size differs from its filament's. Spoolman
+ * stamps a spool's size when it is created; the old BamDude form wrote a
+ * changed label weight to the filament instead.
+ */
+export interface SpoolmanSizeMismatch {
+  id: number;
+  /** The spool as the inventory list maps it — what the naming template reads. */
+  spool: {
+    id?: number;
+    brand?: string | null;
+    material?: string | null;
+    subtype?: string | null;
+    color_name?: string | null;
+    color_name_is_synthesized?: boolean;
+    slicer_filament_name?: string | null;
+    note?: string | null;
+    rgba?: string | null;
+  };
+  /** Grams: the spool's own size, which every figure is now computed from. */
+  initial_weight: number;
+  /** Grams: its filament's size, which the old form showed and edited. */
+  filament_weight: number;
+  remaining_weight: number | null;
 }
 
 export interface SkippedSpool {
@@ -8230,6 +8293,9 @@ export interface InventorySpool {
   created_at: string;
   updated_at: string;
   cost_per_kg: number | null;
+  // Spoolman rows only, read-only: the per-kg rate a print off the spool is
+  // charged — its own price, else its filament's. Never sent back by the form.
+  effective_cost_per_kg?: number | null;
   purchase_date: string | null;
   // "1.75" | "2.85" — NOT NULL on the DB side (defaulted in m020), but
   // typed as string here to keep the dropdown binding straightforward.
@@ -8761,6 +8827,41 @@ export interface UsageHistoryParams {
   page?: number;
   per_page?: number;
   all?: boolean;
+}
+
+/** The History view's query string — one builder for both inventories' feeds.
+ *  `page` is always set: neither feed is ever fetched unpaged from the browser. */
+function usageHistoryQuery(params: UsageHistoryParams): string {
+  const qs = new URLSearchParams();
+  if (params.q) qs.set('q', params.q);
+  for (const status of params.status ?? []) qs.append('status', status);
+  if (params.printer_id) qs.set('printer_id', params.printer_id);
+  if (params.spool_id !== undefined) qs.set('spool_id', String(params.spool_id));
+  if (params.material) qs.set('material', params.material);
+  if (params.brand) qs.set('brand', params.brand);
+  if (params.archived) qs.set('archived', params.archived);
+  if (params.assigned) qs.set('assigned', params.assigned);
+  if (params.date_from) qs.set('date_from', params.date_from);
+  if (params.date_to) qs.set('date_to', params.date_to);
+  if (params.sort_by) qs.set('sort_by', params.sort_by);
+  qs.set('page', String(params.page ?? 1));
+  if (params.all) {
+    qs.set('all', 'true');
+  } else if (params.per_page) {
+    qs.set('per_page', String(params.per_page));
+  }
+  return qs.toString();
+}
+
+/** Which Spoolman the usage history on screen belongs to. `previous_rows` > 0:
+ *  the Spoolman address changed and that many rows recorded against the
+ *  previous address are kept apart until the operator says it is the same
+ *  database. */
+export interface SpoolmanUsageSourceState {
+  has_source: boolean;
+  rows: number;
+  previous_url: string | null;
+  previous_rows: number;
 }
 
 export interface SpoolKProfile {
@@ -12749,6 +12850,16 @@ export const api = {
 
   // Spoolman Integration
   getSpoolmanStatus: () => request<SpoolmanStatus>('/spoolman/status'),
+  migrateSpoolmanTags: (dryRun: boolean) =>
+    request<SpoolmanTagMigrationReport>(`/spoolman/inventory/tags/migrate?dry_run=${dryRun}`, {
+      method: 'POST',
+    }),
+  getSpoolmanSizeMismatches: () => request<SpoolmanSizeMismatch[]>('/spoolman/inventory/spools/size-mismatches'),
+  applyFilamentSizeToSpoolmanSpool: (spoolId: number) =>
+    request<{ id: number; initial_weight: number | null; remaining_weight: number | null }>(
+      `/spoolman/inventory/spools/${spoolId}/use-filament-size`,
+      { method: 'POST' },
+    ),
   connectSpoolman: () =>
     request<{ success: boolean; message: string }>('/spoolman/connect', {
       method: 'POST',
@@ -13150,7 +13261,7 @@ export const api = {
   resetSpoolConsumedCounter: (id: number) =>
     request<InventorySpool>(`/inventory/spools/${id}/reset-consumed-counter`, { method: 'POST' }),
   bulkResetSpoolConsumedCounter: (spoolIds: number[]) =>
-    request<{ reset: number }>(`/inventory/spools/reset-consumed-counter-bulk`, {
+    request<BulkResetResult>(`/inventory/spools/reset-consumed-counter-bulk`, {
       method: 'POST',
       body: JSON.stringify({ spool_ids: spoolIds }),
     }),
@@ -13232,7 +13343,7 @@ export const api = {
       body: JSON.stringify({ spool_ids: spoolIds }),
     }),
   bulkResetSpoolmanInventorySpoolConsumedCounter: (spoolIds: number[]) =>
-    request<{ reset: number }>(`/spoolman/inventory/spools/reset-consumed-counter-bulk`, {
+    request<BulkResetResult>(`/spoolman/inventory/spools/reset-consumed-counter-bulk`, {
       method: 'POST',
       body: JSON.stringify({ spool_ids: spoolIds }),
     }),
@@ -13378,27 +13489,8 @@ export const api = {
    *  download that the forecast-server-side cycle deleted; two tests still pin
    *  that nothing fetches it that way. Reaching this table from the browser is
    *  fine — reaching all of it at once is what was wrong. */
-  getUsageHistory: (params: UsageHistoryParams = {}) => {
-    const qs = new URLSearchParams();
-    if (params.q) qs.set('q', params.q);
-    for (const status of params.status ?? []) qs.append('status', status);
-    if (params.printer_id) qs.set('printer_id', params.printer_id);
-    if (params.spool_id !== undefined) qs.set('spool_id', String(params.spool_id));
-    if (params.material) qs.set('material', params.material);
-    if (params.brand) qs.set('brand', params.brand);
-    if (params.archived) qs.set('archived', params.archived);
-    if (params.assigned) qs.set('assigned', params.assigned);
-    if (params.date_from) qs.set('date_from', params.date_from);
-    if (params.date_to) qs.set('date_to', params.date_to);
-    if (params.sort_by) qs.set('sort_by', params.sort_by);
-    qs.set('page', String(params.page ?? 1));
-    if (params.all) {
-      qs.set('all', 'true');
-    } else if (params.per_page) {
-      qs.set('per_page', String(params.per_page));
-    }
-    return request<SpoolUsagePage>(`/inventory/usage?${qs}`);
-  },
+  getUsageHistory: (params: UsageHistoryParams = {}) =>
+    request<SpoolUsagePage>(`/inventory/usage?${usageHistoryQuery(params)}`),
   /** The History view's dropdown options — computed over every usage row, not
    *  over the current selection, so narrowing one filter never empties another. */
   getUsageHistoryFacets: () => request<SpoolUsageFacets>('/inventory/usage/facets'),
@@ -13406,6 +13498,22 @@ export const api = {
     request<InventorySpool>(`/inventory/spools/${spoolId}/usage`, { method: 'DELETE' }),
   deleteSpoolUsageRecord: (spoolId: number, usageId: number) =>
     request<InventorySpool>(`/inventory/spools/${spoolId}/usage/${usageId}`, { method: 'DELETE' }),
+  // Spoolman mode: the same views over the Spoolman spools' own usage rows.
+  // A separate table and separate doors — neither inventory reads the other's
+  // history. Clearing or deleting here is bookkeeping only: the spool's weight
+  // in Spoolman is not changed.
+  getSpoolmanUsageHistory: (params: UsageHistoryParams = {}) =>
+    request<SpoolUsagePage>(`/spoolman/inventory/usage?${usageHistoryQuery({ ...params, archived: undefined })}`),
+  getSpoolmanUsageHistoryFacets: () => request<SpoolUsageFacets>('/spoolman/inventory/usage/facets'),
+  getSpoolmanSpoolUsageHistory: (spoolId: number, limit = 50) =>
+    request<SpoolUsageRecord[]>(`/spoolman/inventory/spools/${spoolId}/usage?limit=${limit}`),
+  clearSpoolmanSpoolUsageHistory: (spoolId: number) =>
+    request<{ status: string; deleted: number }>(`/spoolman/inventory/spools/${spoolId}/usage`, { method: 'DELETE' }),
+  deleteSpoolmanSpoolUsageRecord: (spoolId: number, usageId: number) =>
+    request<{ status: string }>(`/spoolman/inventory/spools/${spoolId}/usage/${usageId}`, { method: 'DELETE' }),
+  getSpoolmanUsageSource: () => request<SpoolmanUsageSourceState>('/spoolman/inventory/usage/source'),
+  keepPreviousSpoolmanUsageSource: () =>
+    request<SpoolmanUsageSourceState>('/spoolman/inventory/usage/source/keep-previous', { method: 'POST' }),
   syncWeightsFromAms: () =>
     request<{ synced: number; skipped: number }>('/inventory/sync-ams-weights', { method: 'POST' }),
   // Stock forecasting + shopping list (upstream #1184)

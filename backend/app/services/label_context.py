@@ -16,6 +16,7 @@ from typing import Any
 from backend.app.models.spool import Spool
 from backend.app.services.label_barcode import BarcodeError, spool_ean13
 from backend.app.services.label_template import PLACEHOLDERS
+from backend.app.services.spoolman_weights import spool_net_weight, spool_price_per_gram
 
 
 def _num(value: float | int | None, decimals: int = 0) -> str:
@@ -124,7 +125,10 @@ def spoolman_context(
     vendor = filament.get("vendor") or {}
     spool_id = int(raw.get("id") or 0)
 
-    initial = filament.get("weight")
+    # The spool's own size and price before its filament's — the figures the
+    # Filaments page shows and a print is charged (``spoolman_weights``).
+    initial = spool_net_weight(raw)
+    per_gram = spool_price_per_gram(raw)
     remaining = raw.get("remaining_weight")
     used = raw.get("used_weight")
     if remaining is None and initial is not None and used is not None:
@@ -160,7 +164,7 @@ def spoolman_context(
         "remaining_pct": f"{_num(float(remaining) / float(initial) * 100)}%" if remaining and initial else "",
         "color_hex": _hex(rgba),
         "color_hex_all": _hex_all(rgba, multi if isinstance(multi, str) else None),
-        "cost_per_kg": _num(filament.get("price"), 2) if filament.get("price") else "",
+        "cost_per_kg": _num(per_gram * 1000, 2) if per_gram else "",
         "purchase_date": "",
         "filament_diameter": _num(filament.get("diameter"), 2) if filament.get("diameter") else "",
         "lot": "",

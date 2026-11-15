@@ -1160,6 +1160,11 @@ async def _delete_printer_rows(printer_id: int, printer: Printer, delete_archive
     await db.execute(
         update(VirtualPrinter).where(VirtualPrinter.target_printer_id == printer_id).values(target_printer_id=None)
     )
+    # The Spoolman usage history the same way, through its one writer: the rows
+    # stay as the spools' record, without a printer.
+    from backend.app.services import spoolman_usage_history
+
+    await spoolman_usage_history.detach_printer(db, printer_id)
     # JSON printer scopes have no FK action on either dialect. Remove this
     # lifetime before its integer id can name another printer. An emptied
     # list stays [] (no printers), never None (all printers).

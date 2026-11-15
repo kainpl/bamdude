@@ -343,12 +343,20 @@ class TestTheDeliberateBehaviorChanges:
         assert [a.kind for a in alerts] == ["reorder"], "a kg margin read as days would have kept this silent"
 
     @pytest.mark.asyncio
-    async def test_under_spoolman_the_tick_does_nothing(self, db_session, monkeypatch) -> None:
-        """The defensive gate the spec adds (§2.5/§3): under Spoolman the local
-        spool tables are not the inventory the operator manages — the whole
-        Inventory tab is a Spoolman iframe — so the task exits before touching
-        the forecast. The pre-refactor task only stayed quiet because the local
-        table happened to be empty."""
+    async def test_under_spoolman_the_tick_never_forecasts_the_local_tables(self, db_session, monkeypatch) -> None:
+        """Under Spoolman the local spool tables are not the inventory the operator
+        manages (§2.5/§3) — a break standing in them must never ring.
+
+        Until 2026-11-15 the tick guaranteed that by exiting before any forecast
+        work, because no forecast existed in Spoolman mode. It now forecasts the
+        SPOOLMAN inventory (upstream 1d86cff5a): the engine picks the source, and
+        the guarantee is that the local tables are not it. Here Spoolman holds
+        nothing, the local table holds a spool deep in a stock break — and the
+        tick stays silent. (The Spoolman side of the tick — an alert from its
+        own spools, and silence when it does not answer — is pinned in
+        ``tests/test_forecast_spoolman_source.py``.)"""
+        from backend.app.services import forecast_engine
+
         anchor = datetime.now(timezone.utc)  # tick() reads the wall clock
         db_session.add(Settings(key="spoolman_enabled", value="true"))
         db_session.add(Settings(key="forecast_global_lead_time_days", value="7"))
@@ -356,14 +364,9 @@ class TestTheDeliberateBehaviorChanges:
         for days_ago in (5, 4, 3, 2, 1):
             await _usage(db_session, spool.id, days_ago, 100, anchor)
 
+        asked = AsyncMock(return_value=[])  # Spoolman's own shelf: empty
+        monkeypatch.setattr(forecast_engine, "_fetch_spoolman_spools", asked)
         breakage, reorder = AsyncMock(), AsyncMock()
-        # T2 review, Minor 2: the plan's contract is "returns WITHOUT QUERYING",
-        # and the notification/settings-row assertions alone would still pass if
-        # the guard slid below the (side-effect-free) forecast work. Patch the
-        # engine call at the name the module actually invokes — its own bound
-        # ``compute_forecast`` — and demand it is never awaited.
-        engine_call = AsyncMock(return_value=[])
-        monkeypatch.setattr("backend.app.services.stock_forecast_alerts.compute_forecast", engine_call)
         monkeypatch.setattr("backend.app.services.stock_forecast_alerts.async_session", _ctx(db_session))
         with (
             patch("backend.app.services.notification_service.notification_service.on_stock_break_alert", breakage),
@@ -371,7 +374,7 @@ class TestTheDeliberateBehaviorChanges:
         ):
             await StockForecastAlerts().tick()
 
-        assert engine_call.await_count == 0, "the guard must return BEFORE any forecast work — 'without querying'"
+        assert asked.await_count == 1, "the forecast was made — over Spoolman's spools"
         assert breakage.await_count == 0
         assert reorder.await_count == 0
 

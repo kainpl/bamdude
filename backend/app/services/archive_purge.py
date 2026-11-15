@@ -258,6 +258,15 @@ class ArchivePurgeService:
         # is ``deleted`` below: when it comes back lower than ``len(ids)``, the
         # on-disk cleanup did NOT run for the difference, and that is a bug to
         # chase rather than a tidy-up that succeeded.
+        #
+        # Both usage histories are unlinked first: a row left here never passed
+        # ``delete_archive``'s own detach, and their ``archive_id`` has no ON
+        # DELETE — PostgreSQL would refuse the statement, SQLite would leave
+        # the id to the next archive that takes it.
+        from backend.app.services import spool_usage_service, spoolman_usage_history  # noqa: PLC0415
+
+        await spool_usage_service.detach_archives(db, ids)
+        await spoolman_usage_history.detach_archives(db, ids)
         await db.execute(delete(PrintArchive).where(PrintArchive.id.in_(ids), PrintArchive.deleted_at.isnot(None)))
         await db.commit()
         if deleted < len(ids):

@@ -679,8 +679,11 @@ class GitBackupService:
 
         # Filter out sensitive settings
         from backend.app.core.credential_config import CONFIG_GUARD_KEY
+        from backend.app.services.spoolman_usage_history import SOURCE_SETTING
 
-        sensitive_keys = {"bambu_cloud_token", "auth_secret_key", CONFIG_GUARD_KEY}
+        # SOURCE_SETTING holds this installation's own token for its Spoolman:
+        # a local identity, never restored and meaningless anywhere else.
+        sensitive_keys = {"bambu_cloud_token", "auth_secret_key", CONFIG_GUARD_KEY, SOURCE_SETTING}
         settings_data = {s.key: s.value for s in settings if s.key not in sensitive_keys}
 
         files["settings/app_settings.json"] = {
@@ -727,8 +730,11 @@ class GitBackupService:
             "spools": spools_data,
         }
 
-        # Usage history (last 500 entries)
-        result = await db.execute(select(SpoolUsageHistory).order_by(desc(SpoolUsageHistory.created_at)).limit(500))
+        # Usage history — every row, with the print each belongs to. It used to
+        # be the newest 500 under the key ``history`` and without ``archive_id``,
+        # which the restore (it reads ``usage_history``) never found: a restore
+        # of our own backup brought back no usage at all.
+        result = await db.execute(select(SpoolUsageHistory).order_by(desc(SpoolUsageHistory.created_at)))
         history = result.scalars().all()
 
         history_data = []
@@ -739,6 +745,9 @@ class GitBackupService:
                     "spool_id": h.spool_id,
                     "printer_id": h.printer_id,
                     "print_name": h.print_name,
+                    # The archive's id INSIDE this backup: the restore resolves
+                    # it through the archives it brought, never as a local id.
+                    "archive_id": h.archive_id,
                     "weight_used": h.weight_used,
                     "percent_used": h.percent_used,
                     "status": h.status,
@@ -750,10 +759,29 @@ class GitBackupService:
         files["spools/usage_history.json"] = {
             "version": "1.0",
             "entry_count": len(history_data),
-            "history": history_data,
+            "usage_history": history_data,
         }
 
-        logger.info("Collected %d spools and %d usage history entries", len(spools_data), len(history_data))
+        # The Spoolman usage history is a table of its own (a Spoolman spool id
+        # and a built-in one are two numberings), so it is a file of its own —
+        # written whatever the inventory mode, as upstream backs usage up
+        # without built-in spools too (1d86cff5a). Its one writer hands the
+        # rows over in their portable form: no local id, no source token.
+        from backend.app.services import spoolman_usage_history
+
+        spoolman_rows = await spoolman_usage_history.export_rows(db)
+        files["spools/spoolman_usage_history.json"] = {
+            "version": "1.0",
+            "entry_count": len(spoolman_rows),
+            "usage_history": spoolman_rows,
+        }
+
+        logger.info(
+            "Collected %d spools, %d usage history entries and %d Spoolman usage history entries",
+            len(spools_data),
+            len(history_data),
+            len(spoolman_rows),
+        )
 
     async def _collect_archives(self, db: AsyncSession, files: dict):
         """Collect print archive metadata (no binary files)."""

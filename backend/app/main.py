@@ -90,6 +90,7 @@ from backend.app.api.routes import (
     smart_plugs,
     spoolman,
     spoolman_inventory,
+    spoolman_usage,
     statistics,
     stock,
     stock_issues,
@@ -119,6 +120,7 @@ from backend.app.services.archive import ArchiveService, resolve_display_stem
 from backend.app.services.auto_queue_scheduler import auto_queue_scheduler
 from backend.app.services.background_dispatch import background_dispatch, delete_internal_by_name
 from backend.app.services.bambu_mqtt import HMS_SEVERITY_NOTIFY_THRESHOLD, PrinterState
+from backend.app.services.forecast_engine import ForecastSourceUnavailable
 from backend.app.services.git_backup import git_backup_service
 from backend.app.services.ha_sensor_manager import ha_sensor_manager
 from backend.app.services.hms_catalogue import device_of as hms_device_of
@@ -3750,7 +3752,9 @@ async def _on_ams_change(printer_id: int, ams_data: list):
                     )
                     if spool_tag:
                         current_tray_uuids.add(spool_tag.upper())
-                    if spool_tag and await archived_reels.holds_archived_reel(spool_tag, cached_spools):
+                    if spool_tag and await archived_reels.holds_archived_reel(
+                        spool_tag, cached_spools, tray.tag_uid or ""
+                    ):
                         # An archived spool's reel still in the slot — typically the
                         # one the runout close-out just retired after an auto-switch.
                         # It is not unknown: no auto-create, no "+ Add" prompt.
@@ -3774,6 +3778,7 @@ async def _on_ams_change(printer_id: int, ams_data: list):
                             cached_spools=cached_spools,
                             inventory_remaining=inv_remaining,
                             auto_add_unknown_rfid=auto_add_unknown_rfid,
+                            db=db,
                         )
                         if result is None and spool_tag and not auto_add_unknown_rfid:
                             # Spoolman skipped auto-create per user setting — surface
@@ -3875,9 +3880,12 @@ async def _spoolman_bidirectional_weight_sync(client, db, printer_id: int, ams_i
     if not tray_uuid or set(tray_uuid) == {"0"}:
         return  # untagged — #1119 territory, weight stays per-print-owned
 
-    filament = spool.get("filament") or {}
-    ref_weight = filament.get("weight")
-    if not ref_weight or ref_weight <= 0:
+    # The spool's own net weight before its filament's: a 250 g refill of a
+    # 1000 g filament is 250 g at 100 % (upstream #3194).
+    from backend.app.services.spoolman_weights import spool_net_weight
+
+    ref_weight = spool_net_weight(spool)
+    if ref_weight is None:
         return
 
     remain_raw = tray_data.get("remain")
@@ -9672,6 +9680,7 @@ async def _on_print_complete_impl(
                     last_layer_num=data.get("last_layer_num"),
                     last_progress=data.get("last_progress"),
                     completion=completion,
+                    status=data.get("status") or "failed",
                 )
         except Exception as e:
             logger.debug("[SPOOLMAN] Cleanup failed: %s", e)
@@ -11893,6 +11902,22 @@ async def _application_lifespan(app: FastAPI):
 
     await printer_manager.load_awaiting_plate_clear_from_db()
 
+    # Built-in slot rows written while Spoolman mode was on (a hole closed
+    # since) — nothing else ever clears them. Best-effort, and BEFORE any
+    # printer connects: nothing writes the slot ledger yet, so no assignment
+    # lock is needed, and no first AMS push can rebuild the advertised overlay
+    # from rows this is about to delete.
+    async with async_session() as db:
+        try:
+            from backend.app.api.routes.settings import clear_stray_builtin_assignments
+
+            _stray = await clear_stray_builtin_assignments(db)
+            if _stray:
+                logging.warning("Startup: removed %d built-in slot assignment(s) left in Spoolman mode", _stray)
+        except Exception:  # noqa: BLE001 — never block startup on a clean-up
+            await db.rollback()
+            logging.exception("Startup: could not remove built-in slot assignments left in Spoolman mode")
+
     # Connect to all active printers
     async with async_session() as db:
         await init_printer_connections(db)
@@ -12603,6 +12628,15 @@ async def farm_startup_refused_handler(request, exc):
     )
 
 
+@app.exception_handler(ForecastSourceUnavailable)
+async def forecast_source_unavailable_handler(request, exc):
+    # Spoolman is the inventory and did not answer: every forecast route says so
+    # with one typed refusal, never an empty forecast (services/forecast_engine).
+    from backend.app.i18n.api_errors import json_error
+
+    return json_error(503, {"error": "spoolman_unreachable", "message": "Spoolman server is not reachable"})
+
+
 # Every ``HTTPException`` answers in the system language: the English sentence
 # raised at the site is looked up in ``data/api_errors_uk.json`` on the way out.
 # See ``backend/app/i18n/api_errors.py`` for what is deliberately never translated.
@@ -13282,6 +13316,7 @@ app.include_router(user_notifications.router, prefix=app_settings.api_prefix)
 app.include_router(inbox.router, prefix=app_settings.api_prefix)
 app.include_router(spoolman.router, prefix=app_settings.api_prefix)
 app.include_router(spoolman_inventory.router, prefix=app_settings.api_prefix)
+app.include_router(spoolman_usage.router, prefix=app_settings.api_prefix)
 app.include_router(updates.router, prefix=app_settings.api_prefix)
 app.include_router(macros.router, prefix=app_settings.api_prefix)
 app.include_router(maintenance.router, prefix=app_settings.api_prefix)

@@ -65,7 +65,7 @@ def mock_spoolman_client():
     mock_client.set_spool_archived = AsyncMock(
         side_effect=lambda spool_id, archived: {**SAMPLE_SPOOLMAN_SPOOL, "archived": archived}
     )
-    mock_client.reset_spool_usage = AsyncMock(return_value={**SAMPLE_SPOOLMAN_SPOOL, "used_weight": 0})
+    mock_client.reset_spool_consumed_counter = AsyncMock(return_value=SAMPLE_SPOOLMAN_SPOOL)
     mock_client.update_spool_full = AsyncMock(return_value=SAMPLE_SPOOLMAN_SPOOL)
     mock_client.merge_spool_extra = AsyncMock(return_value=SAMPLE_SPOOLMAN_SPOOL)
     mock_client.find_or_create_filament = AsyncMock(return_value=7)

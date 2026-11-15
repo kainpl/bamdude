@@ -70,7 +70,7 @@ from backend.app.schemas.spool_usage import (
     SpoolUsageTotals,
 )
 from backend.app.services import forecast_engine, inventory_service, spool_usage_service
-from backend.app.services.ams_slot_presence import spool_present
+from backend.app.services.ams_slot_presence import firmware_says_empty, spool_present
 from backend.app.services.filament_needs import Needs
 from backend.app.services.location_service import (
     DUPLICATE_LOCATION_NAME,
@@ -531,14 +531,32 @@ async def _spool_counts_for_locations(
     db: AsyncSession,
     locations: list[Location],
     settings: dict[str, str],
+    *,
+    strict: bool = False,
 ) -> dict[int, int]:
-    if _spoolman_is_enabled(settings):
+    """Spools per location, from the inventory in use.
+
+    ``strict`` is the delete's: in Spoolman mode only Spoolman knows which
+    spools sit at a location, so when it cannot be read the lenient fallback —
+    counting built-in spools, of which there are none — said "empty" and the
+    location was deleted from under them (upstream c2bc41a5e). Lists keep it.
+
+    Spoolman switched on with NO address is no Spoolman to ask: nothing was
+    ever read from one, so the delete is not held behind "not reachable" until
+    somebody types a URL — the built-in count answers, as with Spoolman off.
+    An address that is set and cannot be used is still a refusal.
+    """
+    if _spoolman_is_enabled(settings) and settings.get("spoolman_url", "").strip():
         client = await _ensure_spoolman_client(settings)
+        if strict and not client:
+            raise HTTPException(status_code=503, detail="Spoolman is not reachable")
         if client:
             try:
                 spools = await client.get_all_spools(allow_archived=False)
-            except Exception:
+            except Exception as exc:
                 logger.warning("Failed to fetch Spoolman spools for location counts", exc_info=True)
+                if strict:
+                    raise HTTPException(status_code=503, detail="Spoolman is not reachable") from exc
             else:
                 # Use the canonical key helper so this matches what the
                 # migration backfill, Location.name_key, and every other
@@ -712,7 +730,7 @@ async def delete_location(
         raise HTTPException(status_code=404, detail="Location not found")
 
     settings = await _load_settings_map(db)
-    counts = await _spool_counts_for_locations(db, [location], settings)
+    counts = await _spool_counts_for_locations(db, [location], settings, strict=True)
     if counts.get(location.id, 0) > 0:
         raise HTTPException(status_code=409, detail="Location has spools assigned and cannot be deleted")
 
@@ -2025,6 +2043,7 @@ async def create_spool(
     """Create a new spool."""
     try:
         payload = await prepare_internal_spool_payload(db, spool_data.model_dump(), set(spool_data.model_fields_set))
+        inventory_service.lock_entered_weight(payload, set(spool_data.model_fields_set))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     await _derive_family_from_slicer(db, payload)
@@ -2055,6 +2074,7 @@ async def bulk_create_spools(
     spools = []
     try:
         template = await prepare_internal_spool_payload(db, data.spool.model_dump(), set(data.spool.model_fields_set))
+        inventory_service.lock_entered_weight(template, set(data.spool.model_fields_set))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     await _derive_family_from_slicer(db, template)
@@ -2660,6 +2680,29 @@ async def list_assignments(
     return responses
 
 
+async def _refuse_in_spoolman_mode(db: AsyncSession) -> None:
+    """The built-in slot ledger takes no write while Spoolman is the inventory.
+
+    The switch to Spoolman empties ``spool_assignments``, and no reader gates on
+    the mode because the table is meant to hold only the active one. A row
+    written here in Spoolman mode — the card offered the built-in dialog
+    whenever Spoolman was enabled but unreachable — was never cleared and
+    reached the card, the Inventory page, the print dialog, the journal's
+    restart seed and the missing-assignment warning (upstream 62fad59fd, #3430).
+    Decided by the setting, not by whether Spoolman answers.
+    """
+    from backend.app.api.routes.settings import get_setting  # noqa: PLC0415
+
+    if (await get_setting(db, "spoolman_enabled") or "").lower() == "true":
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "spoolman_mode",
+                "message": "Spoolman is the inventory: assign spools to slots from Spoolman",
+            },
+        )
+
+
 @router.post("/assignments", response_model=SpoolAssignmentResponse)
 async def assign_spool(
     data: SpoolAssignmentCreate,
@@ -2668,6 +2711,8 @@ async def assign_spool(
 ):
     """Assign a spool to an AMS slot and auto-configure via MQTT."""
     from backend.app.main import _get_ams_assignment_lock
+
+    await _refuse_in_spoolman_mode(db)
 
     # A manual answer must not race insertion/RFID reconciliation on this slot.
     async with _get_ams_assignment_lock(data.printer_id):
@@ -2867,7 +2912,7 @@ async def _assign_spool(data: SpoolAssignmentCreate, db: AsyncSession, current_u
     # kept showing "?" (upstream #3084). The presence bit overrules the 9;
     # a bit reading EMPTY deliberately does not start suppressing pushes
     # (a wrong bit position would silently stop a slot configuring).
-    slot_is_definitely_empty = tray_has_spool is not True and (tray_state == 9 or tray_state == 10)
+    slot_is_definitely_empty = firmware_says_empty(tray_has_spool, tray_state)
     configured = False
     pending_config = slot_is_definitely_empty
 
@@ -2944,6 +2989,7 @@ async def unassign_spool(
     _: User | None = RequirePermission(Permission.INVENTORY_UPDATE),
 ):
     """Unassign a spool from an AMS slot."""
+    await _refuse_in_spoolman_mode(db)
     result = await db.execute(
         select(SpoolAssignment).where(
             SpoolAssignment.printer_id == printer_id,
@@ -4195,6 +4241,9 @@ async def create_spool_from_slot(
     """
     from backend.app.services.printer_manager import printer_manager
     from backend.app.services.spool_tag_matcher import auto_assign_spool, create_spool_from_tray
+
+    # A built-in spool and its slot row: the third writer of the built-in ledger.
+    await _refuse_in_spoolman_mode(db)
 
     state = printer_manager.get_status(req.printer_id)
     if not state or not state.raw_data:

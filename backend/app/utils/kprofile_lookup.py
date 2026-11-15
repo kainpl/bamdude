@@ -39,7 +39,47 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from backend.app.utils.slot_nozzle import slot_extruder
+from backend.app.utils.slot_nozzle import slot_extruder, slot_nozzle
+
+
+def slot_profile_filament_ids(state, cali_idx: int | None, ams_id: int, tray_id: int) -> set[str]:
+    """The filament id(s) of the live profile a slot's ``cali_idx`` names.
+
+    Read off the same table, by the same two steps as the K value below — the
+    slot's own extruder first, the index alone only where the table does not
+    file that extruder — and inside the table of the nozzle the slot feeds,
+    because the index is numbered per nozzle. Empty when the table has no such
+    entry: the profile is then unknown, which is not "any filament's".
+
+    A read, nothing else: the callers that put a slot's previous index back ask
+    it whether that index is a profile of the filament they are about to name.
+    """
+    try:
+        idx = int(cali_idx) if cali_idx is not None else None
+    except (TypeError, ValueError):
+        return set()
+    if idx is None or idx < 0:
+        return set()
+    nozzle = slot_nozzle(state, ams_id, tray_id)
+    diameter = _diameter(nozzle.diameter)
+    own: set[str] = set()
+    shared: set[str] = set()
+    extruders_filed: set[int] = set()
+    for kp in getattr(state, "kprofiles", None) or []:
+        try:
+            kp_idx = int(kp.slot_id)
+            extruder = int(kp.extruder_id or 0)
+        except (TypeError, ValueError):
+            continue
+        extruders_filed.add(extruder)
+        if kp_idx != idx or _diameter(kp.nozzle_diameter) != diameter or not kp.filament_id:
+            continue
+        shared.add(kp.filament_id)
+        if extruder == nozzle.extruder:
+            own.add(kp.filament_id)
+    if nozzle.extruder is not None and (own or nozzle.extruder in extruders_filed):
+        return own
+    return shared
 
 
 def build_slot_k_resolver(state) -> Callable[[int | None, int, int], float | None]:

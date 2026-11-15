@@ -401,6 +401,32 @@ def slot_progress_fraction(
     return min(at_layer / final, 1.0)
 
 
+def partial_slot_grams(
+    filament_usage: list[dict],
+    layer_usage: dict[int, dict[int, float]] | None,
+    target_layer: int,
+) -> dict[int, float]:
+    """What each slot of a print that stopped at ``target_layer`` used, in grams.
+
+    The one measure of a stopped print's weight, for BOTH inventory writers
+    (``usage_tracker`` and ``spoolman_tracking``): the slicer's per-slot
+    estimate times :func:`slot_progress_fraction` — never the G-code's own
+    grams, which miss every flush and count every un-retract.
+
+    A slot with no estimate, or one the timeline says nothing about, is absent:
+    the caller sizes it some other way (the progress percentage).
+    """
+    grams: dict[int, float] = {}
+    estimates = {u.get("slot_id", 0): u.get("used_g", 0) for u in filament_usage}
+    for slot_id, estimate in estimates.items():
+        if estimate <= 0:
+            continue
+        fraction = slot_progress_fraction(layer_usage, slot_id - 1, target_layer)
+        if fraction is not None:
+            grams[slot_id] = estimate * fraction
+    return grams
+
+
 def extract_filament_properties_from_3mf(file_path: Path | zipfile.ZipFile) -> dict[int, dict]:
     """Extract filament properties (density, diameter, type) from 3MF metadata.
 

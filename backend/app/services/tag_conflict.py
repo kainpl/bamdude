@@ -37,3 +37,43 @@ def tag_already_linked(field: TagField, holder_id: int) -> HTTPException:
             "field": field,
         },
     )
+
+
+def native_tag_refused(field: TagField, conflict) -> HTTPException:
+    """409 for a native tag Spoolman holds elsewhere (``spoolman.NativeTagConflict``).
+
+    An active spool is the same answer as above. An ARCHIVED spool is named
+    too — the lists hide it, so the sentence says where to look — and a
+    filament holder has no spool to name: the client gets ``tag_linked_elsewhere``.
+    Nothing is moved for the operator; the tag stays where Spoolman has it.
+    """
+    if conflict.spool_id is not None and not conflict.archived:
+        return tag_already_linked(field, conflict.spool_id)
+    if conflict.spool_id is not None:
+        return HTTPException(
+            status_code=409,
+            detail={
+                "error": "tag_already_linked",
+                "message": (
+                    f"Tag UID is already linked to archived spool {conflict.spool_id}"
+                    if field == "tag_uid"
+                    else f"Tray UUID is already linked to archived spool {conflict.spool_id}"
+                ),
+                "spool_id": conflict.spool_id,
+                "field": field,
+                "archived": True,
+            },
+        )
+    return HTTPException(
+        status_code=409,
+        detail={
+            "error": "tag_linked_elsewhere",
+            "message": (
+                "Tag UID is linked to a filament in Spoolman, not to a spool"
+                if field == "tag_uid"
+                else "Tray UUID is linked to a filament in Spoolman, not to a spool"
+            ),
+            "filament_id": conflict.filament_id,
+            "field": field,
+        },
+    )

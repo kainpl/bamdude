@@ -67,6 +67,28 @@ METADATA_PATH = "backup_metadata.json"
 SETTINGS_PATH = "settings/app_settings.json"
 SPOOLS_PATH = "spools/inventory.json"
 SPOOL_USAGE_PATH = "spools/usage_history.json"
+
+
+def _builtin_usage_entries(payload) -> list | None:
+    """The built-in usage rows of a backup, whichever key it wrote them under.
+
+    ``usage_history`` is the key; backups made before 2026-11-15 wrote
+    ``history`` (and no ``archive_id``), which no restore ever read — they are
+    read now, their rows coming back without the print they belonged to.
+    """
+    if not isinstance(payload, dict):
+        return None
+    for key in ("usage_history", "history"):
+        entries = payload.get(key)
+        if isinstance(entries, list):
+            return entries
+    return None
+
+
+# The Spoolman usage history: a file of its own, as the table is — a Spoolman
+# spool id and a built-in spool id are two numberings (written by
+# ``git_backup._collect_spools`` through ``spoolman_usage_history.export_rows``).
+SPOOLMAN_USAGE_PATH = "spools/spoolman_usage_history.json"
 # ⚠️ Our collector writes this path; upstream's writes
 # ``archives/print_history.json``. Reading theirs would find nothing in one of
 # OUR backups and report the archives category as simply absent from the commit
@@ -678,7 +700,7 @@ class GitRestoreService:
         if category == RestoreCategory.SETTINGS:
             return [p for p in (SETTINGS_PATH,) if p in available]
         if category == RestoreCategory.SPOOLS:
-            return [p for p in (SPOOLS_PATH, SPOOL_USAGE_PATH) if p in available]
+            return [p for p in (SPOOLS_PATH, SPOOL_USAGE_PATH, SPOOLMAN_USAGE_PATH) if p in available]
         if category == RestoreCategory.ARCHIVES:
             return [p for p in (ARCHIVES_PATH,) if p in available]
         if category == RestoreCategory.KPROFILES:
@@ -953,7 +975,7 @@ class GitRestoreService:
             payload = parsed.get(SPOOLS_PATH)
             spools = payload.get("spools") if isinstance(payload, dict) else None
             usage_payload = parsed.get(SPOOL_USAGE_PATH)
-            usage = usage_payload.get("usage_history") if isinstance(usage_payload, dict) else None
+            usage = _builtin_usage_entries(usage_payload)
             # Usage records are counted here, not just described in the detail:
             # _restore_spool_usage increments this category's tally, so counting
             # only the spools broke restored + skipped + failed == item_count —
@@ -961,9 +983,15 @@ class GitRestoreService:
             # breaks the total down rather than adding to it.
             count = len(spools) if isinstance(spools, list) else 0
             detail = None
-            if isinstance(usage, list) and usage:
-                count += len(usage)
-                detail = _Detail("spoolsUsageCount", f"including {len(usage)} usage records", {"count": len(usage)})
+            # The Spoolman usage rows are usage records of this category too,
+            # and every one of them ends in its tally (restored, skipped or
+            # failed), so they are counted with the built-in ones.
+            records = (len(usage) if isinstance(usage, list) else 0) + len(
+                self._spoolman_usage_entries(parsed.get(SPOOLMAN_USAGE_PATH))
+            )
+            if records:
+                count += records
+                detail = _Detail("spoolsUsageCount", f"including {records} usage records", {"count": records})
             return count, detail
 
         if category == RestoreCategory.ARCHIVES:
@@ -1298,6 +1326,7 @@ class GitRestoreService:
                 tally,
                 archive_id_map,
             )
+            await self._restore_spoolman_usage(db, payload.get(SPOOLMAN_USAGE_PATH), tally, archive_id_map)
             await db.commit()
             results[RestoreCategory.SPOOLS.value] = tally
 
@@ -1847,8 +1876,8 @@ class GitRestoreService:
         spool_id_map: dict[int, int],
         archive_id_map: dict[int, int],
     ) -> None:
-        usage = usage_payload.get("usage_history") if isinstance(usage_payload, dict) else None
-        if not isinstance(usage, list) or not usage:
+        usage = _builtin_usage_entries(usage_payload)
+        if not usage:
             return
 
         valid_printers = set((await db.execute(select(Printer.id))).scalars().all())
@@ -1936,6 +1965,66 @@ class GitRestoreService:
                 f"{unlinked_archives} usage record(s) restored without their print-history link — "
                 "select Print archives alongside Spool inventory to keep it.",
                 count=unlinked_archives,
+            )
+
+    @staticmethod
+    def _spoolman_usage_entries(payload) -> list:
+        usage = payload.get("usage_history") if isinstance(payload, dict) else None
+        return usage if isinstance(usage, list) else []
+
+    async def _restore_spoolman_usage(
+        self,
+        db: AsyncSession,
+        payload,
+        tally: _CategoryTally,
+        archive_id_map: dict[int, int],
+    ) -> None:
+        """The Spoolman usage history, through its one writer.
+
+        Restored whatever the inventory mode — as the built-in file beside it
+        is — and whether or not the backup carried built-in spools: the rows
+        name Spoolman's spools. The writer binds them to THIS installation's
+        current Spoolman, recognises the ones already here and counts what it
+        could not read; this only resolves the two references a row may carry
+        (a printer by its serial, an archive through the archives this restore
+        brought) and reports.
+        """
+        entries = self._spoolman_usage_entries(payload)
+        if not entries:
+            return
+
+        from backend.app.services import spoolman_usage_history
+
+        printers = (await db.execute(select(Printer.serial_number, Printer.id))).all()
+        outcome = await spoolman_usage_history.restore_rows(
+            db,
+            entries,
+            archive_ids=archive_id_map,
+            printer_ids={serial: printer_id for serial, printer_id in printers if serial},
+        )
+        tally.restored += outcome.restored
+        tally.failed += outcome.malformed
+        tally.skipped += outcome.present + outcome.other_source + outcome.no_source
+        if outcome.no_source:
+            tally.note(
+                "spoolmanUsageNoSource",
+                f"{outcome.no_source} Spoolman usage record(s) skipped — no Spoolman address is set on this "
+                "installation, so there is no Spoolman to attach them to.",
+                count=outcome.no_source,
+            )
+        if outcome.other_source:
+            tally.note(
+                "spoolmanUsageOtherSource",
+                f"{outcome.other_source} Spoolman usage record(s) skipped — they belong to a Spoolman the backed-up "
+                "installation had already stopped using.",
+                count=outcome.other_source,
+            )
+        if outcome.unlinked:
+            tally.note(
+                "spoolUsageUnlinked",
+                f"{outcome.unlinked} usage record(s) restored without their print-history link — "
+                "select Print archives alongside Spool inventory to keep it.",
+                count=outcome.unlinked,
             )
 
     async def _restore_settings(

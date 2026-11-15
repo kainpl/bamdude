@@ -18,6 +18,15 @@ import { SpoolmanSettings } from '../../components/SpoolmanSettings';
 vi.mock('../../api/client', () => ({
   setAuthToken: vi.fn(),
   getAuthToken: vi.fn(() => 'test-admin-token'),
+  ApiError: class ApiError extends Error {
+    status: number;
+    code?: string;
+    constructor(message: string, status: number, code?: string) {
+      super(message);
+      this.status = status;
+      this.code = code;
+    }
+  },
   api: {
     getSettings: vi.fn().mockResolvedValue({}),
     getUiPreferences: vi.fn().mockResolvedValue({}),
@@ -32,16 +41,21 @@ vi.mock('../../api/client', () => ({
     syncPrinterAms: vi.fn(),
     getPrinters: vi.fn(),
     getSpoolmanModeSwitchPreview: vi.fn(),
+    migrateSpoolmanTags: vi.fn(),
+    getSpoolmanSizeMismatches: vi.fn().mockResolvedValue([]),
+    applyFilamentSizeToSpoolmanSpool: vi.fn(),
     getAuthStatus: vi.fn().mockResolvedValue({ auth_enabled: false }),
   },
 }));
 
 // Import mocked module
-import { api } from '../../api/client';
+import { api, ApiError } from '../../api/client';
+import type { SpoolmanSizeMismatch, SpoolmanTagMigrationReport } from '../../api/client';
 
 describe('SpoolmanSettings', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(api.getCurrentUser).mockResolvedValue({ id: 1, is_admin: true, permissions: [] } as never);
 
     // Default API mocks - Spoolman disabled (Built-in Inventory mode)
     vi.mocked(api.getSpoolmanSettings).mockResolvedValue({
@@ -408,6 +422,223 @@ describe('SpoolmanSettings', () => {
 
       expect(screen.queryByText('Switch filament tracking?')).not.toBeInTheDocument();
       expect(api.getSpoolmanModeSwitchPreview).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('native tags', () => {
+    const preview: SpoolmanTagMigrationReport = {
+      dry_run: true,
+      moved: [
+        { spool_id: 41, tag: '0123456789ABCDEF0123456789ABCD01', format: 'bambu' },
+        { spool_id: 42, tag: 'D3E68F32', format: 'bambu' },
+      ],
+      already: 5,
+      slot_ids: 2,
+      archived: 1,
+      conflicts: [
+        { spool_id: 43, tag: 'AAAAAAAA', reason: 'held_by_spool', holder: 7, holder_archived: true, holder_filament: null },
+        { spool_id: 44, tag: 'BBBBBBBB', reason: 'shared_extra_tag', holder: 45, holder_archived: false, holder_filament: null },
+        { spool_id: 46, tag: 'CCCCCCCC', reason: 'held_by_filament', holder: null, holder_archived: false, holder_filament: 3 },
+      ],
+    };
+
+    const connected = (nativeTags: boolean) => {
+      vi.mocked(api.getSpoolmanSettings).mockResolvedValue({
+        spoolman_enabled: 'true',
+        spoolman_url: 'http://localhost:7912',
+        spoolman_sync_mode: 'auto',
+        spoolman_disable_weight_sync: 'false',
+        spoolman_report_partial_usage: 'true',
+        auto_add_unknown_rfid: 'false',
+      });
+      vi.mocked(api.getSpoolmanStatus).mockResolvedValue({
+        enabled: true,
+        connected: true,
+        url: 'http://localhost:7912',
+        native_tags: nativeTags,
+      });
+    };
+
+    it('is not offered on a Spoolman without native tags', async () => {
+      connected(false);
+      render(<SpoolmanSettings />);
+
+      await screen.findByText('Connected');
+      expect(screen.queryByText('Spoolman native tags')).not.toBeInTheDocument();
+    });
+
+    it('previews what would be copied before anything is changed', async () => {
+      connected(true);
+      vi.mocked(api.migrateSpoolmanTags).mockResolvedValue(preview);
+      const user = userEvent.setup();
+      render(<SpoolmanSettings />);
+
+      await user.click(await screen.findByRole('button', { name: 'Check tags' }));
+
+      expect(api.migrateSpoolmanTags).toHaveBeenCalledWith(true);
+      expect(await screen.findByText('Spool #41: 0123456789ABCDEF0123456789ABCD01')).toBeInTheDocument();
+      expect(screen.getByText('Spool #42: D3E68F32')).toBeInTheDocument();
+      // Every conflict names who holds the tag; none is settled for the operator.
+      expect(
+        screen.getByText('Spool #43: tag AAAAAAAA already belongs to archived spool #7 in Spoolman.')
+      ).toBeInTheDocument();
+      expect(screen.getByText(/Spool #44: spool #45 has the same tag BBBBBBBB/)).toBeInTheDocument();
+      expect(screen.getByText(/Spool #46: tag CCCCCCCC is linked to a filament/)).toBeInTheDocument();
+      expect(api.migrateSpoolmanTags).toHaveBeenCalledTimes(1);
+    });
+
+    it('copies only when asked to, and shows what was copied', async () => {
+      connected(true);
+      vi.mocked(api.migrateSpoolmanTags).mockImplementation(async (dryRun: boolean) => ({ ...preview, dry_run: dryRun }));
+      const user = userEvent.setup();
+      render(<SpoolmanSettings />);
+      await user.click(await screen.findByRole('button', { name: 'Check tags' }));
+
+      await user.click(await screen.findByRole('button', { name: 'Copy tags' }));
+
+      await waitFor(() => expect(api.migrateSpoolmanTags).toHaveBeenLastCalledWith(false));
+      expect(await screen.findByText('Copied')).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Copy tags' })).not.toBeInTheDocument();
+    });
+
+    it('is not offered to someone who may not change the inventory', async () => {
+      connected(true);
+      vi.mocked(api.getCurrentUser).mockResolvedValue({
+        id: 2,
+        is_admin: false,
+        permissions: ['inventory:read', 'settings:read'],
+      } as never);
+      render(<SpoolmanSettings />);
+
+      await screen.findByText('Connected');
+      await waitFor(() => expect(api.getCurrentUser).toHaveBeenCalled());
+      await waitFor(() => expect(screen.queryByText('Spoolman native tags')).not.toBeInTheDocument());
+    });
+
+    it('says so when this Spoolman turns out to have no native tags', async () => {
+      connected(true);
+      const refusal = new ApiError('This Spoolman server has no native tags', 409, 'spoolman_without_native_tags');
+      vi.mocked(api.migrateSpoolmanTags).mockRejectedValue(refusal);
+      const user = userEvent.setup();
+      render(<SpoolmanSettings />);
+
+      await user.click(await screen.findByRole('button', { name: 'Check tags' }));
+
+      expect(await screen.findByText('This Spoolman has no native tags, so there is nothing to copy the tags into.')).toBeInTheDocument();
+    });
+
+    it("shows the server's own sentence for any other refusal", async () => {
+      connected(true);
+      vi.mocked(api.migrateSpoolmanTags).mockRejectedValue(new ApiError('Spoolman server is not reachable', 503));
+      const user = userEvent.setup();
+      render(<SpoolmanSettings />);
+
+      await user.click(await screen.findByRole('button', { name: 'Check tags' }));
+
+      expect(await screen.findByText('Spoolman server is not reachable')).toBeInTheDocument();
+    });
+
+    it('names the spools a run could not copy, beside the ones it did', async () => {
+      connected(true);
+      vi.mocked(api.migrateSpoolmanTags).mockResolvedValue({
+        ...preview,
+        dry_run: false,
+        conflicts: [],
+        failed: [
+          { spool_id: 51, tag: 'DDDDDDDD', reason: 'spool_gone' },
+          { spool_id: 52, tag: 'EEEEEEEE', reason: 'refused' },
+          { spool_id: 53, tag: 'FFFFFFFF', reason: 'unreachable' },
+        ],
+      });
+      const user = userEvent.setup();
+      render(<SpoolmanSettings />);
+
+      await user.click(await screen.findByRole('button', { name: 'Check tags' }));
+
+      expect(await screen.findByText('Spool #51: it is no longer in Spoolman.')).toBeInTheDocument();
+      expect(screen.getByText('Spool #52: Spoolman refused tag EEEEEEEE.')).toBeInTheDocument();
+      expect(screen.getByText('Spool #53: Spoolman stopped answering before tag FFFFFFFF was copied.')).toBeInTheDocument();
+      expect(screen.getByText('Spool #41: 0123456789ABCDEF0123456789ABCD01')).toBeInTheDocument();
+    });
+
+    it('says so when there is nothing to copy', async () => {
+      connected(true);
+      vi.mocked(api.migrateSpoolmanTags).mockResolvedValue({ ...preview, moved: [], conflicts: [] });
+      const user = userEvent.setup();
+      render(<SpoolmanSettings />);
+
+      await user.click(await screen.findByRole('button', { name: 'Check tags' }));
+
+      expect(await screen.findByText('Nothing to copy: every tag is already in Spoolman.')).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Copy tags' })).not.toBeInTheDocument();
+    });
+  });
+
+  describe('spools whose size differs from their filament', () => {
+    const row = (id: number, subtype: string): SpoolmanSizeMismatch => ({
+      id,
+      spool: { id, brand: 'Sunlu', material: 'PLA', subtype, color_name: 'Red' },
+      initial_weight: 1000,
+      filament_weight: 250,
+      remaining_weight: 900,
+    });
+
+    const spoolmanMode = () => {
+      vi.mocked(api.getSpoolmanSettings).mockResolvedValue({
+        spoolman_enabled: 'true',
+        spoolman_url: 'http://localhost:7912',
+        spoolman_sync_mode: 'auto',
+        spoolman_disable_weight_sync: 'false',
+        spoolman_report_partial_usage: 'true',
+        auto_add_unknown_rfid: 'false',
+      });
+      vi.mocked(api.getSpoolmanStatus).mockResolvedValue({ enabled: true, connected: true, url: 'http://localhost:7912' });
+    };
+
+    it('shows nothing when every spool agrees with its filament', async () => {
+      spoolmanMode();
+      render(<SpoolmanSettings />);
+
+      await screen.findByText('Connected');
+      await waitFor(() => expect(api.getSpoolmanSizeMismatches).toHaveBeenCalled());
+      expect(screen.queryByText('Spools whose size differs from their filament')).not.toBeInTheDocument();
+    });
+
+    it('lists each spool by its name with both sizes and what is left', async () => {
+      spoolmanMode();
+      vi.mocked(api.getSpoolmanSizeMismatches).mockResolvedValue([row(41, 'Matte'), row(46, 'Silk')]);
+      render(<SpoolmanSettings />);
+
+      expect(await screen.findByText('Spools whose size differs from their filament')).toBeInTheDocument();
+      expect(screen.getByText('Sunlu PLA Matte Red')).toBeInTheDocument();
+      expect(screen.getByText('Sunlu PLA Silk Red')).toBeInTheDocument();
+      expect(screen.getAllByText('Spool 1000 g · filament 250 g · 900 g left')).toHaveLength(2);
+    });
+
+    it('changes one spool, and only after the confirmation', async () => {
+      spoolmanMode();
+      vi.mocked(api.getSpoolmanSizeMismatches).mockResolvedValue([row(41, 'Matte'), row(46, 'Silk')]);
+      vi.mocked(api.applyFilamentSizeToSpoolmanSpool).mockResolvedValue({ id: 46, initial_weight: 250, remaining_weight: 150 });
+      const user = userEvent.setup();
+      render(<SpoolmanSettings />);
+
+      const buttons = await screen.findAllByRole('button', { name: "Use the filament's size for this spool" });
+      await user.click(buttons[1]);
+
+      expect(api.applyFilamentSizeToSpoolmanSpool).not.toHaveBeenCalled();
+      const dialog = await screen.findByRole('dialog');
+      expect(dialog).toHaveTextContent('Sunlu PLA Silk Red');
+      await user.click(screen.getByRole('button', { name: 'Set to 250 g' }));
+
+      await waitFor(() => expect(api.applyFilamentSizeToSpoolmanSpool).toHaveBeenCalledTimes(1));
+      expect(api.applyFilamentSizeToSpoolmanSpool).toHaveBeenCalledWith(46);
+    });
+
+    it('is not asked for in the built-in inventory', async () => {
+      render(<SpoolmanSettings />);
+
+      await screen.findByText('Built-in Inventory');
+      expect(api.getSpoolmanSizeMismatches).not.toHaveBeenCalled();
     });
   });
 });

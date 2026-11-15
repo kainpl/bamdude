@@ -27,10 +27,14 @@ from backend.app.api.routes._spoolman_helpers import (
     NormalizedFilament,
     NormalizedVendorRef,
     _map_spoolman_spool,
-    _safe_float,
     _safe_int,
     _safe_optional_float,
     assert_safe_spoolman_url,
+    cost_per_kg_to_spoolman_price,
+    spoolman_cost_per_kg,
+    spoolman_label_weight,
+    spoolman_price_weight,
+    spoolman_tare,
 )
 from backend.app.core.auth import RequirePermission
 from backend.app.core.database import get_db
@@ -43,8 +47,14 @@ from backend.app.models.spoolman_k_profile import SpoolmanKProfile
 from backend.app.models.spoolman_slot_assignment import SpoolmanSlotAssignment
 from backend.app.models.user import User
 from backend.app.schemas.spool import SpoolKProfileBase, naive_utc
-from backend.app.schemas.spoolman import SpoolmanFilamentPatch, SpoolmanSlotAssignmentEnriched
+from backend.app.schemas.spoolman import (
+    SlotAmsId,
+    SlotTrayId,
+    SpoolmanFilamentPatch,
+    SpoolmanSlotAssignmentEnriched,
+)
 from backend.app.services import spool_drying
+from backend.app.services.ams_slot_presence import tray_definitely_empty
 from backend.app.services.location_service import (
     enrich_spool_dicts_with_location_id,
     maybe_sync_spoolman_locations,
@@ -52,16 +62,21 @@ from backend.app.services.location_service import (
 )
 from backend.app.services.printer_manager import printer_manager
 from backend.app.services.spoolman import (
+    NativeTagConflict,
     SpoolmanClient,
     SpoolmanClientError,
     SpoolmanNotFoundError,
     SpoolmanUnavailableError,
+    ams_chip_uid,
     get_spoolman_client,
     init_spoolman_client,
+    native_tag_uids,
 )
 from backend.app.services.spoolman_kprofile_link import resolve_spoolman_slot_kprofile
+from backend.app.services.spoolman_native_tags import copy_extra_tags_to_native
 from backend.app.services.spoolman_tracking import get_fallback_spool_tag_for_slot
-from backend.app.services.tag_conflict import tag_already_linked
+from backend.app.services.spoolman_weights import spool_net_weight
+from backend.app.services.tag_conflict import native_tag_refused, tag_already_linked
 from backend.app.utils.color_utils import spoolman_color_hex
 from backend.app.utils.filament_remaining import grams_remaining
 
@@ -249,6 +264,10 @@ def _raise_if_partial_failure(spools: list[dict], results: list, operation: str)
 async def _apply_price_if_set(client: SpoolmanClient, spool: dict, cost_per_kg: float | None) -> tuple[dict, list[str]]:
     """Patch the spool price; return (updated_spool, warnings).
 
+    Spoolman's spool price is what the whole spool cost, so the per-kg rate is
+    converted at the net weight of the spool Spoolman just created (upstream
+    #3194).
+
     Returns the original spool and a non-empty warnings list when the price
     update fails, so the caller can return HTTP 207 instead of silently
     discarding the price.
@@ -257,7 +276,9 @@ async def _apply_price_if_set(client: SpoolmanClient, spool: dict, cost_per_kg: 
         return spool, []
     try:
         async with _translate_spoolman_errors():
-            updated = await client.update_spool_full(spool["id"], price=cost_per_kg)
+            updated = await client.update_spool_full(
+                spool["id"], price=cost_per_kg_to_spoolman_price(cost_per_kg, spoolman_price_weight(spool))
+            )
         return updated, []
     except HTTPException as exc:
         if exc.status_code >= 500:
@@ -437,9 +458,10 @@ class SpoolTagLinkRequest(BaseModel):
 class SpoolSlotAssignmentRequest(BaseModel):
     spoolman_spool_id: int = Field(..., gt=0)
     printer_id: int = Field(..., gt=0)
-    # ams_id 0–7 for physical AMS units; 255 = external/virtual spool extruder slot
-    ams_id: int = Field(..., ge=0, le=255)
-    tray_id: int = Field(..., ge=0, le=3)
+    # The slot ledger's own range (schemas/spoolman.SlotAmsId): refused here,
+    # before the journal or Spoolman is touched.
+    ams_id: SlotAmsId
+    tray_id: SlotTrayId
     # The human answered the mid-pause prompt with "this is a replacement" —
     # journal a manual runout boundary (see inventory.SpoolAssignmentCreate).
     mid_print_replacement: bool = False
@@ -495,6 +517,88 @@ async def list_spools(
 
     await enrich_spool_dicts_with_location_id(db, mapped)
     return mapped
+
+
+def _own_and_filament_size(spool: dict) -> tuple[float | None, float | None]:
+    """A spool's own ``initial_weight`` and its filament's ``weight`` — each a
+    positive number or None."""
+
+    def positive(value) -> float | None:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        return float(value) if value > 0 else None
+
+    filament = spool.get("filament")
+    return positive(spool.get("initial_weight")), positive(
+        filament.get("weight") if isinstance(filament, dict) else None
+    )
+
+
+# Declared above ``/spools/{spool_id}``, or the path would be read as an id.
+@router.get("/spools/size-mismatches")
+async def list_spool_size_mismatches(
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.INVENTORY_READ),
+) -> list[dict]:
+    """Active spools whose own size differs from their filament's. Read-only.
+
+    Spoolman stamps a spool's ``initial_weight`` at creation and never moves it
+    with the filament. BamDude used to write a changed label weight to the
+    filament and read it from there; it now reads the spool's own size, as
+    Spoolman's ``remaining_weight`` does — so a spool resized through the old
+    form reads its creation size again. Nothing is rewritten for the operator:
+    this is the list, and ``use-filament-size`` settles one spool.
+    """
+    client = await _get_client(db)
+    async with _translate_spoolman_errors():
+        spools = await client.get_all_spools()
+    rows: list[dict] = []
+    for spool in spools:
+        own, of_filament = _own_and_filament_size(spool)
+        if own is None or of_filament is None or abs(own - of_filament) < 0.5 or spool.get("archived"):
+            continue
+        try:
+            mapped = _map_spoolman_spool(spool)
+        except ValueError as exc:
+            logger.warning("Skipping malformed Spoolman spool (id=%r): %s", spool.get("id"), exc)
+            continue
+        rows.append(
+            {
+                "id": mapped["id"],
+                "spool": mapped,
+                "initial_weight": own,
+                "filament_weight": of_filament,
+                "remaining_weight": spool.get("remaining_weight"),
+            }
+        )
+    return sorted(rows, key=lambda row: row["id"])
+
+
+@router.post("/spools/{spool_id}/use-filament-size")
+async def use_filament_size_for_spool(
+    spool_id: int = Path(..., gt=0),
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.INVENTORY_UPDATE),
+) -> dict:
+    """Set ONE spool's own size to its filament's (the size the old form showed).
+
+    What was consumed is not touched: Spoolman derives the remaining weight
+    from the new size. One spool per call, by the operator's own choice.
+    """
+    client = await _get_client(db)
+    async with _translate_spoolman_errors():
+        spool = await client.get_spool(spool_id)
+    _own, of_filament = _own_and_filament_size(spool)
+    if of_filament is None:
+        raise HTTPException(status_code=409, detail="This spool's filament states no weight in Spoolman")
+    async with _translate_spoolman_errors():
+        updated = await client.update_spool_full(spool_id=spool_id, initial_weight=of_filament)
+    await ws_manager.broadcast({"type": "inventory_changed"})
+    return {
+        "id": spool_id,
+        "initial_weight": updated.get("initial_weight"),
+        "remaining_weight": updated.get("remaining_weight"),
+    }
 
 
 @router.get("/spools/{spool_id}")
@@ -573,6 +677,10 @@ async def create_spool(
                 remaining_weight=remaining,
                 comment=data.note or None,
                 location=storage_location or None,
+                # Only a label weight the caller gave: left off, Spoolman uses
+                # the filament's weight, the right size for a caller that did
+                # not say (upstream #3194).
+                initial_weight=(float(data.label_weight) if "label_weight" in data.model_fields_set else None),
             )
     except HTTPException as exc:
         if exc.status_code == 404 and data.spoolman_filament_id is not None:
@@ -663,6 +771,7 @@ async def bulk_create_spools(
                 remaining_weight=remaining,
                 comment=data.note or None,
                 location=storage_location or None,
+                initial_weight=(float(data.label_weight) if "label_weight" in data.model_fields_set else None),
             )
         except (SpoolmanUnavailableError, SpoolmanClientError, SpoolmanNotFoundError) as exc:
             logger.warning("Bulk spool creation: one spool failed: %s", exc)
@@ -755,14 +864,20 @@ async def update_spool(
     # Handed over as stored: the opaque alpha this used to append was folded
     # straight back off by `spoolman_color_hex` below (#2912).
     rgba = data.rgba if data.rgba is not None else cur_color
-    label_weight = data.label_weight if data.label_weight is not None else int(cur_filament.get("weight") or 1000)
+    # The label weight is the spool's own net weight (``initial_weight``), not
+    # the filament's: one filament can have spools of different sizes (upstream
+    # #3194). The form shows it in whole grams, so it counts as changed only
+    # when it differs from that; the exact stored value is otherwise left
+    # alone. A spool with no size at either level takes the one it is given —
+    # Spoolman refuses a ``remaining_weight`` until the spool has one.
+    cur_net_weight = spool_net_weight(current)
+    cur_has_size = cur_net_weight is not None
+    cur_label_weight = spoolman_label_weight(current) or 1000
+    label_weight = data.label_weight if data.label_weight is not None else cur_label_weight
+    label_weight_changed = data.label_weight is not None and (not cur_has_size or data.label_weight != cur_label_weight)
     # Default ``weight_used`` from the synthetic mapping (``label_weight -
-    # remaining_weight``) so an edit that doesn't touch the weight field
-    # preserves Spoolman's real ``remaining_weight`` after a "Reset usage to
-    # 0" (where ``used_weight`` was zeroed). The previous code read
-    # Spoolman's ``used_weight`` directly, which is 0 post-reset, so
-    # ``remaining = label - 0 = 1000`` would overwrite the real remaining
-    # the next time the user edited any other field (upstream Bambuddy #1390).
+    # remaining_weight``) — what the form shows — so an edit that doesn't
+    # touch the weight field sends back the remainder Spoolman already holds.
     cur_remaining_raw = current.get("remaining_weight")
     if cur_remaining_raw is not None:
         synthetic_used = max(0.0, float(label_weight) - float(cur_remaining_raw))
@@ -805,14 +920,16 @@ async def update_spool(
     # prefixes make an alpha-only edit invisible (#2912).
     cur_color_norm = spoolman_color_hex(cur_filament.get("color_hex")) or ""
     cur_vendor_name = (cur_vendor.get("name") or "").strip()
-    cur_weight_int = int(cur_filament.get("weight") or 0)
+    # The label weight is not part of this: it is written to the spool's
+    # ``initial_weight`` below. Comparing it with the filament's weight PATCHed
+    # the filament for every spool of another size, or on a shared filament
+    # relinked the spool to a new duplicate one (upstream #3194).
     metadata_unchanged = (
         cur_filament_id
         and (cur_filament.get("name") or "").strip() == desired_name
         and (cur_filament.get("material") or "").upper() == material.upper()
         and cur_color_norm == (color_hex or "").upper()
         and cur_vendor_name.lower() == ((brand or "").strip().lower())
-        and cur_weight_int == int(label_weight)
     )
 
     if metadata_unchanged:
@@ -831,7 +948,6 @@ async def update_spool(
                 "name": desired_name,
                 "material": material,
                 "color_hex": color_hex,
-                "weight": float(label_weight),
             }
             if brand:
                 vendor_id = await client.find_or_create_vendor(brand)
@@ -856,6 +972,25 @@ async def update_spool(
         raise HTTPException(status_code=500, detail="Failed to find or create filament in Spoolman")
 
     remaining = max(0.0, label_weight - weight_used)
+
+    # The spool's size lives on the spool (``initial_weight``), never on the
+    # filament. A relink also sends the current size: Spoolman stamps the new
+    # filament's weight on a spool without an ``initial_weight`` of its own.
+    new_initial_weight: float | None = None
+    if label_weight_changed:
+        new_initial_weight = float(label_weight)
+    elif filament_id != cur_filament_id and cur_has_size:
+        new_initial_weight = cur_net_weight
+
+    # Spoolman's price is per spool, the form's per kg. An unchanged rate on an
+    # unchanged size is not written, so a no-op edit cannot move the price by
+    # rounding. On a resize the rate is kept, as in internal mode.
+    cur_cost_per_kg = spoolman_cost_per_kg(current)
+    cost_per_kg = data.cost_per_kg if data.cost_per_kg is not None else cur_cost_per_kg
+    new_price: float | None = None
+    if cost_per_kg is not None and (label_weight_changed or cost_per_kg != cur_cost_per_kg):
+        price_weight = float(label_weight) if label_weight_changed else spoolman_price_weight(current)
+        new_price = cost_per_kg_to_spoolman_price(cost_per_kg, price_weight)
 
     # Tag removal: clear only the "tag" key so other custom Spoolman extra fields
     # set outside BamDude are preserved.
@@ -888,13 +1023,26 @@ async def update_spool(
             updated = await client.update_spool_full(
                 spool_id=spool_id,
                 filament_id=filament_id,
-                remaining_weight=remaining,
+                # Without a size Spoolman rejects the whole PATCH (HTTP 400),
+                # so a spool that still has none gets no remaining_weight.
+                remaining_weight=(remaining if new_initial_weight is not None or cur_has_size else None),
                 comment=note or "",
-                price=data.cost_per_kg,
+                price=new_price,
+                initial_weight=new_initial_weight,
                 extra=extra,
                 location=storage_location or None,
                 clear_location=storage_location_changed and not storage_location,
             )
+
+        # The native tags (Spoolman 0.27+) go with it, or the spool would still
+        # be found by each of them after "Clear RFID Tag". Only once the update
+        # went through; a failure here is reported, and clearing again removes
+        # what is left.
+        if tag_nulled:
+            async with _translate_spoolman_errors():
+                await client.unlink_all_native_tags(fresh)
+            if isinstance(updated, dict) and "tags" in updated:
+                updated = {**updated, "tags": []}
 
     # Persist BambuStudio slicer preset AND color_name under spool.extra.
     # Spoolman has no native fields for these — color_name was confirmed
@@ -1072,15 +1220,18 @@ async def reset_spool_consumed_counter(
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.INVENTORY_UPDATE),
 ) -> dict:
-    """Zero the spool's ``used_weight`` in Spoolman without touching anything else.
+    """Zero the shown consumed counter of a Spoolman spool.
 
-    Spoolman keeps ``remaining_weight`` as a separate field, so remaining
-    is preserved (parity with the internal-mode endpoint, upstream
-    Bambuddy #1390).
+    Spoolman has no baseline field, so the baseline is kept in
+    ``spool.extra`` and ``_map_spoolman_spool`` folds it back in: the shown
+    ``weight_used - baseline`` reads 0 while every native Spoolman number
+    stays as it was. It used to PATCH ``used_weight = 0``, which is not the
+    same thing — Spoolman derives ``remaining_weight`` from initial minus
+    used, so the spool went back to full (upstream #2906).
     """
     client = await _get_client(db)
     async with _translate_spoolman_errors():
-        spool = await client.reset_spool_usage(spool_id)
+        spool = await client.reset_spool_consumed_counter(spool_id)
     try:
         mapped = _map_spoolman_spool(spool)
     except ValueError as exc:
@@ -1096,12 +1247,13 @@ async def bulk_reset_spool_consumed_counter(
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.INVENTORY_UPDATE),
 ) -> dict:
-    """Bulk-reset ``used_weight`` to 0 across the given Spoolman spool IDs.
+    """Reset the consumed counter of every listed Spoolman spool.
 
     Caller passes an explicit list of IDs — no "reset all" shortcut, since
     a typo on a wildcard would wipe the entire inventory's tracking.
-    Returns the count of spools successfully reset; individual failures
-    are logged but do not abort the batch (upstream Bambuddy #1390).
+    Returns the count of spools reset and, like the other bulk actions, the
+    per-spool ``errors``: one failure does not abort the batch, and a batch
+    where every reset failed is not reported as a success.
     """
     spool_ids = payload.get("spool_ids")
     if not isinstance(spool_ids, list) or not spool_ids:
@@ -1111,16 +1263,18 @@ async def bulk_reset_spool_consumed_counter(
 
     client = await _get_client(db)
     reset_count = 0
+    errors: list[dict] = []
     for spool_id in spool_ids:
         try:
             async with _translate_spoolman_errors():
-                await client.reset_spool_usage(spool_id)
+                await client.reset_spool_consumed_counter(spool_id)
             reset_count += 1
         except HTTPException as exc:
-            logger.warning("Spoolman reset-usage failed for spool %s: %s", spool_id, exc.detail)
+            logger.warning("Spoolman reset-consumed-counter failed for spool %s: %s", spool_id, exc.detail)
+            errors.append({"id": spool_id, "status": exc.status_code, "detail": str(exc.detail)})
     if reset_count:
         await ws_manager.broadcast({"type": "inventory_changed"})
-    return {"reset": reset_count}
+    return {"reset": reset_count, "errors": errors}
 
 
 @router.patch("/spools/{spool_id}/weight")
@@ -1133,25 +1287,21 @@ async def sync_spool_weight(
 ) -> dict:
     """Update a spool's remaining weight from a measured gross weight.
 
-    Computes remaining = gross_weight - tare, where tare = spool.spool_weight
-    if set, else filament.spool_weight; falls back to 250 g when both unset.
+    Computes remaining = gross_weight - tare, with the tare resolved the way
+    Spoolman does it (spool, filament, vendor, then 250 g — ``spoolman_tare``).
     """
     client = await _get_client(db)
 
     async with _translate_spoolman_errors():
         current = await client.get_spool(spool_id)
 
-    cur_filament = current.get("filament") or {}
-    spool_tare = current.get("spool_weight")
-    raw_tare = spool_tare if spool_tare is not None else cur_filament.get("spool_weight")
-    core_weight = _safe_float(raw_tare, 250.0)
+    core_weight = spoolman_tare(current)
     remaining = max(0.0, data.weight_grams - core_weight)
 
     async with _translate_spoolman_errors():
         updated = await client.update_spool_full(spool_id=spool_id, remaining_weight=remaining)
 
-    upd_filament = updated.get("filament") or {}
-    label_weight = _safe_int(upd_filament.get("weight"), 1000)
+    label_weight = spoolman_label_weight(updated)
     weight_used = max(0.0, label_weight - remaining)
     await ws_manager.broadcast({"type": "inventory_changed"})
     return {"status": "ok", "weight_used": weight_used}
@@ -1205,17 +1355,76 @@ async def link_tag_to_spoolman_spool(
         if holders:
             raise tag_already_linked("tray_uuid" if data.tray_uuid else "tag_uid", holders[0]["id"])
 
-        # Re-fetch inside the lock so cur_extra reflects any concurrent update.
-        async with _translate_spoolman_errors():
-            current = await client.get_spool(spool_id)
-        cur_extra = dict(current.get("extra") or {})
-        cur_extra["tag"] = tag_json
-        async with _translate_spoolman_errors():
-            updated = await client.update_spool_full(spool_id=spool_id, extra=cur_extra)
+        # Both identifiers also become native tags (Spoolman 0.27+), linked
+        # first: a uid Spoolman holds elsewhere — on an archived spool too —
+        # is refused naming the holder, and extra.tag is left as it was.
+        try:
+            # The chip's uid in the form the sync and the copy store it — the
+            # chip's own, without the AMS's padding — which is what a reader sees.
+            chip_uid = ams_chip_uid(
+                (data.tag_uid or "").upper(), client.is_bambu_lab_spool(data.tray_uuid or "", data.tag_uid or "")
+            )
+            async with _translate_spoolman_errors():
+                added_native = await client.link_native_tags(
+                    spool_id, [data.tray_uuid, chip_uid], "bambu" if data.tray_uuid else None
+                )
+        except NativeTagConflict as conflict:
+            held_field = "tag_uid" if chip_uid and conflict.uid == chip_uid else "tray_uuid"
+            raise native_tag_refused(held_field, conflict) from conflict
+
+        try:
+            # Re-fetch inside the lock so cur_extra reflects any concurrent update.
+            async with _translate_spoolman_errors():
+                current = await client.get_spool(spool_id)
+            cur_extra = dict(current.get("extra") or {})
+            cur_extra["tag"] = tag_json
+            async with _translate_spoolman_errors():
+                updated = await client.update_spool_full(spool_id=spool_id, extra=cur_extra)
+        except Exception:
+            await client.take_back_native_tags(spool_id, added_native)
+            raise
+
+        # The spool is THIS reel now: the reel it was linked to before no longer
+        # resolves to it (``current`` still carries the previous extra.tag).
+        if native_tag_uids(current) and await client.drop_previous_reel_tags(
+            current, [data.tray_uuid, chip_uid], bambu_reel=bool(data.tray_uuid)
+        ):
+            async with _translate_spoolman_errors():
+                updated = await client.get_spool(spool_id)
 
     logger.info("Linked tag %s to Spoolman spool %s", tag, spool_id)
     await ws_manager.broadcast({"type": "inventory_changed"})
     return _map_spoolman_spool(updated)
+
+
+@router.post("/tags/migrate")
+async def copy_tags_to_native(
+    dry_run: bool = Query(True, description="Only report what would be linked; change nothing"),
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.INVENTORY_UPDATE),
+) -> dict:
+    """Copy the tags kept in Spoolman's ``extra.tag`` into its native tags.
+
+    ``extra.tag`` is left as it is. Conflicts — two active spools sharing one
+    tag, a uid Spoolman already holds on another spool (an archived one
+    included) or on a filament — are reported and never settled here. The
+    rules live in ``services/spoolman_native_tags``.
+    """
+    client = await _get_client(db)
+    if not await client.has_tag_api():
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "spoolman_without_native_tags",
+                "message": "This Spoolman server has no native tags",
+            },
+        )
+    serials = (await db.execute(select(Printer.serial_number))).scalars().all()
+    async with _translate_spoolman_errors():
+        report = await copy_extra_tags_to_native(client, serials, dry_run=dry_run)
+    if not dry_run and report["moved"]:
+        await ws_manager.broadcast({"type": "inventory_changed"})
+    return report
 
 
 @router.get("/slot-assignments/all", response_model=list[SpoolmanSlotAssignmentEnriched])
@@ -1351,7 +1560,7 @@ async def sync_spoolman_ams_weights(
             skipped += 1
             continue
 
-        label_weight = _safe_int((spool_dict.get("filament") or {}).get("weight"), 1000)
+        label_weight = spoolman_label_weight(spool_dict)
         if label_weight <= 0:
             logger.debug("Spoolman AMS sync: spool %d has no label_weight, skipping", assignment.spoolman_spool_id)
             skipped += 1
@@ -1441,6 +1650,9 @@ async def sync_spoolman_ams_weights(
                 )
             skipped += 1
 
+    if synced:
+        # The Inventory page shows the weight this just changed.
+        await ws_manager.broadcast({"type": "inventory_changed"})
     return {"synced": synced, "skipped": skipped}
 
 
@@ -1466,6 +1678,10 @@ async def assign_spoolman_slot(
     # This prevents ghost rows pointing at non-existent spool IDs.
     async with _translate_spoolman_errors():
         spool = await client.get_spool(body.spoolman_spool_id)
+    # As the built-in route refuses: the ledger must not name a spool that is
+    # out of use — tag-less usage would be charged to it (upstream c2bc41a5e).
+    if spool.get("archived"):
+        raise HTTPException(status_code=400, detail="Cannot assign an archived spool")
 
     from backend.app.main import _get_ams_assignment_lock
     from backend.app.services.print_usage_journal import journal_lock
@@ -1635,7 +1851,8 @@ async def assign_spoolman_slot(
 
             # ONE identity path (spec A §5.2): the family catalog builds the
             # payload — family from the linked calibration when one exists,
-            # else the generic family of the material, inside the builder.
+            # else the preset stored on the spool, else a stand-in for the
+            # material; the precedence lives inside the builder.
             from backend.app.services.ams_backup_compatibility import (  # noqa: PLC0415
                 kprofile_allowed,
                 live_tray_for,
@@ -1649,6 +1866,7 @@ async def assign_spoolman_slot(
             plan = await build_slot_assignment(
                 db,
                 family_id=matching_fc.filament_id if matching_fc else None,
+                stored_preset=mapped.get("slicer_filament"),
                 material_override=tray_type,
                 color_rgba=tray_color,
                 temp_overrides=(mapped.get("nozzle_temp_min"), None),
@@ -1665,7 +1883,12 @@ async def assign_spoolman_slot(
             # masked — the one helper all three assignment paths share. The
             # actual plan stays the spool's truth; only what the printer is told
             # changes.
-            _, projection = await publish_projected_slot(
+            # A slot the firmware calls empty will not echo the filament back, so it is
+            # published (this path has no replay on insert) but not verified; and a
+            # publish that went out asks for a fresh report, so the verification has
+            # current telemetry instead of an idle printer's next push (upstream 53ef17dc5).
+            slot_live_tray = live_tray_for(state, body.ams_id, body.tray_id)
+            sent, projection = await publish_projected_slot(
                 db,
                 mqtt_client,
                 printer=printer,
@@ -1673,7 +1896,7 @@ async def assign_spoolman_slot(
                 ams_id=body.ams_id,
                 tray_id=body.tray_id,
                 actual_plan=plan,
-                live_tray=live_tray_for(state, body.ams_id, body.tray_id),
+                live_tray=slot_live_tray,
                 spool_tag_uid=mapped.get("tag_uid"),
                 spool_tray_uuid=mapped.get("tray_uuid"),
                 material=tray_type,
@@ -1684,7 +1907,10 @@ async def assign_spoolman_slot(
                 tray_sub_brands=tray_sub_brands,
                 tray_type_fallback=tray_type,
                 source="spoolman",
+                verify=not tray_definitely_empty(slot_live_tray),
             )
+            if sent:
+                mqtt_client.request_status_update()
 
             from backend.app.services.calibration_service import (  # noqa: PLC0415
                 apply_active_calibration_to_slot,
@@ -1712,6 +1938,21 @@ async def assign_spoolman_slot(
                         body.ams_id,
                         body.tray_id,
                     )
+            elif not matching_fc and effective_tray_info_idx and kprofile_allowed(projection):
+                # No link made by hand: the spool gets its K by default through
+                # its filament, as in the built-in inventory — the ACTIVE
+                # calibration of (printer, the slot's filament, this nozzle's
+                # diameter, flow type, extruder), through the same helper.
+                fired, _ = await apply_active_calibration_to_slot(
+                    db=db,
+                    printer_id=body.printer_id,
+                    ams_id=body.ams_id,
+                    slot_id=body.tray_id,
+                    filament_id=effective_tray_info_idx,
+                    nozzle_diameter=nozzle_dia_float,
+                    nozzle_volume_type=nozzle.flow_or_standard,
+                    extruder_id=nozzle.extruder_or_default,
+                )
             if not fired:
                 # No stored K-profile: preserve the slot's current live cali_idx
                 from backend.app.api.routes.inventory import _find_tray_in_ams_data
@@ -1723,6 +1964,15 @@ async def assign_spoolman_slot(
                         ams_raw = ams_raw.get("ams", [])
                     live_tray = _find_tray_in_ams_data(ams_raw, body.ams_id, body.tray_id)
                 live_cali_idx = (live_tray or {}).get("cali_idx")
+                # A family taken from the spool's stored preset is not what the
+                # slot's index was chosen under: it goes back only when the
+                # printer's own table files that index under this filament.
+                from backend.app.utils.kprofile_lookup import slot_profile_filament_ids  # noqa: PLC0415
+
+                if plan.from_stored_preset and slot_profile_filament_ids(
+                    state, live_cali_idx, body.ams_id, body.tray_id
+                ) != {effective_tray_info_idx}:
+                    live_cali_idx = None
                 if live_cali_idx is not None and live_cali_idx >= 0:
                     mqtt_client.extrusion_cali_sel(
                         ams_id=body.ams_id,
@@ -1846,7 +2096,7 @@ async def unassign_spoolman_slot(
 @router.get("/slot-assignments")
 async def get_spoolman_slot_assignment(
     printer_id: int = Query(..., gt=0),
-    ams_id: int = Query(..., ge=0, le=7),
+    ams_id: SlotAmsId = Query(...),
     tray_id: int = Query(..., ge=0, le=3),
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.INVENTORY_READ),
@@ -1973,7 +2223,8 @@ async def patch_spoolman_filament(
     """Update a Spoolman filament's name and/or spool_weight.
 
     When spool_weight changes, Option A (keep_existing_spools=True) stamps the old
-    weight onto spools currently inheriting it (spool.spool_weight is None) so their
+    weight (the filament's, or its vendor's empty_spool_weight when the filament had
+    none) onto spools currently inheriting it (spool.spool_weight is None) so their
     tare calculations are unaffected by the filament change.
     Option B (keep_existing_spools=False, the default): when spool_weight is a
     concrete value, stamps it onto every affected spool explicitly; when spool_weight
@@ -2001,7 +2252,13 @@ async def patch_spoolman_filament(
 
         if affected_spools:
             if body.keep_existing_spools:
+                # What the inheriting spools weigh against today: the filament's
+                # own value or, when it has none, its vendor's (upstream #3195).
+                # With neither they sit on the 250 g fallback, which is ours
+                # alone, so there is nothing real to keep.
                 old_weight = _safe_optional_float(current.get("spool_weight"))
+                if old_weight is None:
+                    old_weight = _safe_optional_float((current.get("vendor") or {}).get("empty_spool_weight"))
                 if old_weight is not None:
                     spools_to_fix = [s for s in affected_spools if s.get("spool_weight") is None]
                     if spools_to_fix:

@@ -431,6 +431,40 @@ def a2l_lite_wire_ids(ams_id: int, tray_id: int) -> tuple[int, int, int] | None:
     )
 
 
+def resolve_external_spools_in_mapping(ams_mapping: object, ams_mapping2: object, is_dual_nozzle: bool) -> object:
+    """Put the external holder back into a captured flat ``ams_mapping`` (upstream 37502719b, #3166).
+
+    The firmware rejects 254/255 in the flat list, so BambuStudio and our own
+    ``start_print`` both write an external holder there as ``-1`` and carry the
+    real target only in ``ams_mapping2`` as ``{ams_id: 254|255, slot_id: 0}``.
+    Captured flat, a two-holder machine (X2D, H2D) can no longer say WHICH
+    holder — and "254 first" charged the left holder's spool for a print fed
+    from the right one, in both inventory backends.
+
+    Each ``-1`` whose ``ams_mapping2`` entry names an external holder becomes
+    the global tray the rest of BamDude uses: the ``ams_id`` itself on a
+    dual-nozzle printer (254 = left / deputy, 255 = right / main), 254 on a
+    single-nozzle one, whose only holder the wire always calls 255 — the exact
+    inverse of what ``start_print`` sends. ``{255, 255}`` is the unmapped marker
+    and stays ``-1``. Every other entry is left exactly as captured, and without
+    a usable ``ams_mapping2`` the input is returned unchanged: a ``-1`` that
+    remains is still read downstream as "the external holder".
+    """
+    if not isinstance(ams_mapping, list) or not isinstance(ams_mapping2, list):
+        return ams_mapping
+    if len(ams_mapping2) != len(ams_mapping):
+        return ams_mapping
+    resolved = list(ams_mapping)
+    for i, (flat, detail) in enumerate(zip(ams_mapping, ams_mapping2, strict=True)):
+        if flat != -1 or isinstance(flat, bool) or not isinstance(detail, dict):
+            continue
+        ams_id = detail.get("ams_id")
+        if isinstance(ams_id, bool) or ams_id not in (254, 255) or detail.get("slot_id") == 255:
+            continue
+        resolved[i] = ams_id if is_dual_nozzle else 254
+    return resolved
+
+
 def decode_filam_bak_groups(value: object) -> list[list[int]] | None:
     """Decode firmware ``filam_bak`` masks into global tray ids.
 
@@ -2488,6 +2522,13 @@ class BambuMQTTClient:
         self._finish_photo_captured: bool = False
         self._last_valid_progress: float = 0.0  # Last non-zero progress (firmware resets on cancel)
         self._last_valid_layer_num: int = 0  # Last non-zero layer (firmware resets on cancel)
+        # The layer the previous print ended on, while the print that followed it has not yet
+        # reported a layer of its own (upstream a8dd164c7, #3317). Right after a start an H2S
+        # sends one frame still carrying it (``layer_num`` 357 with ``mc_percent`` 0, then 0);
+        # the observed run boundary has already cleared the old counters by then, so the frame
+        # would become THIS print's layer, and the 0 after it this print's last valid layer —
+        # a print failing before its first layer was then charged as nearly whole. 0 = unarmed.
+        self._stale_layer_num: int = 0
         self._startup_reconcile_done: bool = False  # one-shot guard for reconcile_printer_prints
         self._is_dual_nozzle: bool = False  # Set when device.extruder.info has >= 2 entries
         # Last suppressed runout-tail (tray, origin) — repeats of the same
@@ -2737,6 +2778,7 @@ class BambuMQTTClient:
         self._finish_photo_captured = prior._finish_photo_captured
         self._last_valid_progress = prior._last_valid_progress
         self._last_valid_layer_num = prior._last_valid_layer_num
+        self._stale_layer_num = prior._stale_layer_num
         # Re-arm the connect-edge reconcile sweep on every client recreation
         # (#1542 follow-up): a print that finished during a disconnect window —
         # or a firmware ghost-replay that reran the file under a new subtask —
@@ -3326,7 +3368,7 @@ class BambuMQTTClient:
                 self.state.current_project_url = url
                 self.state.last_project_url = url
             if "ams_mapping" in print_data:
-                self._captured_ams_mapping = print_data["ams_mapping"]
+                self._captured_ams_mapping = self._resolve_captured_mapping(print_data)
                 logger.info(
                     "[%s] Captured ams_mapping from print command: %s",
                     self.serial_number,
@@ -3362,6 +3404,19 @@ class BambuMQTTClient:
                     self.serial_number,
                     json.dumps(print_data),
                 )
+
+    def _resolve_captured_mapping(self, print_data: dict) -> object:
+        """A ``project_file``'s ``ams_mapping`` with its external holders named again from its
+        own ``ams_mapping2`` (``resolve_external_spools_in_mapping``). The dispatched mapping
+        stays the first authority for attribution — this only keeps it from losing WHICH holder."""
+        flat = print_data.get("ams_mapping")
+        if not isinstance(flat, list) or -1 not in flat:
+            return flat
+        return resolve_external_spools_in_mapping(
+            flat,
+            print_data.get("ams_mapping2"),
+            self._is_dual_nozzle or is_dual_nozzle_model(self.model),
+        )
 
     @_routing_locked
     def _process_message(self, payload: dict):
@@ -4845,9 +4900,11 @@ class BambuMQTTClient:
                     # the firmware still reports tray_now = the physical slot, which stuck the
                     # H2S active-tray highlight on AMS slot 1. Promote to 254 (external spool)
                     # so the highlight lands on the external spool. Narrow scope — only the
-                    # all-(-1) mapping; AMS-only [5] and mixed [5,-1] mappings fall through.
+                    # all-external mapping (every entry 254 as the capture resolves it from
+                    # ams_mapping2, or -1 when the command carried none); AMS-only [5] and
+                    # mixed [5,254] mappings fall through.
                     captured = self._captured_ams_mapping
-                    if captured and all(s == -1 for s in captured):
+                    if captured and all(s in (-1, 254, 255) for s in captured):
                         if self.state.tray_now != 254:
                             logger.debug(
                                 f"[{self.serial_number}] tray_now external-spool override (#1822): "
@@ -5993,6 +6050,13 @@ class BambuMQTTClient:
         if new_print_boundary:
             # Clear the previous print BEFORE applying this frame's counters.
             # The lifecycle reset below must not erase these fresh values.
+            # A start we watched is followed, on some firmware, by one frame
+            # that repeats the layer the previous print ended on: remember it
+            # so it is not read as this print's (see ``_stale_layer_num``).
+            # Only above 1 — every print reports layer 1 first, and a one-layer
+            # job printed again must keep its own. A run first seen already
+            # RUNNING is long past its start frames and is not guarded.
+            self._stale_layer_num = self.state.layer_num if observed_start and self.state.layer_num > 1 else 0
             self.state.layer_num = 0
             self.state.total_layers = 0
             self._last_valid_layer_num = 0
@@ -6022,6 +6086,17 @@ class BambuMQTTClient:
             self.state.mc_print_sub_stage = new_sub_stage
         if "layer_num" in data:
             new_layer = int(data["layer_num"])
+            if self._stale_layer_num and new_layer == self._stale_layer_num:
+                logger.debug(
+                    "[%s] ignoring layer_num %s: the last layer of the previous print",
+                    self.serial_number,
+                    new_layer,
+                )
+                new_layer = self.state.layer_num
+            elif new_layer > 0:
+                # The new print reports a layer of its own; from here on the
+                # previous print's value is a layer this print can reach.
+                self._stale_layer_num = 0
             old_layer = self.state.layer_num
             # Save last non-zero layer for usage tracking (firmware resets to 0 on cancel)
             if old_layer > 0:

@@ -55,6 +55,7 @@ from backend.app.services.queue_ops import queue_claim_scope
 from backend.app.services.queue_wait_reason import set_wait_reason
 from backend.app.services.smart_plug_manager import smart_plug_manager
 from backend.app.services.source_io import SOURCE_FAILURES, SourceUnavailable, require_source_file
+from backend.app.services.spoolman_weights import spool_net_weight
 from backend.app.services.stagger_groups import GroupKey, StaggerGroupResolver, StaggerSplit
 from backend.app.utils import failure_reasons
 from backend.app.utils.ams_drying import is_countdown_parked, only_parked_timers, running_dry_minutes
@@ -1072,10 +1073,11 @@ class PrintScheduler:
                         spool = await client.get_spool(spoolman_id)
                     except Exception:  # noqa: BLE001
                         continue
+                    # The spool's own size, else its filament's — the label
+                    # weight the Filaments page shows; an older spool carries
+                    # only the latter.
                     initial = (
-                        spool.get("initial_weight")
-                        if isinstance(spool, dict)
-                        else getattr(spool, "initial_weight", None)
+                        spool_net_weight(spool) if isinstance(spool, dict) else getattr(spool, "initial_weight", None)
                     )
                     if initial:
                         weights[gtid] = float(initial)

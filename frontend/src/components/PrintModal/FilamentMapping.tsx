@@ -4,8 +4,8 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Circle, Check, AlertTriangle, RefreshCw, ChevronDown, ChevronUp, Palette, Info } from 'lucide-react';
 import { api } from '../../api/client';
 import { useFilamentMapping } from '../../hooks/useFilamentMapping';
-import { useSlotSpoolNames } from '../../hooks/useSlotSpoolNames';
-import { filamentColorMatches, filamentRequirementMatches, filamentTypesCompatible, getGlobalTrayId } from '../../utils/amsHelpers';
+import { useSlotSpoolFacts, useSlotSpoolNames } from '../../hooks/useSlotSpoolNames';
+import { filamentColorMatches, filamentRequirementMatches, filamentTypesCompatible } from '../../utils/amsHelpers';
 import { disambiguateColorNames, getColorName } from '../../utils/colors';
 import { arrangementAdvice, type Inlet } from '../../utils/ftsArrangement';
 import { autoAssignRackPositions, rackOptionsForGroup } from '../../utils/nozzleRack';
@@ -46,12 +46,6 @@ export function FilamentMapping({
     enabled: !!printerId,
   });
 
-  const { data: assignments } = useQuery({
-    queryKey: ['spool-assignments', printerId],
-    queryFn: () => api.getAssignments(printerId),
-    enabled: !!printerId,
-  });
-
   const { loadedFilaments, filamentComparison: rawFilamentComparison, hasTypeMismatch: rawTypeMismatch, hasColorMismatch: rawColorMismatch } =
     useFilamentMapping(filamentReqs, printerStatus, manualMappings);
   // The global exact-colour rule is a routing rule, not merely a warning.  The
@@ -87,30 +81,22 @@ export function FilamentMapping({
   // the printer did not sell (upstream d5c70477). Matching still reads telemetry.
   const slotNames = useSlotSpoolNames(printerId);
 
+  // Each slot's price and grams left come from the spool the ACTIVE inventory
+  // binds to it — in Spoolman mode the Spoolman spool, priced the way the
+  // print is charged — never from built-in rows that mode does not use.
+  const slotFacts = useSlotSpoolFacts(printerId);
+
   const trayCostMap = useMemo(() => {
     const map = new Map<number, number | null>();
-    for (const assignment of assignments || []) {
-      const isExternal = assignment.ams_id === 255;
-      const globalTrayId = getGlobalTrayId(assignment.ams_id, assignment.tray_id, isExternal);
-      map.set(globalTrayId, assignment.spool?.cost_per_kg ?? null);
-    }
+    for (const [globalTrayId, facts] of slotFacts) map.set(globalTrayId, facts.costPerKg);
     return map;
-  }, [assignments]);
+  }, [slotFacts]);
 
   const trayRemainingWeightMap = useMemo(() => {
     const map = new Map<number, number | null>();
-    for (const assignment of assignments || []) {
-      const isExternal = assignment.ams_id === 255;
-      const globalTrayId = getGlobalTrayId(assignment.ams_id, assignment.tray_id, isExternal);
-      const spool = assignment.spool;
-      if (!spool) {
-        map.set(globalTrayId, null);
-        continue;
-      }
-      map.set(globalTrayId, Math.max(0, Math.round((spool.label_weight ?? 0) - (spool.weight_used ?? 0))));
-    }
+    for (const [globalTrayId, facts] of slotFacts) map.set(globalTrayId, facts.remainingGrams);
     return map;
-  }, [assignments]);
+  }, [slotFacts]);
 
   const totalCost = useMemo(() => {
     let total = 0;

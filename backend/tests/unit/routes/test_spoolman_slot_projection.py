@@ -75,6 +75,8 @@ def _spoolman_stub() -> SimpleNamespace:
     return SimpleNamespace(
         get_spool=AsyncMock(return_value=SPOOLMAN_RAW),
         merge_spool_extra=AsyncMock(return_value={"id": SPOOL_ID, "extra": {}}),
+        # A Spoolman from before native tags (0.27): nothing is linked there.
+        link_native_tags=AsyncMock(return_value=[]),
         health_check=AsyncMock(return_value=True),
     )
 

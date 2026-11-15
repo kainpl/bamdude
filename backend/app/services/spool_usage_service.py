@@ -18,7 +18,7 @@ and the grams they carry are still the grams the archives think were printed.
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import String, and_, cast, func, or_, select
+from sqlalchemy import String, and_, cast, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.models.printer import Printer
@@ -327,3 +327,22 @@ async def usage_facets(db: AsyncSession, *, filters: list) -> dict[str, list]:
     brands = list((await db.execute(brands_q)).scalars().all())
 
     return {"statuses": statuses, "printers": printers, "materials": materials, "brands": brands}
+
+
+async def detach_archives(db: AsyncSession, archive_ids: list[int]) -> None:
+    """Unlink the usage rows of archives about to be deleted in bulk.
+
+    ``spool_usage_history.archive_id`` has no ``ON DELETE``: the row is the
+    spool's consumption record and outlives the print. ``ArchiveService.
+    delete_archive`` unlinks its own archive; a bulk Core delete (a user deleted
+    with their items, the trash sweeper's leftover delete) never passes through
+    it — PostgreSQL then refuses the delete, SQLite leaves an id naming nothing.
+    The caller commits.
+    """
+    ids = [int(i) for i in archive_ids]
+    for start in range(0, len(ids), 500):
+        await db.execute(
+            update(SpoolUsageHistory)
+            .where(SpoolUsageHistory.archive_id.in_(ids[start : start + 500]))
+            .values(archive_id=None)
+        )

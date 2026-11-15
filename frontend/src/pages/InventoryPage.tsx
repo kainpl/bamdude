@@ -10,11 +10,12 @@ import {
   Search,
   TrendingDown, Layers, Printer, AlertTriangle, X, Clock, LayoutGrid, TableProperties, Columns,
   ArrowUp, ArrowDown, ArrowUpDown, Group, ChevronDown, Check, RefreshCw, Disc3, Copy, Eraser,
-  TrendingUp, Lock, Sparkles, Upload, Download, MapPin, History,
+  TrendingUp, Lock, Sparkles, Upload, Download, MapPin, History, ExternalLink,
 } from 'lucide-react';
 import { ForecastPanel } from '../components/ForecastPanel';
 import { ListViewToggle } from '../components/ListViewToggle';
 import { shownView } from '../utils/viewModes';
+import { builtinAssignments } from '../utils/slotInventoryMode';
 import { SpoolUsageHistoryPanel } from '../components/SpoolUsageHistoryPanel';
 import { api, ApiError } from '../api/client';
 import type {
@@ -66,6 +67,8 @@ import {
   spoolDisplayNameMatches,
 } from '../utils/spoolName';
 import { compareByOrder, parseSpoolSortOrder } from '../utils/spoolSort';
+import { bulkResetOutcome } from '../utils/bulkResetOutcome';
+import { shownCostPerKg } from '../utils/spoolCost';
 // filterSpoolsByQuery — imported from utils/inventorySearch by Spoolman-mode upstream PR #1241; reserved for future Spoolman-side filtering paths.
 
 type SortDirection = 'asc' | 'desc';
@@ -597,11 +600,17 @@ const columnCells: Record<string, (ctx: CellCtx) => ReactNode> = {
     const entry = spool.core_weight_catalog_id != null ? catalogMap[spool.core_weight_catalog_id] : undefined;
     return <span className="text-sm text-bambu-gray">{entry?.name || '-'}</span>;
   },
-  cost_per_kg: ({ spool, currencySymbol }) => (
-    <span className="text-sm text-bambu-gray">
-      {spool.cost_per_kg != null ? `${currencySymbol}${spool.cost_per_kg.toFixed(2)}` : '-'}
-    </span>
-  ),
+  cost_per_kg: ({ spool, currencySymbol, t }) => {
+    // The rate a print is charged: a Spoolman spool without a price of its
+    // own pays its filament's, shown here and marked as such.
+    const { rate, fromFilament } = shownCostPerKg(spool);
+    return (
+      <span className="text-sm text-bambu-gray">
+        {rate != null ? `${currencySymbol}${rate.toFixed(2)}` : '-'}
+        {fromFilament && <span className="ml-1 text-xs opacity-70">{t('inventory.costFromFilament')}</span>}
+      </span>
+    );
+  },
   weight_check: ({ spool, onSyncWeight }) => {
     const scaleWeight = spool.last_scale_weight;
     if (scaleWeight == null) return <span className="text-sm text-bambu-gray/50" title="No scale measurement">-</span>;
@@ -722,7 +731,7 @@ const columnSortValues: Record<string, (spool: InventorySpool, assignmentMap: Re
   tag_type: (s) => (s.tag_type || '').toLowerCase(),
   stock: (s) => s.slicer_filament ? 1 : 0,
   spool_name: (s) => s.core_weight_catalog_id ?? 0,
-  cost_per_kg: (s) => s.cost_per_kg ?? 0,
+  cost_per_kg: (s) => shownCostPerKg(s).rate ?? 0,
   filament_diameter: (s) => s.filament_diameter || '',
   lot: (s) => s.lot ?? 0,
   weight_check: (s) => {
@@ -770,7 +779,6 @@ function saveSortState(state: SortState) {
 
 // Wrapper: detects Spoolman mode and passes it to the shared inventory UI
 export default function InventoryPageRouter() {
-  const { t } = useTranslation();
   const { data: spoolmanSettings, isLoading: spoolmanSettingsLoading } = useQuery({
     queryKey: ['spoolman-settings'],
     queryFn: api.getSpoolmanSettings,
@@ -779,73 +787,28 @@ export default function InventoryPageRouter() {
   const spoolmanMode = spoolmanSettings?.spoolman_enabled === 'true';
   const spoolmanModeReady = !spoolmanSettingsLoading;
 
-  if (spoolmanSettings?.spoolman_enabled === 'true' && spoolmanSettings?.spoolman_url) {
-    const spoolmanUrl = spoolmanSettings.spoolman_url.replace(/\/+$/, '');
-    // Browsers block HTTP iframes inside HTTPS parents (mixed-content rule,
-    // independent of CSP). Surface a targeted warning instead of letting
-    // the iframe render as a silent blank — there's nothing BamDude can do
-    // browser-side to override the block. See upstream issue #1096.
-    const bamdudeIsHttps = window.location.protocol === 'https:';
-    const spoolmanIsHttp = spoolmanUrl.toLowerCase().startsWith('http://');
-    if (bamdudeIsHttps && spoolmanIsHttp) {
-      return (
-        <div className="p-4 max-w-3xl mx-auto">
-          <div className="rounded-lg border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 p-4">
-            <div className="flex items-start gap-3">
-              <AlertTriangle className="w-5 h-5 text-amber-600 dark:text-amber-400 mt-0.5 shrink-0" />
-              <div className="flex-1 min-w-0 space-y-2 text-sm">
-                <p className="font-semibold text-amber-900 dark:text-amber-100">
-                  {t('inventory.spoolmanMixedContentTitle')}
-                </p>
-                <p className="text-amber-800 dark:text-amber-200">
-                  {t('inventory.spoolmanMixedContentBody')}
-                </p>
-                <ul className="list-disc pl-5 space-y-1 text-amber-800 dark:text-amber-200">
-                  <li>{t('inventory.spoolmanMixedContentFixReverseProxy')}</li>
-                  <li>{t('inventory.spoolmanMixedContentFixOpenNewTab')}</li>
-                </ul>
-                <div className="flex flex-wrap gap-2 pt-2">
-                  <a
-                    href={`${spoolmanUrl}/spool`}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex items-center gap-2 px-3 py-1.5 text-sm rounded bg-amber-600 hover:bg-amber-700 text-white"
-                  >
-                    {t('inventory.spoolmanOpenInNewTab')}
-                  </a>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      );
-    }
-    return (
-      <iframe
-        src={`${spoolmanUrl}/spool`}
-        className="h-full w-full border-0"
-        title="Spoolman"
-        sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox"
-      />
-    );
-  }
+  // Spoolman mode renders OUR page, with or without an address (the owner's
+  // decision, as upstream): History, Forecast, the cost column and the spool
+  // form all live here. Spoolman's own interface is one link away, in a new
+  // tab — which no mixed-content rule blocks, unlike the iframe this replaced.
+  const spoolmanUrl = spoolmanMode ? (spoolmanSettings?.spoolman_url ?? '').trim().replace(/\/+$/, '') : '';
 
-  return <InventoryPage spoolmanMode={spoolmanMode} spoolmanModeReady={spoolmanModeReady} />;
+  return <InventoryPage spoolmanMode={spoolmanMode} spoolmanModeReady={spoolmanModeReady} spoolmanUrl={spoolmanUrl} />;
 }
 
-function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spoolmanMode?: boolean; spoolmanModeReady?: boolean }) {
+function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true, spoolmanUrl = '' }: { spoolmanMode?: boolean; spoolmanModeReady?: boolean; spoolmanUrl?: string }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { showToast } = useToast();
   const { hasPermission, loading: authLoading } = useAuth();
-  // Forecast tab gated on perm + non-Spoolman mode (Spoolman proxies spools, so we
-  // can't read spool_usage_history through the iframe). `spoolmanModeReady` keeps
-  // the answer NO until the mode is actually known — on a cold load spoolmanMode
-  // reads false while the settings are still in flight, and that window must not
-  // mount the ForecastPanel (whose local-inventory feed would fire once) in a
-  // session that turns out to be Spoolman (task-5 review, Minor 1).
+  // Forecast tab gated on the permission, in both inventories: the server's
+  // engine forecasts the Spoolman spools in Spoolman mode and the built-in ones
+  // otherwise. `spoolmanModeReady` keeps the answer NO until the mode is
+  // actually known — on a cold load spoolmanMode reads false while the settings
+  // are still in flight, and the panel must not mount (and ask the built-in
+  // spool lookups) in a session that turns out to be Spoolman.
   const canViewForecast =
-    !authLoading && spoolmanModeReady && !spoolmanMode && hasPermission('inventory:forecast_read');
+    !authLoading && spoolmanModeReady && hasPermission('inventory:forecast_read');
   const [searchParams, setSearchParams] = useSearchParams();
   const [formModal, setFormModal] = useState<{ spool?: InventorySpool | null; mode: SpoolFormMode } | null>(null);
   const deepLinkHandled = useRef(false);
@@ -1119,7 +1082,8 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
 
   const displayedView = shownView(viewMode, (mode) => {
     if (mode === 'forecast') return canViewForecast;
-    if (mode === 'history') return spoolmanModeReady && !spoolmanMode;
+    // Both inventories have a ledger; which one is shown waits for the mode.
+    if (mode === 'history') return spoolmanModeReady;
     return true;
   }, 'table');
 
@@ -1160,8 +1124,8 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
   // its own server-driven feed rendered INSTEAD of the list, so the list must
   // not keep polling behind it — a persisted "All" page size would otherwise
   // make that a full-table download every 30 s under a tab that never reads it.
-  // Gated on Spoolman mode for the same reason the forecast is: those rows are
-  // OUR ledger, and there is none to show when Spoolman owns the inventory.
+  // It waits for the Spoolman mode to be known: each inventory has its own
+  // ledger and its own feed, and the panel must never ask the wrong one.
   const historyViewActive = displayedView === 'history';
   const historyVerdictPending = viewMode === 'history' && !spoolmanModeReady;
   const listFeedSuppressed =
@@ -1363,11 +1327,16 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
     [showToast, t],
   );
 
-  const { data: assignments } = useQuery({
+  // Built-in slot rows are neither fetched nor used in Spoolman mode: their
+  // spool ids collide with Spoolman's and put a slot badge on an unrelated
+  // spool (upstream 62fad59fd, issue #3430).
+  const { data: fetchedAssignments } = useQuery({
     queryKey: ['spool-assignments'],
     queryFn: () => api.getAssignments(),
+    enabled: !spoolmanMode,
     refetchInterval: 30000,
   });
+  const assignments = builtinAssignments(spoolmanMode, fetchedAssignments);
 
   // Spoolman-mode slot assignments. spool.id IS the spoolman_spool_id, so this
   // feeds into the same assignmentMap that the LOCATION column reads.
@@ -1476,7 +1445,17 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
         : api.bulkResetSpoolConsumedCounter(ids),
     onSuccess: (data) => {
       refreshSpoolQueries();
-      showToast(t('inventory.allConsumedCountersReset', { count: data.reset }), 'success');
+      // A spool Spoolman refused is not a reset one: say all / some / none,
+      // as the other bulk actions do, and never a green "0 reset".
+      const { kind, ok, failed } = bulkResetOutcome(data);
+      const action = t('inventory.resetConsumedCounter');
+      if (kind === 'ok') {
+        showToast(t('inventory.allConsumedCountersReset', { count: ok }), 'success');
+      } else if (kind === 'partial') {
+        showToast(t('inventory.bulk.partial', { action, ok, failed }), 'warning');
+      } else {
+        showToast(t('inventory.bulk.failed', { action, count: failed }), 'error');
+      }
     },
     onError: () => {
       showToast(t('inventory.resetConsumedCounterFailed'), 'error');
@@ -2305,7 +2284,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
           <ListViewToggle value={displayedView} onChange={setViewMode} options={[
             { value: 'table', icon: TableProperties, label: t('inventory.table') },
             { value: 'cards', icon: LayoutGrid, label: t('inventory.cards') },
-            ...(!spoolmanMode && spoolmanModeReady ? [
+            ...(spoolmanModeReady ? [
               { value: 'history' as const, icon: History, label: t('inventory.usageHistoryTab') },
               { value: 'forecast' as const, icon: canViewForecast ? TrendingUp : Lock, label: t('forecast.title'), disabled: !canViewForecast, hint: t('forecast.noReadAccess') },
             ] : []),
@@ -2364,6 +2343,19 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
               {t('inventory.csv.exportButton', 'Export CSV')}
             </Button>
           </>}
+          {/* Spoolman's own interface, for people used to it: a link, in a new
+              tab. Only in Spoolman mode with an address set. */}
+          {spoolmanMode && spoolmanUrl && (
+            <a
+              href={spoolmanUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center justify-center font-medium rounded-lg transition-colors focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-bambu-dark bg-bambu-dark-secondary border border-bambu-dark-tertiary text-bambu-gray hover:text-white hover:border-bambu-gray focus:ring-bambu-gray px-3 py-1.5 text-sm gap-1.5 min-h-[44px] md:min-h-0"
+            >
+              <ExternalLink className="w-4 h-4" />
+              {t('inventory.openSpoolman')}
+            </a>
+          )}
           <Button variant="outline" size="sm" onClick={() => setLocationsModalOpen(true)}>
             <MapPin className="w-4 h-4" />
             {t('locations.manage')}
@@ -2885,15 +2877,17 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
            mounted, and therefore fetching /inventory/forecast, only while
            this tab is open. The canViewForecast guard keeps a stale
            PERSISTED viewMode from mounting the panel where the tab itself
-           is unreachable — above all Spoolman mode, where the forecast
-           endpoints would compute over the LOCAL inventory under a Spoolman
-           UI (task-5 review, Minor 1); it falls back to the table below
-           instead. */
-        <ForecastPanel />
+           is unreachable; it falls back to the table below instead. In
+           Spoolman mode the same endpoints forecast the Spoolman spools
+           (the server picks the inventory), and the panel's own spool
+           lookups go to the Spoolman list. */
+        <ForecastPanel spoolmanMode={spoolmanMode} />
       ) : historyViewActive ? (
         /* The farm-wide usage ledger. Server-driven end to end — page, order,
-           filters, search and totals all decided by GET /inventory/usage. */
+           filters, search and totals all decided by the active inventory's
+           usage feed (the built-in one's, or the Spoolman spools' own). */
         <SpoolUsageHistoryPanel
+          spoolmanMode={spoolmanMode}
           search={search}
           onClearSearch={() => { setSearch(''); resetPage(); }}
           onOpenSpool={openSpoolById}

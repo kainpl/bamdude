@@ -30,6 +30,7 @@ from backend.app.services.printer_manager import printer_manager
 from backend.app.services.slot_assignment import SlotAssignmentPlan, build_slot_assignment
 from backend.app.services.slot_assignment_publish import publish_slot_plan
 from backend.app.services.spoolman_kprofile_link import resolve_spoolman_slot_kprofile
+from backend.app.utils.kprofile_lookup import slot_profile_filament_ids
 from backend.app.utils.slot_nozzle import slot_nozzle
 
 logger = logging.getLogger(__name__)
@@ -68,6 +69,10 @@ class SlotCandidate:
     # the K re-push in ``bulk_apply`` reads the state ONCE: asking the manager
     # again could answer a different device than the one this was built for.
     nozzle_diameter: str = "0.4"
+    # A Spoolman slot with no link made by hand: the combo its DEFAULT K is
+    # looked up under — (filament id, nozzle diameter, flow type, extruder) of
+    # the nozzle the slot feeds, read from the same state as everything above.
+    default_k_combo: tuple[str, float, str, int] | None = None
 
 
 @dataclass
@@ -267,7 +272,8 @@ async def iter_slot_projections(db, printer) -> SlotWalk:
             # Already 8 chars: ``_map_spoolman_spool`` validates the hex and
             # appends the alpha itself, so there is no 6-char form to pad here.
             color = (mapped.get("rgba") or "808080FF").upper()
-            # The family is the BRANDED one of the slot's linked calibration —
+            # The family is the BRANDED one of the slot's linked calibration
+            # (else the preset stored on the spool, inside the builder) —
             # the same resolver both Spoolman assign routes use, so a revert
             # republishes the plan the slot actually had and the K re-push
             # carries the id those routes key K off.
@@ -285,6 +291,7 @@ async def iter_slot_projections(db, printer) -> SlotWalk:
                 actual = await build_slot_assignment(
                     db,
                     family_id=linked.filament_id if linked else None,
+                    stored_preset=mapped.get("slicer_filament"),
                     material_override=tray_type,
                     color_rgba=color,
                     temp_overrides=(mapped.get("nozzle_temp_min"), None),
@@ -315,6 +322,17 @@ async def iter_slot_projections(db, printer) -> SlotWalk:
             label = " ".join(
                 p for p in (f"Spoolman #{row.spoolman_spool_id}", mapped.get("brand") or "", tray_type) if p
             )
+            kprofile_filament_id = linked.filament_id if linked else actual.tray_info_idx
+            # As the two assign routes: a family taken from the stored preset
+            # keeps the slot's live index only when the printer's own table
+            # files that index under this filament; otherwise no K is re-sent.
+            if (
+                not linked
+                and actual.from_stored_preset
+                and slot_profile_filament_ids(state, (live or {}).get("cali_idx"), row.ams_id, row.tray_id)
+                != {actual.tray_info_idx}
+            ):
+                kprofile_filament_id = None
             out.append(
                 SlotCandidate(
                     row.ams_id,
@@ -323,9 +341,19 @@ async def iter_slot_projections(db, printer) -> SlotWalk:
                     label,
                     projection,
                     live,
-                    linked.filament_id if linked else actual.tray_info_idx,
+                    kprofile_filament_id,
                     recovered,
                     nozzle_diameter=common["nozzle_diameter"],
+                    default_k_combo=(
+                        None
+                        if linked or not actual.tray_info_idx
+                        else (
+                            actual.tray_info_idx,
+                            nozzle.diameter_float,
+                            nozzle.flow_or_standard,
+                            nozzle.extruder_or_default,
+                        )
+                    ),
                 )
             )
 
@@ -515,6 +543,30 @@ async def bulk_apply(db, printer, client, *, dry_run: bool) -> dict:
             continue
         applied += 1
         overlay.remember(printer.id, c.ams_id, c.tray_id, c.projection, c.source)  # forgets on a revert (not projected)
+        if c.default_k_combo and kprofile_allowed(c.projection):
+            # As the two Spoolman assign routes and the built-in inventory: a
+            # spool nobody linked by hand gets its K by default through its
+            # filament — the active calibration of the slot's combo, selected
+            # by the one existing helper. Only when that does not fire is the
+            # slot's live index put back, below.
+            from backend.app.services.calibration_service import (  # noqa: PLC0415
+                apply_active_calibration_to_slot,
+            )
+
+            filament_id, diameter, flow, extruder = c.default_k_combo
+            fired, _ = await apply_active_calibration_to_slot(
+                db=db,
+                printer_id=printer.id,
+                ams_id=c.ams_id,
+                slot_id=c.tray_id,
+                filament_id=filament_id,
+                nozzle_diameter=diameter,
+                nozzle_volume_type=flow,
+                extruder_id=extruder,
+            )
+            if fired:
+                r["kprofile"] = "applied"
+                continue
         live_cali = (c.live_tray or {}).get("cali_idx")
         if isinstance(live_cali, int) and live_cali >= 0:
             if kprofile_allowed(c.projection) and c.kprofile_filament_id:

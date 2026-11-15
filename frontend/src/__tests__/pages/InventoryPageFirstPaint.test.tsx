@@ -268,4 +268,106 @@ describe('InventoryPage first paint', () => {
     });
     expect(screen.queryByText('19000g')).not.toBeInTheDocument();
   });
+
+  it('offers History and Forecast in Spoolman mode too, each fed by the Spoolman doors', async () => {
+    // Upstream 1d86cff5a (#3407): both views exist in Spoolman mode. They must
+    // read the Spoolman spools' own usage rows — never the built-in feed, whose
+    // spool ids are another numbering (upstream 704919339).
+    localStorage.setItem(FILTERS_KEY, JSON.stringify({ ...DEFAULT_FILTERS, viewMode: 'history' }));
+    setupHandlers();
+    const asked: string[] = [];
+    server.use(
+      // Spoolman mode renders OUR page, with or without an address.
+      http.get('/api/v1/settings/spoolman', () =>
+        HttpResponse.json({ spoolman_enabled: 'true', spoolman_url: '' })
+      ),
+      http.get('/api/v1/spoolman/inventory/spools', () => HttpResponse.json([])),
+      http.get('/api/v1/spoolman/inventory/slot-assignments/all', () => HttpResponse.json([])),
+      http.get('/api/v1/spoolman/inventory/usage/facets', () =>
+        HttpResponse.json({ statuses: [], printers: [], materials: [], brands: [] })
+      ),
+      http.get('/api/v1/spoolman/inventory/usage/source', () =>
+        HttpResponse.json({ has_source: true, rows: 0, previous_url: null, previous_rows: 0 })
+      ),
+      http.get('/api/v1/spoolman/inventory/usage', () => {
+        asked.push('spoolman-usage');
+        return HttpResponse.json({
+          items: [],
+          meta: { total: 0, current_page: 1, per_page: 50, last_page: 1 },
+          totals: { weight_used: 0, cost: null },
+        });
+      }),
+      http.get('/api/v1/inventory/usage', () => {
+        asked.push('built-in-usage');
+        return HttpResponse.json({
+          items: [],
+          meta: { total: 0, current_page: 1, per_page: 50, last_page: 1 },
+          totals: { weight_used: 0, cost: null },
+        });
+      }),
+    );
+    render(<InventoryPageRouter />);
+
+    const history = await screen.findByRole('button', { name: 'History' });
+    await waitFor(() => expect(history).toHaveAttribute('aria-pressed', 'true'));
+    expect(screen.getByRole('button', { name: 'Forecast' })).toBeEnabled();
+    await waitFor(() => expect(asked).toContain('spoolman-usage'));
+    expect(asked).not.toContain('built-in-usage');
+    expect(await screen.findByText(/BamDude records each print it charges to Spoolman/)).toBeInTheDocument();
+  });
+
+  describe('Spoolman mode with an address', () => {
+    // The page used to hand the whole screen to Spoolman's own UI in an iframe
+    // whenever an address was set, so History, Forecast, the cost column and the
+    // spool form were unreachable on exactly the installs they were built for.
+    // The owner's decision: our page, as upstream — and a link for people used
+    // to Spoolman's interface.
+    const spoolmanAt = (url: string) =>
+      server.use(
+        http.get('/api/v1/settings/spoolman', () => HttpResponse.json({ spoolman_enabled: 'true', spoolman_url: url })),
+        http.get('/api/v1/spoolman/inventory/spools', () => HttpResponse.json([])),
+        http.get('/api/v1/spoolman/inventory/slot-assignments/all', () => HttpResponse.json([])),
+      );
+
+    it('mounts our page, not an iframe of Spoolman', async () => {
+      setupHandlers();
+      spoolmanAt('http://spoolman.lan:7912/');
+      render(<InventoryPageRouter />);
+
+      // The unified page's own controls, Spoolman-mode views included.
+      expect(await screen.findByRole('button', { name: 'History' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Forecast' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Add Spool' })).toBeInTheDocument();
+      expect(document.querySelector('iframe')).toBeNull();
+    });
+
+    it('offers Spoolman itself in a new tab', async () => {
+      setupHandlers();
+      spoolmanAt('http://spoolman.lan:7912/');
+      render(<InventoryPageRouter />);
+
+      const link = await screen.findByRole('link', { name: 'Open Spoolman' });
+      expect(link).toHaveAttribute('href', 'http://spoolman.lan:7912');
+      expect(link).toHaveAttribute('target', '_blank');
+      expect(link).toHaveAttribute('rel', 'noopener noreferrer');
+    });
+
+    it('has no such link while Spoolman has no address', async () => {
+      setupHandlers();
+      spoolmanAt('');
+      render(<InventoryPageRouter />);
+
+      await screen.findByRole('button', { name: 'History' });
+      expect(screen.queryByRole('link', { name: 'Open Spoolman' })).not.toBeInTheDocument();
+    });
+
+    it('has no such link in the built-in inventory', async () => {
+      setupHandlers();
+      render(<InventoryPageRouter />);
+
+      await screen.findByRole('button', { name: 'History' });
+      expect(screen.queryByRole('link', { name: 'Open Spoolman' })).not.toBeInTheDocument();
+      expect(document.querySelector('iframe')).toBeNull();
+    });
+  });
 });

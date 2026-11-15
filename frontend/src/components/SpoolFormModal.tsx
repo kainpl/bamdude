@@ -80,10 +80,9 @@ export function SpoolFormModal({
   // Usage history is a TAB, not a trailer under the filament form. It is a
   // list that grows without bound, and pinned to the bottom of an already
   // long form it stretched the dialog past its own scroll box. It exists
-  // only where there is a ledger of ours to show — an existing spool of the
-  // internal inventory; in Spoolman mode Spoolman keeps that record and we
-  // never wrote one, which is why the block used to be gated the same way.
-  const showUsageTab = isEditing && !!spool && !spoolmanMode;
+  // for an existing spool of either inventory: the built-in one's ledger, or
+  // the rows BamDude records for every print charge it sends to Spoolman.
+  const showUsageTab = isEditing && !!spool;
 
   // Form state
   const [formData, setFormData] = useState<SpoolFormData>(defaultFormData);
@@ -1078,7 +1077,7 @@ export function SpoolFormModal({
             </div>
           </div>
         ) : activeTab === 'usage' ? (
-          spool && <SpoolUsageHistory spoolId={spool.id} />
+          spool && <SpoolUsageHistory spoolId={spool.id} spoolmanMode={spoolmanMode} />
         ) : (
           <PAProfileSection
             formData={formData}
