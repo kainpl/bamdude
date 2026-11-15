@@ -5074,22 +5074,45 @@ class BambuMQTTClient:
                                             )
                                             self.state.tray_now = from_mapping
                                         else:
-                                            # Genuinely ambiguous - the slot as-is is shown (it is right only
-                                            # for the first AMS) and names no tray for the journal.
-                                            logger.warning(
-                                                f"[{self.serial_number}] H2D tray_now: multiple AMS {ams_on_extruder} on extruder {active_ext}, "
-                                                f"no snow field, using slot {parsed_tray_now} (may be incorrect)"
+                                            # Genuinely ambiguous: the current tray is KEPT until the
+                                            # nozzle's snow names one, and nothing is journalled. The
+                                            # bare slot is never written down — it would be a tray of
+                                            # AMS 0 (upstream #3242). BambuStudio derives no tray from
+                                            # ``ams.tray_now`` on a multi-extruder printer at all
+                                            # (DevExtruderSystem ParseV1_0 returns when the extruder
+                                            # count is not 1; the tray comes from each extruder's
+                                            # snow). Parity with both, read from code.
+                                            logger.debug(
+                                                f"[{self.serial_number}] H2D tray_now: multiple AMS {ams_on_extruder} on "
+                                                f"extruder {active_ext}, slot {parsed_tray_now} is ambiguous without "
+                                                f"snow, keeping {current_tray}"
                                             )
-                                            self.state.tray_now = parsed_tray_now
                                             unresolved = True
                             else:
-                                # No AMS on this extruder - the slot as-is is shown and names no tray
-                                logger.warning(
-                                    f"[{self.serial_number}] H2D tray_now: no AMS on extruder {active_ext}, "
-                                    f"using slot {parsed_tray_now}"
+                                # No AMS on this nozzle that the map knows of. The running print's
+                                # own mapping may still name one tray at this slot (same rule as
+                                # above: only while a print runs); otherwise the slot cannot be
+                                # placed and the current tray is kept (upstream #3242).
+                                from_mapping = (
+                                    self._resolve_local_slot_from_mapping(
+                                        parsed_tray_now, self.state.raw_data.get("mapping")
+                                    )
+                                    if self._was_running and not self._completion_triggered
+                                    else None
                                 )
-                                self.state.tray_now = parsed_tray_now
-                                unresolved = True
+                                if from_mapping is not None:
+                                    logger.debug(
+                                        f"[{self.serial_number}] H2D tray_now: no AMS on extruder {active_ext}, "
+                                        f"slot {parsed_tray_now} -> global ID {from_mapping} (from mapping)"
+                                    )
+                                    self.state.tray_now = from_mapping
+                                else:
+                                    logger.debug(
+                                        f"[{self.serial_number}] H2D tray_now: no AMS on extruder {active_ext}, "
+                                        f"slot {parsed_tray_now} can't be placed without snow, keeping "
+                                        f"{self.state.tray_now}"
+                                    )
+                                    unresolved = True
                 elif not self._is_dual_nozzle and 0 <= parsed_tray_now <= 3:
                     # #1822: on an all-external-spool print the slicer maps every slot to -1;
                     # the firmware still reports tray_now = the physical slot, which stuck the

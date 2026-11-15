@@ -206,7 +206,7 @@ class TestAnUnresolvedSlotIsNotJournalled:
 
         printer.send(tray_now=3)
 
-        assert printer.tray_now == 3  # as before: nothing is printing, nothing is journalled
+        assert printer.tray_now == 255  # kept: the bare slot names no tray (upstream #3242, BambuStudio parity)
         assert printer.facts == []
 
     def test_a_slot_on_a_nozzle_with_no_unit_writes_no_tray_change(self):
