@@ -364,5 +364,8 @@ class FarmReadyMiddleware:
                 from backend.app.core.auth_runtime import auth_runtime
 
                 auth_runtime.open_admission()
+                from backend.app.services.auto_queue_return_runtime import auto_queue_return_runtime
+
+                auto_queue_return_runtime.open_admission()
 
         return await self.app(scope, receive, ready_send)

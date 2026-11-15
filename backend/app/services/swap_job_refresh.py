@@ -165,6 +165,8 @@ def _refusal(
     if row.status not in ("pending", "failed"):
         return "status"
     if kind == "queue":
+        if getattr(row, "returned_receipt_identity", None) is not None:
+            return "not_before_dispatch"
         if (
             row.started_at is not None
             or (row.dispatch_attempts or 0) != 0
@@ -173,6 +175,8 @@ def _refusal(
         ):
             return "not_before_dispatch"
     else:
+        if getattr(row, "failed_return_proof", None) is not None or (getattr(row, "failed_return_count", 0) or 0) > 0:
+            return "not_before_dispatch"
         if row.cancelled_at is not None:
             return "cancelled"
         if row.assigned_to_item_id is not None or row.assigned_at is not None:

@@ -8816,6 +8816,7 @@ async def _on_print_complete_impl(
                 logger.info("[PLATE] Armed awaiting_plate_clear gate for printer %s", printer_id)
         except Exception as e:
             logger.warning("[PLATE] Failed to arm awaiting_plate_clear: %s", e)
+            analysis_completion["return_critical_failed"] = True
     elif archive_id and _owns_printer_effect():
         # The swap path cleared the plate for real — so RELEASE the gate, don't
         # merely skip arming it. Skipping was the whole bug: the flag is
@@ -9026,6 +9027,14 @@ async def _on_print_complete_impl(
                         bound_archive.extra_data = extra
                 await db.commit()
                 logger.info("Updated queue item %s status to %s", queue_item.id, queue_status)
+                if queue_status == "failed" and bound_archive is not None:
+                    from backend.app.services.auto_queue_return import capture_candidate
+
+                    # No candidate escapes a failed terminal commit. A normal
+                    # callback/cleanup alone cannot certify this transaction.
+                    analysis_completion["return_candidate"] = await capture_candidate(
+                        db, queue_item, bound_archive, epoch=completion_epoch, effect_token=effect_token
+                    )
 
                 # Filament-calibration sessions: flip the linked
                 # ``calibration_session`` row to its post-print state
@@ -9538,7 +9547,11 @@ async def _on_print_complete_impl(
                 # than excluding them, which was the side-effect upstream
                 # called out as a win.
                 completed_at=(
-                    datetime.now(timezone.utc) if status in ("completed", "failed", "aborted", "cancelled") else None
+                    analysis_completion["return_candidate"].completed_at
+                    if analysis_completion.get("return_candidate") is not None
+                    else datetime.now(timezone.utc)
+                    if status in ("completed", "failed", "aborted", "cancelled")
+                    else None
                 ),
                 failure_reason=failure_reason,
                 expected_identity=terminal_archive_identity,
@@ -9547,6 +9560,7 @@ async def _on_print_complete_impl(
             )
             if not updated:
                 return
+            analysis_completion["return_archive_finalized"] = True
             logger.info(
                 "[ARCHIVE] Archive %s status updated to %s, failure_reason=%s", archive_id, status, failure_reason
             )
@@ -10249,6 +10263,7 @@ async def _on_print_complete_impl(
     # (The plate-clear gate is armed/released ABOVE, before the queue-item
     # update releases the printer's queue claim — see the comment there.)
     logger.info("[CALLBACK] on_print_complete finished for printer %s, archive %s", printer_id, archive_id)
+    analysis_completion["return_body_completed"] = True
 
 
 # AMS sensor history recording
@@ -10446,7 +10461,21 @@ async def on_print_complete(printer_id: int, data: dict) -> None:
     # spawned so no task outlives the callback (queue-leftovers Q3). Never raises.
     from backend.app.services.queue_leftovers import retire_for_printer
 
-    await retire_for_printer(printer_id)
+    retirement = await retire_for_printer(printer_id)
+
+    candidate = analysis_completion.get("return_candidate")
+    if (
+        candidate is not None
+        and analysis_completion.get("return_archive_finalized") is True
+        and analysis_completion.get("return_body_completed") is True
+        and analysis_completion.get("return_critical_failed") is not True
+        and getattr(retirement, "failed", False) is not True
+    ):
+        from backend.app.services.auto_queue_return_runtime import auto_queue_return_runtime
+
+        # Normal-success tail only. The separate runtime retains ownership if
+        # this callback is cancelled while source verification or SQL finishes.
+        await auto_queue_return_runtime.publish(candidate, manager=printer_manager)
 
 
 def _ams_has_filament(ams_data: dict) -> bool:
@@ -12248,6 +12277,11 @@ async def _application_lifespan(app: FastAPI):
     yield
 
     # Shutdown
+    from backend.app.services.auto_queue_return_runtime import auto_queue_return_runtime
+
+    auto_queue_return_runtime.close_admission()
+    if not await auto_queue_return_runtime.quiesce_for_restore(10):
+        logging.getLogger(__name__).warning("AutoQueue return shutdown work remains owned")
     from backend.app.services.print_run_binding import revoke_print_effects
     from backend.app.services.print_state_observer import print_state_observer
 

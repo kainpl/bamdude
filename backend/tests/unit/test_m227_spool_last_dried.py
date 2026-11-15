@@ -1,21 +1,21 @@
-"""m226 adds the three «last dried» columns to an existing ``spool`` table."""
+"""m227 adds the three «last dried» columns to an existing ``spool`` table."""
 
 import pytest
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from backend.app.migrations import m226_spool_last_dried as m226
+from backend.app.migrations import m227_spool_last_dried as m227
 
 
 @pytest.mark.asyncio
-async def test_m226_adds_the_columns_and_leaves_existing_spools_without_a_record(tmp_path):
-    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'm226.db'}")
+async def test_m227_adds_the_columns_and_leaves_existing_spools_without_a_record(tmp_path):
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'm227.db'}")
     async with engine.begin() as conn:
         await conn.exec_driver_sql(
             "CREATE TABLE spool (id INTEGER PRIMARY KEY, material VARCHAR(50), last_used DATETIME)"
         )
         await conn.exec_driver_sql("INSERT INTO spool (id, material) VALUES (1, 'PLA')")
 
-        await m226.upgrade(conn)
+        await m227.upgrade(conn)
 
         columns = {row[1]: row[2] for row in (await conn.exec_driver_sql("PRAGMA table_info(spool)")).fetchall()}
         assert columns["last_dried_at"] == "DATETIME"
@@ -26,7 +26,7 @@ async def test_m226_adds_the_columns_and_leaves_existing_spools_without_a_record
         ).fetchone()
         assert tuple(row) == (None, None, None)
         # idempotent (DEBUG=true re-runs the newest migration)
-        await m226.upgrade(conn)
+        await m227.upgrade(conn)
     await engine.dispose()
 
 
@@ -51,7 +51,7 @@ async def test_postgresql_is_asked_for_a_type_it_has(monkeypatch):
         asked.append((table, column_def))
         return True
 
-    monkeypatch.setattr(m226, "add_column", record)
-    await m226.upgrade(SimpleNamespace(dialect=SimpleNamespace(name="postgresql")))
+    monkeypatch.setattr(m227, "add_column", record)
+    await m227.upgrade(SimpleNamespace(dialect=SimpleNamespace(name="postgresql")))
     assert ("spool", "last_dried_at TIMESTAMP") in asked
     assert not any("DATETIME" in column_def for _table, column_def in asked)

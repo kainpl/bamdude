@@ -94,6 +94,7 @@
   "An API key restricted to specific printers cannot use the AutoQueue.": "API-ключ, обмежений окремими принтерами, не може користуватися автоматичною чергою.",
   "An API key restricted to specific printers cannot use the farm-wide auto-queue": "API-ключ, обмежений окремими принтерами, не може користуватися автоматичною чергою всієї ферми",
   "An API key restricted to specific printers must name a printer by its id": "API-ключ, обмежений окремими принтерами, має називати принтер його ідентифікатором",
+  "An active administrator must approve Git backup configuration": "Конфігурацію Git-бекапу має погодити активний адміністратор",
   "An alias is too long": "Псевдонім задовгий",
   "An animated picture cannot be the logo": "Анімоване зображення не може бути логотипом",
   "An attachment may be at most {} bytes": "Вкладення може бути щонайбільше {} байтів",
@@ -139,6 +140,8 @@
   "Auto-dispatch in Queue mode requires a Target Printer. Pick a target, enable Auto-select printer, or turn Auto-dispatch off.": "Автовідправлення в режимі черги потребує цільового принтера. Виберіть цільовий принтер, увімкніть автовибір принтера або вимкніть автовідправлення.",
   "Auto-queue item changed before assignment": "Елемент авточерги змінився до призначення",
   "Auto-queue item not found": "Елемент авточерги не знайдено",
+  "AutoQueue failed-return setting cannot be null": "Перемикач повернення невдалих робіт в авточергу не може бути null",
+  "AutoQueue return work has not stopped; restart before restoring": "Робота повернення в авточергу ще не завершилася; перезапустіть BamDude перед відновленням",
   "Backup is disabled": "Резервне копіювання вимкнено",
   "Bambu Cloud session expired while fetching {} preset. Sign in again and retry.": "Термін сесії Bambu Cloud минув під час завантаження пресета {}. Увійдіть знову та повторіть спробу.",
   "Bambu Cloud unreachable while fetching {} preset: {}": "Bambu Cloud недоступний під час завантаження пресета {}: {}",
@@ -391,6 +394,8 @@
   "Fresh idle printer status is required for calibration": "Для калібрування потрібен свіжий статус принтера в стані очікування",
   "Fresh idle printer status is required for homing": "Для повернення осей у Home потрібен свіжий статус принтера в стані очікування",
   "Git backup configuration changed during verification; reload and retry": "Налаштування Git-бекапу змінилися під час перевірки; оновіть дані й повторіть дію",
+  "Git backup is temporarily unavailable.": "Git-бекап тимчасово недоступний.",
+  "Git backup work has not stopped; restart before restoring": "Робота Git-бекапу ще не завершилася; перезапустіть застосунок перед відновленням",
   "Group chosen in {} order lines": "Групу обрано в позиціях замовлень: {}",
   "Group held by {} stock positions": "Групу тримають позиції складу: {}",
   "Group name already exists": "Назва групи вже існує",
@@ -1278,8 +1283,5 @@
   "«{}»: only {} can be assembled": "«{}»: зібрати можна лише {}",
   "«{}»: only {} can be issued": "«{}»: видати можна лише {}",
   "«{}»: only {} can be received": "«{}»: оприбуткувати можна лише {}",
-  "«{}»: only {} can be written off": "«{}»: списати можна лише {}",
-  "An active administrator must approve Git backup configuration": "Конфігурацію Git-бекапу має погодити активний адміністратор",
-  "Git backup is temporarily unavailable.": "Git-бекап тимчасово недоступний.",
-  "Git backup work has not stopped; restart before restoring": "Робота Git-бекапу ще не завершилася; перезапустіть застосунок перед відновленням"
+  "«{}»: only {} can be written off": "«{}»: списати можна лише {}"
 }

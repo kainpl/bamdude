@@ -250,14 +250,29 @@ async def test_final_queue_claim_refuses_a_model_excluded_after_enqueue(
     assert (await db_session.get(PrintQueueItem, printer.id, populate_existing=True)).status == "pending"
 
 
+@pytest.mark.parametrize("returned", [False, True])
 async def test_replan_reviews_both_queues_then_replaces_only_the_shared_draft(
     committing_client,
     db_session,
     resource_shop,
+    returned,
 ):
     s = resource_shop
     await choose(committing_client, s, models=["A1 mini"], printer_ids=[s["printer"].id])
     printer, auto = await pending_rows(db_session, s)
+    if returned:
+        from backend.app.models.auto_queue_return import AutoQueueReturn
+        from backend.tests.integration.test_auto_queue_return_schema import receipt_values
+
+        receipt = AutoQueueReturn(
+            **receipt_values(
+                auto_item_id=auto.id, auto_identity=auto.recovery_identity, returned_at=datetime.now(), ordinal=1
+            )
+        )
+        db_session.add(receipt)
+        auto.failed_return_count = 1
+        auto.failed_return_proof = {"version": 1, "receipt_identity": receipt.id}
+        await db_session.commit()
     path, proposal = await review(committing_client, s)
     assert proposal["remove_printer_ids"] == [printer.id]
     assert proposal["remove_auto_ids"] == [auto.id]
@@ -270,6 +285,8 @@ async def test_replan_reviews_both_queues_then_replaces_only_the_shared_draft(
     assert (await db_session.execute(select(func.count()).select_from(AutoQueueItem))).scalar_one() == 0
     assert (await db_session.get(Project, s["order"], populate_existing=True)).status == "active"
     assert await db_session.get(ProductPlate, s["plate"].id)
+    if returned:
+        assert await db_session.get(AutoQueueReturn, receipt.id) is not None
 
 
 async def test_rebuilding_draft_keeps_fleet_distribution_when_queues_pause(

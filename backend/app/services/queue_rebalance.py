@@ -75,6 +75,7 @@ from backend.app.schemas.project import RebalanceOut, RebalanceSkipped
 from backend.app.services import queue_sources, swap_compatibility
 from backend.app.services.auto_queue_add import build_auto_queue_rows
 from backend.app.services.auto_queue_eligibility import busy_printer_ids, router_view_conditions
+from backend.app.services.auto_queue_return_policy import has_return_history, last_failed_printer
 from backend.app.services.farm_forecast import (
     FarmSnapshot,
     StaggerPolicy,
@@ -150,6 +151,7 @@ REBALANCE_WORK_BUDGET = 600_000
 #: here means adding it there, in both locales.
 SKIP_REASONS = (
     "not_found",
+    "already_returned",
     "already_assigned",
     "not_filed",
     "pinned",
@@ -261,6 +263,7 @@ class MovableItem:
     been_jumped: bool = False
     auto_eject: bool = False
     prep: float = 0.0  # what it pays before its start
+    last_failed_printer_identity: str | None = None
 
 
 Verdict = Literal["yes", "no", "unknown"]
@@ -314,6 +317,7 @@ class Machine:
     requires_operator: bool = False
     interval: float = 0.0
     dispatchable: bool = True
+    printer_identity: str | None = None
 
 
 class FitSource(Protocol):
@@ -420,6 +424,7 @@ def _lane(machine: Machine) -> Lane:
         gap=machine.gap,
         requires_operator=machine.requires_operator,
         interval=machine.interval,
+        printer_identity=machine.printer_identity,
     )
 
 
@@ -448,6 +453,7 @@ def _home_job(item: MovableItem, machines: list[Machine], farm: FarmView) -> Job
         been_jumped=item.been_jumped,
         auto_eject=item.auto_eject,
         prep=item.prep,
+        last_failed_printer_identity=item.last_failed_printer_identity,
     )
 
 
@@ -915,6 +921,7 @@ class PassPrinter:
     #: profile, the order's choices and the swap rule (Codex r1 T-R1/T-R3).
     raw_model: str | None = None
     swap_mode: bool = False
+    printer_identity: str | None = None
 
 
 async def load_printers(db: AsyncSession, busy: set[int], interlocked: set[int]) -> dict[int, PassPrinter]:
@@ -939,7 +946,14 @@ async def load_printers(db: AsyncSession, busy: set[int], interlocked: set[int])
     drying_held = await scheduler.drying_held_printer_ids(db)
     rows = (
         await db.execute(
-            select(Printer.id, Printer.model, Printer.location_id, PrinterQueue.status, Printer.swap_mode_enabled)
+            select(
+                Printer.id,
+                Printer.model,
+                Printer.location_id,
+                PrinterQueue.status,
+                Printer.swap_mode_enabled,
+                Printer.connector_identity,
+            )
             .join(PrinterQueue, PrinterQueue.printer_id == Printer.id)
             .where(*_router_population())
         )
@@ -947,7 +961,7 @@ async def load_printers(db: AsyncSession, busy: set[int], interlocked: set[int])
     printers: dict[int, PassPrinter] = {}
     # By printer id, so a printer that somehow answered the query twice (a
     # second queue row of its own) is still one machine.
-    for printer_id, model, location_id, queue_status, swap_mode in rows:
+    for printer_id, model, location_id, queue_status, swap_mode, printer_identity in rows:
         if printer_id in printers:
             continue
         name = printer_manager.effective_model_for(printer_id, model)
@@ -965,7 +979,7 @@ async def load_printers(db: AsyncSession, busy: set[int], interlocked: set[int])
         )
         dispatchable = queue_status not in ("paused", "error")
         printers[printer_id] = PassPrinter(
-            printer_id, name, key, snapshot, ready, location_id, dispatchable, model, bool(swap_mode)
+            printer_id, name, key, snapshot, ready, location_id, dispatchable, model, bool(swap_mode), printer_identity
         )
     return printers
 
@@ -1333,6 +1347,7 @@ def _tail_item(row: AutoQueueItem, home: str, prep: float) -> MovableItem:
         been_jumped=bool(row.been_jumped),
         auto_eject=bool(row.auto_eject),
         prep=float(prep),
+        last_failed_printer_identity=last_failed_printer(row),
     )
 
 
@@ -1414,6 +1429,7 @@ def _machines(
             requires_operator=state.requires_operator or gap > 0,
             interval=float(state.stagger_interval_seconds or 0),
             dispatchable=bool(passing is None or passing.dispatchable),
+            printer_identity=passing.printer_identity if passing is not None else None,
         )
     return machines
 
@@ -1822,6 +1838,9 @@ async def rebalance(
     resources = await _order_resources(db)
     line_orders = await _line_orders(db)
     for row in rows:
+        if has_return_history(row):
+            result.skipped.append((row.id, "already_returned"))
+            continue
         if constrained(resources.get(line_orders.get(row.project_line_id, row.project_id))):
             # A constrained order uses its reviewed fleet replan, not the
             # model-wide idle counters of the opportunistic rebalancer.
@@ -2091,6 +2110,8 @@ def _row_changed(fresh: AutoQueueItem | None, item_id: int, recheck: _Recheck) -
     """Why the row is no longer the one the move was decided on — ``None`` when it still is."""
     if fresh is None:
         return "not_found"
+    if has_return_history(fresh):
+        return "already_returned"
     why = refusal(fresh)
     if why:
         return why

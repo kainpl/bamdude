@@ -145,6 +145,7 @@ describe('i18n locale parity', () => {
  */
 describe('the rebalance refusal codes are the backend’s closed list', () => {
   const SKIP_REASONS = [
+    'already_returned',
     'order_resources',
     'not_found',
     'already_assigned',

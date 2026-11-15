@@ -219,6 +219,71 @@ async def test_an_auto_job_names_each_assignment_by_its_own_identity(farm, sessi
     assert reassigned["assignment"]["identity"] == second.recovery_identity != first.recovery_identity
 
 
+async def test_returned_auto_is_queued_before_old_failed_history_and_promotes_again(farm, sessions):
+    from backend.app.models.auto_queue_return import AutoQueueReturn
+    from backend.tests.integration.test_auto_queue_return_schema import receipt_values
+
+    entry = {
+        "entry_id": str(uuid.uuid4()),
+        "plate_id": 15,
+        "quantity": 1,
+        "target": {"kind": "auto", "target_model": "P1P"},
+        "action": "queue_asap",
+    }
+    operation_id, submission_id = await _publish(farm, entry)
+    [auto] = await _rows(sessions, AutoQueueItem)
+    async with sessions() as db:
+        old = PrintQueueItem(queue_id=farm["queue"].id, status="failed", source_auto_identity=auto.recovery_identity)
+        db.add(old)
+        await db.commit()
+        await db.refresh(old)
+    archive = await _execute(sessions, old, farm["printer"].id, status="failed")
+    values = receipt_values(
+        old_job_id=old.id,
+        old_job_identity=old.recovery_identity,
+        old_queue_id=old.queue_id,
+        execution_archive_id=archive.id,
+        execution_archive_identity=archive.recovery_identity,
+        auto_item_id=auto.id,
+        auto_identity=auto.recovery_identity,
+        printer_id=farm["printer"].id,
+        printer_identity=farm["printer"].connector_identity,
+        returned_at=datetime.now(),
+        ordinal=1,
+    )
+    proof = {
+        "version": 1,
+        "receipt_identity": values["id"],
+        "old_job_identity": old.recovery_identity,
+        "execution_archive_identity": archive.recovery_identity,
+        "last_failed_printer_identity": farm["printer"].connector_identity,
+    }
+    async with sessions() as db:
+        db.add(AutoQueueReturn(**values))
+        (await db.get(PrintQueueItem, old.id)).returned_receipt_identity = values["id"]
+        current = await db.get(AutoQueueItem, auto.id)
+        current.failed_return_count, current.failed_return_proof = 1, proof
+        await db.commit()
+    [job] = (await _observe(farm, operation_id, submission_id))["jobs"]
+    assert job["state"] == "queued" and job["assignment"] is None and job["printer"] is None
+    assert job["executions"][0]["identity"] == archive.recovery_identity
+    async with sessions() as db:
+        newer = PrintQueueItem(queue_id=old.queue_id, status="pending", source_auto_identity=auto.recovery_identity)
+        db.add(newer)
+        await db.flush()
+        current = await db.get(AutoQueueItem, auto.id)
+        current.status, current.assigned_to_item_id = "assigned", newer.id
+        await db.commit()
+    [job] = (await _observe(farm, operation_id, submission_id))["jobs"]
+    assert job["state"] == "assigned" and job["assignment"]["identity"] == newer.recovery_identity
+    async with sessions() as db:
+        current = await db.get(AutoQueueItem, auto.id)
+        current.failed_return_proof = {**proof, "receipt_identity": "missing-proof"}
+        await db.commit()
+    [job] = (await _observe(farm, operation_id, submission_id))["jobs"]
+    assert job["state"] == "unavailable" and job["reason"] == "chain_broken"
+
+
 async def test_an_auto_job_finishes_through_its_lineage_after_its_rows_are_gone(farm, sessions):
     entry = {
         "entry_id": str(uuid.uuid4()),

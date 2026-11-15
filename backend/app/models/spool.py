@@ -51,7 +51,7 @@ class Spool(Base):
 
     last_used: Mapped[datetime | None] = mapped_column(DateTime)  # Last time this spool was used in a print
     encode_time: Mapped[datetime | None] = mapped_column(DateTime)  # When spool was encoded/written to tag
-    # Last drying (m226): stamped by ``services/spool_drying`` when an AMS drying
+    # Last drying (m227): stamped by ``services/spool_drying`` when an AMS drying
     # cycle that held this spool ends having run at least half its length, or
     # set by hand for a spool dried elsewhere (naive UTC). Temperature and
     # hours are known only for a cycle BamDude started or watched; a date set

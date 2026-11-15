@@ -373,8 +373,9 @@ async def test_missing_stock_or_product_read_right_does_not_leak_a_proposal(comm
         assert response.status_code == 403, response.text
 
 
+@pytest.mark.parametrize("returned", [False, True])
 async def test_reviewed_auto_removal_is_atomic_with_quantity_and_preserves_protected_rows(
-    committing_client, db_session, shop
+    committing_client, db_session, shop, returned
 ):
     from datetime import datetime
 
@@ -393,6 +394,19 @@ async def test_reviewed_auto_removal_is_atomic_with_quantity_and_preserves_prote
     rows[2].scheduled_time = datetime(2030, 1, 1)
     db_session.add_all(rows)
     await db_session.commit()
+    if returned:
+        from backend.app.models.auto_queue_return import AutoQueueReturn
+        from backend.tests.integration.test_auto_queue_return_schema import receipt_values
+
+        receipt = AutoQueueReturn(
+            **receipt_values(
+                auto_item_id=rows[0].id, auto_identity=rows[0].recovery_identity, returned_at=datetime.now(), ordinal=1
+            )
+        )
+        db_session.add(receipt)
+        rows[0].failed_return_count = 1
+        rows[0].failed_return_proof = {"version": 1, "receipt_identity": receipt.id}
+        await db_session.commit()
     removable_id, protected_ids = rows[0].id, [rows[1].id, rows[2].id]
     response = await preview(committing_client, shop, replace_pending=True)
     assert response.status_code == 200, response.text
@@ -428,6 +442,8 @@ async def test_reviewed_auto_removal_is_atomic_with_quantity_and_preserves_prote
     assert accepted.status_code == 200, accepted.text
     remaining = list((await db_session.execute(select(AutoQueueItem.id))).scalars())
     assert sorted(remaining) == sorted(protected_ids)
+    if returned:
+        assert await db_session.get(AutoQueueReturn, receipt.id) is not None
     assert await db_session.scalar(select(func.count()).select_from(PrintQueueItem)) == 0
 
 

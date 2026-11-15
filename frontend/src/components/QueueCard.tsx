@@ -1,4 +1,5 @@
 import { QueueWaitReason } from './QueueWaitReason';
+import { AutoQueueReturnInfo } from './AutoQueueReturnInfo';
 import { MoveToAutoButton } from './MoveToAutoButton';
 import { QueueDuration } from './QueueDuration';
 import { UsageProjection } from './UsageProjection';
@@ -1703,7 +1704,8 @@ function IssuesSection({
       if (action === 'retry') {
         // A row the printer's plate gate waits on is answered on the printer card, never retried here.
         const candidate = (item: PrintQueueItem) =>
-          (item.status === 'failed' || item.status === 'cancelled') && !isStaleClaim(item.error_code);
+          (item.status === 'failed' || item.status === 'cancelled') && !isStaleClaim(item.error_code)
+          && item.returned_receipt_identity == null;
         const retryable = (item: PrintQueueItem) => candidate(item) && !item.plate_answer_required;
         const failed = rows.filter(item => item.status === 'failed' && retryable(item));
         const cancelled = rows.filter(item => item.status === 'cancelled' && retryable(item));
@@ -1804,11 +1806,12 @@ function IssuesSection({
                       {failureText(t, item.error_code, item.error_message, item.archive_id)}
                     </p>
                   )}
+                  <AutoQueueReturnInfo returned={item.returned_receipt_identity != null} ordinal={item.return_ordinal} reason={item.return_refusal_code} />
                 </div>
                 <div className="flex items-center gap-0.5 flex-shrink-0">
                   <button
                     onClick={() => retryMutation.mutate(item.id)}
-                    disabled={retryMutation.isPending || retryRowsBusy || !canUpdate || isStaleClaim(item.error_code) || !!item.plate_answer_required}
+                    disabled={retryMutation.isPending || retryRowsBusy || !canUpdate || isStaleClaim(item.error_code) || item.returned_receipt_identity != null || !!item.plate_answer_required}
                     className="p-0.5 rounded hover:bg-bambu-green/20 text-bambu-green disabled:opacity-50"
                     title={item.plate_answer_required ? t('queueCard.actions.answerPlateFirst') : t('queueCard.actions.retry')}
                   >
@@ -1842,11 +1845,12 @@ function IssuesSection({
                   {(item.error_message || item.error_code) && (
                     <p className="text-[10px] text-bambu-gray truncate">{failureText(t, item.error_code, item.error_message, item.archive_id)}</p>
                   )}
+                  <AutoQueueReturnInfo returned={item.returned_receipt_identity != null} ordinal={item.return_ordinal} reason={item.return_refusal_code} />
                 </div>
                 <div className="flex items-center gap-0.5 flex-shrink-0">
                   <button
                     onClick={() => retryMutation.mutate(item.id)}
-                    disabled={retryMutation.isPending || retryRowsBusy || !canUpdate || isStaleClaim(item.error_code) || !!item.plate_answer_required}
+                    disabled={retryMutation.isPending || retryRowsBusy || !canUpdate || isStaleClaim(item.error_code) || item.returned_receipt_identity != null || !!item.plate_answer_required}
                     className="p-0.5 rounded hover:bg-bambu-green/20 text-bambu-green disabled:opacity-50"
                     title={item.plate_answer_required ? t('queueCard.actions.answerPlateFirst') : t('queueCard.actions.restart')}
                   >

@@ -1086,6 +1086,22 @@ describe('SettingsPage', () => {
     await waitFor(() => expect(receivedBody).toMatchObject({ auto_queue_compatible_models: true }));
   });
 
+  it('saves automatic failed returns as an explicit opt-in with visible limits', async () => {
+    let receivedBody: Record<string, unknown> | null = null;
+    server.use(http.put('/api/v1/settings/', async ({ request }) => {
+      receivedBody = (await request.json()) as Record<string, unknown>;
+      return HttpResponse.json({ ...mockSettings, ...receivedBody });
+    }));
+    const user = userEvent.setup();
+    render(<SettingsPage />);
+    await user.click(await screen.findByText('Printing'));
+    const checkbox = await screen.findByRole('checkbox', { name: /Automatically return failed AutoQueue jobs/ });
+    expect(checkbox).not.toBeChecked();
+    expect(screen.getByText(/Failures recovered only by reconciliation after a disconnect or restart/)).toBeVisible();
+    await user.click(checkbox);
+    await waitFor(() => expect(receivedBody).toMatchObject({ auto_queue_return_failed: true }));
+  });
+
   describe('Usage accuracy — runout_archive_spool_enabled', () => {
     const LABEL = 'Archive the spool it closed';
 

@@ -28,6 +28,27 @@ from backend.tests.integration.test_rebalance_job_feasibility import (  # noqa: 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 
 
+@pytest.mark.parametrize("force", [False, True])
+@pytest.mark.parametrize("hooks", [2, 6])
+async def test_returned_work_never_rebalances_but_shared_refusal_remains_open(
+    db_session, test_engine, printer_factory, tmp_path, monkeypatch, clean_spool, force, hooks
+):
+    farm = await petg_farm(db_session, printer_factory, tmp_path, targets=1, alt_hooks=hooks)
+    farm.item.failed_return_count = 1
+    farm.item.failed_return_proof = {"version": 1, "last_failed_printer_identity": farm.home.connector_identity}
+    await db_session.commit()
+    assert queue_rebalance.refusal(farm.item) is None
+    before = (farm.item.library_file_id, farm.item.target_model, farm.item.plate_id, farm.item.failed_return_count)
+    p_elig, p_sched = _live(farm)
+    with p_elig, p_sched:
+        result = await queue_rebalance.rebalance(db_session, item_ids=[farm.item.id], force=force)
+    await db_session.commit()
+    assert (result.converted, result.created, result.skipped) == (0, 0, [(farm.item.id, "already_returned")])
+    rows = await _rows(test_engine)
+    assert len(rows) == 1
+    assert (rows[0].library_file_id, rows[0].target_model, rows[0].plate_id, rows[0].failed_return_count) == before
+
+
 @pytest.fixture
 async def test_engine(monkeypatch, tmp_path):
     """A database file, so two sessions are two connections and a commit is the other's evidence."""
@@ -48,6 +69,34 @@ async def test_engine(monkeypatch, tmp_path):
 async def _rows(test_engine) -> list[AutoQueueItem]:
     async with AsyncSession(test_engine, expire_on_commit=False) as fresh:
         return list((await fresh.execute(select(AutoQueueItem).order_by(AutoQueueItem.id))).scalars().all())
+
+
+async def test_return_proof_arriving_after_plan_refuses_the_final_claim(
+    db_session, test_engine, printer_factory, tmp_path, monkeypatch, clean_spool
+):
+    farm = await petg_farm(db_session, printer_factory, tmp_path, targets=1, alt_hooks=2)
+    real_publish = queue_rebalance.publish_staged
+    entered = []
+
+    async def publish_after_return(*args, **kwargs):
+        if not entered:
+            entered.append(1)
+            async with AsyncSession(test_engine, expire_on_commit=False) as other:
+                row = await other.get(AutoQueueItem, farm.item.id)
+                row.failed_return_count = 1
+                row.failed_return_proof = {"version": 1, "receipt_identity": "concurrent-return"}
+                await other.commit()
+        return await real_publish(*args, **kwargs)
+
+    monkeypatch.setattr(queue_rebalance, "publish_staged", publish_after_return)
+    p_elig, p_sched = _live(farm)
+    with p_elig, p_sched:
+        result = await queue_rebalance.rebalance(db_session, line_ids=[farm.line.id], force=True)
+    await db_session.commit()
+    assert entered
+    assert (result.converted, result.created, result.skipped) == (0, 0, [(farm.item.id, "already_returned")])
+    rows = await _rows(test_engine)
+    assert len(rows) == 1 and rows[0].target_model == "P2S" and rows[0].failed_return_count == 1
 
 
 async def test_a_run_that_moved_the_job_after_this_ones_check_wins(

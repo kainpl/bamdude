@@ -361,7 +361,10 @@ async def has_waiting_row(db: AsyncSession, printer_id: int) -> bool:
     itself put on screen (2026-09-04). Clear plate has no such question: it is
     silent when nothing waits.
     """
-    return await waiting_row(db, printer_id) is not None
+    from backend.app.services.print_execution import repeat_refusal_code
+
+    row = await waiting_row(db, printer_id)
+    return row is not None and repeat_refusal_code(row) is None
 
 
 async def repeat_available(printer_id: int) -> bool:

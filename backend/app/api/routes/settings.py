@@ -317,6 +317,7 @@ async def _load_settings(db: AsyncSession, *, effective_env: bool = True) -> App
                 "queue_shortest_first",
                 "forecast_operator_absence_enabled",
                 "auto_queue_rebalance_models",
+                "auto_queue_return_failed",
                 "auto_queue_compatible_models",
                 "auto_order_for_batches",
                 "default_force_color_match",
@@ -1219,6 +1220,7 @@ async def _restore_backup(file: UploadFile, db: AsyncSession, *, authority=None)
                 # Shutdown failure is fatal; a delay cannot prove a writer stopped.
                 from backend.app.core.auth_runtime import auth_runtime
                 from backend.app.services import library_scan
+                from backend.app.services.auto_queue_return_runtime import auto_queue_return_runtime
                 from backend.app.services.background_dispatch import background_dispatch
                 from backend.app.services.cloud_credentials import close_admission as close_cloud_admission
                 from backend.app.services.credential_rollout import credential_rollout
@@ -1237,9 +1239,12 @@ async def _restore_backup(file: UploadFile, db: AsyncSession, *, authority=None)
                 close_cloud_admission()
                 slice_dispatch.close_admission()
                 library_scan.close_admission()
+                auto_queue_return_runtime.close_admission()
                 farm_startup_guard.hold("restore")
                 from backend.app.services.git_backup import git_backup_service
 
+                if not await auto_queue_return_runtime.quiesce_for_restore():
+                    raise HTTPException(409, "AutoQueue return work has not stopped; restart before restoring")
                 if not await git_backup_service.quiesce_for_restore():
                     raise HTTPException(409, "Git backup work has not stopped; restart before restoring")
                 if not await slice_dispatch.quiesce_for_restore():

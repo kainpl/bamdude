@@ -122,6 +122,15 @@ function answerBulkDelete(answer: (ids: number[]) => Response | { deleted_count:
 }
 
 describe('QueueCard collapsed copies', () => {
+  it('shows returned physical history and disables retry without hiding the failure', async () => {
+    mockQueue({ failed: [{ ...row(1, 'failed'), returned_receipt_identity: 'receipt', return_ordinal: 1,
+      error_message: 'Filament ran out', error_code: 'filament_runout' }] });
+    renderCard();
+    fireEvent.click(await screen.findByText('Issues (1)'));
+    expect(await screen.findByRole('link', { name: /Returned to Auto Queue/ })).toBeVisible();
+    expect(screen.getByTitle('Retry')).toBeDisabled();
+    expect(screen.getByText(/Filament ran out/)).toBeVisible();
+  });
   it('keeps editing and cancellation available in the visible action menu', async () => {
     const edit = vi.fn();
     const cancel = vi.spyOn(api, 'cancelQueueItem').mockResolvedValue({ success: true } as never);

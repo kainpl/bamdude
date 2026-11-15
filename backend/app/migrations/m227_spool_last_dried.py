@@ -19,7 +19,7 @@ before this, so every existing spool starts with no record.
 
 from backend.app.migrations.helpers import add_column
 
-version = 226
+version = 227
 name = "spool_last_dried"
 
 

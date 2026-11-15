@@ -4,7 +4,7 @@ from typing import Annotated, Literal
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import AfterValidator, BaseModel, Field, field_validator
+from pydantic import AfterValidator, BaseModel, Field, StrictBool, field_validator
 
 from backend.app.core.timezones import server_timezone
 from backend.app.mcp_server.config import McpConfig, canonical_endpoint
@@ -310,6 +310,9 @@ class AppSettings(BaseModel):
     auto_queue_rebalance_models: bool = Field(
         default=False,
         description="Auto-queue: move an order line's pending prints to idle printers of another model when that finishes sooner",
+    )
+    auto_queue_return_failed: bool = Field(
+        default=False, description="Automatically return proven failed AutoQueue jobs"
     )
     auto_queue_compatible_models: bool = Field(
         default=False,
@@ -914,7 +917,16 @@ class AppSettingsUpdate(BaseModel):
     prefer_lowest_filament: bool | None = None
     queue_shortest_first: bool | None = None
     auto_queue_rebalance_models: bool | None = None
+    auto_queue_return_failed: StrictBool | None = None
     auto_queue_compatible_models: bool | None = None
+
+    @field_validator("auto_queue_return_failed")
+    @classmethod
+    def return_failed_not_null(cls, value):
+        if value is None:
+            raise ValueError("AutoQueue failed-return setting cannot be null")
+        return value
+
     default_force_color_match: bool | None = None
     auto_order_for_batches: bool | None = None
     preheat_enabled: bool | None = None

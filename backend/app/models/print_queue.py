@@ -23,6 +23,9 @@ class PrintQueueItem(Base):
     recovery_identity: Mapped[str | None] = mapped_column(
         String(36), default=lambda: str(uuid4()), unique=True, index=True
     )
+    # Separate from the physical failure code. The receipt is historical proof,
+    # not a cascading FK to an AutoQueue row that an operator may later replace.
+    returned_receipt_identity: Mapped[str | None] = mapped_column(String(36), nullable=True)
 
     # Queue assignment (required - every item belongs to a printer's queue)
     queue_id: Mapped[int] = mapped_column(ForeignKey("printer_queues.id"), nullable=False)

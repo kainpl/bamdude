@@ -353,6 +353,7 @@ def import_all_models() -> None:
         auth_ephemeral,
         auth_session,
         auto_queue,
+        auto_queue_return,
         bug_report,
         calibration_audit,
         calibration_session,

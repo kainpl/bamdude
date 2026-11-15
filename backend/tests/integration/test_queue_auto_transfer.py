@@ -276,7 +276,8 @@ async def test_direct_preserves_blob_and_paused_error_queue(async_client, db_ses
     assert (await move(async_client, item_id, pre)).status_code == 404
 
 
-async def test_rearm_preserves_ancestor_plate_identity_and_history(async_client, db_session, job):
+@pytest.mark.parametrize("returned", [False, True])
+async def test_rearm_preserves_ancestor_plate_identity_and_history(async_client, db_session, job, returned):
     item_id, _ = job
     item = await db_session.get(PrintQueueItem, item_id)
     ancestor = AutoQueueItem(
@@ -294,6 +295,10 @@ async def test_rearm_preserves_ancestor_plate_identity_and_history(async_client,
     db_session.add(ancestor)
     await db_session.flush()
     item.source_auto_item_id = ancestor.id
+    item.source_auto_identity = ancestor.recovery_identity
+    if returned:
+        ancestor.failed_return_count = 1
+        ancestor.failed_return_proof = {"version": 1, "receipt_identity": "historical-receipt"}
     await db_session.commit()
     identity, ancestor_id = ancestor.swap_declaration_identity, ancestor.id
     pre = await proposal(async_client, item_id)
@@ -303,6 +308,10 @@ async def test_rearm_preserves_ancestor_plate_identity_and_history(async_client,
     await db_session.refresh(ancestor)
     assert response.json()["resulting_auto_item_id"] == ancestor_id
     assert ancestor.plate_id is None and ancestor.swap_declaration_identity == identity and ancestor.been_jumped
+    assert ancestor.failed_return_count == int(returned)
+    assert ancestor.failed_return_proof == (
+        {"version": 1, "receipt_identity": "historical-receipt"} if returned else None
+    )
     assert (
         ancestor.status == "pending"
         and ancestor.assigned_to_item_id is None

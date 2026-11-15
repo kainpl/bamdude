@@ -88,6 +88,7 @@ class RetireResult:
     retired_items: list[int] = field(default_factory=list)
     retired_autos: list[int] = field(default_factory=list)
     skipped: list[Skipped] = field(default_factory=list)
+    failed: bool = False
 
 
 def _superseded_rows() -> Select:
@@ -307,4 +308,4 @@ async def retire_for_printer(printer_id: int) -> RetireResult:
         return await retire(item_ids=ids)
     except Exception:  # noqa: BLE001 -- a background cleanup must never fail the path that called it
         logger.exception("Queue leftovers: automatic pass failed for printer %s", printer_id)
-        return RetireResult()
+        return RetireResult(failed=True)

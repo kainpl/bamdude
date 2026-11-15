@@ -27,6 +27,8 @@ KNOWN = {
     ("services/print_reconciliation.py", "release_interrupted_dispatch_claims"),
     # An AutoQueue row (``AutoQueueItem``), not a printer queue row.
     ("services/queue_auto_transfer.py", "apply"),
+    # Re-arms only the AutoQueue ancestor; retains the old printer row and its plate gate.
+    ("services/auto_queue_return.py", "return_ready"),
 }
 
 

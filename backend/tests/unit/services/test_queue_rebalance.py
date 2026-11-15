@@ -388,6 +388,7 @@ def test_model_compatibility_is_asked_once_per_pair_of_models(monkeypatch):
 def test_the_reason_list_is_closed():
     assert SKIP_REASONS == (
         "not_found",
+        "already_returned",
         "already_assigned",
         "not_filed",
         "pinned",

@@ -2493,6 +2493,23 @@ export default {
 
   // Auto Queue (router layer above per-printer queues)
   autoQueue: {
+    failedReturn: {
+      returned: 'Returned to Auto Queue',
+      count: 'Automatic returns: {{count}}/2',
+      deferred: 'Automatic return: {{reason}}',
+      reasons: {
+        attempt_changed: 'The print attempt changed', cooldown: 'Waiting for the two-minute cooldown',
+        disabled: 'Automatic return is switched off', execution_changed: 'A newer print owns the printer',
+        farm_held: 'The farm is on hold', history_changed: 'Return history needs review',
+        order_changed: 'The order changed or is closed', owner_unavailable: 'The job owner is no longer eligible',
+        physical_claim_unsettled: 'A physical printer action is unresolved', physical_owner_changed: 'The printer owner changed',
+        policy_not_portable: 'The saved print policy needs review', return_limit: 'The limit of two automatic returns was reached',
+        settlement_changed: 'Completion evidence changed', settlement_missing: 'Completion evidence is unavailable',
+        source_changed: 'The accepted source changed', source_or_policy_changed: 'The source or saved options changed',
+        source_unavailable: 'The accepted file is unavailable', storage_changed: 'Storage changed',
+        temporarily_unavailable: 'Temporarily unavailable',
+      },
+    },
     title: 'Auto Queue',
     itemCount_one: '{{count}} pending',
     itemCount_other: '{{count}} pending',
@@ -2519,6 +2536,7 @@ export default {
         order_resources: 'This order has printer restrictions — use its reviewed remaining-work plan',
         not_found: 'This item no longer exists',
         already_assigned: 'Already handed to a printer',
+        already_returned: 'Previously returned after a failed print',
         not_filed: 'Not filed under an order line — nothing to rebalance it against',
         pinned: 'Pinned to specific filament slots — not moved',
         scheduled: 'Scheduled for a time — not moved',
@@ -3827,6 +3845,8 @@ export default {
     autoQueueRebalance: 'Rebalance across printer models',
     autoQueueRebalanceDescription: 'Idle printers of another model take an order line’s pending prints when that finishes the line sooner — plates and counts are recalculated for that model’s bed.',
     autoQueueCompatibleModels: 'Use compatible printers in Auto Queue',
+    autoQueueReturnFailed: 'Automatically return failed AutoQueue jobs',
+    autoQueueReturnFailedDescription: 'Automatically return proven failed AutoQueue jobs up to two times, after at least two minutes. The failed printer stays blocked. A job may be assigned to the same printer again if all alternatives are busy; it waits there for Resume. Before it starts, you can move it back to AutoQueue. Failures recovered only by reconciliation after a disconnect or restart are not returned automatically.',
     autoQueueCompatibleModelsDescription: 'When no matching model is ready, Auto Queue may use printers that Bambu Studio marks compatible with the file.',
     defaultForceColorMatch: "Force color match by default",
     defaultForceColorMatchDescription: "New jobs queued from order plans require exact filament colours. The print dialog starts with this option on. Existing jobs and virtual-printer choices keep their settings.",

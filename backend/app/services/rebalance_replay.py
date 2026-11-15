@@ -82,6 +82,7 @@ class Lane:
     requires_operator: bool = False
     #: Its own stagger interval; 0 = the farm's (``farm_forecast``: ``stagger_interval_seconds or`` the policy's).
     interval: float = 0.0
+    printer_identity: str | None = None
 
 
 @dataclass(frozen=True)
@@ -102,6 +103,7 @@ class Job:
     #: T-R2): a stored 0 sorts as 0 although its duration is unknown (``seconds`` None, T19).
     #: ``None`` = the same as ``seconds``.
     order_seconds: float | None = None
+    last_failed_printer_identity: str | None = None
 
 
 def _order_seconds(job: Job) -> float | None:
@@ -395,9 +397,15 @@ def replay(
                 free.clear()  # nothing pending fits a free printer, now or later
                 return
             fitted = fit[cls[best]]
+            from backend.app.services.auto_queue_return_policy import returned_printer_rank
+
             choice = max(
                 (pid for pid in free if pid in fitted),
-                key=lambda pid: (is_ready(pid, t), fitted[pid][0], fitted[pid][1], -pid),
+                key=lambda pid: returned_printer_rank(
+                    jobs[best].last_failed_printer_identity,
+                    by_pid[pid].printer_identity,
+                    (is_ready(pid, t), fitted[pid][0], fitted[pid][1], -pid),
+                ),
             )
             assign(best, choice, t)
 
