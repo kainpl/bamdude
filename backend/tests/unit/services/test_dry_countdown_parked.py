@@ -167,6 +167,27 @@ class TestTheMqttClientStampsIt:
         _push(client, dry_time=719, presence_is_status=False)
         assert _unit(client)["dry_countdown_stalled"] is True
 
+    def test_a_new_command_starts_a_new_wait(self, client):
+        """A start sent over a parked timer of the same length changes nothing
+        the detector could see - the value stays 720 - so the command itself
+        has to restart the wait, or the new cycle reads parked from its first
+        report on a unit that sends no phase."""
+        client._client = MagicMock()
+        _push(client, dry_time=720)
+        _later(client, 151)
+        _push(client, dry_time=720)
+        assert _unit(client)["dry_countdown_stalled"] is True
+
+        assert client.send_drying_command(0, 45, 12, mode=1, filament="PLA") is True
+
+        assert _unit(client)["dry_countdown_stalled"] is False
+        _push(client, dry_time=720)
+        assert _unit(client)["dry_countdown_stalled"] is False
+        # ... and a timer that then does not move is parked again.
+        _later(client, 151)
+        _push(client, dry_time=720)
+        assert _unit(client)["dry_countdown_stalled"] is True
+
     def test_units_are_judged_apart(self, client):
         client._handle_ams_data(
             {"ams": [{"id": "0", "dry_time": 720, "tray": []}, {"id": "1", "dry_time": 300, "tray": []}]}

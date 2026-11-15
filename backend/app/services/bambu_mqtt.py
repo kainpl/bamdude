@@ -4574,6 +4574,17 @@ class BambuMQTTClient:
                 and now - seen[1] > DRY_COUNTDOWN_STALL_SECONDS
             )
 
+    def _restart_dry_countdown_watch(self, ams_id: int) -> None:
+        """A drying command went out for this unit: what was parked is being replaced.
+
+        A start over a parked timer of the same length leaves the value as it
+        was, so without this the new cycle would read parked from its first report.
+        """
+        self._dry_countdown_seen.pop(ams_id, None)
+        for unit in self.state.raw_data.get("ams") or []:
+            if isinstance(unit, dict) and str(unit.get("id")) == str(ams_id):
+                unit["dry_countdown_stalled"] = False
+
     def _handle_ams_data(self, ams_data, *, presence_is_status=True, printer_status=None):
         """Handle AMS data changes for Spoolman integration.
 
@@ -9754,6 +9765,7 @@ class BambuMQTTClient:
             self._drying_targets[ams_id] = {"filament": filament or "", "temp": int(temp)}
         else:
             self._drying_targets.pop(ams_id, None)
+        self._restart_dry_countdown_watch(ams_id)
         return True
 
     @staticmethod
