@@ -8142,6 +8142,32 @@ export interface SpoolmanTagMigrationReport {
   }>;
 }
 
+/**
+ * A Spoolman spool whose own size differs from its filament's. Spoolman
+ * stamps a spool's size when it is created; the old BamDude form wrote a
+ * changed label weight to the filament instead.
+ */
+export interface SpoolmanSizeMismatch {
+  id: number;
+  /** The spool as the inventory list maps it — what the naming template reads. */
+  spool: {
+    id?: number;
+    brand?: string | null;
+    material?: string | null;
+    subtype?: string | null;
+    color_name?: string | null;
+    color_name_is_synthesized?: boolean;
+    slicer_filament_name?: string | null;
+    note?: string | null;
+    rgba?: string | null;
+  };
+  /** Grams: the spool's own size, which every figure is now computed from. */
+  initial_weight: number;
+  /** Grams: its filament's size, which the old form showed and edited. */
+  filament_weight: number;
+  remaining_weight: number | null;
+}
+
 export interface SkippedSpool {
   location: string;
   reason: string;
@@ -12826,6 +12852,12 @@ export const api = {
     request<SpoolmanTagMigrationReport>(`/spoolman/inventory/tags/migrate?dry_run=${dryRun}`, {
       method: 'POST',
     }),
+  getSpoolmanSizeMismatches: () => request<SpoolmanSizeMismatch[]>('/spoolman/inventory/spools/size-mismatches'),
+  applyFilamentSizeToSpoolmanSpool: (spoolId: number) =>
+    request<{ id: number; initial_weight: number | null; remaining_weight: number | null }>(
+      `/spoolman/inventory/spools/${spoolId}/use-filament-size`,
+      { method: 'POST' },
+    ),
   connectSpoolman: () =>
     request<{ success: boolean; message: string }>('/spoolman/connect', {
       method: 'POST',

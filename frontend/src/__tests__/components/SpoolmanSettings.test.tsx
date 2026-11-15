@@ -33,13 +33,15 @@ vi.mock('../../api/client', () => ({
     getPrinters: vi.fn(),
     getSpoolmanModeSwitchPreview: vi.fn(),
     migrateSpoolmanTags: vi.fn(),
+    getSpoolmanSizeMismatches: vi.fn().mockResolvedValue([]),
+    applyFilamentSizeToSpoolmanSpool: vi.fn(),
     getAuthStatus: vi.fn().mockResolvedValue({ auth_enabled: false }),
   },
 }));
 
 // Import mocked module
 import { api } from '../../api/client';
-import type { SpoolmanTagMigrationReport } from '../../api/client';
+import type { SpoolmanSizeMismatch, SpoolmanTagMigrationReport } from '../../api/client';
 
 describe('SpoolmanSettings', () => {
   beforeEach(() => {
@@ -499,6 +501,74 @@ describe('SpoolmanSettings', () => {
 
       expect(await screen.findByText('Nothing to copy: every tag is already in Spoolman.')).toBeInTheDocument();
       expect(screen.queryByRole('button', { name: 'Copy tags' })).not.toBeInTheDocument();
+    });
+  });
+
+  describe('spools whose size differs from their filament', () => {
+    const row = (id: number, subtype: string): SpoolmanSizeMismatch => ({
+      id,
+      spool: { id, brand: 'Sunlu', material: 'PLA', subtype, color_name: 'Red' },
+      initial_weight: 1000,
+      filament_weight: 250,
+      remaining_weight: 900,
+    });
+
+    const spoolmanMode = () => {
+      vi.mocked(api.getSpoolmanSettings).mockResolvedValue({
+        spoolman_enabled: 'true',
+        spoolman_url: 'http://localhost:7912',
+        spoolman_sync_mode: 'auto',
+        spoolman_disable_weight_sync: 'false',
+        spoolman_report_partial_usage: 'true',
+        auto_add_unknown_rfid: 'false',
+      });
+      vi.mocked(api.getSpoolmanStatus).mockResolvedValue({ enabled: true, connected: true, url: 'http://localhost:7912' });
+    };
+
+    it('shows nothing when every spool agrees with its filament', async () => {
+      spoolmanMode();
+      render(<SpoolmanSettings />);
+
+      await screen.findByText('Connected');
+      await waitFor(() => expect(api.getSpoolmanSizeMismatches).toHaveBeenCalled());
+      expect(screen.queryByText('Spools whose size differs from their filament')).not.toBeInTheDocument();
+    });
+
+    it('lists each spool by its name with both sizes and what is left', async () => {
+      spoolmanMode();
+      vi.mocked(api.getSpoolmanSizeMismatches).mockResolvedValue([row(41, 'Matte'), row(46, 'Silk')]);
+      render(<SpoolmanSettings />);
+
+      expect(await screen.findByText('Spools whose size differs from their filament')).toBeInTheDocument();
+      expect(screen.getByText('Sunlu PLA Matte Red')).toBeInTheDocument();
+      expect(screen.getByText('Sunlu PLA Silk Red')).toBeInTheDocument();
+      expect(screen.getAllByText('Spool 1000 g · filament 250 g · 900 g left')).toHaveLength(2);
+    });
+
+    it('changes one spool, and only after the confirmation', async () => {
+      spoolmanMode();
+      vi.mocked(api.getSpoolmanSizeMismatches).mockResolvedValue([row(41, 'Matte'), row(46, 'Silk')]);
+      vi.mocked(api.applyFilamentSizeToSpoolmanSpool).mockResolvedValue({ id: 46, initial_weight: 250, remaining_weight: 150 });
+      const user = userEvent.setup();
+      render(<SpoolmanSettings />);
+
+      const buttons = await screen.findAllByRole('button', { name: "Use the filament's size for this spool" });
+      await user.click(buttons[1]);
+
+      expect(api.applyFilamentSizeToSpoolmanSpool).not.toHaveBeenCalled();
+      const dialog = await screen.findByRole('dialog');
+      expect(dialog).toHaveTextContent('Sunlu PLA Silk Red');
+      await user.click(screen.getByRole('button', { name: 'Set to 250 g' }));
+
+      await waitFor(() => expect(api.applyFilamentSizeToSpoolmanSpool).toHaveBeenCalledTimes(1));
+      expect(api.applyFilamentSizeToSpoolmanSpool).toHaveBeenCalledWith(46);
+    });
+
+    it('is not asked for in the built-in inventory', async () => {
+      render(<SpoolmanSettings />);
+
+      await screen.findByText('Built-in Inventory');
+      expect(api.getSpoolmanSizeMismatches).not.toHaveBeenCalled();
     });
   });
 });

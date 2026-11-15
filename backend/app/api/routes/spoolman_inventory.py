@@ -519,6 +519,88 @@ async def list_spools(
     return mapped
 
 
+def _own_and_filament_size(spool: dict) -> tuple[float | None, float | None]:
+    """A spool's own ``initial_weight`` and its filament's ``weight`` — each a
+    positive number or None."""
+
+    def positive(value) -> float | None:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        return float(value) if value > 0 else None
+
+    filament = spool.get("filament")
+    return positive(spool.get("initial_weight")), positive(
+        filament.get("weight") if isinstance(filament, dict) else None
+    )
+
+
+# Declared above ``/spools/{spool_id}``, or the path would be read as an id.
+@router.get("/spools/size-mismatches")
+async def list_spool_size_mismatches(
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.INVENTORY_READ),
+) -> list[dict]:
+    """Active spools whose own size differs from their filament's. Read-only.
+
+    Spoolman stamps a spool's ``initial_weight`` at creation and never moves it
+    with the filament. BamDude used to write a changed label weight to the
+    filament and read it from there; it now reads the spool's own size, as
+    Spoolman's ``remaining_weight`` does — so a spool resized through the old
+    form reads its creation size again. Nothing is rewritten for the operator:
+    this is the list, and ``use-filament-size`` settles one spool.
+    """
+    client = await _get_client(db)
+    async with _translate_spoolman_errors():
+        spools = await client.get_all_spools()
+    rows: list[dict] = []
+    for spool in spools:
+        own, of_filament = _own_and_filament_size(spool)
+        if own is None or of_filament is None or abs(own - of_filament) < 0.5 or spool.get("archived"):
+            continue
+        try:
+            mapped = _map_spoolman_spool(spool)
+        except ValueError as exc:
+            logger.warning("Skipping malformed Spoolman spool (id=%r): %s", spool.get("id"), exc)
+            continue
+        rows.append(
+            {
+                "id": mapped["id"],
+                "spool": mapped,
+                "initial_weight": own,
+                "filament_weight": of_filament,
+                "remaining_weight": spool.get("remaining_weight"),
+            }
+        )
+    return sorted(rows, key=lambda row: row["id"])
+
+
+@router.post("/spools/{spool_id}/use-filament-size")
+async def use_filament_size_for_spool(
+    spool_id: int = Path(..., gt=0),
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.INVENTORY_UPDATE),
+) -> dict:
+    """Set ONE spool's own size to its filament's (the size the old form showed).
+
+    What was consumed is not touched: Spoolman derives the remaining weight
+    from the new size. One spool per call, by the operator's own choice.
+    """
+    client = await _get_client(db)
+    async with _translate_spoolman_errors():
+        spool = await client.get_spool(spool_id)
+    _own, of_filament = _own_and_filament_size(spool)
+    if of_filament is None:
+        raise HTTPException(status_code=409, detail="This spool's filament states no weight in Spoolman")
+    async with _translate_spoolman_errors():
+        updated = await client.update_spool_full(spool_id=spool_id, initial_weight=of_filament)
+    await ws_manager.broadcast({"type": "inventory_changed"})
+    return {
+        "id": spool_id,
+        "initial_weight": updated.get("initial_weight"),
+        "remaining_weight": updated.get("remaining_weight"),
+    }
+
+
 @router.get("/spools/{spool_id}")
 async def get_spool(
     spool_id: int = Path(..., gt=0),

@@ -11,6 +11,7 @@ import { ConfirmModal } from './ConfirmModal';
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
 import { Select } from './Select';
+import { SpoolmanSizeMismatches } from './SpoolmanSizeMismatches';
 
 export function SpoolmanSettings() {
   const { isAdmin, hasPermission } = useAuth();
@@ -708,6 +709,9 @@ export function SpoolmanSettings() {
                   )}
                 </div>
               )}
+
+              {/* Spools resized through the old form: shown, never rewritten */}
+              {status?.connected && <SpoolmanSizeMismatches />}
 
               {/* Sync result */}
               {syncSuccess && syncResult && (

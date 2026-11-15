@@ -1060,6 +1060,7 @@
   "This serial belongs to an archived printer — unarchive it instead of re-adding": "Цей серійний номер належить архівованому принтеру — розархівуйте його замість повторного додавання",
   "This server is not the one the operation was made for.": "Цей сервер не той, для якого створено операцію.",
   "This source has no operator declaration to apply. Declare it first.": "Це джерело не має операторської декларації, яку можна застосувати. Спершу задекларуйте його.",
+  "This spool's filament states no weight in Spoolman": "Для філаменту цієї котушки у Spoolman не вказано ваги",
   "This tag is a staggered-start group. Un-choose it under Settings → Printing → Queue & Scheduling → Staggered start first.": "Цей тег — група поетапного запуску. Спочатку зніміть його вибір у Налаштування → Друк → Черги та планування → Поетапний запуск.",
   "This thumbnail job belongs to an earlier session; read the file again": "Це завдання мініатюри належить до попереднього сеансу; оновіть файл",
   "Thumbnail exceeds {} MB cap": "Мініатюра більша за ліміт {} МБ",
