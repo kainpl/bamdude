@@ -439,6 +439,35 @@ class TestTheSyncButton:
         assert response.json() == {"synced": 0, "skipped": 1, "skipped_printers": 1}
         assert await _books(db_session, spool) == (200.0, [])
 
+    async def test_the_spools_are_written_in_ascending_id_order(self, async_client, db_session, printer_factory):
+        """Each write holds its spool's row until the request commits. Two presses that walked the
+        assignments in different orders could hold each other's rows on PostgreSQL: one order, by id."""
+        printer = await printer_factory()
+        spools = []
+        for _ in range(3):
+            spool = Spool(material="PLA", rgba="FF0000FF", label_weight=1000, weight_used=200)
+            db_session.add(spool)
+            await db_session.commit()
+            await db_session.refresh(spool)
+            spools.append(spool)
+        for tray_id, spool in zip(range(3), reversed(spools), strict=True):  # rows in descending spool order
+            db_session.add(SpoolAssignment(spool_id=spool.id, printer_id=printer.id, ams_id=0, tray_id=tray_id))
+            await db_session.commit()
+        trays = [{"id": t, "state": 11, "tray_type": "PLA", "tray_color": "FF0000FF", "remain": 65} for t in range(3)]
+        state = SimpleNamespace(state="IDLE", raw_data={"ams": [{"id": 0, "tray": trays}]}, connected=True)
+        written: list[int] = []
+        real = usage_tracker.sync_spool_weight_from_ams
+
+        async def recording(db, spool, **kwargs):
+            written.append(spool.id)
+            return await real(db, spool, **kwargs)
+
+        with patch.object(usage_tracker, "sync_spool_weight_from_ams", recording):
+            response = await self._press(async_client, state)
+
+        assert response.json() == {"synced": 3, "skipped": 0}
+        assert written == sorted(s.id for s in spools)
+
     async def test_a_printer_that_dropped_off_is_not_read_from_its_last_report(
         self, async_client, db_session, printer_factory
     ):

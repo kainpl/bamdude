@@ -576,19 +576,29 @@ async def attach_recovered_3mf(
     ams_trays = build_ams_tray_lookup(state.raw_data) if state and state.raw_data else {}
     slot_to_tray = session_row.ams_mapping or None
     slot_to_tray = unlose_external_markers(slot_to_tray, queue_map) if slot_to_tray else queue_map
-    db.add(
-        ActivePrintSpoolman(
-            printer_id=printer_id,
-            archive_id=archive_id,
-            filament_usage=filament_usage,
-            ams_trays=ams_trays,
-            slot_to_tray=slot_to_tray,
-            layer_usage=layer_usage_json,
-            filament_properties=analysis.filament_properties,
-            tray_remain_start=None,
-        )
+    made = ActivePrintSpoolman(
+        printer_id=printer_id,
+        archive_id=archive_id,
+        filament_usage=filament_usage,
+        ams_trays=ams_trays,
+        slot_to_tray=slot_to_tray,
+        layer_usage=layer_usage_json,
+        filament_properties=analysis.filament_properties,
+        tray_remain_start=None,
     )
+    db.add(made)
     await db.commit()
+    made_id = made.id
+    # The print may have ended while that commit was on its way: its report has
+    # then looked for the row already, or works from its own copy. Either way
+    # nothing would remove this one — it goes, by its own id only.
+    if await _running_session() is None:
+        await db.execute(delete(ActivePrintSpoolman).where(ActivePrintSpoolman.id == made_id))
+        await db.commit()
+        logger.info(
+            "[SPOOLMAN] Late 3MF: archive %s finished meanwhile; its late tracking row is withdrawn", archive_id
+        )
+        return "unchanged"
     logger.info("[SPOOLMAN] Late 3MF: made the tracking row of archive %s (print still running)", archive_id)
     return "created"
 

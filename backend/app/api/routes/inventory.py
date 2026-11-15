@@ -3654,7 +3654,14 @@ async def sync_weights_from_ams(
     from backend.app.services.printer_manager import printer_manager
     from backend.app.services.usage_tracker import print_is_unbooked, sync_spool_weight_from_ams
 
-    result = await db.execute(select(SpoolAssignment).options(selectinload(SpoolAssignment.spool)))
+    # Ascending spool id: every write below holds its spool's row until the
+    # commit, so two requests walking the rows in different orders could hold
+    # them crosswise on PostgreSQL. One order for all of them.
+    result = await db.execute(
+        select(SpoolAssignment)
+        .options(selectinload(SpoolAssignment.spool))
+        .order_by(SpoolAssignment.spool_id, SpoolAssignment.id)
+    )
     assignments = list(result.scalars().all())
     logger.info("AMS weight sync: found %d assignments", len(assignments))
 

@@ -2551,6 +2551,9 @@ async def _track_from_3mf(
                 spool_result = await db.execute(_spool_charge_stmt(seg_spool_id))
                 spool = spool_result.scalar_one_or_none()
                 if not spool:
+                    # The spool was deleted since it was named: said, not dropped.
+                    if uncharged is not None:
+                        uncharged.append((tray_global, round(float(segment_grams), 2)))
                     continue
 
                 spool.weight_used = (spool.weight_used or 0) + segment_grams
@@ -2788,6 +2791,8 @@ async def _track_from_3mf(
                 spool_result = await db.execute(_spool_charge_stmt(seg_spool_id))
                 spool = spool_result.scalar_one_or_none()
                 if not spool:
+                    if uncharged is not None:
+                        uncharged.append((global_tray_id, round(float(segment_grams), 2)))
                     continue
 
                 spool.weight_used = (spool.weight_used or 0) + segment_grams
@@ -2867,6 +2872,9 @@ async def _track_from_3mf(
         spool_result = await db.execute(_spool_charge_stmt(spool_id))
         spool = spool_result.scalar_one_or_none()
         if not spool:
+            missed_grams = layer_grams[slot_id] if layer_grams and slot_id in layer_grams else used_g * scale
+            if uncharged is not None and missed_grams > 0:
+                uncharged.append((global_tray_id, round(float(missed_grams), 2)))
             continue
 
         # Use per-layer grams if available, otherwise linear scale

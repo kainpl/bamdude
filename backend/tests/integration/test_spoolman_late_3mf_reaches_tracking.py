@@ -274,6 +274,19 @@ class TestAMissingRowIsMadeOnlyMidPrint:
 
         assert await _row(db_session, stage) is None
 
+    async def test_a_completion_that_begins_while_the_row_is_being_written_leaves_none_behind(
+        self, db_session, stage, sessions
+    ):
+        """The print ends between the last check and the row's commit: the report has already looked
+        for the row (or holds its own copy), and nothing would ever remove this one."""
+        await _session_row(db_session, stage)
+
+        # Not running at either check before the write; running once the row is committed.
+        with patch.object(usage_tracker, "completion_is_running", side_effect=[False, False, True]):
+            assert await _late_attach(db_session, stage, [_tray(0, remain=-1)]) == "unchanged"
+
+        assert await _row(db_session, stage) is None
+
     async def test_after_the_print_was_charged_no_row_is_left_behind(self, db_session, stage, sessions):
         """A manual retry on a finished archive: its session is gone, and so is its row."""
         assert await _late_attach(db_session, stage, [_tray(0, remain=-1)]) == "unchanged"
