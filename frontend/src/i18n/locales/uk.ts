@@ -9754,11 +9754,7 @@ export default {
     // record, the spool itself stays).
     clearRfid: 'Очистити RFID мітку',
     rfidCleared: 'RFID мітку очищено',
-    spoolmanMixedContentTitle: 'Spoolman неможливо вбудувати через HTTP',
-    spoolmanMixedContentBody: 'Браузер блокує HTTP-вміст усередині HTTPS-сторінки, тому iframe Spoolman залишається порожнім. BamDude завантажений через HTTPS, але Spoolman налаштований на http:// URL.',
-    spoolmanMixedContentFixReverseProxy: 'Найкраще рішення: розмістити Spoolman за тим самим reverse-proxy, що й BamDude, щоб обидва були доступні через HTTPS.',
-    spoolmanMixedContentFixOpenNewTab: 'Обхідний шлях: відкрити Spoolman у новій вкладці - окремі вкладки не підпадають під правило mixed-content.',
-    spoolmanOpenInNewTab: 'Відкрити Spoolman у новій вкладці',
+    openSpoolman: 'Відкрити Spoolman',
     archive: 'Архівувати',
     restore: 'Відновити',
     noSpools: 'Котушок ще немає. Додайте першу котушку для початку.',

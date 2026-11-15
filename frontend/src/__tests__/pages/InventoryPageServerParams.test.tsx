@@ -739,9 +739,8 @@ describe('InventoryPage — the Forecast tab renders server-computed rows', () =
     // not one request reaches the local spool table.
     localStorage.setItem('bamdude-inventory-filters', JSON.stringify({ viewMode: 'forecast' }));
     server.use(
-      // Enabled with NO url = the proxied-inventory Spoolman flavor — the
-      // one that renders OUR page with spoolmanMode=true (a url would render
-      // Spoolman's own iframe and never reach this code at all).
+      // Spoolman mode renders OUR page with spoolmanMode=true, with or
+      // without an address.
       http.get('/api/v1/settings/spoolman', () =>
         HttpResponse.json({ spoolman_enabled: 'true', spoolman_url: '' })
       ),

@@ -10,7 +10,7 @@ import {
   Search,
   TrendingDown, Layers, Printer, AlertTriangle, X, Clock, LayoutGrid, TableProperties, Columns,
   ArrowUp, ArrowDown, ArrowUpDown, Group, ChevronDown, Check, RefreshCw, Disc3, Copy, Eraser,
-  TrendingUp, Lock, Sparkles, Upload, Download, MapPin, History,
+  TrendingUp, Lock, Sparkles, Upload, Download, MapPin, History, ExternalLink,
 } from 'lucide-react';
 import { ForecastPanel } from '../components/ForecastPanel';
 import { ListViewToggle } from '../components/ListViewToggle';
@@ -779,7 +779,6 @@ function saveSortState(state: SortState) {
 
 // Wrapper: detects Spoolman mode and passes it to the shared inventory UI
 export default function InventoryPageRouter() {
-  const { t } = useTranslation();
   const { data: spoolmanSettings, isLoading: spoolmanSettingsLoading } = useQuery({
     queryKey: ['spoolman-settings'],
     queryFn: api.getSpoolmanSettings,
@@ -788,61 +787,16 @@ export default function InventoryPageRouter() {
   const spoolmanMode = spoolmanSettings?.spoolman_enabled === 'true';
   const spoolmanModeReady = !spoolmanSettingsLoading;
 
-  if (spoolmanSettings?.spoolman_enabled === 'true' && spoolmanSettings?.spoolman_url) {
-    const spoolmanUrl = spoolmanSettings.spoolman_url.replace(/\/+$/, '');
-    // Browsers block HTTP iframes inside HTTPS parents (mixed-content rule,
-    // independent of CSP). Surface a targeted warning instead of letting
-    // the iframe render as a silent blank — there's nothing BamDude can do
-    // browser-side to override the block. See upstream issue #1096.
-    const bamdudeIsHttps = window.location.protocol === 'https:';
-    const spoolmanIsHttp = spoolmanUrl.toLowerCase().startsWith('http://');
-    if (bamdudeIsHttps && spoolmanIsHttp) {
-      return (
-        <div className="p-4 max-w-3xl mx-auto">
-          <div className="rounded-lg border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 p-4">
-            <div className="flex items-start gap-3">
-              <AlertTriangle className="w-5 h-5 text-amber-600 dark:text-amber-400 mt-0.5 shrink-0" />
-              <div className="flex-1 min-w-0 space-y-2 text-sm">
-                <p className="font-semibold text-amber-900 dark:text-amber-100">
-                  {t('inventory.spoolmanMixedContentTitle')}
-                </p>
-                <p className="text-amber-800 dark:text-amber-200">
-                  {t('inventory.spoolmanMixedContentBody')}
-                </p>
-                <ul className="list-disc pl-5 space-y-1 text-amber-800 dark:text-amber-200">
-                  <li>{t('inventory.spoolmanMixedContentFixReverseProxy')}</li>
-                  <li>{t('inventory.spoolmanMixedContentFixOpenNewTab')}</li>
-                </ul>
-                <div className="flex flex-wrap gap-2 pt-2">
-                  <a
-                    href={`${spoolmanUrl}/spool`}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex items-center gap-2 px-3 py-1.5 text-sm rounded bg-amber-600 hover:bg-amber-700 text-white"
-                  >
-                    {t('inventory.spoolmanOpenInNewTab')}
-                  </a>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      );
-    }
-    return (
-      <iframe
-        src={`${spoolmanUrl}/spool`}
-        className="h-full w-full border-0"
-        title="Spoolman"
-        sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox"
-      />
-    );
-  }
+  // Spoolman mode renders OUR page, with or without an address (the owner's
+  // decision, as upstream): History, Forecast, the cost column and the spool
+  // form all live here. Spoolman's own interface is one link away, in a new
+  // tab — which no mixed-content rule blocks, unlike the iframe this replaced.
+  const spoolmanUrl = spoolmanMode ? (spoolmanSettings?.spoolman_url ?? '').trim().replace(/\/+$/, '') : '';
 
-  return <InventoryPage spoolmanMode={spoolmanMode} spoolmanModeReady={spoolmanModeReady} />;
+  return <InventoryPage spoolmanMode={spoolmanMode} spoolmanModeReady={spoolmanModeReady} spoolmanUrl={spoolmanUrl} />;
 }
 
-function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spoolmanMode?: boolean; spoolmanModeReady?: boolean }) {
+function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true, spoolmanUrl = '' }: { spoolmanMode?: boolean; spoolmanModeReady?: boolean; spoolmanUrl?: string }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { showToast } = useToast();
@@ -2389,6 +2343,19 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
               {t('inventory.csv.exportButton', 'Export CSV')}
             </Button>
           </>}
+          {/* Spoolman's own interface, for people used to it: a link, in a new
+              tab. Only in Spoolman mode with an address set. */}
+          {spoolmanMode && spoolmanUrl && (
+            <a
+              href={spoolmanUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center justify-center font-medium rounded-lg transition-colors focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-bambu-dark bg-bambu-dark-secondary border border-bambu-dark-tertiary text-bambu-gray hover:text-white hover:border-bambu-gray focus:ring-bambu-gray px-3 py-1.5 text-sm gap-1.5 min-h-[44px] md:min-h-0"
+            >
+              <ExternalLink className="w-4 h-4" />
+              {t('inventory.openSpoolman')}
+            </a>
+          )}
           <Button variant="outline" size="sm" onClick={() => setLocationsModalOpen(true)}>
             <MapPin className="w-4 h-4" />
             {t('locations.manage')}

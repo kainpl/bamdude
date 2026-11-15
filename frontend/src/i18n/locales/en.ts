@@ -9552,11 +9552,7 @@ export default {
     // record, the spool itself stays).
     clearRfid: 'Clear RFID Tag',
     rfidCleared: 'RFID tag cleared',
-    spoolmanMixedContentTitle: 'Spoolman cannot be embedded over HTTP',
-    spoolmanMixedContentBody: 'Your browser blocks HTTP content inside HTTPS pages, so the Spoolman iframe stays blank. BamDude is loaded over HTTPS but Spoolman is configured at an http:// URL.',
-    spoolmanMixedContentFixReverseProxy: 'Best fix: put Spoolman behind the same reverse proxy as BamDude so both are reachable over HTTPS.',
-    spoolmanMixedContentFixOpenNewTab: 'Workaround: open Spoolman in a new tab - standalone tabs are not subject to the mixed-content rule.',
-    spoolmanOpenInNewTab: 'Open Spoolman in new tab',
+    openSpoolman: 'Open Spoolman',
     archive: 'Archive',
     restore: 'Restore',
     noSpools: 'No spools yet. Add your first spool to get started.',
