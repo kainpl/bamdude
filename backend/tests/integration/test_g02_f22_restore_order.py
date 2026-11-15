@@ -1,7 +1,9 @@
 """Merged G01 admission closes synchronously; accepted VP work drains before joins."""
 
 import asyncio
+import sqlite3
 import threading
+from contextlib import closing
 from io import BytesIO
 from unittest.mock import AsyncMock
 from zipfile import ZipFile
@@ -26,6 +28,18 @@ from backend.app.services.farm_startup_guard import farm_startup_guard
 from backend.app.services.git_backup import GitBackupService
 from backend.app.services.slice_dispatch import slice_dispatch
 from backend.app.services.virtual_printer.manager import VirtualPrinterInstance, VirtualPrinterManager
+
+
+def _source_bytes(tmp_path):
+    # The drain oracle stubs only downstream validation. D4 owns/copies a
+    # genuine source image before that boundary, including its private debt.
+    source = tmp_path / "f22-source.db"
+    with closing(sqlite3.connect(source)) as db:
+        db.executescript(
+            "CREATE TABLE printers(id INTEGER); CREATE TABLE settings(key TEXT,value TEXT);"
+            "CREATE TABLE _migrations(version INTEGER); INSERT INTO _migrations VALUES(41);"
+        )
+    return source.read_bytes()
 
 
 @pytest.fixture(autouse=True)
@@ -138,7 +152,7 @@ async def test_zip_closes_g01_admission_then_proves_vp_before_any_other_join(
     monkeypatch.setattr(routes, "_quiesce_library_previews", later)
     body = BytesIO()
     with ZipFile(body, "w") as archive:
-        archive.writestr("bamdude.db", b"only preflight is stubbed")
+        archive.writestr("bamdude.db", _source_bytes(tmp_path))
     await db_session.scalar(select(1))
     assert db_session.in_transaction()
     restoring = asyncio.create_task(
@@ -227,7 +241,7 @@ async def test_zip_keeps_real_upload_thread_fence_after_vp_proof(db_session, mon
     writing = asyncio.create_task(owner.run(write))
     body = BytesIO()
     with ZipFile(body, "w") as archive:
-        archive.writestr("bamdude.db", b"only preflight is stubbed")
+        archive.writestr("bamdude.db", _source_bytes(tmp_path))
     try:
         assert await asyncio.to_thread(entered.wait, 2)
         with pytest.raises(HTTPException) as error:

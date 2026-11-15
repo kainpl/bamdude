@@ -363,15 +363,49 @@ def _run(mode: str, data_dir: Path, url: str | None, *extra: str) -> dict:
 
 @pytest.fixture(scope="module")
 def g02_schema_reference(tmp_path_factory):
-    from backend.tests.integration.g02_pg_schema_scenarios import FIXTURES
+    from backend.app.core.pg_schema_contract import retained_pairs
 
     url = _pg_url()
     _wipe(url, all_objects=True)
     directory = tmp_path_factory.mktemp("g02_reference")
     reference = _run("g02_schema:fresh", directory, url)
     (directory / "fresh.json").write_text(json.dumps(reference, indent=2))
-    accepted = json.loads((FIXTURES / "retained-drift.json").read_text())
+    accepted = retained_pairs()
     return reference, accepted
+
+
+@pytest.fixture(scope="module")
+def d4_fresh_verified(tmp_path_factory):
+    """Always run fresh before the historical population gate, once per module."""
+    tmp_path = tmp_path_factory.mktemp("d4_fresh")
+    url = _pg_url()
+    _wipe(url, all_objects=True)
+    result = _run("g02_schema:d4_model_fresh", tmp_path, url)
+    (tmp_path / "d4-model-fresh.json").write_text(json.dumps(result, indent=2))
+    assert result["expected_tables"] > 100, result
+    assert result["differences"] == [], result
+    assert result["residuals"] == {}, result
+    return result
+
+
+def test_d4_fresh_model_plan_has_no_accepted_drift_or_residual(d4_fresh_verified):
+    assert d4_fresh_verified["differences"] == []
+
+
+@pytest.mark.timeout(300)
+@pytest.mark.parametrize(
+    "case",
+    ["v042", "v051", "v061", "pre075", "pre144", "repair", "retry043", "retry071", "retry221", "deletes", "head_v061"],
+)
+def test_d4_historical_population_clears_full_durable_debt(tmp_path, case, d4_fresh_verified):
+    url = _pg_url()
+    _wipe(url, all_objects=True)
+    if case == "head_v061":
+        _run("g02_schema:prepare_head_v061", tmp_path / case, None)
+    mode = case if case in ("repair", "deletes", "head_v061") or case.startswith("retry") else "import:" + case
+    result = _run("g02_schema:d4:" + mode, tmp_path / case, url)
+    (tmp_path / ("d4-" + case + ".json")).write_text(json.dumps(result, indent=2))
+    assert result["debt"] is None and len(result["phases"]) == 7
 
 
 @pytest.mark.timeout(120)

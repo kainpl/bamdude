@@ -83,13 +83,77 @@ their code/requirements hashes and the exact drift rules live in
 are historical bytes; their resolved environments are modern resolutions of
 lower bounds, not historical deployment lockfiles.
 
-## Unreleased gates still open in G02 D4
+## Durable import repair and recovery
 
-The current development tree is not release-ready. Fresh head-SQLite sources
-can contain a named unique index duplicating an auth constraint, which the PG
-import rejects. Portable backups also omit other migration-only indexes,
-including a partial unique calibration index. B restores only the frozen B
-targets; it does not resolve that complete index inventory. D4 must cover
-fresh and already-affected SQLite sources and both portable restore dialects
-before a release. The historical fixture upgraded to head is a separate test;
-its success does not close these two gates.
+An imported migration marker does not prove the destination's schema. Every
+database replacement writes a new private repair debt in the replacement
+transaction (in the prepared image on SQLite). PostgreSQL resumes the whole
+post-import conform: historical repair, portable indexes, columns and NOT NULL,
+UNIQUE, foreign keys, model indexes and CHECK. Only final verification and
+removing that exact debt owner share the finishing transaction. A process
+crash between phases leaves durable work for the next start.
+
+The comparator uses the installed model plan, frozen historical policy and
+the exact versioned accepted B pairs in application data. It does not execute
+defaults from a source file or grant wildcard exceptions. Extra objects outside
+the application plan are not silently dropped.
+
+Known violations of data-dependent guards retain rows and a count-only,
+nonblocking residual when that exact guard is actually missing. This does not
+replace the existing import FK policy: dangling SET NULL references are still
+detached, and other orphan rows are still purged before classification. Missing
+guards are retried individually after their data is corrected, rather than
+reconciling every running installation against current models on each boot.
+Portable export re-proves its omissions in the same database snapshot that
+copies rows; an old report is not permission to omit a now-enforceable guard.
+
+Duplicate active filament calibrations need a separate explicit confirmation
+in Settings → Backup, before services stop. Restore retains the source rows
+and active flags, without the partial uniqueness protection, and reports the
+warning. The short-lived, one-use confirmation is bound to the administrator,
+the entire ZIP and prepared database, destination and exact count. Its audit
+and new debt are committed with replacement. Approval in a source backup is
+never accepted. Automatic SQLite-to-PG import cannot supply this consent:
+make a consistent ZIP from a copy of the source, start a clean installation
+and use the explicit restore flow.
+
+The complete portable index set is declared in models and repaired by a
+frozen additive migration. Native upgrades with duplicate active calibrations
+remain usable with a durable warning. The intentionally redundant legacy
+token-identity index remains in this inventory. Unknown same-name indexes are
+never dropped based on a guessed equivalent expression.
+
+If a technical or unknown-structure failure leaves hard debt, startup stays in
+maintenance: `/health` and other requests return safe 503, and farm, auth and
+WebSocket admission remain closed. Two automatic attempts are recorded before
+work starts; kills do not refund them. A known failure, including a temporary
+lock or connection failure when it can be recorded, exhausts the automatic
+budget. An unhealthy-container restart policy may restart the process, but
+cannot refill this budget. Correct the external cause and run offline recovery:
+
+```sh
+python -m backend.app.cli schema_repair status
+python -m backend.app.cli schema_repair retry
+```
+
+Stop BamDude first; commands refuse its held installation lock. `status` is
+read-only and does not initialise a missing database, embedded password/port,
+migrations or farm. `retry` makes one explicit attempt, including when the
+automatic budget is exhausted, and never supplies consent or clears debt by
+force. A successful repair still requires normal application restart.
+
+For Docker, stop the application service (it is PID 1 in its container), then
+run the command in a one-shot container of the same image with the same data
+mount, environment and UID. Keep an external PostgreSQL service running.
+For a Windows service, stop it and confirm its process has ended; invoke its
+bundled Python from the application directory with the same DATA_DIR and
+DATABASE_URL. A separately registered PostgreSQL service may remain running. For an existing embedded-child cluster, retry starts only the required database child and proves its cleanup; it never initializes a replacement cluster.
+
+To prepare a raw SQLite source for explicit restore, use SQLite's backup API
+against an isolated copy of its DB/WAL pair to produce a consistent
+`bamdude.db`. Put it at the ZIP root with the source's required queue, library,
+keys and companion files under the existing backup validation rules. Do not
+edit or rename the original to bypass preflight.
+
+D4's implementation acceptance and G02 C remain separate release gates. A
+historical schema test alone does not close either gate.

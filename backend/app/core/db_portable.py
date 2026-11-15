@@ -62,6 +62,10 @@ def validate_sqlite_backup(path: Path, *, require_app_schema: bool = False) -> N
                 raise ValueError("Backup database has no tables")
             if require_app_schema and not {"printers", "settings"} <= tables:
                 raise ValueError("Backup is missing application tables")
+            if require_app_schema and not {"key", "value"} <= {
+                r[1] for r in src.execute("PRAGMA table_info(settings)")
+            }:
+                raise ValueError("Backup is missing application settings columns")
             if "_migrations" in tables:
                 versions = {r[0] for r in src.execute("SELECT version FROM _migrations")}
                 known = {m["version"] for m in _discover_migrations()}
@@ -96,6 +100,24 @@ async def _file_work(function, *args, **kwargs):
     return task.result()
 
 
+async def _annotate_sqlite_snapshot(path, metadata):
+    """Diagnostic proof on the private snapshot, never a live DB edit."""
+    if "settings" not in metadata.tables:
+        return
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    from backend.app.core.schema_conform_repair import data_residuals
+    from backend.app.core.schema_repair_state import PORTABLE, VERSION, put_record
+
+    image = create_async_engine(f"sqlite+aiosqlite:///{path}")
+    try:
+        async with image.begin() as conn:
+            reports = await data_residuals(conn, metadata, accepted_calibration=True)
+            await put_record(conn, PORTABLE, {"version": VERSION, "entries": reports})
+    finally:
+        await image.dispose()
+
+
 async def dump_to_sqlite(engine, metadata, output_path: Path) -> None:
     """Export a consistent database snapshot to the existing portable SQLite format."""
     from backend.app.core.db_dialect import is_sqlite
@@ -105,6 +127,7 @@ async def dump_to_sqlite(engine, metadata, output_path: Path) -> None:
         # can race writers and does not capture a consistent live database.
         with _staged_output(output_path) as staging:
             await _file_work(_snapshot_sqlite, Path(engine.url.database), staging)
+            await _annotate_sqlite_snapshot(staging, metadata)
     else:
         await _export_pg_to_sqlite(engine, metadata, output_path)
 
@@ -189,6 +212,9 @@ async def _export_pg_to_sqlite(engine, metadata, output_path: Path) -> None:
                 # new snapshot for each table and can mix parent/child revisions.
                 await conn.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY"))
             await _check_export_schema(conn, portable, metadata)
+            from backend.app.core.schema_portable_residuals import adapt_portable
+
+            residuals = await adapt_portable(conn, portable, metadata) if conn.dialect.name == "postgresql" else []
             # Staging engine: no case-folding listener (core/case_folding.py) — nothing
             # case-insensitive runs here; add configure_sqlite_connection if that ever changes.
             schema_engine = create_sync_engine(f"sqlite:///{staging}")
@@ -237,6 +263,18 @@ async def _export_pg_to_sqlite(engine, metadata, output_path: Path) -> None:
                     async with conn.stream(statement) as result:
                         async for rows in result.partitions(500):
                             dst.executemany(insert, [serialize(row) for row in rows])
+                if "settings" in portable.tables:
+                    from backend.app.core.schema_repair_state import PORTABLE, VERSION, encode
+
+                    # This is diagnostic data only. New restores re-prove every
+                    # object and require their own calibration confirmation.
+                    dst.execute('DELETE FROM settings WHERE "key"=?', (PORTABLE,))
+                    dst.execute(
+                        'INSERT INTO settings("key",value) VALUES (?,?)',
+                        (PORTABLE, encode({"version": VERSION, "entries": residuals})),
+                    )
+                    if residuals:
+                        logger.warning("Portable backup preserves %d schema data residuals", len(residuals))
                 violations = dst.execute("PRAGMA foreign_key_check").fetchmany(5)
                 if violations:
                     raise ValueError(f"Portable backup has foreign key violations: {violations}")
@@ -434,7 +472,19 @@ async def _restore_model_indexes(conn, models_metadata) -> None:
             # sets normally agree; the guard stays because it is cheap and the
             # failure it prevents is a boot that stops.
             present = {c["name"] for c in inspector.get_columns(table.name)}
+            existing_indexes = {i["name"] for i in inspector.get_indexes(table.name)}
+            if sync_conn.dialect.name == "sqlite":
+                # SQLite reflection omits expression indexes; checkfirst alone
+                # therefore tries to create our now-bound expression twice.
+                existing_indexes.update(
+                    sync_conn.scalars(
+                        text("SELECT name FROM sqlite_schema WHERE type='index' AND tbl_name=:table"),
+                        {"table": table.name},
+                    )
+                )
             for index in table.indexes:
+                if index.name in existing_indexes:
+                    continue
                 # Every column the index touches, plain or inside an expression
                 # (``COALESCE(a, b)`` names two), must already exist here.
                 # ``visitors.iterate`` walks the expression tree and yields the
@@ -748,7 +798,7 @@ async def _reconcile_check_constraints(engine, models_metadata) -> None:
 _conform_pending = False
 
 
-async def conform_imported_schema(engine, models_metadata) -> None:
+async def conform_imported_schema(engine, models_metadata, *, debt=None) -> None:
     """After an import and the chain that followed it: what a fresh install has, the moved one gets.
 
     A file that upgraded through the migrations is the models MINUS
@@ -766,12 +816,21 @@ async def conform_imported_schema(engine, models_metadata) -> None:
 
     Measured against a fresh ``create_all`` + chain on the same PostgreSQL
     (2026-09-09): after this pass the two schemas differ in nothing that
-    changes behaviour. Runs exactly once, after the chain that followed an
-    ``import_sqlite_to_postgres`` in this process — never on an ordinary
-    boot. Separately numbered historical repairs may run on upgrade; this
-    generic pass against model metadata remains import-only.
+    changes behaviour. Every replacement now owns durable repair debt; a
+    later process resumes the entire import-only plan before readiness, even
+    when all migration markers arrived with the source. The legacy flag arm
+    below remains for direct compatibility callers, not as completion proof.
+    Ordinary native boots only retry their recorded residual objects.
     """
     global _conform_pending
+    from backend.app.core.schema_repair import claim, run_claimed
+
+    if debt is None:
+        debt = await claim(engine, models_metadata)
+    if debt is not None:
+        await run_claimed(engine, models_metadata, debt)
+        _conform_pending = False
+        return
     if not _conform_pending:
         return
     _conform_pending = False
@@ -799,7 +858,7 @@ def _request_conform() -> None:
 
 
 @asynccontextmanager
-async def prepared_import_source(path, metadata):
+async def prepared_import_source(path, metadata, *, postgres=True):
     """All validators and the importer share one owned snapshot, never a cache."""
     from backend.app.core.sqlite_import_source import (
         PreparedSqliteSource,
@@ -816,19 +875,22 @@ async def prepared_import_source(path, metadata):
         if own:
             # Reserve ownership before yielding to the worker: cancellation
             # during copy still has a reachable object to clean up.
-            await _file_work(prepare_postgres_source, source, metadata)
+            if postgres:
+                await _file_work(prepare_postgres_source, source, metadata)
+            else:
+                await _file_work(source.copy)
         yield source
     finally:
         if own:
             await _file_work(source.close)
 
 
-async def import_sqlite_to_postgres(engine, metadata, sqlite_path: Path) -> int:
+async def import_sqlite_to_postgres(engine, metadata, sqlite_path: Path, *, acceptance=None) -> int:
     async with prepared_import_source(sqlite_path, metadata) as prepared:
-        return await _import_prepared_to_postgres(engine, metadata, prepared)
+        return await _import_prepared_to_postgres(engine, metadata, prepared, acceptance=acceptance)
 
 
-async def _import_prepared_to_postgres(engine, metadata, prepared) -> int:
+async def _import_prepared_to_postgres(engine, metadata, prepared, *, acceptance=None) -> int:
     """Import a SQLite file into PostgreSQL at the FILE's migration level.
 
     Used for the first-start move and for restoring a SQLite backup. The
@@ -1080,6 +1142,12 @@ async def _import_prepared_to_postgres(engine, metadata, prepared) -> int:
             # replacement. A late external writer must not be consumed silently.
             await _file_work(prepared.assert_unchanged)
 
+            # Owned by the SAME transaction as imported rows. A source marker
+            # or current migration level cannot certify the target's repair.
+            from backend.app.core.schema_repair_state import write_pending
+
+            await write_pending(conn, metadata, acceptance=acceptance)
+
         # What the models declare beyond the file — indexes reflection could not
         # carry, foreign keys no migration ever created — is added AFTER the
         # pending migrations, when the tables they belong to exist. See
@@ -1129,6 +1197,24 @@ class SqliteImportError(RuntimeError):
     """The one-time SQLite → PostgreSQL import failed; startup must not continue."""
 
 
+async def _target_has_repair_history(conn):
+    """Eligibility only, NEVER proof that its pending schema is repaired.
+
+    A committed import with zero printers is still used storage. A crash before
+    consuming its local SQLite file must not re-import/reset its repair budget.
+    """
+    from backend.app.core.schema_repair_state import DEBT, RESIDUALS, has_settings
+
+    if not await has_settings(conn):
+        return False
+    return bool(
+        await conn.scalar(
+            text('SELECT count(*) FROM settings WHERE "key" IN (:debt,:residuals)'),
+            {"debt": DEBT, "residuals": RESIDUALS},
+        )
+    )
+
+
 async def preflight_sqlite_to_pg(engine):
     """Before create_all: refuse an unsupported *eligible* local import source.
 
@@ -1144,6 +1230,8 @@ async def preflight_sqlite_to_pg(engine):
     if not is_postgres():
         return
     async with engine.connect() as conn:
+        if await _target_has_repair_history(conn):
+            return
         if await conn.run_sync(lambda sync: inspect(sync).has_table("printers")):
             if await conn.scalar(text("SELECT EXISTS (SELECT 1 FROM printers)")):
                 return
@@ -1167,6 +1255,14 @@ async def _prepare_local_import(data_dir, metadata):
             await _file_work(source.close)
             return None
         await _file_work(source.validate, metadata)
+        from backend.app.core.schema_restore_consent import calibration_groups
+
+        if await _file_work(calibration_groups, source.path):
+            raise ValueError(
+                "Active calibration duplicates require explicit restore confirmation. "
+                "Create a consistent ZIP from a COPY of the SQLite database, start a clean installation, "
+                "then restore the ZIP and review its warning. The original database was not changed."
+            )
         return source
     except BaseException as exc:
         if source is not None:
@@ -1199,6 +1295,8 @@ async def auto_migrate_sqlite_to_pg(engine, metadata, *, prepared=None) -> bool:
     # Check if PG already has data
     try:
         async with engine.begin() as conn:
+            if await _target_has_repair_history(conn):
+                return False
             result = await conn.execute(text("SELECT COUNT(*) FROM printers"))
             if (result.scalar() or 0) > 0:
                 return False  # PG already populated

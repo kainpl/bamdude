@@ -18,7 +18,7 @@ somewhere still resolves its metadata after the operator "deletes" it.
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, String, Text, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from backend.app.core.database import Base
@@ -48,3 +48,7 @@ class SlicerPipeline(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now(), onupdate=func.now()
     )
+
+
+# Canonical declarations also carry migration-owned indexes into portable DDL.
+Index("ix_slicer_pipelines_is_deleted", SlicerPipeline.is_deleted)

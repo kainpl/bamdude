@@ -702,7 +702,9 @@ class GitBackupService:
         from backend.app.core.credential_config import CONFIG_GUARD_KEY
 
         sensitive_keys = {"bambu_cloud_token", "auth_secret_key", CONFIG_GUARD_KEY}
-        settings_data = {s.key: s.value for s in settings if s.key not in sensitive_keys}
+        from backend.app.core.schema_repair_state import private_setting
+
+        settings_data = {s.key: s.value for s in settings if s.key not in sensitive_keys and not private_setting(s.key)}
 
         files["settings/app_settings.json"] = {
             "version": "1.0",

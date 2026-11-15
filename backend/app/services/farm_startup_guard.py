@@ -360,6 +360,10 @@ class FarmReadyMiddleware:
         async def ready_send(message):
             await send(message)
             if message["type"] == "lifespan.startup.complete":
+                from backend.app.core import schema_repair_maintenance
+
+                if schema_repair_maintenance.active:
+                    return
                 farm_startup_guard.mark_ready()
                 from backend.app.core.auth_runtime import auth_runtime
 

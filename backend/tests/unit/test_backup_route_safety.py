@@ -21,7 +21,9 @@ def upload(tmp_path, *, damaged=False, migration_level=41):
         source.write_bytes(b"corrupt")
     else:
         with closing(sqlite3.connect(source)) as db:
-            db.executescript("CREATE TABLE printers(id INTEGER PRIMARY KEY); CREATE TABLE settings(key TEXT);")
+            db.executescript(
+                "CREATE TABLE printers(id INTEGER PRIMARY KEY); CREATE TABLE settings(key TEXT,value TEXT);"
+            )
             # A deliberately minimal supported-level fixture: imports are
             # injected below. Real historical schema lives in the G02 fixtures.
             if migration_level is not None:
@@ -215,7 +217,8 @@ async def test_failed_database_swap_restores_previous_key_and_keeps_identity(tmp
     )
     monkeypatch.setattr("backend.app.core.database.close_all_connections", AsyncMock())
 
-    async def failed_import(*args):
+    async def failed_import(*args, acceptance=None):
+        assert acceptance is None
         assert key.read_bytes() == b"backup-key"
         assert (live / "custom-archive/restored.3mf").read_bytes() == b"restored-model"
         assert not (live / "icons/old.png").exists()

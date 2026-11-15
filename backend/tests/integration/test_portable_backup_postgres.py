@@ -60,6 +60,22 @@ def test_postgres_zip_restores_to_sqlite_and_postgres(tmp_path):
     assert restored == {**original, "dialect": "sqlite"}
 
 
+@pytest.mark.parametrize("data_residual", [False, True])
+def test_two_complete_portable_cycles_keep_rows_history_and_indexes_with_new_debt(tmp_path, data_residual):
+    url = _pg_url()
+    _wipe(url, all_objects=True)
+    original = run("export-r5" if data_residual else "export", tmp_path / "source", url, tmp_path)
+    source = original.pop("zip")
+    tokens = []
+    for cycle in range(2):
+        restored = run("cycle", tmp_path / f"cycle-{cycle}", url, source)
+        assert restored["report"] == original
+        assert restored["residuals"] == ([["printers.column.name.nullable", "null_rows", 1]] if data_residual else [])
+        tokens.append(restored["restore_id"])
+        source = restored["zip"]
+    assert len(set(tokens)) == 2
+
+
 @pytest.fixture
 def scratch_url():
     url = _pg_url()
@@ -124,6 +140,8 @@ async def test_failed_import_rolls_back_old_database(scratch_url, tmp_path, monk
         db.executescript("""
             CREATE TABLE parent(id INTEGER PRIMARY KEY);
             CREATE TABLE child(id INTEGER PRIMARY KEY, parent_id INTEGER REFERENCES parent(id));
+            CREATE TABLE _migrations(version INTEGER NOT NULL);
+            INSERT INTO _migrations VALUES(41);
             INSERT INTO parent VALUES (1);
             INSERT INTO child VALUES (2, 1);
         """)

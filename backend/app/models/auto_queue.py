@@ -194,3 +194,7 @@ from backend.app.models.print_queue import PrintQueueItem  # noqa: E402
 from backend.app.models.project import Project  # noqa: E402
 from backend.app.models.queue_source import QueueSource  # noqa: E402
 from backend.app.models.user import User  # noqa: E402
+
+# Canonical declarations also carry migration-owned indexes into portable DDL.
+Index("ix_auto_queue_batch_id", AutoQueueItem.batch_id)
+Index("ix_auto_queue_status_position", AutoQueueItem.status, AutoQueueItem.position)

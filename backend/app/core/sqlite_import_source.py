@@ -103,10 +103,12 @@ class PreparedSqliteSource:
 
     def validate(self, models_metadata):
         from backend.app.core.db_portable import _reflect_sqlite_schema, validate_sqlite_backup
+        from backend.app.core.schema_source_indexes import validate_source_indexes
         from backend.app.core.sqlite_import_preflight import validate_text_values
 
         validate_postgres_source(self)
         validate_sqlite_backup(self.path)
+        validate_source_indexes(self.path)
         self.metadata = _reflect_sqlite_schema(self.path, models_metadata)
         validate_text_values(self.path, self.metadata)
 

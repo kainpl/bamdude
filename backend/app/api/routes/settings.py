@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
-from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import delete, func, select, text
@@ -19,6 +19,7 @@ from backend.app.core.config import settings as app_settings
 from backend.app.core.credential_config import canonical_url, lock_credential_config, merge_secret_fields
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
+from backend.app.core.schema_repair_state import SchemaRepairPending
 from backend.app.core.tasks import spawn_background_task
 from backend.app.i18n.api_errors import json_error
 from backend.app.models.settings import Settings
@@ -735,8 +736,11 @@ async def reset_settings(
     # Keep it locked and present across reset; a later editor must never lazily
     # create its own independent serialization row.
     result = await db.execute(select(Settings).where(Settings.key != CONFIG_GUARD_KEY).order_by(Settings.key))
+    from backend.app.core.schema_repair_state import private_setting
+
     for setting in result.scalars().all():
-        await db.delete(setting)
+        if not private_setting(setting.key):
+            await db.delete(setting)
 
     await db.commit()
 
@@ -1088,11 +1092,21 @@ async def create_backup(
         bg = BackgroundTasks()
         bg.add_task(lambda p=zip_file: _os.unlink(p) if p.exists() else None)
 
+        from backend.app.core.db_portable import _file_work
+        from backend.app.core.schema_portable_residuals import zip_warning_count
+
+        try:
+            count = await _file_work(zip_warning_count, zip_file)
+        except BaseException:
+            zip_file.unlink(missing_ok=True)
+            raise
+
         return FileResponse(
             path=str(zip_file),
             media_type="application/zip",
             filename=filename,
             background=bg,
+            headers={"X-BamDude-Schema-Residual-Objects": str(count)},
         )
     except BackupBusyError as exc:
         raise HTTPException(409, "A backup or restore is already running") from exc
@@ -1110,6 +1124,8 @@ async def restore_backup(
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.SETTINGS_RESTORE),
     request: Request = None,
+    accept_calibration_residual: bool = Form(False),
+    calibration_receipt: str | None = Form(None),
 ):
     """Validate and stage all files, then replace files and the portable database."""
     from backend.app.services.backup_files import BackupBusyError, exclusive_operation
@@ -1124,7 +1140,13 @@ async def restore_backup(
 
     try:
         async with exclusive_operation():
-            return await _restore_backup(file, db, authority=authority)
+            return await _restore_backup(
+                file,
+                db,
+                authority=authority,
+                accept_calibration_residual=accept_calibration_residual is True,
+                calibration_receipt=calibration_receipt if isinstance(calibration_receipt, str) else None,
+            )
     except BackupBusyError as exc:
         raise HTTPException(409, "A backup or restore is already running") from exc
 
@@ -1157,7 +1179,14 @@ async def _quiesce_library_previews() -> None:
 PREVIEW_QUIESCE_UNPROVEN = "Library previews could not prove they stopped. Restart BamDude, then restore."
 
 
-async def _restore_backup(file: UploadFile, db: AsyncSession, *, authority=None):
+async def _restore_backup(
+    file: UploadFile,
+    db: AsyncSession,
+    *,
+    authority=None,
+    accept_calibration_residual=False,
+    calibration_receipt=None,
+):
     import asyncio
     import tempfile
     from contextlib import AsyncExitStack
@@ -1172,6 +1201,11 @@ async def _restore_backup(file: UploadFile, db: AsyncSession, *, authority=None)
         validate_sqlite_backup,
     )
     from backend.app.core.paths import resolve_data_dir
+    from backend.app.core.schema_source_indexes import (
+        SOURCE_INDEX_MESSAGE,
+        SourceIndexShapeError,
+        validate_source_indexes,
+    )
     from backend.app.core.sqlite_import_preflight import (
         SOURCE_COLLISION_MESSAGE,
         SOURCE_VALUES_MESSAGE,
@@ -1213,11 +1247,13 @@ async def _restore_backup(file: UploadFile, db: AsyncSession, *, authority=None)
         if not backup_db.exists():
             raise HTTPException(400, "Invalid backup: missing database file (bamdude.db or bambuddy.db)")
         try:
-            prepared = None
-            if not is_sqlite():
-                prepared = await source_stack.enter_async_context(prepared_import_source(backup_db, Base.metadata))
-            checked_db = prepared.path if prepared is not None else backup_db
+            prepared = await source_stack.enter_async_context(
+                prepared_import_source(backup_db, Base.metadata, postgres=not is_sqlite())
+            )
+            checked_db = prepared.path
             await _file_work(validate_sqlite_backup, checked_db, require_app_schema=True)
+            if is_sqlite():
+                await _file_work(validate_source_indexes, checked_db)
             zigbee_db = staging / "zigbee/zigbee.db"
             if zigbee_db.exists():
                 await _file_work(validate_sqlite_backup, zigbee_db)
@@ -1241,9 +1277,70 @@ async def _restore_backup(file: UploadFile, db: AsyncSession, *, authority=None)
             ) from exc
         except SqliteSourceCollisionError as exc:
             raise HTTPException(400, {"error": exc.code, "message": SOURCE_COLLISION_MESSAGE}) from exc
+        except SourceIndexShapeError as exc:
+            raise HTTPException(400, {"error": exc.code, "message": SOURCE_INDEX_MESSAGE}) from exc
         except ValueError as exc:
             logger.warning("Restore preflight rejected database: %s", exc)
             raise HTTPException(400, "Invalid backup database: damaged or incompatible. Check server logs.") from exc
+
+        # This decision precedes ANY hold/drain. The source metadata cannot
+        # authorize its own missing active-calibration UNIQUE.
+        from backend.app.core.schema_restore_consent import (
+            CONFIRMATION_MESSAGE,
+            binding,
+            calibration_groups,
+            receipts,
+            zip_digest,
+        )
+        from backend.app.services.connector_submissions import read_server_identity
+
+        acceptance = None
+        count = await _file_work(calibration_groups, prepared.path)
+        if accept_calibration_residual is True and not count:
+            raise HTTPException(
+                400,
+                {
+                    "error": "calibration_restore_confirmation_invalid",
+                    "message": "Restore confirmation expired or no longer matches. Select the backup again.",
+                },
+            )
+        if count:
+            target = (*await read_server_identity(db), farm_startup_guard.boot_id())
+            source_hash = await _file_work(zip_digest, file.file)
+            expected = binding(authority, source_hash, prepared, target, count)
+            if accept_calibration_residual is True:
+                acceptance = receipts.consume(calibration_receipt, expected)
+                if acceptance is None:
+                    raise HTTPException(
+                        400,
+                        {
+                            "error": "calibration_restore_confirmation_invalid",
+                            "message": "Restore confirmation expired or no longer matches. Select the backup again.",
+                        },
+                    )
+            else:
+                receipt = receipts.issue(expected) if authority is not None and all(target) else None
+                raise HTTPException(
+                    400,
+                    {
+                        "error": "calibration_restore_confirmation_required",
+                        "message": CONFIRMATION_MESSAGE,
+                        "duplicate_groups": count,
+                        "receipt": receipt,
+                    },
+                )
+
+        if is_sqlite():
+            from sqlalchemy.ext.asyncio import create_async_engine
+
+            from backend.app.core.schema_repair_state import write_pending
+
+            image = create_async_engine(f"sqlite+aiosqlite:///{prepared.path}")
+            try:
+                async with image.begin() as conn:
+                    await write_pending(conn, Base.metadata, acceptance=acceptance)
+            finally:
+                await image.dispose()
 
         try:
             files = FileRestore(staging, app_settings, resolve_data_dir())
@@ -1352,6 +1449,10 @@ async def _restore_backup(file: UploadFile, db: AsyncSession, *, authority=None)
                         # is owned by restore while ordinary admission remains
                         # closed; release its guard before filesystem I/O.
                         await validate_restore_actor(db, authority)
+                        if acceptance is not None:
+                            target_now = (*await read_server_identity(db), farm_startup_guard.boot_id())
+                            if list(target_now) != acceptance["target"]:
+                                raise HTTPException(400, "Restore confirmation no longer matches this installation")
                         await db.rollback()
                     await _file_work(files.prepare)
                     queue_sources.invalidate_receipts()
@@ -1369,14 +1470,15 @@ async def _restore_backup(file: UploadFile, db: AsyncSession, *, authority=None)
                         def replace_sqlite():
                             # Online backup writes through the live DB's WAL. Mark
                             # commit inside the worker even if its await is cancelled.
-                            _snapshot_sqlite(backup_db, db_path)
+                            prepared.assert_unchanged()
+                            _snapshot_sqlite(prepared.path, db_path)
                             files.committed = True
 
                         await _file_work(replace_sqlite)
                     else:
                         from backend.app.core.database import engine
 
-                        await import_sqlite_to_postgres(engine, Base.metadata, prepared)
+                        await import_sqlite_to_postgres(engine, Base.metadata, prepared, acceptance=acceptance)
                         files.committed = True  # No await between DB success and this flag.
             finally:
                 await _file_work(files.finish)
@@ -1414,6 +1516,17 @@ async def _restore_backup(file: UploadFile, db: AsyncSession, *, authority=None)
             }
         except HTTPException:
             raise
+        except SchemaRepairPending:
+            from backend.app.core import schema_repair_maintenance
+
+            schema_repair_maintenance.active = True
+            return json_error(
+                503,
+                {
+                    "error": "schema_repair_pending",
+                    "message": "Database schema repair is pending. Stop BamDude and run schema_repair retry.",
+                },
+            )
         except Exception:
             logger.exception("Restore failed; restart BamDude before resuming work")
             return JSONResponse(

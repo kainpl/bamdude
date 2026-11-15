@@ -296,9 +296,17 @@ def _contents(staging: Path):
 
 
 def write_manifest(staging: Path) -> None:
+    from backend.app.core.schema_portable_residuals import snapshot_warning_count
+
+    warning_count = snapshot_warning_count(staging / "bamdude.db")
     files, dirs = _contents(staging)
     (staging / MANIFEST).write_text(
-        json.dumps({"format": 1, "files": files, "directories": dirs}, ensure_ascii=False, indent=2), encoding="utf-8"
+        json.dumps(
+            {"format": 1, "files": files, "directories": dirs, "schema_residual_objects": warning_count},
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
     )
 
 

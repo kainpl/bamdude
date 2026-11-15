@@ -22,7 +22,7 @@ import {
   RotateCcw,
 } from 'lucide-react';
 import { GitHubIcon, GitLabIcon } from './BrandIcons';
-import { api } from '../api/client';
+import { api, ApiError } from '../api/client';
 import type {
   GitBackupConfig,
   GitBackupConfigCreate,
@@ -198,7 +198,44 @@ function GitBackupSettingsContent() {
   const [showRestoreConfirm, setShowRestoreConfirm] = useState(false);
   const [restoreFile, setRestoreFile] = useState<File | null>(null);
   const [restoreResult, setRestoreResult] = useState<{ success: boolean; message: string } | null>(null);
+  const [calibrationConfirmation, setCalibrationConfirmation] = useState<{
+    source: File | string; receipt: string; message: string; count: number;
+  } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const runZipRestore = async (source: File | string, receipt?: string) => {
+    setIsRestoring(true);
+    setRestoreResult(null);
+    setOperationStatus(t('backup.restoringBackup'));
+    try {
+      const result = typeof source === 'string'
+        ? await api.restoreLocalBackup(source, receipt)
+        : await api.importBackup(source, receipt);
+      if ('code' in result && result.code === 'calibration_restore_confirmation_required'
+        && 'receipt' in result && typeof result.receipt === 'string'
+        && 'duplicateGroups' in result && typeof result.duplicateGroups === 'number') {
+        setCalibrationConfirmation({ source, receipt: result.receipt, message: result.message || '', count: result.duplicateGroups });
+        return;
+      }
+      const success = result.success !== false;
+      const message = success ? result.message || t('backup.backupRestoredRestart') : restoreFailureText({ ...result, success }, t);
+      setRestoreResult({ success, message });
+      showToast(message, success ? 'success' : 'error');
+    } catch (error) {
+      if (error instanceof ApiError && error.code === 'calibration_restore_confirmation_required'
+        && error.calibrationReceipt && error.duplicateGroups) {
+        setCalibrationConfirmation({ source, receipt: error.calibrationReceipt, message: error.message, count: error.duplicateGroups });
+        return;
+      }
+      const message = error instanceof Error ? error.message : t('backup.failedToRestore');
+      setRestoreResult({ success: false, message });
+      showToast(message, 'error');
+    } finally {
+      setIsRestoring(false);
+      setOperationStatus('');
+      setRestoreFile(null);
+    }
+  };
 
   // Block navigation while backup/restore is in progress
   useEffect(() => {
@@ -1028,7 +1065,7 @@ function GitBackupSettingsContent() {
                   setOperationStatus(t('backup.preparingBackup'));
                   try {
                     setOperationStatus(t('backup.creatingArchive'));
-                    const { blob, filename } = await api.exportBackup();
+                    const { blob, filename, residualObjects } = await api.exportBackup();
                     setOperationStatus(t('backup.downloadingFile'));
                     const url = URL.createObjectURL(blob);
                     const a = document.createElement('a');
@@ -1036,7 +1073,8 @@ function GitBackupSettingsContent() {
                     a.download = filename;
                     a.click();
                     URL.revokeObjectURL(url);
-                    showToast(t('backup.backupDownloaded'));
+                    if (residualObjects) showToast(t('backup.schemaResidualBackup', { count: residualObjects }), 'warning');
+                    else showToast(t('backup.backupDownloaded'));
                   } catch (e) {
                     showToast(t('backup.failedToCreateBackup', { message: e instanceof Error ? e.message : 'Unknown error' }), 'error');
                   } finally {
@@ -1422,21 +1460,7 @@ function GitBackupSettingsContent() {
           onConfirm={async () => {
             const filename = scheduledRestoreFile;
             setScheduledRestoreFile(null);
-            setIsRestoring(true);
-            setOperationStatus(t('backup.restoringBackup'));
-            try {
-              const result = await api.restoreLocalBackup(filename);
-              if (result.success !== false) {
-                showToast(result.message || t('backup.backupRestoredRestart'), 'success');
-              } else {
-                showToast(result.message ?? t('backup.failedToRestore'), 'error');
-              }
-            } catch (e) {
-              showToast(e instanceof Error ? e.message : t('backup.failedToRestore'), 'error');
-            } finally {
-              setIsRestoring(false);
-              setOperationStatus('');
-            }
+            await runZipRestore(filename);
           }}
           onCancel={() => setScheduledRestoreFile(null)}
         />
@@ -1477,33 +1501,27 @@ function GitBackupSettingsContent() {
           variant="danger"
           onConfirm={async () => {
             setShowRestoreConfirm(false);
-            setIsRestoring(true);
-            setRestoreResult(null);
-            try {
-              setOperationStatus(t('backup.uploadingFile'));
-              const result = await api.importBackup(restoreFile);
-              setRestoreResult(result);
-              if (result.success) {
-                showToast(result.message || t('backup.backupRestoredRestart'), 'success');
-              } else {
-                const message = restoreFailureText(result, t);
-                setRestoreResult({ success: false, message });
-                showToast(message, 'error');
-              }
-            } catch (e) {
-              const message = e instanceof Error ? e.message : t('backup.failedToRestore');
-              setRestoreResult({ success: false, message });
-              showToast(message, 'error');
-            } finally {
-              setIsRestoring(false);
-              setOperationStatus('');
-              setRestoreFile(null);
-            }
+            await runZipRestore(restoreFile);
           }}
           onCancel={() => {
             setShowRestoreConfirm(false);
             setRestoreFile(null);
           }}
+        />
+      )}
+
+      {calibrationConfirmation && (
+        <ConfirmModal
+          title={t('backup.calibrationResidualTitle')}
+          message={`${calibrationConfirmation.message}\n\n${t('backup.calibrationResidualCount', { count: calibrationConfirmation.count })}`}
+          confirmText={t('backup.calibrationResidualAccept')}
+          variant="danger"
+          onConfirm={async () => {
+            const confirmation = calibrationConfirmation;
+            setCalibrationConfirmation(null);
+            await runZipRestore(confirmation.source, confirmation.receipt);
+          }}
+          onCancel={() => setCalibrationConfirmation(null)}
         />
       )}
 

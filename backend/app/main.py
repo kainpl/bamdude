@@ -12433,6 +12433,7 @@ async def _application_lifespan(app: FastAPI):
         await _embedded_pg.stop()
 
 
+from backend.app.core.schema_repair_state import SchemaRepairPending
 from backend.app.services.farm_startup_guard import FarmReadyMiddleware, FarmStartupRefused, farm_startup_guard
 
 
@@ -12484,6 +12485,26 @@ async def lifespan(app: FastAPI):
                 await connector_runtime.shutdown()
                 await mcp_runtime.shutdown()
                 farm_startup_guard.close_admission()
+    except SchemaRepairPending as exc:
+        from backend.app.core import schema_repair_maintenance
+
+        auth_runtime.close_admission()
+        close_cloud_admission()
+        farm_startup_guard.close_admission()
+        schema_repair_maintenance.active = True
+        logging.getLogger(__name__).warning("Schema repair maintenance: %s", exc.reason)
+        try:
+            yield
+        finally:
+            schema_repair_maintenance.active = False
+            from backend.app.core.database import engine
+
+            await engine.dispose()
+            if app_settings.embedded_postgres:
+                from backend.app.services import embedded_postgres as _embedded_pg
+
+                await _embedded_pg.stop()
+            farm_startup_guard.finish(clean=False)
     except BaseException:
         auth_runtime.close_admission()
         close_cloud_admission()
@@ -13407,6 +13428,10 @@ from backend.app.services.live_media import LiveMediaDeliveryMiddleware, install
 
 install_live_media_routes(app)
 app.add_middleware(LiveMediaDeliveryMiddleware)
+
+from backend.app.core.schema_repair_maintenance import SchemaRepairMaintenanceMiddleware
+
+app.add_middleware(SchemaRepairMaintenanceMiddleware)
 
 
 @app.get("/{full_path:path}")

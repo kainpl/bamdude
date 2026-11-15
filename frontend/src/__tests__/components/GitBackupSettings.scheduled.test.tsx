@@ -6,7 +6,7 @@
  * out for the hourly schedule. Backup files render with size + filename.
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { render } from '../utils';
 import { GitBackupSettings } from '../../components/GitBackupSettings';
@@ -37,6 +37,7 @@ const mockLocalBackups = [
 ];
 
 describe('GitBackupSettings - Scheduled Local Backups', () => {
+  afterEach(() => vi.restoreAllMocks());
   beforeEach(() => {
     vi.clearAllMocks();
     server.use(
@@ -88,6 +89,52 @@ describe('GitBackupSettings - Scheduled Local Backups', () => {
     expect(within(dialog).getByText(/Restore disconnects virtual printer proxies/)).toBeInTheDocument();
     fireEvent.click(within(dialog).getByRole('button', { name: 'Restore Backup' }));
     await waitFor(() => expect(screen.getAllByText(message).length).toBeGreaterThan(0));
+  });
+
+  it.each(['scheduled', 'uploaded'])('requires a separate explicit calibration confirmation for %s restore', async (entry) => {
+    let calls = 0;
+    const supplied: unknown[] = [];
+    if (entry === 'uploaded') {
+      // Inspect the browser's original FormData. Node's MSW Request conversion
+      // cannot decode jsdom File objects as a native multipart body.
+      const fetchOriginal = globalThis.fetch.bind(globalThis);
+      vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+        if (String(input).endsWith('/settings/restore')) {
+          const body = init!.body as FormData;
+          supplied.push({ accept: body.get('accept_calibration_residual'), receipt: body.get('calibration_receipt'), file: (body.get('file') as File).name });
+        }
+        return fetchOriginal(input, init);
+      });
+    }
+    const path = entry === 'scheduled' ? '/api/v1/local-backup/backups/:filename/restore' : '/api/v1/settings/restore';
+    server.use(http.post(path, async ({ request }) => {
+      calls++;
+      if (entry === 'scheduled') {
+        const raw = await request.text();
+        supplied.push(raw ? JSON.parse(raw) : null);
+      }
+      return calls === 1 ? HttpResponse.json({ detail: {
+        error: 'calibration_restore_confirmation_required', message: 'Keep all calibration data with a warning?',
+        receipt: 'actor-source-target-bound', duplicate_groups: 2,
+      } }, { status: 400 }) : HttpResponse.json({ success: true, message: 'Restored with calibration warning.' });
+    }));
+    const { container } = render(<GitBackupSettings />);
+    await screen.findByText('bamdude-backup-20260412-120000.zip');
+    if (entry === 'scheduled') fireEvent.click(screen.getByTitle('Restore from this backup'));
+    else fireEvent.change(container.querySelector('input[type="file"][accept=".zip"]')!, {
+      target: { files: [new File(['zip'], 'same-backup.zip', { type: 'application/zip' })] },
+    });
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Restore Backup' }));
+    const consent = await screen.findByRole('dialog', { name: 'Duplicate active calibrations' });
+    expect(calls).toBe(1);
+    expect(within(consent).getByText(/Groups of duplicate active calibrations: 2\./)).toBeInTheDocument();
+    expect(supplied[0]).toEqual(entry === 'scheduled' ? null : { accept: null, receipt: null, file: 'same-backup.zip' });
+    fireEvent.click(within(consent).getByRole('button', { name: 'Restore with warning' }));
+    await waitFor(() => expect(calls).toBe(2));
+    expect(supplied[1]).toEqual(entry === 'scheduled'
+      ? { accept_calibration_residual: true, calibration_receipt: 'actor-source-target-bound' }
+      : { accept: 'true', receipt: 'actor-source-target-bound', file: 'same-backup.zip' });
+    await waitFor(() => expect(screen.getAllByText('Restored with calibration warning.').length).toBeGreaterThan(0));
   });
 
   it('shows frequency dropdown when enabled', async () => {

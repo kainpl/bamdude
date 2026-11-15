@@ -78,6 +78,24 @@ async def run(case):
     from backend.app.core.config import settings
     from backend.app.migrations import m228_postgres_historical_schema as repair
 
+    d4 = case.startswith("d4:")
+    if d4:
+        case = case.removeprefix("d4:")
+        from backend.app.core import schema_repair
+        from backend.app.core.schema_repair_state import DEBT, RESIDUALS, read_record, write_pending
+
+        phases = []
+        original_runner = schema_repair.run_claimed
+
+        async def observe(phase):
+            if phase != "verified":
+                phases.append(phase)
+
+        async def observed_runner(engine, metadata, debt, **kwargs):
+            return await original_runner(engine, metadata, debt, phase_hook=observe, **kwargs)
+
+        schema_repair.run_claimed = observed_runner
+
     if case.startswith("import:"):
         unpack(case.split(":")[1], Path(settings.data_dir))
     if case == "prepare_head_v061":
@@ -85,6 +103,41 @@ async def run(case):
     if case.startswith("retry"):
         await load_failed_pg(database, case)
     await database.init_db()
+    if d4:
+        if case == "repair":
+            await exercise_repair(database, repair)
+        if case == "deletes":
+            await exercise_deletes(database)
+        if not phases:
+            # Native/retry populations also owe the COMPLETE import pipeline,
+            # including model FK/UNIQUE/CHECK, not only B's frozen migration.
+            async with database.engine.begin() as conn:
+                await write_pending(conn, database.Base.metadata)
+            debt = await schema_repair.claim(database.engine, database.Base.metadata)
+            await schema_repair.run_claimed(database.engine, database.Base.metadata, debt)
+        async with database.engine.begin() as conn:
+            assert await read_record(conn, DEBT) is None
+            residuals = await read_record(conn, RESIDUALS)
+        assert phases == ["B", "D4-indexes", "columns", "UNIQUE", "FK", "model-indexes", "CHECK"], phases
+        await database.engine.dispose()
+        return {"debt": None, "phases": phases, "residuals": residuals["entries"]}
+    if case == "d4_model_fresh":
+        from backend.app.core.pg_schema_contract import canonical, compare
+        from backend.app.core.schema_conform_repair import verify
+        from backend.app.core.schema_model_plan import expected_model_plan
+
+        async with database.engine.begin() as conn:
+            actual = await capture(conn)
+            expected = await expected_model_plan(conn, database.Base.metadata)
+            keys = set(canonical(expected))
+            differences = [row for row in compare(expected, actual) if row["object"] in keys]
+            assert await verify(conn, database.Base.metadata, fresh=True) == []
+        await database.engine.dispose()
+        return {
+            "differences": differences,
+            "expected_tables": len(expected["schema"]),
+            "residuals": actual["null_residuals"],
+        }
     if case in ("prepare_head_v061", "prepare_head_fresh", "prepare_head_fresh_affected"):
         assert database.engine.dialect.name == "sqlite"
         if case == "prepare_head_fresh_affected":

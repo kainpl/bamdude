@@ -15,7 +15,9 @@ pins their expanded SQL and marker level. A trusted-fixture loader uses PG's
 COPY protocol, resets restore-only settings, and never invents old schemas.
 
 `sqlite-ddl.json` pins rendered released SQLite CREATE statements from the
-accepted base. `retained-drift.json` contains only the accepted exact old/new
+accepted base. `backend/app/data/pg_schema_b_retained_drift_v1.json` contains
+the accepted exact old/new
 structural pairs. `null-residuals.json` names the accepted columns where unknown
 NULL values are retained; the oracle additionally requires a positive count.
-No wildcard exclusions or SQL-default execution are used.
+No wildcard exclusions or SQL-default execution are used. Runtime and the gate
+read that same versioned file and `core/pg_schema_contract.py` normalisation.

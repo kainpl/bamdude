@@ -1,5 +1,15 @@
 ## [Unreleased]
 
+- Portable restore now retains durable schema-repair ownership across process
+  restarts and restores the complete application index set. Known data
+  violations remain visible warnings with their rows preserved; existing
+  import foreign-key orphan handling is unchanged. Duplicate active
+  calibrations require an explicit, source-bound confirmation before restore
+  stops services. Technical repair failures keep the farm in maintenance;
+  offline `schema_repair status` and `retry` provide recovery without clearing
+  the debt by force. Recovery backups preserve these known residuals and
+  recheck them when restored.
+
 - SQLite-to-PostgreSQL import validates text against the actual destination
   types before stopping services, including legacy column widths, NUL and
   overlength trailing spaces. Identity, validation and import share one DB/WAL

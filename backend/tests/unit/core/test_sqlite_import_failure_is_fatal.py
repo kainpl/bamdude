@@ -24,7 +24,7 @@ class _Scalar:
 
 
 class _Engine:
-    """engine.begin() whose only query answers SELECT COUNT(*) FROM printers."""
+    """Unused target: no repair history, plus the existing printer count."""
 
     def __init__(self, printers: int):
         self._printers = printers
@@ -34,6 +34,9 @@ class _Engine:
         engine = self
 
         class Conn:
+            async def run_sync(self, _inspect):
+                return False  # This fake has no settings/repair-history table.
+
             async def execute(self, _clause):
                 return _Scalar(engine._printers)
 
