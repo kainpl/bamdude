@@ -250,6 +250,19 @@ async def build_slot_assignment(
         family_id = stand_in.filament_id
     else:
         family_id = resolved.family.filament_id
+        # A family minted under one of OrcaSlicer's own "OF…" ids (the sync only
+        # takes it out of the picker; a spool may still name it): the slot is told
+        # Bambu's id for that filament, or — an id the table lacks — the
+        # material's generic, said. Every other id is itself.
+        printer_fid = catalog.bambu_filament_id(family_id)
+        if printer_fid is None:
+            stand_in, fam_type = _stand_in(fam_type or material_override or "")
+            if stand_in is not None:
+                warnings.append(f"{family_id} is no id a printer knows; using {stand_in.filament_id}")
+                degraded = "family_unresolved"
+                family_id = stand_in.filament_id
+        else:
+            family_id = printer_fid
 
     # support_user_preset gate (spec A §5.2): P* only when the device says so.
     # The same rule as above: the id is replaced, the family's type stays.

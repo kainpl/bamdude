@@ -1410,7 +1410,13 @@ async def derive_effective_filament_id(*, spool=None, slot_tray_info_idx: str | 
 
         resolved = await resolve_spool(db, spool)
         if resolved.family:
-            return resolved.family.filament_id
+            # The id the slot is published under (``build_slot_assignment``): a
+            # family under an OrcaSlicer "OF…" id is known to the printer, and so
+            # to its K table, by Bambu's. Every other id is itself.
+            from backend.app.utils import filament_catalog
+
+            fid = resolved.family.filament_id
+            return filament_catalog.bambu_filament_id(fid) or fid
     return slot_tray_info_idx or None
 
 

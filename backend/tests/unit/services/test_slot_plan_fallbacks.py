@@ -125,3 +125,88 @@ async def test_configure_takes_a_setting_id_for_the_filament_it_names(async_clie
     client, body = await _configure(async_client, printer, tray_info_idx="GFSA00", tray_type="PLA")
     assert client.ams_set_filament_setting.call_args.kwargs["tray_info_idx"] == "GFA00"
     assert body["warnings"] == []
+
+
+# --- a spool ALREADY linked to a family minted under an OrcaSlicer "OF…" id ------------------
+# The sync only marks such a family orphaned (out of the picker); the spool still names it.
+
+
+def _family_spool(family_id: str, material: str = "PETG") -> SimpleNamespace:
+    spool = _spool(material)
+    spool.filament_family_id = family_id
+    return spool
+
+
+async def _orca_family(db, filament_id: str) -> None:
+    db.add(
+        UserFilamentFamily(
+            filament_id=filament_id,
+            ecosystem="orca",
+            alias="Bambu PETG HF",
+            vendor="Bambu Lab",
+            filament_type="PETG",
+            origin="cloud_orca",
+            orphaned=True,
+        )
+    )
+    await db.commit()
+
+
+@pytest.mark.asyncio
+async def test_a_spool_linked_to_an_orca_id_family_is_published_under_bambus_id(db_session):
+    """OF0UJcb6 is OrcaSlicer's id for Bambu PETG HF (GFG60). Sent as it was, the slot read back blank."""
+    await _orca_family(db_session, "OF0UJcb6")
+    plan = await build_slot_assignment(db_session, spool=_family_spool("OF0UJcb6"), printer_model="P1S")
+    assert (plan.tray_info_idx, plan.tray_type, plan.degraded) == ("GFG60", "PETG", None)
+
+
+@pytest.mark.asyncio
+async def test_its_k_lookup_keys_on_the_same_translated_id(db_session):
+    from backend.app.services.calibration_service import derive_effective_filament_id
+
+    await _orca_family(db_session, "OF0UJcb6")
+    assert await derive_effective_filament_id(spool=_family_spool("OF0UJcb6"), db=db_session) == "GFG60"
+
+
+@pytest.mark.asyncio
+async def test_an_orca_id_the_table_lacks_goes_out_as_the_materials_generic_and_says_so(db_session):
+    await _orca_family(db_session, "OFzzzzzz")
+    plan = await build_slot_assignment(db_session, spool=_family_spool("OFzzzzzz"), printer_model="P1S")
+    assert (plan.tray_info_idx, plan.tray_type, plan.degraded) == ("GFG99", "PETG", "family_unresolved")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "spool",
+    [
+        _family_spool("GFA00", "PLA"),
+        _family_spool("GFG99"),
+        _family_spool("P0f00aa1"),
+        _spool("PETG"),
+        _spool("PLA Aero"),
+        _spool("Nylon"),
+    ],
+    ids=["bambu-pla-basic", "generic-petg", "user-family", "no-family", "aero", "nylon"],
+)
+async def test_every_other_spool_gets_the_plan_it_got_before(db_session, spool):
+    """GUARD 2: with the translation switched off (identity) the plan and the K key are the same."""
+    from backend.app.services import slot_assignment
+    from backend.app.services.calibration_service import derive_effective_filament_id
+
+    db_session.add(
+        UserFilamentFamily(
+            filament_id="P0f00aa1",
+            ecosystem="bambu",
+            alias="shop PETG",
+            vendor="shop",
+            filament_type="PETG",
+            origin="cloud_bambu",
+        )
+    )
+    await db_session.commit()
+    plan = await build_slot_assignment(db_session, spool=spool, printer_model="P1S")
+    key = await derive_effective_filament_id(spool=spool, db=db_session)
+    # One module object: the patch reaches both readers.
+    with patch.object(slot_assignment.catalog, "bambu_filament_id", lambda value: value):
+        assert await build_slot_assignment(db_session, spool=spool, printer_model="P1S") == plan
+        assert await derive_effective_filament_id(spool=spool, db=db_session) == key
