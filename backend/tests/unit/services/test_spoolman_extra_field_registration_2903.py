@@ -74,6 +74,12 @@ class FakeSpoolman:
             self.registered.add(name)
             return httpx.Response(200, json={"name": name})
 
+        # This double is a Spoolman from before native tags (0.27): it knows no
+        # tag route. ASSUMED, not measured on an old server — 0.27.1 answers an
+        # unknown route under /api/v1 with 404, and so does this.
+        if path.startswith("/tag/") or "/tag" in path.removeprefix("/spool"):
+            return httpx.Response(404, json={"detail": "Not Found"})
+
         if path == "/spool" and request.method == "POST":
             if (rejection := self._reject_unknown_extra(body)) is not None:
                 return rejection
