@@ -303,18 +303,18 @@ UNREADABLE_ROW = "-rw-r--r-- 1 root root BADSIZE Nov 15 12:00 old.mp4"
 
 @pytest.fixture
 def extra_list_lines(monkeypatch):
-    """LIST answers the real entries plus whatever lines the test appends, in that order."""
-    extra: list[str] = []
+    """``extra[directory] = lines``: LIST of that directory answers its real entries, then these lines."""
+    extra: dict[str, list[str]] = {}
     original = mock._ControlSession._cmd_list
 
     def _list(self, argument):
-        if not extra:
-            return original(self, argument)
+        parts = [token for token in argument.split() if not token.startswith("-")]
+        directory = "/" + (parts[0] if parts else self._cwd).strip("/")
         target = self._listing_target(argument)
-        if target is None or not target.is_dir():
+        if directory not in extra or target is None or not target.is_dir():
             return original(self, argument)
         lines = [self._format_entry(child) for child in sorted(target.iterdir(), key=lambda p: p.name)]
-        payload = "".join(f"{line}\r\n" for line in [*lines, *extra]).encode("utf-8", "replace")
+        payload = "".join(f"{line}\r\n" for line in [*lines, *extra[directory]]).encode("utf-8", "replace")
         self._send_data(payload)
 
     monkeypatch.setattr(mock._ControlSession, "_cmd_list", _list)
@@ -386,7 +386,7 @@ class TestAnUnreadableLineReachesEveryConsumer:
     async def test_the_checked_listing_says_no_answer(self, patch_ftp_port, extra_list_lines):
         server = patch_ftp_port
         server.add_file("timelapse/new.mp4", b"v")
-        extra_list_lines.append(UNREADABLE_ROW)
+        extra_list_lines["/timelapse"] = [UNREADABLE_ROW]
         entries, answered = await list_files_checked_async(IP, CODE, "/timelapse")
         assert answered is False
         assert [e["name"] for e in entries] == ["new.mp4"]
@@ -406,18 +406,21 @@ class TestAnUnreadableLineReachesEveryConsumer:
         transport = FtpTransport(printer)
         first = await coalescer.list(printer, "external", "/timelapse", "model", transport, wait=10)
         assert (first.status, [f.name for f in first.files]) == (LISTING_COMPLETE, ["a.mp4"])
-        extra_list_lines.append(UNREADABLE_ROW)
+        extra_list_lines["/timelapse"] = [UNREADABLE_ROW]
         second = await coalescer.list(printer, "external", "/timelapse", "model", transport, wait=10)
         assert (second.status, second.reason, second.stale) == (LISTING_UNAVAILABLE, "unparsed_entries", True)
         assert [f.name for f in second.files] == ["a.mp4"]
 
     async def test_the_timelapse_baseline_is_not_trusted(self, patch_ftp_port, extra_list_lines, monkeypatch):
+        """A readable video beside an unreadable row: the old code returned it as a trusted baseline."""
         from types import SimpleNamespace
 
         from backend.app.services import timelapse_files
 
+        server = patch_ftp_port
         monkeypatch.setattr(timelapse_files, "_supports_internal_timelapse", lambda printer: False)
-        extra_list_lines.append(UNREADABLE_ROW)
+        server.add_file("timelapse/new.mp4", b"v")
+        extra_list_lines["/timelapse"] = [UNREADABLE_ROW]
         printer = SimpleNamespace(id=4343, ip_address=IP, access_code=CODE, model="X1C", name="probe")
         videos, _source = await timelapse_files.list_timelapse_videos(printer)
         assert videos == []
