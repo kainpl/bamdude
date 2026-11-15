@@ -15,6 +15,7 @@ import { render } from '../utils';
 import { AssignSpoolModal } from '../../components/AssignSpoolModal';
 import { AssignToSlotModal } from '../../components/AssignToSlotModal';
 import { api } from '../../api/client';
+import i18n from '../../i18n';
 
 vi.mock('../../api/client', () => ({
   setAuthToken: vi.fn(),
@@ -220,6 +221,20 @@ describe('AssignToSlotModal — printer → AMS unit → slot', () => {
     await waitFor(() => expect(occupied).toHaveTextContent(/Other PETG/));
     fireEvent.click(occupied);
     expect(await screen.findByRole('button', { name: /^Replace spool$/i })).toBeInTheDocument();
+  });
+
+  it('names the chosen slot in the language of the reader', async () => {
+    await i18n.changeLanguage('uk');
+    try {
+      open();
+      const [printer] = await screen.findAllByRole('combobox');
+      await waitFor(() => expect(within(printer).getByRole('option', { name: 'Bench' })).toBeInTheDocument());
+      fireEvent.change(printer, { target: { value: '7' } });
+      fireEvent.click(await screen.findByRole('button', { name: /A2.*PETG HF/ }));
+      expect(await screen.findByText('(AMS-A Слот 2)')).toBeInTheDocument();
+    } finally {
+      await i18n.changeLanguage('en');
+    }
   });
 
   it('says so when the printer reports no slots', async () => {

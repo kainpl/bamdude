@@ -146,7 +146,7 @@ export function AssignToSlotModal({ spool, spoolmanMode, onClose, onAssigned }: 
         material: tray.tray_type ?? undefined,
         profile,
         color: tray.tray_color || '',
-        location: u.external ? u.label : `${u.label} Slot ${trayId + 1}`,
+        location: u.external ? u.label : t('configureAmsSlot.slotLabel', { ams: u.label, slot: trayId + 1 }),
       },
       currentSpool: currentSpoolOf(u.amsId, trayId),
     });

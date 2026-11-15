@@ -823,6 +823,9 @@ export function KProfilesView() {
     queryKey: ['kprofiles', selectedPrinter, '0.4'],
     queryFn: () => api.getKProfiles(selectedPrinter!, '0.4'),
     enabled: !!selectedPrinter,
+    // As the list above: a table the printer did not answer for (504) is not
+    // asked for three more times behind the operator's back.
+    retry: false,
     staleTime: 60000,  // Cache for 1 minute
   });
 
