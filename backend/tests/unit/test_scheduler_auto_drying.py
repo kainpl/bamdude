@@ -586,6 +586,13 @@ class _DryingTestBase:
         """Create a side_effect for db.execute that returns settings by key and printers."""
         if printer_ids is None:
             printer_ids = [1]
+        # These tests pin what happens once a start is due. The sustained-humidity
+        # wait (on by default) is switched off here unless a test asks for it; it
+        # has its own file, services/test_drying_sustained_humidity.py.
+        if "auto_drying_sustained_minutes" not in settings_map:
+            off = MagicMock()
+            off.value = "0"
+            settings_map = {**settings_map, "auto_drying_sustained_minutes": off}
 
         async def side_effect(stmt):
             result = MagicMock()

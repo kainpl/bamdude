@@ -341,6 +341,7 @@ _RESTORABLE_SETTING_KEYS = frozenset(
         "queue_drying_block",
         "ambient_drying_enabled",
         "print_drying_enabled",
+        "auto_drying_sustained_minutes",
         "drying_presets",
         "ams_humidity_thresholds",
         "zigbee_sensor_reporting",

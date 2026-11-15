@@ -301,6 +301,9 @@ export function SettingsPage() {
   // (#1605). Committed back to localSettings.ams_humidity_thresholds on blur so
   // intermediate values ("", "3", "5") aren't eaten by the [5, 95] clamp mid-type.
   const [humidityDrafts, setHumidityDrafts] = useState<Record<string, string>>({});
+  // The same treatment for the sustained-humidity minutes: clamped to 5..240
+  // when the field is left, so "2" on the way to "25" is not rewritten mid-type.
+  const [sustainedDraft, setSustainedDraft] = useState<string | null>(null);
   const [showPlugModal, setShowPlugModal] = useState(false);
   // Which paired device the operator pressed "add" on in the coordinator
   // card. The sensors section owns the dialog it opens; this only carries
@@ -1351,6 +1354,7 @@ export function SettingsPage() {
       (baseline.queue_drying_block ?? false) !== (localSettings.queue_drying_block ?? false) ||
       (baseline.ambient_drying_enabled ?? false) !== (localSettings.ambient_drying_enabled ?? false) ||
       (baseline.print_drying_enabled ?? false) !== (localSettings.print_drying_enabled ?? false) ||
+      (baseline.auto_drying_sustained_minutes ?? 15) !== (localSettings.auto_drying_sustained_minutes ?? 15) ||
       (baseline.drying_presets ?? '') !== (localSettings.drying_presets ?? '') ||
       (baseline.ams_humidity_thresholds ?? '') !== (localSettings.ams_humidity_thresholds ?? '') ||
       (baseline.stagger_enabled ?? false) !== (localSettings.stagger_enabled ?? false) ||
@@ -1472,6 +1476,7 @@ export function SettingsPage() {
         queue_drying_block: localSettings.queue_drying_block,
         ambient_drying_enabled: localSettings.ambient_drying_enabled,
         print_drying_enabled: localSettings.print_drying_enabled,
+        auto_drying_sustained_minutes: localSettings.auto_drying_sustained_minutes,
         drying_presets: localSettings.drying_presets,
         ams_humidity_thresholds: localSettings.ams_humidity_thresholds,
         stagger_enabled: localSettings.stagger_enabled,
@@ -6347,6 +6352,59 @@ export function SettingsPage() {
                       <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
                     </label>
                   </div>
+                  {/* Sustained-humidity wait: a property of auto-drying as a
+                      whole (it covers a mid-print start with ambient off), so
+                      it is not nested under the ambient switch. */}
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <label className="block text-sm text-white">
+                        {t('settings.autoDryingSustainedEnabled')}
+                      </label>
+                      <p className="text-xs text-bambu-gray mt-0.5">
+                        {t('settings.autoDryingSustainedDescription')}
+                      </p>
+                    </div>
+                    <label className="relative inline-flex items-center cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={(localSettings.auto_drying_sustained_minutes ?? 15) > 0}
+                        onChange={(e) => {
+                          setSustainedDraft(null);
+                          updateSetting('auto_drying_sustained_minutes', e.target.checked ? 15 : 0);
+                        }}
+                        className="sr-only peer"
+                      />
+                      <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
+                    </label>
+                  </div>
+                  {(localSettings.auto_drying_sustained_minutes ?? 15) > 0 && (
+                    <div>
+                      <label htmlFor="auto-drying-sustained-minutes" className="block text-sm text-bambu-gray mb-1">
+                        {t('settings.autoDryingSustainedMinutes')}
+                      </label>
+                      <input
+                        id="auto-drying-sustained-minutes"
+                        type="number"
+                        min={5}
+                        max={240}
+                        value={sustainedDraft ?? String(localSettings.auto_drying_sustained_minutes ?? 15)}
+                        onChange={(e) => setSustainedDraft(e.target.value)}
+                        onBlur={(e) => {
+                          const parsed = parseInt(e.target.value, 10);
+                          if (!Number.isNaN(parsed)) {
+                            updateSetting('auto_drying_sustained_minutes', Math.max(5, Math.min(240, parsed)));
+                          }
+                          setSustainedDraft(null);
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            (e.currentTarget as HTMLInputElement).blur();
+                          }
+                        }}
+                        className="w-24 px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                      />
+                    </div>
+                  )}
                   {/* Per-Filament Humidity Thresholds (#1605) */}
                   <div className="space-y-2">
                     <p className="text-sm text-white font-medium">{t('settings.humidityThresholds')}</p>
