@@ -2370,6 +2370,10 @@ def _printer_status_effect_key(state: PrinterState) -> str:
         else None
     )
     fts_key = _fts_status_key(state)
+    nozzles_key = tuple(
+        (n.nozzle_type, getattr(n, "nozzle_flow", ""), n.nozzle_diameter)
+        for n in (getattr(state, "nozzles", None) or [])
+    )
     return (
         f"{state.connected}:{state.state}:{state.progress}:{state.layer_num}:{state.total_layers}:"
         f"{nozzle_temp}:{bed_temp}:{nozzle_2_temp}:{chamber_temp}:"
@@ -2410,7 +2414,12 @@ def _printer_status_effect_key(state: PrinterState) -> str:
         f"{sorted(state.axis_at_home.items())}:{sorted(state.ext_has_filament.items())}:"
         # Whether a timelapse is possible changes when a card is pulled or
         # fills up — moments nothing else in this key notices.
-        f"{state.sdcard_state}:{state.has_timelapse_kit}:{sorted(state.timelapse_storage.items())}"
+        f"{state.sdcard_state}:{state.has_timelapse_kit}:{sorted(state.timelapse_storage.items())}:"
+        # Pushed since the status shapers were made to agree, and each moves
+        # exactly when nothing else here does: a nozzle swapped on an idle
+        # printer, a macro the server started or finished, developer mode
+        # switched on the printer's screen.
+        f"{nozzles_key}:{getattr(state, 'macro_executing', None)}:{getattr(state, 'developer_mode', None)}"
     )
 
 

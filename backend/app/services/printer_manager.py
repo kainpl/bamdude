@@ -14,8 +14,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.tasks import spawn_background_task
 from backend.app.models.printer import Printer
-from backend.app.schemas.printer import AirductFan
-from backend.app.services import ams_advertised_overlay as _overlay
+from backend.app.schemas.printer import AirductFan, AMSTray, AmsTrayActual, AMSUnit
+from backend.app.services import ams_advertised_overlay as _overlay, print_mapping_projection as _print_mapping
 from backend.app.services.bambu_mqtt import (
     FAN_CTRL,
     BambuMQTTClient,
@@ -2422,6 +2422,259 @@ def wire_tray_state(tray: dict) -> int | None:
     return state_val
 
 
+# BS ``DevFilaColorType`` — ⚠️ 0 is MULTI and 2 is SINGLE, not the other way
+# round, so a bare ``ctype: 0`` must never be read as "no type".
+FILA_CTYPE_MULTI = 0
+FILA_CTYPE_GRADIENT = 1
+FILA_CTYPE_SINGLE = 2
+
+
+def _tray_remain_g(tray: dict) -> int:
+    """The firmware's own grams-remaining for a tray, or -1 when it has none.
+
+    BS reads this from both its tray parsers with a default of -1
+    (``DevFilaSystemParser`` and ``parse_vt_tray``), and prefers it over the
+    percentage wherever it is present.
+
+    ⚠️ **This is not a weight measurement, and no hardware measures weight.**
+    Bambu's AMS — including the 2 Pro — derives remaining filament from the RFID
+    tag plus how far the spool has turned; a load cell is an open feature
+    request, not a product. So the figure exists only for tagged spools and is
+    ``-1`` everywhere else. Reading it costs nothing and means the number is
+    used the day firmware or hardware starts providing it.
+    """
+    raw = tray.get("remain_g")
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        return -1
+    return int(raw)
+
+
+def _tray_colours(tray: dict, fallback_colour: str | None) -> tuple[list[str], int]:
+    """Every colour a tray carries, plus how it should be read.
+
+    BS applies both fallbacks in each of its two tray parsers, and we follow
+    them so a caller never has to special-case a firmware that omits a field:
+
+    * no ``cols`` → the single ``tray_color``, as a one-item list;
+    * no ``ctype`` → derived from the list, ``len > 1`` being MULTI.
+
+    Colours are returned without the leading ``#`` and lower-cased, matching
+    ``tray_color`` elsewhere in this response so the frontend has one shape to
+    handle.
+    """
+    raw = tray.get("cols")
+    cols: list[str] = []
+    if isinstance(raw, list):
+        cols = [str(c).replace("#", "").lower() for c in raw if isinstance(c, str) and c]
+    if not cols and fallback_colour:
+        cols = [fallback_colour.replace("#", "").lower()]
+
+    ctype = tray.get("ctype")
+    if not isinstance(ctype, int) or isinstance(ctype, bool):
+        ctype = FILA_CTYPE_MULTI if len(cols) > 1 else FILA_CTYPE_SINGLE
+    return cols, ctype
+
+
+def _tag_or_none(value: object, blank: str) -> str | None:
+    """An RFID field, or ``None`` for the firmware's "no tag" values."""
+    if value in (None, "", blank):
+        return None
+    return value
+
+
+def ams_units_for(state: PrinterState, printer_id: int | None, drying_targets: dict[int, dict] | None) -> list[AMSUnit]:
+    """Every AMS unit of a printer state, as BOTH status payloads carry it.
+
+    The REST status and the WebSocket push describe the same card, and the page
+    replaces the whole ``ams`` list with whichever arrived last. While each
+    shaper built its own units they drifted in both directions: the REST answer
+    had no ``dry_status`` / ``dry_sub_status`` / ``dry_sf_reason`` (a unit that
+    cannot dry offered Start after every refetch) and the push had no ``cols``
+    / ``ctype`` / ``remain_g`` (a multi-colour spool was drawn in one colour
+    until the next refetch). Upstream 113f08a1a. Build a unit HERE and nowhere
+    else; ``tests/integration/test_status_shapers_agree.py`` compares the two
+    payloads key for key.
+
+    ``drying_targets`` is the per-AMS active-cycle cache
+    (``{ams_id: {"filament": str, "temp": int}}``): Bambu does not echo the
+    chosen filament and temperature on the per-tick AMS push.
+    """
+    raw_data = state.raw_data or {}
+    raw_units = raw_data.get("ams")
+    if not isinstance(raw_units, list):
+        return []
+
+    # K value for a slot's bound profile, resolved against the nozzle the slot
+    # feeds — see kprofile_lookup.
+    resolve_slot_k = build_slot_k_resolver(state)
+    units: list[AMSUnit] = []
+    for ams_data in raw_units:
+        if not isinstance(ams_data, dict):
+            continue
+        ams_id_int = int(ams_data.get("id", 0))
+        trays: list[AMSTray] = []
+        for tray in ams_data.get("tray", []):
+            tray_id = int(tray.get("id", 0))
+            # Get K value: first try tray's k field, then lookup from K-profiles
+            k_value = tray.get("k")
+            cali_idx = tray.get("cali_idx")
+            if k_value is None:
+                k_value = resolve_slot_k(cali_idx, ams_id_int, tray_id)
+
+            cols, ctype = _tray_colours(tray, tray.get("tray_color"))
+            # The spool behind an advertised profile. The live fields stay
+            # exactly as the printer reports them — the browser draws what the
+            # machine shows and labels it with what is really loaded; ``None``
+            # whenever nothing was masked on this slot.
+            entry = _overlay.effective(printer_id, ams_id_int, tray_id, tray) if printer_id is not None else None
+            trays.append(
+                AMSTray(
+                    id=tray_id,
+                    actual=(
+                        AmsTrayActual(
+                            tray_color=entry.actual_color,
+                            tray_type=entry.actual_material,
+                            tray_info_idx=entry.actual_variant,
+                            cols=list(entry.actual_cols),
+                        )
+                        if entry
+                        else None
+                    ),
+                    tray_color=tray.get("tray_color"),
+                    cols=cols,
+                    ctype=ctype,
+                    tray_type=tray.get("tray_type"),
+                    tray_sub_brands=tray.get("tray_sub_brands"),
+                    tray_id_name=tray.get("tray_id_name"),
+                    tray_info_idx=tray.get("tray_info_idx"),
+                    remain=tray.get("remain", 0),
+                    remain_g=_tray_remain_g(tray),
+                    k=k_value,
+                    cali_idx=cali_idx,
+                    tag_uid=_tag_or_none(tray.get("tag_uid"), "0000000000000000"),
+                    tray_uuid=_tag_or_none(tray.get("tray_uuid"), "00000000000000000000000000000000"),
+                    nozzle_temp_min=tray.get("nozzle_temp_min"),
+                    nozzle_temp_max=tray.get("nozzle_temp_max"),
+                    drying_temp=tray.get("drying_temp"),
+                    drying_time=tray.get("drying_time"),
+                    state=wire_tray_state(tray),
+                    # Firmware's authoritative "spool physically present" bit
+                    # (tray_exist_bits, upstream #2527).
+                    exists=tray.get("exists"),
+                )
+            )
+        # Percentage only. The 1-5 ``humidity`` index is never substituted for
+        # one -- it is inverted, so it would read as the opposite of what it
+        # means (#3140). See utils/ams_humidity.
+        humidity_pct = ams_humidity_percent(ams_data)
+        humidity_value = int(round(humidity_pct)) if humidity_pct is not None else None
+
+        # AMS-HT has 1 tray, regular AMS has 4 trays
+        is_ams_ht = len(trays) == 1
+
+        # Active-cycle filament + target temperature for the drying badge:
+        # the cached target of the last send_drying_command first, then the
+        # loaded trays, but only when they agree on a filament type — see
+        # uniform_tray_drying_hint.
+        target = (drying_targets or {}).get(ams_id_int) or {}
+        dry_target_temp: int | None = None
+        dry_filament: str | None = None
+        temp_val = target.get("temp")
+        fil_val = target.get("filament") or ""
+        if temp_val is not None:
+            try:
+                dry_target_temp = int(temp_val)
+            except (TypeError, ValueError):
+                dry_target_temp = None
+        if fil_val:
+            dry_filament = str(fil_val)
+        if dry_target_temp is None or not dry_filament:
+            hint_filament, hint_temp = uniform_tray_drying_hint(
+                [(tray.tray_type or "", tray.drying_temp) for tray in trays]
+            )
+            if not dry_filament:
+                dry_filament = hint_filament
+            if dry_target_temp is None:
+                dry_target_temp = hint_temp
+
+        units.append(
+            AMSUnit(
+                id=ams_id_int,
+                humidity=humidity_value,
+                temp=ams_data.get("temp"),
+                is_ams_ht=is_ams_ht,
+                tray=trays,
+                # Serial number: Bambu MQTT uses "sn" key on AMS unit objects
+                serial_number=str(ams_data.get("sn") or ams_data.get("serial_number") or ""),
+                # Firmware version: populated by _handle_version_info from get_version
+                sw_ver=str(ams_data.get("sw_ver") or ""),
+                # Drying: dry_time > 0 means drying is active (minutes remaining)
+                dry_time=int(ams_data.get("dry_time") or 0),
+                # The timer is held but not running - no cycle behind it.
+                dry_countdown_stalled=is_countdown_parked(ams_data),
+                # Drying status from info hex bits (0=Off, 1=Checking, 2=Drying, 3=Cooling, etc.)
+                dry_status=int(ams_data.get("dry_status") or 0),
+                dry_sub_status=int(ams_data.get("dry_sub_status") or 0),
+                # Cannot-dry reasons from firmware (e.g. 1=InsufficientPower, 8=NeedPluginPower)
+                dry_sf_reason=list(ams_data.get("dry_sf_reason") or []),
+                dry_target_temp=dry_target_temp,
+                dry_filament=dry_filament,
+                # Module type: "ams", "n3f", "n3s" (from get_version)
+                module_type=str(ams_data.get("module_type") or ""),
+            )
+        )
+    return units
+
+
+def vt_trays_for(state: PrinterState) -> list[AMSTray]:
+    """The external spool holder(s) of a printer state, as both status payloads carry them."""
+    raw_data = state.raw_data or {}
+    vt_tray_raw = raw_data.get("vt_tray")
+    if isinstance(vt_tray_raw, dict):
+        vt_tray_raw = [vt_tray_raw]
+    elif not isinstance(vt_tray_raw, list):
+        return []
+
+    resolve_slot_k = build_slot_k_resolver(state)
+    trays: list[AMSTray] = []
+    for vt_data in vt_tray_raw:
+        # Get K value: first try tray's k field, then lookup from K-profiles
+        vt_k_value = vt_data.get("k")
+        vt_cali_idx = vt_data.get("cali_idx")
+        tray_id = int(vt_data.get("id", 254))
+        if vt_k_value is None:
+            # External holder: 254 is Ext-L, 255 Ext-R; the resolver takes the 0/1 side.
+            vt_k_value = resolve_slot_k(vt_cali_idx, 255, tray_id - 254)
+
+        # The external spool carries the same colour fields as an AMS tray —
+        # BS parses them in both places, so a multi-colour spool on the
+        # external holder is not a different case.
+        cols, ctype = _tray_colours(vt_data, vt_data.get("tray_color"))
+        trays.append(
+            AMSTray(
+                id=tray_id,
+                # External slots are excluded from projection (spec §6.2), so
+                # ``actual`` is always None here.
+                tray_color=vt_data.get("tray_color"),
+                tray_type=vt_data.get("tray_type"),
+                cols=cols,
+                ctype=ctype,
+                tray_sub_brands=vt_data.get("tray_sub_brands"),
+                tray_id_name=vt_data.get("tray_id_name"),
+                tray_info_idx=vt_data.get("tray_info_idx"),
+                remain=vt_data.get("remain", 0),
+                remain_g=_tray_remain_g(vt_data),
+                k=vt_k_value,
+                cali_idx=vt_cali_idx,
+                tag_uid=_tag_or_none(vt_data.get("tag_uid"), "0000000000000000"),
+                tray_uuid=_tag_or_none(vt_data.get("tray_uuid"), "00000000000000000000000000000000"),
+                nozzle_temp_min=vt_data.get("nozzle_temp_min"),
+                nozzle_temp_max=vt_data.get("nozzle_temp_max"),
+            )
+        )
+    return trays
+
+
 def printer_state_to_dict(
     state: PrinterState,
     printer_id: int | None = None,
@@ -2444,196 +2697,14 @@ def printer_state_to_dict(
     from backend.app.services.mqtt_recorder import mqtt_recorder
 
     layer_pair = layer_pair or resolve_layer_pair(printer_manager, printer_id, state)
-    # Parse AMS data from raw_data
-    ams_units = []
-    vt_tray = []
     raw_data = state.raw_data or {}
+    # One serialiser for both payloads: see ``ams_units_for``.
+    ams_units = [unit.model_dump() for unit in ams_units_for(state, printer_id, drying_targets)]
+    vt_tray = [tray.model_dump() for tray in vt_trays_for(state)]
 
-    # K value for a slot's bound profile. Shared with the REST shaper of the
-    # same card (routes/printers.py) so the two cannot answer differently: this
-    # one used to key on cali_idx alone, which printed whichever nozzle's entry
-    # the table listed last.
-    resolve_slot_k = build_slot_k_resolver(state)
-
-    if "ams" in raw_data and isinstance(raw_data["ams"], list):
-        for ams_data in raw_data["ams"]:
-            # Read once per unit: the overlay lookup below and the drying badge
-            # further down both key off it.
-            ams_id_int = int(ams_data.get("id", 0))
-            trays = []
-            for tray in ams_data.get("tray", []):
-                tag_uid = tray.get("tag_uid")
-                if tag_uid in ("", "0000000000000000"):
-                    tag_uid = None
-                tray_uuid = tray.get("tray_uuid")
-                if tray_uuid in ("", "00000000000000000000000000000000"):
-                    tray_uuid = None
-
-                # Get K value: first try tray's k field, then lookup from K-profiles
-                k_value = tray.get("k")
-                cali_idx = tray.get("cali_idx")
-                if k_value is None:
-                    k_value = resolve_slot_k(cali_idx, ams_id_int, int(tray.get("id", 0)))
-
-                state_val = wire_tray_state(tray)
-
-                # The spool behind an advertised profile. The live fields stay
-                # exactly as the printer reports them — the browser draws what
-                # the machine shows and labels it with what is really loaded;
-                # ``None`` whenever nothing was masked on this slot.
-                entry = (
-                    _overlay.effective(printer_id, ams_id_int, int(tray.get("id", 0)), tray)
-                    if printer_id is not None
-                    else None
-                )
-                actual = (
-                    {
-                        "tray_color": entry.actual_color,
-                        "tray_type": entry.actual_material,
-                        "tray_info_idx": entry.actual_variant,
-                        "cols": list(entry.actual_cols),
-                    }
-                    if entry
-                    else None
-                )
-
-                trays.append(
-                    {
-                        "id": int(tray.get("id", 0)),
-                        "actual": actual,
-                        "tray_color": tray.get("tray_color"),
-                        "tray_type": tray.get("tray_type"),
-                        "tray_sub_brands": tray.get("tray_sub_brands"),
-                        "tray_id_name": tray.get("tray_id_name"),
-                        "tray_info_idx": tray.get("tray_info_idx"),
-                        "remain": tray.get("remain", 0),
-                        "k": k_value,
-                        "cali_idx": cali_idx,
-                        "tag_uid": tag_uid,
-                        "tray_uuid": tray_uuid,
-                        "nozzle_temp_min": tray.get("nozzle_temp_min"),
-                        "nozzle_temp_max": tray.get("nozzle_temp_max"),
-                        "drying_temp": tray.get("drying_temp"),
-                        "drying_time": tray.get("drying_time"),
-                        "state": state_val,
-                        # Firmware's authoritative "spool physically present" bit
-                        # (tray_exist_bits, upstream #2527). Upstream only wired
-                        # this into the REST payload; we must emit it here too —
-                        # the WS status merges wholesale into the printerStatus
-                        # query cache, so an `ams` array without `exists` would
-                        # drop the flag again on the very next push.
-                        "exists": tray.get("exists"),
-                    }
-                )
-            # Percentage only — the 1-5 index is inverted and must never stand
-            # in for one (#3140). See utils/ams_humidity.
-            humidity_pct = ams_humidity_percent(ams_data)
-            humidity_value = int(round(humidity_pct)) if humidity_pct is not None else None
-
-            # AMS-HT has 1 tray, regular AMS has 4 trays
-            is_ams_ht = len(trays) == 1
-
-            # Active-cycle filament + target temperature for the drying badge.
-            # Bambu doesn't echo the chosen filament/temp on the per-tick AMS
-            # push, so prefer the cached target from the last send_drying_command;
-            # fall back to the loaded trays, but only when they agree on a
-            # filament type — see uniform_tray_drying_hint.
-            target = (drying_targets or {}).get(ams_id_int)
-            dry_target_temp: int | None = None
-            dry_filament: str | None = None
-            if target:
-                temp_val = target.get("temp")
-                fil_val = target.get("filament") or ""
-                if temp_val is not None:
-                    try:
-                        dry_target_temp = int(temp_val)
-                    except (TypeError, ValueError):
-                        dry_target_temp = None
-                if fil_val:
-                    dry_filament = str(fil_val)
-            if dry_target_temp is None or not dry_filament:
-                hint_filament, hint_temp = uniform_tray_drying_hint(
-                    [(tray.get("tray_type") or "", tray.get("drying_temp")) for tray in trays]
-                )
-                if not dry_filament:
-                    dry_filament = hint_filament
-                if dry_target_temp is None:
-                    dry_target_temp = hint_temp
-
-            ams_units.append(
-                {
-                    "id": ams_id_int,
-                    "humidity": humidity_value,
-                    "temp": ams_data.get("temp"),
-                    "is_ams_ht": is_ams_ht,
-                    "tray": trays,
-                    # Serial number: Bambu MQTT uses "sn" key on AMS unit objects
-                    "serial_number": str(ams_data.get("sn") or ams_data.get("serial_number") or ""),
-                    # Firmware version: populated by _handle_version_info from get_version
-                    "sw_ver": str(ams_data.get("sw_ver") or ""),
-                    # Drying: dry_time > 0 means drying is active (minutes remaining)
-                    "dry_time": int(ams_data.get("dry_time") or 0),
-                    # The timer is held but not running - no cycle behind it.
-                    "dry_countdown_stalled": is_countdown_parked(ams_data),
-                    # Drying status from info hex bits (0=Off, 1=Checking, 2=Drying, 3=Cooling, etc.)
-                    "dry_status": int(ams_data.get("dry_status") or 0),
-                    "dry_sub_status": int(ams_data.get("dry_sub_status") or 0),
-                    # Cannot-dry reasons from firmware (e.g. 1=InsufficientPower, 8=NeedPluginPower)
-                    "dry_sf_reason": list(ams_data.get("dry_sf_reason") or []),
-                    # Active-cycle filament name + target temperature for the badge
-                    "dry_target_temp": dry_target_temp,
-                    "dry_filament": dry_filament,
-                    # Module type: "ams", "n3f", "n3s" (from get_version)
-                    "module_type": str(ams_data.get("module_type") or ""),
-                }
-            )
-
-    # Parse virtual tray (external spool) - now a list
-    if "vt_tray" in raw_data:
-        vt_tray_raw = raw_data["vt_tray"]
-        if isinstance(vt_tray_raw, dict):
-            vt_tray_raw = [vt_tray_raw]
-        elif not isinstance(vt_tray_raw, list):
-            vt_tray_raw = []
-        for vt_data in vt_tray_raw:
-            vt_tag_uid = vt_data.get("tag_uid")
-            if vt_tag_uid in ("", "0000000000000000"):
-                vt_tag_uid = None
-            vt_tray_uuid = vt_data.get("tray_uuid")
-            if vt_tray_uuid in ("", "00000000000000000000000000000000"):
-                vt_tray_uuid = None
-
-            # Get K value for vt_tray
-            vt_k_value = vt_data.get("k")
-            vt_cali_idx = vt_data.get("cali_idx")
-            tray_id = int(vt_data.get("id", 254))
-            if vt_k_value is None:
-                # External holder: 254 is Ext-L, 255 Ext-R; the resolver takes the 0/1 side.
-                vt_k_value = resolve_slot_k(vt_cali_idx, 255, tray_id - 254)
-            vt_tray.append(
-                {
-                    "id": tray_id,
-                    # External slots are excluded from projection (spec §6.2),
-                    # so this is always None — the key is here so both tray
-                    # shapes stay one shape for the frontend.
-                    "actual": None,
-                    "tray_color": vt_data.get("tray_color"),
-                    "tray_type": vt_data.get("tray_type"),
-                    "tray_sub_brands": vt_data.get("tray_sub_brands"),
-                    "tray_id_name": vt_data.get("tray_id_name"),
-                    "tray_info_idx": vt_data.get("tray_info_idx"),
-                    "remain": vt_data.get("remain", 0),
-                    "k": vt_k_value,
-                    "cali_idx": vt_cali_idx,
-                    "tag_uid": vt_tag_uid,
-                    "tray_uuid": vt_tray_uuid,
-                    "nozzle_temp_min": vt_data.get("nozzle_temp_min"),
-                    "nozzle_temp_max": vt_data.get("nozzle_temp_max"),
-                }
-            )
-
-    # Get ams_extruder_map from raw_data (populated by MQTT handler from AMS info field)
-    ams_extruder_map = raw_data.get("ams_extruder_map", {})
+    # The state attribute first, as the REST shaper reads it: ``raw_data`` is
+    # replaced during MQTT updates and the map is briefly missing from it.
+    ams_extruder_map = state.ams_extruder_map or raw_data.get("ams_extruder_map", {})
 
     # Filter out chamber temp for models that don't have a real sensor
     # P1P, P1S, A1, A1Mini report meaningless chamber_temper values
@@ -2862,9 +2933,8 @@ def printer_state_to_dict(
         # plate path — without resolve_plate_id those installs always reported
         # plate 1 (#1166). Pushed via WebSocket so the printer card picks up
         # plate transitions in a multi-plate 3MF without waiting for the 30 s
-        # REST poll (upstream #881 follow-up). current_archive_id is
-        # intentionally REST-only — stable for the life of a print and needs
-        # a DB lookup the WS path shouldn't pay for.
+        # REST poll (upstream #881 follow-up). ``current_archive_id`` rides
+        # below, from the bound run in memory — never a DB lookup here.
         "current_plate_id": resolve_plate_id(state),
         # Queue plate-clear gate (#961): surfaces the same value the REST /status
         # route returns so frontend WS merge reflects transitions within ~100 ms
@@ -2881,7 +2951,44 @@ def printer_state_to_dict(
         # same field the REST /status route returns, for the same reason
         # ``awaiting_plate_clear`` is here.
         "repeat_available": bool(repeat_available),
+        # Fields a status read carried and a push did not (upstream cacaaf4da,
+        # adapted): each kept its loaded value for the length of a print,
+        # because every push postpones the page's fallback poll. All come from
+        # memory. ``nozzles`` is what Configure Slot filters the K-profiles by
+        # after a nozzle swap; ``macro_executing`` shows a macro the server
+        # started; the air-duct pair arrives from the printer after connect.
+        "nozzles": [
+            {
+                "nozzle_type": n.nozzle_type,
+                "nozzle_flow": getattr(n, "nozzle_flow", ""),
+                "nozzle_diameter": n.nozzle_diameter,
+            }
+            for n in (state.nozzles or [])
+        ],
+        "developer_mode": state.developer_mode,
+        "macro_executing": state.macro_executing,
+        "airduct_modes": sorted(state.airduct_modes or {}),
+        "supports_cooling_filter": bool((state.print_option_support or {}).get("cooling_filter")),
     }
+    # The two fields below are sent only when this process can answer from
+    # memory; the page merges a push over the REST answer, so an ABSENT key
+    # keeps what the status read resolved from the database.
+    printing = state.state in _print_mapping.ACTIVE_STATES
+    if not printing:
+        result["ams_mapping"] = []
+        result["current_archive_id"] = None
+    else:
+        # The trays the print was dispatched to, read off its session — never
+        # the live ``mapping`` (see services/print_mapping_projection).
+        session_mapping = _print_mapping.from_session(printer_id)
+        if session_mapping is not None:
+            result["ams_mapping"] = session_mapping
+        if printer_id is not None:
+            from backend.app.services.print_run_binding import current_print_run
+
+            run = current_print_run(printer_manager, printer_id)
+            if run is not None:
+                result["current_archive_id"] = run.archive_id
     # Add cover URL if there's an active print and printer_id is provided
     # Include PAUSE state so skip objects modal can show cover
     if printer_id and state.state in ("RUNNING", "PAUSE") and state.gcode_file:
