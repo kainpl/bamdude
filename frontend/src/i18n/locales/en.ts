@@ -1593,6 +1593,8 @@ export default {
       hours: 'hours',
       timeRemaining: '{{time}} left',
       active: 'Drying',
+      notRunning: 'Drying not running',
+      notRunningHint: 'The printer holds a drying timer, but the countdown has stopped and the AMS reports no drying phase. The cycle never started or was paused, for example by the power limit or the current print.',
       screenOnly: 'AMS drying on this printer can only be controlled from the printer\'s own screen (Bambu limitation)',
       startingDrying: 'Starting drying...',
       rotateTray: 'Rotate spool during drying',

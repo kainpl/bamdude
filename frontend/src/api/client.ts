@@ -1097,6 +1097,7 @@ export interface AMSUnit {
   serial_number: string;  // AMS unit serial number (from MQTT sn field)
   sw_ver: string;         // AMS firmware version (from get_version info.module ams/* entry)
   dry_time: number;       // Minutes remaining (0 = not drying, >0 = drying active)
+  dry_countdown_stalled?: boolean; // The timer is held but not running (a parked command) — read via utils/amsDrying
   dry_status: number;     // 0=Off, 1=Checking, 2=Drying, 3=Cooling, 4=Stopping, 5=Error
   dry_sub_status: number; // 0=Off, 1=Heating, 2=Dehumidify
   dry_sf_reason: number[]; // Cannot-dry reasons (1=InsufficientPower, 8=NeedPluginPower)
