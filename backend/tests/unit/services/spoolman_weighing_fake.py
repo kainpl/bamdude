@@ -3,17 +3,27 @@
 ``FakeSpoolman`` (the extra-field double) stores whatever it is sent. The
 weight tests need the part of Spoolman that is NOT a store: a spool keeps
 ``initial_weight`` and ``used_weight`` and *derives* ``remaining_weight`` from
-them, so writing one moves the other. Modelled here from upstream Bambuddy's
-client and commit texts (#2906, #3194) — no live Spoolman was measured:
+them, so writing one moves the other. Every rule below was measured on a
+live Spoolman 0.27.1 (2026-11-15):
 
 * ``remaining_weight`` = ``initial_weight`` − ``used_weight`` (floored at 0),
-  absent while the spool has no ``initial_weight``;
-* a spool created without ``initial_weight`` copies its filament's ``weight``;
+  absent while the spool has no ``initial_weight`` — so ``used_weight: 0``
+  reports the spool full;
+* a spool created without ``initial_weight`` is stamped with its filament's
+  ``weight``, and without ``spool_weight`` with its filament's, else its
+  vendor's ``empty_spool_weight``; a later relink re-stamps neither;
 * a written ``remaining_weight`` becomes ``used_weight = initial − remaining``
   and is refused (400) for a spool without a size; ``initial_weight`` is
   applied before ``remaining_weight`` within one PATCH;
-* a ``text`` extra field takes only a value that decodes to a JSON string;
-* ``GET /spool`` embeds the filament, and the filament its vendor.
+* an unregistered extra key is refused, a ``text`` extra field takes only a
+  value that decodes to a JSON string, and a PATCHed ``extra`` is merged;
+* ``GET /spool`` embeds the filament, and the filament its vendor; a field
+  that is null is left out of the answer.
+
+``add_spool`` stages a row directly and stamps only the size, so a test can
+hold a spool as an OLDER Spoolman left it — no tare of its own, or (with
+``initial_weight=None``) no size of its own — which is where the filament and
+vendor fallbacks still decide.
 """
 
 from __future__ import annotations
@@ -69,7 +79,7 @@ class WeighingSpoolman(FakeSpoolman):
         return filament
 
     def view(self, spool_id: int) -> dict:
-        stored = dict(self.spools[spool_id])
+        stored = {key: value for key, value in self.spools[spool_id].items() if value is not None}
         filament_id = stored.pop("filament_id")
         stored["filament"] = self._filament_view(filament_id)
         initial = stored.get("initial_weight")
@@ -140,6 +150,11 @@ class WeighingSpoolman(FakeSpoolman):
                 "registered": "2026-01-01T00:00:00Z",
                 "initial_weight": filament.get("weight"),
             }
+            tare = filament.get("spool_weight")
+            if tare is None and filament.get("vendor_id") is not None:
+                tare = self.vendors[filament["vendor_id"]].get("empty_spool_weight")
+            if tare is not None:
+                spool["spool_weight"] = tare
             if (rejection := self._apply(spool, body)) is not None:
                 return rejection
             self.spools[spool_id] = spool
