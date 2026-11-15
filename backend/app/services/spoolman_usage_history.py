@@ -408,6 +408,26 @@ async def delete_row(db: AsyncSession, spool_id: int, usage_id: int) -> bool:
 async def detach_archive(db: AsyncSession, archive_id: int) -> None:
     """A deleted archive leaves its rows without a link (SQLite runs no FK actions,
     and on PostgreSQL the reference would block the delete). The caller commits."""
+    await detach_archives(db, [archive_id])
+
+
+async def detach_archives(db: AsyncSession, archive_ids: list[int]) -> None:
+    """The same for a bulk archive delete, which never passes ``delete_archive``
+    (a user deleted with their items, the trash sweeper's leftover delete). The
+    caller commits."""
+    ids = [int(i) for i in archive_ids]
+    for start in range(0, len(ids), 500):
+        await db.execute(
+            update(SpoolmanUsageHistory)
+            .where(SpoolmanUsageHistory.archive_id.in_(ids[start : start + 500]))
+            .values(archive_id=None)
+        )
+
+
+async def detach_printer(db: AsyncSession, printer_id: int) -> None:
+    """A deleted printer leaves its rows without one. ``SET NULL`` is the
+    PostgreSQL backstop; SQLite runs no FK actions and hands the id to the next
+    printer, which would be shown as these charges' printer. The caller commits."""
     await db.execute(
-        update(SpoolmanUsageHistory).where(SpoolmanUsageHistory.archive_id == archive_id).values(archive_id=None)
+        update(SpoolmanUsageHistory).where(SpoolmanUsageHistory.printer_id == printer_id).values(printer_id=None)
     )
