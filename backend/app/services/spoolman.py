@@ -1591,7 +1591,10 @@ class SpoolmanClient:
             if existing:
                 logger.info("Updating existing spool %s for tag %s...", existing["id"], spool_tag[:16])
                 await self.add_native_tags(existing, reel_uids, tag_format)
-                await self._fill_missing_tray_preset(existing, tray)
+                # Only a Bambu roll's tray names its own filament (as upstream):
+                # under any other tag the preset is what the slot was last told.
+                if is_bambu:
+                    await self._fill_missing_tray_preset(existing, tray)
                 return await self.update_spool(
                     spool_id=existing["id"],
                     remaining_weight=None if disable_weight_sync else remaining,
@@ -1661,7 +1664,7 @@ class SpoolmanClient:
                 comment="Created by BamDude",
                 extra={
                     "tag": json.dumps(spool_tag),
-                    **_tray_preset_extra(tray),
+                    **(_tray_preset_extra(tray) if is_bambu else {}),
                     # A Spoolman filament has no colour name; ours lives on the
                     # spool, where the mapper reads it first. Without it the
                     # list fell back to a hex-only lookup that cannot tell

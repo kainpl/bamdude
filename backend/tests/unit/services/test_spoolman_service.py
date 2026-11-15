@@ -578,6 +578,37 @@ class TestABambuSpoolKeepsTheTraysPreset:
         )
 
     @pytest.mark.asyncio
+    async def test_a_tag_that_is_no_bambu_roll_stores_no_preset_on_create(self):
+        """A third-party tag says nothing about the filament: the tray's preset
+        is whatever the slot was last configured with (review slots I-2)."""
+        client = SpoolmanClient("http://localhost:7912")
+        foreign = _bambu_tray(tray_uuid="", tag_uid="04A1B2C3D4E5F6")  # 14 hex: not a Bambu chip
+        with (
+            patch.object(client, "find_spool_by_tag", AsyncMock(return_value=None)),
+            patch.object(client, "_holder_outside_the_list", AsyncMock(return_value=None)),
+            patch.object(client, "find_or_create_filament", AsyncMock(return_value=1)),
+            patch.object(client, "create_spool", AsyncMock(return_value={"id": 99})) as create,
+            patch.object(client, "add_native_tags", AsyncMock()),
+        ):
+            await client.sync_ams_tray(foreign, "X1C", disable_weight_sync=True)
+
+        assert set(create.call_args.kwargs["extra"]) == {"tag"}
+
+    @pytest.mark.asyncio
+    async def test_a_tag_that_is_no_bambu_roll_fills_no_preset_on_a_match(self):
+        client = SpoolmanClient("http://localhost:7912")
+        existing = {"id": 42, "extra": {"tag": '"04A1B2C3D4E5F6"'}}
+        foreign = _bambu_tray(tray_uuid="", tag_uid="04A1B2C3D4E5F6")
+        with (
+            patch.object(client, "merge_spool_extra", AsyncMock(return_value=existing)) as merge,
+            patch.object(client, "update_spool", AsyncMock(return_value=existing)),
+            patch.object(client, "add_native_tags", AsyncMock()),
+        ):
+            await client.sync_ams_tray(foreign, "X1C", disable_weight_sync=True, cached_spools=[existing])
+
+        merge.assert_not_awaited()
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("stored", ['"GFA01"', '"PFUS1234"'])
     async def test_a_preset_already_set_is_left_alone(self, stored):
         client = SpoolmanClient("http://localhost:7912")

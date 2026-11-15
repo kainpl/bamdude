@@ -250,6 +250,25 @@ class TestTheSlotsFilamentFamily:
         assert sent["tray_info_idx"] == "GFG99"
         assert sent["tray_type"] == "PETG"
 
+    async def test_a_stored_preset_of_another_material_does_not_configure_the_slot(self, db_session, route):
+        """The spool's filament was changed in Spoolman (PLA → PETG) and the
+        preset extra stayed behind: the slot is told the spool's material, not
+        PLA Basic at PLA temperatures (review slots I-2)."""
+        printer = await make_printer(db_session, f"01P00A0000009{ROUTES.index(route)}")
+
+        mqtt = await run_route(
+            db_session,
+            route,
+            printer,
+            raw_spool=spoolman_spool(bambu_slicer_filament='"GFA00"'),  # Bambu PLA Basic on a PETG spool
+            tray=live_tray(),
+        )
+
+        sent = mqtt.ams_set_filament_setting.call_args.kwargs
+        assert sent["tray_info_idx"] == "GFG99"
+        assert sent["tray_type"] == "PETG"
+        assert sent["nozzle_temp_max"] > 240
+
     async def test_no_preset_and_no_calibration_is_the_stand_in_as_before(self, db_session, route):
         printer = await make_printer(db_session, f"01P00A0000008{ROUTES.index(route)}")
 

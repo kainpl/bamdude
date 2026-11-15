@@ -29,6 +29,7 @@ from backend.app.services.filament_identity import (
     resolve_tray,
 )
 from backend.app.utils import filament_catalog as catalog
+from backend.app.utils.filament_types import filament_types_compatible
 from backend.app.utils.printer_models import PRINTER_MODEL_MAP
 
 logger = logging.getLogger(__name__)
@@ -81,6 +82,20 @@ def _stand_in(material: str) -> tuple[catalog.CatalogFamily | None, str]:
     if family is not None:
         return family, family.filament_type or material.strip()
     return catalog.generic_family_for_material(material), material.strip()
+
+
+def _preset_is_of_material(preset_type: str | None, material: str | None) -> bool:
+    """Would the preset tell the slot the type the spool's material gives it?
+
+    The spool's side is what :func:`_stand_in` would write for that material —
+    the catalogue's own reading of the name ("PETG HF" and "PLA+" are PETG and
+    PLA) — and the two are compared as routing compares types. A side that
+    states no type has nothing to contradict the other with.
+    """
+    if not (material or "").strip() or not (preset_type or "").strip():
+        return True
+    _, spool_type = _stand_in(material)
+    return filament_types_compatible(preset_type, spool_type)
 
 
 def _pick_preset(family_id: str, candidates: list[str]) -> catalog.CatalogPreset | None:
@@ -183,10 +198,19 @@ async def build_slot_assignment(
     # wins; the stored preset answers only where there is none, in place of
     # the stand-in below: a Bambu PETG HF spool with no calibration on this
     # printer went out as Generic PETG (upstream 5e3a2f278, issue #3433).
+    # ⚠️ Only a preset of the spool's OWN material: in Spoolman the material is
+    # edited outside BamDude, and a preset left behind by another filament
+    # (PLA Basic on a spool that is now PETG) would tell the slot PLA.
     from_stored_preset = False
     if (resolved is None or not resolved.family) and stored_preset:
-        resolved = await resolve_raw(db, stored_preset)
-        from_stored_preset = bool(resolved and resolved.family)
+        candidate = await resolve_raw(db, stored_preset)
+        if candidate.family and _preset_is_of_material(candidate.filament_type, material_override):
+            resolved, from_stored_preset = candidate, True
+        elif candidate.family:
+            warnings.append(
+                f"stored preset {candidate.family.filament_id} is {candidate.filament_type!r}, "
+                f"the spool is {material_override!r}; preset ignored"
+            )
     fam_type = (resolved.filament_type if resolved and resolved.family else None) or (material_override or "")
 
     # No family -> a system profile for the spool's material, warning-logged.
