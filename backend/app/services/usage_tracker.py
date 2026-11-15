@@ -2269,16 +2269,11 @@ async def _track_from_3mf(
                     # never appears as gcode extrusion, so the absolute figure
                     # under-charged a cancelled swap-heavy print ~7x (measured
                     # 2026-08-28: slicer totals 46.35 g vs 6.8 g of E-moves).
-                    from backend.app.utils.threemf_tools import slot_progress_fraction
+                    # One function with the Spoolman writer, so a stopped
+                    # print weighs the same in both backends.
+                    from backend.app.utils.threemf_tools import partial_slot_grams
 
-                    _est_by_slot = {u.get("slot_id", 0): u.get("used_g", 0) for u in filament_usage}
-                    layer_grams = {}
-                    for slot_id, est_g in _est_by_slot.items():
-                        if est_g <= 0:
-                            continue
-                        fraction = slot_progress_fraction(layer_usage, slot_id - 1, current_layer)
-                        if fraction is not None:
-                            layer_grams[slot_id] = est_g * fraction
+                    layer_grams = partial_slot_grams(filament_usage, layer_usage, current_layer)
             except Exception:
                 pass  # Fall back to linear scaling
 

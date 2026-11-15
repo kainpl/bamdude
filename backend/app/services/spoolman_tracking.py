@@ -1214,11 +1214,10 @@ async def _report_partial_usage(
     last_progress: int | None = None,
     completion: CompletionSnapshot | None = None,
 ):
-    """Report partial filament usage based on actual G-code layer data.
-
-    Uses per-layer cumulative extrusion from G-code parsing for accurate
-    multi-material tracking. Falls back to linear interpolation if G-code
-    data is unavailable.
+    """Report what a print that stopped used: the slicer's per-slot estimate scaled by
+    how far each slot got along its own G-code timeline (``partial_slot_grams`` — the
+    internal writer's measure, through the same function). Falls back to linear
+    interpolation if G-code data is unavailable.
 
     How far the print got comes from the completion event (``completion``, else the captured
     ``last_layer_num`` / ``last_progress``) — never from the printer now, which may already be
@@ -1226,7 +1225,7 @@ async def _report_partial_usage(
     only; it never divides it between reels (spec partial-print-layer-split r2).
     """
     from backend.app.services.printer_manager import printer_manager
-    from backend.app.utils.threemf_tools import get_cumulative_usage_at_layer, mm_to_grams
+    from backend.app.utils.threemf_tools import partial_slot_grams
 
     async with async_session() as db:
         from backend.app.api.routes.settings import get_setting
@@ -1301,7 +1300,6 @@ async def _report_partial_usage(
 
     # Get tracking data
     layer_usage = tracking.layer_usage
-    filament_properties = tracking.filament_properties or {}
     filament_usage = tracking.filament_usage or []
     ams_trays = {int(k): v for k, v in (tracking.ams_trays or {}).items()}
     slot_to_tray = tracking.slot_to_tray
@@ -1376,12 +1374,13 @@ async def _report_partial_usage(
             cost_out=print_cost,
         )
 
-    # No-3MF aborted print (#1820 mirror of the completion path): nothing in
-    # filament_usage or layer_usage to base partial estimates on, but the
-    # remain%-delta snapshot we captured at start still describes consumption
-    # up to the abort moment. Write it the same way report_usage's fallback
-    # does, then return — there's no 3MF-derived partial to layer on top.
-    if not filament_usage and not layer_usage and tray_remain_start:
+    # No-3MF aborted print (#1820 mirror of the completion path): no slicer
+    # estimate in filament_usage to scale (a G-code timeline alone is a
+    # progress measure, not a weight), but the remain%-delta snapshot we
+    # captured at start still describes consumption up to the abort moment.
+    # Write it the same way report_usage's fallback does, then return —
+    # there's no 3MF-derived partial to layer on top.
+    if not filament_usage and tray_remain_start:
         current_lookup = _snapshot_tray_remain(state.raw_data) if state and state.raw_data else {}
         # Journal trays are off-limits to the delta here too (a runout's
         # substitute tray must not be charged twice on an abort).
@@ -1398,43 +1397,39 @@ async def _report_partial_usage(
         await _settle_archive()
         return
 
-    # Try to use accurate G-code parsed data — it measures the weight AT a layer, so it needs one.
-    if layer_usage and current_layer:
+    # The linear ratio: what sizes a slot the G-code timeline says nothing about.
+    progress_ratio = None
+    if current_layer and total_layers and total_layers > 0:
+        progress_ratio = min(current_layer / total_layers, 1.0)
+    elif progress_ratio_from_event is not None:
+        progress_ratio = progress_ratio_from_event
+
+    # The slicer's estimate x each slot's progress along its own G-code timeline — the measure
+    # the internal writer uses, through the same function (``partial_slot_grams``), so a stopped
+    # print weighs the same in both backends. Never the G-code's own grams: flush / purge runs
+    # in firmware macros and is not in the plate G-code (measured 46.35 g against 6.8 g of
+    # E-moves), and the parser counts every un-retract as extrusion (upstream a8dd164c7, #3317).
+    # It measures the weight AT a layer, so it needs an observed one — as the internal writer
+    # does; a layer estimated from the progress is the linear ratio's below.
+    if layer_usage and bound.layer:
         layer_usage_int = {
             int(layer): {int(fid): mm for fid, mm in filaments.items()} for layer, filaments in layer_usage.items()
         }
-        usage_mm = get_cumulative_usage_at_layer(layer_usage_int, current_layer)
+        slot_grams = partial_slot_grams(filament_usage, layer_usage_int, bound.layer)
 
-        if usage_mm:
-            logger.info("[SPOOLMAN] Using G-code parsed data for layer %s", current_layer)
+        if slot_grams:
+            logger.info("[SPOOLMAN] Using the G-code timeline for layer %s", bound.layer)
 
-            # Build (slot_id, grams) list using Spoolman densities with 3MF fallback
             usage_items = []
-            for filament_id, mm_used in usage_mm.items():
-                slot_id = filament_id + 1  # filament_id is 0-based, slot_id is 1-based
-
-                # Get density from Spoolman (most accurate), fall back to 3MF, then PLA default
-                global_tray_id = _resolve_global_tray_id(slot_id, slot_to_tray, ams_trays)
-                tray_info = ams_trays.get(global_tray_id)
-                density = None
-                diameter = 1.75
-
-                if tray_info:
-                    spool_tag = _resolve_spool_tag(tray_info, printer_serial, global_tray_id)
-                    if spool_tag:
-                        spool = await client.find_spool_by_tag(spool_tag)
-                        if spool:
-                            filament_data = spool.get("filament", {})
-                            density = filament_data.get("density")
-                            diameter = filament_data.get("diameter", 1.75)
-
-                if not density:
-                    props = filament_properties.get(str(slot_id), filament_properties.get(slot_id, {}))
-                    density = props.get("density", 1.24)
-                    logger.debug("[SPOOLMAN] Using fallback density %s for slot %s", density, slot_id)
-
-                grams_used = round(mm_to_grams(mm_used, diameter, density), 2)
-                usage_items.append((slot_id, grams_used))
+            for usage in filament_usage:
+                slot_id = usage.get("slot_id", 0)
+                total_used_g = usage.get("used_g", 0)
+                if total_used_g <= 0:
+                    continue
+                if slot_id in slot_grams:
+                    usage_items.append((slot_id, round(slot_grams[slot_id], 2)))
+                elif progress_ratio is not None:
+                    usage_items.append((slot_id, round(total_used_g * progress_ratio, 2)))
 
             spools_updated = await _charge(usage_items, "Partial (G-code)", layer_usage_int)
             if spools_updated > 0:
@@ -1443,12 +1438,6 @@ async def _report_partial_usage(
             return
 
     # Fallback: linear interpolation (if no G-code data available)
-    progress_ratio = None
-    if current_layer and total_layers and total_layers > 0:
-        progress_ratio = min(current_layer / total_layers, 1.0)
-    elif progress_ratio_from_event is not None:
-        progress_ratio = progress_ratio_from_event
-
     if progress_ratio is None:
         logger.debug(
             "[SPOOLMAN] Cannot use linear fallback: total_layers=%s, last_progress=%s",
