@@ -84,6 +84,14 @@ _GATE_DEPENDENCY: dict[str, tuple[str, ...]] = {
     # ownership form, one without takes the permission form.
     "media-token": ("require_media_ownership_permission", "require_media_permission", "require_media_any_permission"),
 }
+#: Where each real factory is defined. A qualified name says what a closure is
+#: CALLED; a function with no check in it, named ``require_media_permission`` in
+#: some other module, has the same one. A closure's ``__module__`` is the module
+#: its factory was written in, so the pair is what identifies the gate.
+_AUTH_MODULE = "backend.app.core.auth"
+_FACTORY_MODULE: dict[str, str] = {
+    factory: _AUTH_MODULE for factories in _GATE_DEPENDENCY.values() for factory in factories
+} | {"kiosk_access": "backend.app.api.routes.monitor"}
 _DEPENDENCY_GATES = frozenset(_GATE_DEPENDENCY)
 _HANDLER_GATES = frozenset({"slicer-token", "pre-auth", "nonce"})
 _GATES = _DEPENDENCY_GATES | _HANDLER_GATES | frozenset({"anonymous", "setup"})
@@ -259,6 +267,21 @@ def _call_name(call) -> str:
     return getattr(call, "__qualname__", None) or getattr(call, "__name__", None) or type(call).__name__
 
 
+def _is_factory_gate(call, factories: tuple[str, ...]) -> bool:
+    """This callable came out of one of the named factories — the real one, in its own module."""
+    factory = _call_name(call).split(".")[0]
+    return factory in factories and getattr(call, "__module__", None) == _FACTORY_MODULE[factory]
+
+
+def require_media_permission(*permissions):
+    """An impostor for the regression below: the real factory's name, this module, no check."""
+
+    async def checker():
+        return None
+
+    return checker
+
+
 def _reachable_dependencies(dependant) -> list:
     """Every dependency FastAPI solves for this route, at any depth, as its ``Dependant``.
 
@@ -286,8 +309,7 @@ def _gate_problem(route: APIRoute, gate: str, label: str) -> str | None:
     deps = _gate_dependencies(route)
     if gate in _DEPENDENCY_GATES:
         factories = _GATE_DEPENDENCY[gate]
-        reachable = [_call_name(d.call) for d in _reachable_dependencies(route.dependant)]
-        if any(name.split(".")[0] in factories for name in reachable):
+        if any(_is_factory_gate(d.call, factories) for d in _reachable_dependencies(route.dependant)):
             return None
         return f"{label}: tagged {gate}, so it must carry one of {factories} — it carries {deps or 'no gate'}"
     if deps:
@@ -371,6 +393,23 @@ def _probe_route(dependency) -> APIRoute:
     return next(r for r in probe.routes if isinstance(r, APIRoute))
 
 
+def _wrapping(dependency):
+    from fastapi import Depends
+
+    async def wrapper(auth=Depends(dependency)):
+        return auth
+
+    return wrapper
+
+
+def test_every_gate_factory_the_table_names_is_where_the_guard_looks_for_it():
+    """``_FACTORY_MODULE`` is a claim too: a factory that moved would make every entry fail obscurely."""
+    import importlib
+
+    for factory, module in _FACTORY_MODULE.items():
+        assert callable(getattr(importlib.import_module(module), factory, None)), f"{factory} is not in {module}"
+
+
 def test_a_gate_inside_a_wrapper_counts_only_while_the_real_factory_is_in_it():
     """The guard looks through a wrapper dependency, and only for the gate itself.
 
@@ -412,6 +451,13 @@ def test_a_gate_inside_a_wrapper_counts_only_while_the_real_factory_is_in_it():
         problem = _gate_problem(_probe_route(lost), "media-token", name)
         assert problem is not None and "must carry one of" in problem, f"{name}: the guard accepted a lost gate"
 
+    # The real factory's name on a function from another module is not the factory.
+    impostor = require_media_permission(Permission.ARCHIVES_READ_ALL)
+    assert impostor.__qualname__.split(".")[0] in _GATE_DEPENDENCY["media-token"], "the impostor lost its disguise"
+    for name, lost in (("impostor", impostor), ("wrapped impostor", _wrapping(impostor))):
+        problem = _gate_problem(_probe_route(lost), "media-token", name)
+        assert problem is not None and "must carry one of" in problem, f"{name}: a namesake passed for the gate"
+
     # A wrapper holding a token gate is still a gate on a route tagged as having none.
     assert "now gates it" in _gate_problem(_probe_route(wrapped), "anonymous", "anonymous")
     # ...and one gate is not another: the media gate does not satisfy a stream-token entry.
@@ -439,7 +485,7 @@ def test_the_archive_media_wrapper_holds_the_archive_ownership_gate():
             gates = [
                 d.call
                 for d in _reachable_dependencies(dependency)
-                if _call_name(d.call).split(".")[0] == "require_media_ownership_permission"
+                if _is_factory_gate(d.call, ("require_media_ownership_permission",))
             ]
             assert len(gates) == 1, f"{route.path}: the wrapper holds {len(gates)} media ownership gates"
             bound = inspect.getclosurevars(gates[0]).nonlocals
