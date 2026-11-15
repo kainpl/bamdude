@@ -10985,11 +10985,25 @@ class BambuMQTTClient:
             print_data.get("sequence_id"),
         )
         logger.debug("[%s] %s full response: %s", self.serial_number, print_data.get("command"), print_data)
+        # This connection answers K writes — whoever sent the write. Read by
+        # ``answers_cali_writes``; a new connection has a new generation.
+        self._cali_ack_generation = getattr(self.state, "connection_generation", None)
         ack_seq = str(print_data.get("sequence_id", ""))
         # Only fill a slot somebody is waiting on. Writing every ack into the
         # dict would make it grow for the lifetime of the process.
         if ack_seq in self._pending_cali_acks:
             self._pending_cali_acks[ack_seq] = print_data
+
+    @property
+    def answers_cali_writes(self) -> bool:
+        """Whether THIS connection has answered an ``extrusion_cali_set`` / ``_del``.
+
+        Some firmware never answers one; there a missing answer says nothing
+        and is not worth reporting. Only where an answer has been seen is its
+        absence "sent, not confirmed".
+        """
+        seen = getattr(self, "_cali_ack_generation", None)
+        return seen is not None and seen == getattr(self.state, "connection_generation", None)
 
     async def await_cali_ack(self, sequence_id: str | None, timeout: float = 3.0) -> tuple[bool, str]:
         """Wait for the printer's verdict on a K-profile write.

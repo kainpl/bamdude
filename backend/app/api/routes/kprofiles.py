@@ -85,6 +85,21 @@ async def _resolve_fc_id_for_audit(
     ).scalar()
 
 
+async def _write_verdict(client, sequence_id) -> tuple[bool, str, bool]:
+    """The printer's verdict on a K write, and whether to call it confirmed.
+
+    A missing answer is reported ("sent, not confirmed") only where this
+    connection has answered such a write before. Firmware that never answers
+    them would otherwise have every save reported that way; there silence says
+    nothing and the write is the quiet success it always was. A refusal is a
+    failure everywhere.
+    """
+    ack_ok, ack_detail, confirmed = await client.await_cali_verdict(sequence_id)
+    if ack_ok and not confirmed and sequence_id and not client.answers_cali_writes:
+        confirmed = True
+    return ack_ok, ack_detail, confirmed
+
+
 def _audit_result(audit_error: str | None, confirmed: bool) -> str:
     """The audit's verdict on a K-profile write.
 
@@ -328,7 +343,7 @@ async def set_kprofile(
     # the printer refused was reported to the user as saved. Awaited BEFORE the
     # audit row is written, so the audit records the printer's verdict rather
     # than the fact that bytes left the process.
-    ack_ok, ack_detail, confirmed = await client.await_cali_verdict(success)
+    ack_ok, ack_detail, confirmed = await _write_verdict(client, success)
 
     fc_id = await _resolve_fc_id_for_audit(db, printer_id=printer_id, profile=profile)
     if not success:
@@ -413,7 +428,7 @@ async def set_kprofiles_batch(
     nozzle_diameter = profiles[0].nozzle_diameter
 
     success = client.set_kprofiles_batch(profile_dicts, nozzle_diameter)
-    ack_ok, ack_detail, confirmed = await client.await_cali_verdict(success)
+    ack_ok, ack_detail, confirmed = await _write_verdict(client, success)
 
     if not success:
         audit_error = "set_kprofiles_batch MQTT publish failed"
@@ -481,7 +496,7 @@ async def delete_kprofile(
         extruder_id=profile.extruder_id,
     )
 
-    ack_ok, ack_detail, confirmed = await client.await_cali_verdict(success)
+    ack_ok, ack_detail, confirmed = await _write_verdict(client, success)
 
     fc_id = await _resolve_fc_id_for_audit(db, printer_id=printer_id, profile=profile)
     if not success:

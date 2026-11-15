@@ -102,3 +102,26 @@ class TestVerdictSaysWhetherItWasConfirmed:
         c = _ack_client()
         seq = c.set_kprofile(filament_id="GFA00", name="PLA", k_value="0.020000")
         assert await c.await_cali_ack(seq, timeout=0.15) == (True, "")
+
+
+class TestWhetherSilenceIsWorthSaying:
+    """Firmware that never answers a K write must not have every save called "not confirmed": silence
+    is said only on a connection that has answered such a write before."""
+
+    def test_a_connection_that_never_answered_does_not_claim_to(self):
+        c = _ack_client()
+        c.state.connection_generation = 7
+        assert c.answers_cali_writes is False
+
+    def test_an_answer_proves_this_connection_answers(self):
+        c = _ack_client()
+        c.state.connection_generation = 7
+        c._route_ack({"command": "extrusion_cali_set", "result": "success", "sequence_id": "5"})
+        assert c.answers_cali_writes is True
+
+    def test_a_new_connection_has_proven_nothing(self):
+        c = _ack_client()
+        c.state.connection_generation = 7
+        c._route_ack({"command": "extrusion_cali_del", "result": "success", "sequence_id": "5"})
+        c.state.connection_generation = 8
+        assert c.answers_cali_writes is False
