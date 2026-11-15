@@ -179,6 +179,73 @@ class TestWhatDoesNotEndACycle:
         assert ended == []
 
 
+def _frame(client, units: dict[int, int | None], *, bits: str | None, status: bool = True) -> None:
+    """A status frame naming these units (``dry_time`` or none), with the AMS unit mask it carries."""
+    ams: dict = {
+        "ams": [{"id": str(i), "tray": [], **({} if t is None else {"dry_time": t})} for i, t in units.items()]
+    }
+    if bits is not None:
+        ams["ams_exist_bits"] = bits
+    client._handle_ams_data(ams, presence_is_status=status)
+
+
+class TestAUnitThatDisappears:
+    """Unplugged while counting: its record goes without a report, so whatever
+    is later seen under that id cannot end the old cycle over the spools
+    assigned there now. "Gone" is the unit mask of a status frame, nothing less."""
+
+    def _counting(self, client):
+        _frame(client, {0: 0, 1: 0}, bits="3")
+        _frame(client, {0: 0, 1: 480}, bits="3")
+        _frame(client, {0: 0, 1: 300}, bits="3")
+
+    def test_a_unit_that_left_the_mask_reports_no_end(self, client, ended):
+        self._counting(client)
+        _frame(client, {0: 0}, bits="1")
+        _frame(client, {0: 0, 1: 0}, bits="3")  # the same unit, or another, plugged in there
+
+        assert ended == []
+
+    def test_no_unit_reported_at_all_drops_them_too(self, client, ended):
+        self._counting(client)
+        _frame(client, {}, bits="0")
+        _frame(client, {0: 0, 1: 0}, bits="3")
+
+        assert ended == []
+
+    def test_a_frame_that_only_does_not_mention_the_unit_keeps_its_cycle(self, client, ended):
+        self._counting(client)
+        _frame(client, {0: 0}, bits=None)  # a partial list: only the active unit
+        _frame(client, {0: 0}, bits="3")
+        _frame(client, {1: 0}, bits="3")
+
+        assert ended == [DryingCycleEnd(ams_id=1, remaining_minutes=300, peak_minutes=480, start_seen=True)]
+
+    def test_an_acknowledgement_without_the_unit_drops_nothing(self, client, ended):
+        self._counting(client)
+        _frame(client, {0: 0}, bits="1", status=False)
+        _frame(client, {1: 0}, bits="3")
+
+        assert [c.ams_id for c in ended] == [1]
+
+    def test_what_we_remembered_of_the_old_unit_does_not_start_a_cycle_for_the_new_one(self, client, ended):
+        self._counting(client)
+        _frame(client, {0: 0}, bits="1")
+        _frame(client, {1: None}, bits="3")  # back, in a frame that does not say its countdown
+        _frame(client, {1: 0}, bits="3")
+
+        assert ended == []
+
+    def test_the_unit_that_came_back_records_its_own_cycle(self, client, ended):
+        self._counting(client)
+        _frame(client, {0: 0}, bits="1")
+        _frame(client, {0: 0, 1: 0}, bits="3")
+        _frame(client, {1: 60}, bits="3")
+        _frame(client, {1: 0}, bits="3")
+
+        assert ended == [DryingCycleEnd(ams_id=1, remaining_minutes=60, peak_minutes=60, start_seen=True)]
+
+
 class _Publisher:
     def publish(self, *_args, **_kwargs):
         return None

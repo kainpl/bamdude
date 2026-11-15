@@ -2421,6 +2421,9 @@ class BambuMQTTClient:
         # whether its start was watched, the target we sent for it). See
         # ``_observe_dry_cycles``.
         self._dry_cycles: dict[int, dict[str, object] | None] = {}
+        # Units a status frame's unit mask said are gone. Their merged entry is
+        # what we remembered, so one is read again only from a frame of its own.
+        self._dry_cycle_gone: set[int] = set()
         # Fires when the printer's K-profile push contains content that
         # differs from the last seen hash — covers MQTT (re)connect (first
         # push fills empty hash), set/edit/delete from extrusion_cali_*
@@ -5202,7 +5205,9 @@ class BambuMQTTClient:
         # is read; before the cached targets are dropped below, because a
         # cycle's record copies its target when the countdown starts.
         if presence_is_status:
-            self._observe_dry_cycles(merged_ams)
+            self._observe_dry_cycles(
+                merged_ams, ams_list, ams_data.get("ams_exist_bits") if isinstance(ams_data, dict) else None
+            )
 
         # Drop cached drying-target params for any AMS that has stopped drying
         # (dry_time back to 0), so the badge stops advertising a finished cycle.
@@ -9748,7 +9753,7 @@ class BambuMQTTClient:
             logger.exception("[%s] publish_raw failed for topic=%s", self.serial_number, topic)
             return False
 
-    def _observe_dry_cycles(self, ams_units: list) -> None:
+    def _observe_dry_cycles(self, ams_units: list, reported: object = None, ams_exist_bits: object = None) -> None:
         """Keep the per-unit drying-cycle record and report a cycle that ended.
 
         Called for status frames only. A frame without ``dry_time`` says
@@ -9756,7 +9761,39 @@ class BambuMQTTClient:
         the same two readings the drying-complete edge refuses. The report is
         what the printer showed of the cycle, whoever started it: BamDude, the
         printer's screen or the slicer.
+
+        A unit that left the printer while counting loses its record with no
+        report: whatever is seen under that id later is another cycle, and may
+        be another unit over other spools. "Left" is the frame's own unit mask
+        (``ams_exist_bits``) with the unit's bit clear - never a list that
+        merely does not name it, which is how the printer reports the active
+        unit during a print. Only a regular AMS (id 0-3, its own bit) is read,
+        or a mask naming no unit at all: the AMS-HT bits are not inferred, as
+        ``printer_feed_snapshot`` does not infer them.
         """
+        mask: int | None = None
+        if ams_exist_bits is not None and not isinstance(ams_exist_bits, bool):
+            try:
+                mask = ams_exist_bits if isinstance(ams_exist_bits, int) else int(str(ams_exist_bits), 16)
+            except (TypeError, ValueError):
+                mask = None
+        if mask is not None and mask < 0:
+            mask = None
+
+        def gone(ams_id: int) -> bool:
+            return mask is not None and (mask == 0 or (0 <= ams_id < 4 and not mask & (1 << ams_id)))
+
+        for ams_id in [known for known in self._dry_cycles if gone(known)]:
+            del self._dry_cycles[ams_id]
+            self._drying_targets.pop(ams_id, None)
+            self._dry_cycle_gone.add(ams_id)
+        carried: set[int] = set()
+        for unit in reported if isinstance(reported, list) else []:
+            if isinstance(unit, dict) and unit.get("dry_time") is not None:
+                try:
+                    carried.add(int(unit.get("id", -1)))
+                except (TypeError, ValueError):
+                    continue
         for ams_unit in ams_units:
             try:
                 ams_id = int(ams_unit.get("id", -1))
@@ -9766,6 +9803,15 @@ class BambuMQTTClient:
                 continue
             if ams_id < 0 or current is None:
                 continue
+            if gone(ams_id):
+                self._dry_cycle_gone.add(ams_id)
+                continue
+            if ams_id in self._dry_cycle_gone:
+                # Back only when a frame names its countdown itself; until then
+                # the merged value is the old unit's.
+                if ams_id not in carried:
+                    continue
+                self._dry_cycle_gone.discard(ams_id)
             if current <= 0 and ams_unit.get("dry_status") in _ACTIVE_DRY_STATUSES:
                 continue
             seen_before = ams_id in self._dry_cycles

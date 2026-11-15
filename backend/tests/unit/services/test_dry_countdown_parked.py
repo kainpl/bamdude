@@ -378,13 +378,60 @@ class TestAutoDryingAndAParkedUnit:
         history = auto._dry_unit_history[(1, 0)]
         assert "running" not in history
         assert isinstance(history["ended_at"], float)  # the ordinary re-arm cooldown is running
-        assert history["unproductive"] == 0  # a cycle that never ran proves nothing about drying
+        # A cycle the printer would not run is a strike: nothing else bounds the retry.
+        assert history["unproductive"] == 1
 
         # The timer is gone on the next report; still wet, but inside the cooldown.
         auto.pm.send_drying_command.reset_mock()
         auto.pm.get_status.return_value = _status(_wet(dry_time=0))
         await auto._check_auto_drying(_settings_db(), [], set())
         auto.pm.send_drying_command.assert_not_called()
+        assert history["unproductive"] == 1  # the stop is counted once, not again when the timer goes
+
+    @pytest.mark.asyncio
+    async def test_a_unit_the_printer_keeps_parking_is_suspended_and_reported(self, auto):
+        """Two cycles in a row the printer parked: the existing suspension and its
+        notification end the start + stop pair, and a dry reading lifts it as ever."""
+        auto._notify_auto_drying_suspended = AsyncMock()
+        parked = _status(_wet(dry_time=720, dry_countdown_stalled=True))
+        idle = _status(_wet(dry_time=0))
+
+        def cooled_off():
+            auto._dry_unit_history[(1, 0)]["ended_at"] = time.monotonic() - ps._AUTO_DRY_REARM_COOLDOWN_SECONDS - 1
+
+        starts = []
+        for _ in range(2):
+            auto.pm.get_status.return_value = idle
+            await auto._check_auto_drying(_settings_db(), [], set())  # arms
+            starts.append([c for c in auto.pm.send_drying_command.call_args_list if c.kwargs.get("mode") == 1])
+            auto.pm.get_status.return_value = parked
+            await auto._check_auto_drying(_settings_db(), [], set())  # parked: stopped
+            cooled_off()
+        assert [len(s) for s in starts] == [1, 2]
+        assert auto._dry_unit_history[(1, 0)]["unproductive"] == 2
+
+        auto.pm.send_drying_command.reset_mock()
+        auto.pm.get_status.return_value = idle
+        await auto._check_auto_drying(_settings_db(), [], set())
+        await auto._check_auto_drying(_settings_db(), [], set())
+
+        auto.pm.send_drying_command.assert_not_called()
+        assert auto._dry_unit_history[(1, 0)]["suspended"] is True
+        auto._notify_auto_drying_suspended.assert_awaited_once()
+
+        # Humidity back at or below the threshold resumes it, as for any suspension.
+        auto.pm.get_status.return_value = _status(_wet(dry_time=0, humidity_raw="20"))
+        await auto._check_auto_drying(_settings_db(), [], set())
+        assert not auto._dry_unit_history[(1, 0)].get("suspended")
+        assert "unproductive" not in auto._dry_unit_history[(1, 0)]
+
+    @pytest.mark.asyncio
+    async def test_a_stop_by_a_person_or_a_dispatch_is_still_no_strike(self, auto):
+        auto._dry_unit_history[(1, 0)] = {"unproductive": 0, "suspended": False, "ended_at": None, "running": True}
+
+        auto.forget_auto_dry_cycle(1, 0)
+
+        assert auto._dry_unit_history[(1, 0)]["unproductive"] == 0
 
     @pytest.mark.asyncio
     async def test_a_manual_parked_timer_beside_an_armed_unit_is_left_alone(self, auto):

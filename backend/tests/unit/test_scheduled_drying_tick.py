@@ -351,6 +351,36 @@ async def test_a_run_parked_on_an_idle_printer_is_stopped_and_reported(db_sessio
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("ran", "outcome"),
+    [
+        (timedelta(hours=7, minutes=30), ("completed", None)),
+        (timedelta(hours=7), ("failed", "not_started")),
+    ],
+    ids=["past-the-complete-fraction", "below-it"],
+)
+async def test_a_run_that_did_its_time_and_then_parks_is_completed(db_session, printer_factory, pm, ran, outcome):
+    """A run parked in its last tenth dried the filament: the timer is taken off
+    and the run is done, never reported as one that did not start."""
+    printer = await printer_factory(model="X1C")
+    pm.get_status.return_value.raw_data = {"ams": [_parked(dry_time=20)]}
+    row = await _run(db_session, printer, status="running", started_at=NOW - ran)
+    holds = {printer.id: 1.0}
+
+    await sd.tick(db_session, now=NOW, drying_in_progress=holds, dispatching_printers=set())
+
+    await db_session.refresh(row)
+    assert (row.status, row.reason) == outcome
+    pm.send_drying_command.assert_called_once_with(printer.id, 0, 0, 0, mode=0)
+    if outcome[0] == "completed":
+        pm.notifier.on_scheduled_drying_completed.assert_awaited_once()
+        pm.notifier.on_scheduled_drying_failed.assert_not_awaited()
+    else:
+        pm.notifier.on_scheduled_drying_failed.assert_awaited_once()
+    assert printer.id not in holds
+
+
+@pytest.mark.asyncio
 async def test_a_parked_run_does_not_starve_its_rule(db_session, printer_factory, pm):
     printer = await printer_factory(model="X1C")
     rule = DryingSchedule(

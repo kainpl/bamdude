@@ -106,13 +106,23 @@ async def _stamp_internal(db: AsyncSession, printer_id: int, ams_id: int, record
         .where(SpoolAssignment.printer_id == printer_id, SpoolAssignment.ams_id == ams_id)
     )
     spools = list(result.scalars().unique().all())
+    if not spools:
+        return 0
+    # The rows were read by printer id, and the id may name the next printer by
+    # now: the write is made under the record's hold, proved again under it
+    # (read, hold, prove, then write - inv-deleted-printer-runtime-not-inherited).
+    from backend.app.services.printer_manager import printer_manager
+
+    if not await printer_manager.hold_record(db, printer_id):
+        await db.rollback()
+        logger.info("Drying not recorded for printer %d: the printer record is gone", printer_id)
+        return 0
     now = utc_now()
     for spool in spools:
         spool.last_dried_at = now
         spool.last_dried_temp = record.temp
         spool.last_dried_hours = record.hours
-    if spools:
-        await db.commit()
+    await db.commit()
     return len(spools)
 
 
@@ -136,8 +146,16 @@ async def _stamp_spoolman(db: AsyncSession, printer_id: int, ams_id: int, record
     # ``merge_spool_extra`` registers the keys a write carries before it sends
     # them (Spoolman refuses an unknown extra key).
     fields = spoolman_extra(utc_now(), record)
+    # These writes go to Spoolman, not to our database, so no row lock can cover
+    # them (and none is held across the network): the session is asked again
+    # after every await, before the next spool of this printer id is addressed.
+    from backend.app.services.printer_manager import printer_manager
+
     stamped = 0
     for spool_id in spool_ids:
+        if not printer_manager.session_still_lives(printer_id):
+            logger.info("Drying not recorded on Spoolman spool %d: the printer record is gone", spool_id)
+            break
         try:
             await client.merge_spool_extra(spool_id, fields)
             stamped += 1

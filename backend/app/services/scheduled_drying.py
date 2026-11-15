@@ -625,6 +625,12 @@ async def _follow(db: AsyncSession, run: ScheduledDrying, now: datetime) -> None
         # no word to anybody. Seen parked is evidence - no START_CONFIRM_SECONDS.
         printer_manager.send_drying_command(run.printer_id, run.ams_id, 0, 0, mode=0)
         _seen_active.discard(run.id)
+        if elapsed >= run.duration_hours * 3600 * COMPLETE_FRACTION:
+            # Parked in its last stretch: the filament is dried - done, not a failure.
+            _finish(run, "completed", now)
+            logger.info("Scheduled drying: run %s on printer %s completed (timer parked)", run.id, run.printer_id)
+            await _notify(db, "completed", run)
+            return
         _finish(run, "failed", now, reason="not_started")
         logger.info(
             "Scheduled drying: run %s on printer %s - the printer holds the timer but is not drying; stopped",

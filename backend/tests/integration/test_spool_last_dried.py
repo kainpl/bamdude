@@ -121,6 +121,75 @@ class TestTheStampOnInternalSpools:
 
 
 @pytest.fixture
+def retired_session(printer_factory):
+    """A callback of a client session whose printer record a deletion has since retired."""
+    from contextlib import asynccontextmanager
+
+    from backend.app.services.printer_manager import printer_manager
+
+    @asynccontextmanager
+    async def scope():
+        printer = await printer_factory()
+        printer_id = printer.id  # the refused write rolls back, and the row object expires
+        life = printer_manager.printer_life(printer_id)
+        printer_manager.begin_printer_deletion(printer_id)
+        try:
+            with printer_manager.session_scope(printer_id, life):
+                yield printer
+        finally:
+            printer_manager._printer_lives.pop(printer_id, None)
+            printer_manager._client_generations.pop(printer_id, None)
+
+    return scope
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+class TestADeletedPrintersCycleStampsNothing:
+    """The slot rows are read by printer id, and SQLite gives a deleted
+    printer's id to the next one: the write is proved under the record's hold."""
+
+    async def test_internal_spools_of_a_retired_record_are_left_alone(self, db_session, retired_session, broadcast):
+        async with retired_session() as printer:
+            spool = await _spool(db_session)
+            await _assign(db_session, spool, printer, 0)
+            spool_id = spool.id
+
+            assert await spool_drying.record_drying_cycle(db_session, printer.id, FULL) == 0
+
+        assert (await db_session.get(Spool, spool_id, populate_existing=True)).last_dried_at is None
+        broadcast.assert_not_awaited()
+
+    async def test_a_printer_whose_row_is_gone_stamps_nothing(self, db_session, printer_factory, broadcast):
+        from sqlalchemy import delete
+
+        from backend.app.models.printer import Printer
+
+        printer = await printer_factory()
+        spool = await _spool(db_session)
+        await _assign(db_session, spool, printer, 0)  # SQLite runs no FK action: the row outlives its printer
+        printer_id, spool_id = printer.id, spool.id
+        await db_session.execute(delete(Printer).where(Printer.id == printer_id))
+        await db_session.commit()
+
+        assert await spool_drying.record_drying_cycle(db_session, printer_id, FULL) == 0
+
+        assert (await db_session.get(Spool, spool_id, populate_existing=True)).last_dried_at is None
+
+    async def test_spoolman_spools_of_a_retired_record_are_left_alone(self, db_session, retired_session, broadcast):
+        db_session.add(Settings(key="spoolman_enabled", value="true"))
+        await db_session.commit()
+        fake = FakeSpoolman()
+        fake.spools[11] = {"id": 11, "extra": {}}
+        async with retired_session() as printer:
+            await _spoolman_slots(db_session, printer, {(0, 0): 11})
+            with patch("backend.app.services.spoolman.get_spoolman_client", AsyncMock(return_value=_client(fake))):
+                assert await spool_drying.record_drying_cycle(db_session, printer.id, FULL) == 0
+
+        assert "bambu_last_dried_at" not in fake.spools[11]["extra"]
+
+
+@pytest.fixture
 async def spoolman_mode(db_session):
     db_session.add(Settings(key="spoolman_enabled", value="true"))
     await db_session.commit()

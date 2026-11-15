@@ -2014,6 +2014,13 @@ class PrintScheduler:
                         )
                         self._armed_dry_cycles.pop(unit_key, None)
                         self.forget_auto_dry_cycle(pid, ams_id)
+                        # ⚠️ Unlike a stop a person or a dispatch sent, this one IS a
+                        # strike: the printer would not run the cycle, and nothing
+                        # else ends a start + stop pair every cooldown for ever. Two
+                        # in a row suspend the unit and say so, as two cycles that
+                        # dried nothing do; a dry reading lifts it the same way.
+                        if unit_state is not None:
+                            unit_state["unproductive"] = int(unit_state.get("unproductive", 0)) + 1
                     continue
 
                 if dry_time > 0:
