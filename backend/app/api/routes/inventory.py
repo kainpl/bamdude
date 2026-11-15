@@ -70,7 +70,7 @@ from backend.app.schemas.spool_usage import (
     SpoolUsageTotals,
 )
 from backend.app.services import forecast_engine, inventory_service, spool_usage_service
-from backend.app.services.ams_slot_presence import spool_present
+from backend.app.services.ams_slot_presence import firmware_says_empty, spool_present
 from backend.app.services.filament_needs import Needs
 from backend.app.services.location_service import (
     DUPLICATE_LOCATION_NAME,
@@ -2907,7 +2907,7 @@ async def _assign_spool(data: SpoolAssignmentCreate, db: AsyncSession, current_u
     # kept showing "?" (upstream #3084). The presence bit overrules the 9;
     # a bit reading EMPTY deliberately does not start suppressing pushes
     # (a wrong bit position would silently stop a slot configuring).
-    slot_is_definitely_empty = tray_has_spool is not True and (tray_state == 9 or tray_state == 10)
+    slot_is_definitely_empty = firmware_says_empty(tray_has_spool, tray_state)
     configured = False
     pending_config = slot_is_definitely_empty
 

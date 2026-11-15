@@ -50,6 +50,7 @@ from backend.app.schemas.spoolman import (
     SpoolmanSlotAssignmentEnriched,
 )
 from backend.app.services import spool_drying
+from backend.app.services.ams_slot_presence import tray_definitely_empty
 from backend.app.services.location_service import (
     enrich_spool_dicts_with_location_id,
     maybe_sync_spoolman_locations,
@@ -1678,7 +1679,12 @@ async def assign_spoolman_slot(
             # masked — the one helper all three assignment paths share. The
             # actual plan stays the spool's truth; only what the printer is told
             # changes.
-            _, projection = await publish_projected_slot(
+            # A slot the firmware calls empty will not echo the filament back, so it is
+            # published (this path has no replay on insert) but not verified; and a
+            # publish that went out asks for a fresh report, so the verification has
+            # current telemetry instead of an idle printer's next push (upstream 53ef17dc5).
+            slot_live_tray = live_tray_for(state, body.ams_id, body.tray_id)
+            sent, projection = await publish_projected_slot(
                 db,
                 mqtt_client,
                 printer=printer,
@@ -1686,7 +1692,7 @@ async def assign_spoolman_slot(
                 ams_id=body.ams_id,
                 tray_id=body.tray_id,
                 actual_plan=plan,
-                live_tray=live_tray_for(state, body.ams_id, body.tray_id),
+                live_tray=slot_live_tray,
                 spool_tag_uid=mapped.get("tag_uid"),
                 spool_tray_uuid=mapped.get("tray_uuid"),
                 material=tray_type,
@@ -1697,7 +1703,10 @@ async def assign_spoolman_slot(
                 tray_sub_brands=tray_sub_brands,
                 tray_type_fallback=tray_type,
                 source="spoolman",
+                verify=not tray_definitely_empty(slot_live_tray),
             )
+            if sent:
+                mqtt_client.request_status_update()
 
             from backend.app.services.calibration_service import (  # noqa: PLC0415
                 apply_active_calibration_to_slot,

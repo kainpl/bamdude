@@ -22,7 +22,7 @@ from backend.app.models.spool_assignment import SpoolAssignment
 from backend.app.models.spoolman_slot_assignment import SpoolmanSlotAssignment
 from backend.app.models.user import User
 from backend.app.schemas.spoolman import SlotAmsId, SlotTrayId
-from backend.app.services.ams_slot_presence import spool_present
+from backend.app.services.ams_slot_presence import spool_present, tray_definitely_empty
 from backend.app.services.printer_manager import printer_manager
 from backend.app.services.spoolman import (
     ArchivedTagIndex,
@@ -1038,7 +1038,12 @@ async def link_spool(
                 # actual plan stays the spool's truth; only what the printer is
                 # told changes.
                 printer_row = (await db.execute(select(Printer).where(Printer.id == p_id))).scalar_one_or_none()
-                _, projection = await publish_projected_slot(
+                # A slot the firmware calls empty will not echo the filament back, so it is
+                # published (this path has no replay on insert) but not verified; and a
+                # publish that went out asks for a fresh report, so the verification has
+                # current telemetry instead of an idle printer's next push (upstream 53ef17dc5).
+                slot_live_tray = live_tray_for(state, a_id, t_id)
+                sent, projection = await publish_projected_slot(
                     db,
                     mqtt_client,
                     printer=printer_row,
@@ -1046,7 +1051,7 @@ async def link_spool(
                     ams_id=a_id,
                     tray_id=t_id,
                     actual_plan=plan,
-                    live_tray=live_tray_for(state, a_id, t_id),
+                    live_tray=slot_live_tray,
                     spool_tag_uid=mapped.get("tag_uid"),
                     spool_tray_uuid=mapped.get("tray_uuid"),
                     material=tray_type,
@@ -1057,7 +1062,10 @@ async def link_spool(
                     tray_sub_brands=tray_sub_brands,
                     tray_type_fallback=tray_type,
                     source="spoolman",
+                    verify=not tray_definitely_empty(slot_live_tray),
                 )
+                if sent:
+                    mqtt_client.request_status_update()
 
                 from backend.app.services.calibration_service import (  # noqa: PLC0415
                     apply_active_calibration_to_slot,

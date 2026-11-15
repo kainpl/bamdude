@@ -35,6 +35,7 @@ def publish_slot_plan(
     plan: SlotAssignmentPlan,
     tray_sub_brands: str = "",
     tray_type_fallback: str = "",
+    verify: bool = True,
 ) -> bool:
     sent = client.ams_set_filament_setting(
         ams_id=ams_id,
@@ -49,13 +50,16 @@ def publish_slot_plan(
         cols=plan.cols,
         ctype=plan.ctype,
     )
-    if sent:
+    if sent and verify:
         # Read-back verification (upstream #2582): the printer echoes the
         # accepted filament id in its next per-tray push, so we record what we
         # just ADVERTISED — verifying against the actual plan would report every
         # projected slot as rejected. ``cali_idx`` starts unknown because the
         # caller's K-profile push resolves it live inside
         # ``apply_active_calibration_to_slot``, which fills it in afterwards.
+        # ``verify=False`` is for a slot the firmware calls empty: nothing will
+        # echo the filament back, and the check would report a pre-assignment
+        # that is fine as "not confirmed" (upstream 53ef17dc5).
         client.register_assignment_verification(
             ams_id=ams_id, tray_id=tray_id, tray_info_idx=plan.tray_info_idx, tray_color=plan.tray_color, cali_idx=None
         )
@@ -82,6 +86,7 @@ async def publish_projected_slot(
     tray_sub_brands: str = "",
     tray_type_fallback: str = "",
     source: str,
+    verify: bool = True,
 ) -> tuple[bool, SlotProjection]:
     """Project one slot under the printer's policy, publish it, remember what was masked.
 
@@ -126,6 +131,7 @@ async def publish_projected_slot(
         plan=projection.advertised,
         tray_sub_brands=tray_sub_brands,
         tray_type_fallback=tray_type_fallback,
+        verify=verify,
     )
     # The store is written HERE, before the caller commits its assignment row —
     # and that direction is the safe one. An entry without its row is inert: it
