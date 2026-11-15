@@ -6,7 +6,7 @@ import logging
 import time
 from contextlib import suppress
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Literal
 
@@ -220,6 +220,10 @@ AUTO_DRY_SUSTAINED_DEFAULT_MINUTES = 15
 # A streak is unbroken only while some pass observed it: four missed passes,
 # with this floor so a fast loop does not void a streak on one hiccup.
 _AUTO_DRY_SUSTAINED_GAP_FLOOR_SECONDS = 120
+# Queue drying dries FOR a scheduled job only when the job is this close: the
+# longest preset cycle. A job scheduled for next week is no reason to keep its
+# printers drying all week (owner, 2026-11-15; upstream looks ahead without limit).
+_QUEUE_PREDRY_HORIZON_HOURS = 12
 
 
 def _drying_ams_ids(status) -> list[int]:
@@ -1823,14 +1827,38 @@ class PrintScheduler:
         except Exception as exc:  # noqa: BLE001 - an observation must never wedge the queue
             logger.warning("Queue: chamber sampling failed: %s", exc)
 
-        # Find printers with scheduled items (for queue drying mode)
+        # Find printers with scheduled items (for queue drying mode).
+        #
+        # Two different questions about a printer's pending rows:
+        #   scheduled - a job with a time is coming within the horizon, so queue
+        #               drying has something to dry FOR;
+        #   ready     - a row could start NOW, so under block mode a new cycle
+        #               would only stand in its way.
+        # ⚠️ "Any pending row" used to answer the second. Every scheduled row is
+        # a pending row, so queue drying with block mode on never started a
+        # cycle at all (upstream e05a91744).
+        now_utc = datetime.now(timezone.utc)
+        horizon = now_utc + timedelta(hours=_QUEUE_PREDRY_HORIZON_HOURS)
         printers_with_scheduled: set[int] = set()
-        printers_with_items: set[int] = set()
+        printers_with_ready_items: set[int] = set()
         for item in queue_items:
-            if item.queue_id:
-                printers_with_items.add(item.queue_id)
-                if item.scheduled_time and not item.manual_start:
-                    printers_with_scheduled.add(item.queue_id)
+            if not item.queue_id:
+                continue
+            sched = item.scheduled_time
+            if sched is not None and sched.tzinfo is None:
+                sched = sched.replace(tzinfo=timezone.utc)
+            if sched is not None and not item.manual_start and sched <= horizon:
+                printers_with_scheduled.add(item.queue_id)
+            if self._row_could_start_now(item, sched, now_utc):
+                printers_with_ready_items.add(item.queue_id)
+        # A scheduled «any printer of model X» job stands in no printer's queue
+        # until its time, so it counts for every printer it could run on. Only
+        # queue drying asks: nothing else dries FOR a job.
+        if queue_drying_enabled:
+            try:
+                printers_with_scheduled |= await self._scheduled_auto_queue_printers(db)
+            except Exception as exc:  # noqa: BLE001 - a lookup must never wedge the queue
+                logger.warning("Auto-drying: could not read the scheduled AutoQueue jobs: %s", exc)
 
         # If only queue mode is on and no printers have scheduled items, stop drying.
         # (But skip this short-circuit when print_drying_enabled is on — busy printers
@@ -1896,10 +1924,13 @@ class PrintScheduler:
                         await self._stop_drying(pid)
                     logger.debug("Auto-drying: printer %d skipped - no scheduled prints", pid)
                     continue
-                # When block mode is on, don't START new drying on printers with pending items.
+                # When block mode is on, don't START new drying on a printer with a
+                # row that could start now: the cycle would hold that row. A row
+                # that cannot start yet (scheduled for later, manual start, a
+                # paused queue) leaves the printer free to dry ahead of it.
                 # But allow already-drying printers through so humidity auto-stop logic still runs.
-                if block_for_drying and pid in printers_with_items and not self._drying_in_progress.get(pid):
-                    logger.debug("Auto-drying: printer %d skipped - has pending items (block mode)", pid)
+                if block_for_drying and pid in printers_with_ready_items and not self._drying_in_progress.get(pid):
+                    logger.debug("Auto-drying: printer %d skipped - a pending job could start now (block mode)", pid)
                     continue
             if not printer_manager.is_connected(pid):
                 logger.debug("Auto-drying: printer %d skipped - not connected", pid)
@@ -2213,6 +2244,70 @@ class PrintScheduler:
                         unit_key, {"unproductive": 0, "suspended": False, "ended_at": None}
                     )
                     armed["running"] = True
+
+    @staticmethod
+    def _row_could_start_now(item: PrintQueueItem, scheduled: datetime | None, now: datetime) -> bool:
+        """Whether nothing but the printer stands between this pending row and its start.
+
+        The standing holds ``check_queue`` skips a row for without looking at
+        the printer: a time that has not come, a manual start, a queue paused
+        by the operator or by an error. None of them ends by itself within a
+        tick, so a drying cycle started meanwhile takes nothing from the row.
+        """
+        if item.manual_start:
+            return False
+        if scheduled is not None and scheduled > now:
+            return False
+        queue = getattr(item, "queue", None)
+        return not (queue is not None and (queue.is_paused or queue.status in ("paused", "error")))
+
+    async def _scheduled_auto_queue_printers(self, db: AsyncSession) -> set[int]:
+        """Printers a scheduled AutoQueue job within the pre-drying horizon could run on.
+
+        Asked of the ONE source of "which printers can this job run on"
+        (``auto_queue_eligibility.printers_for_item``: model, location subtree,
+        auto-distribute, order restrictions) and never by routing the job
+        early - *Routing is NOT dispatching* cuts both ways. A row without a
+        target model names no candidates until its file is read, and is left out.
+        """
+        from backend.app.models.auto_queue import AutoQueueItem
+        from backend.app.services.auto_queue_eligibility import printers_for_item
+
+        horizon = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(hours=_QUEUE_PREDRY_HORIZON_HOURS)
+        rows = await db.execute(
+            select(AutoQueueItem).where(
+                AutoQueueItem.status == "pending",
+                AutoQueueItem.cancelled_at.is_(None),
+                AutoQueueItem.manual_start.is_(False),
+                AutoQueueItem.target_model.is_not(None),
+                AutoQueueItem.scheduled_time.is_not(None),
+                AutoQueueItem.scheduled_time <= horizon,
+            )
+        )
+        printer_ids: set[int] = set()
+        candidates: dict[tuple, set[int]] = {}
+        for item in rows.scalars().all():
+            key = (item.target_model, item.target_location_id, item.project_id, item.project_line_id)
+            if key not in candidates:
+                printers, _model, _suffix = await printers_for_item(db, item)
+                candidates[key] = {printer.id for printer in printers}
+            printer_ids |= candidates[key]
+        return printer_ids
+
+    async def drying_held_printer_ids(self, db: AsyncSession) -> set[int]:
+        """Printers whose queue a drying cycle holds right now.
+
+        The same two facts ``check_queue`` holds a row on - a cycle this
+        scheduler tracks (auto or scheduled drying) and ``queue_drying_block``.
+        With block mode off a print simply takes the printer, so nothing is held.
+        For RANKING only (the AutoQueue router prefers an equally fit printer
+        that is not held): a held printer still gets work when it is the only
+        one - the wait is then visible on its row.
+        """
+        held = {pid for pid, since in self._drying_in_progress.items() if since}
+        if not held or not await self._get_bool_setting(db, "queue_drying_block"):
+            return set()
+        return held
 
     async def _notify_auto_drying_suspended(
         self,

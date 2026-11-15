@@ -9,6 +9,8 @@ Covers:
 """
 
 import time
+from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -160,6 +162,11 @@ class TestDryingPresets:
         assert presets == PrintScheduler.DEFAULT_DRYING_PRESETS
 
 
+def _a_minute_ago() -> datetime:
+    """A scheduled time as the queue stores it (naive UTC) that has already come."""
+    return datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(minutes=1)
+
+
 def _claim(scheduler, *printer_ids: int) -> None:
     """Record the printers' drying as cycles WE armed.
 
@@ -308,7 +315,7 @@ class TestMinimumDryingTime:
         # Queue item with schedule
         item = MagicMock()
         item.printer_id = 1
-        item.scheduled_time = MagicMock()  # Has a schedule
+        item.scheduled_time = _a_minute_ago()  # Has a schedule
         item.manual_start = False
 
         await scheduler._check_auto_drying(db, [item], set())
@@ -365,7 +372,7 @@ class TestMinimumDryingTime:
 
         item = MagicMock()
         item.printer_id = 1
-        item.scheduled_time = MagicMock()
+        item.scheduled_time = _a_minute_ago()
         item.manual_start = False
 
         await scheduler._check_auto_drying(db, [item], set())
@@ -914,7 +921,7 @@ class TestBlockForDryingBugFix(_DryingTestBase):
         # Queue item exists for this printer (triggers block mode gate)
         item = MagicMock()
         item.printer_id = 1
-        item.scheduled_time = MagicMock()
+        item.scheduled_time = _a_minute_ago()
         item.manual_start = False
 
         await scheduler._check_auto_drying(db, [item], set())
@@ -957,15 +964,33 @@ class TestBlockForDryingBugFix(_DryingTestBase):
         }
         db.execute = AsyncMock(side_effect=self._make_db_side_effect(settings_returns))
 
-        item = MagicMock()
-        item.printer_id = 1
-        item.scheduled_time = MagicMock()
-        item.manual_start = False
+        # ⚠️ A real row: the pass reads ``queue_id`` (a printer's queue has the
+        # printer's id) and the row's own time. The fixture used to set
+        # ``printer_id`` on a MagicMock, so printer 1 had no scheduled row at
+        # all and the test passed through the "no scheduled prints" exit
+        # without ever reaching block mode.
+        def due_row():
+            return SimpleNamespace(
+                queue_id=1,
+                scheduled_time=_a_minute_ago(),
+                manual_start=False,
+                queue=SimpleNamespace(is_paused=False, status="idle"),
+            )
 
-        await scheduler._check_auto_drying(db, [item], set())
+        await scheduler._check_auto_drying(db, [due_row()], set())
 
-        # Should NOT start drying - block mode with pending items
+        # Should NOT start drying - block mode with a job that could start now
         mock_pm.send_drying_command.assert_not_called()
+
+        # ...and block mode is the only thing refusing: without it the same
+        # printer, row and reading start a cycle.
+        settings_returns["queue_drying_block"] = self._make_setting("false")
+        db.execute = AsyncMock(side_effect=self._make_db_side_effect(settings_returns))
+        mock_pm.send_drying_command.return_value = True
+
+        await scheduler._check_auto_drying(db, [due_row()], set())
+
+        mock_pm.send_drying_command.assert_called_once_with(1, 0, 45, 12, mode=1, filament="PLA")
 
 
 class TestMidPrintDrying(_DryingTestBase):
