@@ -38,6 +38,20 @@ logger = logging.getLogger(__name__)
 _internal_templates_ready = False
 
 
+def _unscoped_chat(chat: Any) -> bool:
+    """The chat-side half of ``_get_providers_for_event(unscoped_only=True)``.
+
+    A Telegram provider row carries no printer scope - each chat does - so the
+    provider-side rule passes every bot, and ``allows_printer(None)`` then
+    passes every chat. News that belongs to no printer and is NOT farm-wide
+    (a room sensor, the AutoQueue's waiting digest) hands this to the chat
+    fan-out, so a chat limited to some printers is left out exactly as a
+    limited provider is. The chat stays the authority; nothing is added to the
+    provider.
+    """
+    return chat.printer_ids is None
+
+
 def begin_internal_template_reconcile() -> None:
     global _internal_templates_ready
     _internal_templates_ready = False
@@ -2864,6 +2878,7 @@ class NotificationService:
             event.template,
             printer_id=printer_id,
             variables=variables,
+            chat_filter=_unscoped_chat if printer_id is None else None,
         )
 
     async def on_ha_sensor_alert(
@@ -2884,7 +2899,15 @@ class NotificationService:
             return
         variables = {"location": location_name, "sensor": sensor_name, "state": state}
         title, message = await self._build_message_from_template(db, "location_ha_sensor_alert", variables)
-        await self._send_to_providers(providers, title, message, db, "location_ha_sensor_alert", variables=variables)
+        await self._send_to_providers(
+            providers,
+            title,
+            message,
+            db,
+            "location_ha_sensor_alert",
+            variables=variables,
+            chat_filter=_unscoped_chat,
+        )
 
     async def on_bed_cooled(
         self,
@@ -3123,8 +3146,13 @@ class NotificationService:
         waiting_reason: str,
         db: AsyncSession,
     ):
-        """Handle a committed digest of actionable AutoQueue obstacles."""
-        providers = await self._get_providers_for_event(db, "on_queue_job_waiting", None)
+        """Handle a committed digest of actionable AutoQueue obstacles.
+
+        The digest is the whole farm's («Any X1C: …») and names no printer, so
+        a provider or a chat somebody bound to one printer does not get it
+        (upstream e05a91744). Unscoped recipients and the inbox do.
+        """
+        providers = await self._get_providers_for_event(db, "on_queue_job_waiting", unscoped_only=True)
         if not providers:
             return
 
@@ -3135,7 +3163,15 @@ class NotificationService:
         }
 
         title, message = await self._build_message_from_template(db, "queue_job_waiting", variables)
-        await self._send_to_providers(providers, title, message, db, "queue_job_waiting", variables=variables)
+        await self._send_to_providers(
+            providers,
+            title,
+            message,
+            db,
+            "queue_job_waiting",
+            variables=variables,
+            chat_filter=_unscoped_chat,
+        )
 
     async def on_queue_job_skipped(
         self,

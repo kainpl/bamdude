@@ -2585,11 +2585,6 @@ class BambuMQTTClient:
         self._xcam_hold_start: dict[str, float] = {}
         self._xcam_hold_time: float = 3.0  # Ignore incoming data for 3 seconds after command
 
-        # Track last requested tray ID for H2D dual-nozzle printers
-        # H2D only reports slot number (0-3) in tray_now, not global tray ID
-        # We use our tracked value to resolve the correct global ID
-        self._last_load_tray_id: int | None = None
-
         # Captured from a print command, on whichever topic carried it — the
         # slicer's own dispatch on the request topic, or the printer's echo of
         # it on the report topic. Both say what the print was told to use.
@@ -11621,7 +11616,6 @@ class BambuMQTTClient:
 
         # Track this load request for H2D dual-nozzle disambiguation
         # H2D reports only slot number (0-3) in tray_now, so we use our tracked value
-        self._last_load_tray_id = tray_id
         self.state.pending_tray_target = tray_id
         logger.info("[%s] Set pending_tray_target=%s for H2D disambiguation", self.serial_number, tray_id)
 
@@ -11709,7 +11703,6 @@ class BambuMQTTClient:
         logger.info("[%s] Unloading filament (tray_now was %s)", self.serial_number, tray_now)
 
         # Clear tracked load request since we're unloading
-        self._last_load_tray_id = None
         self.state.pending_tray_target = None
         logger.info("[%s] Cleared pending_tray_target (unload)", self.serial_number)
 
