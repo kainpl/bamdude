@@ -215,13 +215,15 @@ async def test_two_returns_then_third_physical_failure_stays_failed(failed_auto_
         await complete(rig, {"status": "failed", "subtask_id": "81"})
         async with rig.db() as db:
             receipt = await db.scalar(select(AutoQueueReturn).where(AutoQueueReturn.old_job_id == job_id))
-            assert receipt is not None
-            receipt_id, at = receipt.id, receipt.completed_at + timedelta(seconds=120)
+            if expected == 3:
+                # The terminal print is retained, but an exhausted logical job
+                # must not add another ready receipt to the background pass.
+                assert receipt is None
+            else:
+                assert receipt is not None
+                receipt_id, at = receipt.id, receipt.completed_at + timedelta(seconds=120)
         if expected == 2:
             assert (await returns.return_ready(receipt_id, now=at)).ordinal == 2
-        else:
-            with pytest.raises(returns.ReturnRefused, match="return_limit"):
-                await returns.return_ready(receipt_id, now=at)
     async with rig.db() as db:
         auto = await db.get(AutoQueueItem, auto_id)
         assert auto.failed_return_count == 2 and auto.status == "assigned"

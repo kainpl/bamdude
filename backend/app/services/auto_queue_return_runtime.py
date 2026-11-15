@@ -9,6 +9,21 @@ from sqlalchemy import and_, or_, select
 
 logger = logging.getLogger(__name__)
 
+# These invalidate this immutable attempt, rather than deferring its admission.
+# Keep the receipt for history/diagnostics, but never schedule it again.
+FINAL_REFUSAL_CODES = frozenset(
+    {
+        "return_limit",
+        "attempt_changed",
+        "execution_changed",
+        "history_changed",
+        "settlement_changed",
+        "settlement_missing",
+        "source_or_policy_changed",
+        "order_changed",
+    }
+)
+
 
 class AutoQueueReturnRuntime:
     def __init__(self):
@@ -85,12 +100,30 @@ class AutoQueueReturnRuntime:
         from backend.app.models.auto_queue_return import AutoQueueReturn
         from backend.app.services import queue_sources
 
+        if code == "disabled" or epoch != queue_sources.current_epoch():
+            return
+        # An unchanged episode is a read, not another SQLite writer reservation.
+        # The transaction below repeats the check after acquiring its guard.
+        async with database.async_session() as db:
+            row = await db.get(AutoQueueReturn, receipt_id)
+            if (
+                row is None
+                or row.returned_at is not None
+                or row.last_refusal_code == code
+                or row.last_refusal_code in FINAL_REFUSAL_CODES
+            ):
+                return
         async with queue_sources.storage_mutation(), database.async_session() as db:
             if epoch != queue_sources.current_epoch():
                 return
             await database.take_write_lock(db, AutoQueueReturn.__table__, receipt_id)
             row = await db.get(AutoQueueReturn, receipt_id, with_for_update=True)
-            if row is None or row.returned_at is not None or row.last_refusal_code == code:
+            if (
+                row is None
+                or row.returned_at is not None
+                or row.last_refusal_code == code
+                or row.last_refusal_code in FINAL_REFUSAL_CODES
+            ):
                 return
             row.last_refusal_code = code
             row.last_refusal_at = datetime.now(timezone.utc).replace(tzinfo=None)
@@ -108,8 +141,15 @@ class AutoQueueReturnRuntime:
         deadline = monotonic() + 2
         async with database.async_session() as db:
             enabled = await db.scalar(select(Settings.value).where(Settings.key == SETTING_KEY)) == "true"
+            if not enabled:
+                self.cursor = None
+                return
             query = select(AutoQueueReturn.id, AutoQueueReturn.ready_at, AutoQueueReturn.printer_id).where(
                 AutoQueueReturn.returned_at.is_(None),
+                or_(
+                    AutoQueueReturn.last_refusal_code.is_(None),
+                    AutoQueueReturn.last_refusal_code.notin_(FINAL_REFUSAL_CODES),
+                ),
                 AutoQueueReturn.completed_at
                 <= datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(seconds=COOLDOWN_SECONDS),
             )
@@ -129,8 +169,6 @@ class AutoQueueReturnRuntime:
             if not self.admitting or queue_sources.current_epoch() != epoch:
                 break
             try:
-                if not enabled:
-                    raise ReturnRefused("disabled")
                 await return_ready(receipt_id)
             except ReturnRefused as exc:
                 await self._diagnose(receipt_id, exc.code, epoch)

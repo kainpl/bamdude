@@ -62,6 +62,15 @@ storage replacement if drain is not proven; the existing farm restore hold keeps
 it closed until restart. Startup opens only after startup.complete. Shutdown
 keeps unresolved work owned and admission closed.
 
+The pass exits on a disabled setting before reading receipts or taking a writer.
+It excludes persisted final refusals (exhausted budget, obsolete attempt or
+execution, changed history/settlement/source basis, or an invalid order link).
+These receipts remain diagnostic history, not scheduled work. Cheap read-only
+checks reject obsolete attempts before hashing or lane locks; the final writer
+still repeats its guarded admission checks. An exhausted job creates no new
+ready receipt. Temporary refusals remain retryable, and an unchanged diagnostic
+episode does not reserve another writer.
+
 Refusals use finite reason codes, deduplicated per receipt/reason episode, apart
 from physical error_code. Queue views show return counts, historical returned
 markers and deferred reasons without exposing source basis or owner credentials.

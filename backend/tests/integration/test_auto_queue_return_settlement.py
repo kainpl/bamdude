@@ -3,7 +3,7 @@
 import asyncio
 import hashlib
 from dataclasses import replace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from sqlalchemy import select
@@ -103,9 +103,9 @@ async def test_real_failed_callback_publishes_ready_without_rearming(failed_auto
         assert len((await db.scalars(select(AutoQueueReturn))).all()) == 1
 
 
-@pytest.mark.parametrize("mode", ["off", "ownerless", "not_started", "direct", "cancelled", "completed"])
+@pytest.mark.parametrize("mode", ["off", "ownerless", "not_started", "direct", "cancelled", "completed", "limit"])
 async def test_noneligible_completion_never_mints_ready(failed_auto_run, mode):
-    rig, _, job_id, _, _ = failed_auto_run
+    rig, _, job_id, auto_id, _ = failed_auto_run
     async with rig.db() as db:
         job = await db.get(PrintQueueItem, job_id)
         if mode == "off":
@@ -117,6 +117,8 @@ async def test_noneligible_completion_never_mints_ready(failed_auto_run, mode):
             job.dispatch_attempts = 0
         elif mode == "direct":
             job.source_auto_item_id = None
+        elif mode == "limit":
+            (await db.get(AutoQueueItem, auto_id)).failed_return_count = returns.MAX_RETURNS
         await db.commit()
     await complete(rig, {"status": mode if mode in {"cancelled", "completed"} else "failed", "subtask_id": "81"})
     async with rig.db() as db:
@@ -194,6 +196,48 @@ async def test_ready_publication_rechecks_independent_transaction(failed_auto_ru
         await returns.publish_ready(candidate, manager=rig.manager)
     async with rig.db() as db:
         assert (await db.scalars(select(AutoQueueReturn))).all() == []
+
+
+@pytest.mark.parametrize("boundary", ["before_preflight", "after_preflight"])
+async def test_publication_rechecks_limit_after_candidate_capture(failed_auto_run, monkeypatch, boundary):
+    rig, archive_id, job_id, auto_id, runtime = failed_auto_run
+    runtime.close_admission()
+    token = current_print_effect_token(rig.manager, rig.printer_id)
+    await complete(rig, {"status": "failed", "subtask_id": "81"})
+    async with rig.db() as db:
+        candidate = await returns.capture_candidate(
+            db,
+            await db.get(PrintQueueItem, job_id),
+            await db.get(PrintArchive, archive_id),
+            epoch=queue_sources.current_epoch(),
+            effect_token=token,
+        )
+    assert candidate is not None
+
+    async def exhaust_budget():
+        async with rig.db() as db:
+            (await db.get(AutoQueueItem, auto_id)).failed_return_count = returns.MAX_RETURNS
+            await db.commit()
+
+    if boundary == "before_preflight":
+        await exhaust_budget()
+        verify = Mock(side_effect=AssertionError("Exhausted jobs must not hash"))
+        monkeypatch.setattr(returns, "_verify_blob", verify)
+    else:
+        original = returns.preflight
+
+        async def changed_after_read(value):
+            await original(value)
+            await exhaust_budget()
+
+        monkeypatch.setattr(returns, "preflight", changed_after_read)
+    with pytest.raises(returns.ReturnRefused, match="return_limit"):
+        await returns.publish_ready(candidate, manager=rig.manager)
+    if boundary == "before_preflight":
+        verify.assert_not_called()
+    async with rig.db() as db:
+        assert (await db.scalars(select(AutoQueueReturn))).all() == []
+        assert (await db.get(PrintQueueItem, job_id)).status == "failed"
 
 
 async def test_cancelled_waiter_does_not_detach_owned_io():

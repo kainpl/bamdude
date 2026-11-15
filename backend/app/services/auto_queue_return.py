@@ -198,7 +198,7 @@ async def capture_candidate(db, job, archive, *, epoch, effect_token):
     if await db.scalar(select(Settings.value).where(Settings.key == SETTING_KEY)) != "true":
         return None
     auto = await db.get(AutoQueueItem, job.source_auto_item_id)
-    if not _chain(auto, job, archive):
+    if not _chain(auto, job, archive) or auto.failed_return_count >= MAX_RETURNS:
         return None
     owner = await db.get(User, job.created_by_id)
     printer = await db.get(Printer, archive.printer_id)
@@ -268,6 +268,8 @@ async def preflight(candidate):
             or auto.recovery_identity != candidate.auto_identity
         ):
             raise ReturnRefused("attempt_changed")
+        if auto.failed_return_count >= MAX_RETURNS:
+            raise ReturnRefused("return_limit")
         descriptor = await item_descriptor(db, job, fresh=True)
         if descriptor is None or descriptor.sha256 != basis["source"]["sha256"]:
             raise ReturnRefused("source_unavailable")
@@ -375,6 +377,8 @@ async def publish_ready(candidate, *, manager):
         claim_lanes(db, [candidate.queue_id], archive_id=candidate.archive_id),
     ):
         auto, job, archive, queue, printer = await _locked_rows(db, candidate)
+        if auto.failed_return_count >= MAX_RETURNS:
+            raise ReturnRefused("return_limit")
         if candidate.effect_token is None or not print_effect_is_current(manager, candidate.effect_token):
             raise ReturnRefused("execution_changed")
         old = await db.scalar(
@@ -455,6 +459,49 @@ def _returned(receipt):
     return None
 
 
+async def _precheck_return(db, candidate):
+    """Reject obsolete attempts with reads only, before blob I/O or writer/lane locks.
+
+    This is only a cost guard: the final guarded transaction still rereads every
+    admission fact, including facts that can change after these unlocked reads.
+    """
+    auto = await db.get(AutoQueueItem, candidate.auto_id)
+    job = await db.get(PrintQueueItem, candidate.job_id)
+    archive = await db.get(PrintArchive, candidate.archive_id)
+    if (
+        auto is None
+        or auto.recovery_identity != candidate.auto_identity
+        or job is None
+        or job.recovery_identity != candidate.job_identity
+        or job.status != "failed"
+        or job.returned_receipt_identity is not None
+        or archive is None
+        or archive.recovery_identity != candidate.archive_identity
+        or archive.status != "failed"
+        or archive.deleted_at is not None
+        or not _chain(auto, job, archive)
+    ):
+        raise ReturnRefused("attempt_changed")
+    if auto.failed_return_count >= MAX_RETURNS:
+        raise ReturnRefused("return_limit")
+    later = await db.scalar(
+        select(PrintArchive.id)
+        .where(
+            PrintArchive.printer_id == candidate.printer_id,
+            PrintArchive.id != candidate.archive_id,
+            PrintArchive.started_at >= candidate.completed_at,
+        )
+        .limit(1)
+    )
+    if later is not None:
+        raise ReturnRefused("execution_changed")
+    basis = json.loads(candidate.basis_json)
+    try:
+        await order_filing.resolve_link(db, basis["auto"]["project_id"], basis["auto"]["project_line_id"])
+    except HTTPException as exc:
+        raise ReturnRefused("order_changed") from exc
+
+
 async def return_ready(receipt_id, *, now=None):
     """The only reset writer. Caller must own this entire task through actual SQL/I/O exit."""
     async with database.async_session() as db:
@@ -465,6 +512,18 @@ async def return_ready(receipt_id, *, now=None):
         previous = _returned(receipt)
         if previous is not None:
             return previous
+        try:
+            await _precheck_return(db, candidate)
+        except ReturnRefused:
+            # A competing return can commit between the receipt read and the
+            # cheap row reads. Preserve the same idempotent result as the final
+            # guarded duplicate check, rather than reporting its marker as stale.
+            receipt = await db.get(AutoQueueReturn, receipt_id, populate_existing=True)
+            if receipt is not None and _receipt_candidate(receipt) == candidate:
+                previous = _returned(receipt)
+                if previous is not None:
+                    return previous
+            raise
     await preflight(candidate)
     commit_started = False
     try:

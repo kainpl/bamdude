@@ -53,7 +53,7 @@ async def test_restart_consumes_durable_ready_but_never_scans_failed(failed_auto
     assert await restarted.quiesce_for_restore()
 
 
-async def test_repeated_refusal_is_one_persisted_episode(failed_auto_run, caplog, monkeypatch):
+async def test_disabled_pass_does_not_create_refusal_episode(failed_auto_run, caplog, monkeypatch):
     import logging
 
     rig, _, _, auto_id, runtime = failed_auto_run
@@ -67,10 +67,10 @@ async def test_repeated_refusal_is_one_persisted_episode(failed_auto_run, caplog
     with caplog.at_level(logging.INFO):
         for _ in range(4):
             await runtime.pass_ready()
-    assert caplog.text.count("AutoQueue return deferred: disabled") == 1
+    assert "AutoQueue return deferred: disabled" not in caplog.text
     off_preflight.assert_not_awaited()
     async with rig.db() as db:
-        assert (await db.get(AutoQueueReturn, receipt_id)).last_refusal_code == "disabled"
+        assert (await db.get(AutoQueueReturn, receipt_id)).last_refusal_code is None
         assert (await db.get(AutoQueueItem, auto_id)).failed_return_count == 0
 
 
