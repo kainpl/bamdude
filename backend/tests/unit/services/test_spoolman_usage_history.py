@@ -286,6 +286,60 @@ class TestTheSourceToken:
         assert await history.source_token(db_session) != old
         assert (await history.source_state(db_session))["rows"] == 0
 
+    async def _move_to(self, db_session, url: str) -> str:
+        row = (await db_session.execute(select(Settings).where(Settings.key == "spoolman_url"))).scalar_one()
+        row.value = url
+        await db_session.commit()
+        return await history.source_token(db_session)
+
+    @pytest.mark.asyncio
+    async def test_going_back_to_a_known_address_finds_its_history_again(self, monkeypatch, db_session):
+        """A → B → A: a mistyped host, or https tried and undone, with any reader
+        running once in between, orphaned every row for good (review accounting I1)."""
+        await _spoolman(db_session)
+        await _charge_two_slots(monkeypatch, db_session)
+        first = await history.source_token(db_session)
+
+        assert await self._move_to(db_session, "https://spoolman.local:7912") != first
+        assert await self._move_to(db_session, "http://spoolman.local:7912/") == first
+
+        state = await history.source_state(db_session)
+        assert (state["rows"], state["previous_rows"], state["previous_url"]) == (2, 0, None)
+
+    @pytest.mark.asyncio
+    async def test_an_empty_stop_on_the_way_does_not_hide_a_previous_source_with_rows(self, monkeypatch, db_session):
+        """A → B → C with nothing recorded at B: the card still offers A's history."""
+        await _spoolman(db_session)
+        await _charge_two_slots(monkeypatch, db_session)
+
+        await self._move_to(db_session, "http://typo:7912")
+        await self._move_to(db_session, "http://new-host:7912")
+
+        state = await history.source_state(db_session)
+        assert (state["previous_rows"], state["previous_url"]) == (2, "http://spoolman.local:7912")
+        assert await history.keep_previous_source(db_session) == 2
+
+    @pytest.mark.asyncio
+    async def test_a_history_kept_for_a_renamed_host_is_there_under_the_old_name_too(self, monkeypatch, db_session):
+        await _spoolman(db_session)
+        await _charge_two_slots(monkeypatch, db_session)
+        renamed = await self._move_to(db_session, "http://renamed-host:7912")
+        await history.keep_previous_source(db_session)
+
+        assert await self._move_to(db_session, "http://spoolman.local:7912") == renamed
+        assert (await history.source_state(db_session))["rows"] == 2
+
+    @pytest.mark.asyncio
+    async def test_a_database_declared_new_stays_new_after_a_round_trip(self, monkeypatch, db_session):
+        await _spoolman(db_session)
+        await _charge_two_slots(monkeypatch, db_session)
+        await history.rotate_source(db_session)
+        fresh = await history.source_token(db_session)
+
+        await self._move_to(db_session, "http://elsewhere:7912")
+        assert await self._move_to(db_session, "http://spoolman.local:7912") == fresh
+        assert (await history.source_state(db_session))["rows"] == 0
+
 
 class TestWhichSpoolARowBelongsTo:
     def test_the_same_registration_is_the_same_spool(self):

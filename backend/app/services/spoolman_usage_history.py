@@ -12,7 +12,9 @@ in Settings (``spoolman_usage_source``) together with the address it was made
 for, created on first use, and ROTATED whenever the configured ``spoolman_url``
 is a different address (compared trimmed, without a trailing slash, case
 folded) — checked lazily by :func:`source_token`, so every door that changes
-the address is covered without hooking any of them. Readers show only the
+the address is covered without hooking any of them. The setting remembers the
+token of every address it has named, so going back to one (A → B → A) finds
+its history again instead of starting a third source. Readers show only the
 current token's rows; a rotated-away token's rows stay in the table as history
 of the previous Spoolman and are shown nowhere. Spoolman itself offers no
 database identity to bind to (``GET /info`` names a version and paths), so two
@@ -39,6 +41,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from sqlalchemy import delete, func, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core import database
@@ -112,17 +115,71 @@ async def source_token(db: AsyncSession) -> str | None:
     if data:
         if not url or url == data.get("url"):
             return data["token"]
-        # A different address: a different Spoolman until the operator says otherwise.
-        previous = {"token": data["token"], "url": data.get("url") or ""}
-        data = {"token": uuid.uuid4().hex, "url": url, "previous": previous}
+        # A different address: a different Spoolman until the operator says
+        # otherwise — unless it is an address this installation has named
+        # before, whose token (and history) it gets back: A → B → A is a
+        # mistyped host put right, not a third Spoolman.
+        leaving = {"token": data["token"], "url": data.get("url") or ""}
+        known = _known(data)
+        if leaving["url"]:
+            known[leaving["url"]] = leaving["token"]
+        token = known.get(url) or uuid.uuid4().hex
+        known.pop(url, None)
+        known[url] = token
+        # The one "previous" the Settings card can offer: the source just left,
+        # unless it recorded nothing and an earlier one — not the one now
+        # current again — still holds rows.
+        previous = leaving
+        earlier = data.get("previous") if isinstance(data.get("previous"), dict) else None
+        if (
+            earlier
+            and earlier.get("token") not in (None, token, leaving["token"])
+            and not await _row_count(db, leaving["token"])
+            and await _row_count(db, earlier["token"])
+        ):
+            previous = earlier
+        data = {"token": token, "url": url, "previous": previous, "known": _trimmed(known)}
         await _write_source(db, row, data)
-        logger.info("[SPOOLMAN] The Spoolman address changed: usage history starts a new source")
+        logger.info("[SPOOLMAN] The Spoolman address changed: usage history follows the address")
         return data["token"]
     if not url:
         return None
-    data = {"token": uuid.uuid4().hex, "url": url}
-    await _write_source(db, row, data)
+    data = {"token": uuid.uuid4().hex, "url": url, "known": {}}
+    data["known"][url] = data["token"]
+    try:
+        await _write_source(db, row, data)
+    except IntegrityError:
+        # Two first uses at once: the other one named the source. Use its name.
+        await db.rollback()
+        _row, data = await _read_source(db)
+        return data.get("token")
     return data["token"]
+
+
+# How many addresses the setting remembers a token for; the oldest go first.
+KNOWN_ADDRESSES = 20
+
+
+def _known(data: dict) -> dict[str, str]:
+    """address → token, for every address this installation has named."""
+    known = data.get("known")
+    if not isinstance(known, dict):
+        return {}
+    return {url: token for url, token in known.items() if isinstance(url, str) and isinstance(token, str) and token}
+
+
+def _trimmed(known: dict[str, str]) -> dict[str, str]:
+    return dict(list(known.items())[-KNOWN_ADDRESSES:])
+
+
+async def _row_count(db: AsyncSession, token: str) -> int:
+    return int(
+        (
+            await db.execute(
+                select(func.count()).select_from(SpoolmanUsageHistory).where(SpoolmanUsageHistory.source_token == token)
+            )
+        ).scalar_one()
+    )
 
 
 async def source_state(db: AsyncSession) -> dict:
@@ -177,6 +234,8 @@ async def keep_previous_source(db: AsyncSession) -> int:
         .values(source_token=token)
     )
     data.pop("previous", None)
+    # The old address names the same database: going back to it finds the rows.
+    data["known"] = {url: token if held == previous["token"] else held for url, held in _known(data).items()}
     await _write_source(db, row, data)
     return int(result.rowcount or 0)
 
@@ -190,11 +249,13 @@ async def rotate_source(db: AsyncSession) -> None:
     if token is None:
         return
     row, data = await _read_source(db)
-    data = {
-        "token": uuid.uuid4().hex,
-        "url": data.get("url") or "",
-        "previous": {"token": token, "url": data.get("url") or ""},
-    }
+    url = data.get("url") or ""
+    fresh = uuid.uuid4().hex
+    known = _known(data)
+    if url:
+        # The address names the new database from now on, after a round trip too.
+        known[url] = fresh
+    data = {"token": fresh, "url": url, "previous": {"token": token, "url": url}, "known": _trimmed(known)}
     await _write_source(db, row, data)
 
 
