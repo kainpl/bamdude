@@ -516,9 +516,13 @@ class SpoolmanClient:
         comment: str | None = None,
         extra: dict | None = None,
         initial_weight: float | None = None,
+        spool_weight: float | None = None,
     ) -> dict:
         """Create a new spool in Spoolman."""
         data: dict = {"filament_id": filament_id}
+        # The spool's own empty weight, only when the caller named one (0 is one).
+        if spool_weight is not None:
+            data["spool_weight"] = spool_weight
         # The spool's own net weight. Left off, Spoolman copies the filament's
         # weight, which is wrong for a spool of another size (upstream #3194).
         if initial_weight is not None:

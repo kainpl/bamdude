@@ -120,6 +120,12 @@ def duration_bucket(seconds: float | None) -> str | None:
     return DURATION_BUCKETS[-1][0]
 
 
+# ``filament_type`` is split on the comma alone and trimmed: its writers join
+# with ", " but the row created at print start used a bare comma for years, and
+# those rows are still there.
+MATERIAL_SEPARATOR = ","
+
+
 def split_multi(
     rows: list[dict[str, Any]],
     *,
@@ -147,7 +153,9 @@ def split_multi(
     for row in rows:
         raw = (row.get("key") or "").strip()
         if raw:
-            parts = [p.strip() for p in raw.split(sep) if p.strip()]
+            # A repeated part counts once: counts are credited whole to each
+            # part, so "PLA,PLA" would otherwise be two PLA prints.
+            parts = list(dict.fromkeys(p.strip() for p in raw.split(sep) if p.strip()))
         else:
             parts = []
         if not parts:
@@ -435,7 +443,7 @@ async def collect(
 
     materials = split_multi(
         await _grouped_by_text(db, filters, PrintArchive.filament_type, with_seconds=True),
-        sep=", ",
+        sep=MATERIAL_SEPARATOR,
         default="Unknown",
         divide=("grams", "seconds"),
         whole=("prints", "completed", "failed"),

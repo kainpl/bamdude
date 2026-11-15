@@ -1600,7 +1600,7 @@ export default {
       rotateTray: 'Rotate spool during drying',
       rotateDisabledLoaded: 'Spool rotation is unavailable while a tray in this AMS is loaded',
       toastCommandSent: 'Drying command sent',
-      toastStopped: 'Drying stopped',
+      toastStopSent: 'Stop command sent to the AMS',
       toastNotStarted: 'The printer accepted the command but the AMS never started drying',
       targetSummary: '{{filament}} @ {{temp}}°C',
       // Which dry_sf_reason blocks drying — the one the backend would name first.
@@ -9520,6 +9520,7 @@ export default {
     pickColor: 'Pick custom color',
     labelWeight: 'Label Weight',
     coreWeight: 'Empty Spool Weight',
+    coreWeightSpoolmanHint: 'Saved on this spool in Spoolman when you change it. Left as is, the spool keeps the weight Spoolman gave it.',
     searchSpoolWeight: 'Search spool weight...',
     weightUsed: 'Used',
     currentWeight: 'Remaining Weight',

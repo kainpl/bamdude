@@ -2761,7 +2761,7 @@ const PrinterCard = memo(function PrinterCard({
   const stopDryingMutation = useMutation({
     mutationFn: (amsId: number) => api.stopDrying(printer.id, amsId),
     onSuccess: (_data, amsId) => {
-      showToast(t('printers.drying.toastStopped'), 'success');
+      showToast(t('printers.drying.toastStopSent'), 'success');
       // A stop cancels any pending start verdict for that unit.
       setDryStartWatch(prev => {
         if (!(amsId in prev)) return prev;

@@ -39,6 +39,7 @@ class MappedSpoolFields(TypedDict):
     effect_type: None
     label_weight: int | None
     core_weight: int | None
+    core_weight_is_inherited: bool
     core_weight_catalog_id: None
     weight_used: float | None
     weight_used_baseline: float | None
@@ -150,6 +151,11 @@ def _safe_optional_float(value: object) -> float | None:
 
 # Used only when Spoolman has no empty-spool weight at any level.
 SPOOLMAN_FALLBACK_TARE = 250.0
+
+
+def _own_tare(spool: dict) -> float | None:
+    raw = spool.get("spool_weight")
+    return None if isinstance(raw, bool) else _safe_optional_float(raw)
 
 
 def spoolman_tare(spool: dict) -> float:
@@ -440,6 +446,9 @@ def _map_spoolman_spool(spool: dict) -> MappedSpoolFields:
         "brand": vendor.get("name") or None,
         "label_weight": label_weight,
         "core_weight": _safe_int(spoolman_tare(spool), 250),
+        # False when the spool carries a tare of its own; True when the figure
+        # above is its filament's, its vendor's or the 250 g fallback.
+        "core_weight_is_inherited": _own_tare(spool) is None,
         "core_weight_catalog_id": None,
         "weight_used": used_weight,
         "weight_used_baseline": weight_used_baseline,

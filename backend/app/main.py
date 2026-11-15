@@ -1745,7 +1745,9 @@ def _extract_filament_data_from_mqtt(data: dict, ams_mapping: list[int] | None =
     else:
         filaments = [loaded[g] for g in sorted(loaded.keys())]
 
-    types_joined = ",".join(f[0] for f in filaments)
+    # Comma + space, each material once — the form every other writer of the
+    # column uses (a two-slot PLA job is "PLA", not "PLA,PLA").
+    types_joined = ", ".join(dict.fromkeys(f[0] for f in filaments))
     colors_joined = ",".join(f[1] for f in filaments if f[1])
 
     # Column limits per backend/app/models/archive.py: filament_type=50,

@@ -158,6 +158,7 @@ function SpoolWeightPicker({
           <input
             type="number"
             className="w-16 px-2 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm text-center font-mono focus:outline-none focus:border-bambu-green"
+            aria-label={t('inventory.coreWeight')}
             value={value}
             min={0}
             max={2000}
@@ -214,17 +215,17 @@ export function AdditionalSection({
 
   return (
     <div className="space-y-4">
-      {/* Empty Spool Weight — hidden in Spoolman mode (managed per filament type in Spoolman) */}
-      {spoolmanMode ? (
-        <p className="text-xs text-bambu-gray px-1">{t('inventory.spoolWeightManagedBySpoolman')}</p>
-      ) : (
-        <SpoolWeightPicker
-          catalog={spoolCatalog}
-          value={formData.core_weight}
-          onChange={(weight) => updateField('core_weight', weight)}
-          catalogId={formData.core_weight_catalog_id}
-          onCatalogIdChange={(id) => updateField('core_weight_catalog_id', id)}
-        />
+      {/* Empty Spool Weight — in Spoolman mode it is the spool's own
+          ``spool_weight``, written only when the operator changes it. */}
+      <SpoolWeightPicker
+        catalog={spoolCatalog}
+        value={formData.core_weight}
+        onChange={(weight) => updateField('core_weight', weight)}
+        catalogId={formData.core_weight_catalog_id}
+        onCatalogIdChange={(id) => updateField('core_weight_catalog_id', id)}
+      />
+      {spoolmanMode && (
+        <p className="text-xs text-bambu-gray px-1 -mt-2">{t('inventory.coreWeightSpoolmanHint')}</p>
       )}
 
       {/* Current Weight (remaining filament) */}

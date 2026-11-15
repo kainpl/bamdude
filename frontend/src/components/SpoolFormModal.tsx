@@ -89,6 +89,7 @@ export function SpoolFormModal({
   const [errors, setErrors] = useState<Partial<Record<keyof SpoolFormData, string>>>({});
   const [activeTab, setActiveTab] = useState<TabId>('filament');
   const [weightTouched, setWeightTouched] = useState(false);
+  const [coreWeightTouched, setCoreWeightTouched] = useState(false);
   const [locationIdTouched, setLocationIdTouched] = useState(false);
   // Sent only when changed, so saving an unrelated edit cannot put back a
   // drying date an AMS cycle stamped while the form was open.
@@ -369,7 +370,8 @@ export function SpoolFormModal({
           color_name: spool.color_name_is_synthesized ? '' : (spool.color_name || ''),
           rgba: spool.rgba || '808080FF',
           label_weight: spool.label_weight || 1000,
-          core_weight: spool.core_weight || 250,
+          // 0 g is a real tare — only a missing value takes the default.
+          core_weight: spool.core_weight ?? 250,
           core_weight_catalog_id: spool.core_weight_catalog_id ?? null,
           weight_used: isCopying ? 0 : spool.weight_used || 0,
           slicer_filament: spool.slicer_filament || '',
@@ -418,6 +420,7 @@ export function SpoolFormModal({
       setErrors({});
       setActiveTab('filament');
       setWeightTouched(false);
+      setCoreWeightTouched(false);
       setLocationIdTouched(false);
       setLastDriedTouched(false);
     }
@@ -462,6 +465,7 @@ export function SpoolFormModal({
         : {}),
     }));
     if (key === 'weight_used') setWeightTouched(true);
+    if (key === 'core_weight') setCoreWeightTouched(true);
     if (key === 'location_id') setLocationIdTouched(true);
     if (key === 'last_dried_at') setLastDriedTouched(true);
     if (errors[key]) {
@@ -787,7 +791,14 @@ export function SpoolFormModal({
       color_name: formData.color_name || null,
       rgba: formData.rgba || null,
       label_weight: formData.label_weight,
-      ...(spoolmanMode ? {} : { core_weight: formData.core_weight, core_weight_catalog_id: formData.core_weight_catalog_id }),
+      // Built-in: always. Spoolman: the spool's own tare, only when the
+      // operator changed it, or a copy carries the source's OWN one — an
+      // untouched save must not stamp an inherited figure onto the spool.
+      ...(spoolmanMode
+        ? (coreWeightTouched || (isCopying && spool?.core_weight_is_inherited === false)
+          ? { core_weight: formData.core_weight }
+          : {})
+        : { core_weight: formData.core_weight, core_weight_catalog_id: formData.core_weight_catalog_id }),
       // ONE identity control (spec A §5.1): the family. The legacy columns get
       // the family's own id + alias — exactly the format an RFID-scanned Bambu
       // spool historically wrote there, so every legacy consumer (Inventory

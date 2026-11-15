@@ -1624,7 +1624,7 @@ export default {
       rotateTray: 'Обертати котушку під час сушіння',
       rotateDisabledLoaded: 'Обертання котушки недоступне, поки в цьому AMS завантажено лоток',
       toastCommandSent: 'Команду сушіння надіслано',
-      toastStopped: 'Сушіння зупинено',
+      toastStopSent: 'Команду зупинки сушіння надіслано',
       toastNotStarted: 'Принтер прийняв команду, але AMS так і не почав сушіння',
       targetSummary: '{{filament}} @ {{temp}}°C',
       // Which dry_sf_reason blocks drying — the one the backend would name first.
@@ -9722,6 +9722,7 @@ export default {
     pickColor: 'Обрати власний колір',
     labelWeight: 'Вага на етикетці',
     coreWeight: 'Вага порожньої котушки',
+    coreWeightSpoolmanHint: 'Зберігається на цій котушці в Spoolman, коли ви її змінюєте. Якщо не чіпати, котушка лишає вагу, яку їй дав Spoolman.',
     searchSpoolWeight: 'Пошук ваги котушки...',
     weightUsed: 'Використано',
     currentWeight: 'Залишкова вага',

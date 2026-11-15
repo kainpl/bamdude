@@ -8260,6 +8260,10 @@ export interface InventorySpool {
   brand: string | null;
   label_weight: number;
   core_weight: number;
+  /** Spoolman mode: false when the spool carries an empty weight of its own,
+   *  true when ``core_weight`` is its filament's, its vendor's or the 250 g
+   *  fallback. Absent in built-in mode. */
+  core_weight_is_inherited?: boolean;
   core_weight_catalog_id: number | null;
   weight_used: number;
   /** Baseline anchor for the resettable "Total Consumed" display. The
