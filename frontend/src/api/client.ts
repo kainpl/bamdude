@@ -8269,6 +8269,9 @@ export interface InventorySpool {
    *  remaining (which keeps using `label_weight - weight_used`).
    *  Optional for back-compat with pre-m075 / pre-#1390 servers. */
   weight_used_baseline?: number;
+  /** The weight was entered by hand: no AMS weight sync writes it until the
+   *  operator unlocks it (prints still charge it). Built-in inventory only. */
+  weight_locked?: boolean;
   slicer_filament: string | null;
   slicer_filament_name: string | null;
   // Family link (spec A §5.1): the catalog identity ("GFG99" / "P122e532").

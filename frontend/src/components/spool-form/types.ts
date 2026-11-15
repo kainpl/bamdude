@@ -203,6 +203,11 @@ export interface AdditionalSectionProps extends SectionProps {
   // weight is managed by Spoolman on the filament object, so
   // SpoolWeightPicker is hidden and an info notice is shown instead.
   spoolmanMode?: boolean;
+  // The saved spool's weight was entered by hand, so AMS weight syncs leave it
+  // alone. ``unlockWeight`` is the operator's tick to release that on save.
+  weightLocked?: boolean;
+  unlockWeight?: boolean;
+  onUnlockWeightChange?: (unlock: boolean) => void;
 }
 
 // PA Profile section props

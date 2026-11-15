@@ -2111,8 +2111,13 @@ async def bulk_update_spools(
     isn't captured by the int ``spool_id`` matcher.
     """
     update_data = data.fields.model_dump(exclude_unset=True)
+    # The one thing a bulk edit may do to the weight lock is release it, for the selected spools: a lock
+    # is set by weighing ONE spool, never handed out to a selection.
+    unlock_weight = update_data.get("weight_locked") is False
     for protected in ("weight_used", "weight_used_baseline", "weight_locked", "tag_uid", "tray_uuid"):
         update_data.pop(protected, None)
+    if unlock_weight:
+        update_data["weight_locked"] = False
     if not update_data:
         raise HTTPException(400, "No editable fields provided")
     # Resolve location_id / storage_location into the FK-alongside-free-text
@@ -2989,20 +2994,29 @@ async def unassign_spool(
     _: User | None = RequirePermission(Permission.INVENTORY_UPDATE),
 ):
     """Unassign a spool from an AMS slot."""
-    await _refuse_in_spoolman_mode(db)
-    result = await db.execute(
-        select(SpoolAssignment).where(
-            SpoolAssignment.printer_id == printer_id,
-            SpoolAssignment.ams_id == ams_id,
-            SpoolAssignment.tray_id == tray_id,
-        )
-    )
-    assignment = result.scalar_one_or_none()
-    if not assignment:
-        raise HTTPException(404, "Assignment not found")
+    from backend.app.main import _get_ams_assignment_lock
 
-    await db.delete(assignment)
-    await db.commit()
+    await _refuse_in_spoolman_mode(db)
+    # The AMS callback's unlink pass deletes rows of this printer under the same lock: without it the two
+    # DELETEs of one row met, the second matched nothing, and the unassign that had happened answered 500
+    # (or the callback lost its pass's other unlinks). Nothing was written yet, so nothing is held while
+    # this waits.
+    async with _get_ams_assignment_lock(printer_id):
+        result = await db.execute(
+            select(SpoolAssignment)
+            .where(
+                SpoolAssignment.printer_id == printer_id,
+                SpoolAssignment.ams_id == ams_id,
+                SpoolAssignment.tray_id == tray_id,
+            )
+            .execution_options(populate_existing=True)
+        )
+        assignment = result.scalar_one_or_none()
+        if not assignment:
+            raise HTTPException(404, "Assignment not found")
+
+        await db.delete(assignment)
+        await db.commit()
 
     # With the assignment gone there is no spool left behind the mask, so the
     # printer's own tray values become the truth again.
@@ -3464,7 +3478,7 @@ async def sync_weights_from_ams(
     reading already contains part of it.
     """
     from backend.app.services.printer_manager import printer_manager
-    from backend.app.services.usage_tracker import print_is_unbooked, record_ams_sync_usage
+    from backend.app.services.usage_tracker import print_is_unbooked, sync_spool_weight_from_ams
 
     result = await db.execute(select(SpoolAssignment).options(selectinload(SpoolAssignment.spool)))
     assignments = list(result.scalars().all())
@@ -3558,7 +3572,7 @@ async def sync_weights_from_ams(
             # Shared with the live sync in ``main.on_ams_change``: an increase
             # earns a usage-history row (filament this instance never saw leave
             # the spool), a decrease re-arms the low-stock warning (m117).
-            await record_ams_sync_usage(
+            written = await sync_spool_weight_from_ams(
                 db,
                 spool,
                 printer_id=assignment.printer_id,
@@ -3566,7 +3580,11 @@ async def sync_weights_from_ams(
                 tray_id=assignment.tray_id,
                 new_used=new_used,
             )
-            synced += 1
+            # 0.0: the spool was weighed by hand (or written otherwise) after this request read it.
+            if written:
+                synced += 1
+            else:
+                skipped += 1
         else:
             skipped += 1
 
@@ -4258,8 +4276,9 @@ async def create_spool_from_slot(
     the user looked at the slot and chose to register it. Also assigns the new spool
     to the slot in the same call.
     """
+    from backend.app.main import _get_ams_assignment_lock
     from backend.app.services.printer_manager import printer_manager
-    from backend.app.services.spool_tag_matcher import auto_assign_spool, create_spool_from_tray
+    from backend.app.services.spool_tag_matcher import auto_assign_spool, create_spool_from_tray, get_spool_by_tag
 
     # A built-in spool and its slot row: the third writer of the built-in ledger.
     await _refuse_in_spoolman_mode(db)
@@ -4302,17 +4321,25 @@ async def create_spool_from_slot(
     if not is_valid_tag(tray.get("tag_uid", ""), tray.get("tray_uuid", "")):
         raise HTTPException(status_code=400, detail="Slot has no RFID tag")
 
-    spool = await create_spool_from_tray(db, tray)
-    await auto_assign_spool(
-        req.printer_id,
-        req.ams_id,
-        req.tray_id,
-        spool,
-        printer_manager,
-        db,
-        tray_info_idx=tray.get("tray_info_idx", ""),
-    )
-    await db.commit()
+    # Under the printer's assignment lock, and the tag looked up again inside it: a second click, or the
+    # AMS callback's own RFID pass, may have made this reel's spool a moment ago. Without the lock the
+    # second request answered 500 on PostgreSQL; without the second look SQLite ended with two spools
+    # carrying one tag, the first of them out of its slot. Nothing was written yet, so nothing is held
+    # while this waits.
+    async with _get_ams_assignment_lock(req.printer_id):
+        spool = await get_spool_by_tag(db, tray.get("tag_uid", ""), tray.get("tray_uuid", ""))
+        if spool is None:
+            spool = await create_spool_from_tray(db, tray)
+        await auto_assign_spool(
+            req.printer_id,
+            req.ams_id,
+            req.tray_id,
+            spool,
+            printer_manager,
+            db,
+            tray_info_idx=tray.get("tray_info_idx", ""),
+        )
+        await db.commit()
     await ws_manager.broadcast({"type": "inventory_changed"})
     await ws_manager.broadcast(
         {

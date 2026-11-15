@@ -89,6 +89,8 @@ export function SpoolFormModal({
   const [errors, setErrors] = useState<Partial<Record<keyof SpoolFormData, string>>>({});
   const [activeTab, setActiveTab] = useState<TabId>('filament');
   const [weightTouched, setWeightTouched] = useState(false);
+  // The operator's tick to release a hand-entered weight to the AMS sync again.
+  const [unlockWeight, setUnlockWeight] = useState(false);
   const [locationIdTouched, setLocationIdTouched] = useState(false);
   // Sent only when changed, so saving an unrelated edit cannot put back a
   // drying date an AMS cycle stamped while the form was open.
@@ -418,6 +420,7 @@ export function SpoolFormModal({
       setErrors({});
       setActiveTab('filament');
       setWeightTouched(false);
+      setUnlockWeight(false);
       setLocationIdTouched(false);
       setLastDriedTouched(false);
     }
@@ -461,7 +464,11 @@ export function SpoolFormModal({
         ? { spoolman_filament_id: null }
         : {}),
     }));
-    if (key === 'weight_used') setWeightTouched(true);
+    if (key === 'weight_used') {
+      setWeightTouched(true);
+      // A weight entered now is a new hand measurement: it locks again.
+      setUnlockWeight(false);
+    }
     if (key === 'location_id') setLocationIdTouched(true);
     if (key === 'last_dried_at') setLastDriedTouched(true);
     if (errors[key]) {
@@ -829,6 +836,11 @@ export function SpoolFormModal({
     if (!isEditing || weightTouched) {
       data.weight_used = formData.weight_used;
     }
+    // Releasing the hand-weight lock is its own explicit act, never a side
+    // effect of another edit — and never together with a newly entered weight.
+    if (isEditing && unlockWeight && !weightTouched) {
+      data.weight_locked = false;
+    }
 
     // Only send location_id when creating or when explicitly changed by the user.
     // Backend derives the denormalized storage_location string; omitting on an
@@ -1055,6 +1067,9 @@ export function SpoolFormModal({
                 categories={knownCategories}
                 availableLocations={storageLocations}
                 showLastDried={isEditing}
+                weightLocked={isEditing && !spoolmanMode && !!spool?.weight_locked && !weightTouched}
+                unlockWeight={unlockWeight}
+                onUnlockWeightChange={setUnlockWeight}
                 onCreateLocation={async (name) => {
                   try {
                     const created = await api.createLocation({ name });

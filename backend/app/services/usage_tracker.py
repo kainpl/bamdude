@@ -1151,7 +1151,7 @@ async def apply_runout_zero_corrections(
     touched = False
     archived_ids: list[int] = []
     for event in runouts:
-        spool = (await db.execute(select(Spool).where(Spool.id == event.spool_id))).scalar_one_or_none()
+        spool = (await db.execute(_spool_charge_stmt(event.spool_id))).scalar_one_or_none()
         if spool is None:
             continue
         loads_after = [
@@ -1255,6 +1255,23 @@ async def apply_runout_zero_corrections(
     return results
 
 
+def _spool_charge_stmt(spool_id: int):
+    """The read every charge of a booking makes of the spool it is about to write.
+
+    ``FOR UPDATE``: on PostgreSQL the row is held from here to the booking's commit, so a weight typed by
+    hand meanwhile waits and then stands, as it does on SQLite, where the booking already owns the writer
+    (``_lock_usage_archive``) before it reads any spool. Without it PostgreSQL wrote ``old + grams`` over
+    the hand weight and left its lock flag standing over the wrong figure; and a spool deleted between the
+    read and the commit took the whole print's booking down with it. SQLite's dialect emits no
+    ``FOR UPDATE``: nothing changes there. ``populate_existing`` so the row read after a wait is the row
+    as committed, never a copy this session loaded earlier.
+
+    Not upstream's ``weight_used = weight_used + grams`` (5b34997df): that books the print on top of a
+    weight weighed AFTER it. Lock order: the archive first (the callers hold it), then spools.
+    """
+    return select(Spool).where(Spool.id == spool_id).with_for_update().execution_options(populate_existing=True)
+
+
 async def record_ams_sync_usage(
     db: AsyncSession,
     spool: Spool,
@@ -1324,6 +1341,52 @@ async def record_ams_sync_usage(
         new_used,
     )
     return delta
+
+
+async def sync_spool_weight_from_ams(
+    db: AsyncSession,
+    spool: Spool,
+    *,
+    printer_id: int,
+    ams_id: int,
+    tray_id: int,
+    new_used: float,
+) -> float:
+    """Write an AMS reading through ``record_ams_sync_usage`` -- unless the spool changed since the caller
+    compared it. The one door of both AMS-sync sites (``main.on_ams_change`` and the Sync button).
+
+    The caller decided on a copy of the spool it loaded earlier. Under the row's write hold the two columns
+    are read again: a weight entered by hand since then (which also locks the spool), or any other write,
+    means that decision is stale -- nothing is written, the copy is refreshed, and the next reading decides
+    on what is stored now. Without this the AMS figure overwrote the hand weight and its lock flag stayed
+    set over it (upstream 5b34997df, WL-6).
+
+    Returns the delta in grams, ``0.0`` when nothing was written.
+    """
+    from backend.app.core.database import take_write_lock
+
+    compared = float(spool.weight_used or 0.0)
+    with db.no_autoflush:
+        await take_write_lock(db, Spool.__table__, spool.id)
+        stored = (
+            await db.execute(
+                select(Spool.weight_used, Spool.weight_locked).where(Spool.id == spool.id).with_for_update()
+            )
+        ).first()
+    if stored is None:
+        return 0.0
+    if stored.weight_locked or abs(float(stored.weight_used or 0.0) - compared) > 1e-6:
+        logger.info(
+            "[UsageTracker] Spool %d changed since its AMS reading was compared (stored %s, locked=%s) — not synced",
+            spool.id,
+            stored.weight_used,
+            bool(stored.weight_locked),
+        )
+        await db.refresh(spool)
+        return 0.0
+    return await record_ams_sync_usage(
+        db, spool, printer_id=printer_id, ams_id=ams_id, tray_id=tray_id, new_used=new_used
+    )
 
 
 async def _resolve_spool_id_for_tray(
@@ -1870,7 +1933,7 @@ async def _on_print_complete(
                         continue
 
                     # Load spool
-                    spool_result = await db.execute(select(Spool).where(Spool.id == spool_id))
+                    spool_result = await db.execute(_spool_charge_stmt(spool_id))
                     spool = spool_result.scalar_one_or_none()
                     if not spool:
                         continue
@@ -2477,7 +2540,7 @@ async def _track_from_3mf(
                         uncharged.append((tray_global, round(float(segment_grams), 2)))
                     continue
 
-                spool_result = await db.execute(select(Spool).where(Spool.id == seg_spool_id))
+                spool_result = await db.execute(_spool_charge_stmt(seg_spool_id))
                 spool = spool_result.scalar_one_or_none()
                 if not spool:
                     continue
@@ -2686,7 +2749,7 @@ async def _track_from_3mf(
                     if uncharged is not None:
                         uncharged.append((global_tray_id, round(float(segment_grams), 2)))
                     continue
-                spool_result = await db.execute(select(Spool).where(Spool.id == seg_spool_id))
+                spool_result = await db.execute(_spool_charge_stmt(seg_spool_id))
                 spool = spool_result.scalar_one_or_none()
                 if not spool:
                     continue
@@ -2765,7 +2828,7 @@ async def _track_from_3mf(
             continue
 
         # Load spool
-        spool_result = await db.execute(select(Spool).where(Spool.id == spool_id))
+        spool_result = await db.execute(_spool_charge_stmt(spool_id))
         spool = spool_result.scalar_one_or_none()
         if not spool:
             continue

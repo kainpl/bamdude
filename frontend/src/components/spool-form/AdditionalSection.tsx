@@ -185,6 +185,9 @@ export function AdditionalSection({
   errors = {},
   spoolmanMode = false,
   showLastDried = false,
+  weightLocked = false,
+  unlockWeight = false,
+  onUnlockWeightChange,
 }: AdditionalSectionProps) {
   const { t } = useTranslation();
   const { showToast } = useToast();
@@ -299,6 +302,22 @@ export function AdditionalSection({
           <span className="text-xs text-bambu-gray shrink-0">/ {formData.core_weight + formData.label_weight}g</span>
         </div>
       </div>
+
+      {/* A hand-entered weight is locked against the AMS weight sync; this is the only way out of it. */}
+      {weightLocked && onUnlockWeightChange && (
+        <div className="rounded-lg border border-bambu-dark-tertiary px-3 py-2">
+          <p className="text-xs text-bambu-gray">{t('inventory.weightLockedNote')}</p>
+          <label className="mt-2 flex items-start gap-2 text-sm text-white cursor-pointer">
+            <input
+              type="checkbox"
+              checked={unlockWeight}
+              onChange={(e) => onUnlockWeightChange(e.target.checked)}
+              className="mt-0.5 w-4 h-4 accent-bambu-green flex-shrink-0"
+            />
+            <span>{t('inventory.unlockWeight')}</span>
+          </label>
+        </div>
+      )}
 
       {/* Purchase date */}
       <div>

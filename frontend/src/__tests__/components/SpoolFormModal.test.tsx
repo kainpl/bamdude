@@ -101,6 +101,61 @@ const existingSpool: InventorySpool = {
   k_profiles: [],
 };
 
+describe('SpoolFormModal hand-weight lock', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const open = async (spool: InventorySpool) => {
+    render(<SpoolFormModal isOpen={true} onClose={vi.fn()} spool={spool} currencySymbol="$" />);
+    await waitFor(() => expect(screen.getByText('Edit Spool')).toBeInTheDocument());
+  };
+  const save = async () => {
+    fireEvent.click(screen.getByRole('button', { name: /save/i }));
+    await waitFor(() => expect(api.updateSpool).toHaveBeenCalledTimes(1));
+    return vi.mocked(api.updateSpool).mock.calls[0][1];
+  };
+  const UNLOCK = 'Let the AMS weight sync update this spool again';
+
+  it('offers no unlock for a spool whose weight was never entered by hand', async () => {
+    await open(existingSpool);
+
+    expect(screen.queryByLabelText(UNLOCK)).not.toBeInTheDocument();
+    expect(await save()).not.toHaveProperty('weight_locked');
+  });
+
+  it('leaves the lock alone unless the operator ticks the unlock', async () => {
+    await open({ ...existingSpool, weight_locked: true });
+
+    expect(screen.getByLabelText(UNLOCK)).not.toBeChecked();
+    expect(await save()).not.toHaveProperty('weight_locked');
+  });
+
+  it('releases the lock, and sends no weight with it', async () => {
+    await open({ ...existingSpool, weight_locked: true });
+
+    fireEvent.click(screen.getByLabelText(UNLOCK));
+    const payload = await save();
+
+    expect(payload).toHaveProperty('weight_locked', false);
+    expect(payload).not.toHaveProperty('weight_used');
+  });
+
+  it('a weight entered now withdraws the unlock: it is a new hand measurement', async () => {
+    await open({ ...existingSpool, weight_locked: true });
+
+    fireEvent.click(screen.getByLabelText(UNLOCK));
+    const remainingInput = screen.getByDisplayValue('700');
+    fireEvent.change(remainingInput, { target: { value: '500' } });
+    fireEvent.blur(remainingInput);
+    const payload = await save();
+
+    expect(screen.queryByLabelText(UNLOCK)).not.toBeInTheDocument();
+    expect(payload).toHaveProperty('weight_used', 500);
+    expect(payload).not.toHaveProperty('weight_locked');
+  });
+});
+
 describe('SpoolFormModal weightTouched', () => {
   beforeEach(() => {
     vi.clearAllMocks();

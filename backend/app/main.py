@@ -2949,8 +2949,9 @@ async def _on_ams_change(printer_id: int, ams_data: list):
     # Check if a print is actively running on this printer - if so, skip AMS
     # weight sync to avoid double-deducting spool weight (the usage tracker
     # handles weight deduction precisely during prints via 3MF/G-code data).
+    from backend.app.services import usage_tracker as _usage_tracker
     from backend.app.services.ams_sync_debounce import debounce as _ams_decrease_debounce
-    from backend.app.services.usage_tracker import _active_sessions, print_is_unbooked, record_ams_sync_usage
+    from backend.app.services.usage_tracker import _active_sessions, print_is_unbooked
 
     _print_active = printer_id in _active_sessions
 
@@ -3464,7 +3465,7 @@ async def _on_ams_change(printer_id: int, ams_data: list):
                                             remain_val,
                                             tray.get("remain_g"),
                                         )
-                                        await record_ams_sync_usage(
+                                        await _usage_tracker.sync_spool_weight_from_ams(
                                             db,
                                             existing_assignment.spool,
                                             printer_id=printer_id,
@@ -3496,7 +3497,7 @@ async def _on_ams_change(printer_id: int, ams_data: list):
                                                 current_used,
                                                 new_used,
                                             )
-                                            await record_ams_sync_usage(
+                                            await _usage_tracker.sync_spool_weight_from_ams(
                                                 db,
                                                 existing_assignment.spool,
                                                 printer_id=printer_id,

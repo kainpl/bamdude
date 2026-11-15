@@ -26,7 +26,7 @@ interface Props {
   onSaved: () => void;
 }
 
-type FieldType = 'datalist' | 'text' | 'textarea' | 'number' | 'date' | 'diameter' | 'effect' | 'preset' | 'catalog' | 'color' | 'dried';
+type FieldType = 'datalist' | 'text' | 'textarea' | 'number' | 'date' | 'diameter' | 'effect' | 'preset' | 'catalog' | 'color' | 'dried' | 'unlock';
 interface FieldDef {
   key: string; // spool column (or 'color' pseudo)
   labelKey: string;
@@ -54,6 +54,9 @@ const FIELDS: FieldDef[] = [
   { key: 'effect_type', labelKey: 'inventory.spoolForm.effectType', type: 'effect' },
   { key: 'storage_location', labelKey: 'inventory.storageLocation', type: 'datalist' },
   { key: 'purchase_location', labelKey: 'inventory.purchaseLocation', type: 'datalist' },
+  // Not a value to set: ticking it releases the hand-weight lock of the selected
+  // spools, so AMS weight syncs may write them again. The weights stay as they are.
+  { key: 'weight_locked', labelKey: 'inventory.bulkEdit.unlockWeight', type: 'unlock' },
 ];
 
 const NUMERIC = new Set(['label_weight', 'cost_per_kg', 'low_stock_threshold_pct']);
@@ -262,6 +265,8 @@ export function BulkEditSpoolsModal({ isOpen, spools, allSpools, catalogEntries,
           fields.slicer_filament = code;
           const opt = code ? presetOptions.find((o) => o.code === code) : null;
           fields.slicer_filament_name = opt?.displayName ?? code;
+        } else if (f.type === 'unlock') {
+          fields.weight_locked = false;
         } else if (f.type === 'dried') {
           // «Now» is the moment of applying, not of ticking the box.
           fields.last_dried_at = raw === 'clear' ? null : new Date().toISOString();
@@ -319,6 +324,12 @@ export function BulkEditSpoolsModal({ isOpen, spools, allSpools, catalogEntries,
             <option value="now">{t('inventory.lastDriedNow')}</option>
             <option value="clear">{t('inventory.bulkEdit.lastDriedClear')}</option>
           </Select>
+        );
+      case 'unlock':
+        return (
+          <p className={`text-xs ${on ? 'text-white' : 'text-bambu-gray'}`}>
+            {t('inventory.bulkEdit.unlockWeightHint', { count: selected.filter((s) => s.weight_locked).length })}
+          </p>
         );
       case 'diameter':
         return (
