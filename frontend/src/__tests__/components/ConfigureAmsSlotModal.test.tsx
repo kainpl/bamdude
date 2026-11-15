@@ -425,6 +425,14 @@ describe('ConfigureAmsSlotModal', () => {
     });
   });
 
+  it('says when the K half of the configuration did not reach the printer (upstream ab5ccc108)', async () => {
+    (api.configureAmsSlot as ReturnType<typeof vi.fn>).mockResolvedValue({ success: true, message: 'ok', warnings: ['k_profile_not_sent'] });
+    render(<ConfigureAmsSlotModal {...defaultProps} slotInfo={{ ...defaultProps.slotInfo, trayInfoIdx: 'GFA00' }} />);
+    await screen.findByText('Bambu PLA Basic');
+    fireEvent.click(screen.getByRole('button', { name: 'Configure Slot' }));
+    expect(await screen.findByText(/K-profile selection was not sent/)).toBeInTheDocument();
+  });
+
   describe('flow type of the fitted nozzle (upstream e5a18bf5)', () => {
     // BambuStudio offers a slot only the profiles of the flow type fitted to its
     // nozzle (AMSMaterialsSetting.cpp); a K measured through a High Flow nozzle

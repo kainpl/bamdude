@@ -3257,16 +3257,22 @@ async def configure_ams_slot(
     if not success:
         raise HTTPException(status_code=500, detail="Failed to send filament configuration command")
 
+    # What did NOT reach the printer, as codes the dialog words (upstream
+    # ab5ccc108): the results of the two K sends used to be dropped, so a K that
+    # never left was answered "Configured".
+    warnings: list[str] = []
+
     # Method 1: Select existing calibration profile by cali_idx
     # Do NOT include setting_id - BambuStudio never sends it in extrusion_cali_sel,
     # and including it causes the firmware to mislink the profile on X1C/P1S.
-    client.extrusion_cali_sel(
+    if not client.extrusion_cali_sel(
         ams_id=ams_id,
         tray_id=tray_id,
         cali_idx=cali_idx,
         filament_id=filament_id_for_kprofile,
         nozzle_diameter=nozzle_diameter,
-    )
+    ):
+        warnings.append("k_profile_not_sent")
 
     # Method 2: Only send extrusion_cali_set when NO existing profile was selected
     # (cali_idx == -1). When cali_idx >= 0, extrusion_cali_sel already selected the
@@ -3283,7 +3289,7 @@ async def configure_ams_slot(
         else:
             global_tray_id = tray_id
 
-        client.extrusion_cali_set(
+        if not client.extrusion_cali_set(
             tray_id=global_tray_id,
             k_value=k_value,
             nozzle_diameter=nozzle_diameter,
@@ -3292,7 +3298,8 @@ async def configure_ams_slot(
             setting_id=kprofile_setting_id or "",
             name=tray_sub_brands or "",
             cali_idx=cali_idx,
-        )
+        ):
+            warnings = ["k_value_not_sent"]
 
     # Register a read-back verification (upstream #2582) so the tray telemetry
     # that the status push below returns can confirm the printer accepted this
@@ -3313,6 +3320,7 @@ async def configure_ams_slot(
     return {
         "success": True,
         "message": f"Configured AMS {ams_id} tray {tray_id} with {tray_sub_brands}",
+        "warnings": warnings,
     }
 
 

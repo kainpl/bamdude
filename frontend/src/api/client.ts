@@ -12667,18 +12667,20 @@ export const api = {
   // K-Profiles
   getKProfiles: (printerId: number, nozzleDiameter = '0.4') =>
     request<KProfilesResponse>(`/printers/${printerId}/kprofiles/?nozzle_diameter=${nozzleDiameter}`),
+  // `confirmed: false` = sent, and the printer never answered. Not a failure
+  // (silence is not a refusal), but not something to call "saved" either.
   setKProfile: (printerId: number, profile: KProfileCreate) =>
-    request<{ success: boolean; message: string }>(`/printers/${printerId}/kprofiles/`, {
+    request<{ success: boolean; message: string; confirmed?: boolean }>(`/printers/${printerId}/kprofiles/`, {
       method: 'POST',
       body: JSON.stringify(profile),
     }),
   deleteKProfile: (printerId: number, profile: KProfileDelete) =>
-    request<{ success: boolean; message: string }>(`/printers/${printerId}/kprofiles/`, {
+    request<{ success: boolean; message: string; confirmed?: boolean }>(`/printers/${printerId}/kprofiles/`, {
       method: 'DELETE',
       body: JSON.stringify(profile),
     }),
   setKProfilesBatch: (printerId: number, profiles: KProfileCreate[]) =>
-    request<{ success: boolean; message: string }>(`/printers/${printerId}/kprofiles/batch`, {
+    request<{ success: boolean; message: string; confirmed?: boolean }>(`/printers/${printerId}/kprofiles/batch`, {
       method: 'POST',
       body: JSON.stringify(profiles),
     }),
@@ -12760,7 +12762,8 @@ export const api = {
     if (config.k_value !== undefined && config.k_value > 0) {
       params.set('k_value', config.k_value.toString());
     }
-    return request<{ success: boolean; message: string }>(
+    // `warnings`: codes of what did NOT reach the printer (the dialog words them).
+    return request<{ success: boolean; message: string; warnings?: string[] }>(
       `/printers/${printerId}/slots/${amsId}/${trayId}/configure?${params}`,
       { method: 'POST' }
     );

@@ -199,6 +199,8 @@ export function ConfigureAmsSlotModal({
   const [colorInput, setColorInput] = useState<string>(''); // User's text input (name or hex)
   const [searchQuery, setSearchQuery] = useState('');
   const [showSuccess, setShowSuccess] = useState(false);
+  // What the server says did NOT reach the printer (codes, worded here).
+  const [configureWarnings, setConfigureWarnings] = useState<string[]>([]);
   const [showExtendedColors, setShowExtendedColors] = useState(false);
   const scrolledToRef = useRef<string>('');
 
@@ -296,14 +298,17 @@ export function ConfigureAmsSlotModal({
       });
       return result;
     },
-    onSuccess: () => {
+    onSuccess: (result) => {
+      const warnings = result?.warnings ?? [];
+      setConfigureWarnings(warnings);
       setShowSuccess(true);
       onSuccess?.();
-      // Close after showing success briefly
+      // Close after showing success briefly — longer when there is something
+      // to read: "Configured" with a K that never left must not flash by.
       setTimeout(() => {
         setShowSuccess(false);
         onClose();
-      }, 1500);
+      }, warnings.length > 0 ? 6000 : 1500);
     },
   });
 
@@ -468,6 +473,7 @@ export function ConfigureAmsSlotModal({
       setColorInput('');
       setSearchQuery('');
       setShowSuccess(false);
+      setConfigureWarnings([]);
       scrolledToRef.current = '';
     }
   }, [isOpen, slotInfo.trayInfoIdx, slotInfo.trayColor]);
@@ -594,6 +600,11 @@ export function ConfigureAmsSlotModal({
               <CheckCircle2 className="w-16 h-16 text-bambu-green mx-auto" />
               <p className="text-lg font-semibold text-white">{t('configureAmsSlot.slotConfigured')}</p>
               <p className="text-sm text-bambu-gray">{t('configureAmsSlot.settingsSentToPrinter')}</p>
+              {configureWarnings.map(code => (
+                <p key={code} role="alert" className="text-sm text-amber-700 dark:text-amber-400 max-w-sm mx-auto">
+                  {t(`configureAmsSlot.warnings.${code}`, { defaultValue: code })}
+                </p>
+              ))}
             </div>
           </div>
         )}

@@ -264,7 +264,9 @@ function KProfileModal({
     },
     onSuccess: (result) => {
       console.log('[KProfile] Save success:', result);
-      showToast(t('kProfiles.toast.profileSaved'));
+      // A write the printer never answered is "sent", not "saved" (upstream f45cc599f).
+      if (result?.confirmed === false) showToast(t('kProfiles.toast.profileSentUnconfirmed'), 'warning');
+      else showToast(t('kProfiles.toast.profileSaved'));
       // Save note if it changed (including clearing it). Parent resolves
       // the editing profile to its stable filament_calibration_id via the
       // listing endpoint's fc_id_by_cali_idx map (m065).
@@ -294,7 +296,8 @@ function KProfileModal({
     },
     onSuccess: (result) => {
       console.log('[KProfile] Delete success:', result);
-      showToast(t('kProfiles.toast.profileDeleted'));
+      if (result?.confirmed === false) showToast(t('kProfiles.toast.deleteSentUnconfirmed'), 'warning');
+      else showToast(t('kProfiles.toast.profileDeleted'));
       // Show syncing indicator while printer processes the command
       setIsSyncing(true);
       // Add longer delay for delete - printer needs more time to process
@@ -409,8 +412,9 @@ function KProfileModal({
     console.log(`[KProfile] Saving ${batchPayload.length} profiles in batch:`, batchPayload);
 
     try {
-      await api.setKProfilesBatch(printerId, batchPayload);
-      showToast(t('kProfiles.toast.profilesSaved', { count: selectedExtruders.length }));
+      const batchResult = await api.setKProfilesBatch(printerId, batchPayload);
+      if (batchResult?.confirmed === false) showToast(t('kProfiles.toast.profileSentUnconfirmed'), 'warning');
+      else showToast(t('kProfiles.toast.profilesSaved', { count: selectedExtruders.length }));
       // Notes for freshly-created batch profiles can't attach reliably yet
       // — the printer hasn't returned the new cali_idx/setting_id, so the
       // backend has nothing to resolve. The user can attach a note after the
@@ -1072,11 +1076,12 @@ export function KProfilesView() {
 
         // Import profiles one by one
         let imported = 0;
+        let importUnconfirmed = 0;
         for (const p of data.profiles) {
           if (!p.name || !p.k_value || !p.filament_id) continue;
 
           try {
-            await api.setKProfile(selectedPrinter!, {
+            const importResult = await api.setKProfile(selectedPrinter!, {
               name: p.name,
               k_value: parseFloat(p.k_value).toFixed(6),
               filament_id: p.filament_id,
@@ -1090,6 +1095,7 @@ export function KProfilesView() {
               slot_id: 0, // Always create new
             });
             imported++;
+            if (importResult?.confirmed === false) importUnconfirmed++;
             // Small delay between imports
             await new Promise(resolve => setTimeout(resolve, 500));
           } catch (err) {
@@ -1097,7 +1103,11 @@ export function KProfilesView() {
           }
         }
 
-        showToast(t('kProfiles.toast.importedProfiles', { count: imported, total: data.profiles.length }));
+        if (importUnconfirmed > 0) {
+          showToast(t('kProfiles.toast.importedProfilesUnconfirmed', { count: imported, total: data.profiles.length, unconfirmed: importUnconfirmed }), 'warning');
+        } else {
+          showToast(t('kProfiles.toast.importedProfiles', { count: imported, total: data.profiles.length }));
+        }
         refetchProfiles();
       } catch (err) {
         console.error('Import error:', err);
@@ -1137,9 +1147,10 @@ export function KProfilesView() {
     setBulkDeleteInProgress(true);
 
     let deleted = 0;
+    let deleteUnconfirmed = 0;
     for (const profile of profilesToDelete) {
       try {
-        await api.deleteKProfile(selectedPrinter!, {
+        const deleteResult = await api.deleteKProfile(selectedPrinter!, {
           slot_id: profile.slot_id,
           extruder_id: profile.extruder_id,
           nozzle_id: profile.nozzle_id,
@@ -1148,6 +1159,7 @@ export function KProfilesView() {
           setting_id: profile.setting_id,
         });
         deleted++;
+        if (deleteResult?.confirmed === false) deleteUnconfirmed++;
         // Small delay between deletes
         await new Promise(resolve => setTimeout(resolve, 300));
       } catch (err) {
@@ -1155,7 +1167,11 @@ export function KProfilesView() {
       }
     }
 
-    showToast(t('kProfiles.toast.profilesDeleted', { count: deleted }));
+    if (deleteUnconfirmed > 0) {
+      showToast(t('kProfiles.toast.profilesDeletedUnconfirmed', { count: deleted, unconfirmed: deleteUnconfirmed }), 'warning');
+    } else {
+      showToast(t('kProfiles.toast.profilesDeleted', { count: deleted }));
+    }
     setBulkDeleteInProgress(false);
     setShowBulkDeleteConfirm(false);
     setSelectionMode(false);

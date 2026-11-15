@@ -7518,14 +7518,24 @@ class BambuMQTTClient:
                                 logger.warning("[%s] on_lights_report failed: %s", self.serial_number, e)
                         break
 
-        # Parse nozzle hardware info (single nozzle printers)
-        if "nozzle_type" in data:
+        # Parse nozzle hardware info (single nozzle printers).
+        #
+        # From a STATUS frame only (upstream f45cc599f): we put ``nozzle_diameter``
+        # on ``extrusion_cali_set`` / ``_del`` / ``_sel``, and a command's answer
+        # carries the sender's fields back in this same envelope. Read as
+        # hardware, saving a 0.6 profile on a printer with 0.4 fitted made
+        # ``slot_nozzle`` hand 0.6 to every binder until the next full status.
+        # BambuStudio takes only ``cali_idx`` from that answer (DevCalib.cpp) and
+        # the nozzle from status. Parity with its code; the echo on current
+        # firmware was not captured.
+        nozzle_is_status = is_printer_status_frame(data)
+        if "nozzle_type" in data and nozzle_is_status:
             material, flow = _parse_nozzle_type(str(data["nozzle_type"]))
             if material:
                 self.state.nozzles[0].nozzle_type = material
             if flow:
                 self.state.nozzles[0].nozzle_flow = flow
-        if "nozzle_diameter" in data:
+        if "nozzle_diameter" in data and nozzle_is_status:
             self.state.nozzles[0].nozzle_diameter = str(data["nozzle_diameter"])
 
         # Parse nozzle hardware info (dual nozzle printers - H2D series)
@@ -10934,9 +10944,22 @@ class BambuMQTTClient:
         path. ``get_kprofiles`` uses an Event because it is async throughout.
 
         Returns ``(ok, detail)``; ``detail`` carries the printer's own reason.
+        A caller that must tell an answered success from silence asks
+        :meth:`await_cali_verdict`.
+        """
+        ok, detail, _confirmed = await self.await_cali_verdict(sequence_id, timeout)
+        return ok, detail
+
+    async def await_cali_verdict(self, sequence_id: str | None, timeout: float = 3.0) -> tuple[bool, str, bool]:
+        """:meth:`await_cali_ack`, plus whether the printer ANSWERED at all.
+
+        ``(ok, detail, confirmed)``. Silence is still ``ok`` — that rule stands —
+        but it is ``confirmed=False``: an unanswered write and a confirmed one
+        used to be indistinguishable to the operator and in the audit
+        (upstream f45cc599f).
         """
         if not sequence_id:
-            return True, ""
+            return True, "", False
         try:
             deadline = asyncio.get_running_loop().time() + timeout
             while asyncio.get_running_loop().time() < deadline:
@@ -10944,12 +10967,12 @@ class BambuMQTTClient:
                 if ack is not None:
                     result = str(ack.get("result", "")).lower()
                     if result in ("success", "ok", ""):
-                        return True, ""
+                        return True, "", True
                     reason = str(ack.get("reason", "") or "").strip()
-                    return False, reason or result
+                    return False, reason or result, True
                 await asyncio.sleep(0.05)
             logger.debug("[%s] No cali ack for seq=%s within %ss", self.serial_number, sequence_id, timeout)
-            return True, ""
+            return True, "", False
         finally:
             # Only this write's slot. Clearing the dict would drop the verdicts
             # other in-flight writes are still waiting on.
