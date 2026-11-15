@@ -77,6 +77,7 @@ from backend.app.services.spoolman_native_tags import copy_extra_tags_to_native
 from backend.app.services.spoolman_tracking import get_fallback_spool_tag_for_slot
 from backend.app.services.spoolman_weights import spool_net_weight
 from backend.app.services.tag_conflict import native_tag_refused, tag_already_linked
+from backend.app.services.usage_tracker import print_is_unbooked
 from backend.app.utils.color_utils import spoolman_color_hex
 from backend.app.utils.filament_remaining import grams_remaining
 
@@ -1541,6 +1542,7 @@ async def sync_spoolman_ams_weights(
 
     synced = 0
     skipped = 0
+    printing_printers: set[int] = set()
 
     def _find_tray(ams_data: list, ams_id: int, tray_id: int) -> dict | None:
         if not ams_data:
@@ -1567,7 +1569,19 @@ async def sync_spoolman_ams_weights(
             continue
 
         state = printer_manager.get_status(assignment.printer_id)
-        if not state or not state.raw_data:
+        if print_is_unbooked(assignment.printer_id, state):
+            # The print's own filament is still to be reported from the 3MF; the AMS reading already
+            # contains part of it, and writing it now would count that part twice.
+            logger.info(
+                "Spoolman AMS sync: printer %d has a print that is not booked yet, skipping spool %d",
+                assignment.printer_id,
+                assignment.spoolman_spool_id,
+            )
+            printing_printers.add(assignment.printer_id)
+            skipped += 1
+            continue
+        # A printer that dropped off keeps its last report: that is no reading.
+        if not state or not state.raw_data or getattr(state, "connected", True) is False:
             logger.info(
                 "Spoolman AMS sync: printer %d not connected, skipping spool %d",
                 assignment.printer_id,
@@ -1653,7 +1667,10 @@ async def sync_spoolman_ams_weights(
     if synced:
         # The Inventory page shows the weight this just changed.
         await ws_manager.broadcast({"type": "inventory_changed"})
-    return {"synced": synced, "skipped": skipped}
+    answer = {"synced": synced, "skipped": skipped}
+    if printing_printers:
+        answer["skipped_printers"] = len(printing_printers)
+    return answer
 
 
 @router.post("/slot-assignments")

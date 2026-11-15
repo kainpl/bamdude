@@ -3458,9 +3458,13 @@ async def sync_weights_from_ams(
     Overwrites the database weight_used for every assigned spool using the
     current AMS remain% from connected printers.  This is a manual recovery
     tool - it bypasses the normal "only increase" guard.
+
+    A printer whose print is not booked yet (``usage_tracker.print_is_unbooked``) is left alone and
+    counted in ``skipped_printers``: the print's own filament is still to be charged, and the AMS
+    reading already contains part of it.
     """
     from backend.app.services.printer_manager import printer_manager
-    from backend.app.services.usage_tracker import record_ams_sync_usage
+    from backend.app.services.usage_tracker import print_is_unbooked, record_ams_sync_usage
 
     result = await db.execute(select(SpoolAssignment).options(selectinload(SpoolAssignment.spool)))
     assignments = list(result.scalars().all())
@@ -3468,6 +3472,7 @@ async def sync_weights_from_ams(
 
     synced = 0
     skipped = 0
+    printing_printers: set[int] = set()
 
     for assignment in assignments:
         spool = assignment.spool
@@ -3482,7 +3487,17 @@ async def sync_weights_from_ams(
             continue
 
         state = printer_manager.get_status(assignment.printer_id)
-        if not state or not state.raw_data:
+        if print_is_unbooked(assignment.printer_id, state):
+            logger.info(
+                "AMS weight sync: printer %d has a print that is not booked yet, skipping spool %d",
+                assignment.printer_id,
+                spool.id,
+            )
+            printing_printers.add(assignment.printer_id)
+            skipped += 1
+            continue
+        # A printer that dropped off keeps its last report: that is no reading.
+        if not state or not state.raw_data or getattr(state, "connected", True) is False:
             logger.info(
                 "AMS weight sync: printer %d not connected, skipping spool %d",
                 assignment.printer_id,
@@ -3556,7 +3571,11 @@ async def sync_weights_from_ams(
             skipped += 1
 
     await db.commit()
-    return {"synced": synced, "skipped": skipped}
+    # ``skipped_printers`` only when a printer was left alone because its print is not booked yet.
+    answer = {"synced": synced, "skipped": skipped}
+    if printing_printers:
+        answer["skipped_printers"] = len(printing_printers)
+    return answer
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────

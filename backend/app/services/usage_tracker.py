@@ -10,6 +10,7 @@ AMS remain% delta is the fallback for trays not covered by 3MF data.
 import asyncio
 import json
 import logging
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
@@ -326,6 +327,45 @@ _active_sessions: dict[int, PrintSession] = {}
 
 # Serialises the read-modify-write on the persisted tray-change log, per printer.
 _tray_change_locks: dict[int, asyncio.Lock] = {}
+
+# Printers whose finished print is being closed out: one token per completion still running. Process memory
+# only -- a restart starts with none -- and a token leaves with its own completion (``completion_in_progress``).
+_completing: dict[int, set[object]] = {}
+
+
+@contextmanager
+def completion_in_progress(printer_id: int):
+    """Mark ``printer_id`` as "its finished print is not booked yet" for the length of the block.
+
+    The printer already says FINISH and the session may have left memory, but the print's filament is still
+    to be charged -- by this tracker, or by the Spoolman report minutes later, after the swap macro. The mark
+    gates nothing but the remain% weight sync (``print_is_unbooked``); it never changes what is charged.
+    It ends with the block however the block ends (return, exception, cancellation), and the next print
+    start on the printer drops whatever is left.
+    """
+    token = object()
+    _completing.setdefault(printer_id, set()).add(token)
+    try:
+        yield
+    finally:
+        tokens = _completing.get(printer_id)
+        if tokens is not None:
+            tokens.discard(token)
+            if not tokens:
+                _completing.pop(printer_id, None)
+
+
+def print_is_unbooked(printer_id: int, printer_state) -> bool:
+    """Whether a print on this printer still has filament to charge -- the one question every remain%
+    weight sync asks before it writes (the automatic one, the Spoolman tagged-spool one, both Sync buttons).
+
+    True for a registered session, for a printer that reports RUNNING or PAUSE (a restart may have restored
+    no session; Spoolman mode never registers one), and while a completion is closing the print out.
+    ``printer_state`` is the printer's live status object, or None when there is none.
+    """
+    if printer_id in _active_sessions or printer_id in _completing:
+        return True
+    return (getattr(printer_state, "state", "") or "").upper() in ("RUNNING", "PAUSE")
 
 
 def _tray_key_to_str(key: tuple[int, int]) -> str:
@@ -1374,6 +1414,9 @@ async def on_print_start(
     will deduct precisely" flag; registering a session the internal tracker will
     never complete would suppress a sync those users still need.
     """
+    # A new print is a new question: no completion mark of an earlier print outlives this start.
+    _completing.pop(printer_id, None)
+
     state = printer_manager.get_status(printer_id)
     if not state or not state.raw_data:
         logger.debug("[UsageTracker] No state for printer %d, skipping", printer_id)
@@ -1514,13 +1557,18 @@ async def _lock_usage_archive(db, archive_id, identity):
 
 
 async def on_print_complete(*args, **kwargs) -> list[dict]:
-    try:
-        return await _on_print_complete(*args, **kwargs)
-    except _UsageArchiveChanged:
-        # No spool/history mutation is allowed to escape onto a reused id.
-        db = kwargs.get("db") or args[3]
-        await db.rollback()
-        return []
+    # The session leaves memory at the top of the booking and the commit comes after the file analysis;
+    # the mark holds the remain% weight sync off across that gap for every caller (the reconcile has no
+    # completion callback around it) and ends with the booking, the rollback below included.
+    printer_id = kwargs.get("printer_id") if "printer_id" in kwargs else args[0]
+    with completion_in_progress(printer_id):
+        try:
+            return await _on_print_complete(*args, **kwargs)
+        except _UsageArchiveChanged:
+            # No spool/history mutation is allowed to escape onto a reused id.
+            db = kwargs.get("db") or args[3]
+            await db.rollback()
+            return []
 
 
 async def _on_print_complete(

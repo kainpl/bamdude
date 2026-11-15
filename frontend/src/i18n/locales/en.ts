@@ -3583,6 +3583,8 @@ export default {
     amsSyncMessage: 'This will overwrite all inventory spool weights with the current AMS remain% values from connected printers. Use this to recover from corrupted weight data. Printers must be online.',
     amsSyncing: 'Syncing...',
     amsSyncSuccess: '{{synced}} spool(s) synced, {{skipped}} skipped',
+    amsSyncSkippedPrinting_one: '{{count}} printer was left out: its print is not finished and booked yet. Sync again afterwards.',
+    amsSyncSkippedPrinting_other: '{{count}} printers were left out: their prints are not finished and booked yet. Sync again afterwards.',
     amsSyncError: 'Failed to sync weights from AMS',
     spoolmanAmsSyncButton: 'Sync AMS Weights to Spoolman',
     spoolmanAmsSyncTitle: 'Sync AMS Weights to Spoolman',

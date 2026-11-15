@@ -45,6 +45,7 @@ vi.mock('../../api/client', () => ({
     getSpoolmanSizeMismatches: vi.fn().mockResolvedValue([]),
     applyFilamentSizeToSpoolmanSpool: vi.fn(),
     getAuthStatus: vi.fn().mockResolvedValue({ auth_enabled: false }),
+    syncWeightsFromAms: vi.fn(),
   },
 }));
 
@@ -639,6 +640,41 @@ describe('SpoolmanSettings', () => {
 
       await screen.findByText('Built-in Inventory');
       expect(api.getSpoolmanSizeMismatches).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('Sync Weights from AMS', () => {
+    const press = async () => {
+      const user = userEvent.setup();
+      render(<SpoolmanSettings />);
+      await user.click(await screen.findByRole('button', { name: 'Sync Weights from AMS' }));
+      const dialog = await screen.findByRole('dialog');
+      const confirm = Array.from(dialog.querySelectorAll('button')).find(
+        (button) => button.textContent === 'Sync Weights from AMS',
+      );
+      await user.click(confirm as HTMLButtonElement);
+    };
+
+    it('says how many printers were left out because they are printing', async () => {
+      vi.mocked(api.syncWeightsFromAms).mockResolvedValue({ synced: 2, skipped: 3, skipped_printers: 1 });
+
+      await press();
+
+      expect(await screen.findByText('2 spool(s) synced, 3 skipped')).toBeInTheDocument();
+      expect(
+        await screen.findByText(
+          '1 printer was left out: its print is not finished and booked yet. Sync again afterwards.',
+        ),
+      ).toBeInTheDocument();
+    });
+
+    it('says nothing about printers when none was printing', async () => {
+      vi.mocked(api.syncWeightsFromAms).mockResolvedValue({ synced: 2, skipped: 0 });
+
+      await press();
+
+      expect(await screen.findByText('2 spool(s) synced, 0 skipped')).toBeInTheDocument();
+      expect(screen.queryByText(/left out/)).not.toBeInTheDocument();
     });
   });
 });

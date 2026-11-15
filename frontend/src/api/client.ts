@@ -13391,7 +13391,7 @@ export const api = {
         : '/spoolman/inventory/slot-assignments/all',
     ),
   syncSpoolmanAmsWeights: () =>
-    request<{ synced: number; skipped: number }>('/spoolman/inventory/sync-ams-weights', {
+    request<{ synced: number; skipped: number; skipped_printers?: number }>('/spoolman/inventory/sync-ams-weights', {
       method: 'POST',
     }),
   getSpoolmanKProfiles: (spoolId: number) =>
@@ -13515,7 +13515,7 @@ export const api = {
   keepPreviousSpoolmanUsageSource: () =>
     request<SpoolmanUsageSourceState>('/spoolman/inventory/usage/source/keep-previous', { method: 'POST' }),
   syncWeightsFromAms: () =>
-    request<{ synced: number; skipped: number }>('/inventory/sync-ams-weights', { method: 'POST' }),
+    request<{ synced: number; skipped: number; skipped_printers?: number }>('/inventory/sync-ams-weights', { method: 'POST' }),
   // Stock forecasting + shopping list (upstream #1184)
   getSkuSettings: () =>
     request<FilamentSkuSettings[]>('/inventory/sku-settings'),

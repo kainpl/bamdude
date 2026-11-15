@@ -2950,7 +2950,7 @@ async def _on_ams_change(printer_id: int, ams_data: list):
     # weight sync to avoid double-deducting spool weight (the usage tracker
     # handles weight deduction precisely during prints via 3MF/G-code data).
     from backend.app.services.ams_sync_debounce import debounce as _ams_decrease_debounce
-    from backend.app.services.usage_tracker import _active_sessions, record_ams_sync_usage
+    from backend.app.services.usage_tracker import _active_sessions, print_is_unbooked, record_ams_sync_usage
 
     _print_active = printer_id in _active_sessions
 
@@ -2964,6 +2964,12 @@ async def _on_ams_change(printer_id: int, ams_data: list):
     # have the same runout.
     _unlink_state = printer_manager.get_status(printer_id)
     printing_now = (getattr(_unlink_state, "state", "") or "").upper() in ("RUNNING", "PAUSE")
+
+    # The remain% weight sync asks one question, in both inventory backends: is a print on this printer
+    # still to be charged? A registered session, a printer that reports RUNNING/PAUSE (a restart may have
+    # restored no session) and a completion still closing the print out all answer yes -- syncing then
+    # writes the print's filament once from the AMS reading and the tracker adds it a second time.
+    _weight_sync_held = print_is_unbooked(printer_id, _unlink_state)
 
     # MQTT relay - publish AMS change
     try:
@@ -3435,6 +3441,7 @@ async def _on_ams_change(printer_id: int, ams_data: list):
                             remain_raw = tray.get("remain")
                             if (
                                 remain_raw is not None
+                                and not _weight_sync_held
                                 and existing_assignment.spool
                                 and not existing_assignment.spool.weight_locked
                             ):
@@ -3816,7 +3823,7 @@ async def _on_ams_change(printer_id: int, ams_data: list):
                         # never while a print runs (the per-print tracker owns
                         # weight then; #1119's no-weight rule stays for
                         # everything untagged).
-                        if result and result.get("id") and not printing_now and not _print_active:
+                        if result and result.get("id") and not _weight_sync_held:
                             try:
                                 await _spoolman_bidirectional_weight_sync(
                                     client, db, printer_id, ams_id, tray, tray_data, result
@@ -10432,7 +10439,11 @@ async def on_print_complete(printer_id: int, data: dict) -> None:
 
     await _release_unseeded_journal(printer_id)
 
-    with defer_queue_repair_during_completion(printer_id):
+    # From here until the callback ends -- the swap macro and the Spoolman report included -- the finished
+    # print's filament is not booked yet, so the remain% weight sync stays off for this printer.
+    from backend.app.services.usage_tracker import completion_in_progress
+
+    with defer_queue_repair_during_completion(printer_id), completion_in_progress(printer_id):
         try:
             await _on_print_complete_impl(printer_id, data, analysis_completion)
         finally:
