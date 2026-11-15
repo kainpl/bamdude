@@ -67,6 +67,24 @@ METADATA_PATH = "backup_metadata.json"
 SETTINGS_PATH = "settings/app_settings.json"
 SPOOLS_PATH = "spools/inventory.json"
 SPOOL_USAGE_PATH = "spools/usage_history.json"
+
+
+def _builtin_usage_entries(payload) -> list | None:
+    """The built-in usage rows of a backup, whichever key it wrote them under.
+
+    ``usage_history`` is the key; backups made before 2026-11-15 wrote
+    ``history`` (and no ``archive_id``), which no restore ever read — they are
+    read now, their rows coming back without the print they belonged to.
+    """
+    if not isinstance(payload, dict):
+        return None
+    for key in ("usage_history", "history"):
+        entries = payload.get(key)
+        if isinstance(entries, list):
+            return entries
+    return None
+
+
 # The Spoolman usage history: a file of its own, as the table is — a Spoolman
 # spool id and a built-in spool id are two numberings (written by
 # ``git_backup._collect_spools`` through ``spoolman_usage_history.export_rows``).
@@ -957,7 +975,7 @@ class GitRestoreService:
             payload = parsed.get(SPOOLS_PATH)
             spools = payload.get("spools") if isinstance(payload, dict) else None
             usage_payload = parsed.get(SPOOL_USAGE_PATH)
-            usage = usage_payload.get("usage_history") if isinstance(usage_payload, dict) else None
+            usage = _builtin_usage_entries(usage_payload)
             # Usage records are counted here, not just described in the detail:
             # _restore_spool_usage increments this category's tally, so counting
             # only the spools broke restored + skipped + failed == item_count —
@@ -1858,8 +1876,8 @@ class GitRestoreService:
         spool_id_map: dict[int, int],
         archive_id_map: dict[int, int],
     ) -> None:
-        usage = usage_payload.get("usage_history") if isinstance(usage_payload, dict) else None
-        if not isinstance(usage, list) or not usage:
+        usage = _builtin_usage_entries(usage_payload)
+        if not usage:
             return
 
         valid_printers = set((await db.execute(select(Printer.id))).scalars().all())

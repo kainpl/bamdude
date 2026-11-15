@@ -730,8 +730,11 @@ class GitBackupService:
             "spools": spools_data,
         }
 
-        # Usage history (last 500 entries)
-        result = await db.execute(select(SpoolUsageHistory).order_by(desc(SpoolUsageHistory.created_at)).limit(500))
+        # Usage history — every row, with the print each belongs to. It used to
+        # be the newest 500 under the key ``history`` and without ``archive_id``,
+        # which the restore (it reads ``usage_history``) never found: a restore
+        # of our own backup brought back no usage at all.
+        result = await db.execute(select(SpoolUsageHistory).order_by(desc(SpoolUsageHistory.created_at)))
         history = result.scalars().all()
 
         history_data = []
@@ -742,6 +745,9 @@ class GitBackupService:
                     "spool_id": h.spool_id,
                     "printer_id": h.printer_id,
                     "print_name": h.print_name,
+                    # The archive's id INSIDE this backup: the restore resolves
+                    # it through the archives it brought, never as a local id.
+                    "archive_id": h.archive_id,
                     "weight_used": h.weight_used,
                     "percent_used": h.percent_used,
                     "status": h.status,
@@ -753,7 +759,7 @@ class GitBackupService:
         files["spools/usage_history.json"] = {
             "version": "1.0",
             "entry_count": len(history_data),
-            "history": history_data,
+            "usage_history": history_data,
         }
 
         # The Spoolman usage history is a table of its own (a Spoolman spool id
