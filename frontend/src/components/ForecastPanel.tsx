@@ -11,7 +11,7 @@ import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, ReferenceLine, Legend,
 } from 'recharts';
-import { api } from '../api/client';
+import { api, ApiError } from '../api/client';
 import { getSwatchStyle } from '../utils/colors';
 import { formatInventoryWeight } from '../utils/weight';
 import type {
@@ -161,9 +161,31 @@ function formatIsoDay(date: Date): string {
   return `${date.getFullYear()}-${month}-${day}`;
 }
 
+/** What the expanded row's nested table reads of a spool — the same four
+ *  fields from either inventory's list. */
+type GroupSpool = Pick<SpoolListItem, 'id' | 'label_weight' | 'weight_used'> & {
+  weight_used_baseline?: number | null;
+};
+
+/** The Spoolman spool list, under the key and fetch the Filaments page already
+ *  keeps warm — in Spoolman mode this panel's facets and per-SKU spools come
+ *  from it, never from the built-in spool table (which is not the inventory). */
+const spoolmanSpoolsQueryOptions = {
+  queryKey: ['spoolman-inventory-spools'],
+  queryFn: () => api.getSpoolmanInventorySpools(true),
+  staleTime: 30_000,
+} as const;
+
 // ── Main component ────────────────────────────────────────────────────────────
 
-export function ForecastPanel() {
+/**
+ * `spoolmanMode`: Spoolman is the inventory. The forecast itself is the same
+ * server answer either way — the engine picks Spoolman's spools and their own
+ * usage rows there (never a second engine in the browser). What changes here
+ * is only where the panel's own spool lookups go, and that a Spoolman which
+ * does not answer is said out loud instead of drawn as an empty shelf.
+ */
+export function ForecastPanel({ spoolmanMode = false }: { spoolmanMode?: boolean } = {}) {
   const queryClient = useQueryClient();
   const { showToast } = useToast();
   const { t } = useTranslation();
@@ -275,10 +297,19 @@ export function ForecastPanel() {
   const { data: facets } = useQuery({
     queryKey: ['inventory-spools', 'facets', 'all'],
     queryFn: () => api.getSpoolFacets(),
-    enabled: canRead,
+    enabled: canRead && !spoolmanMode,
   });
-  const uniqueMaterials = facets?.materials ?? [];
-  const uniqueBrands = facets?.brands ?? [];
+  const { data: spoolmanSpools } = useQuery({ ...spoolmanSpoolsQueryOptions, enabled: canRead && spoolmanMode });
+  const spoolmanFacets = useMemo(() => {
+    const distinct = (values: (string | null | undefined)[]) =>
+      [...new Set(values.filter((v): v is string => !!v))].sort((a, b) => a.localeCompare(b));
+    return {
+      materials: distinct((spoolmanSpools ?? []).map((s) => s.material)),
+      brands: distinct((spoolmanSpools ?? []).map((s) => s.brand)),
+    };
+  }, [spoolmanSpools]);
+  const uniqueMaterials = spoolmanMode ? spoolmanFacets.materials : facets?.materials ?? [];
+  const uniqueBrands = spoolmanMode ? spoolmanFacets.brands : facets?.brands ?? [];
 
   // The settings EDITORS need the raw per-SKU rows (lead override, margin
   // value/unit) — a CRUD surface the forecast row deliberately doesn't carry.
@@ -429,6 +460,7 @@ export function ForecastPanel() {
           logisticsPending={logisticsQuery.isPending}
           globalLeadTime={globalLeadTime}
           resolveSkuSettings={resolveSkuSettings}
+          spoolmanMode={spoolmanMode}
           canWrite={canWrite}
           onClose={() => setListOpen(false)}
           onRemove={(id) => {
@@ -464,6 +496,24 @@ export function ForecastPanel() {
       {/* ── Table ── */}
       {forecastQuery.isLoading ? (
         <LoadingBlock label={t('common.loading')} />
+      ) : forecastQuery.isError && rows.length === 0 ? (
+        /* "Error is not empty": an unanswered forecast must not be drawn as a
+           shelf with nothing on it. In Spoolman mode the server refuses with a
+           code when Spoolman did not hand its spools over. */
+        <div className="flex items-center gap-3 px-4 py-4 rounded-lg border border-red-200 dark:border-red-500/20 bg-red-50 dark:bg-red-500/10" data-testid="forecast-load-failed">
+          <AlertTriangle className="w-4 h-4 text-red-600 dark:text-red-400 flex-shrink-0" />
+          <span className="text-sm text-red-700 dark:text-red-300">
+            {forecastQuery.error instanceof ApiError && forecastQuery.error.code === 'spoolman_unreachable'
+              ? t('forecast.spoolmanUnreachable')
+              : t('forecast.loadFailed')}
+          </span>
+          <button
+            onClick={() => void forecastQuery.refetch()}
+            className="ml-auto px-2 py-1 rounded text-xs font-medium border border-red-300 dark:border-red-500/30 text-red-700 dark:text-red-300 hover:bg-red-100 dark:hover:bg-red-500/20 transition-colors"
+          >
+            {t('forecast.retry')}
+          </button>
+        </div>
       ) : rows.length === 0 && !materialFilter && !brandFilter ? (
         <div className="flex flex-col items-center justify-center py-16 text-bambu-gray">
           <TrendingDown className="w-10 h-10 mb-3 opacity-40" />
@@ -519,6 +569,7 @@ export function ForecastPanel() {
                     }}
                     onCart={() => setCartModal(r)}
                     showToast={showToast}
+                    spoolmanMode={spoolmanMode}
                   />
                 ))}
               </tbody>
@@ -869,7 +920,7 @@ function GlobalLeadTimeSetting({ value, onSave }: { value: number; onSave: (v: n
 // ── Forecast Row ──────────────────────────────────────────────────────────────
 
 function ForecastRow({
-  row, settings, globalLeadTime, canWrite, onSaved, onCart, showToast,
+  row, settings, globalLeadTime, canWrite, onSaved, onCart, showToast, spoolmanMode = false,
 }: {
   row: SkuForecastRow;
   settings: FilamentSkuSettings | null;
@@ -878,6 +929,7 @@ function ForecastRow({
   onSaved: () => void;
   onCart: () => void;
   showToast: (msg: string, type: 'success' | 'error') => void;
+  spoolmanMode?: boolean;
 }) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
@@ -913,7 +965,8 @@ function ForecastRow({
   // Keyed under the ['inventory-spools'] prefix so every spool-mutation
   // invalidation refreshes it for free.
   const detailKey = skuKey(row.material, row.subtype, row.brand, row.color_name);
-  const detailQuery = useQuery({
+  const wantsDetail = expanded && row.spool_ids.length > 1;
+  const builtInDetailQuery = useQuery({
     queryKey: ['inventory-spools', 'sku-detail', detailKey],
     queryFn: () => api.getSpoolsPaged({
       ...(row.material ? { material: row.material } : {}),
@@ -922,13 +975,19 @@ function ForecastRow({
       archived: 'active',
       all: true,
     }),
-    enabled: expanded && row.spool_ids.length > 1,
+    enabled: wantsDetail && !spoolmanMode,
   });
+  // Spoolman mode: the row's spool_ids are Spoolman ids, so the spools come
+  // from the Spoolman list — a built-in spool with the same id is another reel.
+  const spoolmanDetailQuery = useQuery({ ...spoolmanSpoolsQueryOptions, enabled: wantsDetail && spoolmanMode });
+  const detailQuery = spoolmanMode ? spoolmanDetailQuery : builtInDetailQuery;
   const spoolIdSet = useMemo(() => new Set(row.spool_ids), [row.spool_ids]);
-  const groupSpools = useMemo(
-    () => (detailQuery.data?.items ?? []).filter((s) => spoolIdSet.has(s.id)),
-    [detailQuery.data, spoolIdSet],
-  );
+  const groupSpools = useMemo((): GroupSpool[] => {
+    const all: GroupSpool[] = spoolmanMode
+      ? (spoolmanDetailQuery.data ?? [])
+      : (builtInDetailQuery.data?.items ?? []);
+    return all.filter((s) => spoolIdSet.has(s.id));
+  }, [spoolmanMode, spoolmanDetailQuery.data, builtInDetailQuery.data, spoolIdSet]);
 
   const upsertMutation = useMutation({
     mutationFn: api.upsertSkuSettings,
@@ -1218,7 +1277,7 @@ function ForecastRow({
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-bambu-dark-tertiary">
-                          {sortedSpools.map((s: SpoolListItem) => {
+                          {sortedSpools.map((s: GroupSpool) => {
                             const remaining = Math.max(0, s.label_weight - s.weight_used);
                             const pct = s.label_weight > 0 ? (remaining / s.label_weight) * 100 : 0;
                             return (
@@ -1386,8 +1445,10 @@ function SafetyMarginField({
 
 function ShoppingListPanel({
   items, rows, rowsPending, logistics, logisticsPending, globalLeadTime,
-  resolveSkuSettings, canWrite, onClose, onRemove, onClear,
+  resolveSkuSettings, canWrite, onClose, onRemove, onClear, spoolmanMode = false,
 }: {
+  /** Received spools are created in the inventory the operator manages. */
+  spoolmanMode?: boolean;
   items: ShoppingListItem[];
   rows: SkuForecastRow[];
   /** The cart-rows feed has not answered yet — every rowFor() is null for a
@@ -1466,7 +1527,28 @@ function ShoppingListPanel({
           low_stock_threshold_pct: null,
           purchase_date: null, filament_diameter: '1.75', lot: null,
         };
-        await api.bulkCreateSpools(spoolBase, item.quantity_spools);
+        if (spoolmanMode) {
+          // The inventory is Spoolman: the received reels are created THERE,
+          // never in the built-in table nobody is looking at. Its weight field
+          // is whole grams.
+          const result = await api.bulkCreateSpoolmanInventorySpools(
+            { ...spoolBase, label_weight: Math.max(1, Math.round(spoolWeight)) },
+            item.quantity_spools,
+          );
+          if (!Array.isArray(result) && result.failed_count > 0) {
+            // Some landed, some did not. Repeating would duplicate the ones
+            // that did, so the item is closed and the shortfall said out loud.
+            showToast(
+              t('inventory.spoolsPartiallyCreated', {
+                created: result.created.length,
+                total: result.requested_count,
+              }),
+              'error',
+            );
+          }
+        } else {
+          await api.bulkCreateSpools(spoolBase, item.quantity_spools);
+        }
         // Recorded BEFORE the next await, which is the one that can fail.
         spoolsCreatedFor.current.add(id);
         await api.updateShoppingListStatus(id, status);
@@ -1484,6 +1566,7 @@ function ShoppingListPanel({
       queryClient.invalidateQueries({ queryKey: ['shopping-list'] });
       invalidateSpoolViews(queryClient);
       queryClient.invalidateQueries({ queryKey: ['inventory-spools'] });
+      queryClient.invalidateQueries({ queryKey: ['spoolman-inventory-spools'] });
       // Receiving spools moves the stock the forecast is computed over.
       invalidateForecastQueries(queryClient);
     },

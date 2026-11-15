@@ -42,6 +42,7 @@ from backend.app.models.spool_assignment import SpoolAssignment
 from backend.app.models.spool_catalog import SpoolCatalogEntry
 from backend.app.models.spool_k_profile import SpoolKProfile
 from backend.app.models.spool_usage_history import SpoolUsageHistory
+from backend.app.models.spoolman_usage_history import SpoolmanUsageHistory
 from backend.app.models.telegram_chat import TelegramChat
 from backend.app.models.user import User
 from backend.app.models.user_email_pref import UserEmailPreference
@@ -98,6 +99,7 @@ __all__ = [
     "SpoolAssignment",
     "SpoolCatalogEntry",
     "SpoolUsageHistory",
+    "SpoolmanUsageHistory",
     "ColorCatalogEntry",
     "UserEmailPreference",
     "TelegramChat",

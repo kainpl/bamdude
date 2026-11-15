@@ -41,18 +41,31 @@ def spool_net_weight(spool: dict | None) -> float | None:
 
 
 def spool_price_per_gram(spool: dict | None) -> float | None:
-    """What a gram off this spool costs: the spool's own ``price``, else its
-    filament's, over the spool's net weight.
+    """What a gram off this spool costs.
+
+    The spool's own ``price`` is what THAT spool cost, so it is spread over the
+    spool's net weight. A filament's ``price`` is the catalogue figure for a
+    full spool of ``filament.weight`` grams, so it is spread over that weight —
+    over the spool's own size it would price a 250 g spool of a 1 kg filament
+    at four times the catalogue rate. (A filament priced without a catalogue
+    weight has only the spool's size to go by.)
 
     A spool-level 0 or null falls through to the filament (importers write 0
     for "not set"). None — unpriced, never free — when there is no positive
-    price or no net weight.
+    price or nothing to spread it over.
     """
     net = spool_net_weight(spool)
     if net is None:
         return None
-    price = _positive(spool.get("price"))
-    if price is None:
-        filament = spool.get("filament")
-        price = _positive(filament.get("price")) if isinstance(filament, dict) else None
-    return price / net if price is not None else None
+    own = _positive(spool.get("price"))
+    if own is not None:
+        return _positive(own / net)
+    filament = spool.get("filament")
+    if not isinstance(filament, dict):
+        return None
+    catalogue = _positive(filament.get("price"))
+    if catalogue is None:
+        return None
+    # ``_positive`` on the quotient: a huge price over a tiny weight overflows to
+    # infinity, and an infinite rate is no rate.
+    return _positive(catalogue / (_positive(filament.get("weight")) or net))

@@ -65,8 +65,18 @@ class TestPricePerGram:
         spool["price"] = price
         assert spool_price_per_gram(spool) == pytest.approx(0.03)
 
-    def test_the_filament_price_is_divided_by_the_same_net_weight(self):
-        assert spool_price_per_gram(_spool(initial=500, weight=1000, filament_price=20)) == pytest.approx(0.04)
+    def test_the_filament_price_is_for_the_filaments_own_weight(self):
+        """A catalogue price is what a full spool of ``filament.weight`` costs. A 500 g spool of a 1 kg
+        filament priced 20 costs 0.02 a gram, not 0.04 — dividing by the spool's size would double it."""
+        assert spool_price_per_gram(_spool(initial=500, weight=1000, filament_price=20)) == pytest.approx(0.02)
+
+    def test_the_spools_own_price_is_for_the_spools_own_weight(self):
+        assert spool_price_per_gram(_spool(initial=250, weight=1000, price=8, filament_price=20)) == pytest.approx(
+            0.032
+        )
+
+    def test_a_catalogue_price_without_a_catalogue_weight_uses_the_spools_size(self):
+        assert spool_price_per_gram(_spool(initial=500, filament_price=20)) == pytest.approx(0.04)
 
     def test_no_price_anywhere_is_unpriced(self):
         assert spool_price_per_gram(_spool(weight=1000)) is None

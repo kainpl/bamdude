@@ -90,6 +90,7 @@ from backend.app.api.routes import (
     smart_plugs,
     spoolman,
     spoolman_inventory,
+    spoolman_usage,
     statistics,
     stock,
     stock_issues,
@@ -119,6 +120,7 @@ from backend.app.services.archive import ArchiveService, resolve_display_stem
 from backend.app.services.auto_queue_scheduler import auto_queue_scheduler
 from backend.app.services.background_dispatch import background_dispatch, delete_internal_by_name
 from backend.app.services.bambu_mqtt import HMS_SEVERITY_NOTIFY_THRESHOLD, PrinterState
+from backend.app.services.forecast_engine import ForecastSourceUnavailable
 from backend.app.services.git_backup import git_backup_service
 from backend.app.services.ha_sensor_manager import ha_sensor_manager
 from backend.app.services.hms_catalogue import device_of as hms_device_of
@@ -9676,6 +9678,7 @@ async def _on_print_complete_impl(
                     last_layer_num=data.get("last_layer_num"),
                     last_progress=data.get("last_progress"),
                     completion=completion,
+                    status=data.get("status") or "failed",
                 )
         except Exception as e:
             logger.debug("[SPOOLMAN] Cleanup failed: %s", e)
@@ -12619,6 +12622,15 @@ async def farm_startup_refused_handler(request, exc):
     )
 
 
+@app.exception_handler(ForecastSourceUnavailable)
+async def forecast_source_unavailable_handler(request, exc):
+    # Spoolman is the inventory and did not answer: every forecast route says so
+    # with one typed refusal, never an empty forecast (services/forecast_engine).
+    from backend.app.i18n.api_errors import json_error
+
+    return json_error(503, {"error": "spoolman_unreachable", "message": "Spoolman server is not reachable"})
+
+
 # Every ``HTTPException`` answers in the system language: the English sentence
 # raised at the site is looked up in ``data/api_errors_uk.json`` on the way out.
 # See ``backend/app/i18n/api_errors.py`` for what is deliberately never translated.
@@ -13298,6 +13310,7 @@ app.include_router(user_notifications.router, prefix=app_settings.api_prefix)
 app.include_router(inbox.router, prefix=app_settings.api_prefix)
 app.include_router(spoolman.router, prefix=app_settings.api_prefix)
 app.include_router(spoolman_inventory.router, prefix=app_settings.api_prefix)
+app.include_router(spoolman_usage.router, prefix=app_settings.api_prefix)
 app.include_router(updates.router, prefix=app_settings.api_prefix)
 app.include_router(macros.router, prefix=app_settings.api_prefix)
 app.include_router(maintenance.router, prefix=app_settings.api_prefix)

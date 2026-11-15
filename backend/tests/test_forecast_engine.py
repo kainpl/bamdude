@@ -5,11 +5,12 @@ to these tests, not vice versa):
 
 * ``history_rate(day_buckets: list[tuple[date, float]], now) -> RateEstimate | None``
   — pure; takes UTC-day buckets (the SQL layer's output), naive-UTC-compatible.
-* ``delta_rate(total_used_g: float, oldest_created_at: datetime | None, now) -> float | None``
-  — pure over the aggregates SQL delivers; the caller feeds it the baseline-aware
-  clamped total ``Σ max(0, weight_used - weight_used_baseline)`` over ALL spools
-  of the SKU (archived included — the client passes ``group.allSpools``) and the
-  oldest ``created_at`` (naive UTC, as the DB stores it).
+* ``delta_rate(spans: Sequence[UsageSpan], now) -> float | None`` — pure; one
+  ``usage_span`` per spool of the SKU that consumed anything (archived included),
+  the baseline-aware clamp ``max(0, weight_used - weight_used_baseline)`` PER
+  SPOOL, spread from the spool's first use to its last and counted over the
+  90-day window (2026-11-15, upstream 1d86cff5a — it used to take the clamped
+  total and the oldest ``created_at``, so shelf time counted as use).
 * ``finish_row(*, rate, std_dev, eff_lead_time_days, margin_value, margin_unit,
   total_remaining_g, now, snoozed)`` — the client-only arithmetic (Z·σ·√L, ROP,
   dates, alert booleans); returns an object exposing the finishing fields.
@@ -99,12 +100,25 @@ def _buckets(records: list[dict]) -> list[tuple[date, float]]:
     return sorted(by_day.items())
 
 
-def _delta_inputs(spools: list[dict]) -> tuple[float, datetime | None]:
-    """The aggregates ``delta_rate`` takes: baseline-aware clamped total and the
-    oldest ``created_at`` (naive UTC, exactly as the DB hands them over)."""
-    total = sum(max(0.0, s["weight_used"] - s["weight_used_baseline"]) for s in spools)
-    oldest = min((datetime.fromisoformat(s["created_at"]) for s in spools), default=None)
-    return total, oldest
+def _stamp(spool: dict, key: str) -> datetime | None:
+    return datetime.fromisoformat(spool[key]) if spool.get(key) else None
+
+
+def _delta_inputs(engine, spools: list[dict]) -> list:
+    """What ``delta_rate`` takes: one span per spool that consumed anything, the
+    baseline clamp per spool, timestamps naive UTC exactly as the DB hands them over."""
+    spans = [
+        engine.usage_span(
+            s["weight_used"] - s["weight_used_baseline"],
+            first_use=_stamp(s, "first_use"),
+            created_at=_stamp(s, "created_at"),
+            last_used=_stamp(s, "last_used"),
+            archived_at=_stamp(s, "archived_at"),
+            now=NOW,
+        )
+        for s in spools
+    ]
+    return [span for span in spans if span is not None]
 
 
 _HISTORY_PARAMS = [pytest.param(v, id=v["name"]) for v in VECTORS["history"]]
@@ -155,6 +169,13 @@ class TestTheVectorsThemselves:
             "younger_than_a_day_refuses",
             "over_reset_clamps_to_zero_and_refuses",
             "over_reset_spool_does_not_poison_the_group",
+            # The span formula's own cases (upstream 1d86cff5a, #3407).
+            "shelf_time_before_first_use_is_not_use",
+            "use_that_ended_before_the_window_measures_zero",
+            "a_span_across_the_window_edge_counts_its_inside_part",
+            "a_spool_used_up_in_one_day_counts_whole_at_that_day",
+            "a_spool_used_up_before_the_window_keeps_the_window_whole",
+            "a_last_use_in_the_future_ends_now",
         ]
 
         for vector in history:
@@ -169,8 +190,35 @@ class TestTheVectorsThemselves:
         for vector in delta:
             assert set(vector) == {"name", "comment", "spools", "expected_rate"}
             for spool in vector["spools"]:
-                assert set(spool) == {"weight_used", "weight_used_baseline", "created_at"}
+                assert {"weight_used", "weight_used_baseline", "created_at"} <= set(spool)
+                assert set(spool) <= {
+                    "weight_used",
+                    "weight_used_baseline",
+                    "created_at",
+                    "first_use",
+                    "last_used",
+                    "archived_at",
+                }
         assert sum(1 for v in delta if v["expected_rate"] is None) == 3  # the three refusals
+
+    def test_the_task_one_delta_vectors_did_not_move_with_the_span_formula(self):
+        """The seven vectors frozen from the shipped implementation describe spools in
+        use from the day they were entered until now — where "all grams / days since
+        the oldest spool" and the span formula agree. Their figures are pinned here by
+        hand so a regeneration cannot quietly move them."""
+        frozen = {v["name"]: v["expected_rate"] for v in VECTORS["delta"][:7]}
+        assert frozen == {
+            "one_spool_ten_days": 10.0,
+            "baseline_aware_reset": 10.0,
+            "oldest_spool_anchors_the_window": 5.0,
+            "zero_consumption_refuses": None,
+            "younger_than_a_day_refuses": None,
+            "over_reset_clamps_to_zero_and_refuses": None,
+            "over_reset_spool_does_not_poison_the_group": 10.0,
+        }
+        for vector in VECTORS["delta"][:7]:
+            for spool in vector["spools"]:
+                assert set(spool) == {"weight_used", "weight_used_baseline", "created_at"}
 
     def test_the_half_life_vector_demonstrates_half_weight_at_thirty_days(self):
         """Property of the frozen truth, not of the engine: the pair holds one
@@ -201,8 +249,7 @@ class TestTheGoldenVectors:
 
     @pytest.mark.parametrize("vector", _DELTA_PARAMS)
     def test_delta_rate_reproduces_the_frozen_vector(self, engine, vector):
-        total_used, oldest = _delta_inputs(vector["spools"])
-        rate = engine.delta_rate(total_used, oldest, NOW)
+        rate = engine.delta_rate(_delta_inputs(engine, vector["spools"]), NOW)
         if vector["expected_rate"] is None:
             assert rate is None
         else:
@@ -233,16 +280,23 @@ class TestRateHelperEdges:
     def test_history_refuses_a_single_day(self, engine):
         assert engine.history_rate([(date(2026, 8, 26), 150.0)], NOW) is None
 
+    @staticmethod
+    def _span(engine, grams, created_at, **stamps):
+        return engine.usage_span(
+            grams, first_use=None, created_at=created_at, last_used=None, archived_at=None, now=NOW, **stamps
+        )
+
     def test_delta_refuses_zero_consumption(self, engine):
-        assert engine.delta_rate(0.0, datetime(2026, 8, 19), NOW) is None
+        assert self._span(engine, 0.0, datetime(2026, 8, 19)) is None
+        assert engine.delta_rate([], NOW) is None
 
     def test_delta_needs_a_created_at(self, engine):
         """No spool ever recorded a creation time → nothing anchors the window."""
-        assert engine.delta_rate(100.0, None, NOW) is None
+        assert engine.delta_rate([self._span(engine, 100.0, None)], NOW) is None
 
     def test_delta_refuses_a_group_younger_than_a_day(self, engine):
         oldest = (NOW - timedelta(hours=3)).replace(tzinfo=None)
-        assert engine.delta_rate(50.0, oldest, NOW) is None
+        assert engine.delta_rate([self._span(engine, 50.0, oldest)], NOW) is None
 
 
 # ── finish_row: the client-only arithmetic, hand vectors ──────────────────────
@@ -826,7 +880,14 @@ class TestComputeForecastTiers:
 
     async def test_only_reset_spools_left_still_get_a_baseline_aware_delta(self, engine, db_session):
         """Reset spools are OUT of the history tier but IN the delta tier,
-        baseline-aware: 900 used over an 800 baseline in 10 days is 10 g/day."""
+        baseline-aware: only the 100 g used since the reset count.
+
+        They are spread over the time the spool has been in USE — since its first
+        usage record 3 days ago, kept by the rate or not — so 33.3 g/day. Until
+        2026-11-15 this pinned 10 g/day: the same 100 g over the 10 days since the
+        spool was entered, seven of which it spent on the shelf (the defect
+        upstream 1d86cff5a fixed; a reset drops records from the trend, not from
+        when use began)."""
         spool = await _spool(
             db_session,
             weight_used=900.0,
@@ -838,7 +899,7 @@ class TestComputeForecastTiers:
 
         row = (await _rows_by_key(engine, db_session))[_PLA_BLACK]
         assert row.rate_tier == "delta"
-        assert row.rate_g_day == pytest.approx(_delta_vector("baseline_aware_reset")["expected_rate"], rel=1e-9)
+        assert row.rate_g_day == pytest.approx(100.0 / 3.0, rel=1e-9)
 
     async def test_usage_beyond_ninety_days_is_outside_the_window(self, engine, db_session):
         """The spec'd deviation from the shipped panel: the window is 90 days of

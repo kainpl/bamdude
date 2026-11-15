@@ -32,6 +32,18 @@ says why that is almost never the right move:
 
 The JSON is committed together with this script so every expected number has an
 executable provenance.
+
+Delta-tier change of record (2026-11-15, upstream 1d86cff5a / #3407): the fallback
+rate stopped being "every gram ever consumed / days since the oldest spool row was
+created". Each spool's consumption is now spread from its first use to its last
+and counted over the 90-day window (``forecast_engine.delta_rate`` over
+``usage_span``). The seven delta vectors frozen in Task 1 describe spools in use
+from the day they were entered until now, where the two formulas agree — their
+inputs and expected rates were regenerated UNCHANGED, byte for byte — and six
+vectors were added for the cases the old formula got wrong (shelf time before
+first use, use that ended before the window, a span across the window's edge, a
+spool used up in a day, a SKU in use for longer than the window, last use in the
+future). ``--write`` was used once, for that.
 """
 
 from __future__ import annotations
@@ -43,7 +55,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
-from backend.app.services.forecast_engine import delta_rate, history_rate
+from backend.app.services.forecast_engine import delta_rate, history_rate, usage_span
 
 # Midnight, deliberately: bucket days are UTC-midnight anchored, so with NOW on
 # a midnight every whole ``days_ago`` lands exactly on a bucket boundary and the
@@ -65,11 +77,16 @@ class _Record:
 
 @dataclass
 class _Spool:
-    """Stand-in for a Spool row — ``delta_rate`` reads exactly these attributes."""
+    """Stand-in for a Spool row — the delta tier reads exactly these attributes
+    (``first_use`` is the spool's earliest usage record, which the SQL layer
+    looks up beside the row)."""
 
     weight_used: float
     weight_used_baseline: float
     created_at: datetime
+    first_use: datetime | None = None
+    last_used: datetime | None = None
+    archived_at: datetime | None = None
 
 
 def _at(days_ago: float) -> datetime:
@@ -132,9 +149,12 @@ _HISTORY_CASES: list[tuple[str, str, list[tuple[float, float, int]]]] = [
 ]
 
 # ── Delta-tier inputs ────────────────────────────────────────────────────────
-# Each case: (name, comment, [(weight_used, weight_used_baseline, created_days_ago)]).
+# Each case: (name, comment, [spool]) where a spool is
+# (weight_used, weight_used_baseline, created_days_ago) and, optionally,
+# (..., first_use_days_ago, last_used_days_ago, archived_days_ago) — None for a
+# stamp the spool does not carry.
 
-_DELTA_CASES: list[tuple[str, str, list[tuple[float, float, float]]]] = [
+_DELTA_CASES: list[tuple[str, str, list[tuple]]] = [
     (
         "one_spool_ten_days",
         "100 g over 10 days — the plain fallback.",
@@ -169,6 +189,38 @@ _DELTA_CASES: list[tuple[str, str, list[tuple[float, float, float]]]] = [
         "over_reset_spool_does_not_poison_the_group",
         "An over-reset spool contributes 0, not a negative — the healthy spool's grams survive intact.",
         [(100.0, 0.0, 10.0), (50.0, 100.0, 5.0)],
+    ),
+    # ── Added with the span formula (upstream 1d86cff5a, #3407) ──
+    (
+        "shelf_time_before_first_use_is_not_use",
+        "Entered 150 days ago, first printed with 10 days ago: 100 g over 10 days, not over 150.",
+        [(100.0, 0.0, 150.0, 10.0, None, None)],
+    ),
+    (
+        "use_that_ended_before_the_window_measures_zero",
+        "600 g used between 400 and 300 days ago and nothing since: nothing was used in the last 90 days.",
+        [(600.0, 0.0, 400.0, None, 300.0, None)],
+    ),
+    (
+        "a_span_across_the_window_edge_counts_its_inside_part",
+        "900 g spread evenly from day -135 to day -45: half lies inside the 90-day window, 450 g / 90 d.",
+        [(900.0, 0.0, 135.0, None, 45.0, None)],
+    ),
+    (
+        "a_spool_used_up_in_one_day_counts_whole_at_that_day",
+        "200 g first and last used within two hours, 5 days ago: all of it, observed for 5 days.",
+        [(200.0, 0.0, 30.0, 5.0, 5.0 - 2 / 24, None)],
+    ),
+    (
+        "a_spool_used_up_before_the_window_keeps_the_window_whole",
+        "One spool emptied 200 days ago, another opened 10 days ago: the SKU was in use all along, "
+        "so the new spool's 100 g is 100 g per 90 days — not per 10.",
+        [(1000.0, 0.0, 300.0, None, 200.0, 200.0), (100.0, 0.0, 30.0, 10.0, None, None)],
+    ),
+    (
+        "a_last_use_in_the_future_ends_now",
+        "A clock that ran ahead stamped last use tomorrow: the span ends now, 100 g over 10 days.",
+        [(100.0, 0.0, 10.0, None, -1.0, None)],
     ),
 ]
 
@@ -207,15 +259,37 @@ def build_vectors() -> dict:
 
     delta = []
     for name, comment, spools in _DELTA_CASES:
-        stand_ins = [
-            _Spool(weight_used=used, weight_used_baseline=baseline, created_at=_at(days_ago))
-            for used, baseline, days_ago in spools
+        stand_ins = []
+        for used, baseline, days_ago, *stamps in spools:
+            first_use, last_used, archived = (*stamps, None, None, None)[:3]
+            stand_ins.append(
+                _Spool(
+                    weight_used=used,
+                    weight_used_baseline=baseline,
+                    created_at=_at(days_ago),
+                    first_use=None if first_use is None else _at(first_use),
+                    last_used=None if last_used is None else _at(last_used),
+                    archived_at=None if archived is None else _at(archived),
+                )
+            )
+        # What the engine's SQL layer delivers: one span per spool that consumed
+        # anything, the baseline clamp PER SPOOL (never sum-then-clamp).
+        spans = [
+            span
+            for s in stand_ins
+            if (
+                span := usage_span(
+                    s.weight_used - s.weight_used_baseline,
+                    first_use=s.first_use,
+                    created_at=s.created_at,
+                    last_used=s.last_used,
+                    archived_at=s.archived_at,
+                    now=NOW,
+                )
+            )
+            is not None
         ]
-        # The aggregates the engine's SQL layer would deliver: PER-SPOOL
-        # baseline clamp (never sum-then-clamp) and the oldest created_at.
-        total_used = sum(max(0.0, s.weight_used - s.weight_used_baseline) for s in stand_ins)
-        oldest = min((s.created_at for s in stand_ins), default=None)
-        rate = delta_rate(total_used, oldest, NOW)
+        rate = delta_rate(spans, NOW)
         delta.append(
             {
                 "name": name,
@@ -225,6 +299,17 @@ def build_vectors() -> dict:
                         "weight_used": s.weight_used,
                         "weight_used_baseline": s.weight_used_baseline,
                         "created_at": s.created_at.isoformat(),
+                        # Only the stamps a spool carries: the Task 1 vectors
+                        # stay byte-identical.
+                        **{
+                            key: value.isoformat()
+                            for key, value in (
+                                ("first_use", s.first_use),
+                                ("last_used", s.last_used),
+                                ("archived_at", s.archived_at),
+                            )
+                            if value is not None
+                        },
                     }
                     for s in stand_ins
                 ],
@@ -234,11 +319,13 @@ def build_vectors() -> dict:
 
     return {
         "_provenance": (
-            "Frozen in Task 1 by executing the then-shipped "
-            "backend.app.services.stock_forecast_alerts.{history_rate,delta_rate}; regenerable since the "
-            "Task 2 refactor via backend.app.services.forecast_engine (verified to reproduce the frozen "
-            "vectors exactly). Do not edit by hand; regenerate only when the engine's math is the thing "
-            "that deliberately changed: python -m backend.tests.forecast_vectors.generate_vectors"
+            "History vectors and the first seven delta vectors: frozen in Task 1 by executing the "
+            "then-shipped backend.app.services.stock_forecast_alerts.{history_rate,delta_rate}, and "
+            "reproduced unchanged by backend.app.services.forecast_engine ever since. The delta vectors "
+            "after them were measured on the engine when its delta tier became the span formula "
+            "(2026-11-15, upstream 1d86cff5a / #3407). Do not edit by hand; regenerate only when the "
+            "engine's math is the thing that deliberately changed: "
+            "python -m backend.tests.forecast_vectors.generate_vectors"
         ),
         "now": NOW.isoformat(),
         "history": history,
