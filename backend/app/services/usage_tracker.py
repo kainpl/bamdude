@@ -355,6 +355,11 @@ def completion_in_progress(printer_id: int):
                 _completing.pop(printer_id, None)
 
 
+def completion_is_running(printer_id: int) -> bool:
+    """Whether a completion of this printer's print has begun and not ended (``completion_in_progress``)."""
+    return printer_id in _completing
+
+
 def print_is_unbooked(printer_id: int, printer_state) -> bool:
     """Whether a print on this printer still has filament to charge -- the one question every remain%
     weight sync asks before it writes (the automatic one, the Spoolman tagged-spool one, both Sync buttons).
