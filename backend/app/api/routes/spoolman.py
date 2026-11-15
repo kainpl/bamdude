@@ -33,6 +33,7 @@ from backend.app.services.spoolman import (
     init_spoolman_client,
 )
 from backend.app.services.spoolman_kprofile_link import resolve_spoolman_slot_kprofile
+from backend.app.services.spoolman_slot_ledger import write_sync_results
 from backend.app.utils.slot_nozzle import slot_nozzle
 
 logger = logging.getLogger(__name__)
@@ -195,34 +196,62 @@ async def disconnect_spoolman(
     return {"success": True, "message": "Disconnected from Spoolman"}
 
 
-async def _announce_slot_changes(
-    before: dict[tuple[int, int, int], int],
+async def _read_slot_ledger(db: AsyncSession, printer_id: int | None = None) -> dict[tuple[int, int, int], int] | None:
+    """``(printer_id, ams_id, tray_id)`` → spool id, or ``None`` when it could not be read."""
+    try:
+        query = select(SpoolmanSlotAssignment)
+        if printer_id is not None:
+            query = query.where(SpoolmanSlotAssignment.printer_id == printer_id)
+        rows = (await db.execute(query)).scalars().all()
+        return {(row.printer_id, row.ams_id, row.tray_id): row.spoolman_spool_id for row in rows}
+    except Exception as e:
+        logger.warning("Could not load Spoolman slot assignments: %s", e)
+        return None
+
+
+async def _write_and_announce_sync(
+    db: AsyncSession,
+    read: dict[tuple[int, int, int], int] | None,
     changes: list[tuple[int, int, int, int]],
     empties: list[tuple[int, int, int]],
-) -> None:
-    """Tell open browsers which slots a sync just re-pointed or cleared.
+) -> list[str]:
+    """Persist what a sync resolved and tell open browsers which slots moved.
 
     The sync endpoints are what maintains ``spoolman_slot_assignments``, and the
     printer card reads those rows — without an event every other tab kept the
-    previous spool (upstream 7363d5fd, whose AMS callback maintains the same
-    ledger and "announced nothing at all"). Called only after the commit, so a
-    failed write stays silent. Only rows that actually moved are named, as the
-    unassign route does: re-reading the spool already on file changes nothing.
+    previous spool (upstream 7363d5fd). The write is conditional on the ledger
+    the sync READ (``services/spoolman_slot_ledger``, upstream fcc20cb62), so
+    what is announced is what the database says moved, after its commit — never
+    a comparison with that snapshot, which a hand assignment made meanwhile has
+    already left behind. A failed write stays silent.
 
-    ``before`` is the ledger as loaded, keyed ``(printer_id, ams_id, tray_id)``;
-    ``changes`` carry the spool each slot now holds.
+    ``read`` is keyed ``(printer_id, ams_id, tray_id)``; ``None`` = unreadable.
+    One printer at a time, each under its own assignment lock. Returns errors.
     """
-    moved = [(p, a, t) for p, a, t, spool_id in changes if before.get((p, a, t)) != spool_id]
-    moved += [slot for slot in empties if slot in before]
-    for printer_id, ams_id, tray_id in dict.fromkeys(moved):
-        await ws_manager.broadcast(
-            {
-                "type": "spool_assignment_changed",
-                "printer_id": printer_id,
-                "ams_id": ams_id,
-                "tray_id": tray_id,
-            }
-        )
+    errors: list[str] = []
+    for printer_id in dict.fromkeys([c[0] for c in changes] + [e[0] for e in empties]):
+        try:
+            moved = await write_sync_results(
+                db,
+                printer_id=printer_id,
+                read=None if read is None else {(a, t): s for (p, a, t), s in read.items() if p == printer_id},
+                changes=[(a, t, s) for p, a, t, s in changes if p == printer_id],
+                empties=[(a, t) for p, a, t in empties if p == printer_id],
+            )
+        except Exception as e:
+            logger.error("Error persisting Spoolman slot assignments for printer %s: %s", printer_id, e)
+            errors.append(f"Failed to persist slot assignments: {type(e).__name__}")
+            continue
+        for ams_id, tray_id in moved:
+            await ws_manager.broadcast(
+                {
+                    "type": "spool_assignment_changed",
+                    "printer_id": printer_id,
+                    "ams_id": ams_id,
+                    "tray_id": tray_id,
+                }
+            )
+    return errors
 
 
 @router.post("/sync/{printer_id}", response_model=SyncResult)
@@ -339,15 +368,8 @@ async def sync_printer_ams(
         logger.debug("Could not load inventory weights for printer %s: %s", printer_id, e)
 
     # Load existing Spoolman slot assignments for the no-RFID fallback path
-    spoolman_slot_map: dict[tuple[int, int], int] = {}
-    try:
-        slot_result = await db.execute(
-            select(SpoolmanSlotAssignment).where(SpoolmanSlotAssignment.printer_id == printer_id)
-        )
-        for slot in slot_result.scalars().all():
-            spoolman_slot_map[(slot.ams_id, slot.tray_id)] = slot.spoolman_spool_id
-    except Exception as e:
-        logger.warning("Could not load Spoolman slot assignments for printer %s: %s", printer_id, e)
+    ledger_read = await _read_slot_ledger(db, printer_id)
+    spoolman_slot_map: dict[tuple[int, int], int] = {(a, t): s for (_p, a, t), s in (ledger_read or {}).items()}
 
     slot_changes: list[tuple[int, int, int]] = []  # (ams_id, tray_id, spoolman_spool_id)
     empty_slots: list[tuple[int, int]] = []  # (ams_id, tray_id) now empty
@@ -441,38 +463,12 @@ async def sync_printer_ams(
                 errors.append(error_msg)
 
     # Persist slot assignment changes to the local table
-    if slot_changes or empty_slots:
-        try:
-            for ams_id, tray_id, spool_id in slot_changes:
-                await db.execute(
-                    text(
-                        "INSERT INTO spoolman_slot_assignments"
-                        " (printer_id, ams_id, tray_id, spoolman_spool_id)"
-                        " VALUES (:printer_id, :ams_id, :tray_id, :spool_id)"
-                        " ON CONFLICT(printer_id, ams_id, tray_id)"
-                        " DO UPDATE SET spoolman_spool_id = excluded.spoolman_spool_id"
-                    ),
-                    {"printer_id": printer_id, "ams_id": ams_id, "tray_id": tray_id, "spool_id": spool_id},
-                )
-            for ams_id, tray_id in empty_slots:
-                await db.execute(
-                    delete(SpoolmanSlotAssignment).where(
-                        SpoolmanSlotAssignment.printer_id == printer_id,
-                        SpoolmanSlotAssignment.ams_id == ams_id,
-                        SpoolmanSlotAssignment.tray_id == tray_id,
-                    )
-                )
-            await db.commit()
-        except Exception as e:
-            await db.rollback()
-            logger.error("Error persisting Spoolman slot assignments for printer %s: %s", printer_id, e)
-            errors.append(f"Failed to persist slot assignments: {type(e).__name__}")
-        else:
-            await _announce_slot_changes(
-                {(printer_id, a, t): s for (a, t), s in spoolman_slot_map.items()},
-                [(printer_id, a, t, s) for a, t, s in slot_changes],
-                [(printer_id, a, t) for a, t in empty_slots],
-            )
+    errors += await _write_and_announce_sync(
+        db,
+        ledger_read,
+        [(printer_id, a, t, s) for a, t, s in slot_changes],
+        [(printer_id, a, t) for a, t in empty_slots],
+    )
 
     return SyncResult(
         success=len(errors) == 0,
@@ -550,13 +546,8 @@ async def sync_all_printers(
 
     # Load all Spoolman slot assignments for the no-RFID fallback
     # Key: (printer_id, ams_id, tray_id) → spoolman_spool_id
-    all_slot_map: dict[tuple[int, int, int], int] = {}
-    try:
-        slot_result = await db.execute(select(SpoolmanSlotAssignment))
-        for slot in slot_result.scalars().all():
-            all_slot_map[(slot.printer_id, slot.ams_id, slot.tray_id)] = slot.spoolman_spool_id
-    except Exception as e:
-        logger.warning("Could not load Spoolman slot assignments: %s", e)
+    ledger_read = await _read_slot_ledger(db)
+    all_slot_map: dict[tuple[int, int, int], int] = ledger_read or {}
 
     # Collect slot changes across all printers for a single DB write at the end
     all_slot_changes: list[tuple[int, int, int, int]] = []  # (printer_id, ams_id, tray_id, spool_id)
@@ -674,34 +665,7 @@ async def sync_all_printers(
                     all_errors.append(f"{printer.name} AMS {ams_id}:{tray.tray_id}: {e}")
 
     # Persist slot assignment changes across all printers
-    if all_slot_changes or all_empty_slots:
-        try:
-            for p_id, ams_id, tray_id, spool_id in all_slot_changes:
-                await db.execute(
-                    text(
-                        "INSERT INTO spoolman_slot_assignments"
-                        " (printer_id, ams_id, tray_id, spoolman_spool_id)"
-                        " VALUES (:printer_id, :ams_id, :tray_id, :spool_id)"
-                        " ON CONFLICT(printer_id, ams_id, tray_id)"
-                        " DO UPDATE SET spoolman_spool_id = excluded.spoolman_spool_id"
-                    ),
-                    {"printer_id": p_id, "ams_id": ams_id, "tray_id": tray_id, "spool_id": spool_id},
-                )
-            for p_id, ams_id, tray_id in all_empty_slots:
-                await db.execute(
-                    delete(SpoolmanSlotAssignment).where(
-                        SpoolmanSlotAssignment.printer_id == p_id,
-                        SpoolmanSlotAssignment.ams_id == ams_id,
-                        SpoolmanSlotAssignment.tray_id == tray_id,
-                    )
-                )
-            await db.commit()
-        except Exception as e:
-            await db.rollback()
-            logger.error("Error persisting Spoolman slot assignments: %s", e)
-            all_errors.append(f"Failed to persist slot assignments: {type(e).__name__}")
-        else:
-            await _announce_slot_changes(all_slot_map, all_slot_changes, all_empty_slots)
+    all_errors += await _write_and_announce_sync(db, ledger_read, all_slot_changes, all_empty_slots)
 
     return SyncResult(
         success=len(all_errors) == 0,
