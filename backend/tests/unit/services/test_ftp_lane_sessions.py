@@ -192,8 +192,14 @@ class TestTypedListing:
     async def test_without_the_proof_a_550_stays_unreadable(self, patch_ftp_port):
         listing = await list_directory_async(IP, CODE, "/record")
         assert listing.status == LISTING_UNREADABLE
-        entries, answered = await list_files_checked_async(IP, CODE, "/record")
-        assert (entries, answered) == ([], False)
+
+    async def test_a_proven_absence_is_an_answer_a_refused_present_directory_is_not(self, patch_ftp_port):
+        server = patch_ftp_port
+        # /record is not on the card: its parent says so, completely.
+        assert await list_files_checked_async(IP, CODE, "/record") == ([], True)
+        # /timelapse IS on the card but refuses CWD: no answer at all.
+        server.inject_failure("CWD", 550, REAL_CWD_550, count=1)
+        assert await list_files_checked_async(IP, CODE, "/timelapse") == ([], False)
 
     async def test_a_parent_that_cannot_be_listed_proves_nothing(self, patch_ftp_port):
         server = patch_ftp_port
@@ -227,6 +233,36 @@ class TestTypedListing:
         listing = await list_directory_async(IP, CODE, "/timelapse")
         (entry,) = [e for e in listing.entries if e["name"] == "v.mp4"]
         assert entry["mtime_quality"] in {"year_inferred", "date_only"}
+
+
+@pytest.mark.asyncio
+class TestTimelapseListingTrust:
+    """U0 counterexample P1-1 as an assertion: a LIST that fails after connect never trusts a baseline."""
+
+    @staticmethod
+    def _printer():
+        from types import SimpleNamespace
+
+        return SimpleNamespace(id=4242, ip_address=IP, access_code=CODE, model="X1C", name="probe")
+
+    async def test_a_failed_list_leaves_the_card_unanswered(self, patch_ftp_port, monkeypatch):
+        from backend.app.services import timelapse_files
+
+        server = patch_ftp_port
+        monkeypatch.setattr(timelapse_files, "_supports_internal_timelapse", lambda printer: False)
+        server.inject_failure("LIST", 426, "Failure reading network stream.", count=-1)
+        videos, _source = await timelapse_files.list_timelapse_videos(self._printer())
+        assert videos == []
+        assert timelapse_files.last_listing_answered(4242) is False
+
+    async def test_directories_proven_absent_keep_the_card_answered(self, patch_ftp_port, monkeypatch):
+        from backend.app.services import timelapse_files
+
+        monkeypatch.setattr(timelapse_files, "_supports_internal_timelapse", lambda printer: False)
+        # /timelapse exists and is empty; /timelapse/video, /record and /recording are not on the card.
+        videos, _source = await timelapse_files.list_timelapse_videos(self._printer())
+        assert videos == []
+        assert timelapse_files.last_listing_answered(4242) is True
 
 
 class TestListYearAgainstUtc:

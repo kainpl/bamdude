@@ -100,8 +100,9 @@ async def test_a_later_answer_replaces_an_earlier_silence(monkeypatch):
     assert last_listing_answered(_Printer.id) is True
 
 
-def test_a_printer_never_listed_counts_as_answered():
-    assert last_listing_answered(999) is True
+def test_a_printer_never_listed_is_unknown_not_answered():
+    """G10 CR2: a printer nobody has listed has said nothing — no baseline may trust it."""
+    assert last_listing_answered(999) is False
 
 
 # -- the picker will not guess -------------------------------------------------
@@ -137,7 +138,7 @@ def test_a_trusted_baseline_keeps_taking_the_first_new_one():
 async def test_a_baseline_off_a_silent_card_is_marked_untrusted():
     from backend.app import main
 
-    async def silent(printer):
+    async def silent(printer, **_kwargs):
         timelapse_files._listing_answered[printer.id] = False
         return [], None
 
@@ -154,7 +155,7 @@ async def test_a_baseline_off_an_answering_card_is_trusted():
 
     main._untrusted_timelapse_baselines.add(_Printer.id)  # left over from the last print
 
-    async def answered(printer):
+    async def answered(printer, **_kwargs):
         timelapse_files._listing_answered[printer.id] = True
         return [_v("old.mp4")], "/timelapse"
 

@@ -137,6 +137,12 @@ class TransferOutcome:
 class PrinterFileTransport(Protocol):
     async def list_files(self, path: str, file_type: str = FILE_TYPE_MODEL) -> list[RemoteFile]: ...
 
+    async def list_directory(
+        self, path: str, file_type: str = FILE_TYPE_MODEL
+    ) -> tuple[str, list[RemoteFile], str | None]:
+        """``(status, files, reason)`` — what the listing proves (see printer_files.listing)."""
+        ...
+
     async def read_bytes(self, path: str) -> bytes | None: ...
 
     async def download_to_file(

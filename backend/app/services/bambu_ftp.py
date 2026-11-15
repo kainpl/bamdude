@@ -1882,17 +1882,26 @@ async def list_files_checked_async(
     socket_timeout: float | None = None,
     printer_model: str | None = None,
 ) -> tuple[list[dict], bool]:
-    """List a directory, and say whether the printer answered it COMPLETELY.
+    """List a directory, and say whether the printer ANSWERED for it.
 
-    Returns ``(entries, answered)``. ``answered`` is True only for a complete
-    LIST of this directory (G10 CR2): a refused connect, a 550 on CWD (missing
-    and forbidden read the same), a failed or partial LIST and a timeout are all
-    ``False``. Use :func:`list_directory_async` for the typed outcome.
+    Returns ``(entries, answered)``. ``answered`` is True for a complete LIST,
+    and for a directory proven absent by a complete listing of its parent — an
+    absent ``/record`` is an answer, not silence (G10 CR2). A refused connect, a
+    550 the parent cannot settle (missing and forbidden read the same), a failed
+    or partial LIST and a timeout are all ``False``; a caller walking several
+    directories stops on those. Use :func:`list_directory_async` for the typed
+    outcome.
     """
     listing = await list_directory_async(
-        ip_address, access_code, path, timeout=timeout, socket_timeout=socket_timeout, printer_model=printer_model
+        ip_address,
+        access_code,
+        path,
+        timeout=timeout,
+        socket_timeout=socket_timeout,
+        printer_model=printer_model,
+        prove_missing=True,
     )
-    return list(listing.entries), listing.status == LISTING_COMPLETE
+    return list(listing.entries), listing.status in (LISTING_COMPLETE, LISTING_MISSING)
 
 
 async def list_files_async(

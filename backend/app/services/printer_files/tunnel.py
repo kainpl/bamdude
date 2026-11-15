@@ -103,6 +103,19 @@ class TunnelTransport:
         entries = await self._on_lane("list", operation)
         return [self._to_remote(entry) for entry in entries]
 
+    async def list_directory(
+        self, path: str, file_type: str = FILE_TYPE_MODEL
+    ) -> tuple[str, list[RemoteFile], str | None]:
+        """The typed listing of a catalogue: complete, or unavailable with a safe reason."""
+        try:
+            return "complete", await self.list_files(path, file_type=file_type), None
+        except TunnelProtocolError as exc:
+            return "unavailable", [], exc.category
+        except TunnelError:
+            return "unavailable", [], "tunnel"
+        except LaneRefused as refused:
+            return "unavailable", [], refused.reason
+
     async def read_bytes(self, path: str) -> bytes | None:
         """⚠️ Two different commands, chosen by the shape of the path.
 

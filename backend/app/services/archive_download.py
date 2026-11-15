@@ -17,7 +17,7 @@ from backend.app.models.printer import Printer
 from backend.app.services.archive import sd_stem
 from backend.app.services.bambu_ftp import (
     BambuFTPClient,
-    download_file_first_path_async,
+    download_first_path,
     get_ftp_retry_settings,
     list_files_async,
 )
@@ -50,6 +50,23 @@ def last_download_failure_reason(printer_id: int) -> str | None:
     success.
     """
     return _failure_reasons.get(printer_id)
+
+
+class DownloadedSource(tuple):
+    """``(temp_path, downloaded_filename)`` — and ``storage``, the medium the bytes came from.
+
+    Still a two-item tuple, so every caller that unpacks it as before keeps
+    working; ``storage`` (``external`` / ``internal``) is the provenance the
+    transport proved (G10 A7). The name is the basename of the path that really
+    downloaded, never the temp file's name.
+    """
+
+    storage: str
+
+    def __new__(cls, temp_path: Path, filename: str, storage: str):
+        source = super().__new__(cls, (temp_path, filename))
+        source.storage = storage
+        return source
 
 
 def build_filename_candidates(subtask_name: str | None, filename: str | None) -> list[str]:
@@ -170,8 +187,13 @@ async def _download_3mf(
 
     remote_paths_only = [rp for rp, _ in all_remote_paths]
     stage_one_started = time.monotonic()
+    # What this ONE walk has already tried and must not fetch again (upstream
+    # f0818ff18): a path whose transfer started and failed, and paths the printer
+    # refused. A later trigger — reconnect, completion, a manual retry — is a new
+    # walk and may try them again.
+    tried: set[str] = set()
     try:
-        downloaded_from = await download_file_first_path_async(
+        walk = await download_first_path(
             printer.ip_address,
             printer.access_code,
             remote_paths_only,
@@ -179,16 +201,24 @@ async def _download_3mf(
             socket_timeout=ftp_timeout,
             printer_model=printer.model,
         )
-        if downloaded_from:
+        if walk.path:
             logger.info(
                 "Downloaded 3MF for printer %s (tried %d paths, temp=%s)",
                 printer.name,
                 len(remote_paths_only),
                 temp_path,
             )
-            return temp_path, PurePosixPath(downloaded_from).name
+            return DownloadedSource(temp_path, PurePosixPath(walk.path).name, "external")
+        tried.update(walk.not_readable)
+        if walk.transfer_failed:
+            tried.add(walk.transfer_failed)
+            logger.info(
+                "3MF transfer of %s from printer %s started and failed; this walk does not fetch it again",
+                walk.transfer_failed,
+                printer.name,
+            )
     except Exception as e:
-        logger.debug("download_file_try_paths_async failed: %s", e)
+        logger.debug("download_first_path failed: %s", e)
 
     # Stage 2: dir-list + fuzzy match.  Fires only if direct probes all
     # missed — common case: printer renamed the file internally or it
@@ -226,6 +256,8 @@ async def _download_3mf(
             if search_normalized not in fname_normalized:
                 continue
             full_remote = f"{search_dir}/{fname}" if search_dir != "/" else f"/{fname}"
+            if full_remote in tried:
+                continue  # this walk already tried it — and a failed transfer is not retried here
             fallback_paths.append((full_remote, fname))
 
     if not fallback_paths:
@@ -236,7 +268,7 @@ async def _download_3mf(
     # fname comes straight from the printer FTP dir listing — containment-check.
     fuzzy_temp_path = safe_join_under(temp_dir, fuzzy_filename, http=False)
     try:
-        downloaded_from = await download_file_first_path_async(
+        walk = await download_first_path(
             printer.ip_address,
             printer.access_code,
             [rp for rp, _ in fallback_paths],
@@ -244,15 +276,15 @@ async def _download_3mf(
             socket_timeout=ftp_timeout,
             printer_model=printer.model,
         )
-        if downloaded_from:
+        if walk.path:
             logger.info(
                 "Downloaded 3MF for printer %s via fuzzy match (tried %d paths)",
                 printer.name,
                 len(fallback_paths),
             )
-            return fuzzy_temp_path, PurePosixPath(downloaded_from).name
+            return DownloadedSource(fuzzy_temp_path, PurePosixPath(walk.path).name, "external")
     except Exception as e:
-        logger.debug("fuzzy download_file_try_paths_async failed: %s", e)
+        logger.debug("fuzzy download_first_path failed: %s", e)
 
     return await _try_internal_storage(printer, candidates, original_temp_dir)
 
@@ -292,15 +324,15 @@ async def _try_internal_storage(printer: Printer, candidates: list[str], temp_di
     if match is None:
         return None
 
-    data = await transport.read_bytes(match.path)
-    if not data:
-        return None
-
     temp_dir = temp_dir / str(printer.id)
-    temp_dir.mkdir(parents=True, exist_ok=True)
     # ``match.name`` comes from the printer's own listing — containment-check it
     # the same way the FTP stages do.
     temp_path = safe_join_under(temp_dir, match.name, http=False)
-    temp_path.write_bytes(data)
+    # Streamed to disk off the loop, checked frame by frame (G10 A7): never the
+    # whole file in memory, never a blocking write on the event loop.
+    outcome = await transport.download_to_file(match.path, temp_path)
+    if not outcome.completed:
+        logger.info("Could not recover %s from %s's internal storage (%s)", match.name, printer.name, outcome.status)
+        return None
     logger.info("Recovered %s from %s's internal storage", match.name, printer.name)
-    return temp_path, match.name
+    return DownloadedSource(temp_path, match.name, "internal")
