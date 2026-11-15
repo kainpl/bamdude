@@ -3,6 +3,7 @@ import { Scale } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useToast } from '../../contexts/ToastContext';
 import { toDateTimeLocalValue } from '../../utils/date';
+import { costPerKgFromSpoolPrice, spoolPriceFromCostPerKg } from '../../utils/spoolCost';
 import { FILAMENT_EFFECT_OPTIONS } from '../filamentSwatchHelpers';
 import { FilamentSwatch } from '../FilamentSwatch';
 import type { AdditionalSectionProps } from './types';
@@ -195,6 +196,8 @@ export function AdditionalSection({
   const [creatingLocation, setCreatingLocation] = useState(false);
 
   const remainingWeight = Math.max(0, formData.label_weight - formData.weight_used);
+  // The shared conversion — the same one the server stores a Spoolman price by.
+  const perSpoolPrice = spoolPriceFromCostPerKg(formData.cost_per_kg, formData.label_weight);
   const measuredDefault = formData.core_weight + remainingWeight;
 
   useEffect(() => {
@@ -427,9 +430,7 @@ export function AdditionalSection({
             <input
               type="number"
               value={
-                formData.cost_per_kg != null && formData.label_weight > 0
-                  ? Number(((formData.cost_per_kg * formData.label_weight) / 1000).toFixed(2))
-                  : ''
+                perSpoolPrice != null ? Number(perSpoolPrice.toFixed(2)) : ''
               }
               min={0}
               step={0.01}
@@ -439,9 +440,9 @@ export function AdditionalSection({
                   updateField('cost_per_kg', null);
                   return;
                 }
-                const perSpool = parseFloat(e.target.value);
-                if (!Number.isFinite(perSpool) || formData.label_weight <= 0) return;
-                updateField('cost_per_kg', Number(((perSpool * 1000) / formData.label_weight).toFixed(4)));
+                const perKg = costPerKgFromSpoolPrice(parseFloat(e.target.value), formData.label_weight);
+                if (perKg == null) return;
+                updateField('cost_per_kg', Number(perKg.toFixed(4)));
               }}
               style={{ paddingLeft: `${Math.max(2, currencySymbol.length * 0.6 + 1)}rem` }}
               className="w-full py-2 pr-3 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:outline-none focus:border-bambu-green"

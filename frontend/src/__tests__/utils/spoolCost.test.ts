@@ -4,7 +4,7 @@
  * its filament's catalogue price, marked as such.
  */
 import { describe, expect, it } from 'vitest';
-import { shownCostPerKg } from '../../utils/spoolCost';
+import { costPerKgFromSpoolPrice, shownCostPerKg, spoolPriceFromCostPerKg } from '../../utils/spoolCost';
 
 describe('shownCostPerKg', () => {
   it("shows the spool's own rate when it has one", () => {
@@ -38,5 +38,20 @@ describe('the Spoolman list sorts by the shown rate', () => {
     ] as unknown as import('../../api/client').InventorySpool[];
     const sorted = [...spools].sort(compareByOrder([{ field: 'cost_per_kg', direction: 'asc' }]));
     expect(sorted.map((s) => s.id)).toEqual([2, 1, 3]);
+  });
+});
+
+describe('a spool price and its cost per kg', () => {
+  it('converts through the net weight, both ways', () => {
+    expect(spoolPriceFromCostPerKg(20, 250)).toBe(5);
+    expect(costPerKgFromSpoolPrice(5, 250)).toBe(20);
+    expect(spoolPriceFromCostPerKg(48, 1000)).toBe(48);
+  });
+
+  it('answers nothing without a rate or a weight', () => {
+    expect(spoolPriceFromCostPerKg(null, 1000)).toBeNull();
+    expect(spoolPriceFromCostPerKg(20, 0)).toBeNull();
+    expect(costPerKgFromSpoolPrice(5, 0)).toBeNull();
+    expect(costPerKgFromSpoolPrice(Number.NaN, 250)).toBeNull();
   });
 });

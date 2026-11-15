@@ -21,3 +21,19 @@ export function shownCostPerKg(
   if (charged != null) return { rate: charged, fromFilament: true };
   return { rate: own ?? null, fromFilament: false };
 }
+
+/**
+ * A whole spool's price ↔ its cost per kg, through the spool's net weight in
+ * grams — the one rule the server converts by (`cost_per_kg_to_spoolman_price`
+ * and its inverse), so the form's "price per spool" helper and what Spoolman
+ * stores are the same arithmetic. `null` when there is no rate or no weight.
+ */
+export function spoolPriceFromCostPerKg(costPerKg: number | null | undefined, netWeightGrams: number): number | null {
+  if (costPerKg == null || !Number.isFinite(costPerKg) || !(netWeightGrams > 0)) return null;
+  return (costPerKg * netWeightGrams) / 1000;
+}
+
+export function costPerKgFromSpoolPrice(spoolPrice: number, netWeightGrams: number): number | null {
+  if (!Number.isFinite(spoolPrice) || !(netWeightGrams > 0)) return null;
+  return (spoolPrice * 1000) / netWeightGrams;
+}
