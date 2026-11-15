@@ -6,6 +6,7 @@ import { ArrowDownAZ, ArrowUpAZ, Check, ChevronDown, ChevronUp, Loader2, X } fro
 import { api } from '../api/client';
 import { Card, CardContent, CardHeader } from './Card';
 import { Button } from './Button';
+import { Select } from './Select';
 import { useToast } from '../contexts/ToastContext';
 import {
   SPOOL_SORT_FIELDS,
@@ -64,7 +65,6 @@ export function SpoolSortOrderSettings() {
   )));
 
   const iconButton = 'p-1.5 rounded text-bambu-gray hover:text-white hover:bg-bambu-dark-tertiary disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-bambu-gray';
-  const selectClass = 'px-3 py-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:border-bambu-green focus:outline-none';
 
   return (
     <Card>
@@ -81,15 +81,15 @@ export function SpoolSortOrderSettings() {
               {levels.map((level, index) => (
                 <li key={level.field} className="flex items-center gap-2">
                   <span className="w-5 text-right text-xs text-bambu-gray tabular-nums">{index + 1}.</span>
-                  <select
+                  <Select
                     value={level.field}
                     onChange={(e) => setField(index, e.target.value)}
-                    className={`${selectClass} min-w-0 flex-1`}
+                    className="min-w-0 flex-1"
                   >
                     {[level.field, ...unused].map((field) => (
                       <option key={field} value={field}>{t(`settings.spoolSortOrder.fields.${field}`)}</option>
                     ))}
-                  </select>
+                  </Select>
                   <button
                     type="button"
                     onClick={() => flip(index)}
@@ -118,7 +118,7 @@ export function SpoolSortOrderSettings() {
           )}
 
           {unused.length > 0 && (
-            <select
+            <Select
               value=""
               disabled={isLoading}
               onChange={(e) => {
@@ -126,13 +126,13 @@ export function SpoolSortOrderSettings() {
                 if (field) setLevels((prev) => [...prev, { field, direction: 'asc' }]);
               }}
               aria-label={t('settings.spoolSortOrder.addLevel')}
-              className={`${selectClass} text-bambu-gray`}
+              tone="muted"
             >
               <option value="">{t('settings.spoolSortOrder.addLevel')}</option>
               {unused.map((field) => (
                 <option key={field} value={field}>{t(`settings.spoolSortOrder.fields.${field}`)}</option>
               ))}
-            </select>
+            </Select>
           )}
 
           <div className="flex items-center gap-2 pt-2">
