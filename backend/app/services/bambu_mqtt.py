@@ -26,7 +26,7 @@ import paho.mqtt.client as mqtt
 
 from backend.app.services.hms_actions import HMSAction, get_actions_for_error_code
 from backend.app.services.printer_feed_snapshot import FeedTelemetry, snapshot_from_state
-from backend.app.utils.ams_drying import ACTIVE_DRY_STATUSES
+from backend.app.utils.ams_drying import ACTIVE_DRY_STATUSES, DRY_COUNTDOWN_STALL_SECONDS
 from backend.app.utils.filename import subtask_name_from_remote_filename
 from backend.app.utils.paho_teardown import retire_paho_client
 from backend.app.utils.printer_models import is_dual_nozzle_model
@@ -2381,6 +2381,11 @@ class BambuMQTTClient:
         # Per-AMS previous ``dry_time``, used to detect the falling edge.
         # Seeded lazily as we observe each AMS unit.
         self._previous_dry_times: dict[int, int] = {}
+        # Per-AMS (last reported ``dry_time``, monotonic time it last CHANGED):
+        # how ``_observe_dry_countdowns`` tells a timer nobody is running from a
+        # cycle. Lives with the client, so a recreated client reads a parked
+        # timer as active again until the threshold has passed once more.
+        self._dry_countdown_seen: dict[int, tuple[int, float]] = {}
         # Per-AMS active-cycle target params (filament + temp) we sent on the
         # last drying start. Bambu does not echo these on the per-tick AMS push
         # — only the dry_time countdown — so we cache what we sent to drive the
@@ -4524,6 +4529,51 @@ class BambuMQTTClient:
         logger.debug("[%s] External spool identity changed, triggering sync callback", self.serial_number)
         self.on_ams_change(self.state.raw_data.get("ams") or [])
 
+    def _observe_dry_countdowns(self, merged_ams: list, reported: object) -> None:
+        """Stamp ``dry_countdown_stalled`` on each unit of a status frame.
+
+        A printer can take a drying command, keep its countdown and not heat
+        (upstream #2896 / #3096). A live countdown ticks once a minute, so a
+        ``dry_time`` above zero that has not CHANGED for longer than
+        ``DRY_COUNTDOWN_STALL_SECONDS``, in no live phase, is such a timer -
+        read through ``utils/ams_drying.is_countdown_parked``.
+
+        Only a unit whose own entry in THIS frame carried ``dry_time`` is
+        judged: the merged value of a tray-only partial is what we remembered,
+        not what the printer just said, and may neither raise the flag nor
+        restart the wait. A live phase clears it on any frame.
+        """
+        carried: set[int] = set()
+        for unit in reported if isinstance(reported, list) else []:
+            if isinstance(unit, dict) and unit.get("dry_time") is not None:
+                try:
+                    carried.add(int(unit.get("id", -1)))
+                except (TypeError, ValueError):
+                    continue
+        now = time.monotonic()
+        for unit in merged_ams:
+            try:
+                ams_id = int(unit.get("id", -1))
+            except (TypeError, ValueError):
+                continue
+            if unit.get("dry_status") in _ACTIVE_DRY_STATUSES:
+                unit["dry_countdown_stalled"] = False
+            if ams_id not in carried:
+                continue
+            try:
+                current = int(unit.get("dry_time"))
+            except (TypeError, ValueError):
+                continue
+            seen = self._dry_countdown_seen.get(ams_id)
+            if seen is None or seen[0] != current:
+                seen = (current, now)
+                self._dry_countdown_seen[ams_id] = seen
+            unit["dry_countdown_stalled"] = bool(
+                current > 0
+                and unit.get("dry_status") not in _ACTIVE_DRY_STATUSES
+                and now - seen[1] > DRY_COUNTDOWN_STALL_SECONDS
+            )
+
     def _handle_ams_data(self, ams_data, *, presence_is_status=True, printer_status=None):
         """Handle AMS data changes for Spoolman integration.
 
@@ -5042,6 +5092,11 @@ class BambuMQTTClient:
                     ]
                 else:
                     ams_unit["dry_sf_reason"] = []
+
+        # A command's echo is not the printer's status: only a status frame
+        # may say a countdown is - or is no longer - parked.
+        if presence_is_status:
+            self._observe_dry_countdowns(merged_ams, ams_list)
 
         # Detect AMS drying-complete falling edge per-unit (#1349). When an
         # AMS's ``dry_time`` transitions from >0 to 0 the cycle just

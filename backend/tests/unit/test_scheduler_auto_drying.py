@@ -883,10 +883,17 @@ class TestBlockForDryingBugFix(_DryingTestBase):
     @patch("backend.app.services.print_scheduler.printer_manager")
     @patch("backend.app.services.print_scheduler.supports_drying", return_value=True)
     async def test_block_mode_allows_humidity_stop_for_active_drying(self, mock_sd, mock_pm, scheduler):
-        """Bug fix: printer already drying in block mode should still check humidity to auto-stop."""
+        """Block mode refuses only a NEW cycle: a printer already drying is let through to its units.
+
+        ⚠️ The name is historical. The humidity stop it once checked went with
+        #1892 (a running cycle is never stopped on a humidity re-check), so what
+        the branch does today is pass the printer through and leave its cycle
+        running.
+        """
         # Drying started 35 minutes ago
         scheduler._drying_in_progress = {1: time.monotonic() - 2100}
         _claim(scheduler, 1)
+        scheduler._dry_unit_history[(1, 0)] = {"unproductive": 0, "suspended": False, "ended_at": None}
 
         state = MagicMock()
         state.raw_data = {
@@ -918,16 +925,32 @@ class TestBlockForDryingBugFix(_DryingTestBase):
         }
         db.execute = AsyncMock(side_effect=self._make_db_side_effect(settings_returns))
 
-        # Queue item exists for this printer (triggers block mode gate)
-        item = MagicMock()
-        item.printer_id = 1
-        item.scheduled_time = _a_minute_ago()
-        item.manual_start = False
+        # ⚠️ A real row that could start now - what block mode asks about. The
+        # fixture used to set ``printer_id`` on a MagicMock while the pass reads
+        # ``queue_id``: printer 1 then had no row at all, the pass left through
+        # the "no scheduled prints" exit, and the stop this test asserted was
+        # THAT exit stopping the cycle - the block-mode branch never ran.
+        item = SimpleNamespace(
+            queue_id=1,
+            scheduled_time=_a_minute_ago(),
+            manual_start=False,
+            queue=SimpleNamespace(is_paused=False, status="idle"),
+        )
 
         await scheduler._check_auto_drying(db, [item], set())
 
-        # Should have sent stop command - humidity dropped below threshold after 30+ min
-        mock_pm.send_drying_command.assert_any_call(1, 0, 0, 0, mode=0)
+        # Let through to the unit (a printer block mode skips never gets here)...
+        assert scheduler._dry_unit_history[(1, 0)].get("running") is True
+        # ...and the running cycle is left alone, however dry the reading.
+        mock_pm.send_drying_command.assert_not_called()
+        assert 1 in scheduler._drying_in_progress
+
+        # The same pass without the hold IS skipped by block mode: the printer
+        # has a row that could start now.
+        scheduler._drying_in_progress = {}
+        scheduler._dry_unit_history[(1, 0)] = {"unproductive": 0, "suspended": False, "ended_at": None}
+        await scheduler._check_auto_drying(db, [item], set())
+        assert "running" not in scheduler._dry_unit_history[(1, 0)]
 
     @pytest.mark.asyncio
     @patch("backend.app.services.print_scheduler.printer_manager")

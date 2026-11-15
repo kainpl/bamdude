@@ -320,3 +320,105 @@ async def test_the_tick_says_what_it_did(db_session, printer_factory, pm, caplog
     with caplog.at_level("INFO", logger="backend.app.services.scheduled_drying"):
         await sd.tick(db_session, now=NOW, drying_in_progress={}, dispatching_printers=set())
     assert any("started" in r.getMessage() and f"printer {printer.id}" in r.getMessage() for r in caplog.records)
+
+
+# ------------------------------------------------ a parked timer (upstream 6c0292b09)
+
+
+def _parked(dry_time=480):
+    """The printer took the command, keeps the countdown and is not heating."""
+    return {**_unit(dry_time=dry_time), "dry_countdown_stalled": True}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("minutes", [5, 40], ids=["inside-the-confirm-window", "past-it"])
+async def test_a_run_parked_on_an_idle_printer_is_stopped_and_reported(db_session, printer_factory, pm, minutes):
+    """Seen parked is evidence: no waiting out START_CONFIRM_SECONDS, and past
+    it the run no longer stays ``running`` for good."""
+    printer = await printer_factory(model="X1C")
+    pm.get_status.return_value.raw_data = {"ams": [_parked()]}
+    row = await _run(db_session, printer, status="running", started_at=NOW - timedelta(minutes=minutes))
+    holds = {printer.id: 1.0}
+
+    result = await sd.tick(db_session, now=NOW, drying_in_progress=holds, dispatching_printers=set())
+
+    await db_session.refresh(row)
+    assert (row.status, row.reason) == ("failed", "not_started")
+    # The timer does not stay behind to start heating later with no run.
+    pm.send_drying_command.assert_called_once_with(printer.id, 0, 0, 0, mode=0)
+    pm.notifier.on_scheduled_drying_failed.assert_awaited_once()
+    assert printer.id not in holds and printer.id not in result.running_printers
+
+
+@pytest.mark.asyncio
+async def test_a_parked_run_does_not_starve_its_rule(db_session, printer_factory, pm):
+    printer = await printer_factory(model="X1C")
+    rule = DryingSchedule(
+        printer_id=printer.id,
+        ams_id=0,
+        temp=55,
+        duration_hours=8,
+        start_time="02:00",
+        weekdays=127,
+        latest_start="04:00",
+        updated_at=NOW - timedelta(days=1),
+    )
+    db_session.add(rule)
+    await db_session.commit()
+    pm.get_status.return_value.raw_data = {"ams": [_parked()]}
+    row = await _run(
+        db_session,
+        printer,
+        status="running",
+        schedule_id=rule.id,
+        start_after=NOW - timedelta(hours=1),
+        started_at=NOW - timedelta(minutes=40),
+    )
+
+    await sd.tick(db_session, now=NOW, drying_in_progress={}, dispatching_printers=set())
+    await sd.tick(db_session, now=NOW + timedelta(minutes=1), drying_in_progress={}, dispatching_printers=set())
+
+    await db_session.refresh(row)
+    assert row.status == "failed"
+    waiting = (
+        (await db_session.execute(select(ScheduledDrying).where(ScheduledDrying.status == "pending"))).scalars().all()
+    )
+    assert [run.schedule_id for run in waiting] == [rule.id]
+
+
+@pytest.mark.asyncio
+async def test_a_run_parked_under_a_print_yields_to_it(db_session, printer_factory, pm):
+    """The printing half: stopped for real and back to pending, as any cycle a print takes."""
+    printer = await printer_factory(model="X1C")
+    pm.get_status.return_value = SimpleNamespace(
+        state="RUNNING", firmware_version="01.11.00.00", raw_data={"ams": [_parked()]}
+    )
+    row = await _run(db_session, printer, status="running", started_at=NOW - timedelta(hours=1))
+
+    await sd.tick(db_session, now=NOW, drying_in_progress={}, dispatching_printers=set())
+
+    await db_session.refresh(row)
+    assert (row.status, row.reason, row.started_at) == ("pending", "interrupted", None)
+    pm.send_drying_command.assert_called_once_with(printer.id, 0, 0, 0, mode=0)
+    pm.notifier.on_scheduled_drying_failed.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_pending_run_does_not_wait_behind_a_parked_timer(db_session, printer_factory, pm):
+    """A start replaces the timer; a real cycle on the unit still makes it wait."""
+    printer = await printer_factory(model="X1C")
+    pm.get_status.return_value.raw_data = {"ams": [_parked()]}
+    row = await _run(db_session, printer)
+
+    await sd.tick(db_session, now=NOW, drying_in_progress={}, dispatching_printers=set())
+
+    await db_session.refresh(row)
+    assert row.status == "running"
+    assert pm.send_drying_command.call_args.kwargs["mode"] == 1
+
+    other = await printer_factory(model="X1C")
+    pm.get_status.return_value.raw_data = {"ams": [_unit(dry_time=480)]}
+    waiting = await _run(db_session, other)
+    await sd.tick(db_session, now=NOW, drying_in_progress={}, dispatching_printers=set())
+    await db_session.refresh(waiting)
+    assert (waiting.status, waiting.reason) == ("pending", "already_drying")

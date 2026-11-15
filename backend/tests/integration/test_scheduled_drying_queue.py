@@ -211,3 +211,47 @@ async def test_a_failing_preemption_does_not_stop_the_print(
         await scheduler.check_queue()
 
     assert start.await_count == 1
+
+
+# ------------------------------------------------ a parked timer (upstream 6c0292b09)
+
+
+def _parked(ams_id=0):
+    return {**_unit(dry_time=720), "id": ams_id, "dry_countdown_stalled": True}
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_a_printer_whose_only_timer_is_parked_does_not_hold_its_queue(
+    db_session, printer_factory, scheduler, farm, raw_gcode_source
+):
+    """The timer never reaches 0, so the row behind it would wait for good."""
+    await _setting(db_session, "queue_drying_block", "true")
+    printer, _item = await _printer_with_work(db_session, printer_factory, raw_gcode_source)
+    scheduler._drying_in_progress[printer.id] = 1.0
+    farm.state.raw_data = {"ams": [_parked()]}
+
+    start = AsyncMock()
+    with patch.object(PrintScheduler, "_start_print", start):
+        await scheduler.check_queue()
+
+    assert start.await_count == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_a_real_cycle_beside_a_parked_timer_still_holds_the_queue(
+    db_session, printer_factory, scheduler, farm, raw_gcode_source
+):
+    await _setting(db_session, "queue_drying_block", "true")
+    printer, item = await _printer_with_work(db_session, printer_factory, raw_gcode_source)
+    scheduler._drying_in_progress[printer.id] = 1.0
+    farm.state.raw_data = {"ams": [_parked(0), {**_unit(dry_time=300), "id": 1}]}
+
+    start = AsyncMock()
+    with patch.object(PrintScheduler, "_start_print", start):
+        await scheduler.check_queue()
+
+    assert start.await_count == 0
+    await db_session.refresh(item)
+    assert item.waiting_reason_code == "drying"

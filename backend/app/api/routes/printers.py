@@ -127,6 +127,7 @@ from backend.app.services.printer_manager import (
 )
 from backend.app.services.printer_status_context import current_archive_ids, printers_with_waiting_rows
 from backend.app.services.printer_tag_service import delete_links_for_printer, replace_links
+from backend.app.utils.ams_drying import is_countdown_parked
 from backend.app.utils.ams_humidity import ams_humidity_percent
 from backend.app.utils.fila_switch import extruder_slots_payload, inlet_bindings, switch_ready
 from backend.app.utils.http import build_content_disposition
@@ -1514,6 +1515,7 @@ async def _build_printer_status(
                     sw_ver=str(ams_data.get("sw_ver") or ""),
                     # Drying: dry_time > 0 means drying is active (minutes remaining)
                     dry_time=int(ams_data.get("dry_time") or 0),
+                    dry_countdown_stalled=is_countdown_parked(ams_data),
                     dry_target_temp=dry_target_temp,
                     dry_filament=dry_filament,
                     module_type=str(ams_data.get("module_type") or ""),

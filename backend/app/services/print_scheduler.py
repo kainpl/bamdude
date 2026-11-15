@@ -57,6 +57,7 @@ from backend.app.services.smart_plug_manager import smart_plug_manager
 from backend.app.services.source_io import SOURCE_FAILURES, SourceUnavailable, require_source_file
 from backend.app.services.stagger_groups import GroupKey, StaggerGroupResolver, StaggerSplit
 from backend.app.utils import failure_reasons
+from backend.app.utils.ams_drying import is_countdown_parked, only_parked_timers, running_dry_minutes
 from backend.app.utils.ams_humidity import ams_humidity_percent
 from backend.app.utils.filament_types import canonical_filament_type
 from backend.app.utils.material_keys import resolve_material_key
@@ -634,7 +635,7 @@ class PrintScheduler:
                     new_reason = "Printer offline"
                     reason_code = "printer_offline"
                 elif not printer_idle:
-                    if self._drying_in_progress.get(printer_id):
+                    if self._drying_holds_queue(printer_id):
                         new_reason = "Drying in progress"
                         reason_code = "drying"
                     elif rpc and printer_manager.is_awaiting_plate_clear(printer_id):
@@ -715,7 +716,9 @@ class PrintScheduler:
                 # the not-idle branch both of its answers led to the same skip,
                 # so all it ever decided was whether a cycle was needlessly
                 # killed on the way. Off by default.
-                if self._drying_in_progress.get(printer_id) and await self._get_bool_setting(db, "queue_drying_block"):
+                # A parked timer never ends by itself, so it holds nothing; the
+                # hold entry stays, and the stop below still reaches a unit we armed.
+                if self._drying_holds_queue(printer_id) and await self._get_bool_setting(db, "queue_drying_block"):
                     if set_wait_reason(item, "drying", "Drying in progress"):
                         await db.commit()
                     mark_busy(printer_id, "drying")
@@ -1993,6 +1996,26 @@ class PrintScheduler:
                 unit_key = (pid, ams_id)
                 unit_state = self._dry_unit_history.get(unit_key)
 
+                if dry_time > 0 and is_countdown_parked(ams_data):
+                    # The printer holds the timer and is not heating: no cycle to
+                    # adopt a hold from or to let run. One WE armed is stopped and
+                    # handed to the ordinary re-arm cooldown - left there, the unit
+                    # would be dead to auto-drying until somebody pressed Stop.
+                    # ⚠️ Never anybody else's: a manual timer stays as it is.
+                    if unit_key in self._armed_dry_cycles and printer_manager.send_drying_command(
+                        pid, ams_id, 0, 0, mode=0
+                    ):
+                        logger.info(
+                            "Auto-drying: printer %d AMS %d - the printer holds our drying timer (%dm) but is "
+                            "not drying; stopped, the re-arm cooldown decides the retry",
+                            pid,
+                            ams_id,
+                            dry_time,
+                        )
+                        self._armed_dry_cycles.pop(unit_key, None)
+                        self.forget_auto_dry_cycle(pid, ams_id)
+                    continue
+
                 if dry_time > 0:
                     # A cycle is running, whoever started it: the streak is spent.
                     self._auto_dry_above.pop(unit_key, None)
@@ -2294,6 +2317,19 @@ class PrintScheduler:
             printer_ids |= candidates[key]
         return printer_ids
 
+    def _drying_holds_queue(self, printer_id: int) -> bool:
+        """Whether a cycle this scheduler tracks is one the printer's queue can wait on.
+
+        The hold entry alone is not enough: a printer whose only timers are
+        parked (``utils/ams_drying.only_parked_timers``) is not drying and the
+        wait would never end. The entry itself stays until the timer is gone,
+        so the stop paths still reach a unit we armed.
+        """
+        if not self._drying_in_progress.get(printer_id):
+            return False
+        state = printer_manager.get_status(printer_id)
+        return not only_parked_timers((getattr(state, "raw_data", None) or {}).get("ams") if state else None)
+
     async def drying_held_printer_ids(self, db: AsyncSession) -> set[int]:
         """Printers whose queue a drying cycle holds right now.
 
@@ -2304,7 +2340,7 @@ class PrintScheduler:
         that is not held): a held printer still gets work when it is the only
         one - the wait is then visible on its row.
         """
-        held = {pid for pid, since in self._drying_in_progress.items() if since}
+        held = {pid for pid in self._drying_in_progress if self._drying_holds_queue(pid)}
         if not held or not await self._get_bool_setting(db, "queue_drying_block"):
             return set()
         return held
@@ -2373,7 +2409,8 @@ class PrintScheduler:
         ``queue_drying_block`` in ``check_queue``): the same claim, timed by the
         AMS countdown the printer reports (``dry_time``, minutes; the longest
         unit wins). A cycle somebody started by hand is not ours and holds
-        nothing here, exactly as it holds nothing at the gate. Vault
+        nothing here, exactly as it holds nothing at the gate; a parked timer
+        is no cycle and counts for nothing. Vault
         60-specs/farm-forecast-v2-spec §6.
         """
         if not self._drying_in_progress.get(printer_id):
@@ -2381,8 +2418,8 @@ class PrintScheduler:
         state = printer_manager.get_status(printer_id)
         if not state:
             return 0
-        minutes = max((int(unit.get("dry_time") or 0) for unit in state.raw_data.get("ams", [])), default=0)
-        return max(0, minutes) * 60
+        minutes = max((running_dry_minutes(unit) for unit in state.raw_data.get("ams", [])), default=0)
+        return minutes * 60
 
     def _sync_drying_state(self):
         """Drop what is no longer true: printers that have stopped drying, and

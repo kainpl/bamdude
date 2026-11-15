@@ -25,6 +25,7 @@ from backend.app.services.bambu_mqtt import (
     airduct_parts_effective,
     get_stage_name,
 )
+from backend.app.utils.ams_drying import is_countdown_parked
 from backend.app.utils.ams_humidity import ams_humidity_percent
 from backend.app.utils.fila_switch import extruder_slots_payload, inlet_bindings, switch_ready
 from backend.app.utils.kprofile_lookup import build_slot_k_resolver
@@ -2557,6 +2558,8 @@ def printer_state_to_dict(
                     "sw_ver": str(ams_data.get("sw_ver") or ""),
                     # Drying: dry_time > 0 means drying is active (minutes remaining)
                     "dry_time": int(ams_data.get("dry_time") or 0),
+                    # The timer is held but not running - no cycle behind it.
+                    "dry_countdown_stalled": is_countdown_parked(ams_data),
                     # Drying status from info hex bits (0=Off, 1=Checking, 2=Drying, 3=Cooling, etc.)
                     "dry_status": int(ams_data.get("dry_status") or 0),
                     "dry_sub_status": int(ams_data.get("dry_sub_status") or 0),
