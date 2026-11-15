@@ -121,6 +121,23 @@ export interface PrintStateAudit {
   process_ended?: boolean;
 }
 
+// Re-pricing recorded usage — mirrors backend/app/schemas/statistics.py.
+export interface UsageRepriceRequest {
+  spool_id: number | null;
+  date_from: string | null;
+  date_to: string | null;
+  dry_run: boolean;
+}
+export interface UsageRepriceResult {
+  dry_run: boolean;
+  rows: number;
+  rows_changed: number;
+  archives_changed: number;
+  orders_changed: number;
+  cost_before: number;
+  cost_after: number;
+}
+
 export class ApiError extends Error {
   printerId?: number;
   archiveId?: number;
@@ -11414,6 +11431,9 @@ export const api = {
     }),
   recalculateCosts: () =>
     request<{ message: string; updated: number; preserved?: number }>('/statistics/recalculate-costs', { method: 'POST' }),
+  // A preview unless `dry_run` is false — see RepriceUsageModal.
+  repriceUsage: (body: UsageRepriceRequest) =>
+    request<UsageRepriceResult>('/statistics/reprice-usage', { method: 'POST', body: JSON.stringify(body) }),
   getFailureAnalysis: (options?: { days?: number; dateFrom?: string; dateTo?: string; printerId?: number; projectId?: number }) => {
     const params = new URLSearchParams();
     if (options?.days) params.set('days', String(options.days));

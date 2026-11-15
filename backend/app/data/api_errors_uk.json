@@ -1114,6 +1114,7 @@
   "Unsupported export format {}; this BamDude reads format {}": "Непідтримуваний формат експорту {}; цей BamDude читає формат {}",
   "Unsupported file type": "Непідтримуваний тип файлу",
   "Upload failed: {}": "Не вдалося завантажити: {}",
+  "Usage can be re-priced only with the built-in inventory": "Переоцінити витрати можна лише з вбудованим обліком котушок",
   "Usage record not found": "Запис про використання не знайдено",
   "Use either page or cursor, not both": "Вкажіть або page, або cursor — не обидва",
   "Use either stock or in_stock, not both": "Вкажіть або stock, або in_stock — не обидва",

@@ -5,7 +5,9 @@ time» on a 48-printer farm is about a thousand rows here, against ten thousand
 truncated archive rows before.
 """
 
-from pydantic import BaseModel
+from datetime import date
+
+from pydantic import BaseModel, model_validator
 
 
 class BucketMetrics(BaseModel):
@@ -200,3 +202,33 @@ class ArchiveStats(BaseModel):
     # incomplete snapshot history - e.g. right after a fresh upgrade before the
     # hourly snapshot loop has built up a baseline. Frontend shows a tooltip.
     energy_data_warming_up: bool = False
+
+
+class UsageRepriceRequest(BaseModel):
+    """What to re-price: one spool, one period, or one spool within a period — never everything."""
+
+    spool_id: int | None = None
+    date_from: date | None = None
+    date_to: date | None = None
+    # A preview unless the caller says otherwise: applying rewrites recorded costs.
+    dry_run: bool = True
+
+    @model_validator(mode="after")
+    def _scoped(self):
+        if (self.date_from is None) != (self.date_to is None):
+            raise ValueError("A period needs both its first and its last day")
+        if self.date_from is not None and self.date_to is not None and self.date_to < self.date_from:
+            raise ValueError("The period ends before it starts")
+        if self.spool_id is None and self.date_from is None:
+            raise ValueError("Choose a spool, a period, or both")
+        return self
+
+
+class UsageRepriceResult(BaseModel):
+    dry_run: bool
+    rows: int
+    rows_changed: int
+    archives_changed: int
+    orders_changed: int
+    cost_before: float
+    cost_after: float
