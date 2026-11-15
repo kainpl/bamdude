@@ -6,13 +6,18 @@
  * ledger is consulted only in `builtin` mode — never as a fallback while
  * Spoolman is merely unreachable, which is how a built-in row came to be
  * written and shown in Spoolman mode (upstream 62fad59fd, issue #3430).
+ *
+ * A status that has not answered yet (loading, or the request failed) is
+ * `unknown`, not `builtin`: reading it as built-in offered the built-in Assign
+ * dialog on a Spoolman install, where the backend refuses it.
  */
-export type SlotInventoryMode = 'builtin' | 'spoolman' | 'spoolman-unreachable';
+export type SlotInventoryMode = 'builtin' | 'spoolman' | 'spoolman-unreachable' | 'unknown';
 
 export function slotInventoryMode(
   status: { enabled?: boolean; connected?: boolean } | null | undefined,
 ): SlotInventoryMode {
-  if (!status?.enabled) return 'builtin';
+  if (!status) return 'unknown';
+  if (!status.enabled) return 'builtin';
   return status.connected ? 'spoolman' : 'spoolman-unreachable';
 }
 

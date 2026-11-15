@@ -9565,6 +9565,7 @@ export default {
     unassignSpool: 'Unassign',
     replaceSpool: 'Replace spool',
     spoolmanUnreachableAssign: 'Spoolman is unreachable. Spools can be assigned once it responds again.',
+    inventoryModeUnknownAssign: 'Checking which inventory is in use. Spools can be assigned once that is known.',
     currentlyAssigned: 'Currently assigned',
     replaceSuccess: '{{old}} replaced with {{new}}',
     replacePendingInsert: '{{old}} replaced with {{new}}. The slot will be configured when you insert the filament.',

@@ -1962,6 +1962,7 @@ const PrinterCard = memo(function PrinterCard({
   amsThresholds,
   spoolmanEnabled = false,
   spoolmanUnreachable = false,
+  inventoryModeUnknown = false,
   linkedSpools,
   spoolmanUrl,
   spoolmanSyncMode,
@@ -2000,6 +2001,8 @@ const PrinterCard = memo(function PrinterCard({
   spoolmanEnabled?: boolean;
   /** Spoolman is the inventory but does not answer: neither ledger takes an assignment. */
   spoolmanUnreachable?: boolean;
+  /** The Spoolman status has not answered yet: neither inventory's Assign is offered. */
+  inventoryModeUnknown?: boolean;
   hasUnlinkedSpools?: boolean;
   linkedSpools?: Record<string, LinkedSpoolInfo>;
   spoolmanUrl?: string | null;
@@ -5549,6 +5552,7 @@ const PrinterCard = memo(function PrinterCard({
                                               onUnassignSpool: spoolmanSpool ? () => onUnassignSpoolmanSpool?.(spoolmanSpool.id) : undefined,
                                             };
                                           }
+                                          if (inventoryModeUnknown) return { assignedSpool: null, unavailableReason: t('inventory.inventoryModeUnknownAssign') };
                                           if (spoolmanUnreachable) return { assignedSpool: null, unavailableReason: t('inventory.spoolmanUnreachableAssign') };
                                           const assignment = onGetAssignment?.(printer.id, ams.id, slotIdx);
                                           return {
@@ -5997,6 +6001,7 @@ const PrinterCard = memo(function PrinterCard({
                                           onUnassignSpool: spoolmanSpool ? () => onUnassignSpoolmanSpool?.(spoolmanSpool.id) : undefined,
                                         };
                                       }
+                                      if (inventoryModeUnknown) return { assignedSpool: null, unavailableReason: t('inventory.inventoryModeUnknownAssign') };
                                       if (spoolmanUnreachable) return { assignedSpool: null, unavailableReason: t('inventory.spoolmanUnreachableAssign') };
                                       const assignment = onGetAssignment?.(printer.id, ams.id, htSlotId);
                                       return {
@@ -6336,6 +6341,7 @@ const PrinterCard = memo(function PrinterCard({
                                             onUnassignSpool: spoolmanSpool ? () => onUnassignSpoolmanSpool?.(spoolmanSpool.id) : undefined,
                                           };
                                         }
+                                        if (inventoryModeUnknown) return { assignedSpool: null, unavailableReason: t('inventory.inventoryModeUnknownAssign') };
                                         if (spoolmanUnreachable) return { assignedSpool: null, unavailableReason: t('inventory.spoolmanUnreachableAssign') };
                                         const assignment = onGetAssignment?.(printer.id, 255, slotTrayId);
                                         return {
@@ -9540,6 +9546,7 @@ export function PrintersPage() {
   // card must not fall back to the built-in ledger or its Assign dialog.
   const inventoryMode = slotInventoryMode(spoolmanStatus);
   const spoolmanUnreachable = inventoryMode === 'spoolman-unreachable';
+  const inventoryModeUnknown = inventoryMode === 'unknown';
 
   // Fetch Spoolman settings to get sync mode
   const { data: spoolmanSettings } = useQuery({
@@ -10476,6 +10483,7 @@ export function PrintersPage() {
       cardSize={cardSize}
       spoolmanEnabled={spoolmanEnabled}
       spoolmanUnreachable={spoolmanUnreachable}
+      inventoryModeUnknown={inventoryModeUnknown}
       hasUnlinkedSpools={hasUnlinkedSpools}
       linkedSpools={linkedSpools}
       spoolmanUrl={spoolmanStatus?.url}
@@ -10739,6 +10747,7 @@ export function PrintersPage() {
               onCollapse={() => setExpandedPrinterId(null)}
               spoolmanEnabled={spoolmanEnabled}
               spoolmanUnreachable={spoolmanUnreachable}
+              inventoryModeUnknown={inventoryModeUnknown}
               hasUnlinkedSpools={hasUnlinkedSpools}
               linkedSpools={linkedSpools}
               spoolmanUrl={spoolmanStatus?.url}

@@ -2,9 +2,16 @@ import { describe, expect, it } from 'vitest';
 import { builtinAssignments, slotInventoryMode } from '../../utils/slotInventoryMode';
 
 describe('slotInventoryMode', () => {
-  it('is the built-in inventory while Spoolman is off or its status is unknown', () => {
-    expect(slotInventoryMode(undefined)).toBe('builtin');
+  it('is the built-in inventory while Spoolman is off', () => {
     expect(slotInventoryMode({ enabled: false, connected: false })).toBe('builtin');
+  });
+
+  // A status still loading, or one that failed, read as built-in: the card
+  // offered the built-in Assign dialog on a Spoolman install, and the backend
+  // refused it.
+  it('is unknown, not built-in, until the status has answered', () => {
+    expect(slotInventoryMode(undefined)).toBe('unknown');
+    expect(slotInventoryMode(null)).toBe('unknown');
   });
 
   it('is Spoolman while it answers', () => {

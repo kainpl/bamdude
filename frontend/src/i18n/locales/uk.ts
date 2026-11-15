@@ -9767,6 +9767,7 @@ export default {
     unassignSpool: 'Зняти призначення',
     replaceSpool: 'Замінити котушку',
     spoolmanUnreachableAssign: 'Spoolman недоступний. Призначити котушку можна буде, щойно він відповість.',
+    inventoryModeUnknownAssign: 'Зʼясовуємо, який облік філаменту використовується. Призначити котушку можна буде, щойно це стане відомо.',
     currentlyAssigned: 'Зараз призначено',
     replaceSuccess: '{{old}} замінено на {{new}}',
     replacePendingInsert: '{{old}} замінено на {{new}}. Слот налаштується, коли ви вставите філамент.',
