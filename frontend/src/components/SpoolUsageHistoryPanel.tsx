@@ -13,6 +13,7 @@ import { comparePrinterLike, printerLabel } from '../utils/printerLabel';
 import { DEFAULT_SPOOL_DISPLAY_TEMPLATE, formatSpoolDisplayName } from '../utils/spoolName';
 import { invalidateSpoolAndLocationQueries } from '../utils/inventoryQueries';
 import { Select } from './Select';
+import { Button } from './Button';
 
 /**
  * The farm's whole filament ledger, on the Inventory page (2026-09-01).
@@ -124,9 +125,14 @@ interface SpoolUsageHistoryPanelProps {
   /** Opens the spool behind a row. Omitted, the spool cell is plain text —
    *  the panel never navigates on its own. */
   onOpenSpool?: (spoolId: number) => void;
+  /** Spoolman is the inventory: the rows are the Spoolman spools' own, from
+   *  their own feed. The built-in feed is never asked in this mode — the two
+   *  inventories number their spools independently, and a Spoolman spool must
+   *  never show a built-in spool's prints. */
+  spoolmanMode?: boolean;
 }
 
-export function SpoolUsageHistoryPanel({ search = '', onClearSearch, onOpenSpool }: SpoolUsageHistoryPanelProps) {
+export function SpoolUsageHistoryPanel({ search = '', onClearSearch, onOpenSpool, spoolmanMode = false }: SpoolUsageHistoryPanelProps) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { showToast } = useToast();
@@ -178,10 +184,31 @@ export function SpoolUsageHistoryPanel({ search = '', onClearSearch, onOpenSpool
   // "SUNLU PLA Black" here and whatever the operator configured over there.
   const spoolDisplayTemplate = settings?.spool_display_template || DEFAULT_SPOOL_DISPLAY_TEMPLATE;
 
+  // The inventory is part of every key: a cached page of one inventory must
+  // never be painted for the other.
+  const inventory = spoolmanMode ? 'spoolman' : 'built-in';
+
   const { data: facets } = useQuery({
-    queryKey: ['usage-history', 'facets'],
-    queryFn: api.getUsageHistoryFacets,
+    queryKey: ['usage-history', inventory, 'facets'],
+    queryFn: spoolmanMode ? api.getSpoolmanUsageHistoryFacets : api.getUsageHistoryFacets,
     staleTime: 60_000,
+  });
+
+  // Usage recorded against a previous Spoolman address is kept apart until the
+  // operator says the new address is the same database.
+  const { data: source } = useQuery({
+    queryKey: ['usage-history', 'spoolman', 'source'],
+    queryFn: api.getSpoolmanUsageSource,
+    enabled: spoolmanMode,
+    staleTime: 60_000,
+  });
+  const keepPreviousMutation = useMutation({
+    mutationFn: api.keepPreviousSpoolmanUsageSource,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['usage-history'] });
+      queryClient.invalidateQueries({ queryKey: ['spool-usage'] });
+    },
+    onError: () => showToast(t('common.error'), 'error'),
   });
 
   const params = useMemo(() => ({
@@ -190,18 +217,19 @@ export function SpoolUsageHistoryPanel({ search = '', onClearSearch, onOpenSpool
     printer_id: printerId || undefined,
     material: material || undefined,
     brand: brand || undefined,
-    archived: archived === 'all' ? undefined : archived,
+    // Whether a spool is archived is Spoolman's to say; its feed has no such filter.
+    archived: spoolmanMode || archived === 'all' ? undefined : archived,
     assigned: assigned === 'all' ? undefined : assigned,
     date_from: localDayStart(dateFrom),
     date_to: localDayEnd(dateTo),
     sort_by: `${sortKey}_${sortDir}`,
     page: effectivePage,
     ...(perPage === -1 ? { all: true } : { per_page: perPage }),
-  }), [debouncedSearch, statuses, printerId, material, brand, archived, assigned, dateFrom, dateTo, sortKey, sortDir, effectivePage, perPage]);
+  }), [debouncedSearch, statuses, printerId, material, brand, archived, assigned, dateFrom, dateTo, sortKey, sortDir, effectivePage, perPage, spoolmanMode]);
 
   const historyQuery = useQuery({
-    queryKey: ['usage-history', 'page', params],
-    queryFn: () => api.getUsageHistory(params),
+    queryKey: ['usage-history', inventory, 'page', params],
+    queryFn: () => (spoolmanMode ? api.getSpoolmanUsageHistory(params) : api.getUsageHistory(params)),
     placeholderData: (previous) => previous,
   });
 
@@ -216,13 +244,22 @@ export function SpoolUsageHistoryPanel({ search = '', onClearSearch, onOpenSpool
   }
 
   const deleteMutation = useMutation({
-    mutationFn: ({ spoolId, usageId }: { spoolId: number; usageId: number }) =>
-      api.deleteSpoolUsageRecord(spoolId, usageId),
+    mutationFn: ({ spoolId, usageId }: { spoolId: number; usageId: number }): Promise<unknown> =>
+      spoolmanMode
+        ? api.deleteSpoolmanSpoolUsageRecord(spoolId, usageId)
+        : api.deleteSpoolUsageRecord(spoolId, usageId),
     onSuccess: () => {
-      // Deleting a row returns its weight to the spool, so this moves the
-      // inventory and everything computed off it, not just this list.
       queryClient.invalidateQueries({ queryKey: ['usage-history'] });
       queryClient.invalidateQueries({ queryKey: ['spool-usage'] });
+      if (spoolmanMode) {
+        // Bookkeeping only: Spoolman owns the spool's weight, and it is not
+        // changed. (The forecast, whose trend reads these rows, is refreshed by
+        // the server's `inventory_changed`.)
+        showToast(t('inventory.usageRecordDeletedSpoolman'), 'success');
+        return;
+      }
+      // Deleting a row returns its weight to the spool, so this moves the
+      // inventory and everything computed off it, not just this list.
       void invalidateSpoolAndLocationQueries(queryClient, ['inventory-spools']);
       showToast(t('inventory.usageRecordDeleted'), 'success');
     },
@@ -248,7 +285,7 @@ export function SpoolUsageHistoryPanel({ search = '', onClearSearch, onOpenSpool
     printerId !== '' ||
     material !== '' ||
     brand !== '' ||
-    archived !== 'all' ||
+    (!spoolmanMode && archived !== 'all') ||
     assigned !== 'all' ||
     dateFrom !== '' ||
     dateTo !== '';
@@ -338,8 +375,28 @@ export function SpoolUsageHistoryPanel({ search = '', onClearSearch, onOpenSpool
     </th>
   );
 
+  const deleteHint = spoolmanMode ? t('inventory.deleteUsageRecordSpoolman') : t('inventory.deleteUsageRecord');
+
   return (
     <div className="space-y-4">
+      {spoolmanMode && (source?.previous_rows ?? 0) > 0 && (
+        <div className="flex flex-wrap items-center gap-3 px-4 py-3 rounded-lg border border-amber-500/30 bg-amber-100 dark:bg-amber-500/10 text-sm text-amber-800 dark:text-amber-300">
+          <span className="flex-1 min-w-[16rem]">
+            {t('inventory.usageView.previousSource', {
+              count: source?.previous_rows ?? 0,
+              url: source?.previous_url ?? '',
+            })}
+          </span>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => keepPreviousMutation.mutate()}
+            disabled={keepPreviousMutation.isPending}
+          >
+            {t('inventory.usageView.keepPreviousSource')}
+          </Button>
+        </div>
+      )}
       {/* Filter chips row — segmented groups, chip dropdowns, hairline
           separators and a trailing count, exactly as the page's own row does
           it, and standing in the same place. */}
@@ -373,19 +430,21 @@ export function SpoolUsageHistoryPanel({ search = '', onClearSearch, onOpenSpool
             this differs from the spool table, where a tab is always one or the
             other. Nothing about a burned gram stops being true when the reel is
             retired, so nothing is hidden until asked. */}
-        <div className="flex items-center rounded-lg border border-bambu-dark-tertiary overflow-hidden">
-          <button onClick={() => setArchived('all')} className={segment(archived === 'all')}>
-            {t('inventory.all')}
-          </button>
-          <button onClick={() => setArchived('active')} className={segment(archived === 'active')}>
-            <Package className="w-3.5 h-3.5" />
-            {t('inventory.active')}
-          </button>
-          <button onClick={() => setArchived('archived')} className={segment(archived === 'archived')}>
-            <Archive className="w-3.5 h-3.5" />
-            {t('inventory.archived')}
-          </button>
-        </div>
+        {!spoolmanMode && (
+          <div className="flex items-center rounded-lg border border-bambu-dark-tertiary overflow-hidden">
+            <button onClick={() => setArchived('all')} className={segment(archived === 'all')}>
+              {t('inventory.all')}
+            </button>
+            <button onClick={() => setArchived('active')} className={segment(archived === 'active')}>
+              <Package className="w-3.5 h-3.5" />
+              {t('inventory.active')}
+            </button>
+            <button onClick={() => setArchived('archived')} className={segment(archived === 'archived')}>
+              <Archive className="w-3.5 h-3.5" />
+              {t('inventory.archived')}
+            </button>
+          </div>
+        )}
 
         {/* Loaded in a printer, or on the shelf — the same three states the
             spool table offers, and the same amber for "on the shelf". */}
@@ -500,7 +559,11 @@ export function SpoolUsageHistoryPanel({ search = '', onClearSearch, onOpenSpool
       ) : rows.length === 0 ? (
         <div className="text-center py-12 text-bambu-gray text-sm bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg">
           <Clock className="w-6 h-6 mx-auto mb-2 opacity-50" />
-          {hasFilters ? t('inventory.usageView.emptyFiltered') : t('inventory.noUsageHistory')}
+          {hasFilters
+            ? t('inventory.usageView.emptyFiltered')
+            : spoolmanMode
+              ? t('inventory.usageView.emptySpoolman')
+              : t('inventory.noUsageHistory')}
         </div>
       ) : (
         <div className="bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg overflow-hidden">
@@ -575,8 +638,8 @@ export function SpoolUsageHistoryPanel({ search = '', onClearSearch, onOpenSpool
                         type="button"
                         onClick={() => deleteMutation.mutate({ spoolId: row.spool_id, usageId: row.id })}
                         disabled={deleteMutation.isPending}
-                        title={t('inventory.deleteUsageRecord')}
-                        aria-label={t('inventory.deleteUsageRecord')}
+                        title={deleteHint}
+                        aria-label={deleteHint}
                         className="text-bambu-gray/40 hover:text-red-600 dark:hover:text-red-400 can-hover:opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity disabled:opacity-30"
                       >
                         <X className="w-4 h-4" />

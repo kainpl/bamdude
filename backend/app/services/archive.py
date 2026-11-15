@@ -2288,6 +2288,10 @@ class ArchiveService:
         await self.db.execute(
             update(SpoolUsageHistory).where(SpoolUsageHistory.archive_id == archive_id).values(archive_id=None)
         )
+        # The Spoolman inventory's rows the same way, through their one writer.
+        from backend.app.services import spoolman_usage_history
+
+        await spoolman_usage_history.detach_archive(self.db, archive_id)
 
         # Usage-journal rows die with their archive. Explicit because the FK
         # CASCADE fires on PostgreSQL only; placed beside the history detach so

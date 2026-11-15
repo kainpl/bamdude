@@ -1,0 +1,352 @@
+"""Per-print usage history of Spoolman spools — the ONE writer (m228, upstream 1d86cff5a).
+
+Spoolman keeps a spool's totals and no per-print log, so BamDude records its
+own row for every print charge that LANDED in Spoolman. The rows live in
+``spoolman_usage_history``, a table of their own: built-in spool ids and
+Spoolman spool ids are two independent numberings, and they never share a key
+space (upstream 704919339 was exactly that collision).
+
+**Which Spoolman.** A row carries a *source token*. The token is this
+installation's name for "the Spoolman database at this address": it is stored
+in Settings (``spoolman_usage_source``) together with the address it was made
+for, created on first use, and ROTATED whenever the configured ``spoolman_url``
+is a different address (compared trimmed, without a trailing slash, case
+folded) — checked lazily by :func:`source_token`, so every door that changes
+the address is covered without hooking any of them. Readers show only the
+current token's rows; a rotated-away token's rows stay in the table as history
+of the previous Spoolman and are shown nowhere. Spoolman itself offers no
+database identity to bind to (``GET /info`` names a version and paths), so two
+cases need the operator: a host rename of the SAME database
+(:func:`keep_previous_source` moves the previous token's rows to the current
+one) and a new database behind the SAME address (:func:`rotate_source`).
+
+**Which spool.** Inside one Spoolman an id can be handed to a new spool after a
+delete. A row therefore also keeps Spoolman's ``registered`` stamp of the spool
+it charged; :func:`belongs_to` is the one rule readers use: same id AND the
+same stamp — or, for a row whose spool Spoolman did not hand over at charge
+time, not older than the spool's registration (upstream's guard).
+
+Nothing here ever writes to Spoolman: clearing or deleting history is
+bookkeeping, and the spool's weight in Spoolman is not changed by it.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import uuid
+from dataclasses import dataclass
+from datetime import datetime, timezone
+
+from sqlalchemy import delete, func, select, update
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from backend.app.core import database
+from backend.app.models.settings import Settings
+from backend.app.models.spoolman_usage_history import SpoolmanUsageHistory
+from backend.app.services.spoolman_weights import spool_net_weight
+
+logger = logging.getLogger(__name__)
+
+SOURCE_SETTING = "spoolman_usage_source"
+
+
+@dataclass(frozen=True)
+class Charge:
+    """One landed print charge, as ``spoolman_tracking._PrintCost.add`` observed it."""
+
+    spool_id: int
+    grams: float
+    # Per gram, by the charge's own price rule; None for an unpriced spool.
+    rate: float | None
+    # The Spoolman spool row when the charge path had it; None when it did not.
+    spool: dict | None
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def normalize_url(url: str | None) -> str:
+    """The address a token is bound to: trimmed, no trailing slash, case folded."""
+    return (url or "").strip().rstrip("/").casefold()
+
+
+async def _read_source(db: AsyncSession) -> tuple[Settings | None, dict]:
+    row = (await db.execute(select(Settings).where(Settings.key == SOURCE_SETTING))).scalar_one_or_none()
+    if row is None:
+        return None, {}
+    try:
+        data = json.loads(row.value or "")
+    except (TypeError, ValueError):
+        data = {}
+    if not isinstance(data, dict) or not isinstance(data.get("token"), str) or not data["token"]:
+        data = {}
+    return row, data
+
+
+async def _write_source(db: AsyncSession, row: Settings | None, data: dict) -> None:
+    value = json.dumps(data, sort_keys=True)
+    if row is None:
+        db.add(Settings(key=SOURCE_SETTING, value=value))
+    else:
+        row.value = value
+    await db.commit()
+
+
+async def _configured_url(db: AsyncSession) -> str:
+    raw = (await db.execute(select(Settings.value).where(Settings.key == "spoolman_url"))).scalar_one_or_none()
+    return normalize_url(raw)
+
+
+async def source_token(db: AsyncSession) -> str | None:
+    """The current Spoolman's token, creating or rotating it as the address demands.
+
+    None only when no token exists yet and no address is configured — there is
+    no Spoolman to name. A cleared address never rotates: the token stays bound
+    to the last address, so switching Spoolman off and on again keeps the
+    history. Commits on ``db`` only when it created or rotated the token.
+    """
+    row, data = await _read_source(db)
+    url = await _configured_url(db)
+    if data:
+        if not url or url == data.get("url"):
+            return data["token"]
+        # A different address: a different Spoolman until the operator says otherwise.
+        previous = {"token": data["token"], "url": data.get("url") or ""}
+        data = {"token": uuid.uuid4().hex, "url": url, "previous": previous}
+        await _write_source(db, row, data)
+        logger.info("[SPOOLMAN] The Spoolman address changed: usage history starts a new source")
+        return data["token"]
+    if not url:
+        return None
+    data = {"token": uuid.uuid4().hex, "url": url}
+    await _write_source(db, row, data)
+    return data["token"]
+
+
+async def source_state(db: AsyncSession) -> dict:
+    """What the Settings card needs: is there a previous source, and how much it holds."""
+    token = await source_token(db)
+    _row, data = await _read_source(db)
+    previous = data.get("previous") if isinstance(data.get("previous"), dict) else None
+    previous_rows = 0
+    if previous and previous.get("token"):
+        previous_rows = int(
+            (
+                await db.execute(
+                    select(func.count())
+                    .select_from(SpoolmanUsageHistory)
+                    .where(SpoolmanUsageHistory.source_token == previous["token"])
+                )
+            ).scalar_one()
+        )
+    rows = 0
+    if token:
+        rows = int(
+            (
+                await db.execute(
+                    select(func.count())
+                    .select_from(SpoolmanUsageHistory)
+                    .where(SpoolmanUsageHistory.source_token == token)
+                )
+            ).scalar_one()
+        )
+    return {
+        "has_source": token is not None,
+        "rows": rows,
+        "previous_url": ((previous or {}).get("url") or None) if previous_rows else None,
+        "previous_rows": previous_rows,
+    }
+
+
+async def keep_previous_source(db: AsyncSession) -> int:
+    """ "The new address is the SAME Spoolman database": its history comes along.
+
+    Moves the previous token's rows to the current one and forgets the previous
+    source. Returns how many rows moved. Commits.
+    """
+    token = await source_token(db)
+    row, data = await _read_source(db)
+    previous = data.get("previous") if isinstance(data.get("previous"), dict) else None
+    if token is None or not previous or not previous.get("token"):
+        return 0
+    result = await db.execute(
+        update(SpoolmanUsageHistory)
+        .where(SpoolmanUsageHistory.source_token == previous["token"])
+        .values(source_token=token)
+    )
+    data.pop("previous", None)
+    await _write_source(db, row, data)
+    return int(result.rowcount or 0)
+
+
+async def rotate_source(db: AsyncSession) -> None:
+    """ "This is a NEW Spoolman database behind the same address": history starts over.
+
+    The rows recorded so far stay as the previous source's. Commits.
+    """
+    token = await source_token(db)
+    if token is None:
+        return
+    row, data = await _read_source(db)
+    data = {
+        "token": uuid.uuid4().hex,
+        "url": data.get("url") or "",
+        "previous": {"token": token, "url": data.get("url") or ""},
+    }
+    await _write_source(db, row, data)
+
+
+def belongs_to(row_registered: str | None, row_created_at: datetime | None, spool_registered: str | None) -> bool:
+    """Whether a row recorded under a spool id is THIS spool's, not an earlier holder's.
+
+    The row's own ``registered`` stamp decides when it has one. Without one
+    (Spoolman did not hand the spool over at charge time) a row from before the
+    spool was registered is an earlier spool's — upstream's guard. With nothing
+    to compare, the row stays.
+    """
+    if not spool_registered:
+        return True
+    registered = _instant(spool_registered)
+    if registered is None:
+        return True
+    if row_registered:
+        own = _instant(row_registered)
+        return own is None or own == registered
+    return row_created_at is None or row_created_at >= registered
+
+
+def _instant(value: str | None) -> datetime | None:
+    """A Spoolman timestamp as naive UTC, or None when it is not one."""
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(timezone.utc).replace(tzinfo=None)
+    return parsed
+
+
+def _snapshot(spool: dict | None) -> dict:
+    """The spool's SKU fields as the inventory list shows them, or nothing."""
+    if not isinstance(spool, dict):
+        return {}
+    from backend.app.api.routes._spoolman_helpers import _map_spoolman_spool  # noqa: PLC0415
+
+    try:
+        mapped = _map_spoolman_spool(spool)
+    except (ValueError, TypeError, AttributeError):
+        return {}
+
+    def _text(value, limit: int) -> str | None:
+        return str(value)[:limit] if value else None
+
+    registered = spool.get("registered")
+    return {
+        "spool_registered": _text(registered, 40),
+        "material": _text(mapped.get("material"), 100),
+        "subtype": _text(mapped.get("subtype"), 200),
+        "brand": _text(mapped.get("brand"), 200),
+        "color_name": _text(mapped.get("color_name"), 200),
+        "rgba": _text(mapped.get("rgba"), 8),
+        "slicer_filament_name": _text(mapped.get("slicer_filament_name"), 200),
+        "label_weight": spool_net_weight(spool),
+    }
+
+
+async def record_print(
+    *,
+    printer_id: int | None,
+    archive_id: int | None,
+    status: str,
+    charges: list[Charge],
+) -> int:
+    """One row per landed charge of one print. Returns how many were written.
+
+    Runs in a short transaction of its own, after every charge has landed: it
+    observes them and can change none. The caller catches whatever this raises
+    — a history that could not be written never fails or alters a charge.
+    """
+    charges = [c for c in charges if c.grams > 0 and c.spool_id]
+    if not charges:
+        return 0
+
+    from backend.app.models.archive import PrintArchive  # noqa: PLC0415
+
+    async with database.async_session() as db:
+        token = await source_token(db)
+        if token is None:
+            return 0
+        known_archive = archive_id if archive_id is not None and archive_id > 0 else None
+        print_name = None
+        if known_archive is not None:
+            print_name = (
+                await db.execute(select(PrintArchive.print_name).where(PrintArchive.id == known_archive))
+            ).scalar_one_or_none()
+        now = _utc_now()
+        for charge in charges:
+            net = spool_net_weight(charge.spool)
+            db.add(
+                SpoolmanUsageHistory(
+                    source_token=token,
+                    spoolman_spool_id=int(charge.spool_id),
+                    printer_id=printer_id,
+                    print_name=print_name,
+                    archive_id=known_archive,
+                    weight_used=charge.grams,
+                    percent_used=int(round(charge.grams / net * 100)) if net else 0,
+                    status=(status or "completed")[:20],
+                    cost=round(charge.grams * charge.rate, 2) if charge.rate is not None else None,
+                    created_at=now,
+                    **_snapshot(charge.spool),
+                )
+            )
+        await db.commit()
+        return len(charges)
+
+
+async def clear_for_spool(db: AsyncSession, spool_id: int, spool_registered: str | None) -> int:
+    """Forget this spool's rows of the current source. Spoolman's totals are untouched.
+
+    Only the rows :func:`belongs_to` gives this spool — an earlier holder of
+    the id keeps its history. The caller commits.
+    """
+    token = await source_token(db)
+    if token is None:
+        return 0
+    rows = (
+        await db.execute(
+            select(SpoolmanUsageHistory.id, SpoolmanUsageHistory.spool_registered, SpoolmanUsageHistory.created_at)
+            .where(SpoolmanUsageHistory.source_token == token)
+            .where(SpoolmanUsageHistory.spoolman_spool_id == spool_id)
+        )
+    ).all()
+    ids = [r.id for r in rows if belongs_to(r.spool_registered, r.created_at, spool_registered)]
+    if ids:
+        await db.execute(delete(SpoolmanUsageHistory).where(SpoolmanUsageHistory.id.in_(ids)))
+    return len(ids)
+
+
+async def delete_row(db: AsyncSession, spool_id: int, usage_id: int) -> bool:
+    """Forget one row of the current source. Spoolman's totals are untouched. The caller commits."""
+    token = await source_token(db)
+    if token is None:
+        return False
+    result = await db.execute(
+        delete(SpoolmanUsageHistory)
+        .where(SpoolmanUsageHistory.id == usage_id)
+        .where(SpoolmanUsageHistory.spoolman_spool_id == spool_id)
+        .where(SpoolmanUsageHistory.source_token == token)
+    )
+    return bool(result.rowcount)
+
+
+async def detach_archive(db: AsyncSession, archive_id: int) -> None:
+    """A deleted archive leaves its rows without a link (SQLite runs no FK actions,
+    and on PostgreSQL the reference would block the delete). The caller commits."""
+    await db.execute(
+        update(SpoolmanUsageHistory).where(SpoolmanUsageHistory.archive_id == archive_id).values(archive_id=None)
+    )

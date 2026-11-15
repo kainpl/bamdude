@@ -7,12 +7,13 @@ Supports accurate partial usage reporting for failed/cancelled prints.
 
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from sqlalchemy import delete, select
 
 from backend.app.core.config import settings as app_settings
 from backend.app.core.database import async_session
+from backend.app.services import spoolman_usage_history
 from backend.app.services.print_usage_journal import without_stale_refill_runouts
 from backend.app.services.spoolman import (
     SpoolmanClientError,
@@ -472,11 +473,13 @@ async def cleanup_tracking(
     last_layer_num: int | None = None,
     last_progress: int | None = None,
     completion: CompletionSnapshot | None = None,
+    status: str = "failed",
 ):
     """Report partial usage and clean up Spoolman tracking data for failed/aborted prints.
 
     ``completion`` is the completion event's own figures; without it only the captured
-    ``last_layer_num`` / ``last_progress`` are known (see ``_report_partial_usage``)."""
+    ``last_layer_num`` / ``last_progress`` are known (see ``_report_partial_usage``).
+    ``status`` is the print's outcome, for its usage-history rows."""
     from backend.app.models.active_print_spoolman import ActivePrintSpoolman
 
     # Get tracking data first (needed for partial usage reporting)
@@ -499,6 +502,7 @@ async def cleanup_tracking(
             last_layer_num=last_layer_num,
             last_progress=last_progress,
             completion=completion,
+            status=status,
         )
     except Exception as e:
         logger.warning("[SPOOLMAN] Partial usage report failed: %s", e)
@@ -554,6 +558,9 @@ def _spool_cost_per_gram(spool: dict | None) -> float | None:
     return spool_price_per_gram(spool)
 
 
+_ObservedCharge = spoolman_usage_history.Charge
+
+
 @dataclass
 class _PrintCost:
     """What a print's charges to Spoolman spools amounted to — weight and money.
@@ -571,13 +578,27 @@ class _PrintCost:
     priced_grams: float = 0.0
     priced: int = 0
     unpriced: int = 0
+    # Which print this is, and each charge as it landed — what the usage
+    # history records (upstream 1d86cff5a, #3407). Observed only: nothing
+    # above reads these.
+    printer_id: int | None = None
+    archive_id: int | None = None
+    history_status: str = "completed"
+    observed: list[_ObservedCharge] = field(default_factory=list)
 
-    def add(self, grams: float, spool: dict | None, label: str) -> None:
-        """Record ``grams`` charged to ``spool``. Call only after the charge succeeded."""
+    def add(self, grams: float, spool: dict | None, label: str, *, spool_id: int | None = None) -> None:
+        """Record ``grams`` charged to ``spool``. Call only after the charge succeeded.
+
+        ``spool_id`` names the spool for the usage history — passed apart from
+        ``spool``, which is None when its row could not be fetched for the
+        price: a charge without a price is history all the same.
+        """
         if grams <= 0:
             return
         self.charged_grams += grams
         rate = _spool_cost_per_gram(spool)
+        if spool_id is not None:
+            self.observed.append(_ObservedCharge(spool_id=spool_id, grams=grams, rate=rate, spool=spool))
         if rate is None:
             self.unpriced += 1
             logger.debug("[SPOOLMAN] %s: spool has no usable price, the farm rate will cover it", label)
@@ -697,6 +718,7 @@ async def _report_journal_splits(
                         round(grams, 2),
                         await _spool_for_price(client, spoolman_id, method_label),
                         f"{method_label} journal slot {slot_id}",
+                        spool_id=spoolman_id,
                     )
                 logger.info(
                     "[SPOOLMAN] %s: slot %s journal split from layer %d: %.2fg -> spool %s",
@@ -1050,7 +1072,7 @@ async def _report_spool_usage_for_slots(
             # Recorded only after the charge landed: a spool Spoolman refused
             # contributes neither weight nor cost.
             if cost_out is not None:
-                cost_out.add(grams_used, spool_obj, f"{method_label} slot {slot_id}")
+                cost_out.add(grams_used, spool_obj, f"{method_label} slot {slot_id}", spool_id=spool_id_to_use)
         except (SpoolmanNotFoundError, SpoolmanClientError, SpoolmanUnavailableError) as exc:
             logger.warning("[SPOOLMAN] Failed to record usage for spool %s: %s", spool_id_to_use, exc)
 
@@ -1255,7 +1277,12 @@ async def _report_spool_usage_split_by_tray_changes(
                 )
                 spools_updated += 1
                 if cost_out is not None:
-                    cost_out.add(round(segment_grams, 2), spool_obj, f"Split slot {slot_id} seg {seg_idx}")
+                    cost_out.add(
+                        round(segment_grams, 2),
+                        spool_obj,
+                        f"Split slot {slot_id} seg {seg_idx}",
+                        spool_id=spool_id_to_use,
+                    )
             except (SpoolmanNotFoundError, SpoolmanClientError, SpoolmanUnavailableError) as exc:
                 logger.warning(
                     "[SPOOLMAN] Split slot %s seg %s: failed to record usage for spool %s: %s",
@@ -1274,6 +1301,7 @@ async def _report_partial_usage(
     last_layer_num: int | None = None,
     last_progress: int | None = None,
     completion: CompletionSnapshot | None = None,
+    status: str = "failed",
 ):
     """Report what a print that stopped used: the slicer's per-slot estimate scaled by
     how far each slot got along its own G-code timeline (``partial_slot_grams`` — the
@@ -1284,6 +1312,9 @@ async def _report_partial_usage(
     ``last_layer_num`` / ``last_progress``) — never from the printer now, which may already be
     running the next print. A layer estimated from the progress percentage sizes the weight
     only; it never divides it between reels (spec partial-print-layer-split r2).
+
+    ``status`` is the print's own outcome, recorded on its usage-history rows only; the
+    archive is settled as a failed print whatever it says.
     """
     from backend.app.services.printer_manager import printer_manager
     from backend.app.utils.threemf_tools import partial_slot_grams
@@ -1345,8 +1376,8 @@ async def _report_partial_usage(
 
     # What the aborted print was actually charged, for the archive: its weight
     # is what was used, not the estimate, and the cost follows (#2591, D6).
-    print_cost = _PrintCost()
     partial_archive_id = getattr(tracking, "archive_id", None)
+    print_cost = _PrintCost(printer_id=printer_id, archive_id=partial_archive_id, history_status=status)
     # Filament read and not charged to any spool — from every branch below, said once.
     uncharged: list[tuple[int, float]] = []
 
@@ -1803,7 +1834,7 @@ async def report_usage(printer_id: int, archive_id: int, completion: CompletionS
         slot_materials: dict[int, str] = {}
         # Every charge that lands is recorded here — its weight, and its money
         # when the spool has a price — for the archive to settle on (#2591).
-        print_cost = _PrintCost()
+        print_cost = _PrintCost(printer_id=printer_id, archive_id=archive_id, history_status="completed")
         handled_global_tray_ids: set[int] = set()
         # Filament read and not charged to any Spoolman spool (audit D4).
         uncharged: list[tuple[int, float]] = []
@@ -2078,7 +2109,7 @@ async def _report_remain_delta_for_slots(
         # ``spool`` is the full row fetched above for its filament weight, so
         # the price is already in hand (#2591).
         if cost_out is not None:
-            cost_out.add(grams_used, spool, f"AMS{ams_id}-T{tray_id}")
+            cost_out.add(grams_used, spool, f"AMS{ams_id}-T{tray_id}", spool_id=spool_id)
         if slot_colors_out is not None:
             color = filament.get("color_hex")
             if color:
@@ -2194,6 +2225,31 @@ async def _settle_charges(db, archive_id: int | None, charges: _PrintCost, *, st
     except Exception as exc:  # noqa: BLE001 — see the docstring
         logger.warning(
             "[SPOOLMAN] Archive %s: could not record the charged weight/cost: %s", archive_id, exc, exc_info=True
+        )
+    await _record_usage_history(charges)
+
+
+async def _record_usage_history(charges: _PrintCost) -> None:
+    """One usage-history row per charge that landed (upstream 1d86cff5a, #3407).
+
+    The one place the history is written from: both writers settle through
+    ``_settle_charges`` once per print, after every ``use_spool`` has answered.
+    It only reads what ``_PrintCost.add`` observed, in a transaction of its own
+    (``spoolman_usage_history.record_print``); whatever goes wrong is logged —
+    the spools are charged and the archive settled either way.
+    """
+    if not charges.observed:
+        return
+    try:
+        await spoolman_usage_history.record_print(
+            printer_id=charges.printer_id,
+            archive_id=charges.archive_id,
+            status=charges.history_status,
+            charges=list(charges.observed),
+        )
+    except Exception as exc:  # noqa: BLE001 — history must never fail a usage report
+        logger.warning(
+            "[SPOOLMAN] Archive %s: could not record the usage history: %s", charges.archive_id, exc, exc_info=True
         )
 
 

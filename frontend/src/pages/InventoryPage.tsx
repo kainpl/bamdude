@@ -1119,7 +1119,8 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
 
   const displayedView = shownView(viewMode, (mode) => {
     if (mode === 'forecast') return canViewForecast;
-    if (mode === 'history') return spoolmanModeReady && !spoolmanMode;
+    // Both inventories have a ledger; which one is shown waits for the mode.
+    if (mode === 'history') return spoolmanModeReady;
     return true;
   }, 'table');
 
@@ -1160,8 +1161,8 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
   // its own server-driven feed rendered INSTEAD of the list, so the list must
   // not keep polling behind it — a persisted "All" page size would otherwise
   // make that a full-table download every 30 s under a tab that never reads it.
-  // Gated on Spoolman mode for the same reason the forecast is: those rows are
-  // OUR ledger, and there is none to show when Spoolman owns the inventory.
+  // It waits for the Spoolman mode to be known: each inventory has its own
+  // ledger and its own feed, and the panel must never ask the wrong one.
   const historyViewActive = displayedView === 'history';
   const historyVerdictPending = viewMode === 'history' && !spoolmanModeReady;
   const listFeedSuppressed =
@@ -2305,8 +2306,10 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
           <ListViewToggle value={displayedView} onChange={setViewMode} options={[
             { value: 'table', icon: TableProperties, label: t('inventory.table') },
             { value: 'cards', icon: LayoutGrid, label: t('inventory.cards') },
-            ...(!spoolmanMode && spoolmanModeReady ? [
+            ...(spoolmanModeReady ? [
               { value: 'history' as const, icon: History, label: t('inventory.usageHistoryTab') },
+            ] : []),
+            ...(!spoolmanMode && spoolmanModeReady ? [
               { value: 'forecast' as const, icon: canViewForecast ? TrendingUp : Lock, label: t('forecast.title'), disabled: !canViewForecast, hint: t('forecast.noReadAccess') },
             ] : []),
           ]} />
@@ -2892,8 +2895,10 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true }: { spo
         <ForecastPanel />
       ) : historyViewActive ? (
         /* The farm-wide usage ledger. Server-driven end to end — page, order,
-           filters, search and totals all decided by GET /inventory/usage. */
+           filters, search and totals all decided by the active inventory's
+           usage feed (the built-in one's, or the Spoolman spools' own). */
         <SpoolUsageHistoryPanel
+          spoolmanMode={spoolmanMode}
           search={search}
           onClearSearch={() => { setSearch(''); resetPage(); }}
           onOpenSpool={openSpoolById}

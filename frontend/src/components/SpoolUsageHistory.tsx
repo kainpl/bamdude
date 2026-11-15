@@ -10,6 +10,9 @@ import { invalidateSpoolViews } from '../utils/queryInvalidation';
 
 interface SpoolUsageHistoryProps {
   spoolId: number;
+  /** A Spoolman spool: its own rows, from its own feed. Clearing or deleting
+   *  them is bookkeeping only — the spool's weight in Spoolman is not changed. */
+  spoolmanMode?: boolean;
 }
 
 const STATUS_COLORS: Record<string, string> = {
@@ -30,7 +33,7 @@ const STATUS_LABEL_KEYS: Record<string, string> = {
   runout: 'inventory.usageStatusRunout',
 };
 
-export function SpoolUsageHistory({ spoolId }: SpoolUsageHistoryProps) {
+export function SpoolUsageHistory({ spoolId, spoolmanMode = false }: SpoolUsageHistoryProps) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { showToast } = useToast();
@@ -45,33 +48,43 @@ export function SpoolUsageHistory({ spoolId }: SpoolUsageHistoryProps) {
   const timeFormat = (settings?.time_format ?? 'system') as TimeFormat;
   const dateFormat = (settings?.date_format ?? 'system') as DateFormat;
 
+  // The inventory is part of the key: the two number their spools
+  // independently, and one's cached list must never be shown for the other.
+  const usageKey = ['spool-usage', spoolmanMode ? 'spoolman' : 'built-in', spoolId];
   const { data: history, isLoading } = useQuery({
-    queryKey: ['spool-usage', spoolId],
-    queryFn: () => api.getSpoolUsageHistory(spoolId),
+    queryKey: usageKey,
+    queryFn: () => (spoolmanMode ? api.getSpoolmanSpoolUsageHistory(spoolId) : api.getSpoolUsageHistory(spoolId)),
   });
+
+  const afterChange = (builtInToast: string, spoolmanToast: string) => {
+    queryClient.invalidateQueries({ queryKey: usageKey });
+    queryClient.invalidateQueries({ queryKey: ['usage-history'] });
+    if (spoolmanMode) {
+      // Spoolman owns the spool's weight; only the record is gone.
+      showToast(spoolmanToast, 'success');
+      return;
+    }
+    // The built-in inventory returns the rows' weight to the spool, so the
+    // spool list moves too.
+    invalidateSpoolViews(queryClient);
+    queryClient.invalidateQueries({ queryKey: ['inventory-spools'] });
+    showToast(builtInToast, 'success');
+  };
 
   const clearMutation = useMutation({
-    mutationFn: () => api.clearSpoolUsageHistory(spoolId),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['spool-usage', spoolId] });
-      // Clear-all returns each row's weight to the spool, so refresh the list too.
-      invalidateSpoolViews(queryClient);
-      queryClient.invalidateQueries({ queryKey: ['inventory-spools'] });
-      showToast(t('inventory.historyCleared'), 'success');
-    },
+    mutationFn: (): Promise<unknown> =>
+      spoolmanMode ? api.clearSpoolmanSpoolUsageHistory(spoolId) : api.clearSpoolUsageHistory(spoolId),
+    onSuccess: () => afterChange(t('inventory.historyCleared'), t('inventory.historyClearedSpoolman')),
   });
 
-  // Per-row delete returns the row's weight to the spool (counts as unused
-  // again), so refresh the spool list too — not just the usage list.
   const deleteRowMutation = useMutation({
-    mutationFn: (usageId: number) => api.deleteSpoolUsageRecord(spoolId, usageId),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['spool-usage', spoolId] });
-      invalidateSpoolViews(queryClient);
-      queryClient.invalidateQueries({ queryKey: ['inventory-spools'] });
-      showToast(t('inventory.usageRecordDeleted'), 'success');
-    },
+    mutationFn: (usageId: number): Promise<unknown> =>
+      spoolmanMode
+        ? api.deleteSpoolmanSpoolUsageRecord(spoolId, usageId)
+        : api.deleteSpoolUsageRecord(spoolId, usageId),
+    onSuccess: () => afterChange(t('inventory.usageRecordDeleted'), t('inventory.usageRecordDeletedSpoolman')),
   });
+  const deleteHint = spoolmanMode ? t('inventory.deleteUsageRecordSpoolman') : t('inventory.deleteUsageRecord');
 
   if (isLoading) {
     return (
@@ -85,7 +98,7 @@ export function SpoolUsageHistory({ spoolId }: SpoolUsageHistoryProps) {
     return (
       <div className="text-center py-4 text-bambu-gray text-sm">
         <Clock className="w-5 h-5 mx-auto mb-2 opacity-50" />
-        {t('inventory.noUsageHistory')}
+        {spoolmanMode ? t('inventory.usageView.emptySpoolman') : t('inventory.noUsageHistory')}
       </div>
     );
   }
@@ -99,6 +112,7 @@ export function SpoolUsageHistory({ spoolId }: SpoolUsageHistoryProps) {
           size="sm"
           onClick={() => clearMutation.mutate()}
           disabled={clearMutation.isPending}
+          title={spoolmanMode ? t('inventory.clearHistorySpoolmanHint') : undefined}
           className="text-xs text-bambu-gray hover:text-red-700 dark:hover:text-red-400"
         >
           <Trash2 className="w-3 h-3 mr-1" />
@@ -135,8 +149,8 @@ export function SpoolUsageHistory({ spoolId }: SpoolUsageHistoryProps) {
                 type="button"
                 onClick={() => deleteRowMutation.mutate(record.id)}
                 disabled={deleteRowMutation.isPending}
-                title={t('inventory.deleteUsageRecord')}
-                aria-label={t('inventory.deleteUsageRecord')}
+                title={deleteHint}
+                aria-label={deleteHint}
                 className="text-bambu-gray/40 hover:text-red-600 dark:hover:text-red-400 can-hover:opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity disabled:opacity-30"
               >
                 <X className="w-3.5 h-3.5" />

@@ -108,3 +108,17 @@ class SpoolUsageFacets(BaseModel):
     printers: list[SpoolUsageFacetPrinter]
     materials: list[str]
     brands: list[str]
+
+
+class SpoolmanUsageSourceState(BaseModel):
+    """Which Spoolman the usage history on screen belongs to (m228).
+
+    ``previous_rows`` > 0 means the Spoolman address changed and that many rows
+    recorded against the previous address are kept apart, shown nowhere, until
+    the operator says the new address is the same database.
+    """
+
+    has_source: bool
+    rows: int
+    previous_url: str | None = None
+    previous_rows: int = 0

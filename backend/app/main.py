@@ -90,6 +90,7 @@ from backend.app.api.routes import (
     smart_plugs,
     spoolman,
     spoolman_inventory,
+    spoolman_usage,
     statistics,
     stock,
     stock_issues,
@@ -9672,6 +9673,7 @@ async def _on_print_complete_impl(
                     last_layer_num=data.get("last_layer_num"),
                     last_progress=data.get("last_progress"),
                     completion=completion,
+                    status=data.get("status") or "failed",
                 )
         except Exception as e:
             logger.debug("[SPOOLMAN] Cleanup failed: %s", e)
@@ -13282,6 +13284,7 @@ app.include_router(user_notifications.router, prefix=app_settings.api_prefix)
 app.include_router(inbox.router, prefix=app_settings.api_prefix)
 app.include_router(spoolman.router, prefix=app_settings.api_prefix)
 app.include_router(spoolman_inventory.router, prefix=app_settings.api_prefix)
+app.include_router(spoolman_usage.router, prefix=app_settings.api_prefix)
 app.include_router(updates.router, prefix=app_settings.api_prefix)
 app.include_router(macros.router, prefix=app_settings.api_prefix)
 app.include_router(maintenance.router, prefix=app_settings.api_prefix)

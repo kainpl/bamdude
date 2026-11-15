@@ -8763,6 +8763,41 @@ export interface UsageHistoryParams {
   all?: boolean;
 }
 
+/** The History view's query string — one builder for both inventories' feeds.
+ *  `page` is always set: neither feed is ever fetched unpaged from the browser. */
+function usageHistoryQuery(params: UsageHistoryParams): string {
+  const qs = new URLSearchParams();
+  if (params.q) qs.set('q', params.q);
+  for (const status of params.status ?? []) qs.append('status', status);
+  if (params.printer_id) qs.set('printer_id', params.printer_id);
+  if (params.spool_id !== undefined) qs.set('spool_id', String(params.spool_id));
+  if (params.material) qs.set('material', params.material);
+  if (params.brand) qs.set('brand', params.brand);
+  if (params.archived) qs.set('archived', params.archived);
+  if (params.assigned) qs.set('assigned', params.assigned);
+  if (params.date_from) qs.set('date_from', params.date_from);
+  if (params.date_to) qs.set('date_to', params.date_to);
+  if (params.sort_by) qs.set('sort_by', params.sort_by);
+  qs.set('page', String(params.page ?? 1));
+  if (params.all) {
+    qs.set('all', 'true');
+  } else if (params.per_page) {
+    qs.set('per_page', String(params.per_page));
+  }
+  return qs.toString();
+}
+
+/** Which Spoolman the usage history on screen belongs to. `previous_rows` > 0:
+ *  the Spoolman address changed and that many rows recorded against the
+ *  previous address are kept apart until the operator says it is the same
+ *  database. */
+export interface SpoolmanUsageSourceState {
+  has_source: boolean;
+  rows: number;
+  previous_url: string | null;
+  previous_rows: number;
+}
+
 export interface SpoolKProfile {
   id: number;
   spool_id: number;
@@ -13378,27 +13413,8 @@ export const api = {
    *  download that the forecast-server-side cycle deleted; two tests still pin
    *  that nothing fetches it that way. Reaching this table from the browser is
    *  fine — reaching all of it at once is what was wrong. */
-  getUsageHistory: (params: UsageHistoryParams = {}) => {
-    const qs = new URLSearchParams();
-    if (params.q) qs.set('q', params.q);
-    for (const status of params.status ?? []) qs.append('status', status);
-    if (params.printer_id) qs.set('printer_id', params.printer_id);
-    if (params.spool_id !== undefined) qs.set('spool_id', String(params.spool_id));
-    if (params.material) qs.set('material', params.material);
-    if (params.brand) qs.set('brand', params.brand);
-    if (params.archived) qs.set('archived', params.archived);
-    if (params.assigned) qs.set('assigned', params.assigned);
-    if (params.date_from) qs.set('date_from', params.date_from);
-    if (params.date_to) qs.set('date_to', params.date_to);
-    if (params.sort_by) qs.set('sort_by', params.sort_by);
-    qs.set('page', String(params.page ?? 1));
-    if (params.all) {
-      qs.set('all', 'true');
-    } else if (params.per_page) {
-      qs.set('per_page', String(params.per_page));
-    }
-    return request<SpoolUsagePage>(`/inventory/usage?${qs}`);
-  },
+  getUsageHistory: (params: UsageHistoryParams = {}) =>
+    request<SpoolUsagePage>(`/inventory/usage?${usageHistoryQuery(params)}`),
   /** The History view's dropdown options — computed over every usage row, not
    *  over the current selection, so narrowing one filter never empties another. */
   getUsageHistoryFacets: () => request<SpoolUsageFacets>('/inventory/usage/facets'),
@@ -13406,6 +13422,22 @@ export const api = {
     request<InventorySpool>(`/inventory/spools/${spoolId}/usage`, { method: 'DELETE' }),
   deleteSpoolUsageRecord: (spoolId: number, usageId: number) =>
     request<InventorySpool>(`/inventory/spools/${spoolId}/usage/${usageId}`, { method: 'DELETE' }),
+  // Spoolman mode: the same views over the Spoolman spools' own usage rows.
+  // A separate table and separate doors — neither inventory reads the other's
+  // history. Clearing or deleting here is bookkeeping only: the spool's weight
+  // in Spoolman is not changed.
+  getSpoolmanUsageHistory: (params: UsageHistoryParams = {}) =>
+    request<SpoolUsagePage>(`/spoolman/inventory/usage?${usageHistoryQuery({ ...params, archived: undefined })}`),
+  getSpoolmanUsageHistoryFacets: () => request<SpoolUsageFacets>('/spoolman/inventory/usage/facets'),
+  getSpoolmanSpoolUsageHistory: (spoolId: number, limit = 50) =>
+    request<SpoolUsageRecord[]>(`/spoolman/inventory/spools/${spoolId}/usage?limit=${limit}`),
+  clearSpoolmanSpoolUsageHistory: (spoolId: number) =>
+    request<{ status: string; deleted: number }>(`/spoolman/inventory/spools/${spoolId}/usage`, { method: 'DELETE' }),
+  deleteSpoolmanSpoolUsageRecord: (spoolId: number, usageId: number) =>
+    request<{ status: string }>(`/spoolman/inventory/spools/${spoolId}/usage/${usageId}`, { method: 'DELETE' }),
+  getSpoolmanUsageSource: () => request<SpoolmanUsageSourceState>('/spoolman/inventory/usage/source'),
+  keepPreviousSpoolmanUsageSource: () =>
+    request<SpoolmanUsageSourceState>('/spoolman/inventory/usage/source/keep-previous', { method: 'POST' }),
   syncWeightsFromAms: () =>
     request<{ synced: number; skipped: number }>('/inventory/sync-ams-weights', { method: 'POST' }),
   // Stock forecasting + shopping list (upstream #1184)
