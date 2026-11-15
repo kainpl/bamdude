@@ -1414,6 +1414,25 @@ async def derive_effective_filament_id(*, spool=None, slot_tray_info_idx: str | 
     return slot_tray_info_idx or None
 
 
+def _hotend_unknown(printer_id: int, state, ams_id: int, slot_id: int) -> bool:
+    """Whether a dual-nozzle printer leaves it open which hotend an AMS slot feeds.
+
+    True only for an AMS slot on a dual-nozzle model whose extruder map does not
+    name that AMS (it reports 0xE right after connect, or sits behind a Filament
+    Track Switch). A single-nozzle printer has one hotend, and the external
+    holder names its side itself.
+    """
+    from backend.app.utils.printer_models import is_dual_nozzle_model
+    from backend.app.utils.slot_nozzle import slot_extruder
+
+    if ams_id == 255:
+        return False
+    model = printer_manager.get_model(printer_id)
+    if not isinstance(model, str) or not is_dual_nozzle_model(model):
+        return False
+    return slot_extruder(state, ams_id, slot_id) is None
+
+
 async def apply_active_calibration_to_slot(
     *,
     db: AsyncSession,
@@ -1449,6 +1468,20 @@ async def apply_active_calibration_to_slot(
 
     client = printer_manager.get_client(printer_id)
     if not client or not client.state.connected:
+        return False, None
+
+    if _hotend_unknown(printer_id, client.state, ams_id, slot_id):
+        # Every binder hands this helper ``extruder_or_default`` — 0 when the
+        # printer does not say which hotend the slot feeds. On a dual-nozzle
+        # machine that is the RIGHT hotend's calibration on a slot that may
+        # feed the left (upstream bff7f6810). Unknown binds nothing; the slot
+        # is bound by the next binder that runs once the map names it.
+        logger.info(
+            "K bind skipped printer=%s ams=%s slot=%s: the printer does not say which hotend this slot feeds",
+            printer_id,
+            ams_id,
+            slot_id,
+        )
         return False, None
 
     cache_row: FilamentCalibration | None = None

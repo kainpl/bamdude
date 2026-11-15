@@ -439,8 +439,17 @@ export function ConfigureAmsSlotModal({
     // `extrusion_cali_sel: -1` — silently CLEARING the printer's binding while
     // the printer card's hover-card still shows the profile. Gated on
     // activeIdx > 0 so caliIdx 0/null can't leak an unrelated profile in.
+    //
+    // Only while the dialog still names the filament the slot HOLDS (upstream
+    // 02e39b18b): the bound profile is a calibration of that filament, and
+    // offering — and pre-selecting — it after the operator picked another one
+    // saved a PETG slot bound to a PLA calibration. BambuStudio offers a slot
+    // its own filament's profiles only and sends -1 otherwise
+    // (AMSMaterialsSetting.cpp). A slot that reports no filament id has
+    // nothing to compare with and keeps the net.
+    const familyChanged = !!slotInfo.trayInfoIdx && !!selectedPresetId && selectedPresetId !== slotInfo.trayInfoIdx;
     const activeIdx = slotInfo.caliIdx;
-    if (activeIdx != null && activeIdx > 0 && !result.some(p => p.slot_id === activeIdx)) {
+    if (!familyChanged && activeIdx != null && activeIdx > 0 && !result.some(p => p.slot_id === activeIdx)) {
       const active = kprofilesData.profiles.find(
         p => p.slot_id === activeIdx && (slotInfo.extruderId === undefined || p.extruder_id === slotInfo.extruderId),
       );
@@ -448,7 +457,7 @@ export function ConfigureAmsSlotModal({
     }
 
     return result;
-  }, [kprofilesData?.profiles, selectedPresetInfo, targetFilamentId, nozzleFlow, slotInfo.extruderId, slotInfo.caliIdx]);
+  }, [kprofilesData?.profiles, selectedPresetInfo, targetFilamentId, nozzleFlow, slotInfo.extruderId, slotInfo.caliIdx, slotInfo.trayInfoIdx, selectedPresetId]);
 
   // Pre-select current profile when modal opens, reset when closes
   useEffect(() => {

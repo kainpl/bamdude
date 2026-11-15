@@ -3142,6 +3142,18 @@ async def get_calibration_options(
 # ============================================================================
 
 
+def _kprofile_filament_id(value: str) -> str:
+    """The filament id a K-profile is filed under, for an id a client named it by."""
+    from backend.app.utils import filament_catalog as catalog
+
+    given = (value or "").strip()
+    if not given or catalog.get_family(given):
+        return given
+    base = given.split("_")[0] if given.startswith("GF") and "_" in given else given
+    preset = catalog.preset_for_setting_id(given) or catalog.preset_for_setting_id(base)
+    return preset.filament_id if preset else given
+
+
 @router.post("/{printer_id}/slots/{ams_id}/{tray_id}/configure")
 async def configure_ams_slot(
     printer_id: int,
@@ -3232,8 +3244,12 @@ async def configure_ams_slot(
     effective_tray_info_idx = plan.tray_info_idx
     effective_setting_id = plan.setting_id
 
-    # K-profile linkage keeps its own explicit id when the client sent one.
-    filament_id_for_kprofile = kprofile_filament_id if kprofile_filament_id else effective_tray_info_idx
+    # K-profile linkage keeps its own explicit id when the client sent one — as
+    # a FILAMENT id: the printer's K table is keyed by it, and a Bambu setting
+    # id sent here by an API client ("GFSL99") addressed nothing (upstream
+    # d6de7aa69). The catalog decides, full id before the bare one; anything it
+    # does not know as a setting id goes out as given.
+    filament_id_for_kprofile = _kprofile_filament_id(kprofile_filament_id) or effective_tray_info_idx
 
     # Always send ams_set_filament_setting - the user explicitly clicked
     # "Configure Slot", so honor that.  Previous versions skipped this for
