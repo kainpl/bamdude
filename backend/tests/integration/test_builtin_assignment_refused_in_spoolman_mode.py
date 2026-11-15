@@ -75,6 +75,29 @@ class TestTheWriteIsRefused:
         assert response.status_code == 409
         assert response.json()["detail"]["error"] == "spoolman_mode"
 
+    async def test_add_from_slot_is_409_and_creates_no_built_in_spool(
+        self, async_client: AsyncClient, printer_factory, db_session: AsyncSession
+    ):
+        """The third writer: "+ Add to inventory" made a built-in spool AND its
+        slot row whenever the page had not learnt the mode (review slots I-4)."""
+        printer = await printer_factory(name="X1C")
+        await _spoolman_mode(db_session)
+        state = MagicMock()
+        state.raw_data = {
+            "ams": [{"id": 0, "tray": [{"id": 1, "tray_type": "PLA", "tray_color": "FF0000FF", "tag_uid": "A1B2C3D4"}]}]
+        }
+
+        with patch("backend.app.services.printer_manager.printer_manager") as pm:
+            pm.get_status.return_value = state
+            response = await async_client.post(
+                "/api/v1/inventory/spools/from-slot", json={"printer_id": printer.id, "ams_id": 0, "tray_id": 1}
+            )
+
+        assert response.status_code == 409
+        assert response.json()["detail"]["error"] == "spoolman_mode"
+        assert await _row_count(db_session) == 0
+        assert int(await db_session.scalar(select(func.count()).select_from(Spool)) or 0) == 0
+
     async def test_the_built_in_mode_still_assigns(
         self, async_client: AsyncClient, printer_factory, db_session: AsyncSession
     ):

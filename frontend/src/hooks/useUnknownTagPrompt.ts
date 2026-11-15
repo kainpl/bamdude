@@ -98,8 +98,15 @@ export function useUnknownTagPrompt() {
 
   const addMutation = useMutation({
     mutationFn: async (prompt: UnknownSpoolPrompt) => {
-      const settings = queryClient.getQueryData<{ spoolman_enabled?: boolean }>(['settings']);
-      if (settings?.spoolman_enabled) {
+      // The Spoolman status, not the settings cache: every user who may add a
+      // spool can read it, and "no settings loaded" is not the built-in
+      // inventory. A status that cannot be read adds nowhere.
+      const status = await queryClient.fetchQuery({
+        queryKey: ['spoolman-status'],
+        queryFn: api.getSpoolmanStatus,
+        staleTime: 60 * 1000,
+      });
+      if (status.enabled) {
         await api.createSpoolmanSpoolFromSlot({
           printer_id: prompt.printer_id,
           ams_id: prompt.ams_id,

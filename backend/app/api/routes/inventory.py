@@ -4237,6 +4237,9 @@ async def create_spool_from_slot(
     from backend.app.services.printer_manager import printer_manager
     from backend.app.services.spool_tag_matcher import auto_assign_spool, create_spool_from_tray
 
+    # A built-in spool and its slot row: the third writer of the built-in ledger.
+    await _refuse_in_spoolman_mode(db)
+
     state = printer_manager.get_status(req.printer_id)
     if not state or not state.raw_data:
         raise HTTPException(status_code=404, detail="Printer not connected or no state available")
