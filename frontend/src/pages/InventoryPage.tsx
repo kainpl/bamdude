@@ -1378,7 +1378,10 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true, spoolma
       showToast(t('inventory.spoolDeleted'), 'success');
     },
     onError: (error: Error) => {
-      if (error instanceof ApiError && error.status === 404) {
+      if (error instanceof ApiError && error.code === 'spool_in_use') {
+        // A spool that has been used, or sits in a slot, is archived — never deleted.
+        showToast(t('inventory.spoolDeleteInUse'), 'warning');
+      } else if (error instanceof ApiError && error.status === 404) {
         showToast(t('inventory.deleteSpoolNotFound'), 'error');
       } else if (error instanceof ApiError && error.status === 503) {
         showToast(t('inventory.spoolmanUnreachable'), 'error');
@@ -1473,7 +1476,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true, spoolma
   const runBulk = async (
     kind: 'archive' | 'restore' | 'delete',
     ids: number[],
-  ): Promise<{ ok: number; failed: number }> => {
+  ): Promise<{ ok: number; failed: number; refused: number }> => {
     if (spoolmanMode) {
       const res =
         kind === 'archive'
@@ -1482,7 +1485,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true, spoolma
             ? await api.bulkRestoreSpoolmanInventorySpools(ids)
             : await api.bulkDeleteSpoolmanInventorySpools(ids);
       const ok = res.archived ?? res.restored ?? res.deleted ?? 0;
-      return { ok, failed: res.errors?.length ?? 0 };
+      return { ok, failed: res.errors?.length ?? 0, refused: 0 };
     }
     const res =
       kind === 'archive'
@@ -1491,7 +1494,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true, spoolma
           ? await api.bulkRestoreSpools(ids)
           : await api.bulkDeleteSpools(ids);
     const ok = res.archived ?? res.restored ?? res.deleted ?? 0;
-    return { ok, failed: res.not_found?.length ?? 0 };
+    return { ok, failed: res.not_found?.length ?? 0, refused: res.refused?.length ?? 0 };
   };
 
   const bulkActionMutation = useMutation({
@@ -1499,9 +1502,15 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true, spoolma
       runBulk(kind, ids),
     onMutate: () => setBulkPending(true),
     onSettled: () => setBulkPending(false),
-    onSuccess: ({ ok, failed }, { kind }) => {
+    onSuccess: ({ ok, failed, refused }, { kind }) => {
       refreshSpoolQueries();
       const label = t(`inventory.bulk.action.${kind}`);
+      if (refused > 0) {
+        // Used / in-use spools are never deleted: say how many stayed and why,
+        // and KEEP the selection so they can be archived in the next click.
+        showToast(t('inventory.bulk.deleteRefused', { ok, count: refused }), 'warning');
+        return;
+      }
       if (ok > 0 && failed === 0) {
         showToast(t('inventory.bulk.done', { action: label, count: ok }), 'success');
         clearSelection();

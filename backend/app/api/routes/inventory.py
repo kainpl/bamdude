@@ -2155,6 +2155,66 @@ async def bulk_update_spools(
     return list(result.scalars().all())
 
 
+async def spool_delete_blockers(db: AsyncSession, spool_ids: list[int]) -> dict[int, list[str]]:
+    """Why each of these spools may not be hard-deleted: ``{spool_id: [reason, ...]}``.
+
+    A spool that anything names is archived, never deleted (owner decision Р6).
+    Deleting one took its usage history along on PostgreSQL (the forecast lost
+    that consumption, a print's cost fell back to an estimate) and left orphans
+    on SQLite — where the next spool created takes ``max(id) + 1``: delete the
+    newest spool mid-print, create another, and the running print, which froze
+    that id in its session and journal, is charged to a spool that was never in
+    the slot. Reasons:
+
+    * ``usage_history`` — it has booked usage;
+    * ``assigned`` — it sits in a slot;
+    * ``print_session`` — a running print's session names it (in memory, or the
+      saved row a restart restores it from);
+    * ``open_print`` — a journal event of a print that is still printing names it.
+
+    A read; the tracker's own tables are not touched.
+    """
+    from backend.app.models.active_print_session import ActivePrintSession
+    from backend.app.models.archive import PrintArchive
+    from backend.app.models.print_usage_event import PrintUsageEvent
+    from backend.app.models.spool_usage_history import SpoolUsageHistory
+    from backend.app.services import usage_tracker
+
+    wanted = set(spool_ids)
+    blockers: dict[int, list[str]] = {}
+    if not wanted:
+        return blockers
+
+    def block(spool_id, reason: str) -> None:
+        if spool_id in wanted and reason not in blockers.setdefault(spool_id, []):
+            blockers[spool_id].append(reason)
+
+    for spool_id in (
+        await db.execute(select(SpoolUsageHistory.spool_id).where(SpoolUsageHistory.spool_id.in_(wanted)).distinct())
+    ).scalars():
+        block(spool_id, "usage_history")
+    for spool_id in (
+        await db.execute(select(SpoolAssignment.spool_id).where(SpoolAssignment.spool_id.in_(wanted)).distinct())
+    ).scalars():
+        block(spool_id, "assigned")
+    for session in list(usage_tracker._active_sessions.values()):
+        for spool_id in (getattr(session, "spool_assignments", None) or {}).values():
+            block(spool_id, "print_session")
+    for saved in (await db.execute(select(ActivePrintSession.spool_assignments))).scalars():
+        for spool_id in (saved or {}).values() if isinstance(saved, dict) else ():
+            block(spool_id, "print_session")
+    for spool_id in (
+        await db.execute(
+            select(PrintUsageEvent.spool_id)
+            .join(PrintArchive, PrintArchive.id == PrintUsageEvent.archive_id)
+            .where(PrintUsageEvent.spool_id.in_(wanted), PrintArchive.status == "printing")
+            .distinct()
+        )
+    ).scalars():
+        block(spool_id, "open_print")
+    return blockers
+
+
 @router.post("/spools/bulk-delete")
 async def bulk_delete_spools(
     data: SpoolBulkIds,
@@ -2169,20 +2229,26 @@ async def bulk_delete_spools(
     untouched with no indication of how far it got. Declared before
     ``/spools/{spool_id}`` so the literal path isn't captured by the int
     matcher.
+
+    A spool that has been used or is in use is not deleted (see
+    :func:`spool_delete_blockers`): it is reported in ``refused`` — archive it
+    instead — and the rest of the selection goes through.
     """
     result = await db.execute(select(Spool).where(Spool.id.in_(data.spool_ids)))
     spools = list(result.scalars().all())
     found_ids = {s.id for s in spools}
     not_found = [i for i in data.spool_ids if i not in found_ids]
 
-    for spool in spools:
+    blockers = await spool_delete_blockers(db, sorted(found_ids))
+    deletable = [spool for spool in spools if spool.id not in blockers]
+    for spool in deletable:
         await db.delete(spool)
     await db.commit()
 
     # One broadcast for the whole batch, not one per row: the table refreshes
     # on a single re-fetch instead of N.
     await ws_manager.broadcast({"type": "inventory_changed"})
-    return {"deleted": len(spools), "not_found": not_found}
+    return {"deleted": len(deletable), "not_found": not_found, "refused": sorted(blockers)}
 
 
 @router.post("/spools/bulk-archive")
@@ -2284,14 +2350,27 @@ async def delete_spool(
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.INVENTORY_UPDATE),
 ):
-    """Hard delete a spool."""
+    """Hard delete a spool that nothing names; a used or in-use one is archived instead (409)."""
     result = await db.execute(select(Spool).where(Spool.id == spool_id))
     spool = result.scalar_one_or_none()
     if not spool:
         raise HTTPException(404, "Spool not found")
 
+    reasons = (await spool_delete_blockers(db, [spool_id])).get(spool_id)
+    if reasons:
+        raise HTTPException(
+            409,
+            detail={
+                "error": "spool_in_use",
+                "message": "This spool has usage history or is in use and cannot be deleted; archive it instead",
+                "reasons": reasons,
+            },
+        )
+
     await db.delete(spool)
     await db.commit()
+    # The single delete announced nothing: other tabs kept the spool in their lists.
+    await ws_manager.broadcast({"type": "inventory_changed"})
     return {"status": "deleted"}
 
 

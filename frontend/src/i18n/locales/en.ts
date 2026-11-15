@@ -9495,6 +9495,7 @@ export default {
       partial: '{{action}}: {{ok}} done, {{failed}} failed',
       failed: '{{action}} failed for all {{count}} spools',
       failedGeneric: 'Bulk action failed',
+      deleteRefused: 'Deleted {{ok}}. {{count}} spool(s) have usage history or are in use and were kept - archive them instead.',
       action: {
         archive: 'Archive',
         restore: 'Restore',
@@ -9613,6 +9614,7 @@ export default {
     spoolUpdated: 'Spool updated',
     saveFailed: 'Could not save the spool',
     spoolDeleted: 'Spool deleted',
+    spoolDeleteInUse: 'This spool has usage history or is in use, so it cannot be deleted. Archive it instead.',
     spoolArchived: 'Spool archived',
     spoolRestored: 'Spool restored',
     deleteConfirm: 'Are you sure you want to delete this spool? This cannot be undone.',

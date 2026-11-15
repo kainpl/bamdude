@@ -1061,6 +1061,7 @@
   "This serial belongs to an archived printer — unarchive it instead of re-adding": "Цей серійний номер належить архівованому принтеру — розархівуйте його замість повторного додавання",
   "This server is not the one the operation was made for.": "Цей сервер не той, для якого створено операцію.",
   "This source has no operator declaration to apply. Declare it first.": "Це джерело не має операторської декларації, яку можна застосувати. Спершу задекларуйте його.",
+  "This spool has usage history or is in use and cannot be deleted; archive it instead": "Ця котушка має історію витрат або зараз використовується, тому видалити її не можна; перемістіть її в архів",
   "This spool is in a slot a running print feeds from; it can be moved when the print ends": "Ця котушка стоїть у слоті, з якого зараз подається філамент для друку; перемістити її можна після завершення друку",
   "This spool's filament states no weight in Spoolman": "Для філаменту цієї котушки у Spoolman не вказано ваги",
   "This tag is a staggered-start group. Un-choose it under Settings → Printing → Queue & Scheduling → Staggered start first.": "Цей тег — група поетапного запуску. Спочатку зніміть його вибір у Налаштування → Друк → Черги та планування → Поетапний запуск.",

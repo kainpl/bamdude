@@ -2111,6 +2111,8 @@ export interface BulkActionResult {
   already_active?: number;
   /** Ids that no longer exist — reported, never fatal to the batch. */
   not_found: number[];
+  /** Spools a bulk delete left alone because they have usage history or are in use: archive those instead. */
+  refused?: number[];
 }
 
 /**
