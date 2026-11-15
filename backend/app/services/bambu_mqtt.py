@@ -1359,6 +1359,16 @@ _DEVICE_BUSY_CLEAR_INTERVAL = 30.0
 HMS_MQTT_VERIFY_FAILED: str = "0500050000010007"
 
 
+class KProfileReadError(Exception):
+    """The printer's K-profile table could not be READ — not connected, or no reply.
+
+    Not the same thing as an empty table (upstream 080d866fb): a nozzle that
+    holds no profiles answers with an empty list. A caller that treats the two
+    alike clears a slot's K, re-creates profiles that exist, or files an
+    unanswered nozzle as read — so no answer is raised, and each caller decides.
+    """
+
+
 @dataclass
 class KProfile:
     """Pressure advance (K) calibration profile from printer."""
@@ -2671,8 +2681,10 @@ class BambuMQTTClient:
         self._kprofiles_by_nozzle: dict[str, list[KProfile]] = {}
         self._cali_history_by_nozzle: dict[str, list] = {}
         # One read of the fitted diameters' tables per connection — see
-        # ``_request_fitted_kprofile_tables``. Re-armed in ``_on_connect``.
+        # ``_request_fitted_kprofile_tables``. Re-armed in ``_on_connect``, and
+        # by ``rearm_fitted_kprofile_tables`` when a table went unanswered.
         self._kprofile_tables_requested = False
+        self._kprofile_table_attempts = 0
         # Verdicts on K-profile *writes* (``extrusion_cali_set`` /
         # ``extrusion_cali_del``), keyed by the sequence_id we sent — the printer
         # echoes it back. ``None`` = registered, not yet answered. Filled on the
@@ -3143,6 +3155,7 @@ class BambuMQTTClient:
             # The table may have changed while the link was down: read the
             # fitted diameters again once this connection's first push names them.
             self._kprofile_tables_requested = False
+            self._kprofile_table_attempts = 0
             client.subscribe(self.topic_subscribe)
             # Subscribe to request topic for ams_mapping capture (if supported by broker)
             if self._request_topic_supported:
@@ -8978,10 +8991,28 @@ class BambuMQTTClient:
         if not diameters:
             return
         self._kprofile_tables_requested = True
+        self._kprofile_table_attempts = getattr(self, "_kprofile_table_attempts", 0) + 1
         try:
             self.on_kprofile_tables_due(diameters)
         except Exception as e:  # noqa: BLE001 — never into the push that carried the nozzle
             logger.warning("[%s] on_kprofile_tables_due failed: %s", self.serial_number, e)
+
+    # How many times one connection asks for the fitted nozzles' tables. More
+    # than one, because the printer is known to ignore a K-profile request now
+    # and then; bounded, because a printer that never answers must not be asked
+    # on every status push for as long as it stays connected.
+    KPROFILE_TABLE_ATTEMPTS_PER_CONNECTION = 3
+
+    def rearm_fitted_kprofile_tables(self) -> None:
+        """A fitted nozzle's table went unanswered: the read is still owed.
+
+        The next push that names a diameter asks again, up to
+        ``KPROFILE_TABLE_ATTEMPTS_PER_CONNECTION`` times per connection. Until a
+        table is read nothing can match a calibration to its live index, so no
+        binder — the pre-print one included — binds anything on that nozzle.
+        """
+        if getattr(self, "_kprofile_table_attempts", 0) < self.KPROFILE_TABLE_ATTEMPTS_PER_CONNECTION:
+            self._kprofile_tables_requested = False
 
     def _prime_kprofile_request(self):
         """Send a priming K-profile request on connect.
@@ -10454,18 +10485,24 @@ class BambuMQTTClient:
             max_retries: Maximum number of retry attempts
 
         Returns:
-            List of KProfile objects
+            List of KProfile objects — empty when the printer ANSWERED with an
+            empty table for that nozzle.
+
+        Raises:
+            KProfileReadError: the table was not read (not connected, or no
+            attempt was answered). Never an empty list for that: "not read"
+            and "holds nothing" lead every caller to different actions.
         """
         if not self._client or not self.state.connected:
             logger.warning("[%s] Cannot get K-profiles: not connected", self.serial_number)
-            return []
+            raise KProfileReadError("printer not connected")
 
         # Capture current event loop for thread-safe callback
         try:
             self._loop = asyncio.get_running_loop()
         except RuntimeError:
             logger.warning("[%s] No running event loop", self.serial_number)
-            return []
+            raise KProfileReadError("no running event loop") from None
 
         for attempt in range(max_retries):
             # One waiter per request, keyed by the sequence_id we are about to
@@ -10513,7 +10550,7 @@ class BambuMQTTClient:
                 self._kprofile_waiters.pop(seq_id, None)
 
         logger.error("[%s] Failed to get K-profiles after %s attempts", self.serial_number, max_retries)
-        return []
+        raise KProfileReadError(f"no answer for nozzle {nozzle_diameter} after {max_retries} attempts")
 
     def set_kprofile(
         self,

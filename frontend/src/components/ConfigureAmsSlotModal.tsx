@@ -233,11 +233,18 @@ export function ConfigureAmsSlotModal({
     staleTime: 30_000,
   });
 
-  const { data: kprofilesData, isLoading: kprofilesLoading } = useQuery({
+  // A table the printer did not answer for is an ERROR, not an empty list
+  // (upstream 080d866fb). No retry: the server already asked the printer three
+  // times, and the dialog says the read failed instead of spinning for a minute.
+  const { data: kprofilesData, isLoading: kprofilesLoading, isError: kprofilesUnread } = useQuery({
     queryKey: ['kprofiles', printerId, nozzleDiameter],
     queryFn: () => api.getKProfiles(printerId, nozzleDiameter),
     enabled: isOpen && !!printerId,
+    retry: false,
   });
+  // Read at execute time for the same reason as the K selection below.
+  const kprofilesUnreadRef = useRef(false);
+  kprofilesUnreadRef.current = kprofilesUnread;
 
   // Fetch color catalog
   // Canonical Bambu printer-model registry ("Bambu Lab X1 Carbon" → "X1C").
@@ -256,7 +263,17 @@ export function ConfigureAmsSlotModal({
       // The K value and the profile's ids travel in the same payload and had
       // the same exposure, so they read the ref too.
       const kProfile = selectedKProfileRef.current;
-      const caliIdx = kProfile?.slot_id ?? -1;
+      // With the table unread nothing could be offered or picked, so "no
+      // profile selected" is not a choice of the default K: the slot keeps the
+      // index it is on. Only for the filament it already holds — an index is a
+      // profile of one filament, and another family starts from the default.
+      const keepLiveIdx =
+        !kProfile
+        && kprofilesUnreadRef.current
+        && slotInfo.caliIdx != null
+        && slotInfo.caliIdx >= 0
+        && selectedPresetId === slotInfo.trayInfoIdx;
+      const caliIdx = kProfile?.slot_id ?? (keepLiveIdx ? slotInfo.caliIdx! : -1);
       const color = colorHex || slotInfo.trayColor?.slice(0, 6) || 'FFFFFF';
       const kValue = kProfile?.k_value ? parseFloat(kProfile.k_value) : 0;
 
@@ -899,7 +916,11 @@ export function ConfigureAmsSlotModal({
                   </span>
                 )}
               </label>
-              {matchingKProfiles.length > 0 ? (
+              {kprofilesUnread ? (
+                <p role="status" className="text-sm text-amber-700 dark:text-amber-400 py-2">
+                  {t('configureAmsSlot.kProfilesUnread')}
+                </p>
+              ) : matchingKProfiles.length > 0 ? (
                 <Select
                   className="w-full"
                   value={selectedKProfile?.name || ''}

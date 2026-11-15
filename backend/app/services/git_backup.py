@@ -24,6 +24,7 @@ from backend.app.models.settings import Settings
 from backend.app.models.user import User
 from backend.app.services import meter_watch, swap_compatibility
 from backend.app.services.bambu_cloud import BambuCloudService
+from backend.app.services.bambu_mqtt import KProfileReadError
 from backend.app.services.printer_manager import printer_manager
 
 logger = logging.getLogger(__name__)
@@ -582,6 +583,16 @@ class GitBackupService:
                         }
                         files[f"kprofiles/{serial}/{nozzle}.json"] = profile_data
                         printer_profiles[nozzle] = len(profiles)
+                except KProfileReadError as e:
+                    # Not read is not empty: the file of this nozzle is left as
+                    # the previous run wrote it, and that is said — it used to
+                    # look exactly like a nozzle that holds no profiles.
+                    logger.warning(
+                        "K-profiles of printer %s nozzle %s were not read (%s) — the backup keeps the previous file",
+                        serial,
+                        nozzle,
+                        e,
+                    )
                 except Exception as e:
                     logger.warning("Failed to get K-profiles for printer %s nozzle %s: %s", serial, nozzle, e)
 

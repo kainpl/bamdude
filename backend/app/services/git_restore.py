@@ -2211,6 +2211,22 @@ class GitRestoreService:
                 # is a silent no-op — the printer drops it and we would still
                 # report the profile restored. So resolve the live index first.
                 current = await self._current_kprofile_index(client, nozzle, serial)
+                if current is None:
+                    # Not read is not "holds nothing" (upstream 080d866fb). With
+                    # no live table nothing can be matched, and sending the
+                    # nozzle anyway adds every profile as a NEW one beside its
+                    # original — duplicates that were tallied restored. The
+                    # nozzle is left as it is and its profiles are counted
+                    # failed; the other nozzles and printers go on.
+                    tally.failed += len(profiles)
+                    tally.note(
+                        "kprofilesUnread",
+                        f"{printer.name} ({serial}) did not answer for nozzle {nozzle} — its profiles were not restored",
+                        nozzle=nozzle,
+                        printer=printer.name,
+                        serial=serial,
+                    )
+                    continue
 
                 profile_dicts = []
                 unmatched = 0
@@ -2362,17 +2378,18 @@ class GitRestoreService:
             return True, ""
 
     @staticmethod
-    async def _current_kprofile_index(client, nozzle: str, serial: str) -> list:
+    async def _current_kprofile_index(client, nozzle: str, serial: str) -> list | None:
         """Read the printer's live profiles for one nozzle.
 
-        Best-effort: a read failure degrades to "nothing matched", which makes
-        every profile an add rather than aborting the restore.
+        ``None`` when the table could not be read — the caller skips that
+        nozzle. An answered empty table is ``[]``: there every profile is
+        rightly an add. A read failure never aborts the restore.
         """
         try:
             return list(await client.get_kprofiles(nozzle_diameter=nozzle) or [])
         except Exception as e:
             logger.warning("Could not read live K-profiles for %s nozzle %s: %s", serial, nozzle, e)
-            return []
+            return None
 
     @staticmethod
     def _match_kprofile(entry: dict, current: list, claimed: set[int]):

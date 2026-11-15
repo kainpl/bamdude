@@ -1164,6 +1164,7 @@ class CalibrationService:
         # routes by session context. Push whichever value we computed.
         push_value = payload.pa_k_value if payload.pa_k_value is not None else payload.flow_ratio
         client = printer_manager.get_client(session.printer_id)
+        slot_selected = False
         if client and client.state.connected and push_value is not None:
             client.extrusion_cali_set(
                 tray_id=fil["tray_id"],
@@ -1183,6 +1184,9 @@ class CalibrationService:
             # no-op there.
             if new_row.cali_idx is None:
                 try:
+                    # A table that was not read raises (KProfileReadError) and
+                    # lands in the except below: the calibration is saved, but
+                    # its index is unknown, so it cannot be selected on the slot.
                     entries = await client.get_kprofiles(str(session.nozzle_diameter))
                     for kp in entries or []:
                         if (
@@ -1204,13 +1208,30 @@ class CalibrationService:
                     filament_id=fil["filament_id"],
                     nozzle_diameter=str(session.nozzle_diameter),
                 )
+                slot_selected = True
+            else:
+                # Saved, but NOT selected on the slot: the slot stays on its old
+                # K until the table is read and something binds it. Said, not
+                # silent — "saved" alone read as "the slot prints with it".
+                logger.warning(
+                    "save_result: calibration %s saved on printer %s but not selected on AMS%s-T%s "
+                    "(its index on the printer is unknown)",
+                    new_row.id,
+                    session.printer_id,
+                    fil.get("ams_id"),
+                    fil.get("tray_id"),
+                )
 
         session.status = "saved"
         await db.commit()
         await broadcast_calibration_event(
             printer_id=session.printer_id,
             event="saved",
-            payload={"session_id": session.id, "filament_calibration_id": new_row.id},
+            payload={
+                "session_id": session.id,
+                "filament_calibration_id": new_row.id,
+                "slot_selected": slot_selected,
+            },
         )
         return new_row
 

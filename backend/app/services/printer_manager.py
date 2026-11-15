@@ -93,20 +93,35 @@ async def _prime_kprofile_tables(printer_id: int, diameters: list[str]) -> int:
     publish because it waits for the reply and retries — the printer is known
     to ignore a K-profile request now and then.
 
+    A nozzle the printer did not answer for is NOT read (``KProfileReadError``,
+    upstream 080d866fb): it is not counted, not logged as "0 profiles", and the
+    client is told the read is still owed — otherwise the connection's one
+    attempt is spent and nothing binds a calibration on that nozzle until some
+    later reply happens to arrive.
+
     Returns the number of diameters that were read.
     """
+    from backend.app.services.bambu_mqtt import KProfileReadError
+
     client = printer_manager.get_client(printer_id)
     if client is None or not client.state.connected:
         return 0
     read = 0
+    unread = False
     for diameter in diameters:
         try:
             profiles = await client.get_kprofiles(nozzle_diameter=diameter, max_retries=2)
+        except KProfileReadError as e:
+            unread = True
+            logger.warning("[Printer %s] K-profile table for nozzle %s was not read: %s", printer_id, diameter, e)
+            continue
         except Exception as e:  # noqa: BLE001 — costs this nozzle its table, never the connection
             logger.warning("[Printer %s] Could not read the K-profile table for nozzle %s: %s", printer_id, diameter, e)
             continue
         read += 1
         logger.info("[Printer %s] Read K-profile table for nozzle %s: %d profiles", printer_id, diameter, len(profiles))
+    if unread:
+        client.rearm_fitted_kprofile_tables()
     return read
 
 

@@ -20,7 +20,7 @@ import {
   StickyNote,
 } from 'lucide-react';
 import { SelectionBox } from './SelectionBox';
-import { api } from '../api/client';
+import { api, ApiError } from '../api/client';
 import type { KProfile, KProfileCreate, KProfileDelete, Permission } from '../api/client';
 import { Card, CardContent } from './Card';
 import { Button } from './Button';
@@ -860,6 +860,10 @@ export function KProfilesView() {
 
   // Check if error is due to printer not being connected
   const isOfflineError = kprofilesError?.message?.includes('not connected');
+  // The printer was asked and did not answer: its table is unknown, NOT empty
+  // (upstream 080d866fb). Without this the page offered "create the first
+  // profile" over profiles that exist. Told by the refusal's code.
+  const isUnreadError = kprofilesError instanceof ApiError && kprofilesError.code === 'kprofiles_unread';
 
   // Auto-select first connected printer
   useEffect(() => {
@@ -1432,6 +1436,20 @@ export function KProfilesView() {
             <h3 className="text-lg font-semibold text-white mb-2">{t('kProfiles.printerOffline')}</h3>
             <p className="text-bambu-gray mb-4">
               {t('kProfiles.printerOfflineDesc')}
+            </p>
+            <Button variant="secondary" onClick={() => refetchProfiles()}>
+              <RefreshCw className="w-4 h-4" />
+              {t('common.refresh')}
+            </Button>
+          </CardContent>
+        </Card>
+      ) : isUnreadError ? (
+        <Card>
+          <CardContent className="py-12 text-center">
+            <AlertCircle className="w-12 h-12 text-amber-500 mx-auto mb-4" />
+            <h3 className="text-lg font-semibold text-white mb-2">{t('kProfiles.readFailed')}</h3>
+            <p className="text-bambu-gray mb-4">
+              {t('kProfiles.readFailedDesc')}
             </p>
             <Button variant="secondary" onClick={() => refetchProfiles()}>
               <RefreshCw className="w-4 h-4" />

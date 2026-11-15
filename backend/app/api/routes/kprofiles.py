@@ -142,8 +142,22 @@ async def get_kprofiles(
     if not client or not client.state.connected:
         raise HTTPException(400, "Printer not connected")
 
-    # Request K-profiles from printer
-    profiles = await client.get_kprofiles(nozzle_diameter=nozzle_diameter)
+    # Request K-profiles from printer. No answer is NOT an empty table (upstream
+    # 080d866fb): answering 200 with nothing made the page offer "create the
+    # first profile" over profiles that exist, and left the Configure Slot
+    # dialog nothing to pre-select — its save then cleared the slot's K.
+    from backend.app.services.bambu_mqtt import KProfileReadError
+
+    try:
+        profiles = await client.get_kprofiles(nozzle_diameter=nozzle_diameter)
+    except KProfileReadError as exc:
+        raise HTTPException(
+            504,
+            detail={
+                "error": "kprofiles_unread",
+                "message": "The printer did not answer the K-profile request",
+            },
+        ) from exc
 
     # Mirror live profiles into our cache so every visible cali_idx maps to a
     # stable filament_calibration.id (Wave 7b sync wire-in). Idempotent.
