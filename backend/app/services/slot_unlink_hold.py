@@ -10,7 +10,9 @@ reel was even given the oldest full stock spool's identity).
 So that one unlink — presence bit off, while idle — waits. It is confirmed only
 when the slot still reports the bit off ``HOLD_SECONDS`` later AND at least one
 more AMS report has arrived since the first one. A bit that comes back inside
-the window was a glitch: the row never left, so no insertion claim runs. A reel
+the window was a glitch: the row never left, so no insertion claim runs for a
+slot that shows the row's own filament again (a reel that comes back unreadable
+is another reel: the stock claim treats the held row as leaving). A reel
 really taken out loses its row ``HOLD_SECONDS`` later — the AMS callback runs
 only on an AMS change, so :func:`schedule_recheck` asks again by itself.
 
