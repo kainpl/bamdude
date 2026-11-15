@@ -1055,20 +1055,60 @@ class TestAsyncWrappers:
         forever and pin the pool. That wait stays bounded; only the transfer
         was freed.
         """
+        import asyncio
+
         from backend.app.services import bambu_ftp
+        from backend.app.services.printer_file_lanes import ftp_key, printer_file_runtime
 
         bambu_ftp.BambuFTPClient._mode_cache.pop("127.0.0.1", None)
         local = tmp_path / "never.bin"
+        connects: list[str] = []
 
-        # Nothing ever signals "started", which is what a slot never granted
-        # looks like from the caller's side.
-        monkeypatch.setattr(bambu_ftp.threading.Event, "wait", lambda self, timeout=None: False, raising=False)
+        class FakeClient:
+            def __init__(self, *args, **kwargs):
+                pass
 
-        result = await download_file_async(
-            "127.0.0.1", "12345678", "/cache/never.bin", local, timeout=0.1, printer_model="X1C"
-        )
+            def connect(self):
+                connects.append("connect")
+                return True
+
+            def download_to_file(self, remote_path, local_path):
+                return True
+
+            def disconnect(self):
+                pass
+
+        monkeypatch.setattr(bambu_ftp, "BambuFTPClient", FakeClient)
+        monkeypatch.setattr(FakeClient, "_mode_cache", {}, raising=False)
+        monkeypatch.setattr(FakeClient, "A1_MODELS", set(), raising=False)
+
+        # Another operation holds the printer's lane and never lets go. The
+        # admission wait is an asyncio wait on the loop with the caller's cap
+        # (G10 U0: the old ``started.wait`` cap queued on the same executor
+        # behind the very job it waited for, so it never fired).
+        release = asyncio.Event()
+        held = asyncio.Event()
+
+        async def holder():
+            async with printer_file_runtime.hold(ftp_key("127.0.0.1")):
+                held.set()
+                await release.wait()
+
+        owner = asyncio.create_task(holder())
+        await held.wait()
+        try:
+            started = time.monotonic()
+            result = await download_file_async(
+                "127.0.0.1", "12345678", "/cache/never.bin", local, timeout=0.1, printer_model="X1C"
+            )
+            elapsed = time.monotonic() - started
+        finally:
+            release.set()
+            await owner
 
         assert result is False
+        assert elapsed < 2.0
+        assert connects == []  # nothing was started, so nothing is left owning a session
 
     @pytest.mark.asyncio
     async def test_download_file_try_paths_first_succeeds(self, patch_ftp_port, tmp_path):

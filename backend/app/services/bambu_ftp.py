@@ -5,15 +5,24 @@ import logging
 import os
 import socket
 import ssl
-import threading
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from enum import Enum
 from ftplib import FTP, FTP_TLS  # nosec B402
 from io import BytesIO
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TypeVar
+
+from backend.app.services.printer_file_lanes import (
+    LaneRefused,
+    LaneTimeout,
+    LaneWorker,
+    WorkerCancelled,
+    ftp_key,
+    printer_file_runtime,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -141,24 +150,18 @@ class DeleteResult(Enum):
 # second concurrent session, which removes the plaintext-rejection root cause.
 # This is separate from the #1401 TLS-1.2 cap (that fixes data-channel 426
 # truncation, a different symptom).
-_ftp_locks: dict[str, asyncio.Lock] = {}
-
-
-def _ftp_lock(ip_address: str) -> asyncio.Lock:
-    """Return the process-wide FTP lock for a printer IP, creating it lazily."""
-    lock = _ftp_locks.get(ip_address)
-    if lock is None:
-        lock = asyncio.Lock()
-        _ftp_locks[ip_address] = lock
-    return lock
+# ⚠️ The lane belongs to the ACTUAL session, not to the coroutine (G10 A, spec
+# r4 §3.3/§5.1): ``printer_file_lanes`` keeps it locked until the worker thread
+# holding the socket has really ended, so a timed-out or cancelled caller can no
+# longer leave a live session behind an unlocked lane (U0 probes R1/R2/Q1).
 
 
 def _ftp_serialized(fn: Callable[..., Awaitable[T]]) -> Callable[..., Awaitable[T]]:
-    """Serialize an async FTP entry point per printer IP.
+    """Hold the printer's FTP lane for one call; never released under a live worker.
 
     The wrapped function must take ``ip_address`` as its first positional arg
-    (or keyword). The lock is held only for the duration of one connect→op→close
-    so retries (via :func:`with_ftp_retry`) release it between attempts.
+    (or keyword). Retries (:func:`with_ftp_retry`) still release the lane between
+    attempts — but only once the previous attempt's thread has ended.
     """
 
     @functools.wraps(fn)
@@ -166,10 +169,138 @@ def _ftp_serialized(fn: Callable[..., Awaitable[T]]) -> Callable[..., Awaitable[
         ip = kwargs.get("ip_address") if "ip_address" in kwargs else (args[0] if args else None)
         if not ip:
             return await fn(*args, **kwargs)
-        async with _ftp_lock(ip):
+        async with printer_file_runtime.hold(ftp_key(ip)):
             return await fn(*args, **kwargs)
 
     return wrapper
+
+
+async def _on_lane(
+    ip_address: str,
+    name: str,
+    target: Callable[[LaneWorker], T],
+    *,
+    admission_timeout: float | None = None,
+    timeout: float | None = None,
+) -> T:
+    """Run ``target`` as one owned FTP worker on the printer's lane.
+
+    ``admission_timeout`` bounds the wait for the lane and a worker slot (#2572);
+    ``timeout`` bounds the wait for the result. Neither frees the lane early.
+    """
+    return await printer_file_runtime.call(
+        ftp_key(ip_address), name, target, admission_timeout=admission_timeout, timeout=timeout
+    )
+
+
+def _session(worker: LaneWorker, client: "BambuFTPClient") -> bool:
+    """Connect ``client`` for ``worker``: the cancel intent is checked before the first byte."""
+    worker.checkpoint()
+    if not client.connect():
+        return False
+    abort = getattr(client, "abort", None)
+    if abort is not None:
+        worker.attach(abort)
+    try:
+        worker.checkpoint()
+    except WorkerCancelled:
+        _end_session(worker, client)
+        raise
+    return True
+
+
+def _end_session(worker: LaneWorker, client: "BambuFTPClient") -> None:
+    abort = getattr(client, "abort", None)
+    if abort is not None:
+        worker.detach(abort)
+    client.disconnect()
+
+
+# The outcome of listing one directory (G10 CR2). ``complete`` is the only answer
+# that says what the directory holds; ``missing`` is absence PROVEN by a complete
+# parent namespace; ``unreadable`` is a 550 (missing OR forbidden); ``unavailable``
+# is no session or a failed/partial LIST; ``slow`` is the caller's wait running out
+# while the listing may still be running.
+LISTING_COMPLETE = "complete"
+LISTING_MISSING = "missing"
+LISTING_UNREADABLE = "unreadable"
+LISTING_UNAVAILABLE = "unavailable"
+LISTING_SLOW = "slow"
+
+
+@dataclass(frozen=True)
+class DirectoryListing:
+    path: str
+    status: str
+    entries: tuple[dict, ...] = ()
+    reason: str | None = None
+    # Lines a complete LIST returned that could not be read as entries: the
+    # namespace is then not authoritative for an absence proof.
+    unparsed: int = 0
+
+
+def _reply_code(error: BaseException) -> str:
+    text = str(error)
+    return text[:3] if text[:3].isdigit() else type(error).__name__
+
+
+_MONTHS = {
+    name: number
+    for number, name in enumerate(
+        ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"), start=1
+    )
+}
+#: How far ahead of "now" a year-less LIST time may lie before it is read as last year.
+#: A day covers a printer clock and a host clock in different zones, and the rollover.
+_YEAR_TOLERANCE = timedelta(days=1)
+
+
+def _parse_list_mtime(month: str, day: str, time_or_year: str, now: datetime) -> tuple[datetime | None, str]:
+    """``(wall time, quality)`` of one LIST date; never a guessed instant.
+
+    The printer prints its own wall clock with no zone, so the value stays naive
+    and its quality says how much of it is known (G10 A6): ``year_inferred`` (a
+    time, the year chosen against ``now`` in UTC with a day of tolerance — that
+    picks the year, it does not prove the zone) or ``date_only``; ``unknown``
+    when it cannot be read.
+    """
+    try:
+        month_number = _MONTHS[month]
+        day_number = int(day)
+        if ":" in time_or_year:
+            hour, minute = (int(part) for part in time_or_year.split(":", 1))
+            reference = now.astimezone(UTC).replace(tzinfo=None)
+            candidate = datetime(reference.year, month_number, day_number, hour, minute)
+            if candidate > reference + _YEAR_TOLERANCE:
+                candidate = candidate.replace(year=reference.year - 1)
+            return candidate, "year_inferred"
+        return datetime(int(time_or_year), month_number, day_number), "date_only"
+    except (KeyError, ValueError):
+        return None, "unknown"
+
+
+def _parse_list_line(item: str, directory: str, now: datetime) -> dict | None:
+    """One ``ls -l`` line as an entry, or None when it is not one."""
+    parts = item.split()
+    if len(parts) < 9:
+        return None
+    name = " ".join(parts[8:])
+    is_dir = item.startswith("d")
+    try:
+        size = int(parts[4]) if not is_dir else 0
+    except ValueError:
+        return None
+    mtime, quality = _parse_list_mtime(parts[5], parts[6], parts[7], now)
+    entry = {
+        "name": name,
+        "is_directory": is_dir,
+        "size": size,
+        "path": f"{directory.rstrip('/')}/{name}",
+        "mtime_quality": quality,
+    }
+    if mtime:
+        entry["mtime"] = mtime
+    return entry
 
 
 class FileNotOnPrinterError(Exception):
@@ -272,6 +403,9 @@ class ImplicitFTP_TLS(FTP_TLS):
             )
         # A1/A1 Mini (skip_session_reuse=True): Don't wrap data channel in SSL
         # The control channel remains encrypted via implicit FTPS
+        # Kept so a cancel from another thread can close THIS transfer's socket
+        # (BambuFTPClient.abort); ftplib closes it itself when the transfer ends.
+        self.data_conn = conn
         return conn, size
 
 
@@ -535,6 +669,23 @@ class BambuFTPClient:
             pass  # Best-effort; the socket may already be gone
         logger.debug("FTP session to %s closed without QUIT (%s), held %s", self.ip_address, reason, held)
 
+    def abort(self) -> None:
+        """Close this session's sockets from another thread, so a blocked recv/send returns.
+
+        The owner of the lane still waits for the worker thread to end; this only
+        makes that end come now instead of at the next socket timeout.
+        """
+        ftp = self._ftp
+        if ftp is None:
+            return
+        for sock in (getattr(ftp, "data_conn", None), getattr(ftp, "sock", None)):
+            if sock is None:
+                continue
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except (OSError, ValueError):
+                pass  # already closed, or never connected
+
     def disconnect(self):
         """Disconnect from the FTP server."""
         if self._ftp:
@@ -552,63 +703,82 @@ class BambuFTPClient:
                 logger.debug("FTP session to %s closed (QUIT acknowledged), held %s", self.ip_address, held)
 
     def list_files(self, path: str = "/") -> list[dict]:
-        """List files in a directory."""
-        if not self._ftp:
-            return []
+        """List a directory: its entries after a COMPLETE listing, else ``[]`` (legacy shape).
 
-        files = []
+        ⚠️ ``[]`` here is "empty" and "could not tell" at once; :meth:`list_directory`
+        says which.
+        """
+        listing = self.list_directory(path)
+        return list(listing.entries) if listing.status == LISTING_COMPLETE else []
+
+    def list_directory(self, path: str = "/", *, now: datetime | None = None) -> "DirectoryListing":
+        """List ``path`` and say what the answer proves (G10 CR2).
+
+        The outcome is decided inside CWD/LIST, never by the connect: a 550 on
+        CWD or LIST means missing OR forbidden (``unreadable`` — the printers
+        word both the same), any other failure or a LIST cut short means
+        ``unavailable``, and a partial listing is never published.
+        """
+        if not self._ftp:
+            return DirectoryListing(path, LISTING_UNAVAILABLE, reason="not_connected")
         try:
             self._ftp.cwd(path)
-            items = []
+        except ftplib.error_perm as e:
+            return DirectoryListing(path, LISTING_UNREADABLE, reason=_reply_code(e))
+        except (OSError, EOFError, ftplib.Error) as e:
+            logger.info("FTP CWD %s failed: %s", path, e)
+            return DirectoryListing(path, LISTING_UNAVAILABLE, reason=type(e).__name__)
+        items: list[str] = []
+        try:
             self._ftp.retrlines("LIST", items.append)
-
-            for item in items:
-                parts = item.split()
-                if len(parts) >= 9:
-                    name = " ".join(parts[8:])
-                    is_dir = item.startswith("d")
-                    size = int(parts[4]) if not is_dir else 0
-
-                    # Parse modification time from FTP listing
-                    # Format: "Nov 30 10:15" or "Nov 30  2024"
-                    mtime = None
-                    try:
-                        from datetime import datetime
-
-                        month = parts[5]
-                        day = parts[6]
-                        time_or_year = parts[7]
-
-                        # Determine if it's time (HH:MM) or year
-                        if ":" in time_or_year:
-                            # Recent file: "Nov 30 10:15" - assume current year
-                            year = datetime.now().year
-                            time_str = f"{month} {day} {year} {time_or_year}"
-                            mtime = datetime.strptime(time_str, "%b %d %Y %H:%M")
-                            # If parsed date is in the future, use last year
-                            if mtime > datetime.now():
-                                mtime = mtime.replace(year=year - 1)
-                        else:
-                            # Older file: "Nov 30 2024" - no time, just date
-                            time_str = f"{month} {day} {time_or_year}"
-                            mtime = datetime.strptime(time_str, "%b %d %Y")
-                    except (ValueError, IndexError):
-                        pass  # Non-critical: mtime parsing is best-effort; file entry works without it
-
-                    file_entry = {
-                        "name": name,
-                        "is_directory": is_dir,
-                        "size": size,
-                        "path": f"{path.rstrip('/')}/{name}",
-                    }
-                    if mtime:
-                        file_entry["mtime"] = mtime
-                    files.append(file_entry)
-            logger.debug("Listed %s files in %s", len(files), path)
-        except (OSError, ftplib.Error) as e:
+        except ftplib.error_perm as e:
+            return DirectoryListing(path, LISTING_UNREADABLE, reason=_reply_code(e))
+        except (OSError, EOFError, ftplib.Error) as e:
             logger.info("FTP list_files failed for %s: %s", path, e)
+            return DirectoryListing(path, LISTING_UNAVAILABLE, reason=type(e).__name__)
+        reference = now or datetime.now(UTC)
+        entries: list[dict] = []
+        unparsed = 0
+        for item in items:
+            entry = _parse_list_line(item, path, reference)
+            if entry is None:
+                unparsed += 1
+            else:
+                entries.append(entry)
+        logger.debug("Listed %s files in %s", len(entries), path)
+        return DirectoryListing(path, LISTING_COMPLETE, tuple(entries), unparsed=unparsed)
 
-        return files
+    def list_directory_proving(self, path: str, *, max_ancestors: int = 3) -> "DirectoryListing":
+        """:meth:`list_directory`, and turn an ambiguous 550 into a PROVEN absence where possible.
+
+        A 550 cannot tell missing from forbidden, so absence is proven only by a
+        complete, fully parsed listing of the parent that lacks the exact child
+        name — on this same session (U0 acceptance §3.2). A parent that is
+        itself unreadable is proven absent the same way, up to ``max_ancestors``
+        levels. A child the parent does list, or any ambiguity, stays
+        ``unreadable``.
+        """
+        listing = self.list_directory(path)
+        if listing.status != LISTING_UNREADABLE:
+            return listing
+        chain = PurePosixPath(path if path.startswith("/") else "/" + path)
+        child = chain
+        for _ in range(max_ancestors):
+            parent = child.parent
+            if parent == child:
+                break
+            parent_listing = self.list_directory(str(parent))
+            if parent_listing.status == LISTING_COMPLETE:
+                if parent_listing.unparsed:
+                    return listing  # not an authoritative namespace
+                names = {entry["name"] for entry in parent_listing.entries}
+                if child.name in names:
+                    return listing  # present but refused: unreadable, not missing
+                return DirectoryListing(path, LISTING_MISSING, reason=f"absent from {parent}")
+            if parent_listing.status != LISTING_UNREADABLE:
+                return listing
+            child = parent
+        return listing
 
     def download_file(self, remote_path: str) -> bytes | None:
         """Download a file from the printer."""
@@ -618,9 +788,22 @@ class BambuFTPClient:
         try:
             buffer = BytesIO()
             self._ftp.retrbinary(f"RETR {remote_path}", buffer.write)
-            return buffer.getvalue()
         except (OSError, ftplib.Error):
             return None
+        data = buffer.getvalue()
+        # A short read is a failed read, here as on the file path (G10 A5): the
+        # bytes path served routes, timelapse reads and cleanup hashing with no
+        # check at all. No SIZE answer is no evidence and changes nothing.
+        server_size = self.get_file_size(remote_path)
+        if server_size is not None and server_size >= 0 and len(data) != server_size:
+            logger.warning(
+                "FTP read of %s is short: got %s bytes, the printer reports %s — treating as failed",
+                remote_path,
+                len(data),
+                server_size,
+            )
+            return None
+        return data
 
     def download_to_file(self, remote_path: str, local_path: Path) -> bool:
         """Download a file from the printer to local filesystem."""
@@ -1209,7 +1392,6 @@ class BambuFTPClient:
         return result if result else None
 
 
-@_ftp_serialized
 async def download_file_async(
     ip_address: str,
     access_code: str,
@@ -1219,40 +1401,25 @@ async def download_file_async(
     socket_timeout: float | None = None,
     printer_model: str | None = None,
 ) -> bool:
-    """Async wrapper for downloading a file with timeout.
+    """Download one file to ``local_path`` on the printer's FTP lane.
 
-    For A1/A1 Mini printers, automatically tries prot_p first, then falls back
-    to prot_c if the download fails. The working mode is cached for future operations.
+    For A1/A1 Mini printers, tries prot_p first, then falls back to prot_c; the
+    working mode is cached for future operations.
 
     Args:
-        ip_address: Printer IP address
-        access_code: Printer access code
-        remote_path: Remote file path on printer
-        local_path: Local path to save file
-        timeout: Overall operation timeout (asyncio)
+        timeout: how long to wait for the lane and a worker slot (#2572) — NOT a
+            cap on the transfer. A 21.6 MB 3MF off a P1S needs 96 s at 231 KB/s;
+            a stall is caught by ``socket_timeout`` on every recv, which is what
+            a stall actually is (BambuStudio: CONNECTTIMEOUT 10, TIMEOUT 0).
         socket_timeout: FTP socket timeout for slow connections (e.g., A1 printers)
         printer_model: Printer model for A1-specific workarounds
     """
-    loop = asyncio.get_event_loop()
     is_a1 = printer_model in BambuFTPClient.A1_MODELS if printer_model else False
 
-    # Per-attempt completion state: asyncio.wait_for cannot cancel
-    # run_in_executor threads, so on timeout the executor may still complete
-    # the download after we stop waiting. The thread flips ``success`` to True
-    # ONLY after the file is fully written — a post-timeout check lets us
-    # salvage the download without mistaking an in-progress partial write
-    # for a completed one. Each attempt gets its own dict and event so a
-    # zombie from an earlier attempt can't flip the flag for a later one
-    # (#972 upstream 1b434880 + #1014 upstream d3425c7f: zombie-thread wait).
-    # The event is set in ``_download``'s finally block so the post-timeout
-    # path can wait for genuine thread completion instead of a fixed sleep.
-
-    def _download(force_prot_c: bool, completion: dict, done: threading.Event, started: threading.Event) -> bool:
+    def _download(force_prot_c: bool):
         mode_str = "prot_c" if force_prot_c else "prot_p"
-        # Set as soon as this body runs: an executor slot was granted, and
-        # everything the caller's cap is for happened before this line.
-        started.set()
-        try:
+
+        def target(worker: LaneWorker) -> bool:
             client = BambuFTPClient(
                 ip_address,
                 access_code,
@@ -1260,57 +1427,36 @@ async def download_file_async(
                 printer_model=printer_model,
                 force_prot_c=force_prot_c,
             )
-            if client.connect():
-                try:
-                    result = client.download_to_file(remote_path, local_path)
-                    if result:
-                        BambuFTPClient.cache_mode(ip_address, mode_str)
-                        completion["success"] = True
-                    return result
-                finally:
-                    client.disconnect()
-            return False
-        finally:
-            done.set()
+            if not _session(worker, client):
+                return False
+            try:
+                result = client.download_to_file(remote_path, local_path)
+                if result:
+                    BambuFTPClient.cache_mode(ip_address, mode_str)
+                return result
+            finally:
+                _end_session(worker, client)
+
+        return target
 
     async def _run(force_prot_c: bool) -> bool:
-        # ⚠️ ``timeout`` bounds how long we wait for a worker SLOT, not the
-        # download. The two used to share one number (``ftp_timeout``, 30 s by
-        # default), which made it a ceiling on file size: a 21.6 MB 3MF off a
-        # P1S needs 96 s at 231 KB/s and could never finish inside it.
-        #
-        # A stalled transfer is still caught — by ``socket_timeout`` on every
-        # recv, which is what a stall actually is. BambuStudio draws the line
-        # in the same place (`Http.cpp`: CONNECTTIMEOUT 10, TIMEOUT 0 = never).
-        #
-        # This also retires the #1014 zombie-salvage dance below: there is no
-        # longer a window where we stop waiting while the thread keeps writing,
-        # so there is nothing to salvage and nothing to race.
-        completion = {"success": False}
-        done = threading.Event()
-        started = threading.Event()
-        future = loop.run_in_executor(None, _download, force_prot_c, completion, done, started)
-        if not await loop.run_in_executor(None, started.wait, timeout):
-            logger.warning(
-                "FTP download waited %ss for a worker slot for %s and never got one",
-                timeout,
-                remote_path,
+        try:
+            return await printer_file_runtime.call(
+                ftp_key(ip_address), "download", _download(force_prot_c), admission_timeout=timeout
             )
+        except LaneRefused as refused:
+            logger.warning("FTP download of %s not started (%s)", remote_path, refused.reason)
             return False
-        return await future
+        except WorkerCancelled:
+            return False
 
-    # Check if we have a cached mode for this printer
     cached_mode = BambuFTPClient._mode_cache.get(ip_address)
-
     if cached_mode:
-        force_prot_c = cached_mode == "prot_c"
-        return await _run(force_prot_c)
+        return await _run(cached_mode == "prot_c")
 
-    # No cached mode - try prot_p first
     if await _run(False):
         return True
 
-    # Download failed - for A1 models, try prot_c fallback
     if is_a1:
         logger.info("FTP download failed with prot_p for A1 model, trying prot_c fallback...")
         return await _run(True)
@@ -1344,7 +1490,6 @@ async def download_file_try_paths_async(
     return found is not None
 
 
-@_ftp_serialized
 async def download_file_first_path_async(
     ip_address: str,
     access_code: str,
@@ -1362,64 +1507,82 @@ async def download_file_first_path_async(
     Args:
         socket_timeout: FTP socket timeout for slow connections (e.g., A1 printers)
         printer_model: Printer model for A1-specific workarounds
-        timeout: overall async cap. The per-socket timeout only bounds an
-            in-flight worker; it does NOT bound how long this coroutine waits for
-            a free executor slot. On a large farm where offline printers keep
-            workers busy on dead connects, that wait is otherwise unbounded — and
-            any caller holding a DB connection while awaiting this would pin it
-            until the pool is exhausted (#2572). The cap converts that into a
-            bounded wait; the orphaned worker finishes and its result is discarded.
+        timeout: how long to wait for the lane and a worker slot (#2572); never a cap on the transfer.
     """
-    loop = asyncio.get_event_loop()
+    return (
+        await download_first_path(
+            ip_address,
+            access_code,
+            remote_paths,
+            local_path,
+            socket_timeout=socket_timeout,
+            printer_model=printer_model,
+            timeout=timeout,
+        )
+    ).path
 
-    started = threading.Event()
 
-    def _download():
-        # Set the moment this body runs — i.e. the moment an executor slot was
-        # granted. Everything the cap below is for happens BEFORE this line.
-        started.set()
+@dataclass(frozen=True)
+class FirstPathResult:
+    """What one walk over candidate paths proved (G10 A7).
+
+    ``path`` — the candidate whose bytes are in the local file, or None.
+    ``not_readable`` — candidates the printer answered 550 for (missing OR forbidden: 550 proves neither).
+    ``transfer_failed`` — the candidate whose transfer started and failed; the walk stopped there,
+    because the session it ran on is no longer known to be healthy.
+    ``reason`` — why nothing was downloaded: ``unavailable`` (no session), ``transfer_failed``,
+    ``not_readable`` (every candidate 550), ``busy`` / ``restoring`` (never started), ``cancelled``.
+    """
+
+    path: str | None
+    not_readable: tuple[str, ...] = ()
+    transfer_failed: str | None = None
+    reason: str | None = None
+
+
+async def download_first_path(
+    ip_address: str,
+    access_code: str,
+    remote_paths: list[str],
+    local_path: Path,
+    *,
+    socket_timeout: float | None = None,
+    printer_model: str | None = None,
+    timeout: float = 90.0,
+) -> FirstPathResult:
+    """Walk ``remote_paths`` over ONE session; stop at the first success or the first transport failure."""
+
+    def target(worker: LaneWorker) -> FirstPathResult:
         client = BambuFTPClient(ip_address, access_code, timeout=socket_timeout, printer_model=printer_model)
-        if not client.connect():
-            return None
-
+        if not _session(worker, client):
+            return FirstPathResult(None, reason="unavailable")
+        not_readable: list[str] = []
         try:
-            # FileNotOnPrinterError signals "try the next path", not "give up" —
-            # this function's whole purpose is to walk a list of candidates
-            # over one connection. Only a real transport error should bubble.
             for remote_path in remote_paths:
+                worker.checkpoint()
                 try:
                     if client.download_to_file(remote_path, local_path):
-                        return remote_path
+                        return FirstPathResult(remote_path, tuple(not_readable))
                 except FileNotOnPrinterError:
+                    # 550: not readable at this path — try the next candidate on the same session.
+                    not_readable.append(remote_path)
                     continue
-            return None
+                # The transfer started and failed (short read, dropped data channel, stall): the
+                # session may be dead, and walking on would cost a socket timeout per candidate.
+                return FirstPathResult(None, tuple(not_readable), transfer_failed=remote_path, reason="transfer_failed")
+            return FirstPathResult(None, tuple(not_readable), reason="not_readable")
         finally:
-            client.disconnect()
+            _end_session(worker, client)
 
-    # ⚠️ The cap bounds the wait for a free executor slot — NOT the transfer.
-    # Those are different waits and only one of them is unbounded by accident:
-    # #2572 is about a caller holding a DB connection while every worker is
-    # busy on dead connects, which is resolved the instant this task starts.
-    # Applying the same number to the transfer made it a file-size limit —
-    # a 21.6 MB 3MF off a P1S measures 96 s at 231 KB/s, so it never finished
-    # inside 90 s and the print got a "no 3MF available" archive instead.
-    #
-    # BambuStudio draws the same line: `Http.cpp` sets CURLOPT_CONNECTTIMEOUT
-    # to 10 and CURLOPT_TIMEOUT to 0, and 0 means "never". A stalled transfer
-    # is caught by ``socket_timeout`` on each recv, which is what a stall
-    # actually looks like.
-    future = loop.run_in_executor(None, _download)
-    if not await loop.run_in_executor(None, started.wait, timeout):
-        logger.warning(
-            "FTP download_try_paths waited %ss for a worker slot for %s and never got one (#2572)",
-            timeout,
-            ip_address,
-        )
-        return None
-    return await future
+    try:
+        return await printer_file_runtime.call(ftp_key(ip_address), "download-first", target, admission_timeout=timeout)
+    except LaneRefused as refused:
+        logger.warning("FTP download walk for %s not started (%s)", ip_address, refused.reason)
+        return FirstPathResult(None, reason=refused.reason)
+    except WorkerCancelled:
+        return FirstPathResult(None, reason="cancelled")
 
 
-@_ftp_serialized
 async def upload_file_async(
     ip_address: str,
     access_code: str,
@@ -1449,91 +1612,83 @@ async def upload_file_async(
         socket_timeout: FTP socket timeout for slow connections (e.g., A1 printers)
         printer_model: Printer model for A1-specific workarounds
     """
-    loop = asyncio.get_event_loop()
     is_a1 = printer_model in BambuFTPClient.A1_MODELS if printer_model else False
 
-    # Per-attempt completion state, mirroring ``download_file_async`` (#972 / #1014).
-    # ``asyncio.wait_for`` cannot cancel a ``run_in_executor`` thread, so on timeout
-    # the worker keeps STOR-ing. Each attempt gets its own dict + event so a zombie
-    # from an earlier attempt can't flip the flag for a later one.
-    def _upload(force_prot_c: bool, completion: dict, done: threading.Event) -> bool:
+    def _upload(force_prot_c: bool):
         mode_str = "prot_c" if force_prot_c else "prot_p"
-        logger.info(
-            f"FTP connecting to {ip_address} for upload (model={printer_model}, "
-            f"mode={mode_str}, socket_timeout={socket_timeout}s)..."
-        )
-        try:
+
+        def target(worker: LaneWorker) -> bool:
+            logger.info(
+                f"FTP connecting to {ip_address} for upload (model={printer_model}, "
+                f"mode={mode_str}, socket_timeout={socket_timeout}s)..."
+            )
             client = BambuFTPClient(
                 ip_address, access_code, timeout=socket_timeout, printer_model=printer_model, force_prot_c=force_prot_c
             )
-            if client.connect():
-                logger.info("FTP connected to %s", ip_address)
-                try:
-                    result = client.upload_file(local_path, remote_path, progress_callback)
-                    if result:
-                        # Cache the working mode
-                        BambuFTPClient.cache_mode(ip_address, mode_str)
-                        completion["success"] = True
-                    if report is not None:
-                        report.failure = None if result else client.failure
-                    return result
-                finally:
-                    client.disconnect()
-            logger.warning("FTP connection failed to %s", ip_address)
-            if report is not None:
-                report.failure = client.failure or FtpFailure("network")
-            return False
-        finally:
-            done.set()
+            if not _session(worker, client):
+                logger.warning("FTP connection failed to %s", ip_address)
+                if report is not None:
+                    report.failure = client.failure or FtpFailure("network")
+                return False
+            logger.info("FTP connected to %s", ip_address)
+            try:
+                result = client.upload_file(local_path, remote_path, progress_callback)
+                if result:
+                    BambuFTPClient.cache_mode(ip_address, mode_str)
+                if report is not None:
+                    report.failure = None if result else client.failure
+                return result
+            finally:
+                _end_session(worker, client)
+
+        return target
 
     async def _run(force_prot_c: bool) -> bool:
-        """One upload attempt, with the zombie-thread wait on timeout (#2529).
+        """One upload attempt; the lane stays owned by its thread until that thread ends (#2529).
 
-        Returning False the instant ``wait_for`` expires is what let a slow upload
-        be retried *on top of itself*: the worker thread is still STOR-ing, and
-        ``_ftp_serialized`` holds its per-IP lock only for one connect→op→close —
-        it deliberately releases between ``with_ftp_retry`` attempts — so attempt 2
-        opens a second session against an FTPS server that accepts about one. The
-        printer answers the extra connect in plaintext and the implicit-TLS client
-        reads it as a malformed record (``WRONG_VERSION_NUMBER``), so both attempts
-        fail and a dispatch that was merely slow looks broken.
-
-        Slow WiFi commonly overshoots ``ftp_timeout`` by 10-30 s without being
-        stuck, so wait for the worker to genuinely finish — capped at 30 s so a
-        truly stuck connection can't stall the attempt indefinitely, with a 0.5 s
-        floor so artificially small test timeouts still give zombies a realistic
-        window. Exactly the shape ``download_file_async`` already uses.
+        A slow upload is never retried on top of itself: the next attempt (with_ftp_retry, or the
+        A1 fallback) waits for this thread to end before it opens a session. Slow WiFi commonly
+        overshoots ``timeout`` by 10-30 s without being stuck, so a thread that completes within
+        the grace window is still a success; one that does not is asked to stop (its sockets are
+        closed) and the attempt fails — its lane is released when the thread really ends.
         """
-        completion = {"success": False}
-        done = threading.Event()
         from backend.app.services.farm_startup_guard import track_command_io
-        from backend.app.services.preview_artifacts import owned
 
-        future = track_command_io(loop.run_in_executor(None, _upload, force_prot_c, completion, done))
         try:
-            return await asyncio.wait_for(asyncio.shield(future), timeout=timeout)
-        except asyncio.CancelledError:
-            await owned(future)
-            raise
-        except TimeoutError:
-            grace = max(min(timeout, 30.0), 0.5)
-            await loop.run_in_executor(None, done.wait, grace)
-            if completion["success"]:
-                logger.info(
-                    "FTP upload wait_for timed out after %ss for %s, but thread completed within %ss grace — salvaging",
-                    timeout,
-                    remote_path,
-                    grace,
-                )
-                return True
-            logger.warning(
-                "FTP upload timed out after %ss (plus %ss grace) for %s",
-                timeout,
-                grace,
-                remote_path,
-            )
+            async with printer_file_runtime.hold(ftp_key(ip_address)) as lane:
+                worker = await printer_file_runtime.start(lane, "upload", _upload(force_prot_c))
+                track_command_io(worker.future)
+                try:
+                    return await printer_file_runtime.wait(worker, timeout)
+                except LaneTimeout:
+                    grace = max(min(timeout, 30.0), 0.5)
+                    try:
+                        result = await printer_file_runtime.wait(worker, grace)
+                    except LaneTimeout:
+                        worker.request_cancel("timeout")
+                        logger.warning(
+                            "FTP upload timed out after %ss (plus %ss grace) for %s", timeout, grace, remote_path
+                        )
+                        if report is not None:
+                            report.failure = FtpFailure("stalled", f"not finished after {timeout}s")
+                        return False
+                    if result:
+                        logger.info(
+                            "FTP upload outlived its %ss wait for %s, but its thread completed within %ss grace — "
+                            "salvaging",
+                            timeout,
+                            remote_path,
+                            grace,
+                        )
+                    return result
+        except LaneRefused as refused:
+            logger.warning("FTP upload of %s not started (%s)", remote_path, refused.reason)
             if report is not None:
-                report.failure = FtpFailure("stalled", f"not finished after {timeout}s")
+                report.failure = FtpFailure("network", f"not started: {refused.reason}")
+            return False
+        except WorkerCancelled:
+            if report is not None:
+                report.failure = FtpFailure("network", "cancelled before connecting")
             return False
 
     # Check if we have a cached mode for this printer
@@ -1555,7 +1710,46 @@ async def upload_file_async(
     return False
 
 
-@_ftp_serialized
+async def list_directory_async(
+    ip_address: str,
+    access_code: str,
+    path: str = "/",
+    timeout: float = 30.0,
+    socket_timeout: float | None = None,
+    printer_model: str | None = None,
+    *,
+    prove_missing: bool = False,
+) -> DirectoryListing:
+    """List one directory on the printer's FTP lane, with a typed outcome.
+
+    ``timeout`` bounds the caller's wait: when it runs out the answer is
+    ``slow`` — the worker is asked to stop and still owns the lane until its
+    thread has ended. ``prove_missing`` turns an ambiguous 550 into ``missing``
+    only through a complete parent listing on the same session.
+    """
+
+    def target(worker: LaneWorker) -> DirectoryListing:
+        client = BambuFTPClient(ip_address, access_code, timeout=socket_timeout, printer_model=printer_model)
+        if not _session(worker, client):
+            return DirectoryListing(
+                path, LISTING_UNAVAILABLE, reason=client.failure.kind if client.failure else "connect"
+            )
+        try:
+            return client.list_directory_proving(path) if prove_missing else client.list_directory(path)
+        finally:
+            _end_session(worker, client)
+
+    try:
+        return await _on_lane(ip_address, "list", target, timeout=timeout)
+    except LaneTimeout:
+        logger.warning("FTP list_files timed out after %ss for %s", timeout, path)
+        return DirectoryListing(path, LISTING_SLOW, reason="timeout")
+    except LaneRefused as refused:
+        return DirectoryListing(path, LISTING_UNAVAILABLE, reason=refused.reason)
+    except WorkerCancelled:
+        return DirectoryListing(path, LISTING_UNAVAILABLE, reason="cancelled")
+
+
 async def list_files_checked_async(
     ip_address: str,
     access_code: str,
@@ -1564,38 +1758,17 @@ async def list_files_checked_async(
     socket_timeout: float | None = None,
     printer_model: str | None = None,
 ) -> tuple[list[dict], bool]:
-    """List a directory, and say whether the printer answered at all.
+    """List a directory, and say whether the printer answered it COMPLETELY.
 
-    Returns ``(entries, answered)``.
-
-    ⚠️ **The pair exists because the list alone is ambiguous.** An empty list
-    means "this directory holds nothing" *and* "the printer never replied", and
-    a caller that walks several directories cannot tell the two apart — so a
-    printer whose FTP daemon has wedged costs the full timeout once per
-    directory, in series. Measured on a live X2D: four timelapse directories,
-    30 s each, before the code ever looked at internal storage where the
-    recording actually was.
-
-    ``answered=False`` means the connection itself failed — refused, or the TLS
-    handshake never completed. Nothing about the next directory will be
-    different, so a caller walking a list should stop rather than pay again.
+    Returns ``(entries, answered)``. ``answered`` is True only for a complete
+    LIST of this directory (G10 CR2): a refused connect, a 550 on CWD (missing
+    and forbidden read the same), a failed or partial LIST and a timeout are all
+    ``False``. Use :func:`list_directory_async` for the typed outcome.
     """
-    loop = asyncio.get_event_loop()
-
-    def _list() -> tuple[list[dict], bool]:
-        client = BambuFTPClient(ip_address, access_code, timeout=socket_timeout, printer_model=printer_model)
-        if not client.connect():
-            return [], False
-        try:
-            return client.list_files(path), True
-        finally:
-            client.disconnect()
-
-    try:
-        return await asyncio.wait_for(loop.run_in_executor(None, _list), timeout=timeout)
-    except TimeoutError:
-        logger.warning("FTP list_files timed out after %ss for %s", timeout, path)
-        return [], False
+    listing = await list_directory_async(
+        ip_address, access_code, path, timeout=timeout, socket_timeout=socket_timeout, printer_model=printer_model
+    )
+    return list(listing.entries), listing.status == LISTING_COMPLETE
 
 
 async def list_files_async(
@@ -1627,7 +1800,6 @@ async def list_files_async(
     return entries
 
 
-@_ftp_serialized
 async def delete_file_async(
     ip_address: str,
     access_code: str,
@@ -1650,29 +1822,32 @@ async def delete_file_async(
         timeout: overall async cap so a saturated executor can't pin the caller
             (and any DB connection it holds) indefinitely (#2572).
     """
-    loop = asyncio.get_event_loop()
 
-    def _delete() -> DeleteResult:
+    def target(worker: LaneWorker) -> DeleteResult:
         if may_run is not None and not may_run():
             return DeleteResult.FAILED
         client = BambuFTPClient(ip_address, access_code, timeout=socket_timeout, printer_model=printer_model)
-        if client.connect():
-            try:
-                if may_run is not None and not may_run():
-                    return DeleteResult.FAILED
-                return client.delete_file(remote_path)
-            finally:
-                client.disconnect()
-        return DeleteResult.FAILED
+        if not _session(worker, client):
+            return DeleteResult.FAILED
+        try:
+            if may_run is not None and not may_run():
+                return DeleteResult.FAILED
+            return client.delete_file(remote_path)
+        finally:
+            _end_session(worker, client)
 
     try:
-        return await asyncio.wait_for(loop.run_in_executor(None, _delete), timeout=timeout)
-    except TimeoutError:
+        return await _on_lane(ip_address, "delete", target, timeout=timeout)
+    except LaneTimeout:
         logger.warning("FTP delete_file exceeded its %ss cap for %s (#2572)", timeout, ip_address)
+        return DeleteResult.FAILED
+    except LaneRefused as refused:
+        logger.warning("FTP delete of %s not started (%s)", remote_path, refused.reason)
+        return DeleteResult.FAILED
+    except WorkerCancelled:
         return DeleteResult.FAILED
 
 
-@_ftp_serialized
 async def clear_sdcard_async(
     ip_address: str,
     access_code: str,
@@ -1689,23 +1864,24 @@ async def clear_sdcard_async(
     Returns ``{"deleted", "failed", "connected"}`` so the caller can tell a
     failed connection (nothing wiped) apart from "nothing to delete".
     """
-    loop = asyncio.get_event_loop()
 
-    def _clear() -> dict:
+    def target(worker: LaneWorker) -> dict:
         client = BambuFTPClient(ip_address, access_code, timeout=socket_timeout, printer_model=printer_model)
-        if not client.connect():
+        if not _session(worker, client):
             return {"deleted": 0, "failed": 0, "folders_removed": 0, "connected": False}
         try:
             result = client.clear_all(root)
             result["connected"] = True
             return result
         finally:
-            client.disconnect()
+            _end_session(worker, client)
 
-    return await loop.run_in_executor(None, _clear)
+    try:
+        return await _on_lane(ip_address, "clear-sdcard", target)
+    except (LaneRefused, WorkerCancelled):
+        return {"deleted": 0, "failed": 0, "folders_removed": 0, "connected": False}
 
 
-@_ftp_serialized
 async def rename_file_async(
     ip_address: str,
     access_code: str,
@@ -1717,25 +1893,26 @@ async def rename_file_async(
     may_run: Callable[[], bool] | None = None,
 ) -> bool | None:
     """Async wrapper for renaming/moving a file. Returns True on success, None if not found, False on error."""
-    loop = asyncio.get_event_loop()
 
-    def _rename():
+    def target(worker: LaneWorker):
         if may_run is not None and not may_run():
             return False
         client = BambuFTPClient(ip_address, access_code, timeout=socket_timeout, printer_model=printer_model)
-        if client.connect():
-            try:
-                if may_run is not None and not may_run():
-                    return False
-                return client.rename_file(from_path, to_path)
-            finally:
-                client.disconnect()
+        if not _session(worker, client):
+            return False
+        try:
+            if may_run is not None and not may_run():
+                return False
+            return client.rename_file(from_path, to_path)
+        finally:
+            _end_session(worker, client)
+
+    try:
+        return await _on_lane(ip_address, "rename", target)
+    except (LaneRefused, WorkerCancelled):
         return False
 
-    return await loop.run_in_executor(None, _rename)
 
-
-@_ftp_serialized
 async def download_file_bytes_async(
     ip_address: str,
     access_code: str,
@@ -1744,36 +1921,38 @@ async def download_file_bytes_async(
     printer_model: str | None = None,
     timeout: float = 300.0,
 ) -> bytes | None:
-    """Async wrapper for downloading file as bytes.
+    """Download one whole file into memory, on the printer's FTP lane.
 
     Args:
         socket_timeout: FTP socket timeout for slow connections (e.g., A1 printers)
         printer_model: Printer model for A1-specific workarounds
-        timeout: overall async cap so a saturated executor can't pin the caller
-            (and any DB connection it holds) indefinitely (#2572). Generous by
-            default — this pulls whole files (timelapse video, gcode) that can
-            legitimately take minutes over slow Wi-Fi; the cap only guards against
-            a permanently-starved pool, not a slow-but-progressing transfer.
-    """
-    loop = asyncio.get_event_loop()
+        timeout: how long to wait for the lane and a worker slot (#2572). It is
+            NOT a cap on the transfer (upstream #3272): a large timelapse over
+            slow Wi-Fi legitimately takes minutes, and a flat cap both failed it
+            and left its thread running beside the next session. A stall is
+            caught by ``socket_timeout`` on every recv.
 
-    def _download():
+    ⚠️ The whole file is held in memory. New consumers stream to a file instead.
+    """
+
+    def target(worker: LaneWorker):
         client = BambuFTPClient(ip_address, access_code, timeout=socket_timeout, printer_model=printer_model)
-        if client.connect():
-            try:
-                return client.download_file(remote_path)
-            finally:
-                client.disconnect()
-        return None
+        if not _session(worker, client):
+            return None
+        try:
+            return client.download_file(remote_path)
+        finally:
+            _end_session(worker, client)
 
     try:
-        return await asyncio.wait_for(loop.run_in_executor(None, _download), timeout=timeout)
-    except TimeoutError:
-        logger.warning("FTP download_bytes exceeded its %ss cap for %s (#2572)", timeout, ip_address)
+        return await _on_lane(ip_address, "read", target, admission_timeout=timeout)
+    except LaneRefused as refused:
+        logger.warning("FTP read of %s not started (%s) (#2572)", remote_path, refused.reason)
+        return None
+    except WorkerCancelled:
         return None
 
 
-@_ftp_serialized
 async def upload_bytes_async(
     ip_address: str,
     access_code: str,
@@ -1785,25 +1964,26 @@ async def upload_bytes_async(
     may_run: Callable[[], bool] | None = None,
 ) -> bool:
     """Async wrapper for uploading bytes to a file on the printer."""
-    loop = asyncio.get_event_loop()
 
-    def _upload():
+    def target(worker: LaneWorker) -> bool:
         if may_run is not None and not may_run():
             return False
         client = BambuFTPClient(ip_address, access_code, timeout=socket_timeout, printer_model=printer_model)
-        if client.connect():
-            try:
-                if may_run is not None and not may_run():
-                    return False
-                return client.upload_bytes(data, remote_path)
-            finally:
-                client.disconnect()
+        if not _session(worker, client):
+            return False
+        try:
+            if may_run is not None and not may_run():
+                return False
+            return client.upload_bytes(data, remote_path)
+        finally:
+            _end_session(worker, client)
+
+    try:
+        return await _on_lane(ip_address, "upload-bytes", target)
+    except (LaneRefused, WorkerCancelled):
         return False
 
-    return await loop.run_in_executor(None, _upload)
 
-
-@_ftp_serialized
 async def get_storage_info_async(
     ip_address: str,
     access_code: str,
@@ -1819,21 +1999,22 @@ async def get_storage_info_async(
         timeout: overall async cap so a saturated executor can't pin the caller
             (and any DB connection it holds) indefinitely (#2572).
     """
-    loop = asyncio.get_event_loop()
 
-    def _get_storage():
+    def target(worker: LaneWorker):
         client = BambuFTPClient(ip_address, access_code, timeout=socket_timeout, printer_model=printer_model)
-        if client.connect():
-            try:
-                return client.get_storage_info()
-            finally:
-                client.disconnect()
-        return None
+        if not _session(worker, client):
+            return None
+        try:
+            return client.get_storage_info()
+        finally:
+            _end_session(worker, client)
 
     try:
-        return await asyncio.wait_for(loop.run_in_executor(None, _get_storage), timeout=timeout)
-    except TimeoutError:
+        return await _on_lane(ip_address, "storage", target, timeout=timeout)
+    except LaneTimeout:
         logger.warning("FTP get_storage_info exceeded its %ss cap for %s (#2572)", timeout, ip_address)
+        return None
+    except (LaneRefused, WorkerCancelled):
         return None
 
 
