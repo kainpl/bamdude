@@ -75,12 +75,6 @@ def _candidate_printer_names(printer_model: str | None, nozzle_diameter: str) ->
     ]
 
 
-# Materials whose own name is no catalogue type and whose generic profile is
-# another's. Deliberately short — Nylon, PA6, PA12 → PA. "Support" names a role,
-# not a material, and stays unresolved.
-_PROFILE_LENDERS = {"NYLON": "PA", "PA6": "PA", "PA12": "PA"}
-
-
 def _stand_in(material: str) -> tuple[catalog.CatalogFamily | None, str]:
     """The system profile a slot is told about for ``material``, and the type it gets.
 
@@ -94,15 +88,9 @@ def _stand_in(material: str) -> tuple[catalog.CatalogFamily | None, str]:
     family = catalog.family_for_material(material)
     if family is not None:
         return family, family.filament_type or material.strip()
-    generic = catalog.generic_family_for_material(material)
-    if generic is None:
-        # A name the catalogue knows as no type, but which IS a material Bambu
-        # files under another spelling (owner decision Р26): the profile of that
-        # one is borrowed, the type stays the spool's — the same rule as above.
-        alias = _PROFILE_LENDERS.get((material or "").strip().upper())
-        if alias:
-            generic = catalog.generic_family_for_material(alias)
-    return generic, material.strip()
+    # Nylon / PA6 / PA12 borrow Generic PA inside ``generic_family_for_material``
+    # (owner decision Р26); the type stays the spool's — the same rule as above.
+    return catalog.generic_family_for_material(material), material.strip()
 
 
 def _preset_is_of_material(preset_type: str | None, material: str | None) -> bool:

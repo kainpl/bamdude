@@ -1455,6 +1455,7 @@ async def apply_active_calibration_to_slot(
     extruder_id: int = 0,
     spool_id: int | None = None,
     bound_cali_idx: int | None = None,
+    bound_k: float | None = None,
 ) -> tuple[bool, FilamentCalibration | None]:
     """Resolve the right calibration for a slot and fire ``extrusion_cali_sel``.
 
@@ -1479,7 +1480,10 @@ async def apply_active_calibration_to_slot(
     already is the resolved profile's live index nothing is published and the
     answer is ``(False, cache_row)``. Every other caller leaves it ``None`` and
     publishes as before: a bind at assign or before a print is sent whatever
-    the slot holds.
+    the slot holds. ``bound_k`` — the K the slot reports beside that index: an
+    index is numbered per nozzle table, so the same number with another K is
+    another table's profile and IS published. A slot that reports no K is
+    judged by its index alone.
     """
     if not filament_id:
         return False, None
@@ -1578,7 +1582,12 @@ async def apply_active_calibration_to_slot(
             break
     if live_match is None:
         return False, cache_row
-    if bound_cali_idx is not None and bound_cali_idx >= 0 and int(live_match.slot_id) == bound_cali_idx:
+    if (
+        bound_cali_idx is not None
+        and bound_cali_idx >= 0
+        and int(live_match.slot_id) == bound_cali_idx
+        and (bound_k is None or abs(bound_k - float(target_k)) < 0.0005)
+    ):
         return False, cache_row
 
     try:

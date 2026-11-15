@@ -171,3 +171,25 @@ async def test_a_printing_printer_is_still_left_alone(db_session, main_db, print
     await _push(printer.id, client, state="RUNNING", cali_idx=-1)
 
     client.extrusion_cali_sel.assert_not_called()
+
+
+async def test_the_same_index_with_another_k_is_another_tables_profile(db_session, main_db, printer_factory):
+    """Indexes are numbered per nozzle table: index 5 of another table is a different profile. A slot
+    that reports the resolved index but another K is not "already on it"."""
+    printer = await _linked_reel(db_session, printer_factory)
+    client = _client()
+
+    await _push(printer.id, client, cali_idx=5, k=0.035)
+
+    client.extrusion_cali_sel.assert_called_once()
+    assert client.extrusion_cali_sel.call_args.kwargs["cali_idx"] == 5
+
+
+async def test_the_same_index_with_the_profiles_own_k_gets_nothing(db_session, main_db, printer_factory):
+    printer = await _linked_reel(db_session, printer_factory)
+    client = _client()
+
+    await _push(printer.id, client, cali_idx=5, k=0.02)
+    await _push(printer.id, client, cali_idx=5, k="0.020")
+
+    client.extrusion_cali_sel.assert_not_called()

@@ -3662,6 +3662,10 @@ async def _on_ams_change(printer_id: int, ams_data: list):
                                             bound_cali_idx = int(tray.get("cali_idx"))
                                         except (TypeError, ValueError):
                                             bound_cali_idx = None
+                                        try:
+                                            bound_k = float(tray.get("k"))
+                                        except (TypeError, ValueError):
+                                            bound_k = None
                                         fired, fc = await apply_active_calibration_to_slot(
                                             db=db,
                                             printer_id=printer_id,
@@ -3673,6 +3677,7 @@ async def _on_ams_change(printer_id: int, ams_data: list):
                                             extruder_id=nozzle.extruder_or_default,
                                             spool_id=spool.id,
                                             bound_cali_idx=bound_cali_idx,
+                                            bound_k=bound_k,
                                         )
                                         if fired and fc:
                                             logger.info(
