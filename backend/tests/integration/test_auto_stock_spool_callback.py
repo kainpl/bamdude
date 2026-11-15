@@ -16,8 +16,17 @@ from backend.tests.unit.services.test_auto_stock_spool import event, manager, pr
 @pytest.mark.integration
 @pytest.mark.parametrize("later_change", [None, "color", "rfid", "removal"])
 async def test_unknown_insertion_then_default_metadata_keeps_one_spool_until_config_echo(
-    db_session, printer_factory, later_change
+    db_session, printer_factory, later_change, monkeypatch
 ):
+    from backend.app.services import slot_unlink_hold
+
+    # A reel taken out is unlinked once its slot has STAYED empty (owner decision
+    # Р8): the clock of that hold is the test's.
+    hold_clock = [1000.0]
+    monkeypatch.setattr(slot_unlink_hold, "_now", lambda: hold_clock[0])
+    monkeypatch.setattr(slot_unlink_hold, "schedule_recheck", lambda *_a, **_k: None)
+    slot_unlink_hold._holds.clear()
+
     p = await printer(printer_factory)
     first = await spool(db_session)
     await spool(db_session)
@@ -66,6 +75,11 @@ async def test_unknown_insertion_then_default_metadata_keeps_one_spool_until_con
             tray.update(exists=False, state=9, tray_type="", tray_color="")
         if later_change:
             await main.on_ams_change(p.id, state.raw_data["ams"])
+            if later_change == "removal":
+                # One "empty" report is held; the next one after the window confirms it.
+                hold_clock[0] += slot_unlink_hold.HOLD_SECONDS + 1
+                state.last_ams_update = getattr(state, "last_ams_update", 0) + 1
+                await main.on_ams_change(p.id, state.raw_data["ams"])
             assert (await db_session.execute(select(SpoolAssignment))).scalars().all() == []
 
 

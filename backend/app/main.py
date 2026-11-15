@@ -2919,6 +2919,21 @@ async def on_stock_spool_inserted(printer_id: int, event: dict):
             logger.exception("Stock insertion assignment failed for printer %s", printer_id)
 
 
+async def _recheck_held_unlinks(printer_id: int) -> None:
+    """Run the AMS pass again for a printer with a held slot unlink (``slot_unlink_hold``).
+
+    The pass itself decides — under the same lock, from the state the printer
+    reports now. A printer that is gone or offline is left alone: cached state
+    confirms nothing, and a reconnect restarts the clock anyway.
+    """
+    state = printer_manager.get_status(printer_id)
+    if state is None or not getattr(state, "connected", False):
+        return
+    current = (getattr(state, "raw_data", None) or {}).get("ams")
+    if isinstance(current, list):
+        await on_ams_change(printer_id, current)
+
+
 async def on_ams_change(printer_id: int, ams_data: list):
     # Unlink/replay and insertion assignment must share the same lock. Otherwise
     # a delayed empty-slot callback could delete the freshly assigned refill.
@@ -3048,6 +3063,17 @@ async def _on_ams_change(printer_id: int, ams_data: list):
             # (ams_id, tray_id) of every row we end up deleting — snapshotted so the
             # WS fan-out below can run after the session is released.
             unlinked_slots: list[tuple[int, int]] = []
+            # Slots whose "presence bit off while idle" unlink is waiting for a
+            # second report (services/slot_unlink_hold, owner decision Р8).
+            from backend.app.services import slot_unlink_hold as _unlink_hold
+
+            held_slots: set[tuple[int, int, int]] = set()
+            _hold_generation = getattr(_unlink_state, "connection_generation", None)
+            if not isinstance(_hold_generation, int) or isinstance(_hold_generation, bool):
+                _hold_generation = None
+            _hold_report = getattr(_unlink_state, "last_ams_update", None)
+            if not isinstance(_hold_report, (int, float)) or isinstance(_hold_report, bool):
+                _hold_report = None
             for assignment in result.scalars().all():
                 known = assignment.spool
                 partial_return = (
@@ -3243,13 +3269,38 @@ async def _on_ams_change(printer_id: int, ams_data: list):
                         # the row threw away the identity the user had supplied
                         # (upstream #3100). A slot the bit calls empty, or one with no
                         # bit, still unlinks.
-                        if spool_present(current_tray) is True:
+                        _hold_key = (printer_id, assignment.ams_id, assignment.tray_id)
+                        _present = spool_present(current_tray)
+                        if _present is True and not _unlink_hold.is_open(_hold_key, row_id=assignment.id):
                             logger.info(
                                 "Auto-unlink skipped: spool %d AMS%d-T%d - slot still occupied, "
                                 "tray reports no filament data yet",
                                 assignment.spool_id,
                                 assignment.ams_id,
                                 assignment.tray_id,
+                            )
+                            continue
+                        # One "empty" report is not a reel taken out (owner
+                        # decision Р8, upstream 3497cf0d4): an idle printer was
+                        # seen to report a whole unit empty for a single push,
+                        # and nothing restores the assignment of an untagged
+                        # reel. The unlink of a slot whose presence bit reads 0
+                        # waits for a later report that still says so. A slot
+                        # that was reported empty and is now occupied-but-blank
+                        # keeps that clock running — a different, unreadable
+                        # reel may be in there and must not inherit the row.
+                        # A slot with no presence bit at all unlinks as before.
+                        if _present is not None and not _unlink_hold.offer(
+                            _hold_key, row_id=assignment.id, generation=_hold_generation, report_stamp=_hold_report
+                        ):
+                            held_slots.add(_hold_key)
+                            logger.info(
+                                "Auto-unlink held: spool %d AMS%d-T%d reports no spool — waiting %.0fs "
+                                "for a second report",
+                                assignment.spool_id,
+                                assignment.ams_id,
+                                assignment.tray_id,
+                                _unlink_hold.HOLD_SECONDS,
                             )
                             continue
                         logger.info(
@@ -3342,6 +3393,13 @@ async def _on_ams_change(printer_id: int, ams_data: list):
                             )
                             continue
                         stale.append(assignment)  # Spool changed
+            # A hold lives only while its slot keeps reporting empty: every slot
+            # this pass did not renew is dropped (the reel is back, a print
+            # started, the row changed). What is still waiting asks again by
+            # itself — a slot that stays empty produces no AMS change of its own.
+            _unlink_hold.keep_only(printer_id, held_slots)
+            if held_slots:
+                _unlink_hold.schedule_recheck(printer_id, lambda: _recheck_held_unlinks(printer_id))
             # Snapshot the slots before the delete — ORM attribute access after the
             # commit would refresh against a deleted row.
             unlinked_slots = [(a.ams_id, a.tray_id) for a in stale]
@@ -12484,6 +12542,13 @@ async def _application_lifespan(app: FastAPI):
         await camera_light.shutdown()
     except Exception as e:
         logging.warning("Failed to stop the camera-light lease: %s", e)
+    # Held slot unlinks ask again from a timer task (services/slot_unlink_hold).
+    try:
+        from backend.app.services import slot_unlink_hold
+
+        await slot_unlink_hold.cancel_all()
+    except Exception as e:
+        logging.warning("Failed to stop the slot unlink re-checks: %s", e)
     # Cancel any pending offline-notification debounce tasks (#1752) so the 60s
     # sleep doesn't outlive the asyncio loop on shutdown.
     for _t in list(_printer_offline_notify_tasks.values()):

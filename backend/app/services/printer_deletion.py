@@ -30,6 +30,10 @@ logger = logging.getLogger(__name__)
 _ID_KEYED = (
     ("backend.app.services.printer_manager", "printer_manager._awaiting_plate_clear"),
     ("backend.app.services.printer_manager", "printer_manager._last_trays"),
+    ("backend.app.services.slot_unlink_hold", "_holds"),
+    ("backend.app.services.slot_unlink_hold", "_recheck_tasks"),
+    ("backend.app.services.spool_single_slot", "_pending_elsewhere"),
+    ("backend.app.services.spool_single_slot", "_pending_announce"),
     ("backend.app.services.printer_manager", "printer_manager._current_print_user"),
     ("backend.app.main", "_active_prints"),
     ("backend.app.main", "_expected_prints"),

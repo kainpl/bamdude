@@ -1140,10 +1140,22 @@ class TestAutoUnlinkOccupiedSlot(TestARunoutIsNotASpoolRemoval):
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_a_blank_report_from_an_empty_slot_still_unlinks(
-        self, async_client: AsyncClient, printer_factory, spool_factory, db_session: AsyncSession
+        self, async_client: AsyncClient, printer_factory, spool_factory, db_session: AsyncSession, monkeypatch
     ):
+        """Still unlinks — once the slot has stayed empty (owner decision Р8): one
+        "empty" report alone is held for ``HOLD_SECONDS`` (services/slot_unlink_hold)."""
+        from backend.app.services import slot_unlink_hold
+
+        clock = [1000.0]
+        monkeypatch.setattr(slot_unlink_hold, "_now", lambda: clock[0])
+        monkeypatch.setattr(slot_unlink_hold, "schedule_recheck", lambda *_a, **_k: None)
+        slot_unlink_hold._holds.clear()
+
         printer = await self._assigned_printer(printer_factory, spool_factory, db_session)
         ams_data = [{"id": 0, "tray": [{"id": 0, "exists": False, "tray_type": "", "tray_color": "", "state": 9}]}]
+        await self._push(printer.id, ams_data, "IDLE")
+        assert len(await self._assignment_for(db_session, printer.id)) == 1
+        clock[0] += slot_unlink_hold.HOLD_SECONDS + 1
         await self._push(printer.id, ams_data, "IDLE")
         assert await self._assignment_for(db_session, printer.id) == []
 
