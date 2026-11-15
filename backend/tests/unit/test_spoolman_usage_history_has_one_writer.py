@@ -75,6 +75,22 @@ def test_the_readers_of_the_spoolman_usage_history_are_a_closed_list():
     assert offenders == []
 
 
+def test_the_git_backup_reaches_the_rows_only_through_the_writers_two_doors():
+    """The backup exports and the restore writes through ``export_rows`` /
+    ``restore_rows`` of the one writer — neither names the table (the reader
+    list above stays closed), and nothing else calls the two doors. They are
+    deliberately NOT fenced to Spoolman mode: a backup keeps the rows whatever
+    the inventory in use, and shows them to nobody."""
+    callers = {"export_rows": [], "restore_rows": []}
+    for path in APP.rglob("*.py"):
+        if path == APP / "services" / "spoolman_usage_history.py":
+            continue
+        source = path.read_text(encoding="utf-8")
+        for door, found in callers.items():
+            found.extend([path.relative_to(APP).as_posix()] * source.count(f"spoolman_usage_history.{door}("))
+    assert callers == {"export_rows": ["services/git_backup.py"], "restore_rows": ["services/git_restore.py"]}
+
+
 def test_every_reader_is_fenced_to_spoolman_mode():
     routes = (APP / "api" / "routes" / "spoolman_usage.py").read_text(encoding="utf-8")
     handlers = routes.count("@router.")

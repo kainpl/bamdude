@@ -10643,6 +10643,8 @@ export default {
         archivesSwapDeclarationUnreadable: "Some archives' swap declarations in the backup could not be read - those sources are unknown until declared again",
         spoolUsageUnresolved: '{{count}} usage record(s) skipped - their spool is not in this backup\'s spool list, so there is nothing to attach them to.',
         spoolUsageUnlinked: '{{count}} usage record(s) restored without their print-history link - select Print archives alongside Spool inventory to keep it.',
+        spoolmanUsageNoSource: '{{count}} Spoolman usage record(s) skipped - no Spoolman address is set on this installation, so there is no Spoolman to attach them to.',
+        spoolmanUsageOtherSource: '{{count}} Spoolman usage record(s) skipped - they belong to a Spoolman the backed-up installation had already stopped using.',
         spoolTagKept: '{{count}} spool tag(s) left as they are - the backup would have cleared a tag that has since been scanned, or moved one onto a second spool.',
         settingsUnknownSkipped: "{{count}} unknown setting(s) skipped — use the current Settings editor",
         settingsInvalidSkipped: "{{count}} malformed setting(s) skipped — current validation failed",

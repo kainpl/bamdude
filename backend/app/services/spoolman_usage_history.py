@@ -431,3 +431,228 @@ async def detach_printer(db: AsyncSession, printer_id: int) -> None:
     await db.execute(
         update(SpoolmanUsageHistory).where(SpoolmanUsageHistory.printer_id == printer_id).values(printer_id=None)
     )
+
+
+# --- The Git backup's two doors (upstream 1d86cff5a) -------------------------
+#
+# The rows travel in a portable form: no row id, no local printer or archive
+# id as authority, no user, and no source token — the token is this
+# installation's own name for its Spoolman and means nothing anywhere else. A
+# row says only whether it belonged to the exporting side's CURRENT Spoolman;
+# a restore binds such rows to the restoring side's current token.
+
+_SNAPSHOT_TEXT = {
+    "material": 100,
+    "subtype": 200,
+    "brand": 200,
+    "color_name": 200,
+    "rgba": 8,
+    "slicer_filament_name": 200,
+}
+
+
+async def _current_token_without_writing(db: AsyncSession) -> str | None:
+    """The token :func:`source_token` would answer, without creating or rotating one.
+
+    A backup observes: it must not be the thing that names or rotates a source.
+    An address changed and not used yet answers the token that address is
+    already known by, or None — the stored rows are then the ones of the
+    address that was left.
+    """
+    _row, data = await _read_source(db)
+    if not data:
+        return None
+    url = await _configured_url(db)
+    if not url or url == data.get("url"):
+        return data["token"]
+    return _known(data).get(url)
+
+
+async def export_rows(db: AsyncSession) -> list[dict]:
+    """Every row in its portable form, oldest first. Reads only.
+
+    A printer is named by its serial number. ``archive_id`` is the archive's id
+    INSIDE the backup — a reference into the backup's own archive list, which a
+    restore resolves to the archive that list became locally; it is never read
+    as a local id.
+    """
+    from backend.app.models.printer import Printer  # noqa: PLC0415
+
+    current = await _current_token_without_writing(db)
+    serials = dict((await db.execute(select(Printer.id, Printer.serial_number))).all())
+    rows = (
+        (
+            await db.execute(
+                select(SpoolmanUsageHistory).order_by(SpoolmanUsageHistory.created_at, SpoolmanUsageHistory.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return [
+        {
+            "spoolman_spool_id": row.spoolman_spool_id,
+            "spool_registered": row.spool_registered,
+            "current_source": current is not None and row.source_token == current,
+            "printer_serial": serials.get(row.printer_id) if row.printer_id is not None else None,
+            "archive_id": row.archive_id,
+            "print_name": row.print_name,
+            "weight_used": row.weight_used,
+            "percent_used": row.percent_used,
+            "status": row.status,
+            "cost": row.cost,
+            "created_at": row.created_at.isoformat() if row.created_at else None,
+            "material": row.material,
+            "subtype": row.subtype,
+            "brand": row.brand,
+            "color_name": row.color_name,
+            "rgba": row.rgba,
+            "slicer_filament_name": row.slicer_filament_name,
+            "label_weight": row.label_weight,
+        }
+        for row in rows
+    ]
+
+
+@dataclass
+class RestoreOutcome:
+    """What a restore of exported rows did, entry by entry."""
+
+    restored: int = 0
+    # Already there: the same charge, by :func:`_identity`.
+    present: int = 0
+    # Not an entry this table can hold (no spool id, no moment, no weight).
+    malformed: int = 0
+    # Rows of a Spoolman the exporting side had already left: nobody's here.
+    other_source: int = 0
+    # Skipped because this installation has no Spoolman to name.
+    no_source: int = 0
+    # Restored, but the archive the row named did not come with the restore.
+    unlinked: int = 0
+
+
+def _number(value) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    return number if number == number and number not in (float("inf"), float("-inf")) else None
+
+
+def _identity(spool_id: int, registered: str | None, created_at: datetime, grams: float, status: str, name) -> tuple:
+    """What makes a restored charge "the one already here", within one source.
+
+    The spool (its id and Spoolman's registration stamp), the moment the writer
+    stamped, the grams, the outcome and the print's name. Two charges equal in
+    all of these are counted, not merged (see :func:`restore_rows`).
+    """
+    return (spool_id, registered or None, created_at, round(grams, 6), status, name or None)
+
+
+def _restorable(entry) -> dict | None:
+    """The columns an exported entry gives, or None when it is not a charge."""
+    if not isinstance(entry, dict):
+        return None
+    spool_id = entry.get("spoolman_spool_id")
+    if isinstance(spool_id, bool) or not isinstance(spool_id, int) or spool_id <= 0:
+        return None
+    raw_moment = entry.get("created_at")
+    created_at = _instant(raw_moment) if isinstance(raw_moment, str) else None
+    grams = _number(entry.get("weight_used"))
+    if created_at is None or grams is None or grams < 0:
+        return None
+
+    def text(key: str, limit: int) -> str | None:
+        value = entry.get(key)
+        return value[:limit] if isinstance(value, str) and value else None
+
+    percent = entry.get("percent_used")
+    return {
+        "spoolman_spool_id": spool_id,
+        "spool_registered": text("spool_registered", 40),
+        "print_name": text("print_name", 500),
+        "weight_used": grams,
+        "percent_used": percent if isinstance(percent, int) and not isinstance(percent, bool) else 0,
+        "status": text("status", 20) or "completed",
+        "cost": _number(entry.get("cost")),
+        "created_at": created_at,
+        "label_weight": _number(entry.get("label_weight")),
+        **{key: text(key, limit) for key, limit in _SNAPSHOT_TEXT.items()},
+    }
+
+
+async def restore_rows(
+    db: AsyncSession,
+    entries: list,
+    *,
+    archive_ids: dict[int, int],
+    printer_ids: dict[str, int],
+) -> RestoreOutcome:
+    """Write exported rows under THIS installation's current source. The caller commits.
+
+    ``archive_ids`` maps an archive's id inside the backup to the local archive
+    the same restore resolved it to; ``printer_ids`` maps a serial number to
+    the local printer. A reference neither names stays empty — a row is never
+    attached by a number carried over from another database.
+
+    A row already here is not written again: rows of the current source are
+    counted by :func:`_identity`, and each incoming entry spends one — so two
+    equal charges come back as two, and a second restore adds none. A malformed
+    entry is counted and skipped; nothing here raises for one.
+    """
+    outcome = RestoreOutcome()
+    token = await source_token(db)
+    if token is None:
+        outcome.no_source = len(entries)
+        return outcome
+
+    here: dict[tuple, int] = {}
+    existing = await db.execute(
+        select(
+            SpoolmanUsageHistory.spoolman_spool_id,
+            SpoolmanUsageHistory.spool_registered,
+            SpoolmanUsageHistory.created_at,
+            SpoolmanUsageHistory.weight_used,
+            SpoolmanUsageHistory.status,
+            SpoolmanUsageHistory.print_name,
+        ).where(SpoolmanUsageHistory.source_token == token)
+    )
+    for row in existing.all():
+        key = _identity(*row)
+        here[key] = here.get(key, 0) + 1
+
+    for entry in entries:
+        fields = _restorable(entry)
+        if fields is None:
+            outcome.malformed += 1
+            continue
+        if entry.get("current_source") is not True:
+            outcome.other_source += 1
+            continue
+        key = _identity(
+            fields["spoolman_spool_id"],
+            fields["spool_registered"],
+            fields["created_at"],
+            fields["weight_used"],
+            fields["status"],
+            fields["print_name"],
+        )
+        if here.get(key):
+            here[key] -= 1
+            outcome.present += 1
+            continue
+        serial = entry.get("printer_serial")
+        named = entry.get("archive_id")
+        named = named if isinstance(named, int) and not isinstance(named, bool) else None
+        archive_id = archive_ids.get(named) if named is not None else None
+        if named is not None and archive_id is None:
+            outcome.unlinked += 1
+        db.add(
+            SpoolmanUsageHistory(
+                source_token=token,
+                printer_id=printer_ids.get(serial) if isinstance(serial, str) else None,
+                archive_id=archive_id,
+                **fields,
+            )
+        )
+        outcome.restored += 1
+    return outcome

@@ -679,8 +679,11 @@ class GitBackupService:
 
         # Filter out sensitive settings
         from backend.app.core.credential_config import CONFIG_GUARD_KEY
+        from backend.app.services.spoolman_usage_history import SOURCE_SETTING
 
-        sensitive_keys = {"bambu_cloud_token", "auth_secret_key", CONFIG_GUARD_KEY}
+        # SOURCE_SETTING holds this installation's own token for its Spoolman:
+        # a local identity, never restored and meaningless anywhere else.
+        sensitive_keys = {"bambu_cloud_token", "auth_secret_key", CONFIG_GUARD_KEY, SOURCE_SETTING}
         settings_data = {s.key: s.value for s in settings if s.key not in sensitive_keys}
 
         files["settings/app_settings.json"] = {
@@ -753,7 +756,26 @@ class GitBackupService:
             "history": history_data,
         }
 
-        logger.info("Collected %d spools and %d usage history entries", len(spools_data), len(history_data))
+        # The Spoolman usage history is a table of its own (a Spoolman spool id
+        # and a built-in one are two numberings), so it is a file of its own —
+        # written whatever the inventory mode, as upstream backs usage up
+        # without built-in spools too (1d86cff5a). Its one writer hands the
+        # rows over in their portable form: no local id, no source token.
+        from backend.app.services import spoolman_usage_history
+
+        spoolman_rows = await spoolman_usage_history.export_rows(db)
+        files["spools/spoolman_usage_history.json"] = {
+            "version": "1.0",
+            "entry_count": len(spoolman_rows),
+            "usage_history": spoolman_rows,
+        }
+
+        logger.info(
+            "Collected %d spools, %d usage history entries and %d Spoolman usage history entries",
+            len(spools_data),
+            len(history_data),
+            len(spoolman_rows),
+        )
 
     async def _collect_archives(self, db: AsyncSession, files: dict):
         """Collect print archive metadata (no binary files)."""
