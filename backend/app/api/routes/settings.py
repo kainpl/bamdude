@@ -1170,6 +1170,11 @@ async def _restore_backup(file: UploadFile, db: AsyncSession, *, authority=None)
         validate_sqlite_backup,
     )
     from backend.app.core.paths import resolve_data_dir
+    from backend.app.core.sqlite_import_source import (
+        SOURCE_LEVEL_MESSAGE,
+        SqliteSourceLevelError,
+        validate_postgres_source,
+    )
     from backend.app.services import queue_sources
     from backend.app.services.backup_files import FileRestore, extract_zip, validate_staged_queue_spool
     from backend.app.services.connector_runtime import connector_runtime
@@ -1198,6 +1203,8 @@ async def _restore_backup(file: UploadFile, db: AsyncSession, *, authority=None)
         if not backup_db.exists():
             raise HTTPException(400, "Invalid backup: missing database file (bamdude.db or bambuddy.db)")
         try:
+            if not is_sqlite():
+                await _file_work(validate_postgres_source, backup_db)
             await _file_work(validate_sqlite_backup, backup_db, require_app_schema=True)
             zigbee_db = staging / "zigbee/zigbee.db"
             if zigbee_db.exists():
@@ -1206,6 +1213,8 @@ async def _restore_backup(file: UploadFile, db: AsyncSession, *, authority=None)
             from backend.app.services.obico_history_files import validate_history
 
             await _file_work(validate_history, staging, backup_db)
+        except SqliteSourceLevelError as exc:
+            raise HTTPException(400, {"error": exc.code, "message": SOURCE_LEVEL_MESSAGE}) from exc
         except ValueError as exc:
             logger.warning("Restore preflight rejected database: %s", exc)
             raise HTTPException(400, "Invalid backup database: damaged or incompatible. Check server logs.") from exc

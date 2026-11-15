@@ -140,9 +140,14 @@ async def _run_pending(engine, session_factory) -> None:
     if app_settings.debug and migrations and applied:
         latest = max(m["version"] for m in migrations)
         if latest in applied:
-            async with engine.begin() as conn:
-                await conn.execute(text("DELETE FROM _migrations WHERE version = :v"), {"v": latest})
-            applied.discard(latest)
+            head = next(m["module"] for m in migrations if m["version"] == latest)
+            if hasattr(head, "replay"):
+                async with engine.begin() as conn:
+                    await head.replay(conn)
+            else:
+                async with engine.begin() as conn:
+                    await conn.execute(text("DELETE FROM _migrations WHERE version = :v"), {"v": latest})
+                applied.discard(latest)
             logger.info("Dev mode: re-running migration %d", latest)
 
     pending = [m for m in migrations if m["version"] not in applied]
@@ -183,7 +188,7 @@ async def run_all_migrations(engine, session_factory) -> bool:
     """Main entry point - called from init_db().
 
     Simple flow:
-    1. create_all() - ensures all tables exist from models
+    1. Preflight an eligible local SQLite→PG source, then create_all()
     2. Ensure _migrations table
     3. Handle BamDude 3.0.1 upgrade (rename + bootstrap)
     4. Run all pending migrations
@@ -212,6 +217,11 @@ async def run_all_migrations(engine, session_factory) -> bool:
                 wal = legacy_path.parent / (legacy_path.name + suffix)
                 if wal.exists():
                     wal.rename(db_path.parent / (db_path.name + suffix))
+
+    if not is_sqlite():
+        from backend.app.core.db_portable import preflight_sqlite_to_pg
+
+        await preflight_sqlite_to_pg(engine)
 
     # Create/update all tables from models
     async with engine.begin() as conn:

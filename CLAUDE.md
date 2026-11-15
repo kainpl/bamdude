@@ -74,7 +74,7 @@ bash docker-publish.sh 0.X.Y --parallel          # EMERGENCY ONLY — a v* tag a
 
 ## Migrations
 
-Startup: `init_db()` → legacy `bambuddy.db` rename → `Base.metadata.create_all()` (idempotent) → SQLite→PG auto-migrate (if PG empty) → `_ensure_migrations_table` → `_bootstrap_existing` (marks m000+m001 applied for legacy) → `_run_pending` → `conform_imported_schema` (only after an import in this process).
+Startup: `init_db()` → legacy `bambuddy.db` rename → eligible SQLite→PG source-level preflight (before target DDL) → `Base.metadata.create_all()` (idempotent) → SQLite→PG auto-migrate (if PG empty) → `_ensure_migrations_table` → `_bootstrap_existing` (marks m000+m001 applied for legacy) → `_run_pending` → `conform_imported_schema` (only after an import in this process).
 
 ⚠️ **The SQLite→PG move imports the file AS IS at ITS migration level, `_migrations` included, and the chain resumes at N+1** (`db_portable._reflect_sqlite_schema`; 2026-09-09). Never build the target schema from `Base.metadata` before the load — the models lack exactly the legacy columns/tables the later converters read (m157 `printer_id`, m158 project pivots), and re-running the whole chain on PG is how a dialect bug in an old migration reached a tester while the maintainer's own SQLite→PG path never executed it. What no migration ever did on SQLite (FK rules, NOT NULL, UNIQUE, CHECK, m001's tsvector half) is added once, after the chain, by `conform_imported_schema` — never on an ordinary boot. Model columns marked `info={"migration_shim": True}` (notification.py) are not canon and are skipped there. Vault: `40-invariants/inv-sqlite-move-imports-file-as-is.md`.
 
@@ -83,6 +83,8 @@ Each `mNNN_*.py` has `version`, `name`, `async def upgrade(conn)` (DDL), optiona
 **Adding a column = TWO places:** model file (fresh installs via `create_all`) + new migration via `add_column()` (existing DBs).
 
 Migration seeds name historical columns for reads and writes. For INSERT use a lightweight SQLAlchemy `table`/`column` definition; ORM inserts and `Model.__table__` both inherit future Python defaults and can reference columns absent at that migration step.
+
+G02 B's historical PG repair uses a frozen literal whitelist, never ordinary-startup reconciliation against live models. Unknown NULLs, duplicate identities and unsafe native orphan repairs remain named/count residuals. Its guarded FTS helper is shared by import conformance; a failed backfill rolls back and stops startup. A migration may provide an explicit repeat-safe `replay(conn)` for DEBUG without deleting its completed marker. The narrow released-DDL exception changes only missing-table PG arms in m043/m127; SQLite rendered DDL stays byte-identical. SQLite-file→PG has a preflight floor; ordinary SQLite/native-PG upgrades do not. See `docs/development/postgres-historical-schema.md`.
 
 ## Key Invariants
 

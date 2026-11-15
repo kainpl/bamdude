@@ -525,6 +525,8 @@ PostgreSQL checks idle pooled connections before checkout by default. Set `DB_PO
 
 Every installer asks which one you want: `install.sh --db sqlite|embedded|external`, a **Database** page in the Windows installer (where the bundled server can run as its own `BamDudePostgres` service), and the same question in `docker-install.sh`. Switching from SQLite imports your existing database automatically on the next start.
 
+SQLite-file imports into PostgreSQL support BamDude v0.4.2 (migration level m041) and newer. Upgrade a copy of an older SQLite database before creating a new backup. Historical PG repairs preserve unknown timestamps and report unresolved data instead of inventing values. See [historical schema upgrades](docs/development/postgres-historical-schema.md) for compatibility, maintenance locks and search-index failures.
+
 Full manual: **<https://docs.bamdude.top/features/postgresql/>**
 
 For full diagnostics on an external server, enable `pg_stat_statements` in the database BamDude uses. The guide covers third-party images and host installations; changing only the BamDude image does not configure that server.

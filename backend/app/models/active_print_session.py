@@ -34,8 +34,9 @@ class ActivePrintSession(Base):
     The Spoolman writer has had an equivalent durable row since #1820
     (``active_print_spoolman``); this is the internal-inventory counterpart.
 
-    No migration: ``Base.metadata.create_all()`` at startup creates a *missing
-    table* on existing databases (only new *columns* need one) — same as
+    ``Base.metadata.create_all()`` creates a missing table on normal startup.
+    AS-IS imports replace that schema; m221 freezes the missing-table shape
+    before adding its owner columns. Other missing-table startups work like
     ``active_print_spoolman``, whose first migration (m101) added a column to a
     table create_all had already made.
     """

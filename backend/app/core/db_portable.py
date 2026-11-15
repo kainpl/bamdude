@@ -746,23 +746,20 @@ async def conform_imported_schema(engine, models_metadata) -> None:
     (2026-09-09): after this pass the two schemas differ in nothing that
     changes behaviour. Runs exactly once, after the chain that followed an
     ``import_sqlite_to_postgres`` in this process — never on an ordinary
-    boot: migrations are frozen, and a working install is not repaired
-    behind its back.
+    boot. Separately numbered historical repairs may run on upgrade; this
+    generic pass against model metadata remains import-only.
     """
     global _conform_pending
     if not _conform_pending:
         return
     _conform_pending = False
 
-    # m001's PostgreSQL half: the tsvector column, its index, the trigger
-    # function and the trigger, plus the backfill — every statement of it is
-    # idempotent, which is why the migration's own function is called rather
-    # than copied. On the file m001 is "applied", but it was applied on
-    # SQLite, where it built an FTS5 table that stayed behind.
-    from backend.app.migrations.m001_bamdude_baseline import _setup_postgres_fts
+    # The chain's frozen repair owns PG search. Reusing m001 here would
+    # recreate correct components and swallow a failed backfill after B-head.
+    from backend.app.migrations._pg_schema_228_fts import ensure_archive_fts
 
     async with engine.begin() as conn:
-        await _setup_postgres_fts(conn)
+        await ensure_archive_fts(conn)
     logger.info("Conformed to the models — PostgreSQL archive search (tsvector, index, trigger)")
 
     await _reconcile_columns(engine, models_metadata)
@@ -793,6 +790,9 @@ async def import_sqlite_to_postgres(engine, metadata, sqlite_path: Path) -> int:
 
     Returns number of tables imported.
     """
+    from backend.app.core.sqlite_import_source import validate_postgres_source
+
+    await _file_work(validate_postgres_source, sqlite_path)
     validate_sqlite_backup(sqlite_path)
 
     with closing(_sqlite_connection(sqlite_path)) as src:
@@ -1042,8 +1042,9 @@ async def _local_sqlite_candidate(data_dir) -> Path | None:
     """The local SQLite file this install may copy into an empty PostgreSQL.
 
     ``bamdude.db`` when it is there. A *legacy-named* file counts only when it is
-    BamDude's own 3.0.1-era database, which ``_is_bamdude_301`` recognises by its
-    ``telegram_chats`` table.
+    BamDude's own database, recognised by its ``telegram_chats`` table on a
+    private copy. An eligible candidate must still pass the import-level floor;
+    this identity probe alone does not authorize consuming an old file.
 
     The probe is the whole point. This path consumes what it accepts — the file
     is renamed to ``.db.migrated`` and its WAL unlinked — so without the gate a
@@ -1055,7 +1056,8 @@ async def _local_sqlite_candidate(data_dir) -> Path | None:
     Imported inside the function: ``migrations`` reaches into this module during
     startup, so importing it at module scope would close the cycle.
     """
-    from backend.app.migrations import FOREIGN_BAMBUDDY_NOTICE, _find_legacy_database, _is_bamdude_301
+    from backend.app.core.sqlite_import_source import is_legacy_bamdude_source
+    from backend.app.migrations import FOREIGN_BAMBUDDY_NOTICE, _find_legacy_database
 
     primary = Path(data_dir) / "bamdude.db"
     if primary.exists():
@@ -1064,7 +1066,7 @@ async def _local_sqlite_candidate(data_dir) -> Path | None:
     alt = _find_legacy_database(data_dir)
     if alt is None:
         return None
-    if await _is_bamdude_301(alt):
+    if await _file_work(is_legacy_bamdude_source, alt):
         return alt
 
     logger.warning(FOREIGN_BAMBUDDY_NOTICE, alt)
@@ -1073,6 +1075,32 @@ async def _local_sqlite_candidate(data_dir) -> Path | None:
 
 class SqliteImportError(RuntimeError):
     """The one-time SQLite → PostgreSQL import failed; startup must not continue."""
+
+
+async def preflight_sqlite_to_pg(engine) -> None:
+    """Before create_all: refuse an unsupported *eligible* local import source.
+
+    A stray old SQLite file must not prevent a populated PG farm from booting.
+    Inspect table presence instead of deliberately aborting a PG transaction.
+    """
+    from sqlalchemy import inspect
+
+    from backend.app.core.config import settings
+    from backend.app.core.db_dialect import is_postgres
+    from backend.app.core.sqlite_import_source import validate_postgres_source
+
+    if not is_postgres():
+        return
+    async with engine.connect() as conn:
+        if await conn.run_sync(lambda sync: inspect(sync).has_table("printers")):
+            if await conn.scalar(text("SELECT EXISTS (SELECT 1 FROM printers)")):
+                return
+    source = await _local_sqlite_candidate(settings.data_dir)
+    if source is not None:
+        try:
+            await _file_work(validate_postgres_source, source)
+        except ValueError as exc:
+            raise SqliteImportError(str(exc)) from exc
 
 
 async def auto_migrate_sqlite_to_pg(engine, metadata) -> bool:

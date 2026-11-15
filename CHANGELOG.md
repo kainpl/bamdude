@@ -1,5 +1,15 @@
 ## [Unreleased]
 
+- Historical PostgreSQL upgrades repair the observed schema gaps without
+  inventing timestamps or discarding usage history. Archive removal now keeps
+  its filament-consumption rows and clears their archive link. Missing write
+  defaults, references, indexes and PostgreSQL search objects are repaired once;
+  unknown data remains reported for review. Search backfill errors stop startup
+  instead of being hidden. SQLite-file imports into PostgreSQL now require
+  BamDude v0.4.2 or newer; older sources need a SQLite upgrade on a copy first.
+  Ordinary SQLite upgrades retain their existing behavior. See the
+  [historical schema guide](docs/development/postgres-historical-schema.md).
+
 - SQLite now limits its default pool to 10 persistent plus 90 overflow connections,
   bounding descriptors retained by WAL. Larger bursts wait for the pool timeout;
   existing pool overrides remain available. Supported systems raise only the soft
