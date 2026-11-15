@@ -188,6 +188,9 @@ class ArchiveResponse(BaseModel):
     tags: str | None
     notes: str | None
     cost: float | None
+    # True while the print still runs: ``cost`` is then the placeholder written at its start (grams at the
+    # default filament rate), which completion replaces with what the spools that fed it cost.
+    cost_is_estimate: bool = False
     photos: list | None
     failure_reason: str | None
     quantity: int = 1  # Number of items printed

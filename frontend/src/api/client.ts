@@ -1793,6 +1793,9 @@ export interface Archive {
   tags: string | null;
   notes: string | null;
   cost: number | null;
+  /** The print still runs: `cost` is the start placeholder at the default
+   *  filament price, replaced from the spools when the print ends. */
+  cost_is_estimate?: boolean;
   photos: string[] | null;
   failure_reason: string | null;
   quantity: number;

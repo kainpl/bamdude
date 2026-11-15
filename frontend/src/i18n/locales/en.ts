@@ -1864,6 +1864,7 @@ export default {
 
   // Archives page
   archives: {
+    costEstimate: 'Estimate at the default filament price. The cost is taken from the spools when the print ends.',
     energy: {
       estimated: '≈ {{kwh}} kWh, estimated from the plug\'s power history ({{coverage}}% of the print covered): its energy counter stood still.',
       approximate: '≈ {{kwh}} kWh, approximate: the counter was read at a moment other than the print\'s own start or end.',
