@@ -4720,6 +4720,16 @@ async def refresh_ams_slot(
     if not success:
         raise HTTPException(400, message)
 
+    # The printer's own verdict (silence counts as accepted). A refusal is
+    # reported, with the printer's reason, and schedules no PA re-apply: the
+    # slot did not change (upstream 1cc4bae5d).
+    accepted, reason = await client.await_rfid_refresh(ams_id, slot_id)
+    if not accepted:
+        logger.warning("Printer %s refused the RFID re-read of AMS %s slot %s: %s", printer_id, ams_id, slot_id, reason)
+        if reason:
+            raise HTTPException(400, f"The printer refused to re-read the RFID tag: {reason}")
+        raise HTTPException(400, "The printer refused to re-read the RFID tag")
+
     # Apply PA profile after delay (RFID re-read takes a few seconds)
     spawn_background_task(
         _apply_pa_after_refresh(printer_id, ams_id, slot_id),

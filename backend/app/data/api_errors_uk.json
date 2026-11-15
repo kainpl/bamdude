@@ -967,6 +967,8 @@
   "The printer preset could not be resolved: {}": "Не вдалося отримати профіль принтера: {}",
   "The printer preset counts from inside its bed; projects cannot be assembled for it": "Профіль принтера відлічує координати зсередини столу; для такого принтера проєкти зібрати не можна",
   "The printer preset does not describe its print area": "Профіль принтера не описує зону друку",
+  "The printer refused to re-read the RFID tag": "Принтер відмовився перечитати RFID-мітку",
+  "The printer refused to re-read the RFID tag: {}": "Принтер відмовився перечитати RFID-мітку: {}",
   "The product has finished goods in stock": "Цей виріб є на складі готових",
   "The proposal is no longer valid. Read a new proposal before moving the job.": "Пропозиція більше не чинна. Прочитайте нову пропозицію перед перенесенням завдання.",
   "The quantity cannot go below what is issued and held for this order ({})": "Кількість не може бути меншою за видане й відкладене під це замовлення ({})",
