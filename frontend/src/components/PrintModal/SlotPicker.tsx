@@ -127,14 +127,19 @@ export function SlotPicker({
     };
   }, [open]);
 
-  // Open upwards when the list would run past the bottom of the window and
-  // there is more room above the row.
+  // Open upwards only when the list would run past the bottom of the window
+  // AND the whole of it fits above the row inside the dialog's scroll box. A
+  // list that overflows downwards just lets that box scroll further; one that
+  // overflowed upwards past the box's start could never be scrolled into view.
   useLayoutEffect(() => {
     if (!open || !buttonRef.current || !listRef.current) return;
     const button = buttonRef.current.getBoundingClientRect();
     const needed = listRef.current.offsetHeight;
     const below = window.innerHeight - button.bottom;
-    setAbove(needed > below && button.top > below);
+    let box: HTMLElement | null = buttonRef.current.parentElement;
+    while (box && !/(auto|scroll)/.test(getComputedStyle(box).overflowY)) box = box.parentElement;
+    const roomAbove = box ? button.top - box.getBoundingClientRect().top + box.scrollTop : button.top;
+    setAbove(needed > below && roomAbove >= needed);
   }, [open, options.length]);
 
   useEffect(() => {
