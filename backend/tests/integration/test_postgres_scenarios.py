@@ -376,7 +376,8 @@ def g02_schema_reference(tmp_path_factory):
 
 @pytest.mark.timeout(120)
 @pytest.mark.parametrize(
-    "case", ["v042", "v051", "v061", "pre075", "pre144", "repair", "retry043", "retry071", "retry221", "deletes"]
+    "case",
+    ["v042", "v051", "v061", "pre075", "pre144", "repair", "retry043", "retry071", "retry221", "deletes", "head_v061"],
 )
 def test_g02_historical_schema_and_repair(tmp_path, case, g02_schema_reference):
     """Addressed CI leg: real historical producers, exact drift, repeat/no-op."""
@@ -385,7 +386,11 @@ def test_g02_historical_schema_and_repair(tmp_path, case, g02_schema_reference):
     reference, accepted = g02_schema_reference
     url = _pg_url()
     _wipe(url, all_objects=True)
-    mode = case if case in ("repair", "deletes") or case.startswith("retry") else "import:" + case
+    if case == "head_v061":
+        prepared = _run("g02_schema:prepare_head_v061", tmp_path / case, None)
+        assert prepared["source_level"] >= 228 and prepared["has_b_marker"]
+        (tmp_path / "head_v061-source.json").write_text(json.dumps(prepared, indent=2))
+    mode = case if case in ("repair", "deletes", "head_v061") or case.startswith("retry") else "import:" + case
     actual = _run("g02_schema:" + mode, tmp_path / case, url)
     differences = unexpected(reference, actual, accepted)
     (tmp_path / (case + ".json")).write_text(json.dumps(actual, indent=2))

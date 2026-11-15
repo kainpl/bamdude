@@ -1072,6 +1072,7 @@
   "Tray UUID is already linked to spool {}": "UUID слота вже привʼязано до котушки {}",
   "URL does not contain a /models/{id} segment": "URL не містить сегмента /models/{id}",
   "URL is empty or not a string": "URL порожній або не є рядком",
+  "Unable to read or copy the SQLite source. Check free space and access permissions for the database and temporary directory, then retry.": "Не вдалося прочитати або скопіювати джерело SQLite. Перевірте вільне місце та права доступу до бази даних і тимчасової теки, потім повторіть спробу.",
   "Unknown Git provider: {}": "Невідомий Git-провайдер: {}",
   "Unknown action_type '{}'": "Невідомий action_type «{}»",
   "Unknown file type: {}": "Невідомий тип файлу: {}",

@@ -770,13 +770,14 @@ async def conform_imported_schema(engine, models_metadata) -> None:
         return
     _conform_pending = False
 
-    # The chain's frozen repair owns PG search. Reusing m001 here would
-    # recreate correct components and swallow a failed backfill after B-head.
-    from backend.app.migrations._pg_schema_228_fts import ensure_archive_fts
+    # The source can already carry m228 from SQLite (where it is a no-op),
+    # or from a portable PG backup whose DDL lacks migration-only objects.
+    # Always replay the frozen PG repair on import, not just its FTS half.
+    from backend.app.migrations.m228_postgres_historical_schema import replay
 
     async with engine.begin() as conn:
-        await ensure_archive_fts(conn)
-    logger.info("Conformed to the models — PostgreSQL archive search (tsvector, index, trigger)")
+        await replay(conn)
+    logger.info("Conformed import — frozen PostgreSQL historical repair")
 
     await _reconcile_columns(engine, models_metadata)
     await _reconcile_unique_constraints(engine, models_metadata)
@@ -1111,12 +1112,12 @@ async def preflight_sqlite_to_pg(engine) -> None:
         if await conn.run_sync(lambda sync: inspect(sync).has_table("printers")):
             if await conn.scalar(text("SELECT EXISTS (SELECT 1 FROM printers)")):
                 return
-    source = await _local_sqlite_candidate(settings.data_dir)
-    if source is not None:
-        try:
+    try:
+        source = await _local_sqlite_candidate(settings.data_dir)
+        if source is not None:
             await _file_work(validate_postgres_source, source)
-        except ValueError as exc:
-            raise SqliteImportError(str(exc)) from exc
+    except ValueError as exc:
+        raise SqliteImportError(str(exc)) from exc
 
 
 async def auto_migrate_sqlite_to_pg(engine, metadata) -> bool:

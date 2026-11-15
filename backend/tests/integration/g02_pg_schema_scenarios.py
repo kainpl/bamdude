@@ -80,9 +80,18 @@ async def run(case):
 
     if case.startswith("import:"):
         unpack(case.split(":")[1], Path(settings.data_dir))
+    if case == "prepare_head_v061":
+        unpack("v061", Path(settings.data_dir))
     if case.startswith("retry"):
         await load_failed_pg(database, case)
     await database.init_db()
+    if case == "prepare_head_v061":
+        assert database.engine.dialect.name == "sqlite"
+        async with database.engine.connect() as conn:
+            level = await conn.scalar(text("SELECT max(version) FROM _migrations"))
+            assert await conn.scalar(text("SELECT count(*) FROM _migrations WHERE version=228")) == 1
+        await database.engine.dispose()
+        return {"source_level": level, "has_b_marker": True, "dialect": "sqlite"}
     if case == "repair":
         await exercise_repair(database, repair)
         await exercise_failed_start(database)
@@ -257,6 +266,20 @@ async def exercise_catalogue_and_orphans(conn, repair):
     from backend.tests.integration.pg_schema_oracle import unexpected
 
     reference = await capture(conn)
+    # SQLAlchemy reflects invalid plain indexes differently from FTS's raw
+    # catalogue helper. Exercise both flags on a normal frozen repair target.
+    plain = next(r for r in repair.REPAIRS if r["object"] == "api_keys.indexes.ix_api_keys_owner_identity")
+    for flag in ("indisvalid", "indisready"):
+        point = await conn.begin_nested()
+        await conn.execute(
+            text(f"UPDATE pg_index SET {flag}=false WHERE indexrelid='ix_api_keys_owner_identity'::regclass")
+        )
+        assert unexpected(reference, await capture(conn), [])
+        residuals = []
+        await repair._repair_index(conn, plain, residuals)
+        assert not residuals, residuals
+        assert not unexpected(reference, await capture(conn), [])
+        await point.rollback()
     for sql in [
         "ALTER TABLE print_archives ENABLE REPLICA TRIGGER archive_search_vector_trigger",
         "UPDATE pg_index SET indisvalid=false WHERE indexrelid='idx_archives_search_vector'::regclass",

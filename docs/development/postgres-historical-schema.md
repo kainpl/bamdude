@@ -19,6 +19,11 @@ Released migration edits are limited to the missing-table PostgreSQL arms of
 m043 and m127; their rendered SQLite DDL is unchanged. The shared column
 helper translates DATETIME/BLOB types without editing released callers.
 
+Import conformance replays that frozen PG repair even when the source already
+carries its migration marker. On SQLite the numbered migration is a no-op;
+its marker alone does not prove that PostgreSQL objects exist. This replay is
+import-only; ordinary native PG boots still use the numbered migration chain.
+
 Unknown timestamps, duplicate identities and native-upgrade orphans that
 cannot be safely detached are preserved and reported by object name and
 count. Historical NULL timestamps are never replaced with the upgrade time.
@@ -26,8 +31,9 @@ The import-only conformance pass retains its existing, separate orphan
 policy; a diagnostic emitted before that pass is not a final retention claim.
 
 Archive removal detaches `spool_usage_history.archive_id` on PostgreSQL. The
-usage row, grams, cost and outcome remain. SQLite writers keep their explicit
-detach because foreign-key enforcement is not universally enabled there.
+usage row, grams, cost and outcome remain. The ordinary archive writer also
+detaches explicitly on SQLite; bulk SQLite deletion doors still need G02 C's
+separate deletion policy. This PG repair does not enable SQLite FK enforcement.
 
 Search repair checks catalog definitions and validation/enabled/ready flags.
 A disabled trigger requires rebuilding stale non-NULL vectors too. Correct
@@ -61,3 +67,14 @@ their code/requirements hashes and the exact drift rules live in
 `backend/tests/integration/fixtures/g02_pg_schema/`. Dependency requirements
 are historical bytes; their resolved environments are modern resolutions of
 lower bounds, not historical deployment lockfiles.
+
+## Unreleased gates still open in G02 D4
+
+The current development tree is not release-ready. Fresh head-SQLite sources
+can contain a named unique index duplicating an auth constraint, which the PG
+import rejects. Portable backups also omit other migration-only indexes,
+including a partial unique calibration index. B restores only the frozen B
+targets; it does not resolve that complete index inventory. D4 must cover
+fresh and already-affected SQLite sources and both portable restore dialects
+before a release. The historical fixture upgraded to head is a separate test;
+its success does not close these two gates.

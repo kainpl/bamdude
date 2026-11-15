@@ -122,6 +122,10 @@ async def _repair_index(conn, row, residuals):
         comparable = dict(actual)
         # Reflection may supply an empty include list outside dialect_options.
         comparable.pop("include_columns", None)
+        # Invalidity is a catalogue state to repair, not a changed definition.
+        # Copy the nested mapping: don't mutate the inspector's cached result.
+        comparable["dialect_options"] = dict(comparable.get("dialect_options", {}))
+        comparable["dialect_options"].pop("postgresql_invalid", None)
         if comparable != target:
             without_sort = dict(comparable)
             sort = without_sort.pop("column_sorting", None)

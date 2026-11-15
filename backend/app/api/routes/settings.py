@@ -1172,7 +1172,9 @@ async def _restore_backup(file: UploadFile, db: AsyncSession, *, authority=None)
     from backend.app.core.paths import resolve_data_dir
     from backend.app.core.sqlite_import_source import (
         SOURCE_LEVEL_MESSAGE,
+        SOURCE_READ_MESSAGE,
         SqliteSourceLevelError,
+        SqliteSourceReadError,
         validate_postgres_source,
     )
     from backend.app.services import queue_sources
@@ -1215,6 +1217,8 @@ async def _restore_backup(file: UploadFile, db: AsyncSession, *, authority=None)
             await _file_work(validate_history, staging, backup_db)
         except SqliteSourceLevelError as exc:
             raise HTTPException(400, {"error": exc.code, "message": SOURCE_LEVEL_MESSAGE}) from exc
+        except SqliteSourceReadError as exc:
+            raise HTTPException(400, {"error": exc.code, "message": SOURCE_READ_MESSAGE}) from exc
         except ValueError as exc:
             logger.warning("Restore preflight rejected database: %s", exc)
             raise HTTPException(400, "Invalid backup database: damaged or incompatible. Check server logs.") from exc

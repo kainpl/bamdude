@@ -1,7 +1,7 @@
 ## [Unreleased]
 
 - Historical PostgreSQL upgrades repair the observed schema gaps without
-  inventing timestamps or discarding usage history. Archive removal now keeps
+  inventing timestamps or discarding usage history. PostgreSQL archive removal keeps
   its filament-consumption rows and clears their archive link. Missing write
   defaults, references, indexes and PostgreSQL search objects are repaired once;
   unknown data remains reported for review. Search backfill errors stop startup

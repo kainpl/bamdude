@@ -15,6 +15,10 @@ SOURCE_LEVEL_MESSAGE = (
     "This SQLite source is older than the supported PostgreSQL import level or has invalid migration history. "
     "Upgrade a COPY of the SQLite database to a supported BamDude version and create a new backup."
 )
+SOURCE_READ_MESSAGE = (
+    "Unable to read or copy the SQLite source. Check free space and access permissions "
+    "for the database and temporary directory, then retry."
+)
 
 
 class SqliteSourceLevelError(ValueError):
@@ -22,6 +26,13 @@ class SqliteSourceLevelError(ValueError):
 
     def __init__(self):
         super().__init__(SOURCE_LEVEL_MESSAGE)
+
+
+class SqliteSourceReadError(ValueError):
+    code = "sqlite_source_read_failed"
+
+    def __init__(self):
+        super().__init__(SOURCE_READ_MESSAGE)
 
 
 def _stamp(path: Path):
@@ -66,6 +77,8 @@ def validate_postgres_source(path: Path) -> None:
                 raise SqliteSourceLevelError()
     except sqlite3.Error as exc:
         raise SqliteSourceLevelError() from exc
+    except OSError as exc:
+        raise SqliteSourceReadError() from exc
 
 
 def is_legacy_bamdude_source(path: Path) -> bool:
@@ -75,5 +88,8 @@ def is_legacy_bamdude_source(path: Path) -> bool:
                 source.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='telegram_chats'").fetchone()
                 is not None
             )
-    except (sqlite3.Error, ValueError, OSError):
+    except OSError as exc:
+        # Lack of temp space/access proves nothing about the file's identity.
+        raise SqliteSourceReadError() from exc
+    except (sqlite3.Error, ValueError):
         return False

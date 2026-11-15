@@ -62,6 +62,29 @@ async def test_unsupported_pg_source_refuses_before_drains_and_file_work(tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_source_copy_failure_is_a_clear_400_before_drain(tmp_path, monkeypatch):
+    from backend.app.core import sqlite_import_source
+    from backend.app.services.backup_files import FileRestore
+
+    monkeypatch.setattr("backend.app.core.db_dialect.is_sqlite", lambda: False)
+    prepare = Mock()
+    drain = AsyncMock()
+    monkeypatch.setattr(FileRestore, "prepare", prepare)
+    monkeypatch.setattr(route, "_quiesce_part_render", drain)
+    monkeypatch.setattr(sqlite_import_source.shutil, "copyfile", Mock(side_effect=OSError(28, "private-temp-path")))
+    db = AsyncMock()
+    with pytest.raises(HTTPException) as caught:
+        await route.restore_backup(file=upload(tmp_path), db=db, _=None)
+    assert caught.value.status_code == 400
+    assert caught.value.detail["error"] == "sqlite_source_read_failed"
+    assert "temporary directory" in caught.value.detail["message"]
+    assert "private-temp-path" not in caught.value.detail["message"]
+    prepare.assert_not_called()
+    drain.assert_not_awaited()
+    db.close.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("raises", [False, True])
 async def test_obico_drain_refusal_precedes_any_live_database_or_file_swap(tmp_path, monkeypatch, raises):
     from backend.app.services.backup_files import FileRestore

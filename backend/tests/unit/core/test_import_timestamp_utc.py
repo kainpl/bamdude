@@ -81,6 +81,7 @@ def nullable_source(path, *, migrations):
             source.execute(
                 "CREATE TABLE _migrations(id INTEGER PRIMARY KEY, version INTEGER NOT NULL UNIQUE, name TEXT NOT NULL, applied_at DATETIME DEFAULT CURRENT_TIMESTAMP)"
             )
+            source.execute("INSERT INTO _migrations(version,name) VALUES(41,'synthetic_supported_level')")
         source.commit()
 
 
@@ -100,7 +101,7 @@ async def test_portable_export_fallback_is_utc_without_shifting_existing_values(
 
 async def test_portable_import_defensive_fallback_is_utc(tmp_path, monkeypatch):
     source = tmp_path / "legacy.db"
-    nullable_source(source, migrations=False)
+    nullable_source(source, migrations=True)
     original = db_portable._reflect_sqlite_schema
 
     def reflected_nn(path, metadata):
@@ -116,7 +117,8 @@ async def test_portable_import_defensive_fallback_is_utc(tmp_path, monkeypatch):
     monkeypatch.setattr(db_portable, "_conform_pending", False)
     engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'target.db'}")
     try:
-        assert await db_portable.import_sqlite_to_postgres(engine, timestamp_metadata(), source) == 1
+        # The supported source carries sample plus its migration history.
+        assert await db_portable.import_sqlite_to_postgres(engine, timestamp_metadata(), source) == 2
         async with engine.connect() as connection:
             values = (await connection.execute(text("SELECT stamp FROM sample ORDER BY id"))).scalars().all()
         assert [datetime.fromisoformat(v) for v in values] == [UTC_NOW, EXISTING]

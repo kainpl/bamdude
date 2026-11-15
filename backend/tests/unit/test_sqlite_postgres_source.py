@@ -3,13 +3,16 @@
 import gzip
 import hashlib
 import sqlite3
+from contextlib import asynccontextmanager, closing
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 
 from backend.app.core.sqlite_import_source import (
     SqliteSourceLevelError,
+    SqliteSourceReadError,
     is_legacy_bamdude_source,
     validate_postgres_source,
 )
@@ -108,4 +111,39 @@ def test_actual_pinned_sources_are_untouched(tmp_path, name, supported):
     else:
         with pytest.raises(SqliteSourceLevelError):
             validate_postgres_source(path)
+    assert files(tmp_path) == before
+
+
+@pytest.mark.asyncio
+async def test_copy_failure_is_actionable_and_does_not_misidentify_legacy_file(tmp_path, monkeypatch, caplog):
+    from backend.app.core import db_portable, sqlite_import_source
+    from backend.app.core.config import settings
+
+    path = tmp_path / "bambuddy.db"
+    with closing(sqlite3.connect(path)) as source:
+        source.execute("CREATE TABLE telegram_chats(id INTEGER)")
+        source.execute("CREATE TABLE _migrations(version INTEGER)")
+        source.execute("INSERT INTO _migrations VALUES(41)")
+        source.commit()
+    before = files(tmp_path)
+
+    def full(*_args):
+        raise OSError(28, "private-temp-path: no space left")
+
+    monkeypatch.setattr(sqlite_import_source.shutil, "copyfile", full)
+    with pytest.raises(SqliteSourceReadError, match="free space") as refused:
+        validate_postgres_source(path)
+    assert "private-temp-path" not in str(refused.value)
+    with pytest.raises(SqliteSourceReadError):
+        await db_portable._local_sqlite_candidate(tmp_path)
+    assert "foreign" not in caplog.text.lower() and "Found a Bambuddy database" not in caplog.text
+
+    @asynccontextmanager
+    async def connect():
+        yield SimpleNamespace(run_sync=AsyncMock(return_value=False))
+
+    monkeypatch.setattr(settings, "database_url", "postgresql+asyncpg://unused/unused")
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    with pytest.raises(db_portable.SqliteImportError, match="temporary directory"):
+        await db_portable.preflight_sqlite_to_pg(SimpleNamespace(connect=connect))
     assert files(tmp_path) == before
