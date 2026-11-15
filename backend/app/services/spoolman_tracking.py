@@ -7,7 +7,6 @@ Supports accurate partial usage reporting for failed/cancelled prints.
 
 import json
 import logging
-import math
 from dataclasses import dataclass
 
 from sqlalchemy import delete, select
@@ -22,6 +21,7 @@ from backend.app.services.spoolman import (
     get_spoolman_client,
     init_spoolman_client,
 )
+from backend.app.services.spoolman_weights import spool_net_weight, spool_price_per_gram
 from backend.app.utils.filament_remaining import usable_remain_percent
 from backend.app.utils.tray_split import CompletionSnapshot, PrintedBound, printed_bound, sole_owner, split_weight
 
@@ -527,52 +527,23 @@ async def _load_journal_events(printer_id: int, archive_id: int) -> list:
         return without_stale_refill_runouts(await load_events(db, printer_id, archive_id))
 
 
-def _as_positive_number(value) -> float | None:
-    """``value`` as a float when it is a usable positive quantity, else None.
-
-    Rejects bools (``float(True)`` is 1.0 — a weight of 1 g would price a spool
-    per gram at its whole cost), and NaN / infinity, which compare False against
-    every bound and would reach the archive as a cost nothing later can clear.
-    """
-    if isinstance(value, bool):
-        return None
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return None
-    if not math.isfinite(number) or number <= 0:
-        return None
-    return number
-
-
 def _spool_cost_per_gram(spool: dict | None) -> float | None:
     """What one gram off this Spoolman spool costs, or None (upstream 39835437, #2591).
 
     ``filament.price`` is the catalogue figure for a full spool; ``price`` on the
     spool overrides it for a purchase that cost something else — the order the
-    Spoolman UI presents them in. The divisor is ``filament.weight``, net grams,
-    the same field the remain-delta path turns a percentage into grams with, so
-    a spool that can be charged by percentage can always be priced.
+    Spoolman UI presents them in. The divisor is the SPOOL'S OWN net weight
+    (``initial_weight``, else ``filament.weight`` — upstream 2f7f17a89, #3194),
+    the same figure the remain-delta path turns a percentage into grams with, so
+    a spool that can be charged by percentage can always be priced, and a 250 g
+    refill under a 1000 g catalogue filament is not priced at a quarter of its
+    rate. The rule lives in ``spoolman_weights``, shared with what is shown.
 
     A missing or non-positive price is an UNPRICED spool, not a free one: None,
     so the caller falls back to the farm rate. A spool-level 0 falls through to
     the catalogue — importers write 0 for "not set" often enough.
     """
-    if not isinstance(spool, dict):
-        return None
-    filament = spool.get("filament")
-    if not isinstance(filament, dict):
-        filament = {}
-    raw_price = spool.get("price")
-    if _as_positive_number(raw_price) is None:
-        raw_price = filament.get("price")
-    price = _as_positive_number(raw_price)
-    weight = _as_positive_number(filament.get("weight"))
-    if price is None or weight is None:
-        return None
-    # Two finite operands can still overflow into a non-finite quotient.
-    rate = price / weight
-    return rate if math.isfinite(rate) else None
+    return spool_price_per_gram(spool)
 
 
 @dataclass
@@ -1915,7 +1886,7 @@ async def _report_remain_delta_for_slots(
     slot_materials_out: dict[int, str] | None = None,
     cost_out: _PrintCost | None = None,
 ) -> int:
-    """AMS remain%-delta path: write ``(start - current) * filament.weight``
+    """AMS remain%-delta path: write ``(start - current) * the spool's net weight``
     grams to Spoolman for slots the 3MF path didn't cover.
 
     Mirrors ``usage_tracker.on_print_complete`` Path 2: per-slot, gated on a
@@ -1976,10 +1947,13 @@ async def _report_remain_delta_for_slots(
             logger.debug("[SPOOLMAN] AMS%d-T%d: get_spool(%s) failed: %s", ams_id, tray_id, spool_id, exc)
             continue
         filament = spool.get("filament") or {}
-        ref_weight = filament.get("weight")
-        if not ref_weight or ref_weight <= 0:
+        # The spool's own net weight, else the catalogue's: the percentage is of
+        # THIS spool, and a 250 g refill under a 1000 g filament was charged
+        # four times what it fed (upstream 2f7f17a89, #3194).
+        ref_weight = spool_net_weight(spool)
+        if ref_weight is None:
             logger.debug(
-                "[SPOOLMAN] AMS%d-T%d: spool %s has no filament.weight, skipping remain-delta",
+                "[SPOOLMAN] AMS%d-T%d: spool %s has no net weight, skipping remain-delta",
                 ams_id,
                 tray_id,
                 spool_id,
