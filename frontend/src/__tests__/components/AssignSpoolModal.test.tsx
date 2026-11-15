@@ -15,6 +15,7 @@ vi.mock('../../api/client', () => ({
     getAssignments: vi.fn(),
     assignSpool: vi.fn(),
     getSettings: vi.fn().mockResolvedValue({}),
+    getUiPreferences: vi.fn().mockResolvedValue({}),
     getAuthStatus: vi.fn().mockResolvedValue({ auth_enabled: false }),
     getReplacementWindow: vi.fn().mockResolvedValue({ mode: 'none', pause_layer: null }),
     getSpoolmanInventorySpools: vi.fn().mockResolvedValue([]),

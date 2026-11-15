@@ -42,6 +42,7 @@ import { StandaloneCamerasPanel } from '../components/settings/StandaloneCameras
 import { StreamOverlayBuilder } from '../components/StreamOverlayBuilder';
 import { SpoolmanSettings } from '../components/SpoolmanSettings';
 import { SpoolDisplayNameSettings } from '../components/SpoolDisplayNameSettings';
+import { SpoolSortOrderSettings } from '../components/SpoolSortOrderSettings';
 import { ArchiveCleanupSettingsBlock } from '../components/ArchiveCleanupSettingsBlock';
 import { LastNextRunCards } from '../components/LastNextRunCards';
 import { SpoolCatalogSettings } from '../components/SpoolCatalogSettings';
@@ -6560,6 +6561,7 @@ export function SettingsPage() {
           {/* Right Column (2/3) - Display Name + Spool Catalog + Color Catalog */}
           <div className="lg:w-2/3 space-y-4">
             <SpoolDisplayNameSettings />
+            <SpoolSortOrderSettings />
             <SpoolCatalogSettings />
             <ColorCatalogSettings />
           </div>

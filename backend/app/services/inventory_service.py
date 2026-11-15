@@ -392,6 +392,84 @@ def _spool_order_by(sort_by: str | None, condition_values: dict[int, float] | No
     return [clause, tiebreak], False
 
 
+# ── The operator's spool order (Settings → Filament) ────────────────────────
+#
+# A chain of «field + direction» levels the operator arranges, stored as one
+# setting: ``material_asc,brand_asc,net_asc``. It orders the slot-assignment
+# picker, and the Filaments list whenever no column is chosen. Empty = each
+# list keeps the order it always had.
+#
+#: The fields a level may name. Each is a key of :func:`_spool_sort_columns`,
+#: except ``display_name`` — the name the naming template composes (owner,
+#: 2026-11-15: the operator sorts by the name they see; the template still
+#: decides nothing but that name and its place in this one order).
+SPOOL_ORDER_KEYS: tuple[str, ...] = (
+    "display_name",
+    "material",
+    "subtype",
+    "brand",
+    "color_name",
+    "slicer_filament",
+    "net",
+    "remaining",
+    "used",
+    "label_weight",
+    "added_time",
+    "purchase_date",
+    "last_used_time",
+    "storage_location",
+    "cost_per_kg",
+    "lot",
+    "id",
+)
+
+
+def parse_spool_sort_order(text: str | None) -> list[tuple[str, str]]:
+    """The stored chain as ``(field, direction)`` levels.
+
+    Tolerant on purpose: an unknown field, a direction that is neither ``asc``
+    nor ``desc`` and a field named a second time are dropped, so a setting
+    written by an older or newer build still orders the list by what it can.
+    """
+    levels: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for chunk in (text or "").split(","):
+        key, _, direction = chunk.strip().rpartition("_")
+        if key in SPOOL_ORDER_KEYS and direction in ("asc", "desc") and key not in seen:
+            seen.add(key)
+            levels.append((key, direction))
+    return levels
+
+
+def spool_order_clauses(levels: list[tuple[str, str]], template: str | None) -> list:
+    """ORDER BY for a chain, ending in the ``Spool.id DESC`` tiebreak every paged spool list carries (unless
+    the chain orders by id itself)."""
+    columns = _spool_sort_columns()
+    clauses = []
+    for key, direction in levels:
+        if key == "display_name":
+            column = func.lower(display_name_expr(template))
+        else:
+            column = columns[key]
+        if key in _DATETIME_NULLABLE_SORT_KEYS:
+            clauses.append(column.asc().nulls_first() if direction == "asc" else column.desc().nulls_last())
+        else:
+            clauses.append(column.asc() if direction == "asc" else column.desc())
+    if not any(key == "id" for key, _ in levels):
+        clauses.append(Spool.id.desc())
+    return clauses
+
+
+async def spool_default_order(db: AsyncSession) -> list | None:
+    """The operator's order as ORDER BY clauses, or ``None`` when none is set — the ONE reader of the setting."""
+    from backend.app.api.routes.settings import get_setting
+
+    levels = parse_spool_sort_order(await get_setting(db, "spool_sort_order"))
+    if not levels:
+        return None
+    return spool_order_clauses(levels, await spool_display_template(db))
+
+
 def _join_first_assignment(query):
     """Outerjoin each spool to its FIRST assignment (lowest id) and that
     assignment's printer — for the ``location`` sort only.
@@ -570,6 +648,7 @@ async def list_spools(
     limit: int | None = None,
     offset: int = 0,
     load_k_profiles: bool = True,
+    default_order: list | None = None,
 ) -> list[Spool]:
     """List spools.
 
@@ -599,6 +678,9 @@ async def list_spools(
         if not include_archived:
             query = query.where(Spool.archived_at.is_(None))
         query = query.order_by(*_DEFAULT_ORDER)
+    elif default_order and not sort_by:
+        # No column asked for: the operator's own order (see ``spool_default_order``).
+        query = query.where(*filters).order_by(*default_order)
     else:
         order_clauses, needs_location_join = _spool_order_by(sort_by, condition_values)
         if needs_location_join:

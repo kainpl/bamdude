@@ -1529,7 +1529,13 @@ async def list_spools(
 
     total = await inventory_service.count_spools(db, filters=filters)
     spools = await inventory_service.list_spools(
-        db, filters=filters, sort_by=sort_by, condition_values=condition_values, limit=limit, offset=offset
+        db,
+        filters=filters,
+        sort_by=sort_by,
+        condition_values=condition_values,
+        limit=limit,
+        offset=offset,
+        default_order=None if sort_by else await inventory_service.spool_default_order(db),
     )
 
     last_page = 1 if all else max(1, math.ceil(total / per_page))
@@ -1774,7 +1780,12 @@ async def spool_picker(
 
     total = await inventory_service.count_spools(db, filters=filters)
     spools = await inventory_service.list_spools(
-        db, filters=filters, limit=per_page, offset=(page - 1) * per_page, load_k_profiles=False
+        db,
+        filters=filters,
+        limit=per_page,
+        offset=(page - 1) * per_page,
+        load_k_profiles=False,
+        default_order=await inventory_service.spool_default_order(db),
     )
     profile_counts: dict[int, int] = {}
     if spools:

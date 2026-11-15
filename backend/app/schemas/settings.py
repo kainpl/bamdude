@@ -215,6 +215,12 @@ class AppSettings(BaseModel):
         description="Template for the synthesised spool display name",
     )
 
+    # The operator's spool order: comma-separated ``<field>_asc|_desc`` levels
+    # (fields: inventory_service.SPOOL_ORDER_KEYS). Orders the slot-assignment
+    # picker, and the Filaments list while no column is chosen. Empty = each
+    # list's built-in order.
+    spool_sort_order: str = Field(default="", description="Default order of spool lists, as sort levels")
+
     # Updates
     check_updates: bool = Field(default=True, description="Automatically check for updates on startup")
     check_printer_firmware: bool = Field(default=True, description="Check for printer firmware updates from Bambu Lab")
@@ -875,6 +881,7 @@ class AppSettingsUpdate(BaseModel):
     auto_add_unknown_rfid: bool | None = None
     disable_filament_warnings: bool | None = None
     spool_display_template: str | None = None
+    spool_sort_order: str | None = None
     check_updates: bool | None = None
     check_printer_firmware: bool | None = None
     include_beta_updates: bool | None = None

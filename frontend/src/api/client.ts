@@ -4971,6 +4971,7 @@ export interface AppSettings {
   disable_filament_warnings: boolean;  // Disable filament warnings (print insufficiency and assignment mismatch)
   auto_add_unknown_rfid: boolean;  // When false, the backend skips auto-creating inventory spools for unknown RFID tags and instead broadcasts an unknown_tag event for the confirmation modal
   spool_display_template: string;  // Template for the synthesised spool display name (see utils/spoolName.ts)
+  spool_sort_order: string;  // The operator's spool order, `field_asc,field_desc` levels (see utils/spoolSort.ts); '' = built-in
   // Default printer
   default_printer_id: number | null;
   // Dark mode theme settings
