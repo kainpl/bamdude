@@ -2642,6 +2642,9 @@ async def _track_from_3mf(
                             if _ext_id in _lookup:
                                 global_tray_id = _ext_id
                                 break
+                        # ``-1`` does not say WHICH holder. With two of them the first is a
+                        # guess: a second ``-1`` filament is not added to the same spool on it.
+                        tray_is_a_guess = 254 in _lookup and 255 in _lookup
                     if global_tray_id is None:
                         global_tray_id = 254
             # Position-based default: sort available tray IDs so external spools (254/255)

@@ -176,6 +176,49 @@ class TestWhatTheTraySkipStillProtects:
         assert not_recorded == []
 
 
+class TestTwoExternalMarkersOnADualHolderMachine:
+    """``-1`` in a slicer's mapping says "an external holder", not which one. On a machine with two
+    holders both ``-1`` filaments resolve to the first holder: which filament printed from the second
+    holder is not stated, so the second one's tray is a guess."""
+
+    VT = [
+        {"id": 254, "tray_type": "PLA", "tray_color": "FF0000FF"},
+        {"id": 255, "tray_type": "PLA", "tray_color": "00FF00FF"},
+    ]
+
+    async def test_the_second_external_filament_is_not_added_to_the_first_holders_spool(self, db_session, stage):  # noqa: F811
+        """30 g + 20 g, both ``-1``. The first holder's spool was charged 30 g and the 20 g were dropped
+        silently; charging both put 50 g on that spool. 30 g stay, the 20 g are reported."""
+        pm = printer_state()
+        pm.get_status.return_value.raw_data = {"ams": [], "vt_tray": self.VT}
+        _active_sessions[stage.printer.id] = session(
+            stage.printer.id,
+            spool_assignments={(255, 0): stage.a, (255, 1): stage.b},
+            started_at=None,
+            ams_mapping=[-1, -1],
+        )
+        usage = [{"slot_id": 1, "used_g": 30.0, "type": "PLA"}, {"slot_id": 2, "used_g": 20.0, "type": "PLA"}]
+
+        _notice, not_recorded = await run_internal(db_session, stage.printer, stage.archive, COMPLETED, pm, usage=usage)
+
+        assert await history(db_session) == {(stage.a, 30.0)}
+        assert not_recorded == [(254, 20.0)]
+
+    async def test_one_holder_takes_both_external_filaments(self, db_session, stage):  # noqa: F811
+        """A single-holder machine: ``-1`` names the only holder there is, so both are charged to it."""
+        pm = printer_state()
+        pm.get_status.return_value.raw_data = {"ams": [], "vt_tray": self.VT[:1]}
+        _active_sessions[stage.printer.id] = session(
+            stage.printer.id, spool_assignments={(255, 0): stage.a}, started_at=None, ams_mapping=[-1, -1]
+        )
+        usage = [{"slot_id": 1, "used_g": 30.0, "type": "PLA"}, {"slot_id": 2, "used_g": 20.0, "type": "PLA"}]
+
+        _notice, not_recorded = await run_internal(db_session, stage.printer, stage.archive, COMPLETED, pm, usage=usage)
+
+        assert await history(db_session) == {(stage.a, 30.0), (stage.a, 20.0)}
+        assert not_recorded == []
+
+
 class TestSpoolmanAlreadyDidThis:
     async def test_both_inventories_charge_the_same_grams_for_the_same_print(self):
         from backend.app.services.spoolman_tracking import report_usage
