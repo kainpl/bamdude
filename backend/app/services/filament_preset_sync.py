@@ -194,6 +194,16 @@ async def _reconcile(
             if fam.origin == source and fam.filament_id not in remaining_fids:
                 fam.orphaned = True
 
+    # A family minted under one of OrcaSlicer's own "OF…" ids, by a pull made
+    # before those were translated: no printer resolves that id, and the rows
+    # above have just been re-derived onto Bambu's. Out of the picker — marked,
+    # never deleted, as every family: a spool may still name it.
+    for fam in (
+        (await db.execute(select(UserFilamentFamily).where(UserFilamentFamily.orphaned.is_(False)))).scalars().all()
+    ):
+        if catalog.bambu_filament_id(fam.filament_id) != fam.filament_id:
+            fam.orphaned = True
+
     await db.commit()
     return outcome
 
@@ -265,15 +275,41 @@ async def sync_bambu_presets_for_user(db: AsyncSession, user: User | None) -> Sy
     )
 
 
-def _orca_family_id(content: dict) -> str | None:
-    fid = content.get("filament_id")
-    if fid:
-        return str(fid)
-    inherits = content.get("inherits") or ""
-    if inherits:
-        preset = catalog.preset_by_name(str(inherits), "orca") or catalog.preset_by_name(str(inherits), "bambu")
+# How far a profile's ``inherits`` is followed through the user's own profiles.
+_INHERIT_HOPS = 5
+
+
+def _orca_family_id(content: dict, siblings: dict[str, dict] | None = None) -> str | None:
+    """The family an Orca profile belongs to, as the id a PRINTER knows.
+
+    Its own ``filament_id`` first — through ``catalog.bambu_filament_id``, the
+    one place OrcaSlicer's own "OF…" ids become Bambu's (an Orca id the table
+    lacks is no id at all). A profile that stores only a diff takes its
+    parent's (upstream #3216): another of the user's profiles (``siblings``, by
+    name, up to ``_INHERIT_HOPS``), else the system preset of that exact name,
+    else — for a system preset of a printer the catalogue does not carry — the
+    family named before the "@".
+    """
+    siblings = siblings or {}
+    current = content
+    seen: set[str] = set()
+    for _hop in range(_INHERIT_HOPS + 1):
+        own = catalog.bambu_filament_id(str(_scalar(current.get("filament_id")) or ""))
+        if own:
+            return own
+        inherits = str(_scalar(current.get("inherits")) or "").strip()
+        if not inherits or inherits in seen:
+            return None
+        seen.add(inherits)
+        parent = siblings.get(inherits)
+        if isinstance(parent, dict):
+            current = parent
+            continue
+        preset = catalog.preset_by_name(inherits, "orca") or catalog.preset_by_name(inherits, "bambu")
         if preset:
             return preset.filament_id
+        family = catalog.family_by_alias(_alias_of(inherits)) if "@" in inherits else None
+        return family.filament_id if family else None
     return None
 
 
@@ -290,7 +326,10 @@ async def sync_orca_presets_for_user(db: AsyncSession, user: User | None) -> Syn
     finally:
         await svc.close()
 
-    incoming: dict[str, dict] = {}
+    # Two passes: a profile may inherit another of the user's own, so every
+    # filament profile of the pull is known by name before any family is asked.
+    parsed: list[tuple[dict, dict]] = []
+    siblings: dict[str, dict] = {}
     for profile in profiles:
         content = profile.get("content") or {}
         if isinstance(content, str):
@@ -300,12 +339,19 @@ async def sync_orca_presets_for_user(db: AsyncSession, user: User | None) -> Syn
                 content = {}
         if (content.get("type") or "") != "filament":
             continue
+        parsed.append((profile, content))
+        name = str(profile.get("name") or content.get("name") or "").strip()
+        if name:
+            siblings.setdefault(name, content)
+
+    incoming: dict[str, dict] = {}
+    for profile, content in parsed:
         pid = str(profile.get("id") or "")
         if not pid:
             continue
         incoming[pid] = {
             "name": profile.get("name") or content.get("name") or "",
-            "family_filament_id": _orca_family_id(content),
+            "family_filament_id": _orca_family_id(content, siblings),
             "base_ref": content.get("inherits") or None,
             "vendor": _scalar(content.get("filament_vendor")),
             "filament_type": _scalar(content.get("filament_type")),
@@ -366,7 +412,7 @@ async def absorb_local_preset(db: AsyncSession, preset) -> None:
         content = json.loads(preset.setting or "{}")
     except ValueError:
         content = {}
-    fid = content.get("filament_id") or _orca_family_id(content)
+    fid = _orca_family_id(content)
     existing = (
         (await db.execute(select(UserFilamentPreset).where(UserFilamentPreset.local_preset_id == preset.id)))
         .scalars()

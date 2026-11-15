@@ -12075,6 +12075,8 @@ export default {
     noKProfile: 'No K profile (use default 0.020)',
     noMatchingKProfiles: 'No matching K profiles found. Default K=0.020 will be used.',
     warnings: {
+      family_unresolved: 'This filament profile is not known to BamDude, so the slot was set to the generic profile of its material. The slicer will see the generic one.',
+      user_preset_unsupported: 'This printer does not take custom filament profiles, so the slot was set to the generic profile of its material. The slicer will see the generic one.',
       k_profile_not_sent: 'The K-profile selection was not sent to the printer - the slot keeps the K it had.',
       k_value_not_sent: 'The K value was not sent to the printer - the slot keeps the K it had.',
     },

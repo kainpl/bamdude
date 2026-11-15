@@ -234,6 +234,11 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
           : t(newAssignment.pending_config ? 'inventory.assignPendingInsert' : 'inventory.assignSuccess'),
         'success',
       );
+      // The slot was told a generic profile instead of the spool's own filament
+      // (upstream 02e39b18b): said, because the slicer will see the generic.
+      if (newAssignment.slot_degraded) {
+        showToast(t(`configureAmsSlot.warnings.${newAssignment.slot_degraded}`, { defaultValue: newAssignment.slot_degraded }), 'warning');
+      }
       setShowMismatchConfirm(false);
       setPendingAssignId(null);
       setMismatchDetails(null);

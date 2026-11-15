@@ -3218,13 +3218,28 @@ async def configure_ams_slot(
     # ``tray_info_idx`` (when given) is a family id straight from the picker;
     # otherwise the material name routes to its generic family inside the
     # builder. The old slot-reuse and generic-table heuristics are gone.
+    from backend.app.services.filament_identity import resolve_raw, resolve_tray
     from backend.app.services.slot_assignment import build_slot_assignment
+
+    # ``tray_info_idx`` is a family id from our own dialog. An API client may
+    # send a Bambu SETTING id there instead (upstream d6de7aa69): it never
+    # reached the printer, but the slot went out as the material's Generic
+    # rather than the filament the client named. The one decoder of the old id
+    # forms answers; its guess from a bare material name is not an id and is not
+    # taken. The given value stays the preset when it is one and none was sent.
+    family_id = tray_info_idx or None
+    if family_id and not (await resolve_tray(db, family_id)).family:
+        decoded = await resolve_raw(db, family_id)
+        if decoded.family and decoded.origin != "legacy":
+            if not setting_id and decoded.setting_id:
+                setting_id = decoded.setting_id
+            family_id = decoded.family.filament_id
 
     state = printer_manager.get_status(printer_id)
     try:
         plan = await build_slot_assignment(
             db,
-            family_id=tray_info_idx or None,
+            family_id=family_id,
             preset_setting_id=setting_id or None,
             # ⚠️ The model lives in the manager's model cache, NOT on
             # PrinterInfo (name + serial only) — ``info.model`` 500'd every
@@ -3275,8 +3290,10 @@ async def configure_ams_slot(
 
     # What did NOT reach the printer, as codes the dialog words (upstream
     # ab5ccc108): the results of the two K sends used to be dropped, so a K that
-    # never left was answered "Configured".
-    warnings: list[str] = []
+    # never left was answered "Configured". And what went out as something else
+    # than was named (upstream 02e39b18b): a generic profile in place of the
+    # filament the operator picked.
+    warnings: list[str] = [plan.degraded] if plan.degraded else []
 
     # Method 1: Select existing calibration profile by cali_idx
     # Do NOT include setting_id - BambuStudio never sends it in extrusion_cali_sel,
@@ -3315,7 +3332,7 @@ async def configure_ams_slot(
             name=tray_sub_brands or "",
             cali_idx=cali_idx,
         ):
-            warnings = ["k_value_not_sent"]
+            warnings = [w for w in warnings if w != "k_profile_not_sent"] + ["k_value_not_sent"]
 
     # Register a read-back verification (upstream #2582) so the tray telemetry
     # that the status push below returns can confirm the printer accepted this

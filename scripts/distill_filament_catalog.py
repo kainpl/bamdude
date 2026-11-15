@@ -2,11 +2,20 @@
 compact identity catalog for backend/app/data/filament_catalog/.
 
 Usage:
-    python scripts/distill_filament_catalog.py <checkout> [--out FILE] [--tag TAG]
+    python scripts/distill_filament_catalog.py <checkout> [--out FILE] [--tag TAG] [--ids-only]
 
 Only the BBL vendor is read (identity catalog = the Bambu-printer ecosystem).
 Values in BS profiles are single-element lists of strings; the inherits chain
 is leaf -> "<family> @base" -> "fdm_filament_*" -> "fdm_filament_common".
+
+OrcaSlicer >= 2.5 content-addresses every BBL filament ("OF..." ids) and
+translates to Bambu's own ids only at the printer boundary, with the table in
+``resources/printers/bambu_filament_ids.json``. A printer knows Bambu's ids
+only, so this distiller translates too: the catalog it writes holds Bambu ids,
+and the table itself is written next to it as ``orca_filament_ids.json`` for the
+one runtime translator (``utils/filament_catalog.bambu_filament_id``). Both are
+generated here and never edited by hand. ``--ids-only`` writes just the table —
+for taking a newer Orca's ids without re-distilling its whole catalog.
 """
 
 from __future__ import annotations
@@ -43,6 +52,39 @@ def _as_int(value):
         return int(str(value))
     except (TypeError, ValueError):
         return None
+
+
+ORCA_ID_TABLE = Path("resources") / "printers" / "bambu_filament_ids.json"
+ORCA_ID_PREFIX = "OF"
+
+
+def load_bambu_ids(checkout: Path) -> dict[str, str]:
+    """OrcaSlicer's own filament id -> Bambu's, or {} for a checkout without the table
+    (BambuStudio, OrcaSlicer < 2.5 — their ids already are Bambu's)."""
+    path = checkout / ORCA_ID_TABLE
+    if not path.is_file():
+        return {}
+    data = json.loads(path.read_text(encoding="utf-8"))
+    return {
+        str(orca_id): str(row["bambu_id"])
+        for orca_id, row in (data.get("filaments") or {}).items()
+        if isinstance(row, dict) and row.get("bambu_id")
+    }
+
+
+def to_bambu_id(filament_id: str | None, bambu_ids: dict[str, str]) -> str | None:
+    """The id a printer knows this filament by; None for an Orca id the table lacks.
+
+    An untranslatable Orca id is "no id", never a family: sent as
+    ``tray_info_idx`` the printer could not resolve it.
+    """
+    if not filament_id:
+        return None
+    if filament_id in bambu_ids:
+        return bambu_ids[filament_id]
+    if bambu_ids and filament_id.startswith(ORCA_ID_PREFIX):
+        return None
+    return filament_id
 
 
 def load_profiles(profiles_root: Path) -> dict[str, dict]:
@@ -110,6 +152,7 @@ def distill(checkout: Path, tag: str) -> tuple[dict, list[str]]:
     if not (profiles_root / "BBL" / "filament").is_dir():
         raise SystemExit(f"not a slicer checkout (missing {profiles_root / 'BBL' / 'filament'})")
     profiles = load_profiles(profiles_root)
+    bambu_ids = load_bambu_ids(checkout)
 
     errors: list[str] = []
     families: dict[str, dict] = {}
@@ -118,9 +161,10 @@ def distill(checkout: Path, tag: str) -> tuple[dict, list[str]]:
     for name, data in profiles.items():
         merged = merged_chain(profiles, name)
         if name.endswith(" @base"):
-            fid = _scalar(merged.get("filament_id"))
+            own_id = _scalar(merged.get("filament_id"))
+            fid = to_bambu_id(own_id, bambu_ids)
             if not fid:
-                errors.append(f"@base without filament_id: {name}")
+                errors.append(f"@base without a Bambu filament_id (own id {own_id!r}): {name}")
                 continue
             families[fid] = {
                 "filament_id": fid,
@@ -132,7 +176,7 @@ def distill(checkout: Path, tag: str) -> tuple[dict, list[str]]:
             continue
         if _scalar(data.get("instantiation")) != "true":
             continue
-        fid = _scalar(merged.get("filament_id"))
+        fid = to_bambu_id(_scalar(merged.get("filament_id")), bambu_ids)
         sid = _scalar(merged.get("setting_id"))
         if not fid or not sid:
             errors.append(f"unresolvable leaf (filament_id={fid!r} setting_id={sid!r}): {name}")
@@ -161,6 +205,22 @@ def distill(checkout: Path, tag: str) -> tuple[dict, list[str]]:
     return catalog, errors
 
 
+def distill_ids(checkout: Path, tag: str) -> dict | None:
+    """The Orca -> Bambu id table as the runtime reads it, or None when the checkout has none."""
+    bambu_ids = load_bambu_ids(checkout)
+    if not bambu_ids:
+        return None
+    return {
+        "source": {"checkout": checkout.name, "tag": tag, "generated": date.today().isoformat()},
+        "ids": dict(sorted(bambu_ids.items())),
+    }
+
+
+def _write(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=1, sort_keys=True) + "\n", encoding="utf-8")
+
+
 def detect_tag(checkout: Path) -> str:
     try:
         return subprocess.run(
@@ -178,19 +238,30 @@ def main() -> int:
     parser.add_argument("checkout", type=Path)
     parser.add_argument("--out", type=Path, default=None)
     parser.add_argument("--tag", default=None)
+    parser.add_argument("--ids-only", action="store_true", help="write only orca_filament_ids.json")
     args = parser.parse_args()
 
     tag = args.tag or detect_tag(args.checkout)
-    catalog, errors = distill(args.checkout, tag)
-    for line in errors:
-        print(line, file=sys.stderr)
-
+    catalog_dir = Path(__file__).resolve().parent.parent / "backend" / "app" / "data" / "filament_catalog"
     out = args.out
     if out is None:
         name = "bambu.json" if "BambuStudio" in args.checkout.name else "orca.json"
-        out = Path(__file__).resolve().parent.parent / "backend" / "app" / "data" / "filament_catalog" / name
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps(catalog, ensure_ascii=False, indent=1, sort_keys=True) + "\n", encoding="utf-8")
+        out = catalog_dir / name
+
+    ids = distill_ids(args.checkout, tag)
+    if ids is not None:
+        ids_out = out.parent / "orca_filament_ids.json"
+        _write(ids_out, ids)
+        print(f"{ids_out}: {len(ids['ids'])} ids")
+    elif args.ids_only:
+        raise SystemExit(f"{args.checkout / ORCA_ID_TABLE} not found: this checkout has no id table")
+    if args.ids_only:
+        return 0
+
+    catalog, errors = distill(args.checkout, tag)
+    for line in errors:
+        print(line, file=sys.stderr)
+    _write(out, catalog)
     print(f"{out}: {len(catalog['families'])} families, {len(catalog['presets'])} presets, {len(errors)} errors")
     return 0
 

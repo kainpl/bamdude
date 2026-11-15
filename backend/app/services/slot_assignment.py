@@ -46,6 +46,13 @@ class SlotAssignmentPlan:
     nozzle_temp_min: int = 200
     nozzle_temp_max: int = 240
     warnings: list[str] = field(default_factory=list)
+    # A CODE, for the caller to tell the operator: the filament that was NAMED
+    # could not be used as named and a generic profile went out instead —
+    # ``family_unresolved`` (nobody knows that id) or ``user_preset_unsupported``
+    # (the printer takes no user presets). None when nothing named was replaced:
+    # a spool that names no family simply has its generic. ``warnings`` above
+    # stays the log's prose.
+    degraded: str | None = None
     # The family came from the preset stored on a Spoolman spool — neither a
     # linked calibration nor the material's stand-in. The callers that put a
     # slot's previous K index back read it: that index was chosen under whatever
@@ -68,6 +75,12 @@ def _candidate_printer_names(printer_model: str | None, nozzle_diameter: str) ->
     ]
 
 
+# Materials whose own name is no catalogue type and whose generic profile is
+# another's. Deliberately short — Nylon, PA6, PA12 → PA. "Support" names a role,
+# not a material, and stays unresolved.
+_PROFILE_LENDERS = {"NYLON": "PA", "PA6": "PA", "PA12": "PA"}
+
+
 def _stand_in(material: str) -> tuple[catalog.CatalogFamily | None, str]:
     """The system profile a slot is told about for ``material``, and the type it gets.
 
@@ -81,7 +94,15 @@ def _stand_in(material: str) -> tuple[catalog.CatalogFamily | None, str]:
     family = catalog.family_for_material(material)
     if family is not None:
         return family, family.filament_type or material.strip()
-    return catalog.generic_family_for_material(material), material.strip()
+    generic = catalog.generic_family_for_material(material)
+    if generic is None:
+        # A name the catalogue knows as no type, but which IS a material Bambu
+        # files under another spelling (owner decision Р26): the profile of that
+        # one is borrowed, the type stays the spool's — the same rule as above.
+        alias = _PROFILE_LENDERS.get((material or "").strip().upper())
+        if alias:
+            generic = catalog.generic_family_for_material(alias)
+    return generic, material.strip()
 
 
 def _preset_is_of_material(preset_type: str | None, material: str | None) -> bool:
@@ -175,6 +196,10 @@ async def build_slot_assignment(
     temp_overrides: tuple[int | None, int | None] = (None, None),
 ) -> SlotAssignmentPlan:
     warnings: list[str] = []
+    degraded: str | None = None
+    # What the caller NAMED, before any resolution — to tell "named and not
+    # usable" (said to the operator) from "names nothing" (its generic is right).
+    named_family = (family_id or getattr(spool, "filament_family_id", None) or "").strip()
 
     resolved = None
     if spool is not None and family_id is None:
@@ -220,6 +245,8 @@ async def build_slot_assignment(
         if stand_in is None:
             raise ValueError(f"no filament family resolvable (family_id={family_id!r}, material={material_override!r})")
         warnings.append(f"family unresolved; using {stand_in.filament_id} for {fam_type!r}")
+        if named_family:
+            degraded = "family_unresolved"
         family_id = stand_in.filament_id
     else:
         family_id = resolved.family.filament_id
@@ -230,6 +257,7 @@ async def build_slot_assignment(
         stand_in, fam_type = _stand_in(fam_type or material_override or "")
         if stand_in is not None:
             warnings.append(f"printer does not support user presets; degraded {family_id} -> {stand_in.filament_id}")
+            degraded = "user_preset_unsupported"
             family_id = stand_in.filament_id
 
     candidates = _candidate_printer_names(printer_model, nozzle_diameter)
@@ -295,5 +323,6 @@ async def build_slot_assignment(
         nozzle_temp_min=int(temp_min),
         nozzle_temp_max=int(temp_max),
         warnings=warnings,
+        degraded=degraded,
         from_stored_preset=from_stored_preset,
     )

@@ -2971,6 +2971,15 @@ async def _assign_spool(data: SpoolAssignmentCreate, db: AsyncSession, current_u
     response = SpoolAssignmentResponse.model_validate(resp)
     response.configured = configured
     response.pending_config = pending_config
+    if configured:
+        # The same computation the publish above read (spool_slot_plan), asked
+        # for one thing only: was a generic sent in place of the named filament.
+        try:
+            response.slot_degraded = (
+                await spool_slot_plan(db, spool, data.printer_id, data.ams_id, data.tray_id)
+            ).degraded
+        except Exception:  # noqa: BLE001 — a report, never the assignment's outcome
+            logger.debug("slot plan re-read failed for spool %s", spool.id, exc_info=True)
     response.replaced_spool_id = replaced_spool_id
 
     await ws_manager.broadcast(

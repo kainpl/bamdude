@@ -8908,6 +8908,9 @@ export interface SpoolAssignment {
   spool?: InventorySpool | null;
   configured: boolean;
   pending_config?: boolean;  // Slot was empty at assign time; will configure on insert
+  // A code when the slot was told a generic profile instead of the spool's own
+  // filament ('family_unresolved' | 'user_preset_unsupported'); worded by the UI.
+  slot_degraded?: string | null;
   created_at: string;
   ams_label?: string | null;  // User-defined friendly name for the AMS unit
   /** Informational: the spool this assign replaced on the slot, `null` for a

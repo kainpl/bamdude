@@ -29,6 +29,24 @@ Current sources:
 |---|---|---|
 | `bambu.json` | BambuStudio | v02.08.02.61 |
 | `orca.json` | OrcaSlicer | v2.4.2 |
+| `orca_filament_ids.json` | OrcaSlicer | v2.5.0 |
+
+### OrcaSlicer's own filament ids (`orca_filament_ids.json`)
+
+OrcaSlicer ≥ 2.5 gives every BBL filament an id of its own (`OF…`) and
+translates to Bambu's only at the printer boundary, from its
+`resources/printers/bambu_filament_ids.json`. A printer resolves Bambu's ids
+only, so the distiller translates too: whenever the checkout carries that table,
+the catalog it writes holds Bambu ids, and the table is written here for the one
+runtime translator (`utils/filament_catalog.bambu_filament_id`) — an Orca Cloud
+profile carries `OF…` ids whatever our catalog was distilled from.
+
+```bash
+python scripts/distill_filament_catalog.py <OrcaSlicer checkout> --ids-only   # only the id table
+```
+
+An Orca id the table lacks is "no id" (the profile's `inherits` is followed),
+never a family.
 
 ## Reading the distiller's error report
 

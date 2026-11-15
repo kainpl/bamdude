@@ -420,6 +420,12 @@ class SpoolAssignmentResponse(BaseModel):
     # for unloaded slots (no filament context for cali_idx to attach to), so
     # pre-load assignment must skip the publish and arm a replay.
     pending_config: bool = False
+    # A code when the slot was told a generic profile INSTEAD of the filament
+    # the spool names (``family_unresolved`` / ``user_preset_unsupported``);
+    # None when it was configured as itself. The UI words it — the fallback
+    # used to be silent, and the slicer then saw a Generic the operator had
+    # never picked.
+    slot_degraded: str | None = None
     # The spool this assignment displaced on the slot (spec 2026-09-13 §3.3);
     # None on a first assignment and on an idempotent re-assign of the same
     # spool. Assigning over an occupied slot has always replaced it — this only
