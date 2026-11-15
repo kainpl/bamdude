@@ -8378,6 +8378,20 @@ export interface SpoolListPage {
   meta: PaginationMeta;
 }
 
+/** Why ``#<id>`` found nothing in the slot-assignment picker. */
+export interface SpoolPickerMiss {
+  reason: 'not_found' | 'archived' | 'other_slot' | 'this_slot';
+  spool_id: number;
+  printer_id?: number | null;
+  printer_name?: string | null;
+  ams_id?: number | null;
+  tray_id?: number | null;
+}
+
+export interface SpoolPickerPage extends SpoolListPage {
+  miss?: SpoolPickerMiss | null;
+}
+
 /** One grouped-mode row (`group_similar=true`, task 3). Text key fields come
  *  back COALESCED (`''` where the column is NULL — that IS the key); compare
  *  null-vs-empty against `representative`'s raw fields, never these. */
@@ -13172,7 +13186,7 @@ export const api = {
     Object.entries(params).forEach(([key, value]) => {
       if (value !== undefined && value !== '') query.set(key, String(value));
     });
-    return request<SpoolListPage>(`/inventory/spools/picker?${query}`, { signal });
+    return request<SpoolPickerPage>(`/inventory/spools/picker?${query}`, { signal });
   },
   /** The stats bar, aggregated server-side (task 5). Farm-wide and
    *  unfiltered — the memo it replaced read the whole feed, not the filter. */

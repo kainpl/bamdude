@@ -57,6 +57,8 @@ from backend.app.schemas.spool import (
     SpoolKProfileResponse,
     SpoolListItem,
     SpoolListPage,
+    SpoolPickerMiss,
+    SpoolPickerPage,
     SpoolResponse,
     SpoolUpdate,
 )
@@ -1720,7 +1722,36 @@ async def spool_family_colors(
     return [SpoolFamilyColor(hex_color=f"#{color}", color_name=name or "") for color, name in rows.all()]
 
 
-@router.get("/spools/picker", response_model=SpoolListPage)
+async def _picker_miss(
+    db: AsyncSession, spool_id: int, *, printer_id: int, ams_id: int, tray_id: int
+) -> SpoolPickerMiss:
+    """Why the picker offers nothing for ``#<spool_id>`` — read after the miss."""
+    spool = await db.get(Spool, spool_id) if spool_id <= 2**31 - 1 else None
+    if spool is None:
+        return SpoolPickerMiss(reason="not_found", spool_id=spool_id)
+    if spool.archived_at is not None:
+        return SpoolPickerMiss(reason="archived", spool_id=spool_id)
+    rows = await db.execute(
+        select(SpoolAssignment, Printer.name)
+        .outerjoin(Printer, Printer.id == SpoolAssignment.printer_id)
+        .where(SpoolAssignment.spool_id == spool_id)
+        .order_by(SpoolAssignment.id)
+    )
+    held = rows.all()
+    for assignment, printer_name in held:
+        if (assignment.printer_id, assignment.ams_id, assignment.tray_id) != (printer_id, ams_id, tray_id):
+            return SpoolPickerMiss(
+                reason="other_slot",
+                spool_id=spool_id,
+                printer_id=assignment.printer_id,
+                printer_name=printer_name,
+                ams_id=assignment.ams_id,
+                tray_id=assignment.tray_id,
+            )
+    return SpoolPickerMiss(reason="this_slot", spool_id=spool_id)
+
+
+@router.get("/spools/picker", response_model=SpoolPickerPage)
 async def spool_picker(
     printer_id: int,
     ams_id: int,
@@ -1734,9 +1765,13 @@ async def spool_picker(
     per_page: int = Query(50, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.INVENTORY_READ),
-) -> SpoolListPage:
+) -> SpoolPickerPage:
     """Server-filtered local assignment picker; legacy spool list is unchanged."""
     filters = [Spool.archived_at.is_(None)]
+    # ``#123`` asks for one spool by its number: the slot's material / profile
+    # filter steps aside (the mismatch confirmation still asks on assign), the
+    # other-slot and archived rules stay (upstream f652d3e0a).
+    asked_id = inventory_service.exact_spool_id(q)
     if replacing_spool_id is not None:
         filters.append(Spool.id != replacing_spool_id)
 
@@ -1756,7 +1791,7 @@ async def spool_picker(
         filters.append(~other_slot)
         profile = tray_profile.split("@", 1)[0].strip().upper()
         material = tray_material.strip().upper()
-        if profile or material:
+        if (profile or material) and asked_id is None:
             spool_profile = func.upper(
                 func.trim(
                     func.coalesce(func.nullif(func.trim(Spool.slicer_filament_name), ""), Spool.slicer_filament, "")
@@ -1817,7 +1852,10 @@ async def spool_picker(
             .group_by(SpoolKProfile.spool_id)
         )
         profile_counts = dict(rows.all())
-    return SpoolListPage(
+    miss = None
+    if asked_id is not None and total == 0:
+        miss = await _picker_miss(db, asked_id, printer_id=printer_id, ams_id=ams_id, tray_id=tray_id)
+    return SpoolPickerPage(
         items=[_spool_to_list_item(s, k_profile_count_override=profile_counts.get(s.id, 0)) for s in spools],
         meta=PaginationMeta(
             total=total,
@@ -1825,6 +1863,7 @@ async def spool_picker(
             per_page=per_page,
             last_page=max(1, math.ceil(total / per_page)),
         ),
+        miss=miss,
     )
 
 

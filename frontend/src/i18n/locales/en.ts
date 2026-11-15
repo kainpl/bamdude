@@ -9676,6 +9676,13 @@ export default {
     spool: 'spool',
     page: 'Page',
     noSpoolsMatch: 'No results found',
+    pickerMiss: {
+      notFound: 'There is no spool #{{id}}.',
+      notActive: 'There is no active spool #{{id}}.',
+      archived: 'Spool #{{id}} is archived. Restore it to assign it.',
+      otherSlot: 'Spool #{{id}} is in another slot: {{where}}.',
+      thisSlot: 'Spool #{{id}} is the one already in this slot.',
+    },
     noSpoolsMatchDesc: 'Try adjusting your search or filters to find what you\'re looking for.',
     active: 'Active',
     archived: 'Archived',

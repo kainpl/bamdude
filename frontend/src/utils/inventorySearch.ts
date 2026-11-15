@@ -1,12 +1,22 @@
 import type { InventorySpool } from '../api/client';
 import { resolveSpoolColorName } from './colors';
 
+/** The spool a query asks for by number and nothing else: ``#123`` alone. */
+export function exactSpoolId(query: string): number | null {
+  const match = /^#(\d+)$/.exec(query.trim());
+  return match ? Number(match[1]) : null;
+}
+
 /**
  * Return true when spool matches the search query across all searchable text fields.
  * Case-insensitive. Empty query always returns true.
  */
 export function spoolMatchesQuery(spool: InventorySpool, query: string): boolean {
   if (!query) return true;
+  // ``#123`` — the number on the label — is that spool and no other; the
+  // server's search reads it the same way (inventory_service).
+  const asked = exactSpoolId(query);
+  if (asked !== null) return spool.id === asked;
   const q = query.toLowerCase();
   return (
     // Numeric spool ID — typing the Spoolman ID into the Assign Spool

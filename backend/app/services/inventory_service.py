@@ -6,7 +6,7 @@ registry (see docs/superpowers/sdd/2026-08-28-cloud-portal-phase2-remote-invento
 import re
 from typing import Any
 
-from sqlalchemy import Integer, Numeric, String, and_, case, cast, func, literal, or_, select
+from sqlalchemy import Integer, Numeric, String, and_, case, cast, false, func, literal, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import raiseload, selectinload
 
@@ -168,6 +168,26 @@ def display_name_expr(template: str | None):
     return composed
 
 
+# ``#123`` — the number on a spool's label — names that spool exactly.
+_ID_TOKEN = re.compile(r"#(\d+)")
+_MAX_ID = 2**31 - 1
+
+
+def _token_spool_id(token: str) -> int | None:
+    """The spool id a ``#<digits>`` token names, else None (``#A7`` is text)."""
+    match = _ID_TOKEN.fullmatch(token)
+    return int(match.group(1)) if match else None
+
+
+def exact_spool_id(q: str | None) -> int | None:
+    """The spool a query asks for by number and nothing else — ``#123`` alone.
+
+    That is the query the assignment picker answers past the slot's material
+    filter, and explains when it finds nothing."""
+    tokens = (q or "").split()
+    return _token_spool_id(tokens[0]) if len(tokens) == 1 else None
+
+
 def spool_search_filters(q: str | None, template: str | None) -> list:
     """The spool search, one filter per token — every search of spools uses it.
 
@@ -182,6 +202,10 @@ def spool_search_filters(q: str | None, template: str | None) -> list:
     assignment picker searched the composed name alone, so with the default
     template "Matte" found nothing, and without ``{brand}`` in it no brand did.
     ``%`` and ``_`` in a token are literal characters, not wildcards.
+
+    A token ``#<digits>`` is the spool of that id and no other (upstream
+    632930f02): the number an operator reads off the label. It does not lean on
+    the template either; a bare number stays a substring search.
     """
     if not q or not q.strip():
         return []
@@ -189,6 +213,11 @@ def spool_search_filters(q: str | None, template: str | None) -> list:
     columns = (*_SEARCH_COLUMNS, composed) if composed is not None else _SEARCH_COLUMNS
     filters = []
     for token in q.strip().split():
+        spool_id = _token_spool_id(token)
+        if spool_id is not None:
+            # Past the column's range no row can match; never a bind overflow.
+            filters.append(Spool.id == spool_id if spool_id <= _MAX_ID else false())
+            continue
         escaped = token.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         filters.append(or_(*(col.ilike(f"%{escaped}%", escape="\\") for col in columns)))
     return filters

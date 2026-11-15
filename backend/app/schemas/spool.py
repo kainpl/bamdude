@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -352,6 +352,26 @@ class SpoolListPage(BaseModel):
 
     items: list[SpoolListItem]
     meta: PaginationMeta
+
+
+class SpoolPickerMiss(BaseModel):
+    """Why ``#<id>`` found nothing in the slot-assignment picker.
+
+    ``not_found`` · ``archived`` · ``other_slot`` (with the slot that holds it) ·
+    ``this_slot`` (it is the spool being replaced). The frontend words it."""
+
+    reason: Literal["not_found", "archived", "other_slot", "this_slot"]
+    spool_id: int
+    printer_id: int | None = None
+    printer_name: str | None = None
+    ams_id: int | None = None
+    tray_id: int | None = None
+
+
+class SpoolPickerPage(SpoolListPage):
+    """The picker's page: a spool list, plus the reason for an exact-id miss."""
+
+    miss: SpoolPickerMiss | None = None
 
 
 class InventoryMaterialStat(BaseModel):
