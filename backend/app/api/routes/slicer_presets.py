@@ -729,7 +729,7 @@ async def get_filament_preset_info(
     from backend.app.schemas.slicer import PresetRef
     from backend.app.services.preset_resolver import resolve_preset_ref
 
-    if source not in ("cloud", "local", "standard"):
+    if source not in ("cloud", "orca_cloud", "local", "standard"):
         raise HTTPException(400, f"Invalid source {source!r}")
     ref = PresetRef(source=source, id=id)  # type: ignore[arg-type]
     try:

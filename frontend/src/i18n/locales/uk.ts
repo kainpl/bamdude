@@ -5771,6 +5771,11 @@ export default {
       highTempPlate: 'Smooth PEI / High Temp Plate',
       texturedPeiPlate: 'Textured PEI Plate',
       supertackPlate: 'Cool Plate SuperTack',
+      // Лише OrcaSlicer; для Bambu Studio не пропонується.
+      texturedCoolPlate: 'Textured Cool Plate',
+      ignoredUnknown: 'У збережених налаштуваннях указано стіл, якого тут немає («{{bed}}»). Тип столу лишився без змін.',
+      ignoredForSlicer: 'У збережених налаштуваннях указано {{bed}} — цей стіл є лише в OrcaSlicer. Тип столу лишився без змін.',
+      resetForSlicer: '{{bed}} є лише в OrcaSlicer. Тип столу змінено на {{fallback}}.',
     },
     cloud: {
       expired: 'Сесія Bambu Cloud закінчилася - увійдіть знову, щоб оновити cloud-пресети.',

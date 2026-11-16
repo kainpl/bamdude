@@ -657,3 +657,28 @@ class TestCloudFilamentMaterialByIdentity:
 
         assert [p.filament_type for p in slots["filament"]] == ["PETG", "PLA", "PETG", None]
         assert all(p.filament_colour is None for p in slots["filament"])
+
+
+class TestFilamentPresetInfoSources:
+    """``GET /slicer/filament-preset/info`` reads the flow ratio of ONE picked
+    preset for the Flow Rate calibration page. Every source a preset can be
+    picked from has to be askable -- an Orca Cloud preset was a 400."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("source", ["orca_cloud", "cloud", "local", "standard"])
+    async def test_every_preset_source_is_answered(self, source):
+        resolved = '{"filament_flow_ratio": ["0.98"], "filament_type": ["PETG"]}'
+        with patch(
+            "backend.app.services.preset_resolver.resolve_preset_ref", AsyncMock(return_value=resolved)
+        ) as resolve:
+            info = await sp.get_filament_preset_info(source=source, id="abc", db=MagicMock(), user=None)
+        assert (info.flow_ratio, info.filament_type) == (0.98, "PETG")
+        assert resolve.await_args.args[2].source == source
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_source_is_still_refused(self):
+        from fastapi import HTTPException
+
+        with pytest.raises(HTTPException) as refusal:
+            await sp.get_filament_preset_info(source="bundle", id="abc", db=MagicMock(), user=None)
+        assert refusal.value.status_code == 400

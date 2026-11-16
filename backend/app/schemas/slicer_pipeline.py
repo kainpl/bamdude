@@ -10,7 +10,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field
 
-from backend.app.schemas.slicer import PresetRef
+from backend.app.schemas.slicer import BedType, PresetRef
 
 
 class SlicerPipelineBase(BaseModel):
@@ -26,7 +26,10 @@ class SlicerPipelineBase(BaseModel):
         min_length=1,
         description="One PresetRef per AMS slot. Order matches the source plate's filament-slot order.",
     )
-    bed_type: str | None = Field(default=None, max_length=64)
+    # The slice request's own list: a set is saved to be sliced with, so a
+    # plate no slice would take is refused here rather than stored and then
+    # silently skipped when the set is applied.
+    bed_type: BedType | None = None
 
 
 class SlicerPipelineCreate(SlicerPipelineBase):
@@ -43,11 +46,16 @@ class SlicerPipelineUpdate(BaseModel):
     printer_preset: PresetRef | None = None
     process_preset: PresetRef | None = None
     filament_presets: list[PresetRef] | None = Field(default=None, min_length=1)
-    bed_type: str | None = Field(default=None, max_length=64)
+    bed_type: BedType | None = None
 
 
 class SlicerPipelineResponse(SlicerPipelineBase):
     """A single pipeline as returned by the API."""
+
+    # A free string on the way OUT: a row saved before the check may name a
+    # plate the list does not have, and one such row must not take the whole
+    # listing down. The dialog says the plate was not applied.
+    bed_type: str | None = None
 
     id: int
     created_by: int | None

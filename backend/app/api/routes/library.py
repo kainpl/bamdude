@@ -2900,6 +2900,20 @@ def _slicer_rejection_message(error_text: str) -> str | None:
     return reason
 
 
+async def refuse_unsliceable_bed_type(db: AsyncSession, request) -> None:
+    """Answer a slice request whose bed plate its slicer lacks with a 422.
+
+    Asked at the request, before the job is queued: the same refusal inside
+    the job would reach the user as a failed slice minutes later.
+    """
+    from backend.app.services.slicer_routing import refuse_bed_type_for_slicer, resolve_sidecar_url
+
+    if not request.bed_type:
+        return
+    chosen, _url = await resolve_sidecar_url(db, slicer_override=request.slicer)
+    refuse_bed_type_for_slicer(request.bed_type, chosen)
+
+
 async def _run_slicer_with_fallback(
     db: AsyncSession,
     *,
@@ -2935,7 +2949,11 @@ async def _run_slicer_with_fallback(
         SlicerTimeoutError,
         get_stall_timeout_seconds,
     )
-    from backend.app.services.slicer_routing import resolve_sidecar_url, slicer_label
+    from backend.app.services.slicer_routing import (
+        refuse_bed_type_for_slicer,
+        resolve_sidecar_url,
+        slicer_label,
+    )
 
     user: User | None = None
     if ingest_authority is not None:
@@ -2988,6 +3006,7 @@ async def _run_slicer_with_fallback(
     # over the SLICER_API_URL / BAMBU_STUDIO_API_URL env defaults from
     # core/config.py.
     chosen, api_url = await resolve_sidecar_url(db, slicer_override=request.slicer)
+    refuse_bed_type_for_slicer(request.bed_type, chosen)
     if chosen is None:
         raise HTTPException(
             status_code=400,
@@ -3210,6 +3229,7 @@ async def _run_slicer_with_fallback(
                         export_3mf=True,
                         arrange=True,
                         orient=request.auto_orient,
+                        bed_type=request.bed_type,
                         request_id=progress_request_id,
                         on_progress=plate_cb,
                     )
@@ -3842,6 +3862,7 @@ async def slice_library_file(
         request = SliceRequest.model_validate(request_body)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    await refuse_unsliceable_bed_type(db, request)
 
     src_result = await db.execute(LibraryFile.active().where(LibraryFile.id == file_id))
     lib_file = src_result.scalar_one_or_none()

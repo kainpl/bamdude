@@ -4325,7 +4325,7 @@ async def slice_archive(
     """
     from pathlib import Path
 
-    from backend.app.api.routes.library import slice_and_persist_as_archive
+    from backend.app.api.routes.library import refuse_unsliceable_bed_type, slice_and_persist_as_archive
     from backend.app.core.database import async_session
     from backend.app.schemas.slicer import SliceRequest
     from backend.app.services.slice_dispatch import (
@@ -4337,6 +4337,7 @@ async def slice_archive(
         request = SliceRequest.model_validate(request_body)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    await refuse_unsliceable_bed_type(db, request)
 
     ingest_authority = await creds.capture()
     archive = await db.get(PrintArchive, archive_id)

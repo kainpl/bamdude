@@ -5734,6 +5734,11 @@ export default {
       highTempPlate: 'Smooth PEI / High Temp Plate',
       texturedPeiPlate: 'Textured PEI Plate',
       supertackPlate: 'Cool Plate SuperTack',
+      // OrcaSlicer only; never offered for Bambu Studio.
+      texturedCoolPlate: 'Textured Cool Plate',
+      ignoredUnknown: 'The saved settings name a bed plate that is not known here ("{{bed}}"). The bed plate was left as it is.',
+      ignoredForSlicer: 'The saved settings name {{bed}}, which is available only with OrcaSlicer. The bed plate was left as it is.',
+      resetForSlicer: '{{bed}} is available only with OrcaSlicer. The bed plate was changed to {{fallback}}.',
     },
     cloud: {
       expired: 'Bambu Cloud session expired - sign in again to refresh your cloud presets.',

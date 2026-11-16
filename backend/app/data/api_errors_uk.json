@@ -927,6 +927,7 @@
   "Target user not found": "Цільового користувача не знайдено",
   "Temperature must be 45-{}°C for this AMS unit": "Для цього блока AMS температура має бути 45-{}°C",
   "Template not found": "Шаблон не знайдено",
+  "Textured Cool Plate is available only with OrcaSlicer. Pick another bed plate, or slice with OrcaSlicer.": "Textured Cool Plate є лише в OrcaSlicer. Виберіть інший стіл або нарізайте в OrcaSlicer.",
   "That Zigbee device cannot be switched.": "Цей пристрій Zigbee не можна вмикати чи вимикати.",
   "That Zigbee device is a sensor, not a plug. Sensors are not bound to printers.": "Цей пристрій Zigbee — датчик, а не розетка. Датчики не привʼязуються до принтерів.",
   "That address is the Zigbee coordinator itself, not a plug.": "Ця адреса належить самому координатору Zigbee, а не розетці.",

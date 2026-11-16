@@ -80,17 +80,33 @@ interface SliceModalProps {
   onClose: () => void;
 }
 
-// The five values BambuStudio's ``curr_bed_type`` enum accepts — same list
-// ``BedTypePicker`` renders. Kept here as the validation whitelist for the
-// localStorage read and for the bed type carried by a saved bundle, so a
-// stale/foreign string can never reach the slicer CLI.
+// The values the slice request's ``bed_type`` accepts (the backend's
+// ``schemas/slicer.BedType``, itself the slicers' ``curr_bed_type`` enum) —
+// same list ``BedTypePicker`` renders. Kept here as the validation whitelist
+// for the localStorage read and for the bed type carried by a saved bundle, so
+// a stale/foreign string can never reach the slicer CLI.
 const ALLOWED_BED_TYPES: BedType[] = [
   'Cool Plate',
   'Engineering Plate',
   'High Temp Plate',
   'Textured PEI Plate',
   'Supertack Plate',
+  'Textured Cool Plate',
 ];
+
+// In OrcaSlicer's enum and not in Bambu Studio's, whose CLI does not reject a
+// name it does not know but slices as for Cool Plate. Offered only while
+// OrcaSlicer is the slicer; the backend refuses it for Bambu Studio (422).
+const ORCA_ONLY_BED_TYPES: BedType[] = ['Textured Cool Plate'];
+
+// The dialog's default plate, and what an OrcaSlicer-only pick falls back to.
+const DEFAULT_BED_TYPE: BedType = 'Textured PEI Plate';
+
+// A bed plate the dialog did not apply, to be SAID rather than dropped:
+// `unknown` / `slicer` — saved settings named a plate nobody knows, or one the
+// chosen slicer lacks (the pick was left alone); `reset` — the pick itself is
+// one the slicer lacks, and was changed to the default.
+type BedTypeNote = { kind: 'unknown' | 'slicer' | 'reset'; bed: string };
 
 // Per-slot preset selection helpers (pickDefault / findPreset / findPresetByName
 // / pickProcessDefault / pickFilamentForSlot) live in
@@ -444,6 +460,10 @@ interface BedTypePickerProps {
   value: BedType;
   onChange: (next: BedType) => void;
   disabled?: boolean;
+  // The slicer this slice will run on, once known. Decides whether the
+  // OrcaSlicer-only plates are offered.
+  slicer: SlicerKind | null;
+  note: BedTypeNote | null;
 }
 
 /**
@@ -455,33 +475,78 @@ interface BedTypePickerProps {
  * four of the five values are uncommon; a wide tile row would dominate
  * a modal for a setting most users flip once.
  */
-function BedTypePicker({ value, onChange, disabled }: BedTypePickerProps) {
+function BedTypePicker({ value, onChange, disabled, slicer, note }: BedTypePickerProps) {
   const { t } = useTranslation();
-  const options: { value: BedType; labelKey: string; fallback: string }[] = [
+  const all: { value: BedType; labelKey: string; fallback: string }[] = [
     { value: 'Cool Plate', labelKey: 'slice.bedType.coolPlate', fallback: 'Cool Plate' },
     { value: 'Engineering Plate', labelKey: 'slice.bedType.engineeringPlate', fallback: 'Engineering Plate' },
     { value: 'High Temp Plate', labelKey: 'slice.bedType.highTempPlate', fallback: 'Smooth PEI / High Temp Plate' },
     { value: 'Textured PEI Plate', labelKey: 'slice.bedType.texturedPeiPlate', fallback: 'Textured PEI Plate' },
     { value: 'Supertack Plate', labelKey: 'slice.bedType.supertackPlate', fallback: 'Cool Plate SuperTack' },
+    { value: 'Textured Cool Plate', labelKey: 'slice.bedType.texturedCoolPlate', fallback: 'Textured Cool Plate' },
   ];
+  // An OrcaSlicer-only plate is listed while OrcaSlicer is the slicer — and
+  // while it is the current value, so the field never shows a value it has no
+  // option for in the moment before the slicer is known.
+  const options = all.filter(
+    (opt) => !ORCA_ONLY_BED_TYPES.includes(opt.value) || slicer === 'orcaslicer' || opt.value === value,
+  );
+  const labelOf = (bed: string) => {
+    const known = all.find((opt) => opt.value === bed);
+    return known ? t(known.labelKey, known.fallback) : bed;
+  };
+  const noteText =
+    note == null
+      ? null
+      : note.kind === 'unknown'
+        ? t('slice.bedType.ignoredUnknown', {
+            bed: note.bed,
+            defaultValue:
+              'The saved settings name a bed plate that is not known here ("{{bed}}"). The bed plate was left as it is.',
+          })
+        : note.kind === 'slicer'
+          ? t('slice.bedType.ignoredForSlicer', {
+              bed: labelOf(note.bed),
+              defaultValue:
+                'The saved settings name {{bed}}, which is available only with OrcaSlicer. The bed plate was left as it is.',
+            })
+          : t('slice.bedType.resetForSlicer', {
+              bed: labelOf(note.bed),
+              fallback: labelOf(DEFAULT_BED_TYPE),
+              defaultValue: '{{bed}} is available only with OrcaSlicer. The bed plate was changed to {{fallback}}.',
+            });
   return (
-    <label className="block">
-      <span className="text-xs text-bambu-gray mb-1 block">
-        {t('slice.bedType.label', 'Bed plate')}
-      </span>
-      <Select
-        className="w-full"
-        value={value}
-        onChange={(e) => onChange(e.target.value as BedType)}
-        disabled={disabled}
-      >
-        {options.map((opt) => (
-          <option key={opt.value} value={opt.value}>
-            {t(opt.labelKey, opt.fallback)}
-          </option>
-        ))}
-      </Select>
-    </label>
+    <div>
+      <label className="block">
+        <span className="text-xs text-bambu-gray mb-1 block">
+          {t('slice.bedType.label', 'Bed plate')}
+        </span>
+        <Select
+          className="w-full"
+          value={value}
+          onChange={(e) => onChange(e.target.value as BedType)}
+          disabled={disabled}
+        >
+          {options.map((opt) => (
+            <option key={opt.value} value={opt.value}>
+              {t(opt.labelKey, opt.fallback)}
+            </option>
+          ))}
+        </Select>
+      </label>
+      {/* Outside the label, or its text would become part of the field's
+          name. Same amber shape as the "a saved preset is gone" banner. */}
+      {noteText && (
+        <div
+          className="flex items-start gap-2 text-xs rounded-md border p-2 mt-2 border-amber-300 dark:border-amber-700/40 bg-amber-50 dark:bg-amber-900/20 text-amber-800 dark:text-amber-200"
+          role="status"
+          aria-label={t('slice.bedType.label', 'Bed plate')}
+        >
+          <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+          <span>{noteText}</span>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -648,16 +713,17 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
   // CLI defaults to "Cool Plate", which produces the wrong first-layer bed
   // temperature for any X1/A1 user with a default plate.
   const [bedType, setBedType] = useState<BedType>(() => {
-    if (typeof localStorage === 'undefined') return 'Textured PEI Plate';
+    if (typeof localStorage === 'undefined') return DEFAULT_BED_TYPE;
     try {
       const stored = localStorage.getItem('bamdude:slice-modal:bed-type');
       return (ALLOWED_BED_TYPES as string[]).includes(stored ?? '')
         ? (stored as BedType)
-        : 'Textured PEI Plate';
+        : DEFAULT_BED_TYPE;
     } catch {
-      return 'Textured PEI Plate';
+      return DEFAULT_BED_TYPE;
     }
   });
+  const [bedTypeNote, setBedTypeNote] = useState<BedTypeNote | null>(null);
   useEffect(() => {
     if (typeof localStorage === 'undefined') return;
     try {
@@ -789,6 +855,27 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
     pickedSlicer,
     settingsQuery.data?.preferred_slicer,
   ]);
+  // The slicer this slice will run on: the only reachable one when exactly
+  // one is, else the user's pick, else the global preference the backend falls
+  // back to. `null` while the health checks are still out — nothing is decided
+  // about the bed plate until it is known.
+  const preferredSlicer = settingsQuery.data?.preferred_slicer;
+  const sliceSlicer: SlicerKind | null =
+    orcaHealthQuery.isLoading || bambuHealthQuery.isLoading
+      ? null
+      : orcaHealthy && !bambuHealthy
+        ? 'orcaslicer'
+        : bambuHealthy && !orcaHealthy
+          ? 'bambu_studio'
+          : (pickedSlicer ?? (preferredSlicer === 'orcaslicer' || preferredSlicer === 'bambu_studio' ? preferredSlicer : null));
+  // A plate only OrcaSlicer has cannot stay picked for Bambu Studio — its CLI
+  // would slice as for Cool Plate without a word. Changed to the default, and
+  // said so beside the field.
+  useEffect(() => {
+    if (sliceSlicer !== 'bambu_studio' || !ORCA_ONLY_BED_TYPES.includes(bedType)) return;
+    setBedTypeNote({ kind: 'reset', bed: bedType });
+    setBedType(DEFAULT_BED_TYPE);
+  }, [sliceSlicer, bedType]);
   // Persist user's pick across modal opens.
   useEffect(() => {
     if (pickedSlicer == null || typeof localStorage === 'undefined') return;
@@ -1225,8 +1312,18 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
     } else {
       unresolved.push(t('slice.process', 'Process profile'));
     }
-    if (picked.bed_type && (ALLOWED_BED_TYPES as string[]).includes(picked.bed_type)) {
-      setBedType(picked.bed_type as BedType);
+    // A saved bed plate that is not applied is said, never skipped in
+    // silence: a set saved before the server checked the name can carry
+    // anything, and an OrcaSlicer-only plate means nothing to Bambu Studio.
+    if (picked.bed_type) {
+      if (!(ALLOWED_BED_TYPES as string[]).includes(picked.bed_type)) {
+        setBedTypeNote({ kind: 'unknown', bed: picked.bed_type });
+      } else if (sliceSlicer === 'bambu_studio' && (ORCA_ONLY_BED_TYPES as string[]).includes(picked.bed_type)) {
+        setBedTypeNote({ kind: 'slicer', bed: picked.bed_type });
+      } else {
+        setBedType(picked.bed_type as BedType);
+        setBedTypeNote(null);
+      }
     }
     // Computed from current state rather than inside a setState updater —
     // the updater can run twice (StrictMode) and runs after this function
@@ -1527,7 +1624,16 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
             {/* Bed-type patches curr_bed_type onto the resolved process JSON,
                 which the embedded-settings path never sends — so it has no
                 effect there and is disabled rather than implying it does. */}
-            <BedTypePicker value={bedType} onChange={setBedType} disabled={isEnqueuing || useEmbedded} />
+            <BedTypePicker
+              value={bedType}
+              onChange={(next) => {
+                setBedTypeNote(null);
+                setBedType(next);
+              }}
+              disabled={isEnqueuing || useEmbedded}
+              slicer={sliceSlicer}
+              note={bedTypeNote}
+            />
             {/* "Slice as designed" (upstream #2611): honour the file's embedded
                 settings instead of the picked process/filament. Offered only
                 when the picked printer matches the design's target. */}

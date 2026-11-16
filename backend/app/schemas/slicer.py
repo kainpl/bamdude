@@ -11,6 +11,28 @@ from pydantic import BaseModel, Field, model_validator
 _HEX_COLOUR = re.compile(r"#(?:[0-9a-fA-F]{6}|[0-9a-fA-F]{8})")
 
 
+# The bed plates a slice may name -- the values of the slicers' own
+# ``curr_bed_type`` enum (``s_keys_map_BedType`` in ``libslic3r/PrintConfig.cpp``
+# of both), minus ``Default Plate``. ONE list: the slice request, a saved set of
+# slice settings and the dialog's picker all read it, so a name one of them
+# takes is a name the others take.
+#
+# ⚠️ ``Textured Cool Plate`` is in OrcaSlicer's enum (``btPCT``) and NOT in
+# Bambu Studio's, whose CLI does not refuse an unknown name but slices as if
+# for Cool Plate. So it is accepted here and refused for Bambu Studio by
+# ``slicer_routing.refuse_bed_type_for_slicer`` once the slicer is known.
+BedType = Literal[
+    "Cool Plate",
+    "Engineering Plate",
+    "High Temp Plate",
+    "Textured PEI Plate",
+    "Supertack Plate",
+    "Textured Cool Plate",
+]
+BED_TYPES: frozenset[str] = frozenset(BedType.__args__)
+ORCA_ONLY_BED_TYPES: frozenset[str] = frozenset({"Textured Cool Plate"})
+
+
 class PresetRef(BaseModel):
     """A source-aware reference to a printer / process / filament preset.
 
@@ -184,16 +206,7 @@ class SliceRequest(BaseModel):
     # finally to ``Cool Plate`` (the upstream config default) — wrong for
     # Textured PEI users on STL inputs. The SliceModal sends this from a
     # dedicated picker so adhesion temps land on the actual plate.
-    bed_type: (
-        Literal[
-            "Cool Plate",
-            "Engineering Plate",
-            "High Temp Plate",
-            "Textured PEI Plate",
-            "Supertack Plate",
-        ]
-        | None
-    ) = Field(
+    bed_type: BedType | None = Field(
         default=None,
         description=(
             "Override the slicer's ``curr_bed_type``. Forwarded to the sidecar's "

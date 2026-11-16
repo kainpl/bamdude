@@ -5747,7 +5747,9 @@ export type BedType =
   | 'Engineering Plate'
   | 'High Temp Plate'
   | 'Textured PEI Plate'
-  | 'Supertack Plate';
+  | 'Supertack Plate'
+  // OrcaSlicer's enum only: the backend refuses it (422) for Bambu Studio.
+  | 'Textured Cool Plate';
 
 /**
  * Why a preset's own values could not be read.
