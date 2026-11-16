@@ -166,7 +166,21 @@ upstream, this Compose file can be flipped to pull from
 
 ## Updating
 
-Bump the versions in `.env`, then rebuild whichever profile(s) you run:
+There are two reasons to rebuild, and the second needs no version change:
+
+- **A newer slicer** — bump the versions in `.env` (and keep the defaults in
+  `docker-compose.yml` in step).
+- **A newer sidecar** — the HTTP wrapper around the slicer is built from the
+  fork's branch at build time, so it is as old as your last build. BamDude
+  asks the sidecar for its code version; when the running one is older than
+  this BamDude needs, the slicer cards of the Slice dialog say **"rebuild the
+  slicer containers"**. Slicing keeps working meanwhile as far as it can, but
+  newer behaviour is missing — presets in brand subfolders, presets with `/`
+  in the name, renamed printer presets, OrcaSlicer's filament library, and the
+  refusal of a preset the slicer cannot resolve (an older sidecar slices such
+  a preset on the slicer's built-in defaults instead).
+
+Either way, rebuild whichever profile(s) you run:
 
 ```bash
 docker compose --profile all build --no-cache

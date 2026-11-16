@@ -81,6 +81,7 @@ FORWARDED_EXCEPTIONS = frozenset(
         "DispatchEnqueueRejected",
         "SlicerTimeoutError",
         "SlicerInputError",
+        "SlicerPresetUnresolvedError",
         "SlicerApiUnavailableError",
         "SlicerApiServerError",
         "OIDCIconError",

@@ -986,6 +986,8 @@
   "The photo may have at most {} pixels": "Фото може мати щонайбільше {} пікселів",
   "The photo must be a PNG, JPEG or WebP picture": "Фото має бути зображенням PNG, JPEG або WebP",
   "The plug did not acknowledge the setting — is it powered and in range?": "Розетка не підтвердила налаштування — чи ввімкнено її живлення і чи вона в зоні дії?",
+  "The preset '{}' cannot be sliced: its parent preset '{}' is not among the slicer's profiles, so nothing was sliced. Pick another preset, or rebuild the slicer containers if the parent belongs to a newer slicer version.": "Профіль «{}» не можна нарізати: його батьківського профілю «{}» немає серед профілів слайсера, тому нічого не нарізано. Виберіть інший профіль або перезберіть контейнери слайсера, якщо батьківський профіль належить новішій версії слайсера.",
+  "The preset '{}' is not among the slicer's profiles, so nothing was sliced. Pick another preset, or rebuild the slicer containers if it belongs to a newer slicer version.": "Профілю «{}» немає серед профілів слайсера, тому нічого не нарізано. Виберіть інший профіль або перезберіть контейнери слайсера, якщо він належить новішій версії слайсера.",
   "The print could not be queued.": "Друк не вдалося поставити в чергу.",
   "The print could not be queued; it can be resumed.": "Друк не вдалося поставити в чергу; його можна відновити.",
   "The print on this plate was put back in the queue. Cancel that queue job or restore it in Print state diagnostics, then answer the plate": "Друк на цьому столі знову поставили в чергу. Скасуйте це завдання в черзі або поверніть його в «Діагностиці станів друку», потім дайте відповідь про стіл",

@@ -5763,6 +5763,7 @@ export default {
     cardReady: 'Ready · v{{version}}',
     cardOffline: 'Offline',
     active: 'active',
+    sidecarOutdated: 'This slicer container is older than this BamDude needs: some presets may be missing from the lists, and a preset the slicer cannot resolve is sliced on its built-in defaults instead of being refused. Rebuild the slicer containers: in slicer-api/ run "docker compose --profile all build --no-cache", then "docker compose --profile all up -d".',
   },
 
   library: {

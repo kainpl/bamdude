@@ -771,7 +771,13 @@ async def get_slicer_health(
 
     Response shape:
 
-    - ``{healthy: true, version: "2.3.2"}`` when the sidecar replied 2xx.
+    - ``{healthy: true, version: "2.3.2", sidecar_version: 1,
+      sidecar_required: 1, sidecar_outdated: false}`` when the sidecar
+      replied 2xx. ``version`` is the SLICER's; ``sidecar_version`` is the
+      sidecar's own code version (None for an image that predates it) and
+      ``sidecar_outdated`` says it is older than this backend needs — the
+      slicer card then tells the operator to rebuild the containers. Such a
+      sidecar stays ``healthy``: it slices, as far as it can.
     - ``{healthy: false, error: "<message>", url: "..."}`` when the URL
       is empty, the sidecar is unreachable, or it replied non-2xx. URL
       is included so the modal can show "BambuStudio at <url> unreachable".
@@ -783,6 +789,7 @@ async def get_slicer_health(
 
     import httpx
 
+    from backend.app.services import slicer_api
     from backend.app.services.slicer_routing import resolve_sidecar_url, slicer_label
 
     chosen, api_url = await resolve_sidecar_url(db, slicer_override=slicer)
@@ -804,7 +811,15 @@ async def get_slicer_health(
         if response.status_code >= 200 and response.status_code < 300:
             body = response.json() if response.headers.get("content-type", "").startswith("application/json") else {}
             version = body.get("version") or body.get("checks", {}).get("orcaslicer", {}).get("version")
-            payload = {"healthy": True, "url": api_url, "version": version}
+            sidecar_version = slicer_api.sidecar_version_of(body)
+            payload = {
+                "healthy": True,
+                "url": api_url,
+                "version": version,
+                "sidecar_version": sidecar_version,
+                "sidecar_required": slicer_api.REQUIRED_SIDECAR_VERSION,
+                "sidecar_outdated": slicer_api.sidecar_is_outdated(sidecar_version),
+            }
         else:
             payload = {"healthy": False, "url": api_url, "error": f"sidecar returned HTTP {response.status_code}"}
     except httpx.RequestError as exc:

@@ -30,6 +30,7 @@ import {
   type Slot,
 } from '../utils/presetPickerUtils';
 import { useSlicerHealth, type SlicerKind } from '../hooks/useSlicerHealth';
+import { SlicerOutdatedNote } from './SlicerOutdatedNote';
 import { useIsWideLayout } from '../hooks/useIsWideLayout';
 import { defaultDesignKeys, designOverridesField } from '../lib/slicerSettings';
 import {
@@ -590,6 +591,7 @@ function SlicerPicker({ value, onChange, disabled }: SlicerPickerProps) {
           />
         ))}
       </div>
+      <SlicerOutdatedNote kind={value} />
     </fieldset>
   );
 }
