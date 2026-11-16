@@ -412,11 +412,12 @@ class _FileGate:
     exception for a printer that is silent (review B2). This job's own
     expected-print registration is its own.
 
-    ⚠️ **A refusal is remembered.** The command that was refused returns the
-    same "failed" as a network error, and by the time anybody re-reads the guard
-    the state may look safe again; ``refused`` keeps the first reason so the job
-    stops instead of going on to write over the file it has just been told to
-    leave alone (review B1).
+    ⚠️ **One refusal closes the gate for the rest of the run.** The command
+    that was refused returns the same "failed" as a network error, and by the
+    time anybody asks again the state may look safe; so ``refused`` keeps the
+    first reason AND every later ``may_run`` of this gate answers no, whatever
+    the printer says by then (review B1, B1-R). The job stops instead of going
+    on to write over the file it has just been told to leave alone.
     """
 
     #: How long a job waits for a reconnecting printer to report before its first destructive step.
@@ -435,11 +436,18 @@ class _FileGate:
 
     def __call__(self, path: str) -> Callable[[], bool]:
         def check() -> bool:
+            # ⚠️ Closed for the rest of the run once it has refused (review B1-R).
+            # A later call may find the printer looking safe again — the print
+            # that kept the file has ended — and the command it would then allow
+            # is the A1 upload fallback, or the upload after a refused /cache
+            # delete: the job would write the file and only then report that it
+            # was refused. Remembering is not enough; the callback itself says no.
+            if self.refused is not None:
+                return False
             refusal = self._refusal(path)
             if refusal is None:
                 return True
-            if self.refused is None:
-                self.refused = refusal
+            self.refused = refusal
             logger.info(
                 "Dispatch job %s: %s on printer %s is left alone (%s)",
                 getattr(self._job, "id", None),
@@ -3016,6 +3024,9 @@ class BackgroundDispatchService:
                             pass
             except Exception as e:
                 logger.debug("Dispatch job %s: Cache cleanup failed (non-critical): %s", job.id, e)
+            # A refusal during the sweep ends the job here, before the upload is
+            # even tried; the gate would refuse it anyway (it stays closed).
+            file_gate.raise_if_refused()
 
             self._raise_if_cancel_requested(job)
 
@@ -4010,6 +4021,9 @@ class BackgroundDispatchService:
                             pass
             except Exception as e:
                 logger.debug("Dispatch job %s: Cache cleanup failed (non-critical): %s", job.id, e)
+            # A refusal during the sweep ends the job here, before the upload is
+            # even tried; the gate would refuse it anyway (it stays closed).
+            file_gate.raise_if_refused()
 
             self._raise_if_cancel_requested(job)
 

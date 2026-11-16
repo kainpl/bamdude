@@ -123,3 +123,20 @@ async def test_a_printer_that_reconnects_in_time_is_waited_for(run, monkeypatch)
     ran = await run(printer_state=None)
     assert ran["refusal"] is None
     assert ran["upload"].await_count == 1
+
+
+async def test_a_refused_cache_delete_ends_the_job_before_any_upload(run):
+    """Review B1-R: the root clear passes, a /cache delete is refused, then the printer looks free again."""
+    calls = {"n": 0}
+
+    def refused_in_cache_then_free(mqtt):
+        calls["n"] += 1
+        if calls["n"] == 2:  # the /cache delete: a print is loaded for exactly this check
+            mqtt.state.state = "RUNNING"
+            mqtt.state.subtask_name = "source"
+            mqtt.state.gcode_file = "/sdcard/source.3mf"
+
+    ran = await run(during_clear=refused_in_cache_then_free, cache_files=["source.3mf"], free_after_refusal=True)
+    assert "belongs to another print" in str(ran["refusal"])
+    assert ran["delete"].await_count == 2
+    assert ran["upload"].await_count == 0

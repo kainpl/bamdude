@@ -451,7 +451,9 @@ class TestThePreUploadClearOnInternalStorage:
         gate = self._gate()
         with pytest.raises(UploadFailed, match="belongs to another print"):
             await self._clear(self._transport(delete), gate)
-        assert gate("/A.3mf")() is True  # a fresh read would have let the upload through
+        # The state is safe again, and a gate that only remembered would now allow the upload.
+        assert guard.file_refusal(1, "/A.3mf") is None
+        assert gate("/A.3mf")() is False
 
     async def test_a_file_the_printer_did_not_delete_ends_the_upload(self, printer):
         from backend.app.services.background_dispatch import UploadFailed
@@ -654,3 +656,79 @@ class TestTheCleanupSaysWhatHappened:
             ):
                 await BackgroundDispatchService._cleanup_sd_card_file("ip", "code", "/A.3mf", None)
             assert ("may still be there" in caplog.text) is logged, answer
+
+
+class TestOneRefusalClosesTheGateForTheRun:
+    """Review B1-R: remembering a refusal is not enough — every later command of the run is refused."""
+
+    def _gate(self):
+        from backend.app.services.background_dispatch import BackgroundDispatchService, PrintDispatchJob
+
+        job = MagicMock(spec=PrintDispatchJob)
+        job.id, job.printer_id, job.printer_life, job.execution_archive_id = 1, 1, None, 50
+        return BackgroundDispatchService._file_gate(job)
+
+    def test_no_later_command_runs_whatever_the_printer_says_by_then(self, printer):
+        gate = self._gate()
+        printer.start("A", state="RUNNING")
+        assert gate("/A.3mf")() is False
+        printer.state.state = "FINISH"  # the print that kept the file has ended
+        assert guard.file_refusal(1, "/A.3mf") is None
+        for path in ("/A.3mf", "/cache/A.3mf", "/Other.3mf"):
+            assert gate(path)() is False
+        assert gate.refused == "active_print"
+
+    def test_the_first_reason_is_kept(self, printer):
+        gate = self._gate()
+        printer.start("A", state="RUNNING")
+        assert gate("/A.3mf")() is False
+        printer.state.connected = False
+        assert gate("/A.3mf")() is False
+        assert gate.refused == "active_print"
+
+    async def test_the_a1_fallback_does_not_upload_after_the_first_attempt_was_refused(
+        self, printer, monkeypatch, tmp_path
+    ):
+        """prot_p is refused after its connection; the state is safe again when prot_c is tried."""
+        from backend.app.services import bambu_ftp
+
+        clients = []
+
+        def make(*_args, **_kwargs):
+            client = MagicMock()
+            first = not clients
+
+            def connect():
+                if first:
+                    printer.start("A", state="RUNNING")  # a print begins while the first attempt connects
+                return True
+
+            def disconnect():
+                if first:
+                    printer.state.state = "FINISH"  # and has ended by the time the fallback starts
+
+            client.connect.side_effect = connect
+            client.disconnect.side_effect = disconnect
+            client.upload_file.return_value = True
+            client.failure = None
+            clients.append(client)
+            return client
+
+        made = MagicMock(side_effect=make)
+        made.A1_MODELS = bambu_ftp.BambuFTPClient.A1_MODELS
+        made.cache_mode = MagicMock()
+        made.get_cached_mode = MagicMock(return_value=None)
+        monkeypatch.setattr(bambu_ftp, "BambuFTPClient", made)
+        model = next(iter(bambu_ftp.BambuFTPClient.A1_MODELS))
+        source = tmp_path / "A.3mf"
+        source.write_bytes(b"x")
+        gate = self._gate()
+
+        from backend.app.services.background_dispatch import UploadFailed
+
+        with pytest.raises(UploadFailed, match="belongs to another print"):
+            await gate.unless_refused(bambu_ftp.upload_file_async)(
+                "b-door-a1", "secret", source, "/A.3mf", printer_model=model, may_run=gate("/A.3mf")
+            )
+        assert sum(client.upload_file.call_count for client in clients) == 0
+        assert gate.refused == "active_print"

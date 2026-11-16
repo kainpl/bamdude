@@ -62,6 +62,8 @@ async def run_reprint(
     printer_state: str | None = "FINISH",
     during_clear=None,
     doubles: dict | None = None,
+    cache_files: list[str] | None = None,
+    free_after_refusal: bool = False,
 ) -> dict:
     """Run ``_run_reprint_archive`` for one 'failed' source archive with the hardware mocked.
 
@@ -214,10 +216,17 @@ async def run_reprint(
     async def _delete(*_args, may_run=None, **_kwargs):
         if during_clear is not None:
             during_clear(mqtt)  # what happens on the printer while the delete waits for the file channel
-        return DeleteResult.NOT_FOUND if may_run is None or may_run() else DeleteResult.FAILED
+        allowed = may_run is None or may_run()
+        if not allowed and free_after_refusal:
+            mqtt.state.state = "FINISH"  # the print that kept the file has ended by the next command
+        return DeleteResult.NOT_FOUND if allowed else DeleteResult.FAILED
+
+    async def _upload(*_args, may_run=None, **_kwargs):
+        # As the real upload does: nothing is written unless the gate allows it.
+        return may_run is None or bool(may_run())
 
     delete_mock = AsyncMock(side_effect=_delete)
-    upload_mock = AsyncMock(return_value=True)
+    upload_mock = AsyncMock(side_effect=_upload)
     if doubles is not None:
         # For a caller whose run ends in a refusal and so returns nothing.
         doubles.update(delete=delete_mock, upload=upload_mock, mqtt=mqtt)
@@ -254,7 +263,7 @@ async def run_reprint(
         patch(
             "backend.app.services.background_dispatch.list_files_async",
             new_callable=AsyncMock,
-            return_value=[],
+            return_value=[{"name": name, "is_directory": False} for name in (cache_files or [])],
         ),
         patch(
             "backend.app.services.background_dispatch.upload_file_async",
