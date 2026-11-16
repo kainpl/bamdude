@@ -156,8 +156,9 @@ server-normalised definition, so unrelated model changes do not strand its guard
 A changed object definition remains recorded with a warning. An optional retry
 error rolls back its work and retains the records without stopping native startup
 or creating hard debt; the explicit CLI returns a failure for that incomplete
-attempt. Migration/repair failures log only their stage/version and exception
-class, never row values, paths or raw driver error details.
+attempt. The D4 migration/repair wrappers log their stage/version and exception
+class without raw error values. This is not a guarantee for the whole import
+stack: older auto-import and foreign-key helpers still log raw driver errors.
 
 For Docker, stop the application service (it is PID 1 in its container), then
 run the command in a one-shot container of the same image with the same data

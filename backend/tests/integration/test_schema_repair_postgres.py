@@ -1,5 +1,7 @@
 """D4 addressed PG data-policy gates, destructive only to TEST_POSTGRES_URL."""
 
+import json
+
 import pytest
 from sqlalchemy import (
     CheckConstraint,
@@ -21,6 +23,7 @@ from backend.app.core.schema_repair_state import (
     RESIDUALS,
     SchemaRepairPending,
     finish_attempt,
+    put_record,
     read_record,
     write_pending,
 )
@@ -49,7 +52,16 @@ async def conn():
 
 
 @pytest.mark.parametrize(
-    "model_change", ["none", "unrelated", "same-table-unrelated", "legacy-record", "changed-check"]
+    "model_change",
+    [
+        "none",
+        "unrelated",
+        "same-table-unrelated",
+        "legacy-record",
+        "changed-check",
+        "changed-check-satisfied",
+        "unknown-contract",
+    ],
 )
 async def test_r5_proves_missing_guards_preserves_rows_and_targeted_retry_enforces(conn, model_change):
     models = MetaData()
@@ -95,24 +107,36 @@ async def test_r5_proves_missing_guards_preserves_rows_and_targeted_retry_enforc
         # Existing candidate records predate the object-contract tag and
         # omitted False for NOT NULL. A harmless model addition must not
         # strand these records either.
-        from backend.app.core.schema_repair_state import put_record
-
         for proof in proofs:
             proof.pop("contract", None)
             if proof["object"].endswith(".nullable"):
                 proof.pop("definition", None)
         await put_record(conn, RESIDUALS, {"version": 1, "entries": {p["object"]: p for p in proofs}})
         Table("later_release", models, Column("id", Integer, primary_key=True))
-    elif model_change == "changed-check":
+    elif model_change in ("changed-check", "changed-check-satisfied"):
         con = next(c for c in probe.constraints if isinstance(c, CheckConstraint))
         probe.constraints.remove(con)
         probe.append_constraint(CheckConstraint("value > 10", name="ck_d4_value"))
+    elif model_change == "unknown-contract":
+        for proof in proofs:
+            proof["contract"] = "d4-data-future-v99"
+        await put_record(conn, RESIDUALS, {"version": 1, "entries": {p["object"]: p for p in proofs}})
     # Corrections belong to the domain/operator. Retry only restores guards.
     await conn.execute(text("UPDATE d4_probe SET required='known',code=id::text,value=1,indexed=id::text"))
+    if model_change == "changed-check-satisfied":
+        # Removing the definition gate must not hide behind failing new data:
+        # the incompatible new CHECK could now be installed successfully.
+        await conn.execute(text("UPDATE d4_probe SET value=20"))
     corrected = (await conn.execute(text("SELECT * FROM d4_probe ORDER BY id"))).all()
+    before_retry = json.dumps(await repair._inventory(conn), sort_keys=True, default=str)
     await retry_data_residuals(conn, models)
     entries = (await read_record(conn, RESIDUALS))["entries"]
-    if model_change == "changed-check":
+    if model_change == "unknown-contract":
+        assert entries == {p["object"]: p for p in proofs}
+        assert json.dumps(await repair._inventory(conn), sort_keys=True, default=str) == before_retry
+        assert (await conn.execute(text("SELECT * FROM d4_probe ORDER BY id"))).all() == corrected
+        return
+    if model_change in ("changed-check", "changed-check-satisfied"):
         assert set(entries) == {"d4_probe.check.ck_d4_value"}
         assert entries["d4_probe.check.ck_d4_value"]["definition"]["sqltext"] == "value >= 0"
     else:
@@ -126,7 +150,7 @@ async def test_r5_proves_missing_guards_preserves_rows_and_targeted_retry_enforc
         "INSERT INTO d4_probe(required,value) VALUES('x',-1)",
         "INSERT INTO d4_probe(required,indexed) VALUES('x','1')",
     ):
-        if model_change == "changed-check" and "value)" in statement:
+        if model_change in ("changed-check", "changed-check-satisfied") and "value)" in statement:
             continue
         with pytest.raises(IntegrityError):
             async with conn.begin_nested():

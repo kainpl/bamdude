@@ -25,13 +25,18 @@ async def engine(tmp_path):
     await result.dispose()
 
 
-@pytest.mark.parametrize("debug", [False, True])
-async def test_migration_error_logs_version_phase_and_class_without_values(engine, monkeypatch, caplog, debug):
+@pytest.mark.parametrize("phase", ["DDL", "seed", "DEBUG replay"])
+async def test_migration_error_logs_version_phase_and_class_without_values(engine, monkeypatch, caplog, phase):
     from backend.app import migrations
     from backend.app.core.config import settings
 
     async def fail(_conn):
         raise ValueError("secret row and connection data must not be logged")
+
+    async def succeed(_conn):
+        pass
+
+    debug = phase == "DEBUG replay"
 
     async def applied(_engine):
         return {99} if debug else set()
@@ -41,12 +46,20 @@ async def test_migration_error_logs_version_phase_and_class_without_values(engin
     monkeypatch.setattr(
         migrations,
         "_discover_migrations",
-        lambda: [{"version": 99, "name": "test_only", "module": SimpleNamespace(upgrade=fail, replay=fail)}],
+        lambda: [
+            {
+                "version": 99,
+                "name": "test_only",
+                "module": SimpleNamespace(
+                    upgrade=fail if phase == "DDL" else succeed, seed=fail if phase == "seed" else succeed, replay=fail
+                ),
+            }
+        ],
     )
     with caplog.at_level(logging.ERROR), pytest.raises(ValueError):
         await migrations._run_pending(engine, async_sessionmaker(engine))
     assert [r.getMessage() for r in caplog.records if r.levelno == logging.ERROR] == [
-        f"Migration 99 failed during {'DEBUG replay' if debug else 'DDL'} (ValueError)"
+        f"Migration 99 failed during {phase} (ValueError)"
     ]
     assert all(r.exc_info is None for r in caplog.records)
 
