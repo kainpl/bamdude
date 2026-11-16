@@ -112,6 +112,19 @@ lxml>=5.0
 # musl Linux on x86_64 / aarch64 / armv7l, Windows, macOS). Imported ONLY by
 # the disposable preview child (services/pdf_thumbnail.py) - never by the
 # main process.
+#
+# Licences (the wheel's own dist-info/licenses carries every text): pypdfium2
+# is Apache-2.0 / BSD-3-Clause, PDFium BSD-3-Clause, and the libraries built
+# into PDFium are permissive (FreeType under its FTL, libjpeg-turbo, OpenJPEG,
+# libpng, libtiff, Little CMS, zlib, ICU, HarfBuzz, Abseil, LLVM libc++).
+# The glibc Linux, Windows and macOS wheels hold that one PDFium library and
+# nothing else - these are what the Docker image (Debian) and the Windows
+# installer carry. The musllinux wheels ALSO bundle libgcc_s and libstdc++
+# (GPL-3.0-or-later WITH GCC-exception-3.1). BamDude does not redistribute
+# those: a native install on a musl system takes its wheel from PyPI itself.
+# An official image built on a musl base (Alpine) would redistribute them, and
+# they would then come under the "sources ship with every release" rule the
+# STEP component follows for libgomp (scripts/step_preview_sources.py).
 pypdfium2>=5.14.0,<6
 
 # System monitoring
