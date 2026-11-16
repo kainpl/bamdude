@@ -395,11 +395,7 @@ class BambuCloudService:
         if self._on_auth_failure is None or self._auth_failure_reported:
             return True
         self._auth_failure_reported = True
-        if self.access_token:
-            _validation_cache[_token_digest(self.access_token)] = (
-                time.monotonic() + _VALIDATION_TTL_SECONDS,
-                False,
-            )
+        expired_token = self.access_token
         self._auth_failure_outcome = None
         try:
             outcome = await self._on_auth_failure()
@@ -408,6 +404,16 @@ class BambuCloudService:
             # Recording the failure is best-effort — the caller still needs the
             # real error (a 401) rather than a bookkeeping exception on top.
             logger.exception("Failed to record Bambu Cloud auth failure")
+            return True
+        if expired_token:
+            if self._auth_failure_outcome is None:
+                # A real expiry that was not renewed: status checks need not
+                # ask Bambu again for a while. Written only now — a renewal
+                # that could not reach Bambu proves nothing about the token,
+                # and a cached "rejected" would present as "sign-in expired".
+                _validation_cache[_token_digest(expired_token)] = (time.monotonic() + _VALIDATION_TTL_SECONDS, False)
+            elif self._auth_failure_outcome == RENEWED:
+                invalidate_validation_cache(expired_token)
         return True
 
     async def _send(self, call):

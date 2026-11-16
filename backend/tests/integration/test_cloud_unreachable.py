@@ -431,6 +431,59 @@ class TestTheStatus:
         assert resp.json()["sign_in_expired"] is True
         assert await _stored(db_session, user_id) == ("acc", "ref", True)
 
+    async def test_a_data_call_whose_renewal_could_not_reach_bambu_does_not_poison_the_status(
+        self, async_client, db_session, bambu
+    ):
+        """The expiry verdict used to be cached before the renewal ran: after a
+        network-failed renewal every status poll said "sign-in expired" for
+        five minutes without asking Bambu."""
+        user_id = await _sign_in(db_session)
+        fake = bambu({("GET", BIND): EXPIRED, ("GET", PROFILE): EXPIRED, ("POST", REFRESH): _down})
+
+        failed = await async_client.get("/api/v1/cloud/devices")
+        status = await async_client.get("/api/v1/cloud/status")
+
+        assert failed.status_code == 502, failed.text
+        assert failed.json()["detail"].startswith(UNREACHABLE)
+        # Nothing is known about the credential: the last known state stands.
+        assert status.json()["is_authenticated"] is True
+        assert status.json()["sign_in_expired"] is False
+        assert fake.count("GET", PROFILE) == 1  # the status asked Bambu, not a cached verdict
+        assert await _stored(db_session, user_id) == ("acc", "ref", False)
+
+    async def test_the_next_successful_call_after_a_failed_renewal_clears_everything(
+        self, async_client, db_session, bambu
+    ):
+        user_id = await _sign_in(db_session)
+        fake = bambu(
+            {
+                ("GET", BIND): [EXPIRED, EXPIRED, (200, {"devices": []})],
+                ("GET", PROFILE): (200, {}),
+                ("POST", REFRESH): [_down, (200, {"accessToken": "acc-2", "refreshToken": "ref-2"})],
+            }
+        )
+
+        first = await async_client.get("/api/v1/cloud/devices")
+        second = await async_client.get("/api/v1/cloud/devices")
+        status = await async_client.get("/api/v1/cloud/status")
+
+        assert (first.status_code, second.status_code) == (502, 200), (first.text, second.text)
+        assert status.json()["is_authenticated"] is True
+        assert status.json()["sign_in_expired"] is False
+        assert fake.count("POST", REFRESH) == 2
+        assert await _stored(db_session, user_id) == ("acc-2", "ref-2", False)
+
+    async def test_a_refused_renewal_is_remembered_as_expired(self, async_client, db_session, bambu):
+        """A real expiry that was not renewed is still cached as rejected."""
+        await _sign_in(db_session)
+        bambu({("GET", BIND): EXPIRED, ("POST", REFRESH): (401, {})})
+
+        await async_client.get("/api/v1/cloud/devices")
+
+        cloud = bambu_cloud.BambuCloudService(region="global")
+        cloud.set_token("acc")
+        assert await cloud.validate_token() is False  # from the cache: PROFILE is not answered here
+
 
 class TestMakerWorldOnTheSameToken:
     DESIGN = "/v1/design-service/design/1400373"
