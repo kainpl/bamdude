@@ -267,21 +267,30 @@ class ArchivePurgeService:
 
         await spool_usage_service.detach_archives(db, ids)
         await spoolman_usage_history.detach_archives(db, ids)
-        # Their video registry rows too (m237) — only for the rows this statement
-        # is about to take, so a live archive of the same batch keeps its own.
+        # Their video registry rows go too (m237) — for exactly the rows this
+        # statement TOOK, read back from it, in the same transaction.
+        #
+        # ⚠️ Never from a SELECT made beforehand (review C1-1). An operator can
+        # restore an archive between that read and this delete: the delete then
+        # rightly leaves the archive, and rows removed on the strength of the
+        # earlier read would be gone from an archive that is alive. The ids the
+        # DELETE returns are the archives that are really gone. PostgreSQL has
+        # cascaded their rows already; SQLite runs no FK action, so they are
+        # removed here.
         from backend.app.services import archive_media  # noqa: PLC0415
 
-        doomed = (
+        taken = (
             (
                 await db.execute(
-                    select(PrintArchive.id).where(PrintArchive.id.in_(ids), PrintArchive.deleted_at.isnot(None))
+                    delete(PrintArchive)
+                    .where(PrintArchive.id.in_(ids), PrintArchive.deleted_at.isnot(None))
+                    .returning(PrintArchive.id)
                 )
             )
             .scalars()
             .all()
         )
-        await archive_media.forget_archives(db, doomed)
-        await db.execute(delete(PrintArchive).where(PrintArchive.id.in_(ids), PrintArchive.deleted_at.isnot(None)))
+        await archive_media.forget_archives(db, taken)
         await db.commit()
         if deleted < len(ids):
             logger.warning(
