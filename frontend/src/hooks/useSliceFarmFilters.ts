@@ -21,7 +21,7 @@ import { useTranslation } from 'react-i18next';
 
 import { ApiError, api, type UnifiedPreset, type UnifiedPresetsBySlot, type UnifiedPresetsResponse } from '../api/client';
 import { useAuth } from '../contexts/AuthContext';
-import type { PrinterParents } from '../utils/printerPresetParents';
+import { buildPrinterParents, type PrinterParents } from '../utils/printerPresetParents';
 import { filamentPresetIsLoaded, printerPresetIsOnline, printersCountedFor } from '../utils/sliceFarmFilter';
 
 const STORAGE_KEYS = {
@@ -117,6 +117,13 @@ export function useSliceFarmFilters(
   const forbidden = offered && farmQuery.error instanceof ApiError && farmQuery.error.status === 403;
   const farm = offered && !forbidden ? farmQuery.data : undefined;
   const failed = farmQuery.isError && !forbidden;
+  // Each listed printer preset is judged through the parent ITS OWN source
+  // names — `printerParents` is the chosen preset's lookup, and a namesake in
+  // another source may have been saved from another printer.
+  const parentsBySource = useMemo(
+    () => Object.fromEntries(TIERS.map((tier) => [tier, buildPrinterParents(presets, tier)])),
+    [presets],
+  );
   const { refetch } = farmQuery;
   const retry = useCallback(() => {
     void refetch();
@@ -131,7 +138,7 @@ export function useSliceFarmFilters(
     let filamentNote: string | null = null;
 
     if (farm && onlyOnline) {
-      keepPrinter = (preset) => printerPresetIsOnline(preset, farm, printerParents);
+      keepPrinter = (preset) => printerPresetIsOnline(preset, farm, parentsBySource[preset.source]);
       if (presets && !all('printer').some(keepPrinter)) {
         printerNote = farm.printers.length === 0 ? t('slice.farmFilter.noOnlinePrinters') : t('slice.farmFilter.noOnlinePresets');
       }
@@ -176,6 +183,7 @@ export function useSliceFarmFilters(
     offered,
     onlyOnline,
     onlyLoaded,
+    parentsBySource,
     presets,
     printerParents,
     retry,

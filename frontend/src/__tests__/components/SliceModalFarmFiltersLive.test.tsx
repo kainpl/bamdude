@@ -287,3 +287,43 @@ describe('SliceModal — the farm filters and the right to see printers', () => 
     expect(offered(printer)).toHaveLength(3);
   });
 });
+
+describe('SliceModal — "only online printers" and two printer presets of one name', () => {
+  it('judges each by the printer its own source says it was saved from', async () => {
+    const user = userEvent.setup();
+    serve();
+    // An imported "Shop printer" saved from an X1C (offline), and a Bambu Cloud
+    // one of the same name saved from the H2D that is online.
+    server.use(
+      http.get('*/api/v1/slicer/presets', () => {
+        const none = { printer: [], process: [], filament: [] };
+        return HttpResponse.json({
+          local: { ...none, printer: [{ id: 'Shop printer', name: 'Shop printer', source: 'local', inherits: X1C }] },
+          orca_cloud: none,
+          cloud: { ...none, printer: [{ id: 'PM9', name: 'Shop printer', source: 'cloud', inherits: H2D }] },
+          standard: {
+            printer: [{ id: A1, name: A1, source: 'standard' }],
+            process: [{ id: 'p', name: '0.20mm Standard', source: 'standard' }],
+            filament: [{ id: 'f', name: 'Generic PLA', source: 'standard', filament_type: 'PLA' }],
+          },
+          cloud_status: 'ok',
+          orca_cloud_status: 'ok',
+        });
+      }),
+    );
+    open();
+    const printer = await picker('Printer profile');
+    await waitFor(() => expect(offered(printer)).toHaveLength(3));
+    await user.selectOptions(printer, `standard:${A1}`);
+
+    await user.click(await onlineToggle());
+
+    const values = () =>
+      Array.from(printer.querySelectorAll('option'))
+        .map((o) => o.value)
+        .filter(Boolean)
+        .sort();
+    // The chosen A1 stays; of the two namesakes only the H2D's is online.
+    await waitFor(() => expect(values()).toEqual(['cloud:PM9', `standard:${A1}`].sort()));
+  });
+});

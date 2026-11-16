@@ -384,3 +384,39 @@ describe('SliceModal — a project from "Assemble project" whose preset names ex
     expect(asked).toBe(0);
   });
 });
+
+describe('SliceModal — two printer presets of one name, saved from different printers', () => {
+  // An imported "My printer" saved from an H2D, and a Bambu Cloud "My printer"
+  // saved from an A1. Each is matched through ITS OWN parent.
+  const listing: Listing = {
+    local: { printer: [{ name: 'My printer', inherits: H2D }] },
+    cloud: { printer: [{ name: 'My printer', id: 'PM001', inherits: A1 }] },
+    standard: {
+      process: [
+        { name: '0.20mm Standard @BBL A1', compatible_printers: [A1] },
+        { name: '0.20mm Standard @BBL H2D', compatible_printers: [H2D] },
+      ],
+      filament: [
+        { name: 'Bambu PLA Basic @BBL A1', filament_type: 'PLA', compatible_printers: [A1] },
+        { name: 'Bambu PLA Basic @BBL H2D', filament_type: 'PLA', compatible_printers: [H2D] },
+      ],
+    },
+  };
+
+  it('pre-picks for the printer the chosen one was saved from', async () => {
+    const user = userEvent.setup();
+    serve(listing);
+    open();
+
+    const printer = (await picker('Printer profile')) as HTMLSelectElement;
+    const process = (await picker('Process profile')) as HTMLSelectElement;
+    const filament = (await picker('Filament profile')) as HTMLSelectElement;
+    await waitFor(() => expect(printer.value).toBe('local:My printer'));
+    await waitFor(() => expect(process.value).toBe('standard:0.20mm Standard @BBL H2D'));
+
+    await user.selectOptions(printer, 'cloud:PM001');
+
+    await waitFor(() => expect(process.value).toBe('standard:0.20mm Standard @BBL A1'));
+    await waitFor(() => expect(filament.value).toBe('standard:Bambu PLA Basic @BBL A1'));
+  });
+});

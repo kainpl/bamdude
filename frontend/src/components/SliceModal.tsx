@@ -1078,6 +1078,7 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
     staleTime: Infinity,
   });
 
+  const printerSource = printerPreset?.source ?? null;
   // Selected-printer context for the process / filament filter (#1325).
   const selectedPrinterName = useMemo<string | null>(() => {
     if (!presetsQuery.data || !printerPreset) return null;
@@ -1088,8 +1089,13 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
   // standard presets via the backend Bambu printer-model registry. Plus, for a
   // printer preset saved under a name of its own, the preset it was saved from
   // (upstream 3acc52d93): its model, nozzle and compatible presets are the
-  // parent's. The ref sent to the slicer stays the picked preset's own.
-  const printerParents = useMemo(() => buildPrinterParents(presetsQuery.data), [presetsQuery.data]);
+  // parent's. The ref sent to the slicer stays the picked preset's own. The
+  // lookup is built for the chosen preset's SOURCE: a namesake in another
+  // source may have been saved from another printer.
+  const printerParents = useMemo(
+    () => buildPrinterParents(presetsQuery.data, printerSource),
+    [presetsQuery.data, printerSource],
+  );
   const compatIndex = useMemo<PrinterCompatibilityIndex>(
     () => buildCompatibilityIndex(printerModelsQuery.data ?? {}, printerParents),
     [printerModelsQuery.data, printerParents],
@@ -1104,7 +1110,6 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
   const embeddedPrinter = platesQuery.data?.embedded_printer ?? null;
   const embeddedProcess = platesQuery.data?.embedded_process ?? null;
   const embeddedFilaments = platesQuery.data?.embedded_filaments;
-  const printerSource = printerPreset?.source ?? null;
 
   // "Slice as designed" (upstream #2611). When on, the backend honours the
   // source 3MF's embedded project_settings.config (the designer's own wall

@@ -48,6 +48,28 @@ describe('buildPrinterParents', () => {
     expect(parents.Mine).toBe('Bambu Lab H2D 0.4 nozzle');
   });
 
+  it("looks in the preset's own source first when two sources hold the name", () => {
+    const both = listing({
+      local: [{ name: 'Mine', inherits: 'Bambu Lab H2D 0.4 nozzle' }],
+      cloud: [{ name: 'Mine', inherits: 'Bambu Lab A1 0.4 nozzle' }],
+    });
+    // A name is not an identity: the cloud "Mine" was saved from an A1.
+    expect(buildPrinterParents(both, 'cloud').Mine).toBe('Bambu Lab A1 0.4 nozzle');
+    expect(buildPrinterParents(both, 'local').Mine).toBe('Bambu Lab H2D 0.4 nozzle');
+  });
+
+  it('looks in the other sources, in tier order, for a name its own source gives no parent', () => {
+    const parents = buildPrinterParents(
+      listing({
+        orca_cloud: [{ name: 'Base', inherits: 'Bambu Lab A1 0.4 nozzle' }],
+        cloud: [{ name: 'Base', inherits: 'Bambu Lab H2D 0.4 nozzle' }],
+        standard: [{ name: 'Mine', inherits: 'Base' }],
+      }),
+      'standard',
+    );
+    expect(printerPresetLineage('Mine', parents)).toEqual(['Mine', 'Base', 'Bambu Lab A1 0.4 nozzle']);
+  });
+
   it('skips a preset that names itself or nothing', () => {
     const parents = buildPrinterParents(
       listing({ local: [{ name: 'Self', inherits: 'Self' }, { name: 'None', inherits: null }, { name: 'Empty', inherits: '' }] }),
