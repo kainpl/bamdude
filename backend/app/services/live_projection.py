@@ -53,6 +53,7 @@ KNOWN_EVENTS = (
             "archive_updated",
             "library_file_added",
             "library_file_notes_changed",
+            "library_file_details_changed",
             "library_scan_progress",
             "library_scan_finished",
             "queue_changed",
@@ -194,7 +195,7 @@ async def prepare(message: dict, *, source_printer_identities=None) -> PreparedE
         ident = _id(data.get("id") or data.get("archive_id"))
         if ident:
             refs.add(("archive", ident))
-    elif kind in {"library_file_added", "library_file_notes_changed"}:
+    elif kind in {"library_file_added", "library_file_notes_changed", "library_file_details_changed"}:
         ident = _id(data.get("id") or data.get("file_id"))
         if ident:
             refs.add(("library", ident))
@@ -349,7 +350,13 @@ def shape(event: PreparedEvent, access: Entitlements, *, personal=False, credent
             if "hms_code" in data:
                 result["hms_code"] = data["hms_code"]
         return {"type": kind, "printer_id": pid, "data": result}
-    if kind in {"archive_created", "archive_updated", "library_file_added", "library_file_notes_changed"}:
+    if kind in {
+        "archive_created",
+        "archive_updated",
+        "library_file_added",
+        "library_file_notes_changed",
+        "library_file_details_changed",
+    }:
         family = "archive" if kind.startswith("archive_") else "library"
         ident = _id(data.get("id") or data.get("archive_id") or data.get("file_id"))
         row = event.rows.get((family, ident))

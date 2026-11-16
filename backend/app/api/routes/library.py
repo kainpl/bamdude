@@ -15,7 +15,7 @@ import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Response, UploadFile
 from fastapi.responses import FileResponse as FastAPIFileResponse, JSONResponse
@@ -51,6 +51,7 @@ from backend.app.schemas.library import (
     CardResponse,
     ExternalFolderCreate,
     FileDuplicate,
+    FileExternalUrlUpdate,
     FileListResponse,
     FileMoveRequest,
     FilePrintRequest,
@@ -2378,6 +2379,7 @@ async def list_files(
                 plate_summaries=plate_summaries,
                 source_type=f.source_type,
                 source_url=f.source_url,
+                external_url=f.external_url,
                 notes_count=notes_counts.get(f.id, 0),
                 print_count=f.print_count,
                 # USER tags only. ``LibraryFile.tags`` spans both kinds since
@@ -5677,6 +5679,7 @@ async def get_file(
         can_relayout=bool(file.file_metadata) and file.file_metadata.get("assembled") is True,
         source_type=file.source_type,
         source_url=file.source_url,
+        external_url=file.external_url,
     )
 
 
@@ -5908,6 +5911,70 @@ async def update_file(
     # gate above, so we re-fetch + serialise directly instead of
     # re-evaluating a read gate that a LIBRARY_UPDATE_OWN-only user might
     # not satisfy.
+    return await get_file(file_id, db, auth_result=(None, True))
+
+
+# The longest link a file keeps. The column is wider (m232); this is the rule.
+EXTERNAL_URL_MAX_LENGTH = 2000
+
+
+def _clean_external_url(value: str | None) -> str | None:
+    """The operator's link as it is stored: trimmed, ``None`` when empty, and
+    refused unless it is an http(s) address with a host.
+
+    The server never fetches it, so this is not an SSRF guard: it keeps a
+    ``javascript:`` or ``data:`` address — which a click would RUN — out of an
+    ``href``, and a control character out of anything that prints the value.
+    """
+    text = (value or "").strip()
+    if not text:
+        return None
+    if len(text) > EXTERNAL_URL_MAX_LENGTH:
+        raise HTTPException(422, "The link is too long: 2000 characters at most.")
+    refusal = HTTPException(422, "The link must be a web address that starts with http:// or https://.")
+    if any(ch.isspace() or ord(ch) < 0x20 or ord(ch) == 0x7F for ch in text):
+        raise refusal
+    try:
+        parts = urlsplit(text)
+        host = parts.hostname
+    except ValueError:
+        raise refusal from None
+    if parts.scheme.lower() not in ("http", "https") or not host:
+        raise refusal
+    return text
+
+
+@router.put("/files/{file_id}/external-url", response_model=FileResponseSchema)
+async def set_file_external_url(
+    file_id: int,
+    data: FileExternalUrlUpdate,
+    db: AsyncSession = Depends(get_db),
+    read: tuple[User | None, bool] = Depends(
+        require_ownership_permission(Permission.LIBRARY_READ_ALL, Permission.LIBRARY_READ_OWN)
+    ),
+    update: tuple[User | None, bool] = Depends(
+        require_ownership_permission(Permission.LIBRARY_UPDATE_ALL, Permission.LIBRARY_UPDATE_OWN)
+    ),
+):
+    """Set or clear the operator's own link on a file (m232).
+
+    Two questions, in this order: may the caller SEE the file (a hidden, trashed
+    or missing one is the same 404 — the write must not confirm an id), then may
+    they EDIT it (their own, or any with ``library:update_all``).
+    """
+    user, can_read_all = read
+    _, can_update_all = update
+    result = await db.execute(select(LibraryFile).where(LibraryFile.id == file_id))
+    file = _ensure_library_file_visible(result.scalar_one_or_none(), user, can_read_all)
+    if not can_update_all and (user is None or file.created_by_id != user.id):
+        raise HTTPException(status_code=403, detail="You can only update your own files")
+
+    file.external_url = _clean_external_url(data.external_url)
+    await db.commit()
+    from backend.app.core.websocket import ws_manager
+
+    await ws_manager.send_library_file_details_changed(file_id)
+    # As ``update_file``: the caller passed both gates above.
     return await get_file(file_id, db, auth_result=(None, True))
 
 

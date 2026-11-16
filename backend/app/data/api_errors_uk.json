@@ -940,6 +940,8 @@
   "The library already holds this file under a different plate-swap declaration than this archive's, so it was not saved again. The library's file was left as it is.": "Бібліотека вже містить цей файл з іншою декларацією зміни столу, ніж у цього архіву, тож його не збережено вдруге. Файл у бібліотеці лишився без змін.",
   "The library file has changed since it was uploaded.": "Файл бібліотеки змінився після вивантаження.",
   "The library file is not available.": "Файл бібліотеки недоступний.",
+  "The link is too long: 2000 characters at most.": "Посилання задовге: щонайбільше 2000 символів.",
+  "The link must be a web address that starts with http:// or https://.": "Посилання має бути вебадресою, що починається з http:// або https://.",
   "The logo may be at most 2 MiB": "Логотип може мати щонайбільше 2 МіБ",
   "The logo may have at most 4 million pixels": "Логотип може мати щонайбільше 4 мільйони пікселів",
   "The logo must be a PNG, JPEG or WebP image": "Логотип має бути зображенням PNG, JPEG або WebP",

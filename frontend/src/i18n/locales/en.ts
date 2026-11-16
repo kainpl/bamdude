@@ -12190,6 +12190,27 @@ export default {
   },
 
   // The file preview shell and its renderers (image viewer)
+  fileDetails: {
+    title: 'File details',
+    menu: 'Details',
+    name: 'Name',
+    type: 'Type',
+    size: 'Size',
+    folder: 'Folder',
+    rootFolder: 'Library root',
+    addedBy: 'Added by',
+    added: 'Added',
+    updated: 'Updated',
+    hash: 'Hash',
+    source: 'Source',
+    notes: 'Notes',
+    link: 'Link',
+    linkHint: 'A web page of your choice for this file: a model page, a datasheet. It must start with http:// or https://. Everyone who can see the file sees the link.',
+    openLink: 'Open link',
+    removeLink: 'Remove link',
+    saveFailed: 'The link could not be saved.'
+  },
+
   filePreview: {
     zoomIn: 'Zoom in',
     zoomOut: 'Zoom out',

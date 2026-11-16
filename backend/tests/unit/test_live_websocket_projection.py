@@ -157,6 +157,38 @@ def test_library_invalidation_asks_current_ownership_not_old_payload(owner, perm
         assert shaped["data"] == {"file_id": 3}
 
 
+@pytest.mark.parametrize(
+    "owner,permission,visible",
+    [(7, "library:read_own", True), (8, "library:read_own", False), (None, "library:read_all", True)],
+)
+def test_a_files_details_invalidation_reaches_only_those_who_may_see_the_file(owner, permission, visible):
+    """A link or a photo changed: the event names the file and nothing of what changed."""
+    prepared = event("library_file_details_changed", data={"file_id": 3, "external_url": "https://private"})
+    prepared.rows[("library", 3)] = {"id": 3, "created_by_id": owner, "filename": "private-name"}
+    shaped = live_projection.shape(prepared, access(permission))
+    assert (shaped is not None) is visible
+    if shaped:
+        assert shaped == {"type": "library_file_details_changed", "data": {"file_id": 3}}
+
+
+@pytest.mark.asyncio
+async def test_a_files_details_invalidation_looks_its_file_up_before_it_is_shaped(monkeypatch):
+    """Without the row there is no owner to ask, and the event reaches nobody."""
+    asked = []
+
+    async def rows(refs):
+        asked.append(set(refs))
+        return {("library", 3): {"id": 3, "created_by_id": 7, "filename": "mine"}}
+
+    monkeypatch.setattr(live_authority, "resource_rows", rows)
+    prepared = await live_projection.prepare({"type": "library_file_details_changed", "data": {"file_id": 3}})
+    assert asked == [{("library", 3)}]
+    assert live_projection.shape(prepared, access("library:read_own")) == {
+        "type": "library_file_details_changed",
+        "data": {"file_id": 3},
+    }
+
+
 def test_key_ownership_door_needs_all_permission_even_for_owners_own_row():
     prepared = event("library_file_notes_changed", data={"file_id": 3})
     prepared.rows[("library", 3)] = {"id": 3, "created_by_id": 7}

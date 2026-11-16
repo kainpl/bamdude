@@ -14832,6 +14832,12 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify(data),
     }),
+  /** Set (`https://…`) or clear (`null`) the operator's own link on a file. */
+  setLibraryFileExternalUrl: (id: number, externalUrl: string | null) =>
+    request<LibraryFile>(`/library/files/${id}/external-url`, {
+      method: 'PUT',
+      body: JSON.stringify({ external_url: externalUrl }),
+    }),
   deleteLibraryFile: (id: number) =>
     request<{ status: string; message: string; trashed: boolean }>(`/library/files/${id}`, { method: 'DELETE' }),
 
@@ -15976,6 +15982,8 @@ export interface LibraryFile {
   // canonical link (e.g. MakerWorld profile URL). NULL for plain uploads.
   source_type?: string | null;
   source_url?: string | null;
+  /** The operator's own link (m232) — http(s), set by hand in the details dialog. */
+  external_url?: string | null;
 }
 
 /** One plate as the library card pages through it (vault 60-specs/library-multiplate-card-spec 4).
@@ -16045,6 +16053,8 @@ export interface LibraryFileListItem {
   // Provenance (m033) — same semantics as ``LibraryFile``.
   source_type?: string | null;
   source_url?: string | null;
+  /** The operator's own link (m232) — http(s), set by hand in the details dialog. */
+  external_url?: string | null;
   notes_count: number;
   // Successful completions only — the backend increments it on completion, so
   // 0 means "never finished a print", not "never attempted one".

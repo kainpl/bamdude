@@ -12405,6 +12405,27 @@ export default {
   },
 
   // The file preview shell and its renderers (image viewer)
+  fileDetails: {
+    title: 'Деталі файла',
+    menu: 'Деталі',
+    name: 'Назва',
+    type: 'Тип',
+    size: 'Розмір',
+    folder: 'Тека',
+    rootFolder: 'Корінь бібліотеки',
+    addedBy: 'Додав',
+    added: 'Додано',
+    updated: 'Оновлено',
+    hash: 'Хеш',
+    source: 'Джерело',
+    notes: 'Нотатки',
+    link: 'Посилання',
+    linkHint: 'Вебсторінка на ваш вибір для цього файла: сторінка моделі, технічний опис. Має починатися з http:// або https://. Посилання бачать усі, хто бачить файл.',
+    openLink: 'Відкрити посилання',
+    removeLink: 'Прибрати посилання',
+    saveFailed: 'Не вдалося зберегти посилання.'
+  },
+
   filePreview: {
     zoomIn: 'Збільшити',
     zoomOut: 'Зменшити',

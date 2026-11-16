@@ -884,6 +884,18 @@ export function useWebSocket() {
         break;
       }
 
+      case 'library_file_details_changed': {
+        // A file's link (or what else its details dialog holds) changed
+        // somewhere: the lists carry the card's marks, and an open dialog
+        // reads the file's own record.
+        const fileId = (message as unknown as { data?: { file_id?: number } }).data?.file_id;
+        debouncedInvalidate('library-files');
+        if (typeof fileId === 'number') {
+          queryClient.invalidateQueries({ queryKey: ['library-file', fileId] });
+        }
+        break;
+      }
+
       case 'pong':
         // Keepalive response, ignore
         break;

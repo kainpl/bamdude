@@ -144,6 +144,10 @@ class LibraryFile(Base):
     # queries by canonical URL on every import.
     source_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
     source_url: Mapped[str | None] = mapped_column(String(512), nullable=True, index=True)
+    # The operator's own link (m232) — a Printables page, a datasheet. Written by
+    # hand through ``PUT /library/files/{id}/external-url`` (http/https only),
+    # never fetched by the server; apart from the provenance above.
+    external_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
 
     # User tracking (Issue #206)
     created_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)

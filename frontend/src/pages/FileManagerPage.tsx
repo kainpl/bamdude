@@ -30,6 +30,7 @@ import {
   FolderPlus,
   FileBox,
   FileText,
+  Info,
   Clock,
   HardDrive,
   Package,
@@ -121,6 +122,8 @@ import { LibraryTagsModal } from '../components/LibraryTagsModal';
 import { LibraryUserTagPills } from '../components/LibraryUserTagPills';
 import { ImagePreviewModal } from '../components/ImagePreviewModal';
 import { PdfPreviewModal } from '../components/PdfPreviewModal';
+import { LibraryFileDetailsModal } from '../components/LibraryFileDetailsModal';
+import { LibraryFileMarks } from '../components/LibraryFileMarks';
 import { isPdf, isViewableImage, previewKindOf } from '../utils/filePreview';
 import { BulkTagsPickerModal } from '../components/BulkTagsPickerModal';
 import { FileTagsPopover, type TagsPopoverAnchor } from '../components/FileTagsPopover';
@@ -786,6 +789,8 @@ interface FileCardProps {
   onViewImage?: (file: LibraryFileListItem) => void;
   /** Open a PDF in the viewer. */
   onViewPdf?: (file: LibraryFileListItem) => void;
+  /** Open the file's details: its facts and the operator's own link. */
+  onDetails?: (file: LibraryFileListItem) => void;
   onRename?: (file: LibraryFileListItem) => void;
   onSwapDeclaration?: (file: LibraryFileListItem) => void;
   onRelayout?: (file: LibraryFileListItem) => void;
@@ -906,7 +911,7 @@ function ThumbnailMenuEntry({ file, t, hasPermission, canModify, onGenerate, onC
   );
 }
 
-function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedule, onAddToOrder, onSlice, onRelayout, onOpenInSlicer, useSlicerApi, desktopSlicer, onPreview3d, onViewImage, onViewPdf, onModelCard, onDownload, onRename, onSwapDeclaration, onGenerateThumbnail, onCancelThumbnail, thumbnailJobActive, onMove, onTags, onDelete }: {
+function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedule, onAddToOrder, onSlice, onRelayout, onOpenInSlicer, useSlicerApi, desktopSlicer, onPreview3d, onViewImage, onViewPdf, onDetails, onModelCard, onDownload, onRename, onSwapDeclaration, onGenerateThumbnail, onCancelThumbnail, thumbnailJobActive, onMove, onTags, onDelete }: {
   file: LibraryFileListItem;
   t: TFunction;
   hasPermission: (permission: Permission) => boolean;
@@ -921,6 +926,7 @@ function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedul
   onPreview3d: (f: LibraryFileListItem) => void;
   onViewImage?: (f: LibraryFileListItem) => void;
   onViewPdf?: (f: LibraryFileListItem) => void;
+  onDetails?: (f: LibraryFileListItem) => void;
   onModelCard?: (f: LibraryFileListItem) => void;
   onDownload: (id: number) => void;
   onRename: (f: LibraryFileListItem) => void;
@@ -1114,6 +1120,16 @@ function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedul
                 {t('fileManager.source.openOriginal', { defaultValue: 'Open on MakerWorld' })}
               </a>
             )}
+            {/* Seeing the file listed is being allowed to read its details. */}
+            {onDetails && (
+              <button
+                className="w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 text-white hover:bg-bambu-dark"
+                onClick={() => { onDetails(file); closeMenu(); }}
+              >
+                <Info className="w-3.5 h-3.5" />
+                {t('fileDetails.menu')}
+              </button>
+            )}
             <button
               className="w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 text-white hover:bg-bambu-dark"
               onClick={() => { onDownload(file.id); closeMenu(); }}
@@ -1196,7 +1212,7 @@ function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedul
   );
 }
 
-function FileCard({ file, isSelected, onSelect, onOpenArchives, onDelete, onDownload, onAddToQueue, onPrint, onSlice, onRelayout, onOpenInSlicer, useSlicerApi, desktopSlicer, onPreview3d, onOpen, onViewImage, onViewPdf, onModelCard, onRename, onSwapDeclaration, onLink, onGenerateThumbnail, onCancelThumbnail, thumbnailJobActive, onPlateGallery, onAddToOrder, onMove, onTags, onTagClick, thumbnailVersion, isRegeneratingThumbnail, hasPermission, canModify, authEnabled, timeFormat, dateFormat, t }: FileCardProps) {
+function FileCard({ file, isSelected, onSelect, onOpenArchives, onDelete, onDownload, onAddToQueue, onPrint, onSlice, onRelayout, onOpenInSlicer, useSlicerApi, desktopSlicer, onPreview3d, onOpen, onViewImage, onViewPdf, onDetails, onModelCard, onRename, onSwapDeclaration, onLink, onGenerateThumbnail, onCancelThumbnail, thumbnailJobActive, onPlateGallery, onAddToOrder, onMove, onTags, onTagClick, thumbnailVersion, isRegeneratingThumbnail, hasPermission, canModify, authEnabled, timeFormat, dateFormat, t }: FileCardProps) {
   // ⚠️ The two modes need different permissions: slicing through the sidecar
   // writes a new library file, while opening in a desktop slicer is a download.
   const sliceDisabled = useSlicerApi ? !hasPermission('library:upload') : !hasPermission('library:read');
@@ -1327,8 +1343,9 @@ function FileCard({ file, isSelected, onSelect, onOpenArchives, onDelete, onDown
           </div>
         )}
         {/* Notes overlay - bottom-left corner */}
-        <div className="absolute bottom-1 left-2" onClick={(e) => e.stopPropagation()}>
+        <div className="absolute bottom-1 left-2 flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
           <LibraryFileNotesButton fileId={file.id} initialCount={file.notes_count} variant="overlay" />
+          <LibraryFileMarks file={file} variant="overlay" />
         </div>
         {/* Product link overlay - bottom-right, same height as notes */}
         {onLink && (
@@ -1633,6 +1650,15 @@ function FileCard({ file, isSelected, onSelect, onOpenArchives, onDelete, onDown
                   {t('fileManager.source.openOriginal', { defaultValue: 'Open on MakerWorld' })}
                 </a>
               )}
+              {onDetails && (
+                <button
+                  className="w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 text-white hover:bg-bambu-dark"
+                  onClick={() => { onDetails(file); closeActions(); }}
+                >
+                  <Info className="w-3.5 h-3.5" />
+                  {t('fileDetails.menu')}
+                </button>
+              )}
               <button
                 className="w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 text-white hover:bg-bambu-dark"
                 onClick={() => { onDownload(file.id); closeActions(); }}
@@ -1842,6 +1868,7 @@ export function FileManagerPage() {
   const [viewerFile, setViewerFile] = useState<LibraryFileListItem | null>(null);
   const [imageFile, setImageFile] = useState<LibraryFileListItem | null>(null);
   const [pdfFile, setPdfFile] = useState<LibraryFileListItem | null>(null);
+  const [detailsFile, setDetailsFile] = useState<LibraryFileListItem | null>(null);
   // Per-plate gallery modal — opened from list-mode "plates" button. Null when closed.
   // «Add to order…» (WS-13 E13 C): the file — and the gallery's plate — the dialog opens on.
   const [addToOrderTarget, setAddToOrderTarget] = useState<{ file: LibraryFileListItem; plateIndex: number | null } | null>(
@@ -2903,6 +2930,7 @@ export function FileManagerPage() {
       onOpen={openPreview}
       onViewImage={setImageFile}
       onViewPdf={setPdfFile}
+      onDetails={setDetailsFile}
       onModelCard={setModelCardFile}
       onRename={(f) => setRenameItem({ type: 'file', id: f.id, name: f.filename })}
       onSwapDeclaration={setSwapDeclarationFile}
@@ -4147,6 +4175,7 @@ export function FileManagerPage() {
                           overlay button (line 1029). MakerWorld imports and
                           unsliced project 3MFs deserve notes too. */}
                       <LibraryFileNotesButton fileId={file.id} initialCount={file.notes_count} variant="inline" />
+                      <LibraryFileMarks file={file} variant="inline" />
                       {/* Print + Schedule — gated on isPrintable because they
                           send G-code to a printer. Unsliced 3MFs go through
                           the slice modal first (separate button further down). */}
@@ -4203,6 +4232,7 @@ export function FileManagerPage() {
                         onPreview3d={setViewerFile}
                         onViewImage={setImageFile}
                         onViewPdf={setPdfFile}
+                        onDetails={setDetailsFile}
                         onModelCard={setModelCardFile}
                             onDownload={handleDownload}
                         onRename={(f) => setRenameItem({ type: 'file', id: f.id, name: f.filename })}
@@ -4573,6 +4603,16 @@ export function FileManagerPage() {
           fileSize={pdfFile.file_size}
           onClose={() => setPdfFile(null)}
           onDownload={() => handleDownload(pdfFile.id)}
+        />
+      )}
+
+      {detailsFile && (
+        <LibraryFileDetailsModal
+          file={detailsFile}
+          canEdit={canModify('library', 'update', detailsFile.created_by_id)}
+          onClose={() => setDetailsFile(null)}
+          timeFormat={timeFormat}
+          dateFormat={dateFormat}
         />
       )}
 

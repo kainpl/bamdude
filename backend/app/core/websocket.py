@@ -604,6 +604,11 @@ class ConnectionManager:
             }
         )
 
+    async def send_library_file_details_changed(self, file_id: int):
+        """Notify clients that what a library file's details dialog holds changed —
+        its link, its photos. An invalidation only: the id, never the content."""
+        await self.broadcast({"type": "library_file_details_changed", "data": {"file_id": file_id}})
+
     async def send_missing_spool_assignment(
         self,
         printer_id: int,
