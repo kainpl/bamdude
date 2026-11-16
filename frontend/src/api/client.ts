@@ -5902,6 +5902,13 @@ export interface SlicerHealth {
   url: string | null;
   version?: string;
   error?: string;
+  // The sidecar's own code version (not the slicer's `version`), the one this
+  // backend needs, and whether the running sidecar is older. Sent for a
+  // healthy sidecar only; `sidecar_version` is null for an image built before
+  // the version existed, which counts as older.
+  sidecar_version?: number | null;
+  sidecar_required?: number;
+  sidecar_outdated?: boolean;
 }
 
 // GET /api/v1/slicer/presets — unified listing across cloud / local / standard.

@@ -113,6 +113,44 @@ class SliceResult(NamedTuple):
 
 _shared_http_client: httpx.AsyncClient | None = None
 
+# The sidecar CODE version this backend was written against — the fork's
+# ``src/version.ts::SIDECAR_VERSION``, reported as ``sidecarVersion`` on its
+# ``/health``. Not the slicer's version: that is pinned in ``slicer-api/.env``.
+#
+# ⚠️ We build the sidecar from the fork's branch whenever an operator rebuilds
+# the containers, so the sidecar an install runs is as old as its last build,
+# whatever BamDude it serves. Raise this number BY HAND, in the same change
+# that starts to depend on a newer sidecar, to the number the fork gave that
+# behaviour. An older sidecar is not refused — slicing goes on as far as it
+# can — the Slice dialog says the containers want rebuilding.
+#
+#   1  presets in subfolders and with "/" in the name, the 422
+#      ``preset_unresolved`` refusal, a renamed printer preset, OrcaSlicer's
+#      filament library, the ordered filament listing.
+REQUIRED_SIDECAR_VERSION = 1
+
+
+def sidecar_version_of(health_body: object) -> int | None:
+    """The sidecar's code version from its ``/health`` body, or None when it states none.
+
+    None is an ANSWER, not a failure: every image built before the version
+    existed says nothing, and is therefore older than any version we can need.
+    Only a whole positive number counts — a string or a float is a body we do
+    not understand, and guessing "new enough" from it would hide the advice.
+    """
+    if not isinstance(health_body, dict):
+        return None
+    value = health_body.get("sidecarVersion")
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        return None
+    return value
+
+
+def sidecar_is_outdated(version: int | None) -> bool:
+    """Whether a sidecar of this code version is older than this backend needs."""
+    return version is None or version < REQUIRED_SIDECAR_VERSION
+
+
 # Fallback for callers with no DB session to read the setting from (and for
 # tests). The user-facing value is ``slicer_stall_timeout_minutes`` under
 # Settings → General → Slicer.

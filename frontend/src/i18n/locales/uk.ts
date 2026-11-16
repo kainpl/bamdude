@@ -5790,6 +5790,7 @@ export default {
     cardReady: 'Готовий · v{{version}}',
     cardOffline: 'Офлайн',
     active: 'активний',
+    sidecarOutdated: 'Контейнер слайсера старіший, ніж потрібно цій версії BamDude: у списках може бракувати частини профілів, а профіль, який слайсер не може розв\'язати, буде нарізано на його типових значеннях замість відмови. Перезберіть контейнери слайсера: у теці slicer-api/ виконайте «docker compose --profile all build --no-cache», а потім «docker compose --profile all up -d».',
   },
 
   library: {
