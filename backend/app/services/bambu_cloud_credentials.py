@@ -272,11 +272,29 @@ async def _renew_or_invalidate(captured, cloud, mark_invalid):
         if cloud is not None:
             try:
                 renewed = await cloud.refresh_access_token()
-            except Exception:
-                logger.warning("Bambu Cloud credential refresh did not complete")
-                renewed = False
+            except Exception as exc:
+                # Not an answer from Bambu (a client closed at shutdown, a
+                # bug): nothing is known about the credential, so nothing is
+                # marked — the same as a renewal that could not reach Bambu.
+                logger.warning("Bambu Cloud credential refresh did not complete (%s)", type(exc).__name__)
+                return RENEW_UNREACHABLE, None, None
             if renewed:
-                stored = await _persist_renewed(captured, cloud.access_token, cloud.refresh_token)
+                for attempt in range(2):
+                    try:
+                        stored = await _persist_renewed(captured, cloud.access_token, cloud.refresh_token)
+                        break
+                    except Exception as exc:
+                        # Bambu issued the pair and we could not write it (a
+                        # locked database, a dropped connection). The sign-in
+                        # is not dead and is never marked so; only the type is
+                        # logged — a driver error can quote the row it failed on.
+                        logger.error(
+                            "A renewed Bambu Cloud sign-in could not be stored (%s)%s",
+                            type(exc).__name__,
+                            "" if attempt else "; trying once more",
+                        )
+                else:
+                    return RENEW_UNREACHABLE, None, None
                 if stored is not None:
                     _remember_renewal(captured, stored)
                 return RENEWED, cloud.access_token, stored
