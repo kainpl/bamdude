@@ -376,6 +376,7 @@ def import_all_models() -> None:
         label_device,
         label_template,
         library,
+        library_file_import_meta,
         library_file_makerworld_meta,
         library_file_note,
         library_file_photo,

@@ -12678,6 +12678,7 @@ export default {
       queue: 'Черга',
       library: 'Бібліотека',
       makerworld: 'MakerWorld',
+      manyfold: 'Manyfold',
       orders: 'Замовлення',
       products: 'Вироби',
       customers: 'Замовники',

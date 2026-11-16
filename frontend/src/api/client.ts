@@ -9436,6 +9436,7 @@ export type Permission =
   | 'git:backup' | 'git:restore'
   | 'cloud:auth' | 'orca_cloud:auth' | 'cloud_link:manage'
   | 'makerworld:view' | 'makerworld:import'
+  | 'manyfold:view' | 'manyfold:import'
   | 'api_keys:read' | 'api_keys:create' | 'api_keys:update' | 'api_keys:delete'
   | 'users:read' | 'users:read_slim' | 'users:create' | 'users:update' | 'users:delete'
   | 'groups:read' | 'groups:create' | 'groups:update' | 'groups:delete'

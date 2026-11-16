@@ -12461,6 +12461,7 @@ export default {
       queue: 'Queue',
       library: 'Library',
       makerworld: 'MakerWorld',
+      manyfold: 'Manyfold',
       orders: 'Orders',
       products: 'Products',
       customers: 'Customers',

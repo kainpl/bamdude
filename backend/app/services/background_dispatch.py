@@ -4273,6 +4273,9 @@ class BackgroundDispatchService:
                         from backend.app.services import library_file_photos
 
                         await library_file_photos.forget_files(db, [library_id])
+                        from backend.app.services import library_import_meta
+
+                        await library_import_meta.forget_files(db, [library_id])
                         transient = await db.get(LibraryFile, library_id)
                         if transient is not None:
                             await db.delete(transient)

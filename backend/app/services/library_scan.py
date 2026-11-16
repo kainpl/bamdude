@@ -891,6 +891,9 @@ async def remove_vanished(
             from backend.app.services import library_file_photos
 
             await library_file_photos.forget_files(db, [row.id for row in rows])
+            from backend.app.services import library_import_meta
+
+            await library_import_meta.forget_files(db, [row.id for row in rows])
             for row in rows:
                 if row.thumbnail_path:
                     with contextlib.suppress(OSError):

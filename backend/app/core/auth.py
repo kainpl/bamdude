@@ -1347,6 +1347,7 @@ _APIKEY_SCOPE_BY_PERMISSION: dict[Permission, str] = {
     # UI-language setting; SETTINGS_UPDATE remains admin-only (denylist).
     Permission.SETTINGS_READ: "can_read_status",
     Permission.MAKERWORLD_VIEW: "can_read_status",
+    Permission.MANYFOLD_VIEW: "can_read_status",
     Permission.WEBSOCKET_CONNECT: "can_read_status",
     # can_queue — queue write ops + reprint (which enqueues an existing archive)
     Permission.QUEUE_CREATE: "can_queue",
@@ -1379,6 +1380,7 @@ _APIKEY_SCOPE_BY_PERMISSION: dict[Permission, str] = {
     Permission.LIBRARY_DELETE_ALL: "can_manage_library",
     Permission.LIBRARY_NOTES_WRITE: "can_manage_library",
     Permission.MAKERWORLD_IMPORT: "can_manage_library",
+    Permission.MANYFOLD_IMPORT: "can_manage_library",
     # can_manage_inventory — inventory write scope (spool/catalog/forecast +
     # SpoolBuddy-kiosk NFC/scale writes that ride INVENTORY_UPDATE).
     Permission.INVENTORY_CREATE: "can_manage_inventory",

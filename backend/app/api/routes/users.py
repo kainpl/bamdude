@@ -552,6 +552,10 @@ async def delete_user(
         from backend.app.services import library_file_photos
 
         await library_file_photos.forget_files(db, list(_doomed_file_ids))
+        # And where a model source imported them from (m235).
+        from backend.app.services import library_import_meta
+
+        await library_import_meta.forget_files(db, list(_doomed_file_ids))
         # And their notes: the bulk DELETE below goes past the ORM cascade, SQLite runs none.
         from backend.app.services.library_trash import forget_file_notes
 
