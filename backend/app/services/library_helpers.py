@@ -72,7 +72,7 @@ def sliced_gcode_in_3mf(path: str | Path) -> bool | None:
 
 
 async def sliced_content_verdict(
-    filename: str, path: str | Path | None, *, file_metadata: dict | None = None
+    filename: str, path: str | Path | None, *, file_metadata: dict | None = None, may_have_changed: bool = False
 ) -> bool | None:
     """What a ``.3mf``'s CONTENT says about being sliced: yes, no, or unknown.
 
@@ -81,11 +81,22 @@ async def sliced_content_verdict(
     recorded is the container opened, off the event loop, central directory
     only. ``None`` — not a ``.3mf`` at all (a raw ``.gcode`` has nothing to look
     inside), no path, or a file that could not be read — is NOT ``False``.
+
+    ⚠️ ``may_have_changed`` — a file on a mounted share, whose stored answer is
+    as old as the folder's last scan. A stored "no" is then confirmed by one
+    fresh read before anybody is refused on it: the operator may have sliced the
+    project and exported over the same name since. A file that cannot be read
+    now keeps the stored answer. A stale "yes" needs no read here — the
+    dispatcher reads the bytes it is about to send.
     """
     if not filename.lower().endswith(".3mf"):
         return None
     known = (file_metadata or {}).get(SLICED_GCODE_META_KEY)
     if known is not None:
+        if may_have_changed and not known and path is not None:
+            fresh = await asyncio.to_thread(sliced_gcode_in_3mf, path)
+            if fresh is not None:
+                return fresh
         return bool(known)
     if path is None:
         return None
@@ -116,6 +127,7 @@ async def sliced_source_refusal(
     *,
     file_metadata: dict | None = None,
     named: bool | None = None,
+    may_have_changed: bool = False,
 ) -> str | None:
     """THE question every print gate asks of a source: why it cannot be printed, or ``None``.
 
@@ -127,9 +139,12 @@ async def sliced_source_refusal(
     NAME rule decides as it always did; so does it for a raw ``.gcode``.
 
     ``named`` is the caller's own filename rule when it is narrower than
-    ``utils.filename.is_sliced_file`` (the dispatcher's).
+    ``utils.filename.is_sliced_file`` (the dispatcher's). ``may_have_changed``
+    is said for a file on a mounted share — see ``sliced_content_verdict``.
     """
-    verdict = await sliced_content_verdict(filename, path, file_metadata=file_metadata)
+    verdict = await sliced_content_verdict(
+        filename, path, file_metadata=file_metadata, may_have_changed=may_have_changed
+    )
     if named is None:
         from backend.app.utils.filename import is_sliced_file
 

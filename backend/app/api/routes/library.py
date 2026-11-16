@@ -5601,7 +5601,12 @@ async def print_library_file(
     # Validate file is sliced — by name, or by what the 3MF holds: the file
     # manager offers Print for a sliced ``Foo.3mf`` (its tag follows the content).
     # A project saved as ``Foo.gcode.3mf`` is refused on its content (upstream #3435).
-    refusal = await sliced_source_refusal(lib_file.filename, file_path, file_metadata=lib_file.file_metadata)
+    refusal = await sliced_source_refusal(
+        lib_file.filename,
+        file_path,
+        file_metadata=lib_file.file_metadata,
+        may_have_changed=bool(lib_file.is_external),
+    )
     if refusal is not None:
         raise HTTPException(
             status_code=400,

@@ -499,3 +499,100 @@ def test_the_archive_runner_asks_its_gate():
     body = inspect.getsource(BackgroundDispatchService._run_reprint_archive)
     assert "_require_sliced_archive_source(" in body
     assert body.index("_require_sliced_archive_source(") < body.index("apply_3mf_transforms")
+
+
+# --------------------------------------------------------------------------- #
+# A recorded "no" is as old as the last scan of a share (review B-M1)
+# --------------------------------------------------------------------------- #
+
+
+class TestAStaleNoOnAShare:
+    async def test_a_file_sliced_in_place_since_the_scan_passes(self, tmp_path):
+        path = a_3mf(tmp_path / NAME, sliced=True)
+        stale = {SLICED_GCODE_META_KEY: False}
+        assert await sliced_source_refusal(NAME, path, file_metadata=stale, may_have_changed=True) is None
+
+    async def test_a_file_that_is_still_a_project_is_refused_on_the_fresh_read(self, tmp_path):
+        path = a_3mf(tmp_path / NAME, sliced=False)
+        stale = {SLICED_GCODE_META_KEY: False}
+        assert await sliced_source_refusal(NAME, path, file_metadata=stale, may_have_changed=True) is not None
+
+    async def test_a_file_nobody_can_read_now_keeps_the_recorded_no(self, tmp_path):
+        stale = {SLICED_GCODE_META_KEY: False}
+        gone = tmp_path / "gone.gcode.3mf"
+        assert await sliced_source_refusal(NAME, gone, file_metadata=stale, may_have_changed=True) is not None
+
+    async def test_a_managed_file_s_recorded_no_is_believed_without_a_read(self, tmp_path, monkeypatch):
+        from backend.app.services import library_helpers
+
+        def opened(_path):
+            raise AssertionError("the container was opened")
+
+        monkeypatch.setattr(library_helpers, "sliced_gcode_in_3mf", opened)
+        stale = {SLICED_GCODE_META_KEY: False}
+        assert await sliced_source_refusal(NAME, tmp_path / NAME, file_metadata=stale) is not None
+
+    async def test_a_recorded_yes_is_not_read_again(self, tmp_path, monkeypatch):
+        from backend.app.services import library_helpers
+
+        def opened(_path):
+            raise AssertionError("the container was opened")
+
+        monkeypatch.setattr(library_helpers, "sliced_gcode_in_3mf", opened)
+        known = {SLICED_GCODE_META_KEY: True}
+        assert await sliced_source_refusal(NAME, tmp_path / NAME, file_metadata=known, may_have_changed=True) is None
+
+
+async def _an_external_row_scanned_as_a_project(db, path: Path) -> LibraryFile:
+    row = await a_library_row(db, path, flag=False)
+    row.is_external = True
+    await db.commit()
+    return row
+
+
+async def test_the_queue_takes_an_external_file_sliced_in_place_since_its_scan(
+    db_session, tmp_path, printer_factory, monkeypatch, sessions
+):
+    from backend.app.services.queue_add import add_items_to_printer_queue
+
+    _src, _printer, queue, _mqtt = await setup_source(db_session, tmp_path, printer_factory, monkeypatch)
+    row = await _an_external_row_scanned_as_a_project(db_session, a_3mf(tmp_path / NAME, sliced=True))
+
+    items, _q = await add_items_to_printer_queue(db_session, _item(queue, row), None)
+
+    assert len(items) == 1
+
+
+async def test_run_next_takes_an_external_file_sliced_in_place_since_its_scan(
+    db_session, tmp_path, printer_factory, monkeypatch, sessions
+):
+    from backend.app.services.queue_add import add_next_block_to_printer_queue
+
+    _src, _printer, queue, _mqtt = await setup_source(db_session, tmp_path, printer_factory, monkeypatch)
+    row = await _an_external_row_scanned_as_a_project(db_session, a_3mf(tmp_path / NAME, sliced=True))
+
+    items, _q = await add_next_block_to_printer_queue(db_session, [_item(queue, row, enqueue_position="next")], None)
+
+    assert len(items) == 1
+
+
+async def test_the_print_route_takes_an_external_file_sliced_in_place_since_its_scan(
+    async_client, db_session, tmp_path, printer_factory
+):
+    printer = await printer_factory()
+    row = await _an_external_row_scanned_as_a_project(db_session, a_3mf(tmp_path / NAME, sliced=True))
+
+    response = await _print(async_client, row, printer, tmp_path)
+
+    assert response.status_code == 200, response.text
+
+
+async def test_an_external_file_that_is_still_a_project_stays_refused(
+    async_client, db_session, tmp_path, printer_factory
+):
+    printer = await printer_factory()
+    row = await _an_external_row_scanned_as_a_project(db_session, a_3mf(tmp_path / NAME, sliced=False))
+
+    response = await _print(async_client, row, printer, tmp_path)
+
+    assert response.status_code == 400, response.text

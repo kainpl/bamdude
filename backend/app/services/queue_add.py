@@ -187,6 +187,7 @@ async def add_items_to_printer_queue(
             library_file.filename,
             resolve_source_path(library_file=library_file),
             file_metadata=library_file.file_metadata,
+            may_have_changed=bool(library_file.is_external),
         )
         if refusal is not None:
             raise HTTPException(
@@ -844,6 +845,7 @@ async def add_next_block_to_printer_queue(
             library_file.filename,
             resolve_source_path(library_file=library_file),
             file_metadata=library_file.file_metadata,
+            may_have_changed=bool(library_file.is_external),
         )
         if refusal is not None:
             raise HTTPException(
