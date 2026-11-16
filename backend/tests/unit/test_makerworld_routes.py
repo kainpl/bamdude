@@ -1241,10 +1241,15 @@ class TestImportOfABrokenDownload:
     @pytest.mark.parametrize(
         ("manifest_name", "url_tail", "stored"),
         [
-            ("Seed starter", "9f2c", "9f2c.3mf"),
+            # The model's own name is kept; the signed URL's last segment (a
+            # UUID) names a file only when MakerWorld sent no name at all.
+            ("Seed starter", "9f2c", "Seed starter.3mf"),
             ("", "9f2c", "makerworld-1400373.3mf"),
-            ("report.pdf", "blob.bin", "blob.bin.3mf"),
-            ("Seed starter", "model.3mf", "model.3mf"),
+            ("report.pdf", "blob.bin", "report.pdf.3mf"),
+            ("Seed starter", "model.3mf", "Seed starter.3mf"),
+            ("Model.3MF", "9f2c", "Model.3MF"),
+            ("Seed%20starter.3Mf", "9f2c", "Seed starter.3Mf"),
+            ("../../evil", "..%2F..%2Fx.3mf", "evil.3mf"),
         ],
     )
     async def test_a_name_without_the_3mf_ending_is_still_stored_as_a_3mf(

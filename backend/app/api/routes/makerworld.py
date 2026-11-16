@@ -503,14 +503,15 @@ async def import_instance(
             suggested_name = os.path.basename(unquote(raw_name.strip())) or f"makerworld-{body.model_id}.3mf"
         else:
             suggested_name = f"makerworld-{body.model_id}.3mf"
-        # Prefer the server-provided human-readable filename; the signed URL's
-        # path ends in a UUID that's not meaningful to users.
-        filename = suggested_name if suggested_name.endswith(".3mf") else unquote(download.filename)
-        # ``download`` has proven the bytes are a 3MF container, and the
-        # library decides a file's type by its name: a name without the ending
-        # would store them as a file of some other type, unread.
+        # The server-provided human-readable name is the file's name; the
+        # signed URL's path ends in a UUID that means nothing to a user and is
+        # never used. ``download`` has proven the bytes are a 3MF container,
+        # and the library decides a file's type by its name: a name without
+        # the ending (``Benchy``) gets it, in whatever case it came
+        # (``Model.3MF`` is kept as it is).
+        filename = suggested_name
         if not filename.lower().endswith(".3mf"):
-            filename = f"{os.path.basename(filename) or f'makerworld-{body.model_id}'}.3mf"
+            filename = f"{filename}.3mf"
 
         result = await save_3mf_bytes_to_library(
             db,
