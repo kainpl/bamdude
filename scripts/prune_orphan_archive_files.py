@@ -151,9 +151,13 @@ def _resolve_data_dir(arg_data_dir: str | None) -> Path:
 # this script came to know only ``file_path`` + ``thumbnail_path`` — and with
 # ``--apply`` delete every timelapse, Fusion design, source 3MF and MakerWorld
 # cover (audit 1.2.5.3-1.2.5.6, D14). A new file column is covered by its name.
-# The first two are required (see ``_REQUIRED_TABLES``); the MakerWorld one is
-# read when present.
-_PATH_TABLES = ("print_archives", "library_files", "library_file_makerworld_meta")
+# The first two are required (see ``_REQUIRED_TABLES``); the MakerWorld one and
+# the registry of archive videos (m237) are read when present. A video the
+# registry names — a variant saved beside the primary, or one waiting to be
+# unlinked by its owner — is kept here even where no ``print_archives`` column
+# points at it. Its ``remote_path`` is a path on a PRINTER; it starts with "/"
+# and so never equals a path under DATA_DIR.
+_PATH_TABLES = ("print_archives", "library_files", "library_file_makerworld_meta", "archive_media_assets")
 
 
 def _path_columns(conn: sqlite3.Connection, table: str) -> list[str]:

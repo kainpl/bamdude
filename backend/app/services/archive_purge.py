@@ -267,6 +267,20 @@ class ArchivePurgeService:
 
         await spool_usage_service.detach_archives(db, ids)
         await spoolman_usage_history.detach_archives(db, ids)
+        # Their video registry rows too (m237) — only for the rows this statement
+        # is about to take, so a live archive of the same batch keeps its own.
+        from backend.app.services import archive_media  # noqa: PLC0415
+
+        doomed = (
+            (
+                await db.execute(
+                    select(PrintArchive.id).where(PrintArchive.id.in_(ids), PrintArchive.deleted_at.isnot(None))
+                )
+            )
+            .scalars()
+            .all()
+        )
+        await archive_media.forget_archives(db, doomed)
         await db.execute(delete(PrintArchive).where(PrintArchive.id.in_(ids), PrintArchive.deleted_at.isnot(None)))
         await db.commit()
         if deleted < len(ids):
