@@ -327,6 +327,7 @@ function PresetDropdown({
   // colour control is a label of its own, and labels do not nest.
   const selectId = useId();
   const colourId = `${selectId}-colour`;
+  const noteId = `${selectId}-note`;
 
   // Tier sections (imported → cloud → standard) after the owner filter, plus
   // — for a process / filament slot with a selected printer — a trailing
@@ -377,6 +378,11 @@ function PresetDropdown({
 
   const totalEntries =
     sections.reduce((sum, s) => sum + s.entries.length, 0) + otherEntries.length;
+  // The chosen preset sits in "Other printers": it stays the choice — nothing
+  // here replaces one — and the field says so, because the closed select shows
+  // a name only.
+  const chosenForOtherPrinter =
+    value !== null && otherEntries.some(({ preset: p }) => p.source === value.source && p.id === value.id);
 
   return (
     <div className="block">
@@ -399,6 +405,7 @@ function PresetDropdown({
         value={toRefValue(value)}
         onChange={(e) => onChange(fromRefValue(e.target.value))}
         disabled={disabled || totalEntries === 0}
+        aria-describedby={chosenForOtherPrinter ? noteId : undefined}
         // Thousands of stock filaments are no list to scroll: the words typed
         // narrow these same options, other printers included; the chosen
         // preset always stays listed.
@@ -463,6 +470,11 @@ function PresetDropdown({
         </label>
       )}
       </div>
+      {chosenForOtherPrinter && (
+        <p id={noteId} role="status" className="mt-1 text-xs text-amber-700 dark:text-amber-400">
+          {t('slice.presetForOtherPrinter', 'This profile is listed for another printer than the selected one.')}
+        </p>
+      )}
     </div>
   );
 }
@@ -713,7 +725,21 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
   // states the wrong material, and without this it would do so to a deliberate
   // choice too — printing PETG on a plate a designer labelled PLA is a thing
   // people do on purpose. A ref, not state: it must not re-trigger the pre-pick.
-  const explicitFilamentSlots = useRef<Set<number>>(new Set());
+  //
+  // ⚠️ An explicit choice is replaced by NO automatic pass, whatever the
+  // matcher thinks of it: not for its material and not for the printer it was
+  // made for. It stays while the listing has it — a choice that does not fit
+  // the printer is marked beside its field, never swapped — and when the
+  // listing drops it the dialog falls back and says so (`goneChoices`). Only
+  // the user, or saved settings the user applies, replace it. Each entry keeps
+  // the chosen ref, so "gone from the listing" can be told without reading
+  // state. The process has the same record.
+  const explicitFilamentSlots = useRef<Map<number, PresetRef>>(new Map());
+  const explicitProcess = useRef<PresetRef | null>(null);
+  // Fields whose hand-made choice left the listing and was replaced by an
+  // automatic pick: 'process', or a filament slot's index.
+  const [goneChoices, setGoneChoices] = useState<('process' | number)[]>([]);
+  const filamentSlotCount = useRef(0);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   // Bed plate override sent to the slicer as ``--curr-bed-type``. Default
@@ -1112,14 +1138,23 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
   // Process pre-pick / re-pick (#1325): defaults to a process compatible with
   // the selected printer (honouring the 3MF's embedded process first), and
   // re-defaults when a printer change leaves the current process incompatible.
-  // A compatible or unknown manual pick is kept.
+  // A choice made by hand is kept whatever the matcher says of it, for as long
+  // as the listing has it; one that is gone falls back and is named on screen.
   useEffect(() => {
     const data = presetsQuery.data;
     if (!data) return;
+    if (explicitProcess.current && !findPreset(data, explicitProcess.current, 'process')) {
+      explicitProcess.current = null;
+      setGoneChoices((gone) => (gone.includes('process') ? gone : [...gone, 'process']));
+    }
     setProcessPreset((current) => {
       if (current) {
         const p = findPreset(data, current, 'process');
-        if (p && presetCompatibility(p, 'process', selectedPrinterName, compatIndex) !== 'mismatch') {
+        if (
+          p
+          && (explicitProcess.current !== null
+            || presetCompatibility(p, 'process', selectedPrinterName, compatIndex) !== 'mismatch')
+        ) {
           return current;
         }
       }
@@ -1130,37 +1165,48 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
   // A plate switch renumbers the slots, so the colour picks are dropped when
   // the slot count changes (see `resizeColourOverrides`).
   useEffect(() => {
-    setFilamentColours((current) => {
-      if (current.length !== filamentSlots.length) {
-        // A renumbered slot list invalidates the record of which slots the
-        // user chose for the same reason: slot 2 of the new plate is not slot 2
-        // of the old one.
-        explicitFilamentSlots.current = new Set();
-      }
-      return resizeColourOverrides(current, filamentSlots.length);
-    });
+    if (filamentSlotCount.current !== filamentSlots.length) {
+      // A renumbered slot list invalidates the record of which slots the
+      // user chose for the same reason: slot 2 of the new plate is not slot 2
+      // of the old one. Done here and not inside a state updater: the filament
+      // pre-pick below must already see the record empty.
+      filamentSlotCount.current = filamentSlots.length;
+      explicitFilamentSlots.current = new Map();
+      setGoneChoices((gone) => (gone.some((g) => g !== 'process') ? gone.filter((g) => g === 'process') : gone));
+    }
+    setFilamentColours((current) => resizeColourOverrides(current, filamentSlots.length));
   }, [filamentSlots]);
 
   // Filament pre-pick: re-runs when the active filament-slot count changes
   // (plate selection, single-plate metadata arriving) or the selected printer
   // changes. Each slot scores every available filament preset against the
-  // slot's required (type, colour); an existing pick (incl. a user override)
-  // is kept as long as it's still compatible with the selected printer, while
-  // null slots and printer-incompatible picks are re-picked (#1325).
+  // slot's required (type, colour); an automatic pick is kept as long as it's
+  // still compatible with the selected printer, while null slots and
+  // printer-incompatible automatic picks are re-picked (#1325). A slot chosen
+  // by hand is kept while the listing has its preset.
   useEffect(() => {
     const data = presetsQuery.data;
     if (!data) return;
+    const gone: number[] = [];
+    for (const [i, ref] of explicitFilamentSlots.current) {
+      if (!findPreset(data, ref, 'filament')) gone.push(i);
+    }
+    if (gone.length > 0) {
+      for (const i of gone) explicitFilamentSlots.current.delete(i);
+      setGoneChoices((known) => [...known, ...gone.filter((i) => !known.includes(i))]);
+    }
     setFilamentPresets((current) => {
       return filamentSlots.map((slot, i) => {
         const cur = current[i] ?? null;
         if (cur) {
           const p = findPreset(data, cur, 'filament');
+          if (p && explicitFilamentSlots.current.has(i)) return cur;
           // Compatible with the printer is not on its own a reason to keep a
           // pick: a preset stating another base material than the plate asks
           // for is the wrong preset however well it fits the machine, and
           // holding onto one is how a PETG profile survived on a PLA plate
           // through every re-pick (#2982). An explicit choice is exempt.
-          const wrongMaterial = p && !explicitFilamentSlots.current.has(i) && statesDifferentMaterial(p, slot.type);
+          const wrongMaterial = p && statesDifferentMaterial(p, slot.type);
           if (p && !wrongMaterial && presetCompatibility(p, 'filament', selectedPrinterName, compatIndex) !== 'mismatch') {
             return cur;
           }
@@ -1299,6 +1345,13 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
   // ref the dropdown can't render — and the banner below names them, because
   // a silently half-applied bundle would slice with the wrong profile.
   const [unresolvedBundleSlots, setUnresolvedBundleSlots] = useState<string[] | null>(null);
+  // The last applied set and the fields it changed — the note beside the
+  // picker. Retired, like the banner above, by the next pick made by hand.
+  const [appliedSet, setAppliedSet] = useState<{ name: string; changed: string[] } | null>(null);
+  const retireBundleNotes = () => {
+    setUnresolvedBundleSlots(null);
+    setAppliedSet(null);
+  };
   const createPipelineMutation = useMutation({
     mutationFn: (body: {
       name: string;
@@ -1328,15 +1381,25 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
     const data = presetsQuery.data;
     if (!data) return;
     const unresolved: string[] = [];
+    // The fields this set gave another value than they had — said beside the
+    // picker, because applying a set is the one action besides the user's own
+    // pick that replaces a choice made by hand.
+    const changed: string[] = [];
     const resolved = (ref: PresetRef, slot: Slot) => resolvePresetName(data, ref, slot) !== null;
+    const differs = (a: PresetRef | null, b: PresetRef) => a == null || a.source !== b.source || a.id !== b.id;
 
     if (resolved(picked.printer_preset, 'printer')) {
+      if (differs(printerPreset, picked.printer_preset)) changed.push(t('slice.printer', 'Printer profile'));
       setPrinterPreset(picked.printer_preset);
     } else {
       unresolved.push(t('slice.printer', 'Printer profile'));
     }
     if (resolved(picked.process_preset, 'process')) {
+      if (differs(processPreset, picked.process_preset)) changed.push(t('slice.process', 'Process profile'));
       setProcessPreset(picked.process_preset);
+      // As deliberate as a pick from the dropdown: it stays even when the
+      // matcher calls it a mismatch for the set's printer.
+      explicitProcess.current = picked.process_preset;
     } else {
       unresolved.push(t('slice.process', 'Process profile'));
     }
@@ -1349,6 +1412,7 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
       } else if (sliceSlicer === 'bambu_studio' && (ORCA_ONLY_BED_TYPES as string[]).includes(picked.bed_type)) {
         setBedTypeNote({ kind: 'slicer', bed: picked.bed_type });
       } else {
+        if (picked.bed_type !== bedType) changed.push(t('slice.bedType.label', 'Bed plate'));
         setBedType(picked.bed_type as BedType);
         setBedTypeNote(null);
       }
@@ -1363,24 +1427,28 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
         : picked.filament_presets.map(() => null as PresetRef | null);
     for (let i = 0; i < nextFilaments.length && i < picked.filament_presets.length; i++) {
       const ref = picked.filament_presets[i];
+      const slotLabel =
+        nextFilaments.length > 1
+          ? t('slice.filamentSlot', {
+              index: i + 1,
+              type: filamentSlots[i]?.type ?? '',
+              defaultValue: `Filament ${i + 1} (${filamentSlots[i]?.type ?? ''})`,
+            })
+          : t('slice.filament', 'Filament profile');
       if (resolved(ref, 'filament')) {
+        if (differs(nextFilaments[i], ref)) changed.push(slotLabel);
         nextFilaments[i] = ref;
         // Applying a pipeline is as deliberate as picking from the dropdown,
-        // so the slots it fills are exempt from the material re-pick too.
-        explicitFilamentSlots.current.add(i);
+        // so the slots it fills are exempt from every automatic re-pick too.
+        explicitFilamentSlots.current.set(i, ref);
       } else {
-        unresolved.push(
-          nextFilaments.length > 1
-            ? t('slice.filamentSlot', {
-                index: i + 1,
-                type: filamentSlots[i]?.type ?? '',
-                defaultValue: `Filament ${i + 1} (${filamentSlots[i]?.type ?? ''})`,
-              })
-            : t('slice.filament', 'Filament profile'),
-        );
+        unresolved.push(slotLabel);
       }
     }
     setFilamentPresets(nextFilaments);
+    // What the set filled is no longer "replaced because it was gone".
+    setGoneChoices([]);
+    setAppliedSet({ name: picked.name, changed });
 
     setUnresolvedBundleSlots(unresolved.length > 0 ? unresolved : null);
     if (unresolved.length === 0) {
@@ -1641,6 +1709,20 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
                     </span>
                   </div>
                 )}
+                {appliedSet && (
+                  <p role="status" className="mt-2 text-xs text-bambu-gray">
+                    {appliedSet.changed.length > 0
+                      ? t('slice.pipelines.appliedChanged', {
+                          name: appliedSet.name,
+                          fields: appliedSet.changed.join(', '),
+                          defaultValue: 'Applied "{{name}}". Changed: {{fields}}',
+                        })
+                      : t('slice.pipelines.appliedUnchanged', {
+                          name: appliedSet.name,
+                          defaultValue: 'Applied "{{name}}". Nothing changed — these were already the selection.',
+                        })}
+                  </p>
+                )}
               </div>
             )}
             {/* Bed plate picker — five values from BambuStudio's
@@ -1787,6 +1869,38 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
                 banner — it describes the state right after a load, and the
                 user is now driving the slots by hand. */}
             <SliceFarmFilterToggles filters={farmFilters} disabled={isEnqueuing || useEmbedded} />
+            {/* A choice made by hand that the listing no longer has was
+                replaced by an automatic pick — said, never done in silence. */}
+            {goneChoices.length > 0 && (
+              <div
+                className="flex items-start gap-2 text-xs rounded-md border p-2 border-amber-300 dark:border-amber-700/40 bg-amber-50 dark:bg-amber-900/20 text-amber-800 dark:text-amber-200"
+                role="status"
+              >
+                <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+                <span>
+                  {t('slice.chosenPresetGone', {
+                    fields: goneChoices
+                      .map((field) =>
+                        field === 'process'
+                          ? t('slice.process', 'Process profile')
+                          : filamentSlots.length > 1
+                            ? t('slice.filamentSlot', {
+                                index: field + 1,
+                                type: filamentSlots[field]?.type ?? '',
+                                defaultValue: `Filament ${field + 1} (${filamentSlots[field]?.type ?? ''})`,
+                              })
+                            : t('slice.filament', 'Filament profile'),
+                      )
+                      .join(', '),
+                    defaultValue:
+                      'A profile you chose is no longer in the list, so another one was selected. Check: {{fields}}',
+                  })}
+                </span>
+              </div>
+            )}
+            {/* Changing the printer by hand replaces no choice made by hand:
+                a process or filament chosen for the old printer stays and is
+                marked beside its field; only automatic picks follow. */}
             <PresetDropdown
               label={t('slice.printer', 'Printer profile')}
               slot="printer"
@@ -1794,7 +1908,7 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
               value={printerPreset}
               keep={farmFilters.keepPrinter}
               onChange={(ref) => {
-                setUnresolvedBundleSlots(null);
+                retireBundleNotes();
                 setPrinterPreset(ref);
               }}
               // Locked in embedded mode too: the picked printer is unused on
@@ -1809,7 +1923,9 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
               data={presetsQuery.data}
               value={processPreset}
               onChange={(ref) => {
-                setUnresolvedBundleSlots(null);
+                retireBundleNotes();
+                explicitProcess.current = ref;
+                setGoneChoices((gone) => gone.filter((g) => g !== 'process'));
                 setProcessPreset(ref);
               }}
               disabled={isEnqueuing || useEmbedded}
@@ -1855,8 +1971,10 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
                     value={filamentPresets[idx] ?? null}
                     keep={farmFilters.keepFilament}
                     onChange={(ref) => {
-                      explicitFilamentSlots.current.add(idx);
-                      setUnresolvedBundleSlots(null);
+                      if (ref) explicitFilamentSlots.current.set(idx, ref);
+                      else explicitFilamentSlots.current.delete(idx);
+                      setGoneChoices((gone) => gone.filter((g) => g !== idx));
+                      retireBundleNotes();
                       setFilamentPresets((current) => {
                         const next = current.length === filamentSlots.length
                           ? [...current]

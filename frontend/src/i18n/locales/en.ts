@@ -5665,6 +5665,9 @@ export default {
       namePlaceholder: 'Name',
       nameAria: 'Name for these slice settings',
       staleWarning: 'Some presets in the saved settings no longer exist. These stayed on their current selection: {{slots}}',
+      // {{fields}} is a list of field labels ("Printer profile, Process profile").
+      appliedChanged: 'Applied "{{name}}". Changed: {{fields}}',
+      appliedUnchanged: 'Applied "{{name}}". Nothing changed — these were already the selection.',
       toast: {
         applied: 'Applied "{{name}}"',
         saved: 'Settings saved',
@@ -5715,6 +5718,8 @@ export default {
     selectPreset: '- Select a preset -',
     noPresetsForSlot: 'No presets available',
     otherPrinters: 'Other printers',
+    presetForOtherPrinter: 'This profile is listed for another printer than the selected one.',
+    chosenPresetGone: 'A profile you chose is no longer in the list, so another one was selected. Check: {{fields}}',
     // {{list}} is the label of the list being searched ("Process profile").
     searchPresets: 'Search: {{list}}',
     searchPresetsPlaceholder: 'Search presets…',
