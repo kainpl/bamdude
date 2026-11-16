@@ -718,6 +718,10 @@ class TestOneRefusalClosesTheGateForTheRun:
         made.A1_MODELS = bambu_ftp.BambuFTPClient.A1_MODELS
         made.cache_mode = MagicMock()
         made.get_cached_mode = MagicMock(return_value=None)
+        # ⚠️ A real, empty mode cache. Left as an attribute of the mock,
+        # ``_mode_cache.get(ip)`` answers a truthy MagicMock, the upload believes
+        # a mode is already known and never tries the fallback this test is about.
+        made._mode_cache = {}
         monkeypatch.setattr(bambu_ftp, "BambuFTPClient", made)
         model = next(iter(bambu_ftp.BambuFTPClient.A1_MODELS))
         source = tmp_path / "A.3mf"
@@ -726,9 +730,20 @@ class TestOneRefusalClosesTheGateForTheRun:
 
         from backend.app.services.background_dispatch import UploadFailed
 
+        asked = []
+        check = gate("/A.3mf")
+
+        def may_run() -> bool:
+            asked.append(check())
+            return asked[-1]
+
         with pytest.raises(UploadFailed, match="belongs to another print"):
             await gate.unless_refused(bambu_ftp.upload_file_async)(
-                "b-door-a1", "secret", source, "/A.3mf", printer_model=model, may_run=gate("/A.3mf")
+                "b-door-a1", "secret", source, "/A.3mf", printer_model=model, may_run=may_run
             )
         assert sum(client.upload_file.call_count for client in clients) == 0
         assert gate.refused == "active_print"
+        # prot_p: allowed before its connection, refused after it. Then the fallback
+        # really ran — and was refused before it opened a connection of its own.
+        assert asked == [True, False, False]
+        assert len(clients) == 1
