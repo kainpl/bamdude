@@ -1,5 +1,5 @@
 import { AlertCircle, CheckCircle, ChevronDown, ChevronUp, Info, Loader2, X, XCircle } from 'lucide-react';
-import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
+import { createContext, useCallback, useContext, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api/client';
@@ -86,8 +86,30 @@ const TOAST_DISMISS_MS = 3000;
 const TOAST_DISMISS_LONG_MS = 2 * TOAST_DISMISS_MS;
 const LONG_LIVED_TOAST_TYPES: ReadonlySet<ToastType> = new Set(['error', 'warning']);
 
+/**
+ * Where the toast viewport lives: `body` — or, while an element of the page is
+ * in real fullscreen, that element, because fullscreen shows its own subtree
+ * and nothing else, and a toast in `body` would be said to nobody.
+ *
+ * Not the document itself (it already contains `body`), and not an element
+ * that draws no children (a video's own fullscreen).
+ */
+function toastHost(): HTMLElement {
+  const shown = document.fullscreenElement;
+  if (!(shown instanceof HTMLElement)) return document.body;
+  if (shown === document.documentElement || shown === document.body) return document.body;
+  if (shown.matches('video, audio, img, canvas, iframe, object, embed')) return document.body;
+  return shown;
+}
+
+function onFullscreenChange(notify: () => void): () => void {
+  document.addEventListener('fullscreenchange', notify);
+  return () => document.removeEventListener('fullscreenchange', notify);
+}
+
 export function ToastProvider({ children }: { children: ReactNode }) {
   const { t } = useTranslation();
+  const host = useSyncExternalStore(onFullscreenChange, toastHost, () => document.body);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [isDispatchCollapsed, setIsDispatchCollapsed] = useState(false);
   const [cancellingDispatchJobIds, setCancellingDispatchJobIds] = useState<Set<number>>(new Set());
@@ -513,7 +535,10 @@ export function ToastProvider({ children }: { children: ReactNode }) {
           unclickable exactly when the dispatch toast's buttons matter. Modals
           are portalled into body for the same reason; `#root` creates no
           stacking context, so z-[60] compares against the modals' z-index the
-          same from either parent.
+          same from either parent. In real fullscreen it moves into the
+          fullscreen element (`toastHost`), the only subtree on screen there;
+          that element belongs to the topmost dialog, which is never inert, and
+          the modal stack leaves fullscreen before another dialog covers it.
           Positioned with safe-area-aware calc() rather than bottom-4/right-20 so an
           installed PWA on a notched phone clears the home indicator and the landscape
           notch (#2612). The 5rem right offset is the clearance for the bug-report
@@ -688,7 +713,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
             </div>
           ))}
         </div>,
-        document.body,
+        host,
       )}
     </ToastContext.Provider>
   );

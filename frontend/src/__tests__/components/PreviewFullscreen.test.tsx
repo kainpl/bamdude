@@ -14,6 +14,8 @@ import { render } from '../utils';
 import { server } from '../mocks/server';
 import { ImagePreviewModal } from '../../components/ImagePreviewModal';
 import { ModelViewerModal } from '../../components/ModelViewerModal';
+import { Modal } from '../../components/Modal';
+import { useToast } from '../../contexts/ToastContext';
 import { ESC_GRACE_MS } from '../../hooks/useElementFullscreen';
 
 vi.mock('../../components/ModelViewer', () => ({
@@ -74,6 +76,101 @@ beforeEach(() => {
 afterEach(() => {
   removeFullscreenStub();
   vi.restoreAllMocks();
+});
+
+/** Says something by toast when asked — as a failed download does. */
+function Speaker() {
+  const { showToast } = useToast();
+  return (
+    <button type="button" onClick={() => showToast('Download failed', 'error')}>
+      speak
+    </button>
+  );
+}
+
+// What fullscreen shows is the fullscreen element's own subtree — nothing
+// portalled into `body` is on screen in it.
+describe('what the rest of the app shows while a viewer is in fullscreen', () => {
+  const viewer = <ImagePreviewModal src="/api/v1/library/files/7/image" title="photo.png" fileSize={10} onClose={vi.fn()} />;
+
+  it('leaves fullscreen when another dialog opens, so the box is never on screen and dead', () => {
+    const fs = stubFullscreen();
+    const view = render(viewer);
+    fireEvent.click(screen.getByRole('button', { name: 'Fullscreen' }));
+    expect(fs.element()).not.toBeNull();
+
+    // An app-level dialog: a session prompt, a socket-driven question.
+    view.rerender(
+      <>
+        {viewer}
+        <Modal onClose={vi.fn()} title="Session expired">
+          <p>Sign in again.</p>
+        </Modal>
+      </>,
+    );
+
+    expect(screen.getByRole('dialog', { name: 'Session expired' })).toBeInTheDocument();
+    expect(fs.exit).toHaveBeenCalledTimes(1);
+    expect(fs.element()).toBeNull();
+  });
+
+  it('keeps a fullscreen that already shows the whole page, dialogs included', () => {
+    const fs = stubFullscreen();
+    // The Monitor's fullscreen is the document itself.
+    act(() => {
+      void document.documentElement.requestFullscreen();
+    });
+    expect(fs.element()).toBe(document.documentElement);
+
+    render(
+      <Modal onClose={vi.fn()} title="A dialog">
+        <p>Visible there.</p>
+      </Modal>,
+    );
+
+    expect(fs.exit).not.toHaveBeenCalled();
+  });
+
+  it('shows toasts inside the fullscreen box, and back in the page after it', () => {
+    const fs = stubFullscreen();
+    render(
+      <>
+        <Speaker />
+        {viewer}
+      </>,
+    );
+    const viewport = () => screen.getByTestId('toast-viewport');
+    expect(viewport().parentElement).toBe(document.body);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Fullscreen' }));
+    const box = fs.element() as HTMLElement;
+    expect(viewport().parentElement).toBe(box);
+
+    fireEvent.click(screen.getByText('speak'));
+    expect(within(box).getByText('Download failed')).toBeInTheDocument();
+    // Live: the box is the topmost dialog's, and nothing above it is inert.
+    expect(viewport().closest('[inert]')).toBeNull();
+
+    fireEvent.click(within(box).getByRole('button', { name: 'Exit fullscreen' }));
+    expect(viewport().parentElement).toBe(document.body);
+    expect(within(viewport()).getByText('Download failed')).toBeInTheDocument();
+  });
+
+  it('keeps toasts in the page when the fullscreen element cannot hold them', () => {
+    const fs = stubFullscreen();
+    render(<Speaker />);
+    const video = document.createElement('video');
+    document.body.appendChild(video);
+    try {
+      act(() => {
+        void video.requestFullscreen();
+      });
+      expect(fs.element()).toBe(video);
+      expect(screen.getByTestId('toast-viewport').parentElement).toBe(document.body);
+    } finally {
+      video.remove();
+    }
+  });
 });
 
 describe('the image viewer in fullscreen', () => {
