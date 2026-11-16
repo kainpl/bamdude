@@ -33,7 +33,7 @@ from backend.app.core.auth import (
     require_permission,
 )
 from backend.app.core.config import settings as app_settings
-from backend.app.core.database import get_db
+from backend.app.core.database import get_db, take_write_lock
 from backend.app.core.permissions import Permission
 from backend.app.models.archive import PrintArchive
 from backend.app.models.library import LibraryFile, LibraryFileTag, LibraryFolder
@@ -1562,26 +1562,100 @@ async def update_folder(
     if data.product_ids is not None and set(data.product_ids) != {p.id for p in folder.products}:
         await creds.check(_products_update)
 
-    if data.name is not None:
-        folder.name = data.name
-
+    # Every check before the first field is written (G11 U3, upstream #3306).
+    moving = False
+    new_parent_id: int | None = None
     if data.parent_id is not None:
-        # Prevent circular reference
-        if data.parent_id == folder_id:
-            raise HTTPException(status_code=400, detail="Folder cannot be its own parent")
+        new_parent_id = data.parent_id or None  # 0 means the root
+        # ⚠️ A move is a read-decide-write over the WHOLE tree: two opposite moves
+        # (A under B, B under A) each pass a cycle check that read before the
+        # other wrote, and both folders then vanish from the tree. So the writer
+        # is taken first — SQLite's single write lock, on PostgreSQL every folder
+        # row in id order (NO KEY: an upload into a folder is not held up) — and
+        # the folder and its would-be ancestors are read only after it.
+        await take_write_lock(db, LibraryFolder.__table__, folder_id)
+        await db.execute(select(LibraryFolder.id).order_by(LibraryFolder.id).with_for_update(key_share=True))
+        await db.refresh(folder, attribute_names=["name", "parent_id", "is_external"])
+        # The parent it already has is no move: a client may send the whole form back.
+        moving = new_parent_id != folder.parent_id
 
-        # Check for circular reference in ancestors
-        if data.parent_id != 0:  # 0 means move to root
-            current_id = data.parent_id
-            while current_id is not None:
+    if moving:
+        # An external folder is a directory of its share: the scanner walks
+        # ``parent_id`` down from the mount point, so a subfolder moved out is
+        # filed a second time by the next scan, and a mount point is placed by
+        # mounting it.
+        if folder.is_external:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "folder_external_fixed",
+                    "message": "An external folder and its subfolders cannot be moved.",
+                },
+            )
+        if new_parent_id == folder_id:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "folder_own_subtree",
+                    "message": "A folder cannot be moved into itself or one of its subfolders.",
+                },
+            )
+        if new_parent_id is not None:
+            parent_row = (
+                await db.execute(
+                    select(LibraryFolder.parent_id, LibraryFolder.is_external).where(LibraryFolder.id == new_parent_id)
+                )
+            ).first()
+            if parent_row is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail={"error": "folder_parent_not_found", "message": "Parent folder not found"},
+                )
+            # A row under an external folder must be a real directory there
+            # (``create_folder`` makes one); a moved row would be a phantom.
+            if parent_row.is_external:
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "error": "folder_parent_external",
+                        "message": "A folder cannot be moved into an external folder.",
+                    },
+                )
+            seen = {new_parent_id}
+            current_id = parent_row.parent_id
+            while current_id is not None and current_id not in seen:
                 if current_id == folder_id:
-                    raise HTTPException(status_code=400, detail="Cannot move folder into its own subtree")
+                    raise HTTPException(
+                        status_code=400,
+                        detail={
+                            "error": "folder_own_subtree",
+                            "message": "A folder cannot be moved into itself or one of its subfolders.",
+                        },
+                    )
+                seen.add(current_id)
                 parent_result = await db.execute(select(LibraryFolder.parent_id).where(LibraryFolder.id == current_id))
                 current_id = parent_result.scalar()
 
-            folder.parent_id = data.parent_id
-        else:
-            folder.parent_id = None
+    if data.name is not None and data.name != folder.name and folder.is_external and folder.parent_id is not None:
+        # The scanner knows a subfolder of a share by its PATH; a new name here
+        # would change the row alone and the tree would name a directory the
+        # share does not have. A mount point's name is only our label for it.
+        under_external = await db.scalar(select(LibraryFolder.is_external).where(LibraryFolder.id == folder.parent_id))
+        if under_external:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "folder_external_rename",
+                    "message": "A subfolder of an external folder cannot be renamed here. "
+                    "Rename the directory itself and scan the folder again.",
+                },
+            )
+
+    if data.name is not None:
+        folder.name = data.name
+
+    if moving:
+        folder.parent_id = new_parent_id
 
     # Replace the folder's product list AND cascade it to every child file, so
     # that linking a folder to a product backfills the file→product pivot for
