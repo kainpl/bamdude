@@ -117,6 +117,7 @@ import { PlanFromFilesModal } from '../components/library/PlanFromFilesModal';
 import { AssembleProjectModal, type AssembleMode } from '../components/library/AssembleProjectModal';
 import { desktopSlicerAccepts, isApiSliceableFileType, openInSlicer, type SlicerType } from '../utils/slicer';
 import { LibraryTagsModal } from '../components/LibraryTagsModal';
+import { LibraryUserTagPills } from '../components/LibraryUserTagPills';
 import { BulkTagsPickerModal } from '../components/BulkTagsPickerModal';
 import { FileTagsPopover, type TagsPopoverAnchor } from '../components/FileTagsPopover';
 import { QueueSequencer } from '../components/QueueSequencer';
@@ -3548,24 +3549,12 @@ export function FileManagerPage() {
                     |
                   </span>
                 )}
-                {userTagPills.map((tag) => {
-                  const active = selectedTagIds.includes(tag.id);
-                  return (
-                    <button
-                      key={tag.id}
-                      type="button"
-                      onClick={() => toggleTagFilter(tag.id)}
-                      className={`text-xs px-2 py-0.5 rounded-full font-medium transition-colors inline-flex items-center gap-1 ${
-                        active
-                          ? 'bg-bambu-green text-white'
-                          : 'bg-bambu-dark border border-bambu-dark-tertiary text-bambu-gray hover:text-white hover:border-bambu-green/60'
-                      }`}
-                    >
-                      {tag.name}
-                      {active && <X className="w-3 h-3" />}
-                    </button>
-                  );
-                })}
+                {/* The user's own tags: clamped to two rows, searchable from a
+                    dozen up — the catalogue grows without limit, the closed
+                    system vocabulary before it does not. */}
+                {userTagPills.length > 0 && (
+                  <LibraryUserTagPills tags={userTagPills} selectedIds={selectedTagIds} onToggle={toggleTagFilter} />
+                )}
                 {selectedTagIds.length > 0 && (
                   <button
                     type="button"
