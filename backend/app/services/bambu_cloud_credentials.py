@@ -182,6 +182,47 @@ async def renew_or_invalidate(captured, cloud=None, *, mark_invalid=None):
     return None, None, None
 
 
+async def renewal_credentials(db: AsyncSession, user: User | None, *, allow_global: bool = False):
+    """What a caller that builds its own ``BambuCloudService`` needs to renew.
+
+    Returns ``(snapshot, refresh_token)`` for the stored credential of ``user``
+    (or of the ownerless ``Settings`` rows when ``allow_global`` — a server-owned
+    job such as the Git backup, never a request). ``(None, None)`` when renewal
+    cannot be prepared (no owner, credential admission closed, the account
+    changed): the caller then works as before — an expiry is reported, not
+    renewed. Preparing a renewal is an extra and never fails the caller.
+    """
+    from backend.app.services.cloud_credentials import snapshot
+
+    if user is None and not allow_global:
+        return None, None
+    try:
+        captured = await snapshot(db, user, "bambu", allow_global=allow_global)
+        owner = await db.get(User, captured.user_id, populate_existing=True) if captured.user_id is not None else None
+        return captured, await get_stored_refresh_token(db, owner)
+    except Exception:
+        logger.warning("Bambu Cloud renewal could not be prepared; an expired sign-in will be reported as expired")
+        return None, None
+
+
+async def renew_for_service(cloud, captured) -> str | None:
+    """``on_auth_failure`` for a ``BambuCloudService`` built outside the cloud routes.
+
+    Delegates to :func:`renew_or_invalidate` with the caller's own service (it
+    then carries the renewed pair, and repeats its request once) and keeps the
+    service's snapshot on the stored pair.
+    """
+    from backend.app.services.cloud_credentials import CredentialSnapshot
+
+    held = getattr(cloud, "credential_snapshot", None)
+    outcome, _token, stored = await renew_or_invalidate(
+        held if isinstance(held, CredentialSnapshot) else captured, cloud
+    )
+    if stored is not None:
+        cloud.credential_snapshot = stored
+    return outcome
+
+
 def _normalise_region(region: str | None) -> str:
     """Treat NULL/empty/unknown as 'global' for legacy rows that predate the region column."""
     return region if region in ("global", "china") else "global"

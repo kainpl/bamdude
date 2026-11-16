@@ -45,7 +45,7 @@ from backend.app.services.bambu_cloud import (
     BambuCloudError,
     BambuCloudService,
 )
-from backend.app.services.bambu_cloud_credentials import get_stored_token
+from backend.app.services.bambu_cloud_credentials import get_stored_token, renew_for_service, renewal_credentials
 from backend.app.services.orca_cloud import (
     OrcaCloudAuthError,
     OrcaCloudError,
@@ -136,8 +136,17 @@ async def _fetch_cloud_presets(
         if cached and now - cached[0] < _CLOUD_TTL_S:
             return cached[1], "ok"
 
-    cloud = BambuCloudService(region=region)
+    # An expired access token is renewed with the stored refresh token, as the
+    # cloud routes do, and the listing repeated once; "expired" is answered
+    # only when it cannot be renewed.
+    captured, refresh_token = await renewal_credentials(db, user)
+    cloud = BambuCloudService(
+        region=region,
+        on_auth_failure=(lambda: renew_for_service(cloud, captured)) if captured is not None else None,
+    )
     cloud.set_token(token)
+    if captured is not None:
+        cloud.set_refresh_token(refresh_token)
     try:
         try:
             raw = await cloud.get_slicer_settings()

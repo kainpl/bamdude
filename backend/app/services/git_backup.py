@@ -24,6 +24,7 @@ from backend.app.models.settings import Settings
 from backend.app.models.user import User
 from backend.app.services import meter_watch, swap_compatibility
 from backend.app.services.bambu_cloud import BambuCloudService
+from backend.app.services.bambu_cloud_credentials import renew_for_service, renewal_credentials
 from backend.app.services.bambu_mqtt import KProfileReadError
 from backend.app.services.printer_manager import printer_manager
 
@@ -622,11 +623,13 @@ class GitBackupService:
         # Every account that has a token, then the ownerless fallback. Backing up
         # only the first would silently drop the others on a multi-admin install.
         result = await db.execute(select(User).where(User.cloud_token.is_not(None)))
+        owners = [u for u in result.scalars().all() if u.cloud_token]
         accounts: list[tuple[str, str, str]] = [
-            (u.cloud_token, u.cloud_email or f"user-{u.id}", u.cloud_region or "global")
-            for u in result.scalars().all()
-            if u.cloud_token
+            (u.cloud_token, u.cloud_email or f"user-{u.id}", u.cloud_region or "global") for u in owners
         ]
+        # An expired access token is renewed through the credential seam, as
+        # everywhere else; a renewal that cannot reach Bambu writes nothing.
+        renewals = [await renewal_credentials(db, u) for u in owners]
 
         if not accounts:
             result = await db.execute(
@@ -635,16 +638,19 @@ class GitBackupService:
             stored = {s.key: s.value for s in result.scalars().all()}
             if stored.get("bambu_cloud_token"):
                 accounts.append((stored["bambu_cloud_token"], "", stored.get("bambu_cloud_region") or "global"))
+                renewals.append(await renewal_credentials(db, None, allow_global=True))
 
         if not accounts:
             logger.info("Cloud not authenticated, skipping cloud profiles")
             return
 
-        for token, label, region in accounts:
-            await self._collect_cloud_profiles_for_account(files, token, label, region, single=len(accounts) == 1)
+        for (token, label, region), renewal in zip(accounts, renewals, strict=True):
+            await self._collect_cloud_profiles_for_account(
+                files, token, label, region, single=len(accounts) == 1, renewal=renewal
+            )
 
     async def _collect_cloud_profiles_for_account(
-        self, files: dict, token: str, label: str, region: str, *, single: bool
+        self, files: dict, token: str, label: str, region: str, *, single: bool, renewal=(None, None)
     ) -> None:
         """Write one account's cloud presets into *files*.
 
@@ -653,8 +659,14 @@ class GitBackupService:
         accounts are namespaced by their email, which is the only stable handle
         we have for "which account is this".
         """
-        cloud = BambuCloudService(region=region)
+        captured, refresh_token = renewal
+        cloud = BambuCloudService(
+            region=region,
+            on_auth_failure=(lambda: renew_for_service(cloud, captured)) if captured is not None else None,
+        )
         cloud.set_token(token)
+        if captured is not None:
+            cloud.set_refresh_token(refresh_token)
         if not cloud.is_authenticated:
             await cloud.close()
             return
