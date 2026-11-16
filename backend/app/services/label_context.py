@@ -11,6 +11,7 @@ would make the number depend on which backend drew it.
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 from backend.app.models.spool import Spool
@@ -39,6 +40,32 @@ def _hex(rgba: str | None) -> str:
         return ""
     token = rgba.strip().lstrip("#")
     return f"#{token[:6].upper()}" if token else ""
+
+
+def _temperature_range(low: Any, high: Any) -> str:
+    """``220–240 °C``, one bound alone, or nothing.
+
+    Written out here because a range cannot be assembled in a template: with one
+    bound missing ``{min}–{max} °C`` would print a dangling dash.
+    """
+    bounds = sorted({int(value) for value in (low, high) if value})
+    if not bounds:
+        return ""
+    return f"{'–'.join(str(bound) for bound in bounds)} °C"
+
+
+def _day(value: Any) -> str:
+    """A date or an ISO timestamp as ``YYYY-MM-DD``; anything else as nothing."""
+    if value is None:
+        return ""
+    if hasattr(value, "strftime"):
+        return value.strftime("%Y-%m-%d")
+    text = str(value)[:10]
+    try:
+        datetime.strptime(text, "%Y-%m-%d")
+    except ValueError:
+        return ""
+    return text
 
 
 def _hex_all(rgba: str | None, extra_colors: str | None) -> str:
@@ -106,6 +133,13 @@ def spool_context(
         "display_name": name or (spool.material or ""),
         "deeplink": f"{deeplink_base}/inventory?spool={spool.id}",
         "ean": ean,
+        "storage_location": getattr(spool, "storage_location", None) or "",
+        # The spool's OWN range — what its form holds. A family's or a preset's
+        # is resolved per printer and is not a fact about the spool.
+        "nozzle_temp": _temperature_range(
+            getattr(spool, "nozzle_temp_min", None), getattr(spool, "nozzle_temp_max", None)
+        ),
+        "added_date": _day(getattr(spool, "created_at", None)),
     }
 
 
@@ -121,10 +155,22 @@ def spoolman_context(
     off the embedded filament. Fields Spoolman does not carry resolve to empty
     rather than being omitted — an absent key would survive as ``{lot}`` on the
     printed label, which is worse than a gap.
+
+    ⚠️ **The descriptive fields come through ``_map_spoolman_spool``** — the
+    mapper the Filaments page shows a Spoolman spool by — so the label and the
+    row it was printed from agree, and a spool held in Spoolman prints the label
+    the same spool held locally would. Reading the raw payload here instead left
+    the subtype empty on every Spoolman label (upstream bf7fc67dc).
     """
+    from backend.app.api.routes._spoolman_helpers import _map_spoolman_spool
+
     filament = raw.get("filament") or {}
-    vendor = filament.get("vendor") or {}
     spool_id = int(raw.get("id") or 0)
+    try:
+        mapped: dict[str, Any] = dict(_map_spoolman_spool(raw))
+    except ValueError:
+        # No usable id. The route never sends one; a label still has to come out.
+        mapped = {}
 
     # The spool's own size and price before its filament's — the figures the
     # Filaments page shows and a print is charged (``spoolman_weights``).
@@ -135,45 +181,52 @@ def spoolman_context(
     if remaining is None and initial is not None and used is not None:
         remaining = max(float(initial) - float(used), 0.0)
 
-    color_hex = filament.get("color_hex")
-    rgba = color_hex.lstrip("#") if isinstance(color_hex, str) else None
-
-    # One parser for the card and the label (upstream #2967).
-    from backend.app.api.routes._spoolman_helpers import parse_spoolman_multi_colors
-
-    multi = ",".join(parse_spoolman_multi_colors(filament)) or None
+    # ⚠️ Only a colour Spoolman actually states. The mapper answers grey for a
+    # filament with none, which suits a list row; on a label it would print a
+    # grey block and "#808080" for a colour nobody entered.
+    rgba = mapped.get("rgba") if filament.get("color_hex") else None
 
     try:
         ean = spool_ean13(spool_id)
     except BarcodeError:
         ean = ""
 
-    name = (display_name or "").strip() or filament.get("name") or filament.get("material") or "Spool"
+    # ⚠️ A colour name somebody stored, never the mapper's stand-in: with none
+    # stored it answers the subtype ("Matte"), which is not a colour. The
+    # filament's name is what this field read before, and stays the fallback.
+    stored_color = "" if mapped.get("color_name_is_synthesized") else (mapped.get("color_name") or "")
+    filament_name = (filament.get("name") or "").strip()
+
+    name = (display_name or "").strip() or stored_color or filament_name or filament.get("material") or "Spool"
 
     return {
         "id": str(spool_id),
-        "brand": vendor.get("name") or "",
-        "material": filament.get("material") or "",
-        "subtype": "",
-        "color_name": filament.get("name") or "",
-        "slicer_filament_name": filament.get("name") or "",
-        "note": raw.get("comment") or "",
+        "brand": mapped.get("brand") or "",
+        "material": mapped.get("material") or "",
+        "subtype": mapped.get("subtype") or "",
+        "color_name": stored_color or filament_name,
+        "slicer_filament_name": mapped.get("slicer_filament_name") or "",
+        "note": mapped.get("note") or "",
         "label_weight_g": _num(initial) if initial is not None else "",
         "label_weight_kg": _num(float(initial) / 1000, 2) if initial else "",
         "remaining_g": _num(remaining) if remaining is not None else "",
         "remaining_kg": _num(float(remaining) / 1000, 2) if remaining else "",
         "remaining_pct": f"{_num(float(remaining) / float(initial) * 100)}%" if remaining and initial else "",
         "color_hex": _hex(rgba),
-        "color_hex_all": _hex_all(rgba, multi if isinstance(multi, str) else None),
+        "color_hex_all": _hex_all(rgba, mapped.get("extra_colors")),
         "cost_per_kg": _num(per_gram * 1000, 2) if per_gram else "",
         "purchase_date": "",
         "filament_diameter": _num(filament.get("diameter"), 2) if filament.get("diameter") else "",
         "lot": "",
         # Spoolman's own article number of the filament.
-        "material_number": str(filament.get("article_number") or "").strip(),
+        "material_number": mapped.get("material_number") or "",
         "display_name": name,
         "deeplink": f"{deeplink_base}/inventory?spool={spool_id}",
         "ean": ean,
+        "storage_location": mapped.get("storage_location") or "",
+        # Spoolman holds one extruder temperature, so this is one bound.
+        "nozzle_temp": _temperature_range(mapped.get("nozzle_temp_min"), mapped.get("nozzle_temp_max")),
+        "added_date": _day(mapped.get("created_at")),
     }
 
 

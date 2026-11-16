@@ -31,14 +31,18 @@ from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.core.auth import RequirePermission
+from backend.app.core.auth import RequireAnyPermission, RequirePermission
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
+from backend.app.i18n import current_language
+from backend.app.i18n.api_errors import translate_sentence
 from backend.app.models.label_template import LabelSheet, LabelTemplate
 from backend.app.models.spool import Spool
 from backend.app.models.user import User
 from backend.app.schemas.label_template import (
     LabelPreviewRequest,
+    LabelSheetCheck,
+    LabelSheetDraft,
     LabelSheetIn,
     LabelSheetOut,
     LabelSheetPreviewRequest,
@@ -46,14 +50,19 @@ from backend.app.schemas.label_template import (
     LabelTemplateOut,
     LabelTestPrintRequest,
 )
+from backend.app.services import label_picture
 from backend.app.services.label_context import example_context, spool_context
+from backend.app.services.label_gate import checked_design, checked_picture, checked_sheet, design_of, draw
 from backend.app.services.label_raster import render_template_png
 from backend.app.services.label_template import (
     PLACEHOLDERS,
     LabelSheetSpec,
     LabelTemplateSpec,
     Placeholder,
-    sheet_overflow,
+    draft_sheet_problems,
+    fits_within,
+    fitting_ids,
+    sheet_problems,
 )
 
 logger = logging.getLogger(__name__)
@@ -85,10 +94,7 @@ def _as_spec(body: LabelTemplateIn) -> LabelTemplateSpec:
     a request body, the spec one is what every renderer takes — and this is the
     single place they meet.
     """
-    try:
-        return LabelTemplateSpec(**body.model_dump())
-    except ValidationError as error:
-        raise HTTPException(422, f"Invalid template: {error}") from error
+    return checked_design(body.model_dump())
 
 
 async def _load(db: AsyncSession, template_id: int) -> LabelTemplate:
@@ -98,10 +104,19 @@ async def _load(db: AsyncSession, template_id: int) -> LabelTemplate:
     return row
 
 
+#: Who may READ the catalogue: the label editor's readers, and anyone who may
+#: print labels. ⚠️ Printing asks ``inventory:read``, and the print dialog lists
+#: exactly these two tables — asking only ``label_templates:read`` here left a
+#: group with the first right and not the second looking at "no designs yet"
+#: while the print API answered them by name. Only the two lists open this way:
+#: every door that draws or writes a design keeps its own right.
+_CatalogueReader = RequireAnyPermission(Permission.LABEL_TEMPLATES_READ, Permission.INVENTORY_READ)
+
+
 @router.get("", response_model=list[LabelTemplateOut])
 async def list_templates(
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.LABEL_TEMPLATES_READ),
+    _: User | None = _CatalogueReader,
 ) -> list[LabelTemplateOut]:
     """Every design, built-ins first — they are what a fresh install prints."""
     result = await db.execute(select(LabelTemplate).order_by(LabelTemplate.builtin_key.is_(None), LabelTemplate.name))
@@ -121,7 +136,13 @@ async def list_placeholders(
     return list(PLACEHOLDERS)
 
 
-def _sheet_out(row: LabelSheet) -> LabelSheetOut:
+async def _design_sizes(db: AsyncSession) -> list[tuple[int, float, float]]:
+    """Every design as ``(id, width, height)`` — all "does it fit" needs."""
+    rows = await db.execute(select(LabelTemplate.id, LabelTemplate.width_mm, LabelTemplate.height_mm))
+    return [(row.id, row.width_mm, row.height_mm) for row in rows]
+
+
+def _sheet_out(row: LabelSheet, designs: list[tuple[int, float, float]]) -> LabelSheetOut:
     """One row as the editor sees it — including what does not fit.
 
     ⚠️ The overflow travels with every read, not only with a save. A geometry
@@ -144,6 +165,7 @@ def _sheet_out(row: LabelSheet) -> LabelSheetOut:
         gap_y_mm=row.gap_y_mm,
         is_builtin=row.builtin_key is not None,
         overflow=_overflow_of(row),
+        fitting_design_ids=fitting_ids(designs, row.cell_width_mm, row.cell_height_mm),
     )
 
 
@@ -165,7 +187,7 @@ def _overflow_of(row: LabelSheet) -> list[str]:
         # A row the current spec cannot express — an old page size, say. Saying
         # nothing is right: the list still draws, and the editor refuses on save.
         return []
-    return sheet_overflow(spec)
+    return sheet_problems(spec)
 
 
 async def _load_sheet(db: AsyncSession, sheet_id: int) -> LabelSheet:
@@ -183,24 +205,18 @@ def _as_sheet_spec(body: LabelSheetIn) -> LabelSheetSpec:
     adhesive stock. The editor sees the same sentences while drawing, so nothing
     arrives here as a surprise.
     """
-    try:
-        spec = LabelSheetSpec(**body.model_dump())
-    except ValidationError as error:
-        raise HTTPException(422, f"Invalid sheet: {error}") from error
-    problems = sheet_overflow(spec)
-    if problems:
-        raise HTTPException(422, " ".join(problems))
-    return spec
+    return checked_sheet(body.model_dump())
 
 
 @router.get("/sheets", response_model=list[LabelSheetOut])
 async def list_sheets(
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.LABEL_TEMPLATES_READ),
+    _: User | None = _CatalogueReader,
 ) -> list[LabelSheetOut]:
     """Paper geometries, each carrying whatever about it does not fit."""
     result = await db.execute(select(LabelSheet).order_by(LabelSheet.name))
-    return [_sheet_out(row) for row in result.scalars().all()]
+    designs = await _design_sizes(db)
+    return [_sheet_out(row, designs) for row in result.scalars().all()]
 
 
 @router.post("/sheets", response_model=LabelSheetOut, status_code=201)
@@ -215,7 +231,7 @@ async def create_sheet(
     db.add(row)
     await db.commit()
     await db.refresh(row)
-    return _sheet_out(row)
+    return _sheet_out(row, await _design_sizes(db))
 
 
 @router.put("/sheets/{sheet_id}", response_model=LabelSheetOut)
@@ -231,7 +247,7 @@ async def update_sheet(
         setattr(row, field, value)
     await db.commit()
     await db.refresh(row)
-    return _sheet_out(row)
+    return _sheet_out(row, await _design_sizes(db))
 
 
 @router.post("/sheets/{sheet_id}/duplicate", response_model=LabelSheetOut, status_code=201)
@@ -243,7 +259,7 @@ async def duplicate_sheet(
     source = await _load_sheet(db, sheet_id)
     copy = LabelSheet(
         name=f"{source.name} (copy)",
-        builtin_key=None,  # the copy is yours; the key is what makes one read-only
+        builtin_key=None,  # the key resolves a shipped name; a copy answers to none
         page_size=source.page_size,
         cell_width_mm=source.cell_width_mm,
         cell_height_mm=source.cell_height_mm,
@@ -257,7 +273,7 @@ async def duplicate_sheet(
     db.add(copy)
     await db.commit()
     await db.refresh(copy)
-    return _sheet_out(copy)
+    return _sheet_out(copy, await _design_sizes(db))
 
 
 @router.delete("/sheets/{sheet_id}", status_code=204, response_model=None)
@@ -271,6 +287,27 @@ async def delete_sheet(
     # design — so there is no in-use check to make here.
     await db.delete(row)
     await db.commit()
+
+
+@router.post("/sheets/check", response_model=LabelSheetCheck)
+async def check_sheet(
+    body: LabelSheetDraft,
+    _: User | None = RequirePermission(Permission.LABEL_TEMPLATES_READ),
+) -> LabelSheetCheck:
+    """What is wrong with the sheet being typed — every problem, nothing drawn.
+
+    ⚠️ The editor asks this while you type instead of working it out itself.
+    The paper table, the slack and the bounds live in ``label_template``; a copy
+    of them in the browser is how the editor and the save stop agreeing.
+
+    Answered 200 with a list, never 422: half a number is not an error, it is
+    somebody typing. Translated here because it is not a refusal — nothing
+    passes through the boundary that translates those.
+    """
+    lang = current_language()
+    return LabelSheetCheck(
+        problems=[translate_sentence(problem, lang) for problem in draft_sheet_problems(body.model_dump())]
+    )
 
 
 @router.post("/sheets/preview")
@@ -295,21 +332,13 @@ async def preview_sheet(
 
     sheet = _as_sheet_spec(body.sheet)
 
-    template = await _load(db, body.template_id)
-    spec = LabelTemplateSpec(
-        name=template.name,
-        width_mm=template.width_mm,
-        height_mm=template.height_mm,
-        shape=template.shape,
-        target=template.target,
-        elements=template.elements,
-    )
+    spec = design_of(await _load(db, body.template_id))
 
     deeplink_base = f"{request.url.scheme}://{request.url.netloc}"
     context = example_context(deeplink_base=deeplink_base)
-    pdf, warnings = render_template_sheet_pdf(spec, [context] * sheet.per_page, sheet)
+    pdf, warnings = await draw(render_template_sheet_pdf, spec, [context] * sheet.per_page, sheet)
 
-    if spec.width_mm > sheet.cell_width_mm or spec.height_mm > sheet.cell_height_mm:
+    if not fits_within(spec.width_mm, spec.height_mm, sheet.cell_width_mm, sheet.cell_height_mm):
         # ⚠️ Said rather than scaled. A design is printed at its own size or
         # refused — fractional scaling destroys bar ratios silently.
         warnings.append(
@@ -440,11 +469,21 @@ async def preview_template(
     the editor shows includes the things that only go wrong at 8 dots per
     millimetre: a QR whose modules fall under two dots, text that stops fitting.
 
+    ⚠️ That is the truth for a thermal design only. A design for a driver prints
+    as a PDF, in colour, and the one-bit picture showed it with a hole where its
+    colour block goes — so ``colour`` asks for that PDF page rasterised instead
+    (``services/label_picture``), at the same dots per millimetre.
+
     Any trouble comes back in ``X-Label-Warnings`` rather than as an error — a
     template with one bad element still has a picture worth looking at, and the
     header is what the editor turns into the warning strip.
     """
     spec = _as_spec(body.template)
+    dpi = body.dots_per_mm * 25.4
+    if body.colour:
+        label_picture.checked(spec, dpi, labels=1)
+    else:
+        checked_picture(spec, body.dots_per_mm)
 
     deeplink_base = f"{request.url.scheme}://{request.url.netloc}"
     if body.spool_id is not None:
@@ -455,7 +494,11 @@ async def preview_template(
     else:
         context = example_context(deeplink_base=deeplink_base)
 
-    png, warnings = render_template_png(spec, context, dots_per_mm=body.dots_per_mm)
+    if body.colour:
+        pictures, warnings = await label_picture.label_pictures(spec, [context], dpi=dpi)
+        png = pictures[0]
+    else:
+        png, warnings = await draw(render_template_png, spec, context, dots_per_mm=body.dots_per_mm)
 
     headers = {"Content-Length": str(len(png)), "Cache-Control": "no-store"}
     if warnings:

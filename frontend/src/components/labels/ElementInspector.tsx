@@ -84,10 +84,14 @@ export function ElementInspector({
                 key={placeholder.key}
                 type="button"
                 onClick={() => insertPlaceholder(placeholder.key)}
-                title={`${placeholder.description} — ${t('labelEditor.example')}: ${placeholder.example}`}
+                title={`${t(`labelEditor.placeholders.${placeholder.key}.description`, {
+                  defaultValue: placeholder.description,
+                })} — ${t('labelEditor.example')}: ${placeholder.example}`}
                 className="px-1.5 py-0.5 text-xs bg-bambu-dark border border-bambu-dark-tertiary rounded hover:border-bambu-green disabled:opacity-50"
               >
-                {placeholder.label}
+                {/* The vocabulary is the server's; its WORDING is the reader's.
+                    A key the locale does not know keeps the server's label. */}
+                {t(`labelEditor.placeholders.${placeholder.key}.label`, { defaultValue: placeholder.label })}
               </button>
             ))}
           </div>

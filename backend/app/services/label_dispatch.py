@@ -20,19 +20,15 @@ from backend.app.models.label_template import LabelTemplate
 from backend.app.models.spool import Spool
 from backend.app.schemas.label_device import LabelDeviceReport, LabelSpoolEntry
 from backend.app.services.label_context import spool_context
+from backend.app.services.label_gate import design_of, draw
 from backend.app.services.label_raster import render_template_png
-from backend.app.services.label_template import LabelTemplateSpec, resolve
+from backend.app.services.label_template import FIT_TOLERANCE_MM, LabelTemplateSpec, fits_within, resolve
 
 logger = logging.getLogger(__name__)
 
 #: 203 dpi. Every Niimbot the bridge speaks to is 8 dots per millimetre; when a
 #: 300 dpi model appears this becomes a device column, not a constant.
 DOTS_PER_MM = 8.0
-
-#: How far a design may exceed the loaded stock before it is refused, in mm.
-#: ⚠️ Not zero: a catalogue entry typed as 50 and stock sold as 50.0 differ by
-#: rounding often enough that an exact comparison would refuse correct paper.
-_SIZE_TOLERANCE_MM = 0.5
 
 #: How stale ``last_seen_at`` may get before a poll bothers to write it.
 #: ⚠️ Polling every few seconds must not mean a database write every few seconds
@@ -48,13 +44,7 @@ def _now() -> datetime:
 
 
 def _spec_of(row: LabelTemplate) -> LabelTemplateSpec:
-    return LabelTemplateSpec(
-        name=row.name,
-        width_mm=row.width_mm,
-        height_mm=row.height_mm,
-        shape=row.shape,
-        elements=row.elements or [],
-    )
+    return design_of(row)
 
 
 async def resolve_cassette(db: AsyncSession, barcode: str | None) -> tuple[float, float] | None:
@@ -86,7 +76,7 @@ def assert_fits(spec: LabelTemplateSpec, device: LabelDevice) -> None:
     if not (device.cassette_width_mm and device.cassette_height_mm):
         return
     width, height = device.cassette_width_mm, device.cassette_height_mm
-    if spec.width_mm > width + _SIZE_TOLERANCE_MM or spec.height_mm > height + _SIZE_TOLERANCE_MM:
+    if not fits_within(spec.width_mm, spec.height_mm, width, height):
         raise HTTPException(
             422,
             f"'{spec.name}' is {spec.width_mm:g} x {spec.height_mm:g} mm and does not fit the "
@@ -138,7 +128,7 @@ async def resolve_template(
     fitting = [
         row
         for row in rows
-        if abs(row.width_mm - width) <= _SIZE_TOLERANCE_MM and abs(row.height_mm - height) <= _SIZE_TOLERANCE_MM
+        if abs(row.width_mm - width) <= FIT_TOLERANCE_MM and abs(row.height_mm - height) <= FIT_TOLERANCE_MM
     ]
     if not fitting:
         raise HTTPException(
@@ -209,7 +199,7 @@ async def enqueue_jobs(
     jobs: list[LabelJob] = []
     warnings: list[str] = []
     for spool_id, context in zip(spool_ids, contexts, strict=True):
-        png, found = render_job_png(spec, context)
+        png, found = await draw(render_job_png, spec, context)
         for warning in found:
             if warning not in warnings:
                 warnings.append(warning)

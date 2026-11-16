@@ -69,6 +69,32 @@ class LabelSheetIn(BaseModel):
     gap_y_mm: float = Field(default=0.0, ge=0)
 
 
+class LabelSheetDraft(BaseModel):
+    """A sheet as it stands in the editor mid-keystroke — possibly not a sheet yet.
+
+    ⚠️ Deliberately unconstrained, and the counts are floats: this body is
+    CHECKED, never saved, and a zero or a "3.5" has to arrive so the answer can
+    say what is wrong with it. ``LabelSheetIn`` stays the only body a save takes.
+    """
+
+    name: str = ""
+    page_size: str = "A4"
+    cell_width_mm: float = 0.0
+    cell_height_mm: float = 0.0
+    cols: float = 0.0
+    rows: float = 0.0
+    margin_top_mm: float = 0.0
+    margin_left_mm: float = 0.0
+    gap_x_mm: float = 0.0
+    gap_y_mm: float = 0.0
+
+
+class LabelSheetCheck(BaseModel):
+    #: Everything that stops this sheet being saved or printed, in the system's
+    #: language. Empty is fine.
+    problems: list[str] = Field(default_factory=list)
+
+
 class LabelSheetPreviewRequest(BaseModel):
     """Lay a saved design onto an unsaved page geometry.
 
@@ -94,12 +120,15 @@ class LabelSheetOut(BaseModel):
     margin_left_mm: float
     gap_x_mm: float
     gap_y_mm: float
-    #: A seeded geometry. Read-only for the same reason a built-in design is:
-    #: an automation printing onto Avery 5160 for a year must not find the grid
-    #: moved under it. Duplicate to get an editable copy.
+    #: A geometry that shipped with BamDude. An ordinary row: it can be edited
+    #: and deleted like any other.
     is_builtin: bool = False
     #: What about this grid does not fit its paper, in words. Empty is fine.
     overflow: list[str] = Field(default_factory=list)
+    #: The designs that fit one cell of this sheet. ⚠️ The print dialog reads
+    #: this instead of comparing sizes itself: the rule and its slack live in
+    #: ``label_template.fits_within`` and nowhere else.
+    fitting_design_ids: list[int] = Field(default_factory=list)
 
 
 class LabelPreviewRequest(BaseModel):
@@ -117,6 +146,10 @@ class LabelPreviewRequest(BaseModel):
     spool_id: int | None = None
     #: The device's resolution. 203 dpi is 8 dots per millimetre.
     dots_per_mm: float = Field(default=8.0, gt=0, le=40)
+    #: The picture a DRIVER makes — the PDF page rasterised, colour block
+    #: included — instead of the one-bit raster a thermal head prints. The
+    #: editor asks for it when the design's target is a driver.
+    colour: bool = False
 
 
 class LabelTestPrintRequest(BaseModel):

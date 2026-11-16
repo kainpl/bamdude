@@ -9,7 +9,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { screen, waitFor } from '@testing-library/react';
+import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 import { render } from '../utils';
@@ -39,6 +39,7 @@ describe('LabelSheetEditor', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     vi.spyOn(api, 'getLabelTemplates').mockResolvedValue([] as never);
+    vi.spyOn(api, 'checkLabelSheet').mockResolvedValue({ problems: [] });
   });
 
   const show = async (sheets: unknown[]) => {
@@ -94,6 +95,89 @@ describe('LabelSheetEditor', () => {
 
     expect(screen.getByText('Does not fit the paper')).toBeInTheDocument();
     expect(screen.getByText(/260.0mm wide/)).toBeInTheDocument();
+  });
+
+  it('asks before it deletes a sheet, naming it', async () => {
+    // One click used to be enough, and a sheet is somebody's measured stock.
+    const remove = vi.spyOn(api, 'deleteLabelSheet').mockResolvedValue(undefined as never);
+    await show([MINE]);
+
+    await userEvent.click(screen.getByRole('button', { name: /^Delete$/ }));
+
+    expect(remove).not.toHaveBeenCalled();
+    const dialog = await screen.findByRole('dialog');
+    expect(dialog).toHaveTextContent(/My stock/);
+
+    await userEvent.click(within(dialog).getByRole('button', { name: /^Delete$/ }));
+    await waitFor(() => expect(remove).toHaveBeenCalledWith(2));
+  });
+
+  it('keeps the sheet when the question is cancelled', async () => {
+    const remove = vi.spyOn(api, 'deleteLabelSheet').mockResolvedValue(undefined as never);
+    await show([MINE]);
+
+    await userEvent.click(screen.getByRole('button', { name: /^Delete$/ }));
+    const dialog = await screen.findByRole('dialog');
+    await userEvent.click(within(dialog).getByRole('button', { name: /^Cancel$/ }));
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(remove).not.toHaveBeenCalled();
+  });
+
+  it('says what is wrong with the grid while it is typed, in the server\'s words', async () => {
+    // The arithmetic is the server's: this editor asks, it never works it out.
+    const check = vi
+      .spyOn(api, 'checkLabelSheet')
+      .mockImplementation(async (draft) => ({
+        problems: draft.cols > 3 ? ['The grid is 260.0mm wide but A4 is 210.0mm.'] : [],
+      }));
+    await show([MINE]);
+
+    const across = screen.getByLabelText(/Across/) as HTMLInputElement;
+    await userEvent.clear(across);
+    await userEvent.type(across, '4');
+
+    expect(await screen.findByText(/260.0mm wide/)).toBeInTheDocument();
+    expect(check).toHaveBeenLastCalledWith(expect.objectContaining({ cols: 4 }));
+    // Save would be refused for the same reason, so it is not offered.
+    expect(screen.getByRole('button', { name: /save/i })).toBeDisabled();
+  });
+
+  it('offers Save again once the grid fits', async () => {
+    vi.spyOn(api, 'checkLabelSheet').mockImplementation(async (draft) => ({
+      problems: draft.cols > 3 ? ['The grid is 260.0mm wide but A4 is 210.0mm.'] : [],
+    }));
+    await show([MINE]);
+
+    const across = screen.getByLabelText(/Across/) as HTMLInputElement;
+    await userEvent.clear(across);
+    await userEvent.type(across, '4');
+    await screen.findByText(/260.0mm wide/);
+    await userEvent.clear(across);
+    await userEvent.type(across, '3');
+
+    await waitFor(() => expect(screen.queryByText(/260.0mm wide/)).not.toBeInTheDocument());
+    expect(screen.getByRole('button', { name: /save/i })).not.toBeDisabled();
+  });
+
+  it('does not ask on every keystroke', async () => {
+    const check = vi.spyOn(api, 'checkLabelSheet').mockResolvedValue({ problems: [] });
+    await show([MINE]);
+    await waitFor(() => expect(check).toHaveBeenCalledTimes(1));
+
+    const left = screen.getByLabelText(/Left margin/) as HTMLInputElement;
+    await userEvent.clear(left);
+    await userEvent.type(left, '12.5');
+
+    await waitFor(() => expect(check).toHaveBeenLastCalledWith(expect.objectContaining({ margin_left_mm: 12.5 })));
+    // Five keystrokes, one question (plus the one on load).
+    expect(check.mock.calls.length).toBeLessThanOrEqual(3);
+  });
+
+  it('reminds you to print a sheet at 100 %', async () => {
+    await show([MINE]);
+
+    expect(screen.getByText(/100\s?%/)).toBeInTheDocument();
   });
 
   it('saves the numbers you typed', async () => {

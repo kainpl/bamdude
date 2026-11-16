@@ -71,6 +71,10 @@ class LabelDeviceOut(BaseModel):
     #: How many of its jobs are still waiting. The one number somebody looking
     #: at a device list actually wants.
     queued: int = 0
+    #: The designs that fit the stock this printer says is loaded — the same
+    #: ``fits_within`` a print is refused by. ``None`` when it has reported no
+    #: cassette: such a printer is not judged, which is not "nothing fits".
+    fitting_design_ids: list[int] | None = None
 
 
 class LabelDeviceUpdate(BaseModel):

@@ -22,6 +22,9 @@ from backend.app.services.preview_protocol import (
     CONTROL_SECONDS,
     JOB_COMMIT_BYTES,
     JSON_BYTES,
+    PDF_INPUT_BYTES,
+    PDF_PNG_BYTES,
+    PDF_RSS_BYTES,
     RSS_BYTES,
     STAGES,
     STEP_WATCHDOG_BYTES,
@@ -228,14 +231,13 @@ class Service:
             return {"outcome": "busy"}
         remaining(command.deadline_monotonic_ns)
         roles = {x.role for x in command.manifest}
-        if not roles or roles - {"mesh", "sliced", "source_png"} or not roles & {"mesh", "sliced"}:
+        inputs = {"mesh": {"stl", "obj", *CAD_KINDS}, "sliced": {"3mf"}, "source_png": {"png"}, "document": {"pdf"}}
+        if not roles or roles - set(inputs) or not roles & {"mesh", "sliced", "document"}:
             raise PreviewError("protocol_error")
-        if any(
-            x.kind
-            not in ({"stl", "obj", *CAD_KINDS} if x.role == "mesh" else {"3mf"} if x.role == "sliced" else {"png"})
-            for x in command.manifest
-        ):
+        if any(x.kind not in inputs[x.role] for x in command.manifest):
             raise PreviewError("protocol_error")
+        if command.kind == "pdf" and roles != {"document"}:
+            raise PreviewError("protocol_error")  # a document is an attempt of its own
         if command.kind == "step" and (roles != {"mesh"} or command.cad is None):
             raise PreviewError("protocol_error")  # a STEP attempt is its mesh alone, with its bundle named
         self.highwater = command.attempt_seq
@@ -366,6 +368,16 @@ class Service:
         png = await self.render(root, "cad_png", deadline, rss_limit=STEP_WATCHDOG_BYTES, job_memory=JOB_COMMIT_BYTES)
         await _require_picture(root, "cad_png", png)
 
+    async def pdf(self, root: Path, command: Command) -> None:
+        """A PDF's first page: one disposable child under the PDF budgets — the input's size before the child
+        exists, its RSS while it runs, the picture's bytes after it; the attempt's absolute deadline is main's."""
+        if command.manifest[0].size > PDF_INPUT_BYTES:
+            raise PreviewError("resource_limit", why="pdf_input_bytes", by="service")
+        result = await self.render(root, "pdf_png", command.deadline_monotonic_ns, "pdf", rss_limit=PDF_RSS_BYTES)
+        await _require_picture(root, "pdf_png", result)
+        if await disk(lambda: (root / "preview.png").stat().st_size) > PDF_PNG_BYTES:
+            raise PreviewError("resource_limit", why="pdf_png_bytes", by="pdf_png", exit_code=result.get("exit"))
+
     async def run(self, command: Command):
         root = Path(self.config["staging"]) / command.attempt_id
         deadline = command.deadline_monotonic_ns
@@ -418,6 +430,9 @@ class Service:
                 await publish("output", "3mf")
             elif command.kind == "step":
                 await self.step(root, command, transfer_store, progress)
+                await publish("preview", "png")
+            elif command.kind == "pdf":
+                await self.pdf(root, command)
                 await publish("preview", "png")
             else:
                 mesh = next(x for x in command.manifest if x.role == "mesh")
