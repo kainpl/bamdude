@@ -54,6 +54,8 @@ export function ImagePreviewModal({ src, title, fileSize, onClose }: Props) {
   const imgRef = useRef<HTMLImageElement>(null);
   const pointers = useRef(new Map<number, { x: number; y: number }>());
   const dragged = useRef(false);
+  /** Where the current press went down; null when no press was seen. */
+  const pressedOn = useRef<'ground' | 'picture' | null>(null);
 
   /** A view the stage allows: the scale in range, the picture's edges never inside the stage's. */
   const settle = useCallback((next: View): View => {
@@ -126,7 +128,10 @@ export function ImagePreviewModal({ src, title, fileSize, onClose }: Props) {
   }, [ready, zoomBy, reset]);
 
   const onPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
-    if (pointers.current.size === 0) dragged.current = false;
+    if (pointers.current.size === 0) {
+      dragged.current = false;
+      pressedOn.current = e.target === e.currentTarget ? 'ground' : 'picture';
+    }
     pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
     // Keeps the drag when the pointer leaves the stage (absent in some test DOMs).
     try {
@@ -164,13 +169,19 @@ export function ImagePreviewModal({ src, title, fileSize, onClose }: Props) {
     pointers.current.delete(e.pointerId);
   };
 
-  // The stage's empty part is the lightbox's ground: a click there closes —
-  // unless it is the click that ends a drag.
+  // The stage's empty part is the lightbox's ground: a press and release
+  // there closes — unless it is the click that ends a drag.
+  // ⚠️ Decided by where the pointer went DOWN, never by the click's target
+  // alone: the stage captures the pointer, so the browser reports the click of
+  // a press on the picture on the stage itself.
   const onStageClick = (e: ReactMouseEvent<HTMLDivElement>) => {
+    const pressed = pressedOn.current;
+    pressedOn.current = null;
     if (dragged.current) {
       dragged.current = false;
       return;
     }
+    if (pressed === 'picture') return;
     if (e.target === e.currentTarget) onClose();
   };
 

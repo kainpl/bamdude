@@ -1976,10 +1976,12 @@ export function FileManagerPage() {
 
   const [viewMode, setViewMode] = usePersistedState<LibraryView>('library-view-mode', 'grid', parseLibraryView);
   const columnsView = viewMode === 'columns';
-  // The columns ARE the path to the open folder, so in that view the address
-  // names the folder at every step: a reload or a shared link shows the same
-  // columns and the browser's Back walks the path. The other views keep their
-  // habit of reading the address without rewriting it on every click.
+  // The address names the open folder in EVERY view — one source of truth, so
+  // a reload or a copied link opens the folder on screen and never one an
+  // earlier view left there. The columns ARE the path to that folder, so there
+  // each step is a step of the browser's history (Back walks the path); in the
+  // other views a folder click replaces the address and Back leaves the page,
+  // as it always did.
   const columnsViewRef = useRef(columnsView);
   useEffect(() => {
     columnsViewRef.current = columnsView;
@@ -2005,14 +2007,12 @@ export function FileManagerPage() {
   const selectFolder = useCallback(
     (folderId: number | null) => {
       setSelectedFolderId(folderId);
-      if (columnsViewRef.current) writeFolderToUrl(folderId, false);
+      writeFolderToUrl(folderId, !columnsViewRef.current);
     },
     [writeFolderToUrl],
   );
   const changeViewMode = (mode: LibraryView) => {
     setViewMode(mode);
-    // Entering the columns: the folder that is open becomes the address's.
-    if (mode === 'columns') writeFolderToUrl(selectedFolderId, true);
   };
   // What the columns have loaded — the files the bulk bar acts on in that view.
   const [columnFiles, setColumnFiles] = useState<LibraryFileListItem[]>([]);
@@ -2136,9 +2136,9 @@ export function FileManagerPage() {
     if (folderParam) {
       const newFolderId = parseInt(folderParam, 10);
       setSelectedFolderId(newFolderId);
-    } else if (columnsViewRef.current) {
-      // In the columns view the address is the path: no folder there is the root
-      // (the browser's Back out of the first folder).
+    } else {
+      // The address is the open folder: none there is the top level (the
+      // browser's Back out of the first folder).
       setSelectedFolderId(null);
     }
   }, [searchParams]);
@@ -4018,6 +4018,8 @@ export function FileManagerPage() {
               onToggleFile={handleFileSelect}
               onOpenFile={openPreview}
               onDetails={setDetailsFile}
+              onMoveFolder={setMoveFolderTarget}
+              canMoveFolders={canMoveFolders(hasPermission)}
               onVisibleFilesChange={setColumnFiles}
               renderPreview={renderFileCard}
               thumbnailVersions={thumbnailVersions}

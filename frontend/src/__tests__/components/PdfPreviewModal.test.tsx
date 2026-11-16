@@ -8,11 +8,12 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { fireEvent, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor } from '@testing-library/react';
 import { render } from '../utils';
 import { MAX_PDF_BYTES, PdfPreviewModal } from '../../components/PdfPreviewModal';
 import { PdfOpenError, type PdfHandle } from '../../utils/pdfDocument';
-import { api } from '../../api/client';
+import i18n from '../../i18n';
+import { ApiError, api } from '../../api/client';
 
 const openPdf = vi.hoisted(() => vi.fn());
 vi.mock('../../utils/pdfDocument', async () => {
@@ -20,13 +21,14 @@ vi.mock('../../utils/pdfDocument', async () => {
   return { ...actual, openPdf };
 });
 
-function fakeHandle(pageCount: number) {
+/** `odd` — pages whose size is not the first page's 600 × 800. */
+function fakeHandle(pageCount: number, odd: Record<number, { width: number; height: number }> = {}) {
   const rendered: { page: number; scale: number }[] = [];
   const cancelled: number[] = [];
   const handle: PdfHandle = {
     pageCount,
     firstPageSize: { width: 600, height: 800 },
-    pageSize: vi.fn(async () => ({ width: 600, height: 800 })),
+    pageSize: vi.fn(async (page: number) => odd[page] ?? { width: 600, height: 800 }),
     render: vi.fn((page: number, _canvas: HTMLCanvasElement, scale: number) => {
       rendered.push({ page, scale });
       return { promise: Promise.resolve(), cancel: () => cancelled.push(page) };
@@ -179,14 +181,103 @@ describe('PdfPreviewModal', () => {
     await waitFor(() => expect(renderedPages(rendered)).toContain(6));
   });
 
-  it('cancels what it was drawing and frees the document when it closes', async () => {
-    const { handle, rendered } = fakeHandle(3);
-    openPdf.mockResolvedValue(handle);
-    const { onClose } = show();
-    await waitFor(() => expect(rendered.length).toBeGreaterThan(0));
+  describe('a document with pages of different sizes', () => {
+    const percent = () => screen.getByTestId('pdf-zoom').textContent;
+    const pageWidth = (n: number) => (stage().querySelector(`[data-page="${n}"]`) as HTMLElement).style.width;
 
-    fireEvent.click(screen.getByRole('button', { name: 'Close' }));
-    expect(onClose).toHaveBeenCalled();
+    it('keeps the zoom and the place while scrolling across a page of another size', async () => {
+      // Portrait pages and one landscape drawing, as a manual has.
+      const { handle } = fakeHandle(10, { 3: { width: 1200, height: 800 } });
+      openPdf.mockResolvedValue(handle);
+      show();
+      // Page 3 is next to the screen, so it is measured: its box is twice as wide.
+      await waitFor(() => expect(pageWidth(3)).toBe('1200px'));
+      expect(percent()).toBe('100%');
+
+      // The middle of the screen crosses onto the landscape page.
+      const onto = 2 * (800 + 12) - 300;
+      stage().scrollTop = onto;
+      fireEvent.scroll(stage());
+      await waitFor(() => expect(pageBox().value).toBe('3'));
+      expect(percent()).toBe('100%');
+      expect(stage().scrollTop).toBe(onto);
+      expect(pageWidth(2)).toBe('600px');
+
+      // And one notch back.
+      stage().scrollTop = onto - 250;
+      fireEvent.scroll(stage());
+      await waitFor(() => expect(pageBox().value).toBe('2'));
+      expect(percent()).toBe('100%');
+      expect(stage().scrollTop).toBe(onto - 250);
+    });
+
+    it('fits the widest page it knows when Fit width is asked for again, and the page on screen for Fit page', async () => {
+      const { handle } = fakeHandle(10, { 3: { width: 1200, height: 800 } });
+      openPdf.mockResolvedValue(handle);
+      show();
+      await waitFor(() => expect(pageWidth(3)).toBe('1200px'));
+
+      fireEvent.click(screen.getByRole('button', { name: 'Fit width' }));
+      await waitFor(() => expect(percent()).toBe('50%'));
+      expect(pageWidth(3)).toBe('600px');
+
+      // Fit page on page 1 (600 × 800 in a 600 × 800 room) is 100 % again.
+      fireEvent.click(screen.getByRole('button', { name: 'Fit page' }));
+      await waitFor(() => expect(percent()).toBe('100%'));
+    });
+
+    it('stays on what it shows when a page above turns out to have another height', async () => {
+      // Page 29 is half as tall as the first page it was assumed to be like.
+      const { handle, rendered } = fakeHandle(40, { 29: { width: 600, height: 400 } });
+      openPdf.mockResolvedValue(handle);
+      show();
+      await waitFor(() => expect(pageBox().value).toBe('1'));
+
+      fireEvent.change(pageBox(), { target: { value: '30' } });
+      fireEvent.keyDown(pageBox(), { key: 'Enter' });
+      await waitFor(() => expect(renderedPages(rendered)).toContain(29));
+      await waitFor(() =>
+        expect((stage().querySelector('[data-page="29"]') as HTMLElement).style.height).toBe('400px'),
+      );
+
+      // Still at the top of page 30, which now starts 400 px higher.
+      expect(stage().scrollTop).toBe(28 * (800 + 12) + (400 + 12));
+      expect(pageBox().value).toBe('30');
+    });
+  });
+
+  it('cancels what it was drawing and frees the document when it closes', async () => {
+    const { handle, rendered, cancelled } = fakeHandle(3);
+    openPdf.mockResolvedValue(handle);
+    const view = render(<PdfPreviewModal fileId={7} title="manual.pdf" fileSize={10} onClose={vi.fn()} onDownload={vi.fn()} />);
+    await waitFor(() => expect(renderedPages(rendered)).toEqual([1, 2, 3]));
+    expect(handle.destroy).not.toHaveBeenCalled();
+
+    // The page closes the viewer by unmounting it.
+    view.unmount();
+
+    expect([...new Set(cancelled)].sort()).toEqual([1, 2, 3]);
+    expect(handle.destroy).toHaveBeenCalledTimes(1);
+  });
+
+  it('gives up an open that has not settled when it closes, and when the file changes', async () => {
+    // A document the parser hangs on: `openPdf` never answers.
+    const signals: AbortSignal[] = [];
+    openPdf.mockImplementation((_bytes: ArrayBuffer, signal: AbortSignal) => {
+      signals.push(signal);
+      return new Promise(() => {});
+    });
+    const view = render(<PdfPreviewModal fileId={7} title="a.pdf" fileSize={10} onClose={vi.fn()} onDownload={vi.fn()} />);
+    await waitFor(() => expect(signals.length).toBe(1));
+    expect(signals[0].aborted).toBe(false);
+
+    view.rerender(<PdfPreviewModal fileId={8} title="b.pdf" fileSize={10} onClose={vi.fn()} onDownload={vi.fn()} />);
+    await waitFor(() => expect(signals.length).toBe(2));
+    expect(signals[0].aborted).toBe(true);
+    expect(signals[1].aborted).toBe(false);
+
+    view.unmount();
+    expect(signals[1].aborted).toBe(true);
   });
 
   it('frees the document on unmount', async () => {
@@ -215,12 +306,72 @@ describe('PdfPreviewModal', () => {
     expect(await screen.findByText('This PDF could not be opened. The file may be damaged.')).toBeInTheDocument();
   });
 
-  it('says so when the file cannot be fetched', async () => {
-    getBytes.mockRejectedValue(new Error('HTTP 404'));
+  // Four failures, four sentences: only a document PDF.js refused is "damaged".
+  it.each([401, 403, 404])('says the file is not available when the server answers %i, and offers no download', async (status) => {
+    getBytes.mockRejectedValue(new ApiError(`HTTP ${status}`, status));
     show();
 
-    expect(await screen.findByText('This PDF could not be opened. The file may be damaged.')).toBeInTheDocument();
+    expect(
+      await screen.findByText('This file is not available: it was moved or deleted, or you no longer have access to it.'),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/may be damaged/)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Download' })).not.toBeInTheDocument();
     expect(openPdf).not.toHaveBeenCalled();
+  });
+
+  it('says the server could not be reached when the request itself fails', async () => {
+    getBytes.mockRejectedValue(new TypeError('Failed to fetch'));
+    show();
+
+    expect(
+      await screen.findByText('The file could not be loaded from the server. Check the connection and try again.'),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/may be damaged/)).not.toBeInTheDocument();
+    expect(openPdf).not.toHaveBeenCalled();
+  });
+
+  it('says the viewer itself could not be loaded, and offers the download', async () => {
+    openPdf.mockRejectedValue(new PdfOpenError('viewer'));
+    const { onDownload } = show();
+
+    expect(
+      await screen.findByText('The PDF viewer could not be loaded. Reload the page and try again, or download the file.'),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/may be damaged/)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Download' }));
+    expect(onDownload).toHaveBeenCalled();
+  });
+
+  it('says each of them in the interface language', async () => {
+    await act(async () => {
+      await i18n.changeLanguage('uk');
+    });
+    try {
+      getBytes.mockRejectedValue(new ApiError('HTTP 404', 404));
+      const first = render(<PdfPreviewModal fileId={7} title="a.pdf" fileSize={10} onClose={vi.fn()} onDownload={vi.fn()} />);
+      expect(
+        await screen.findByText('Цей файл недоступний: його перемістили чи видалили або ви більше не маєте до нього доступу.'),
+      ).toBeInTheDocument();
+      first.unmount();
+
+      getBytes.mockRejectedValue(new TypeError('Failed to fetch'));
+      const second = render(<PdfPreviewModal fileId={7} title="a.pdf" fileSize={10} onClose={vi.fn()} onDownload={vi.fn()} />);
+      expect(
+        await screen.findByText('Не вдалося завантажити файл із сервера. Перевірте з’єднання і спробуйте ще раз.'),
+      ).toBeInTheDocument();
+      second.unmount();
+
+      getBytes.mockResolvedValue(new ArrayBuffer(16));
+      openPdf.mockRejectedValue(new PdfOpenError('viewer'));
+      render(<PdfPreviewModal fileId={7} title="a.pdf" fileSize={10} onClose={vi.fn()} onDownload={vi.fn()} />);
+      expect(
+        await screen.findByText('Не вдалося завантажити переглядач PDF. Оновіть сторінку і спробуйте ще раз або завантажте файл.'),
+      ).toBeInTheDocument();
+    } finally {
+      await act(async () => {
+        await i18n.changeLanguage('en');
+      });
+    }
   });
 
   it('never requests a file over the size cap: it offers the download instead', async () => {

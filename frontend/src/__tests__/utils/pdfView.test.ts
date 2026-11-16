@@ -6,6 +6,8 @@ import { describe, it, expect } from 'vitest';
 import {
   MAX_SCALE,
   MIN_SCALE,
+  anchorAt,
+  anchorOffset,
   clampPage,
   currentPage,
   keyAction,
@@ -14,6 +16,7 @@ import {
   parsePageInput,
   scaleFor,
   visibleRange,
+  widestPage,
   zoomStep,
 } from '../../utils/pdfView';
 
@@ -124,5 +127,43 @@ describe('keyAction', () => {
     expect(keyAction('-')).toBe('zoomOut');
     expect(keyAction('0')).toBe('fitWidth');
     expect(keyAction('a')).toBeNull();
+  });
+});
+
+describe('widestPage', () => {
+  it('is the page a fit to the width must fit in a document of mixed sizes', () => {
+    expect(widestPage([A4, { width: 842, height: 595 }, A4])).toEqual({ width: 842, height: 595 });
+    expect(widestPage([])).toEqual({ width: 0, height: 0 });
+  });
+});
+
+describe('a scroll anchor', () => {
+  const sizes = [
+    { width: 600, height: 800 },
+    { width: 600, height: 800 },
+    { width: 600, height: 800 },
+  ];
+
+  it('names the page under the top edge and how far down it the edge is', () => {
+    const layout = layoutPages(sizes, 1, 12);
+    expect(anchorAt(layout, 0, 12)).toEqual({ page: 1, fraction: 0 });
+    expect(anchorAt(layout, 812 + 406, 12)).toEqual({ page: 2, fraction: 0.5 });
+  });
+
+  it('is found again at the same place of the same page after the pages change size', () => {
+    const before = layoutPages(sizes, 1, 12);
+    const anchor = anchorAt(before, 812 + 406, 12);
+
+    // Twice the scale: the same half-way point of page 2.
+    const zoomed = layoutPages(sizes, 2, 12);
+    expect(anchorOffset(zoomed, anchor, 12)).toBe(1612 + 806);
+
+    // Page 1 turns out to be half as tall: page 2 starts 400 px higher.
+    const measured = layoutPages([{ width: 600, height: 400 }, sizes[1], sizes[2]], 1, 12);
+    expect(anchorOffset(measured, anchor, 12)).toBe(412 + 406);
+  });
+
+  it('is the top of the document when there are no pages', () => {
+    expect(anchorOffset(layoutPages([], 1, 12), { page: 3, fraction: 0.5 }, 12)).toBe(0);
   });
 });

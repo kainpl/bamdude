@@ -192,6 +192,41 @@ describe('ImagePreviewModal', () => {
     expect(onClose).toHaveBeenCalledTimes(3);
   });
 
+  // A real browser hands the click of a captured pointer to the capturing
+  // element — the stage — whatever was pressed. jsdom does not, so the test
+  // dispatches what the browser would: the press on the picture, the click on
+  // the stage.
+  it('does not close on a press and release on the picture, although the browser reports the click on the stage', () => {
+    const { onClose } = show();
+    const press = (type: string) => {
+      const event = new MouseEvent(type, { bubbles: true, cancelable: true, clientX: 400, clientY: 300 });
+      Object.defineProperty(event, 'pointerId', { value: 1 });
+      act(() => {
+        picture().dispatchEvent(event);
+      });
+    };
+
+    press('pointerdown');
+    pointer('pointerup', 1, 400, 300);
+    fireEvent.click(stage());
+    expect(onClose).not.toHaveBeenCalled();
+
+    // The same at 400 %: the zoom survives the click.
+    fireEvent.click(screen.getByRole('button', { name: 'Zoom in' }));
+    const zoomed = view().scale;
+    press('pointerdown');
+    pointer('pointerup', 1, 400, 300);
+    fireEvent.click(stage());
+    expect(onClose).not.toHaveBeenCalled();
+    expect(view().scale).toBe(zoomed);
+
+    // A press and release on the ground still closes.
+    pointer('pointerdown', 1, 5, 5);
+    pointer('pointerup', 1, 5, 5);
+    fireEvent.click(stage());
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
   it('says so, in the interface language, when the picture does not load', async () => {
     await act(async () => {
       await i18n.changeLanguage('uk');

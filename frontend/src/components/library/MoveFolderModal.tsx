@@ -74,6 +74,8 @@ export function MoveFolderModal({
   return (
     <Modal
       onClose={onClose}
+      // In flight the dialog stays: a refusal that arrives is shown here, and nowhere else.
+      closeDisabled={busy}
       title={t('fileManager.moveFolder.title', { name: folder.name })}
       size="sm"
     >
@@ -105,7 +107,7 @@ export function MoveFolderModal({
           </p>
         )}
         <div className="flex justify-end gap-2 pt-2">
-          <Button type="button" variant="secondary" onClick={onClose}>
+          <Button type="button" variant="secondary" onClick={onClose} disabled={busy}>
             {t('common.cancel')}
           </Button>
           <Button onClick={submit} disabled={busy || target === undefined || blockOf(target) !== null}>

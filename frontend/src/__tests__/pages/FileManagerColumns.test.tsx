@@ -203,6 +203,28 @@ describe('the columns of a path', () => {
     expect(new URLSearchParams(window.location.search).get('folder')).toBe('6');
   });
 
+  // The address names the open folder in EVERY view: a link copied after
+  // leaving the columns opens the folder on screen, not the one the columns left there.
+  it('keeps the address true after the view changes: a folder opened in the cards view is the address’s', async () => {
+    open('/files?folder=1');
+    await column('Alpha');
+
+    await userEvent.click(screen.getByRole('button', { name: 'Cards' }));
+    await waitFor(() => expect(screen.queryByRole('listbox')).not.toBeInTheDocument());
+    expect(new URLSearchParams(window.location.search).get('folder')).toBe('1');
+
+    // Another folder, from the tree.
+    const steps = window.history.length;
+    await userEvent.click(screen.getAllByText('Other')[0]);
+    await waitFor(() => expect(new URLSearchParams(window.location.search).get('folder')).toBe('6'));
+    // Outside the columns a folder click is no step of the browser's history.
+    expect(window.history.length).toBe(steps);
+
+    // And the top level names no folder at all.
+    await userEvent.click(screen.getAllByText('Internal')[0]);
+    await waitFor(() => expect(new URLSearchParams(window.location.search).get('folder')).toBeNull());
+  });
+
   it('walks back along the path with the browser’s Back', async () => {
     open('/files');
     await userEvent.click(await option('Library', 'Alpha'));
@@ -356,18 +378,25 @@ describe('a file in a column', () => {
   });
 });
 
+/** The tick box of a file row — a mouse target outside the accessibility tree. */
+const tick = (row: HTMLElement) => row.querySelector('[data-select-file]') as HTMLElement;
+
 describe('selection across columns', () => {
   it('ticks files of several columns into one selection for the bulk bar', async () => {
     open('/files?folder=2');
     const rootRow = (await option('Library', 'root-part.stl')).closest('[data-file-row]') as HTMLElement;
     const betaRow = (await option('Beta', 'beta.stl')).closest('[data-file-row]') as HTMLElement;
 
-    await userEvent.click(within(rootRow).getByRole('button', { name: 'Select file' }));
-    await userEvent.click(within(betaRow).getByRole('button', { name: 'Select file' }));
+    // The tick box is the mouse's door; the option says the state.
+    expect(await option('Library', 'root-part.stl')).toHaveAttribute('aria-checked', 'false');
+    await userEvent.click(tick(rootRow));
+    await userEvent.click(tick(betaRow));
 
     expect(await screen.findByText('2 selected')).toBeInTheDocument();
-    expect(within(rootRow).getByRole('button', { name: 'Select file' })).toHaveAttribute('aria-pressed', 'true');
-    expect(within(betaRow).getByRole('button', { name: 'Select file' })).toHaveAttribute('aria-pressed', 'true');
+    expect(await option('Library', 'root-part.stl')).toHaveAttribute('aria-checked', 'true');
+    expect(await option('Beta', 'beta.stl')).toHaveAttribute('aria-checked', 'true');
+    // Ticking a file is not previewing it.
+    expect(await option('Beta', 'beta.stl')).toHaveAttribute('aria-selected', 'false');
     // The bulk bar acts on them: the Move dialog is offered for both.
     await userEvent.click(screen.getByRole('button', { name: 'Move' }));
     expect(await screen.findByRole('dialog', { name: 'Move 2 files' })).toBeInTheDocument();
@@ -376,12 +405,83 @@ describe('selection across columns', () => {
   it('is cleared by opening another folder, as in the other views', async () => {
     open('/files?folder=2');
     const betaRow = (await option('Beta', 'beta.stl')).closest('[data-file-row]') as HTMLElement;
-    await userEvent.click(within(betaRow).getByRole('button', { name: 'Select file' }));
+    await userEvent.click(tick(betaRow));
     expect(await screen.findByText('1 selected')).toBeInTheDocument();
 
     await userEvent.click(await option('Library', 'Other'));
 
     await waitFor(() => expect(screen.queryByText('1 selected')).not.toBeInTheDocument());
+  });
+});
+
+describe('the columns as the accessibility tree has them', () => {
+  it('owns nothing but options in a listbox: no button, and no control a keyboard cannot reach', async () => {
+    open('/files?folder=2');
+    await option('Beta', 'beta.stl');
+    await option('Library', 'root-part.stl');
+
+    for (const list of screen.getAllByRole('listbox')) {
+      expect(within(list).queryAllByRole('button')).toEqual([]);
+      expect(within(list).queryAllByRole('checkbox')).toEqual([]);
+      // Whatever else is drawn in a row is hidden from the tree, not a stray child.
+      for (const node of list.querySelectorAll('[data-select-file]')) {
+        expect(node).toHaveAttribute('aria-hidden', 'true');
+        expect(node.tagName).not.toBe('BUTTON');
+        expect(node).not.toHaveAttribute('tabindex');
+      }
+      // The keys that are not arrows are said, not left to be guessed.
+      const hint = document.getElementById(list.getAttribute('aria-describedby') ?? '');
+      expect(hint).toHaveTextContent('Space ticks the focused file for the bulk actions.');
+    }
+    // A folder is on the path or not; it has no tick.
+    expect(await option('Library', 'Alpha')).not.toHaveAttribute('aria-checked');
+  });
+});
+
+describe('moving a folder without a mouse', () => {
+  it('opens the Move dialog for the focused folder with M', async () => {
+    open('/files');
+    (await option('Library', 'Alpha')).focus();
+
+    await userEvent.keyboard('m');
+
+    expect(await screen.findByRole('dialog', { name: 'Move “Alpha”' })).toBeInTheDocument();
+  });
+
+  it('offers Move… in the header of an open folder’s column, a tab stop away from its rows', async () => {
+    open('/files?folder=1');
+    const alpha = await columnBox('Alpha');
+    const move = within(alpha).getByRole('button', { name: 'Move “Alpha”' });
+    expect(move).toBeEnabled();
+    // Outside the listbox, and reachable by Tab.
+    expect(move.closest('[role="listbox"]')).toBeNull();
+    expect(move.tabIndex).toBe(0);
+    // The root is no folder to move.
+    expect(within(await columnBox('Library')).queryByRole('button', { name: /^Move/ })).not.toBeInTheDocument();
+
+    move.focus();
+    await userEvent.keyboard('{Enter}');
+
+    expect(await screen.findByRole('dialog', { name: 'Move “Alpha”' })).toBeInTheDocument();
+  });
+
+  it('does not move an external folder: the header says why and M does nothing', async () => {
+    server.use(
+      http.get('/api/v1/library/folders', () =>
+        HttpResponse.json([folder(7, 'NAS', null, [], { is_external: true, external_path: '/mnt/nas' })]),
+      ),
+    );
+    open('/files?folder=7');
+    const nas = await columnBox('NAS');
+
+    const move = within(nas).getByRole('button', { name: 'Move “NAS”' });
+    expect(move).toBeDisabled();
+    expect(move).toHaveAttribute('title', 'An external folder and its subfolders cannot be moved.');
+
+    (await option('Library', 'NAS')).focus();
+    await userEvent.keyboard('m');
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   });
 });
 
@@ -439,8 +539,14 @@ describe('the keyboard', () => {
     const photo = await option('Library', 'root-photo.png');
     photo.focus();
 
+    expect(photo).toHaveAttribute('aria-checked', 'false');
     await userEvent.keyboard(' ');
     expect(await screen.findByText('1 selected')).toBeInTheDocument();
+    // The tick is the option's own state — announced, not only drawn.
+    expect(photo).toHaveAttribute('aria-checked', 'true');
+    await userEvent.keyboard(' ');
+    expect(photo).toHaveAttribute('aria-checked', 'false');
+    await userEvent.keyboard(' ');
 
     await userEvent.keyboard('{ArrowRight}');
     const preview = await screen.findByRole('region', { name: 'Preview: root-photo.png' });

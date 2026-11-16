@@ -3046,6 +3046,7 @@ export default {
     },
     builtin: 'built in',
     doesNotFit: 'Does not fit the paper',
+    checking: 'Checking the grid…',
     preview: 'Preview the page',
     saved: 'Sheet saved',
     scaleHint:
@@ -6176,6 +6177,8 @@ export default {
       preview: 'Preview: {{name}}',
       closePreview: 'Close preview',
       backTo: 'Back to {{name}}',
+      keysHint: 'Space ticks the focused file for the bulk actions.',
+      keysHintMove: 'M moves the focused folder.',
     },
     moveFolder: {
       action: 'Move…',
@@ -12313,6 +12316,7 @@ export default {
       captionPlaceholder: 'Add a caption',
       delete: 'Delete photo',
       confirmDelete: 'Delete this photo?',
+      deleteFailed: 'The photo could not be deleted.',
       count: 'Photos: {{count}}'
     }
   },
@@ -12333,6 +12337,9 @@ export default {
       fitPage: 'Fit page',
       encrypted: 'This PDF is password-protected and cannot be previewed.',
       broken: 'This PDF could not be opened. The file may be damaged.',
+      unavailable: 'This file is not available: it was moved or deleted, or you no longer have access to it.',
+      network: 'The file could not be loaded from the server. Check the connection and try again.',
+      viewerFailed: 'The PDF viewer could not be loaded. Reload the page and try again, or download the file.',
       tooLarge: 'This PDF is too large to preview. Download it to open it.',
       pageFailed: 'This page could not be drawn.'
     }

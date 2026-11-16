@@ -83,9 +83,11 @@ export function LabelSheetEditor() {
   // Deleting asks first: a sheet is somebody's measured stock, and the button
   // sits beside Duplicate.
   const [confirmingDelete, setConfirmingDelete] = useState(false);
-  // What the server says is wrong with the DRAFT. `null` until it has answered
-  // for the sheet on screen — the saved row's own complaints stand in till then.
-  const [problems, setProblems] = useState<string[] | null>(null);
+  // What the server said is wrong with one DRAFT — kept with the draft it was
+  // said about. ⚠️ An answer speaks only for that draft: the moment the draft
+  // is another object (another sheet, another keystroke) the answer is nobody's,
+  // and neither its lines nor a Save it disabled may stay on screen.
+  const [checked, setChecked] = useState<{ draft: LabelSheetInput; problems: string[] } | null>(null);
 
   const { data: sheets, isLoading } = useQuery({ queryKey: ['label-sheets'], queryFn: api.getLabelSheets });
   const { data: designs } = useQuery({ queryKey: ['label-templates'], queryFn: api.getLabelTemplates });
@@ -109,9 +111,11 @@ export function LabelSheetEditor() {
     if (selectedId === null) setSelectedId(sheets[0].id);
   }, [sheets, selectedId]);
 
+  // The saved row as a draft — the draft is this very object until it is edited.
+  const pristine = useMemo(() => (selected ? asInput(selected) : null), [selected]);
   useEffect(() => {
-    setDraft(selected ? asInput(selected) : null);
-  }, [selected]);
+    setDraft(pristine);
+  }, [pristine]);
 
   useEffect(() => {
     if (designId === null && designs?.length) setDesignId(designs[0].id);
@@ -122,20 +126,17 @@ export function LabelSheetEditor() {
   // all three live in one backend function — the one Save is refused by. This
   // only waits for a pause in the typing and shows what comes back.
   useEffect(() => {
-    if (!draft) {
-      setProblems(null);
-      return;
-    }
+    if (!draft) return;
     let stale = false;
     const timer = setTimeout(() => {
       api
         .checkLabelSheet(draft)
         .then((answer) => {
-          if (!stale) setProblems(answer.problems);
+          if (!stale) setChecked({ draft, problems: answer.problems });
         })
         // No answer is no opinion: Save still asks, and still refuses in words.
         .catch(() => {
-          if (!stale) setProblems(null);
+          if (!stale) setChecked({ draft, problems: [] });
         });
     }, CHECK_DEBOUNCE_MS);
     return () => {
@@ -205,8 +206,12 @@ export function LabelSheetEditor() {
 
   if (isLoading) return <LoadingBlock label={t('common.loading')} className="py-12 text-bambu-gray" />;
 
-  // The draft's problems once the server has answered; the saved row's until then.
-  const shownProblems = problems ?? selected?.overflow ?? [];
+  // The answer for the draft on screen, if there is one yet.
+  const problems = checked !== null && checked.draft === draft ? checked.problems : null;
+  // An edited draft with no answer yet says "checking"; the untouched saved row
+  // shows its own complaints, which the list beside it shows too.
+  const checking = problems === null && draft !== null && draft !== pristine;
+  const shownProblems = problems ?? (draft === pristine ? selected?.overflow : null) ?? [];
 
   const set = (key: keyof LabelSheetInput, value: string) => {
     if (!draft) return;
@@ -312,6 +317,9 @@ export function LabelSheetEditor() {
               ))}
             </div>
 
+            {checking && (
+              <p role="status" className="text-xs text-bambu-gray">{t('labelSheets.checking')}</p>
+            )}
             {shownProblems.length > 0 && (
               <ul role="status" className="text-xs text-amber-600 dark:text-amber-400 space-y-1">
                 {shownProblems.map((line) => <li key={line}>{line}</li>)}

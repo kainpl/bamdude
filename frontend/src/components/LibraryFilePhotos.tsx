@@ -32,6 +32,12 @@ interface Props {
   canEdit: boolean;
   /** Where dropped files are taken — the gallery itself when absent. */
   dropZoneRef?: RefObject<HTMLElement | null>;
+  /**
+   * Told when photos start and stop being sent. The dialog that holds the
+   * gallery does not close meanwhile: the files go one request each, and a
+   * refusal of the third is shown here — to nobody, if the dialog is gone.
+   */
+  onBusyChange?: (busy: boolean) => void;
 }
 
 interface Refusal {
@@ -39,7 +45,7 @@ interface Refusal {
   message: string;
 }
 
-function PhotoCaption({ photo, onSave }: { photo: LibraryFilePhoto; onSave: (caption: string | null) => void }) {
+function PhotoCaption({ photo, onSave }: { photo: LibraryFilePhoto; onSave: (caption: string | null) => Promise<unknown> }) {
   const { t } = useTranslation();
   const [draft, setDraft] = useState(photo.caption ?? '');
   const [seen, setSeen] = useState(photo.caption);
@@ -48,9 +54,20 @@ function PhotoCaption({ photo, onSave }: { photo: LibraryFilePhoto; onSave: (cap
     setSeen(photo.caption);
     setDraft(photo.caption ?? '');
   }
+  // What was last sent and has not failed. Enter commits and so does leaving
+  // the box, and the saved caption comes back only after a round trip: without
+  // this the same text went out twice.
+  const sent = useRef<{ value: string | null } | null>(null);
   const commit = () => {
     const next = draft.trim() || null;
-    if (next !== (photo.caption ?? null)) onSave(next);
+    if (next === (photo.caption ?? null)) return;
+    if (sent.current && sent.current.value === next) return;
+    const mine = { value: next };
+    sent.current = mine;
+    onSave(next).catch(() => {
+      // A save that failed may be asked for again, as it is.
+      if (sent.current === mine) sent.current = null;
+    });
   };
   const onKey = (e: ReactKeyboardEvent<HTMLInputElement>) => {
     if (e.key !== 'Enter') return;
@@ -62,7 +79,10 @@ function PhotoCaption({ photo, onSave }: { photo: LibraryFilePhoto; onSave: (cap
       type="text"
       value={draft}
       maxLength={CAPTION_MAX_LENGTH}
-      onChange={(e) => setDraft(e.target.value)}
+      onChange={(e) => {
+        sent.current = null;
+        setDraft(e.target.value);
+      }}
       onBlur={commit}
       onKeyDown={onKey}
       aria-label={t('fileDetails.photos.caption')}
@@ -72,7 +92,7 @@ function PhotoCaption({ photo, onSave }: { photo: LibraryFilePhoto; onSave: (cap
   );
 }
 
-export function LibraryFilePhotos({ fileId, canEdit, dropZoneRef }: Props) {
+export function LibraryFilePhotos({ fileId, canEdit, dropZoneRef, onBusyChange }: Props) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const inputRef = useRef<HTMLInputElement>(null);
@@ -82,6 +102,11 @@ export function LibraryFilePhotos({ fileId, canEdit, dropZoneRef }: Props) {
   const [confirming, setConfirming] = useState<number | null>(null);
   const [viewing, setViewing] = useState<LibraryFilePhoto | null>(null);
   const [dragging, setDragging] = useState(false);
+
+  const uploading = progress !== null;
+  useEffect(() => {
+    onBusyChange?.(uploading);
+  }, [uploading, onBusyChange]);
 
   const { data: photos, isLoading } = useQuery({
     queryKey: ['library-file-photos', fileId],
@@ -132,6 +157,16 @@ export function LibraryFilePhotos({ fileId, canEdit, dropZoneRef }: Props) {
       setConfirming(null);
       refresh();
     },
+    onError: (error: unknown, id) => {
+      const index = photos?.findIndex((p) => p.id === id) ?? -1;
+      const reason = error instanceof Error ? error.message : '';
+      setRefusals([
+        {
+          name: labelOf(photos?.[index], Math.max(0, index)),
+          message: [t('fileDetails.photos.deleteFailed'), reason].filter(Boolean).join(' '),
+        },
+      ]);
+    },
   });
 
   // Dropped files. Native listeners, on whichever element is the drop zone;
@@ -143,7 +178,20 @@ export function LibraryFilePhotos({ fileId, canEdit, dropZoneRef }: Props) {
   useEffect(() => {
     const zone = dropZoneRef?.current ?? rootRef.current;
     if (!zone || !canEdit) return;
-    const carriesFiles = (e: DragEvent) => Array.from(e.dataTransfer?.types ?? []).includes('Files');
+    // ⚠️ Only files that come from OUTSIDE the page. A browser adds `Files` to
+    // the drag of an image and hands the picture over as a file on drop, so a
+    // picture of this very page, moved a few pixels, would be uploaded as a new
+    // photo. `dragstart` fires only for a drag that begins in this document —
+    // a file from the desktop never fires one.
+    let fromThisPage = false;
+    const onPageDragStart = () => {
+      fromThisPage = true;
+    };
+    // After the drop's own handlers; `dragend` alone is not enough — it does
+    // not fire when the dragged element left the document meanwhile.
+    const onPageDragOver = () => setTimeout(() => (fromThisPage = false), 0);
+    const carriesFiles = (e: DragEvent) =>
+      !fromThisPage && Array.from(e.dataTransfer?.types ?? []).includes('Files');
     const onDragOver = (e: DragEvent) => {
       if (!carriesFiles(e)) return;
       e.preventDefault();
@@ -162,7 +210,13 @@ export function LibraryFilePhotos({ fileId, canEdit, dropZoneRef }: Props) {
     zone.addEventListener('dragover', onDragOver);
     zone.addEventListener('dragleave', onDragLeave);
     zone.addEventListener('drop', onDrop);
+    document.addEventListener('dragstart', onPageDragStart, true);
+    document.addEventListener('dragend', onPageDragOver, true);
+    document.addEventListener('drop', onPageDragOver, true);
     return () => {
+      document.removeEventListener('dragstart', onPageDragStart, true);
+      document.removeEventListener('dragend', onPageDragOver, true);
+      document.removeEventListener('drop', onPageDragOver, true);
       zone.removeEventListener('dragover', onDragOver);
       zone.removeEventListener('dragleave', onDragLeave);
       zone.removeEventListener('drop', onDrop);
@@ -243,6 +297,7 @@ export function LibraryFilePhotos({ fileId, canEdit, dropZoneRef }: Props) {
                       src={api.getLibraryFilePhotoThumbnailUrl(fileId, photo.id)}
                       alt={label}
                       loading="lazy"
+                      draggable={false}
                       className="h-full w-full object-cover"
                     />
                   </button>
@@ -269,7 +324,7 @@ export function LibraryFilePhotos({ fileId, canEdit, dropZoneRef }: Props) {
                     </Button>
                   </div>
                 ) : canEdit ? (
-                  <PhotoCaption photo={photo} onSave={(value) => caption.mutate({ id: photo.id, value })} />
+                  <PhotoCaption photo={photo} onSave={(value) => caption.mutateAsync({ id: photo.id, value })} />
                 ) : (
                   photo.caption && <p className="break-words px-1 text-xs text-bambu-gray">{photo.caption}</p>
                 )}

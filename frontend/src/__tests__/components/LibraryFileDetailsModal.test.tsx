@@ -11,6 +11,7 @@ import { render } from '../utils';
 import { server } from '../mocks/server';
 import { LibraryFileDetailsModal } from '../../components/LibraryFileDetailsModal';
 import { api, type LibraryFileListItem } from '../../api/client';
+import i18n from '../../i18n';
 
 const HASH = 'a3f5c9d2e1b40718293a4b5c6d7e8f90112233445566778899aabbccddeeff00';
 
@@ -218,6 +219,44 @@ describe('LibraryFileDetailsModal', () => {
     fireEvent.drop(within(dialog).getByText('Name'), { dataTransfer: { files: [dropped], types: ['Files'] } });
 
     await waitFor(() => expect(upload).toHaveBeenCalledWith(7, dropped));
+  });
+
+  it('cannot be closed while photos are being sent, so their outcome is never lost', async () => {
+    let finish: (error?: Error) => void = () => {};
+    vi.spyOn(api, 'uploadLibraryFilePhoto').mockImplementation(
+      () =>
+        new Promise((resolve, reject) => {
+          finish = (error) => (error ? reject(error) : resolve({} as never));
+        }),
+    );
+    serve(detail());
+    const onClose = vi.fn();
+    render(<LibraryFileDetailsModal file={listed} canEdit onClose={onClose} />);
+    const dialog = await screen.findByRole('dialog', { name: 'File details' });
+    await within(dialog).findByText('No photos yet.');
+
+    await userEvent.upload(within(dialog).getByLabelText('Add photos'), new File(['bytes'], 'a.jpg', { type: 'image/jpeg' }));
+    await within(dialog).findByRole('status');
+
+    // Neither the X, nor the footer's Close, nor Escape.
+    for (const button of within(dialog).getAllByRole('button', { name: 'Close' })) expect(button).toBeDisabled();
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(onClose).not.toHaveBeenCalled();
+
+    // The refusal arrives and is shown where the operator still is.
+    finish(new Error('The photo must be a PNG, JPEG or WebP picture'));
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent('The photo must be a PNG, JPEG or WebP picture');
+    await waitFor(() => {
+      for (const button of within(dialog).getAllByRole('button', { name: 'Close' })) expect(button).toBeEnabled();
+    });
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  // One word for a folder on this page: the File Manager says «папка» everywhere.
+  it('calls a folder what the rest of the File Manager calls it, in Ukrainian', () => {
+    expect(i18n.t('fileDetails.folder', { lng: 'uk' })).toBe('Папка');
+    expect(i18n.t('fileManager.newFolder', { lng: 'uk' })).toContain('папк');
   });
 
   it('is read-only for someone who may not edit the file', async () => {

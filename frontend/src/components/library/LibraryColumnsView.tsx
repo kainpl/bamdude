@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -9,10 +10,11 @@ import {
 } from 'react';
 import { useInfiniteQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { Briefcase, Check, ChevronLeft, ChevronRight, FileBox, FolderOpen, FolderSymlink, Info, Link2, Loader2, X } from 'lucide-react';
+import { Briefcase, Check, ChevronLeft, ChevronRight, FileBox, FolderOpen, FolderSymlink, Info, Link2, Loader2, MoveRight, X } from 'lucide-react';
 import { api } from '../../api/client';
 import type { LibraryFileListItem, LibraryFileListParams, LibraryFolderTree } from '../../api/client';
 import type { LibraryDragDrop } from '../../hooks/useLibraryDragDrop';
+import { isMovableFolder } from '../../utils/folderMove';
 
 /**
  * The File Manager's columns view (Miller columns): the library root, then one
@@ -31,9 +33,17 @@ import type { LibraryDragDrop } from '../../hooks/useLibraryDragDrop';
  * browser's Back all show the same columns.
  *
  * ARIA: every column is a `listbox` of its own, named after its folder, with
- * one tab stop; an `option` is selected when it is on the open path (a folder)
- * or shown in the preview (a file). The tick box beside a file is the bulk
- * selection — a different thing — and stays a button outside the option.
+ * one tab stop, and it owns OPTIONS ONLY — a listbox may own nothing else. An
+ * `option` is `aria-selected` when it is on the open path (a folder) or shown
+ * in the preview (a file). The bulk selection is a different thing and is the
+ * file option's `aria-checked`: Space on the option ticks it, and the tick box
+ * drawn beside it is the mouse's door to the same state — an `aria-hidden`
+ * span, never a button inside the listbox.
+ *
+ * A folder is moved without a mouse two ways, both through the page's Move
+ * dialog and both by the rule its menu in the tree follows: `M` on the focused
+ * folder, and the Move… button in the header of an open folder's column — the
+ * header IS that folder, and it sits outside the listbox, one Tab from its rows.
  */
 
 /** Files a column asks for at once; "Show more" asks for the next page. */
@@ -78,6 +88,8 @@ function Column({
   selectedFiles,
   thumbnailVersions,
   dnd,
+  hintId,
+  move,
   onOpenFolder,
   onPreviewFile,
   onOpenFile,
@@ -87,6 +99,10 @@ function Column({
   index: number;
   folderKey: FolderKey;
   name: string;
+  /** The element that says what Space and M do in a column. */
+  hintId: string;
+  /** Move… for this column's own folder: absent for the root, `why` when it may not be moved. */
+  move: { why?: string; open: () => void } | null;
   subfolders: LibraryFolderTree[];
   /** The folder of this column that the next column shows. */
   openChildId: number | null;
@@ -170,6 +186,18 @@ function Column({
         className={`px-3 py-2 border-b border-bambu-dark-tertiary flex items-center gap-2 text-xs text-bambu-gray ${headerDrop ? DROP_CLASS[headerDrop] : ''}`}
       >
         <span className="font-medium text-white truncate" title={name}>{name}</span>
+        {move && (
+          <button
+            type="button"
+            onClick={move.open}
+            disabled={!!move.why}
+            aria-label={t('fileManager.moveFolder.title', { name })}
+            title={move.why ?? t('fileManager.moveFolder.action')}
+            className="shrink-0 p-1 rounded text-bambu-gray hover:text-white hover:bg-bambu-dark disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-bambu-gray focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-bambu-green"
+          >
+            <MoveRight className="w-3.5 h-3.5" />
+          </button>
+        )}
         {total !== undefined && (
           <span className="ml-auto shrink-0 tabular-nums">
             {total} {t('fileManager.fileCount', { count: total })}
@@ -177,7 +205,7 @@ function Column({
         )}
       </div>
       <div className="flex-1 min-h-0 overflow-y-auto p-1">
-        <div role="listbox" aria-label={name} aria-busy={loading || undefined} tabIndex={-1} data-column-list={index} className="focus-visible:outline-none">
+        <div role="listbox" aria-label={name} aria-describedby={hintId} aria-busy={loading || undefined} tabIndex={-1} data-column-list={index} className="focus-visible:outline-none">
           {subfolders.map((folder) => {
             const key = `d${folder.id}`;
             const drop = dnd.dropState(folder.id);
@@ -223,22 +251,22 @@ function Column({
             const title = file.print_name || file.filename;
             return (
               <div key={key} role="presentation" data-file-row className="flex items-center gap-1 pl-1">
-                <button
-                  type="button"
+                {/* The mouse's door to the option's `aria-checked`; the keyboard's is Space on the option. */}
+                <span
                   data-select-file
-                  tabIndex={-1}
+                  aria-hidden="true"
                   onClick={() => onToggleFile(file.id)}
-                  aria-pressed={ticked}
-                  aria-label={t('fileManager.selectFile')}
+                  title={t('fileManager.selectFile')}
                   className={`w-4 h-4 shrink-0 rounded border-2 flex items-center justify-center cursor-pointer ${
                     ticked ? 'bg-bambu-green border-bambu-green' : 'border-bambu-gray/50'
                   }`}
                 >
                   {ticked && <Check className="w-2.5 h-2.5 text-black" strokeWidth={3} />}
-                </button>
+                </span>
                 <div
                   role="option"
                   aria-selected={file.id === previewFileId}
+                  aria-checked={ticked}
                   tabIndex={tabStop === key ? 0 : -1}
                   data-col={index}
                   data-kind="file"
@@ -307,6 +335,8 @@ export function LibraryColumnsView({
   onToggleFile,
   onOpenFile,
   onDetails,
+  onMoveFolder,
+  canMoveFolders,
   onVisibleFilesChange,
   renderPreview,
   thumbnailVersions,
@@ -323,6 +353,10 @@ export function LibraryColumnsView({
   /** "Open" — what a double click does in the other views. */
   onOpenFile: (file: LibraryFileListItem) => void;
   onDetails: (file: LibraryFileListItem) => void;
+  /** Open the page's Move dialog for a folder. */
+  onMoveFolder: (folder: LibraryFolderTree) => void;
+  /** May the viewer move folders at all (the page's own rights helper)? */
+  canMoveFolders: boolean;
   /** Every file the columns have loaded, in column order — what the bulk bar acts on. */
   onVisibleFilesChange: (files: LibraryFileListItem[]) => void;
   /** The page's own card for a file: its picture, facts, actions and menu. */
@@ -333,6 +367,14 @@ export function LibraryColumnsView({
   const { t } = useTranslation();
   const scrollerRef = useRef<HTMLDivElement>(null);
   const rootName = t('fileManager.columns.root');
+  const hintId = useId();
+  /** Why a folder may not be moved — the sentence its menu in the tree shows — or nothing. */
+  const whyNotMovable = (folder: LibraryFolderTree): string | undefined =>
+    !canMoveFolders
+      ? t('fileManager.moveFolder.noPermission')
+      : !isMovableFolder(folder)
+        ? t('fileManager.moveFolder.externalFixed')
+        : undefined;
 
   // A folder the tree does not hold (deleted, a stale link) leaves just the root.
   const path = useMemo(
@@ -341,8 +383,8 @@ export function LibraryColumnsView({
   );
   const columns = useMemo(
     () => [
-      { folderKey: null as FolderKey, name: rootName, subfolders: folders ?? [] },
-      ...path.map((folder) => ({ folderKey: folder.id as FolderKey, name: folder.name, subfolders: folder.children })),
+      { folderKey: null as FolderKey, name: rootName, subfolders: folders ?? [], folder: null as LibraryFolderTree | null },
+      ...path.map((folder) => ({ folderKey: folder.id as FolderKey, name: folder.name, subfolders: folder.children, folder })),
     ],
     [folders, path, rootName],
   );
@@ -475,6 +517,14 @@ export function LibraryColumnsView({
         if (isFolder) handled = false;
         else onToggleFile(id);
         break;
+      case 'm':
+      case 'M': {
+        // Move… for the focused folder — the keyboard's door to what a drag does.
+        const folder = isFolder ? columns[columnIndex]?.subfolders.find((f) => f.id === id) : undefined;
+        if (!folder || e.ctrlKey || e.metaKey || e.altKey || whyNotMovable(folder)) handled = false;
+        else onMoveFolder(folder);
+        break;
+      }
       default:
         handled = false;
     }
@@ -501,6 +551,10 @@ export function LibraryColumnsView({
           {t('fileManager.columns.filterNote')}
         </p>
       )}
+      <p id={hintId} className="sr-only">
+        {t('fileManager.columns.keysHint')}
+        {canMoveFolders ? ` ${t('fileManager.columns.keysHintMove')}` : ''}
+      </p>
       {narrow && back && (
         <button
           type="button"
@@ -537,6 +591,12 @@ export function LibraryColumnsView({
             selectedFiles={selectedFiles}
             thumbnailVersions={thumbnailVersions}
             dnd={dnd}
+            hintId={hintId}
+            move={
+              column.folder
+                ? { why: whyNotMovable(column.folder), open: () => onMoveFolder(column.folder as LibraryFolderTree) }
+                : null
+            }
             onOpenFolder={onSelectFolder}
             onPreviewFile={(file) => previewIn(index, file)}
             onOpenFile={onOpenFile}
