@@ -51,6 +51,7 @@ MEDIA_ROUTES = frozenset(
         "/makerworld/thumbnail",
         "/makerworld/imports/{library_file_id}/cover",
         "/makerworld/imports/{library_file_id}/cover-variant",
+        "/model-sources/manyfold/models/{model_id}/preview",
         "/product-parts/{part_id}/image",
         "/products/{product_id}/files/{library_file_id}/plates/{plate_index}/objects/{identify_id}/image",
         "/printers/{printer_id}/camera-cover",
