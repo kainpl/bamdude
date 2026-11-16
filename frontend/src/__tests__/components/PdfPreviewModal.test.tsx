@@ -20,13 +20,14 @@ vi.mock('../../utils/pdfDocument', async () => {
   return { ...actual, openPdf };
 });
 
-function fakeHandle(pageCount: number) {
+/** `odd` — pages whose size is not the first page's 600 × 800. */
+function fakeHandle(pageCount: number, odd: Record<number, { width: number; height: number }> = {}) {
   const rendered: { page: number; scale: number }[] = [];
   const cancelled: number[] = [];
   const handle: PdfHandle = {
     pageCount,
     firstPageSize: { width: 600, height: 800 },
-    pageSize: vi.fn(async () => ({ width: 600, height: 800 })),
+    pageSize: vi.fn(async (page: number) => odd[page] ?? { width: 600, height: 800 }),
     render: vi.fn((page: number, _canvas: HTMLCanvasElement, scale: number) => {
       rendered.push({ page, scale });
       return { promise: Promise.resolve(), cancel: () => cancelled.push(page) };
@@ -177,6 +178,71 @@ describe('PdfPreviewModal', () => {
     fireEvent.scroll(stage());
     await waitFor(() => expect(pageBox().value).toBe('6'));
     await waitFor(() => expect(renderedPages(rendered)).toContain(6));
+  });
+
+  describe('a document with pages of different sizes', () => {
+    const percent = () => screen.getByTestId('pdf-zoom').textContent;
+    const pageWidth = (n: number) => (stage().querySelector(`[data-page="${n}"]`) as HTMLElement).style.width;
+
+    it('keeps the zoom and the place while scrolling across a page of another size', async () => {
+      // Portrait pages and one landscape drawing, as a manual has.
+      const { handle } = fakeHandle(10, { 3: { width: 1200, height: 800 } });
+      openPdf.mockResolvedValue(handle);
+      show();
+      // Page 3 is next to the screen, so it is measured: its box is twice as wide.
+      await waitFor(() => expect(pageWidth(3)).toBe('1200px'));
+      expect(percent()).toBe('100%');
+
+      // The middle of the screen crosses onto the landscape page.
+      const onto = 2 * (800 + 12) - 300;
+      stage().scrollTop = onto;
+      fireEvent.scroll(stage());
+      await waitFor(() => expect(pageBox().value).toBe('3'));
+      expect(percent()).toBe('100%');
+      expect(stage().scrollTop).toBe(onto);
+      expect(pageWidth(2)).toBe('600px');
+
+      // And one notch back.
+      stage().scrollTop = onto - 250;
+      fireEvent.scroll(stage());
+      await waitFor(() => expect(pageBox().value).toBe('2'));
+      expect(percent()).toBe('100%');
+      expect(stage().scrollTop).toBe(onto - 250);
+    });
+
+    it('fits the widest page it knows when Fit width is asked for again, and the page on screen for Fit page', async () => {
+      const { handle } = fakeHandle(10, { 3: { width: 1200, height: 800 } });
+      openPdf.mockResolvedValue(handle);
+      show();
+      await waitFor(() => expect(pageWidth(3)).toBe('1200px'));
+
+      fireEvent.click(screen.getByRole('button', { name: 'Fit width' }));
+      await waitFor(() => expect(percent()).toBe('50%'));
+      expect(pageWidth(3)).toBe('600px');
+
+      // Fit page on page 1 (600 × 800 in a 600 × 800 room) is 100 % again.
+      fireEvent.click(screen.getByRole('button', { name: 'Fit page' }));
+      await waitFor(() => expect(percent()).toBe('100%'));
+    });
+
+    it('stays on what it shows when a page above turns out to have another height', async () => {
+      // Page 29 is half as tall as the first page it was assumed to be like.
+      const { handle, rendered } = fakeHandle(40, { 29: { width: 600, height: 400 } });
+      openPdf.mockResolvedValue(handle);
+      show();
+      await waitFor(() => expect(pageBox().value).toBe('1'));
+
+      fireEvent.change(pageBox(), { target: { value: '30' } });
+      fireEvent.keyDown(pageBox(), { key: 'Enter' });
+      await waitFor(() => expect(renderedPages(rendered)).toContain(29));
+      await waitFor(() =>
+        expect((stage().querySelector('[data-page="29"]') as HTMLElement).style.height).toBe('400px'),
+      );
+
+      // Still at the top of page 30, which now starts 400 px higher.
+      expect(stage().scrollTop).toBe(28 * (800 + 12) + (400 + 12));
+      expect(pageBox().value).toBe('30');
+    });
   });
 
   it('cancels what it was drawing and frees the document when it closes', async () => {

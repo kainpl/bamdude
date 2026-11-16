@@ -27,12 +27,16 @@ import {
   clampPage,
   currentPage,
   keyAction,
+  anchorAt,
+  anchorOffset,
   layoutPages,
   outputScale,
   parsePageInput,
   scaleFor,
   visibleRange,
+  widestPage,
   zoomStep,
+  type ScrollAnchor,
   type Size,
   type ZoomMode,
 } from '../utils/pdfView';
@@ -124,6 +128,11 @@ export function PdfPreviewModal({ fileId, title, fileSize, onClose, onDownload }
   const [handle, setHandle] = useState<PdfHandle | null>(null);
   const [sizes, setSizes] = useState<Size[]>([]);
   const [mode, setMode] = useState<ZoomMode>('width');
+  // What a fit mode fits. ⚠️ Chosen once per request — when the document
+  // opens and when a fit button is pressed — never from "the page on screen
+  // now": pages differ in size, and a scale that followed the current page
+  // rescaled the whole document under the operator's wheel.
+  const [fitBasis, setFitBasis] = useState<Size>({ width: 0, height: 0 });
   const [stageSize, setStageSize] = useState<Size>({ width: 0, height: 0 });
   const [scrollTop, setScrollTop] = useState(0);
   const [page, setPage] = useState(1);
@@ -132,6 +141,8 @@ export function PdfPreviewModal({ fileId, title, fileSize, onClose, onDownload }
   /** The page a scroll of our own is heading for — the scroll event it causes must not rename it. */
   const heading = useRef<number | null>(null);
   const pageRef = useRef(1);
+  /** What the top edge of the screen shows — kept there across every new layout. */
+  const anchor = useRef<ScrollAnchor>({ page: 1, fraction: 0 });
 
   // Fetch and open. Whatever was opened is freed when the viewer goes away.
   useEffect(() => {
@@ -154,6 +165,7 @@ export function PdfPreviewModal({ fileId, title, fileSize, onClose, onDownload }
         }
         opened = doc;
         setSizes(Array.from({ length: doc.pageCount }, () => doc.firstPageSize));
+        setFitBasis(doc.firstPageSize);
         setHandle(doc);
         setStatus('ready');
       } catch (error) {
@@ -189,10 +201,7 @@ export function PdfPreviewModal({ fileId, title, fileSize, onClose, onDownload }
   }, [ready, measure]);
 
   const pageCount = handle?.pageCount ?? 0;
-  const scale = useMemo(
-    () => scaleFor(mode, sizes[page - 1] ?? { width: 0, height: 0 }, stageSize, PADDING),
-    [mode, sizes, page, stageSize],
-  );
+  const scale = useMemo(() => scaleFor(mode, fitBasis, stageSize, PADDING), [mode, fitBasis, stageSize]);
   const layout = useMemo(() => layoutPages(sizes, scale, GAP), [sizes, scale]);
   const range = visibleRange(layout.tops, scrollTop, stageSize.height, OVERSCAN);
 
@@ -208,29 +217,32 @@ export function PdfPreviewModal({ fileId, title, fileSize, onClose, onDownload }
       stage.scrollTop = layout.tops[next - 1] ?? 0;
       // No scroll event follows a scroll that went nowhere.
       heading.current = stage.scrollTop === before ? null : next;
+      anchor.current = anchorAt(layout, stage.scrollTop, GAP);
       setScrollTop(stage.scrollTop);
     },
-    [layout.tops, pageCount],
+    [layout, pageCount],
   );
 
-  // A new scale moves every page: stay on the page we were on.
-  const scaleSeen = useRef(scale);
+  // A new layout — another scale, or a page measured at another size — moves
+  // the pages: put what the top edge of the screen showed back under it.
+  const layoutSeen = useRef(layout);
   useLayoutEffect(() => {
-    if (scaleSeen.current === scale) return;
-    scaleSeen.current = scale;
+    if (layoutSeen.current === layout) return;
+    layoutSeen.current = layout;
     const stage = stageRef.current;
     if (!stage) return;
     const before = stage.scrollTop;
-    stage.scrollTop = layout.tops[pageRef.current - 1] ?? 0;
+    stage.scrollTop = anchorOffset(layout, anchor.current, GAP);
     // As in goTo: no scroll event follows a scroll that went nowhere.
     heading.current = stage.scrollTop === before ? null : pageRef.current;
     setScrollTop(stage.scrollTop);
-  }, [scale, layout.tops]);
+  }, [layout]);
 
   const onScroll = () => {
     const stage = stageRef.current;
     if (!stage) return;
     setScrollTop(stage.scrollTop);
+    anchor.current = anchorAt(layout, stage.scrollTop, GAP);
     if (heading.current !== null) {
       heading.current = null;
       return;
@@ -244,9 +256,12 @@ export function PdfPreviewModal({ fileId, title, fileSize, onClose, onDownload }
   const zoomTo = useCallback(
     (next: ZoomMode) => {
       measure();
+      // A fit request: the widest page known for the width, the page on screen for the page.
+      if (next === 'width') setFitBasis(widestPage(sizes));
+      else if (next === 'page') setFitBasis(sizes[pageRef.current - 1] ?? { width: 0, height: 0 });
       setMode(next);
     },
-    [measure],
+    [measure, sizes],
   );
 
   const onSize = useCallback((number: number, size: Size) => {
@@ -387,7 +402,7 @@ export function PdfPreviewModal({ fileId, title, fileSize, onClose, onDownload }
 
   return (
     <FilePreviewShell title={title} onClose={onClose} controls={controls}>
-      <div ref={stageRef} data-testid="pdf-stage" className="absolute inset-0 overflow-auto" onScroll={onScroll} onClick={onGroundClick}>
+      <div ref={stageRef} data-testid="pdf-stage" className="absolute inset-0 overflow-auto [overflow-anchor:none]" onScroll={onScroll} onClick={onGroundClick}>
         <div
           className="flex min-w-fit flex-col items-center"
           style={{ padding: PADDING, gap: GAP, minHeight: '100%' }}

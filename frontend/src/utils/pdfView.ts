@@ -86,6 +86,36 @@ function pageIndexAt(tops: number[], offset: number): number {
   return low;
 }
 
+/** The widest of `sizes` — what "fit width" fits in a document of mixed page sizes. */
+export function widestPage(sizes: Size[]): Size {
+  let widest: Size = { width: 0, height: 0 };
+  for (const size of sizes) if (size.width > widest.width) widest = size;
+  return widest;
+}
+
+/** A place in the document that survives a new layout: a page and how far down it (0…1, the gap after it included). */
+export interface ScrollAnchor {
+  page: number;
+  fraction: number;
+}
+
+/** The place the top edge of the screen is at. */
+export function anchorAt(layout: PageLayout, scrollTop: number, gap: number): ScrollAnchor {
+  if (layout.tops.length === 0) return { page: 1, fraction: 0 };
+  const top = Math.max(0, scrollTop);
+  const index = pageIndexAt(layout.tops, top);
+  const span = layout.heights[index] + gap;
+  const fraction = span > 0 ? (top - layout.tops[index]) / span : 0;
+  return { page: index + 1, fraction: Math.min(1, Math.max(0, fraction)) };
+}
+
+/** The scroll offset that puts `anchor` back at the top edge of the screen. */
+export function anchorOffset(layout: PageLayout, anchor: ScrollAnchor, gap: number): number {
+  if (layout.tops.length === 0) return 0;
+  const index = clampPage(anchor.page, layout.tops.length) - 1;
+  return Math.round(layout.tops[index] + anchor.fraction * (layout.heights[index] + gap));
+}
+
 /** The pages a screen of `viewHeight` at `scrollTop` shows, widened by `overscan` pages each way. */
 export function visibleRange(
   tops: number[],
