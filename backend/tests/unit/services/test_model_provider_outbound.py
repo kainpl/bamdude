@@ -62,11 +62,9 @@ class Net:
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         self.seen.append(request)
-        # The transport connects to the address it checked; the Host header names what was asked for.
-        self.connected.append(request.url.host)
-        logical = httpx.URL(f"{request.url.scheme}://{request.headers['Host']}{request.url.raw_path.decode()}")
-        request.url = logical
-        key = str(logical.copy_with(query=None))
+        # The address the transport checked for this request (its socket layer connects there).
+        self.connected.append(request.extensions["pinned_address"])
+        key = str(request.url.copy_with(query=None))
         answer = self.routes.get(key)
         if answer is None:
             return httpx.Response(599, text=f"unscripted {key}")
@@ -358,8 +356,7 @@ class TestEveryConnectionGoesToACheckedAddress:
         assert scripted_dns == ["manyfold.lan"]
         assert net.connected == ["192.168.1.20"]
         (request,) = net.seen
-        assert request.headers["Host"] == "manyfold.lan:8443"
-        assert request.extensions["sni_hostname"] == "manyfold.lan"
+        assert request.url.host == "manyfold.lan"  # the URL keeps the name: pool, SNI and Host are by name
 
     @pytest.mark.parametrize("base", ["http://imds.example.com", "https://rebind.example.com"])
     async def test_a_configured_name_that_resolves_to_a_metadata_address_is_never_connected(self, base):
@@ -383,7 +380,7 @@ class TestEveryConnectionGoesToACheckedAddress:
         await body_of(transport, "/models/m/raw/a.stl", bearer="tok", foreign_hop=True)
         assert net.connected == ["192.168.1.20", "52.216.1.1"]
         assert scripted_dns == ["manyfold.lan", "bucket.s3.example.com"]
-        assert net.seen[1].extensions["sni_hostname"] == "bucket.s3.example.com"
+        assert net.seen[1].url.host == "bucket.s3.example.com"
 
 
 class TestTheStorageHopIsPublicOnly:

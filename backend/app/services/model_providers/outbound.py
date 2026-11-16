@@ -17,9 +17,10 @@ destination mode, **the configured origin**:
 * A host has ONE spelling (:func:`normalise_host`): lower case, no trailing
   dot, IDNA; a host of numeric parts must be a canonical dotted quad.
 * Every connection goes to an address that was checked: the name is resolved
-  here, EVERY answer is tested (:func:`address_refusal`), and the request is
-  sent to the tested address with the asked-for ``Host`` and TLS name — no
-  second resolution between check and connect.
+  here, EVERY answer is tested (:func:`address_refusal`), and the socket is
+  opened to the tested address by the transport's own socket layer — no second
+  resolution between check and connect. The request keeps the host NAME, so
+  the connection pool, ``Host``, SNI and certificate verification are by name.
 * No redirect is followed, with ONE exception a caller asks for by name
   (``foreign_hop=True``, file bytes only): one hop to another origin — object
   storage behind the source — sent without the token and without cookies,
@@ -45,11 +46,13 @@ import socket
 import ssl
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import unquote, urljoin, urlsplit
 
 import certifi
+import httpcore
 import httpx
 
 from backend.app.api.routes._url_safety import CLOUD_METADATA_IPS, assert_safe_lan_service_url, unwrap_ipv4_mapped
@@ -210,6 +213,57 @@ def _tls_context() -> ssl.SSLContext:
     return ssl.create_default_context(cafile=certifi.where())
 
 
+#: (normalised host, port, checked address) of the request being sent in this task.
+_PIN: ContextVar[tuple[str, int, str] | None] = ContextVar("model_provider_outbound_pin", default=None)
+
+
+class _PinnedSockets(httpcore.AsyncNetworkBackend):
+    """The socket layer: a connection for a host is opened to the address ``_send`` checked for it.
+
+    It never resolves a name. A host without a pin — nobody resolved and checked it for this
+    request — gets no socket at all.
+    """
+
+    def __init__(self, inner: httpcore.AsyncNetworkBackend | None = None):
+        self._inner = inner or httpcore.AnyIOBackend()
+
+    async def connect_tcp(self, host, port, timeout=None, local_address=None, socket_options=None):
+        pin = _PIN.get()
+        if pin is None or (_same_host(host), port) != pin[:2]:
+            raise httpcore.ConnectError("No checked address for this host")
+        return await self._inner.connect_tcp(
+            pin[2], port, timeout=timeout, local_address=local_address, socket_options=socket_options
+        )
+
+    async def connect_unix_socket(self, path, timeout=None, socket_options=None):
+        raise httpcore.ConnectError("Unix sockets are not a model source")
+
+    async def sleep(self, seconds: float) -> None:
+        await self._inner.sleep(seconds)
+
+
+def _pinned_http(inner: httpcore.AsyncNetworkBackend | None = None) -> httpx.AsyncHTTPTransport:
+    """httpx's own HTTP transport over the pinning socket layer.
+
+    Certificate verification is ON (``_tls_context``: CERT_REQUIRED, host name checked) and is done
+    for the request's host name. httpx 0.28 has no public parameter for the socket layer, so the
+    pool it built is replaced by one that differs only in ``network_backend``
+    (``test_model_provider_outbound_pinning.py`` fails if a version stops honouring it).
+    """
+    context = _tls_context()
+    transport = httpx.AsyncHTTPTransport(verify=context, trust_env=False, http2=False)
+    transport._pool = httpcore.AsyncConnectionPool(
+        ssl_context=context,
+        max_connections=20,
+        max_keepalive_connections=10,
+        keepalive_expiry=5.0,
+        http1=True,
+        http2=False,
+        network_backend=_PinnedSockets(inner),
+    )
+    return transport
+
+
 @dataclass(frozen=True)
 class PinnedOrigin:
     """An administrator-configured base address: the origin triple and its path prefix."""
@@ -275,13 +329,14 @@ class GuardedAnswer:
 class GuardedTransport:
     """The only HTTP door of a configured-origin provider."""
 
-    def __init__(self, origin: PinnedOrigin, *, client: httpx.AsyncClient | None = None):
+    def __init__(self, origin: PinnedOrigin, *, client: httpx.AsyncClient | None = None, sockets=None):
         self.origin = origin
         self._owns_client = client is None
         # ``trust_env=False``: a proxy named by the environment would resolve the name itself, past
         # the address check below. The trust store still follows SSL_CERT_FILE / SSL_CERT_DIR.
+        # ``sockets`` replaces the real socket layer under the pinning one (tests).
         self._client = client or httpx.AsyncClient(
-            timeout=DEFAULT_TIMEOUT, follow_redirects=False, trust_env=False, verify=_tls_context()
+            timeout=DEFAULT_TIMEOUT, follow_redirects=False, trust_env=False, transport=_pinned_http(sockets)
         )
 
     async def aclose(self) -> None:
@@ -306,10 +361,11 @@ class GuardedTransport:
     async def _send(self, method: str, url: httpx.URL, *, headers=None, data=None, public_only=False):
         """Resolve, check EVERY address, connect to the checked one.
 
-        The name is resolved here, once, and the connection goes to an address that passed — the
-        client never resolves it again, so an answer that changes between check and connect (DNS
-        rebinding) cannot move the request. ``Host`` and the TLS name stay the host that was asked
-        for, so virtual hosting and certificate verification are unchanged.
+        The name is resolved here, once, and the socket is opened to an address that passed
+        (``_PinnedSockets``) — nothing resolves it again, so an answer that changes between check
+        and connect (DNS rebinding) cannot move the request. The request URL keeps the NAME: the
+        connection pool, ``Host``, the TLS server name and certificate verification are all by
+        name, so two names on one address never share a connection.
         """
         try:
             host = normalise_host(url.host, "The address")
@@ -331,15 +387,19 @@ class GuardedTransport:
                 raise OutboundRefused(f"Refusing to connect: the host resolves to {refusal}", "address_refused")
         # Built directly, never through ``client.build_request``: no client default and no cookie
         # an earlier answer set is merged in.
-        sent = {"User-Agent": USER_AGENT, "Accept": "*/*", **(headers or {}), "Host": url.netloc.decode("ascii")}
-        extensions = {"sni_hostname": host} if url.scheme == "https" and not _is_ip(host) else {}
-        pinned = url.copy_with(host=addresses[0].split("%", 1)[0])
-        request = httpx.Request(method, pinned, headers=sent, data=data, extensions=extensions)
+        sent = {"User-Agent": USER_AGENT, "Accept": "*/*", **(headers or {})}
+        address = addresses[0].split("%", 1)[0]
+        request = httpx.Request(method, url, headers=sent, data=data, extensions={"pinned_address": address})
+        # The pin travels with THIS call (a context variable, read by the socket layer in the same
+        # task): two requests never see each other's address, whatever policy checked it.
+        token = _PIN.set((host, port, address))
         try:
             return await self._client.send(request, stream=True, follow_redirects=False)
         except httpx.HTTPError as exc:
             # The type only: an httpx message may carry the URL, and a URL may carry a signature.
             raise OutboundRefused(f"Could not connect: {type(exc).__name__}", "unreachable") from exc
+        finally:
+            _PIN.reset(token)
 
     def _classify(self, current: httpx.URL, location: str | None) -> tuple[str, str | None]:
         """``(kind, absolute target)`` of a redirect; raises for a Location nobody may follow."""
