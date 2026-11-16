@@ -422,132 +422,6 @@ async def ensure_folders(
             parent_id = new_folder.id
 
 
-# ── A file that moved on the share keeps its row ─────────────────────────────
-
-
-async def _absent(runtime, root: Path, paths: list[str]) -> list[str]:
-    """Which of ``paths`` are not on the disk now (asked of the worker, 32 at a time)."""
-    gone: list[str] = []
-    for start in range(0, len(paths), 32):
-        chunk = paths[start : start + 32]
-        present = await runtime.present(root, chunk)
-        gone.extend(path for path, there in zip(chunk, present, strict=True) if not there)
-    return gone
-
-
-async def may_be_a_move(item: _Prepared, known_by_hash: dict[str, list[str]], runtime, root: Path) -> bool:
-    """Is this new path perhaps a known file under a new address? Decides nothing — it only holds the item back.
-
-    True when a row of this mount has the same bytes and its own path is not on
-    the disk now. Whether it IS a move is decided after the walk
-    (:func:`follow_moves`), when every new path is known.
-    """
-    if item.intent != "create" or not item.content_hash:
-        return False
-    twins = known_by_hash.get(item.content_hash)
-    return bool(twins) and bool(await _absent(runtime, root, twins))
-
-
-async def follow_moves(
-    held: list[_Prepared],
-    known: dict[str, _Known],
-    known_by_hash: dict[str, list[str]],
-    found_paths: set[str],
-    folder_ids: dict[str, int],
-    counters: dict[str, int],
-    *,
-    root: Path,
-    runtime,
-    authority=None,
-) -> tuple[list[_Prepared], list[tuple[int, str]]]:
-    """Re-address the rows of files that moved; return what was not a move, and the rows that were.
-
-    ⚠️ Photos, notes, tags and product links belong to the ROW. Read as "one
-    file vanished, another appeared", a rename on the NAS deleted them all with
-    no trash. So a new path whose bytes are those of a row whose own path is
-    gone keeps that row — its id and everything hung on it — under the new path,
-    name and folder.
-
-    ⚠️ **Only when nobody has to guess.** A move is exactly ONE row of this
-    mount with these bytes whose path the walk did not find and the disk does
-    not have, and exactly ONE new path with these bytes in the whole walk. Two
-    new paths (a copy and a rename), two vanished rows, an original that is
-    still there (a copy) — all go on as they always did: created, skipped as a
-    duplicate, removed by :func:`remove_vanished`. That is why this runs after
-    the walk and not in a batch during it.
-
-    Like every write of the scan: no session while the disk is asked, and the
-    rows go in short transactions of ``BATCH_SIZE``. A row that changed since
-    the scan read it is not moved — its item is handed back to be created.
-    """
-    from backend.app.api.routes.library import to_absolute_path
-    from backend.app.core.database import async_session, take_write_lock
-    from backend.app.services.library_helpers import sync_system_tags
-
-    by_hash: dict[str, list[_Prepared]] = {}
-    for item in held:
-        by_hash.setdefault(item.content_hash or "", []).append(item)
-
-    not_moves: list[_Prepared] = []
-    moves: list[tuple[int, str, _Prepared]] = []
-    for digest, items in by_hash.items():
-        unseen = [path for path in known_by_hash.get(digest, []) if path not in found_paths and path in known]
-        vanished = await _absent(runtime, root, unseen) if unseen else []
-        if len(items) == 1 and len(vanished) == 1:
-            moves.append((known[vanished[0]].id, vanished[0], items[0]))
-        else:
-            not_moves.extend(items)
-
-    moved: list[tuple[int, str]] = []
-    moves.sort(key=lambda move: move[0])
-    for start in range(0, len(moves), BATCH_SIZE):
-        chunk = moves[start : start + BATCH_SIZE]
-        applied: list[tuple[int, str, _Prepared]] = []
-        async with async_session() as db:
-            await guard(db, authority, permissions=("library:upload",))
-            await take_write_lock(db, LibraryFile.__table__, chunk[0][0])
-            for row_id, old_path, item in chunk:
-                row = (
-                    await db.execute(
-                        select(LibraryFile)
-                        .where(LibraryFile.id == row_id)
-                        .with_for_update()
-                        .execution_options(populate_existing=True)
-                    )
-                ).scalar_one_or_none()
-                if (
-                    row is None
-                    or row.deleted_at is not None
-                    or row.file_path != old_path
-                    or row.file_hash != item.content_hash
-                ):
-                    not_moves.append(item)
-                    continue
-                row.file_path = item.file_path_str
-                row.filename = item.filename
-                row.folder_id = folder_ids[item.folder_rel]
-                row.file_size = item.size
-                row.fs_modified_at = item.fs_modified_at
-                if item.file_type:
-                    row.file_type = item.file_type
-                await db.flush()
-                await sync_system_tags(db, row)  # the name is part of what the tags say
-                applied.append((row_id, old_path, item))
-            await db.commit()
-        for row_id, old_path, item in applied:
-            # The row answers for the new path now: the deletion pass must not see the old one.
-            known[item.file_path_str] = known.pop(old_path)
-            counters["files_updated"] += 1
-            moved.append((row_id, item.filename))
-            if item.thumbnail_path:
-                # Prepared for a row that was never made — the kept row has its own picture of these bytes.
-                with contextlib.suppress(Exception):
-                    spare = to_absolute_path(item.thumbnail_path)
-                    if spare:
-                        await asyncio.to_thread(spare.unlink, missing_ok=True)
-    return not_moves, moved
-
-
 # ── The deletion pass, and the guard it needs ───────────────────────────────
 
 
@@ -567,14 +441,8 @@ async def remove_vanished(
     *,
     root: Path | None = None,
     authority=None,
-    folders_emptied: bool = False,
 ) -> bool:
     """Drop rows whose file is gone. Returns whether deletion was refused.
-
-    ``folders_emptied`` — rows were moved out of their folders by this scan
-    (:func:`follow_moves`), so the folder pass runs even when no file vanished:
-    a renamed directory otherwise keeps an empty folder row for a path that no
-    longer exists.
 
     ⚠️ **A share that blinked looks exactly like a folder somebody emptied.**
     ``os.path.exists`` on a disconnected Synology mount says no to everything,
@@ -608,7 +476,7 @@ async def remove_vanished(
     else:
         presence = [await asyncio.to_thread(os.path.exists, path) for _, path in absent_candidates]
     doomed = [candidate for candidate, present in zip(absent_candidates, presence, strict=True) if not present]
-    if not doomed and not folders_emptied:
+    if not doomed:
         return False
 
     for start in range(0, len(doomed), BATCH_SIZE):
@@ -834,19 +702,8 @@ async def run_scan(job_id: int, authority=None) -> None:
                     extraction_hash=extraction_hash,
                 )
 
-        #: The mount's rows by content, so a new path can be recognised as a known
-        #: file that moved. Only a valid digest identifies bytes.
-        from backend.app.services.swap_compatibility import valid_hash
-
-        known_by_hash: dict[str, list[str]] = {}
-        for path, entry in known.items():
-            if valid_hash(entry.file_hash):
-                known_by_hash.setdefault(entry.file_hash, []).append(path)
-
         found_paths: set[str] = set()
         batch: list[_Prepared] = []
-        #: New paths that may be known files under a new address: decided after the walk.
-        held: list[_Prepared] = []
         last_progress = 0.0
         warnings = 0
 
@@ -904,45 +761,15 @@ async def run_scan(job_id: int, authority=None) -> None:
                     warnings += 1
                     logger.warning("library scan skipped unreadable file %s", candidate_path, exc_info=True)
                     continue
-                if prepared is None:
-                    continue
-                try:
-                    hold = await may_be_a_move(prepared, known_by_hash, runtime, root)
-                except Exception:
-                    hold = False  # the disk would not say: file it as the new file it looks like
-                if hold:
-                    held.append(prepared)
-                    continue
-                batch.append(prepared)
-                await flush()
+                if prepared is not None:
+                    batch.append(prepared)
+                    await flush()
             if page["done"]:
                 break
 
         await flush(force=True)
 
-        moved: list[tuple[int, str]] = []
-        if held:
-            not_moves, moved = await follow_moves(
-                held,
-                known,
-                known_by_hash,
-                found_paths,
-                folder_ids,
-                counters,
-                root=root,
-                runtime=runtime,
-                authority=authority,
-            )
-            for file_id, filename in moved:
-                with contextlib.suppress(Exception):
-                    await ws_manager.send_library_file_added({"id": file_id, "filename": filename})
-            for start in range(0, len(not_moves), BATCH_SIZE):
-                batch = not_moves[start : start + BATCH_SIZE]
-                await flush(force=True)
-
-        skipped = await remove_vanished(
-            found_paths, known, folder_ids, counters, root=root, authority=authority, folders_emptied=bool(moved)
-        )
+        skipped = await remove_vanished(found_paths, known, folder_ids, counters, root=root, authority=authority)
         if skipped_duplicates:
             logger.info("scan skipped %d file(s) the library already holds", skipped_duplicates)
         if warnings:
