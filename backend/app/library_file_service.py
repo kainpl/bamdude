@@ -132,7 +132,9 @@ class LibraryFileService:
                 raise PreviewError("protocol_error")
             if any(not Path(path).resolve().is_relative_to(root) for path in paths):
                 raise PreviewError("protocol_error")
-            data = {"present": await disk(lambda: [Path(path).is_file() for path in paths])}
+            # A file OR a directory: the scan asks this of its folder rows too, and a directory that
+            # read as absent lost its row (and its product links) while it was still on the share.
+            data = {"present": await disk(lambda: [Path(path).exists() for path in paths])}
         else:
             raise PreviewError("protocol_error")
         output = self.staging / f"{attempt}.json"

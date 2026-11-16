@@ -453,6 +453,36 @@ async def may_be_a_move(item: _Prepared, known_by_hash: dict[str, list[str]], ru
     return bool(twins) and bool(await _absent(runtime, root, twins))
 
 
+async def decide_moves(
+    held: list[_Prepared],
+    known: dict[str, _Known],
+    known_by_hash: dict[str, list[str]],
+    found_paths: set[str],
+    *,
+    root: Path,
+    runtime,
+) -> tuple[list[tuple[int, str, _Prepared]], list[_Prepared]]:
+    """Which held paths are moves — ``(row id, old path, item)`` — and which are not. Writes nothing.
+
+    The rule is :func:`follow_moves`'s; it is decided apart from the writes so
+    that :func:`follow_directories` can read the same answer first.
+    """
+    by_hash: dict[str, list[_Prepared]] = {}
+    for item in held:
+        by_hash.setdefault(item.content_hash or "", []).append(item)
+
+    not_moves: list[_Prepared] = []
+    moves: list[tuple[int, str, _Prepared]] = []
+    for digest, items in by_hash.items():
+        unseen = [path for path in known_by_hash.get(digest, []) if path not in found_paths and path in known]
+        vanished = await _absent(runtime, root, unseen) if unseen else []
+        if len(items) == 1 and len(vanished) == 1:
+            moves.append((known[vanished[0]].id, vanished[0], items[0]))
+        else:
+            not_moves.extend(items)
+    return moves, not_moves
+
+
 async def follow_moves(
     held: list[_Prepared],
     known: dict[str, _Known],
@@ -464,6 +494,7 @@ async def follow_moves(
     root: Path,
     runtime,
     authority=None,
+    decided: tuple[list[tuple[int, str, _Prepared]], list[_Prepared]] | None = None,
 ) -> tuple[list[_Prepared], list[tuple[int, str]]]:
     """Re-address the rows of files that moved; return what was not a move, and the rows that were.
 
@@ -490,19 +521,9 @@ async def follow_moves(
     from backend.app.services import swap_compatibility
     from backend.app.services.library_helpers import skip_objects_supported_from_metadata, sync_system_tags
 
-    by_hash: dict[str, list[_Prepared]] = {}
-    for item in held:
-        by_hash.setdefault(item.content_hash or "", []).append(item)
-
-    not_moves: list[_Prepared] = []
-    moves: list[tuple[int, str, _Prepared]] = []
-    for digest, items in by_hash.items():
-        unseen = [path for path in known_by_hash.get(digest, []) if path not in found_paths and path in known]
-        vanished = await _absent(runtime, root, unseen) if unseen else []
-        if len(items) == 1 and len(vanished) == 1:
-            moves.append((known[vanished[0]].id, vanished[0], items[0]))
-        else:
-            not_moves.extend(items)
+    if decided is None:
+        decided = await decide_moves(held, known, known_by_hash, found_paths, root=root, runtime=runtime)
+    moves, not_moves = list(decided[0]), list(decided[1])
 
     moved: list[tuple[int, str]] = []
     moves.sort(key=lambda move: move[0])
@@ -577,6 +598,208 @@ async def follow_moves(
                 if spare:
                     await asyncio.to_thread(spare.unlink, missing_ok=True)
     return not_moves, moved
+
+
+# ── A directory that moved on the share keeps its folder row ─────────────────
+
+
+def _rel_of(directory: Path, root: Path) -> str | None:
+    """A directory's address inside the mount, as ``folder_ids`` keys it ("" is the mount itself)."""
+    try:
+        rel = str(directory.relative_to(root)).replace("\\", "/")
+    except ValueError:
+        return None
+    return "" if rel == "." else rel
+
+
+def match_directories(
+    moves: list[tuple[str, str]],
+    before: set[str],
+    now: set[str],
+) -> list[tuple[str, str]]:
+    """Which vanished directory each new directory IS, by the files that moved — ``(old rel, new rel)``. Pure.
+
+    ``moves`` — each moved file's ``(old directory, new directory)``; ``before``
+    — the directories that had a folder row when the scan began; ``now`` — those
+    that have one after the walk. The caller still has to confirm that the old
+    directory is gone from the disk.
+
+    ⚠️ **Evidence, never a name.** A file that went from ``a`` to ``x`` says
+    ``a`` became ``x``; one that went from ``a/b/c`` to ``x/b/c`` says so for
+    ``a/b/c``, and — the tail of the two addresses being the same — for ``a/b``
+    and for ``a`` too. An old directory is a new one only when every such word
+    about it names that one new directory, and every word about that new
+    directory names it: files that went two ways (a split), files of two
+    directories in one (a merge), or one file of some other folder — the mount's
+    own included — landing there, and nobody can say whose directory it is.
+
+    A subfolder nothing spoke of (empty, or all its files changed) follows a
+    parent that was matched, by its name under it: the parent is proven to be
+    the same directory, and the subfolder is where it was inside it.
+    """
+    old_says: dict[str, set[str]] = {}
+    new_says: dict[str, set[str]] = {}
+    for old, new in moves:
+        if old == new:
+            continue
+        direct = True
+        # A file's own two directories always speak; their parents only while both are inside the mount.
+        while direct or (old and new and old != new):
+            old_says.setdefault(old, set()).add(new)
+            new_says.setdefault(new, set()).add(old)
+            direct = False
+            if not old or not new:
+                break
+            old_parent, _, old_name = old.rpartition("/")
+            new_parent, _, new_name = new.rpartition("/")
+            if old_name != new_name:
+                break
+            old, new = old_parent, new_parent
+
+    def fresh(rel: str) -> bool:
+        return rel in now and rel not in before
+
+    matched: dict[str, str] = {}
+    for old, news in old_says.items():
+        if not old or old not in before or len(news) != 1:
+            continue
+        (new,) = news
+        if new and fresh(new) and new_says[new] == {old}:
+            matched[old] = new
+
+    queue = sorted(matched)
+    while queue:
+        old = queue.pop()
+        new = matched[old]
+        for rel in sorted(before):
+            parent, _, name = rel.rpartition("/")
+            child = f"{new}/{name}"
+            if parent != old or rel in matched or rel in old_says or child in new_says or not fresh(child):
+                continue
+            matched[rel] = child
+            queue.append(rel)
+    return sorted(matched.items(), key=lambda pair: (pair[1].count("/"), pair[1]))
+
+
+async def follow_directories(
+    moves: list[tuple[int, str, _Prepared]],
+    before: set[str],
+    folder_ids: dict[str, int],
+    counters: dict[str, int],
+    *,
+    root: Path,
+    runtime,
+    authority=None,
+) -> int:
+    """Give a renamed or moved directory its old folder row back. Returns how many were kept.
+
+    ⚠️ A folder's link to products is a standing rule — whatever lands in the
+    folder joins them — and it hangs on the folder ROW, as a Virtual Printer's
+    target folder does. Read as "one folder vanished, another appeared", a
+    rename on the NAS left the files their rows (:func:`follow_moves`) and took
+    the rule away. So when the moved files say which directory the new one is
+    (:func:`match_directories`), the row the walk just made for it is folded
+    into the old one: its files and subfolders go under the old id, the old row
+    takes the new name, parent and path, and the new row goes.
+
+    Runs before :func:`follow_moves` writes: a file that moved WITH its folder
+    then finds itself still in the same folder row, so nothing is joined to it
+    or withdrawn. A file that is NEW in the directory came in under the row made
+    for the walk, which had no links — it joins the kept folder's products here.
+
+    The scanner is the only writer of an external subfolder's parent and path
+    (``PUT /library/folders/{id}`` refuses to move one), and one scan runs per
+    mount (:func:`active_job_id`); the rows are still read under the write
+    protocol that route takes, and a pair whose rows are not what the scan read
+    is left to today's handling. One short transaction per folder, no session
+    while the disk is asked.
+    """
+    from sqlalchemy import delete, insert
+
+    from backend.app.core.database import async_session, take_write_lock
+    from backend.app.models.product import product_folders
+    from backend.app.models.virtual_printer import VirtualPrinter
+
+    pairs = []
+    for _, old_file, item in moves:
+        old_rel = _rel_of(Path(old_file).parent, root)
+        if old_rel is not None:
+            pairs.append((old_rel, item.folder_rel))
+    matches = match_directories(pairs, before, set(folder_ids))
+    if not matches:
+        return 0
+    # SEC-PATH-OK: addresses of folder rows inside the walked mount, never request input.
+    gone = set(await _absent(runtime, root, [str(root / old) for old, _ in matches]))
+
+    kept = 0
+    renamed: dict[str, str] = {}
+    for old, new in matches:
+        # SEC-PATH-OK: as above.
+        old_path, new_path = str(root / old), str(root / new)
+        old_parent, new_parent = old.rpartition("/")[0], new.rpartition("/")[0]
+        # A subfolder matched by its place goes only when its parent did go.
+        by_place = renamed.get(old_parent) == new_parent
+        if old_path not in gone or new_parent not in folder_ids or (old_parent in dict(matches) and not by_place):
+            continue
+        old_id, new_id = folder_ids[old], folder_ids[new]
+        async with async_session() as db:
+            await guard(db, authority, permissions=("library:upload",))
+            await take_write_lock(db, LibraryFolder.__table__, old_id)
+            rows = {
+                row.id: row
+                for row in (
+                    await db.execute(
+                        select(LibraryFolder.id, LibraryFolder.external_path, LibraryFolder.is_external)
+                        .where(LibraryFolder.id.in_([old_id, new_id]))
+                        .order_by(LibraryFolder.id)
+                        .with_for_update()
+                    )
+                ).all()
+            }
+            if (
+                old_id not in rows
+                or new_id not in rows
+                or not rows[old_id].is_external
+                or rows[old_id].external_path != old_path
+                or rows[new_id].external_path != new_path
+            ):
+                continue
+            arrived = list(
+                (
+                    await db.execute(
+                        select(LibraryFile.id).where(LibraryFile.folder_id == new_id).order_by(LibraryFile.id)
+                    )
+                ).scalars()
+            )
+            await db.execute(update(LibraryFile).where(LibraryFile.folder_id == new_id).values(folder_id=old_id))
+            await db.execute(update(LibraryFolder).where(LibraryFolder.parent_id == new_id).values(parent_id=old_id))
+            # Whatever was hung on the minutes-old row follows too (SQLite runs no FK actions).
+            links = product_folders.c
+            late = set((await db.execute(select(links.product_id).where(links.library_folder_id == new_id))).scalars())
+            have = set((await db.execute(select(links.product_id).where(links.library_folder_id == old_id))).scalars())
+            if late:
+                await db.execute(delete(product_folders).where(links.library_folder_id == new_id))
+            for product_id in sorted(late - have):
+                await db.execute(insert(product_folders).values(product_id=product_id, library_folder_id=old_id))
+            await db.execute(update(LibraryScanJob).where(LibraryScanJob.folder_id == new_id).values(folder_id=old_id))
+            await db.execute(
+                update(VirtualPrinter).where(VirtualPrinter.target_folder_id == new_id).values(target_folder_id=old_id)
+            )
+            await db.execute(delete(LibraryFolder).where(LibraryFolder.id == new_id))
+            await db.execute(
+                update(LibraryFolder)
+                .where(LibraryFolder.id == old_id)
+                .values(name=new.rpartition("/")[2], parent_id=folder_ids[new_parent], external_path=new_path)
+            )
+            for file_id in arrived:
+                await join_folder_products(db, file_id, old_id)
+            await db.commit()
+        folder_ids[new] = old_id
+        del folder_ids[old]
+        renamed[old] = new
+        counters["folders_added"] -= 1
+        kept += 1
+    return kept
 
 
 # ── The deletion pass, and the guard it needs ───────────────────────────────
@@ -874,6 +1097,9 @@ async def run_scan(job_id: int, authority=None) -> None:
             if valid_hash(entry.file_hash):
                 known_by_hash.setdefault(entry.file_hash, []).append(path)
 
+        #: The directories that had a folder row before this walk made any.
+        folders_before = set(folder_ids)
+
         found_paths: set[str] = set()
         batch: list[_Prepared] = []
         #: New paths that may be known files under a new address: decided after the walk.
@@ -953,6 +1179,11 @@ async def run_scan(job_id: int, authority=None) -> None:
 
         moved: list[tuple[int, str]] = []
         if held:
+            decided = await decide_moves(held, known, known_by_hash, found_paths, root=root, runtime=runtime)
+            # Folders first: a file that moved with its directory then stays in the same folder row.
+            await follow_directories(
+                decided[0], folders_before, folder_ids, counters, root=root, runtime=runtime, authority=authority
+            )
             not_moves, moved = await follow_moves(
                 held,
                 known,
@@ -963,6 +1194,7 @@ async def run_scan(job_id: int, authority=None) -> None:
                 root=root,
                 runtime=runtime,
                 authority=authority,
+                decided=decided,
             )
             for file_id, filename in moved:
                 with contextlib.suppress(Exception):
