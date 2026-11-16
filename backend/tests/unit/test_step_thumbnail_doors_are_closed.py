@@ -15,6 +15,17 @@ ALLOWED_QUEUE_CALLERS = {
 }
 ALLOWED_ENQUEUE_MODULES = {"api/routes/library.py", "api/routes/library_thumbnail_jobs.py"}
 
+# Every model site is a provider under ``services/model_providers/`` and is reached through the routes in
+# ``api/routes/makerworld.py`` — both are the MakerWorld door (and the next site's).
+NEGATIVE_DOORS = (
+    "services/model_providers",
+    "api/routes/makerworld.py",
+    "services/archive.py",
+    "services/virtual_printer",
+    "services/calibration_service.py",
+    "services/library_scan.py",
+)
+
 
 def _calls(name: str):
     for path in APP.rglob("*.py"):
@@ -52,15 +63,12 @@ def _other_enqueue_owners() -> set[str]:
 
 
 def test_the_negative_doors_never_name_the_step_jobs():
-    for relative in (
-        "services/makerworld",
-        "services/archive.py",
-        "services/virtual_printer",
-        "services/calibration_service.py",
-        "services/library_scan.py",
-    ):
+    for relative in NEGATIVE_DOORS:
         target = APP / relative
         files = [target] if target.is_file() else list(target.rglob("*.py"))
+        # a door that moved is a door nobody watches: the list named ``services/makerworld`` for months after
+        # the code went to ``services/model_providers/`` and asserted nothing about it
+        assert files, f"{relative} is gone - name the place its code moved to"
         for path in files:
             text = path.read_text(encoding="utf-8")
             assert "library_preview_jobs" not in text and "_queue_step_thumbnail" not in text, path
