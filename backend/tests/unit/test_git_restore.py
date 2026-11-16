@@ -1709,11 +1709,49 @@ class TestRestoreKprofiles:
         assert profiles[0]["cali_idx"] == -1
 
     @pytest.mark.asyncio
-    async def test_unreadable_live_index_degrades_to_adding(self, db_session, printer_factory):
-        # A failed read must not abort the restore.
+    async def test_an_unread_nozzle_is_skipped_and_counted_failed(self, db_session, printer_factory):
+        """A nozzle whose live table could not be read is not written at all.
+
+        This used to degrade to "nothing matched", which sent every backed-up
+        profile as a NEW one beside its original and tallied them restored
+        (upstream 080d866fb; owner decision Р25). A failed read still must not
+        abort the restore — it costs that nozzle only.
+        """
         await printer_factory(serial_number="00M09A123456789")
         client = self._client()
         client.get_kprofiles = AsyncMock(side_effect=RuntimeError("mqtt timeout"))
+        tally = _CategoryTally()
+
+        with patch("backend.app.services.git_restore.printer_manager") as manager:
+            manager.get_client = MagicMock(return_value=client)
+            await _service()._restore_kprofiles(db_session, self._payload(), tally)
+
+        client.set_kprofiles_batch.assert_not_called()
+        assert (tally.restored, tally.failed) == (0, 1)
+        assert "kprofilesUnread" in _codes(tally)
+
+    @pytest.mark.asyncio
+    async def test_an_unread_nozzle_does_not_cost_the_next_one(self, db_session, printer_factory):
+        from backend.app.services.bambu_mqtt import KProfileReadError
+
+        await printer_factory(serial_number="00M09A123456789")
+        client = self._client()
+        client.get_kprofiles = AsyncMock(side_effect=[KProfileReadError("no answer"), []])
+        payload = {**self._payload(nozzle="0.4"), **self._payload(nozzle="0.6")}
+        tally = _CategoryTally()
+
+        with patch("backend.app.services.git_restore.printer_manager") as manager:
+            manager.get_client = MagicMock(return_value=client)
+            await _service()._restore_kprofiles(db_session, payload, tally)
+
+        assert [call.args[1] for call in client.set_kprofiles_batch.call_args_list] == ["0.6"]
+        assert (tally.restored, tally.failed) == (1, 1)
+
+    @pytest.mark.asyncio
+    async def test_a_read_empty_table_still_adds(self, db_session, printer_factory):
+        """An ANSWERED empty table is a fact: nothing to match, so the profiles are new."""
+        await printer_factory(serial_number="00M09A123456789")
+        client = self._client(live=[])
         tally = _CategoryTally()
 
         with patch("backend.app.services.git_restore.printer_manager") as manager:

@@ -23,14 +23,6 @@ const PRIMITIVE = 'components/Select.tsx';
 
 /** Native `<select>` tags the primitive deliberately does not cover. */
 const ALLOWLIST: Record<string, { count: number; why: string }> = {
-  'components/PrintModal/PrinterSelector.tsx': {
-    count: 1,
-    why: 'slot picker whose border is coloured by validation state (filament match) — a third state family beside `tone` and `active`',
-  },
-  'components/PrintModal/FilamentMapping.tsx': {
-    count: 1,
-    why: 'same validation-state border as PrinterSelector',
-  },
   'components/SlicerSettingsPanel.tsx': {
     count: 2,
     why: 'compact settings grid on its own py-0.5/text-xs scale, shared with its inputs',

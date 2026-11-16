@@ -98,6 +98,21 @@ describe('BulkEditSpoolsModal', () => {
     expect(boxes.some((box) => /Acme PLA/.test(box.getAttribute('aria-label') ?? ''))).toBe(false);
   });
 
+  it('unlocks the weight of the selection, and sends no weight', async () => {
+    const locked = [{ ...spools[0], weight_locked: true }, spools[1]] as unknown as InventorySpool[];
+    render(<BulkEditSpoolsModal isOpen spools={locked} allSpools={locked} catalogEntries={[]} spoolDisplayTemplate="{brand} {material} {color_name}" onClose={vi.fn()} onSaved={vi.fn()} />);
+    await waitFor(() => expect(screen.getByText('Bulk edit spools')).toBeInTheDocument());
+
+    expect(screen.getByText(/1 of them has a weight entered by hand/)).toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText('Unlock weight'));
+    fireEvent.click(screen.getByText('Apply to 2'));
+
+    await waitFor(() => expect(api.bulkUpdateSpools).toHaveBeenCalledTimes(1));
+    const [ids, fields] = (api.bulkUpdateSpools as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(ids).toEqual([1, 2]);
+    expect(fields).toEqual({ weight_locked: false });
+  });
+
   it('shows "— varies —" for fields that differ across the selection', async () => {
     render(<BulkEditSpoolsModal isOpen spools={spools} allSpools={spools} catalogEntries={[]} spoolDisplayTemplate="{brand} {material} {color_name}" onClose={vi.fn()} onSaved={vi.fn()} />);
     await waitFor(() => expect(screen.getByText('Bulk edit spools')).toBeInTheDocument());

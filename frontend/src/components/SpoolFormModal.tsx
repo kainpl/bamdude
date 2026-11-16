@@ -1,11 +1,13 @@
 import { useState, useEffect, useId, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { Loader2, Save, Beaker, Palette, Zap, Tag, Unlink, History } from 'lucide-react';
+import { Loader2, Save, Beaker, Palette, Zap, Tag, Unlink, Link2, History } from 'lucide-react';
 import { type FilamentFamily, api, ApiError } from '../api/client';
 import type { InventorySpool, SlicerSetting, SpoolCatalogEntry, LocalPreset, SpoolmanBulkCreateResult, SpoolKProfileInput, SpoolmanFilamentEntry } from '../api/client';
 import { Button } from './Button';
 import { Modal } from './Modal';
+import { AssignToSlotModal } from './AssignToSlotModal';
+import { formatSpoolDisplayName } from '../utils/spoolName';
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
 import type { SpoolFormData, PrinterWithCalibrations, ColorPreset, SpoolFormMode } from './spool-form/types';
@@ -89,6 +91,16 @@ export function SpoolFormModal({
   const [errors, setErrors] = useState<Partial<Record<keyof SpoolFormData, string>>>({});
   const [activeTab, setActiveTab] = useState<TabId>('filament');
   const [weightTouched, setWeightTouched] = useState(false);
+  // The operator's tick to release a hand-entered weight to the AMS sync again.
+  const [unlockWeight, setUnlockWeight] = useState(false);
+  const [showAssignToSlot, setShowAssignToSlot] = useState(false);
+  // The spool is named in the assignment dialogs the way every list names it.
+  const { data: uiPreferences } = useQuery({
+    queryKey: ['ui-preferences'],
+    queryFn: () => api.getUiPreferences(),
+    enabled: showAssignToSlot,
+  });
+  const [coreWeightTouched, setCoreWeightTouched] = useState(false);
   const [locationIdTouched, setLocationIdTouched] = useState(false);
   // Sent only when changed, so saving an unrelated edit cannot put back a
   // drying date an AMS cycle stamped while the form was open.
@@ -369,7 +381,8 @@ export function SpoolFormModal({
           color_name: spool.color_name_is_synthesized ? '' : (spool.color_name || ''),
           rgba: spool.rgba || '808080FF',
           label_weight: spool.label_weight || 1000,
-          core_weight: spool.core_weight || 250,
+          // 0 g is a real tare — only a missing value takes the default.
+          core_weight: spool.core_weight ?? 250,
           core_weight_catalog_id: spool.core_weight_catalog_id ?? null,
           weight_used: isCopying ? 0 : spool.weight_used || 0,
           slicer_filament: spool.slicer_filament || '',
@@ -388,6 +401,7 @@ export function SpoolFormModal({
           low_stock_threshold_pct: spool.low_stock_threshold_pct != null ? String(spool.low_stock_threshold_pct) : '',
           location_id: spool.location_id ?? null,
           purchase_location: spool.purchase_location || '',
+          material_number: spool.material_number || '',
           last_dried_at: (() => {
             const dried = isCopying ? null : parseUTCDate(spool.last_dried_at);
             return dried ? toDateTimeLocalValue(dried) : '';
@@ -418,6 +432,8 @@ export function SpoolFormModal({
       setErrors({});
       setActiveTab('filament');
       setWeightTouched(false);
+      setUnlockWeight(false);
+      setCoreWeightTouched(false);
       setLocationIdTouched(false);
       setLastDriedTouched(false);
     }
@@ -461,7 +477,12 @@ export function SpoolFormModal({
         ? { spoolman_filament_id: null }
         : {}),
     }));
-    if (key === 'weight_used') setWeightTouched(true);
+    if (key === 'weight_used') {
+      setWeightTouched(true);
+      // A weight entered now is a new hand measurement: it locks again.
+      setUnlockWeight(false);
+    }
+    if (key === 'core_weight') setCoreWeightTouched(true);
     if (key === 'location_id') setLocationIdTouched(true);
     if (key === 'last_dried_at') setLastDriedTouched(true);
     if (errors[key]) {
@@ -648,6 +669,7 @@ export function SpoolFormModal({
     enabled: isOpen && hasPermission('inventory:read'),
   });
   const knownCategories = categoryFacets?.categories ?? [];
+  const knownMaterialNumbers = categoryFacets?.material_numbers ?? [];
 
   // Resolve a legacy P-preset's family (via cloud base_id) so an old-style
   // spool derives its filament_family_id at submit. Shares the react-query
@@ -787,7 +809,14 @@ export function SpoolFormModal({
       color_name: formData.color_name || null,
       rgba: formData.rgba || null,
       label_weight: formData.label_weight,
-      ...(spoolmanMode ? {} : { core_weight: formData.core_weight, core_weight_catalog_id: formData.core_weight_catalog_id }),
+      // Built-in: always. Spoolman: the spool's own tare, only when the
+      // operator changed it, or a copy carries the source's OWN one — an
+      // untouched save must not stamp an inherited figure onto the spool.
+      ...(spoolmanMode
+        ? (coreWeightTouched || (isCopying && spool?.core_weight_is_inherited === false)
+          ? { core_weight: formData.core_weight }
+          : {})
+        : { core_weight: formData.core_weight, core_weight_catalog_id: formData.core_weight_catalog_id }),
       // ONE identity control (spec A §5.1): the family. The legacy columns get
       // the family's own id + alias — exactly the format an RFID-scanned Bambu
       // spool historically wrote there, so every legacy consumer (Inventory
@@ -821,6 +850,8 @@ export function SpoolFormModal({
         ? parseInt(formData.low_stock_threshold_pct, 10)
         : null,
       purchase_location: formData.purchase_location.trim() || null,
+      // Spoolman's article number belongs to the filament and is edited there.
+      ...(spoolmanMode ? {} : { material_number: formData.material_number.trim() || null }),
       ...(spoolmanMode ? { spoolman_filament_id: formData.spoolman_filament_id } : {}),
     };
 
@@ -828,6 +859,11 @@ export function SpoolFormModal({
     // This prevents stale cached values from overwriting usage-tracker data.
     if (!isEditing || weightTouched) {
       data.weight_used = formData.weight_used;
+    }
+    // Releasing the hand-weight lock is its own explicit act, never a side
+    // effect of another edit — and never together with a newly entered weight.
+    if (isEditing && unlockWeight && !weightTouched) {
+      data.weight_locked = false;
     }
 
     // Only send location_id when creating or when explicitly changed by the user.
@@ -1053,8 +1089,12 @@ export function SpoolFormModal({
                 currencySymbol={currencySymbol}
                 quickAdd={quickAdd}
                 categories={knownCategories}
+                materialNumbers={knownMaterialNumbers}
                 availableLocations={storageLocations}
                 showLastDried={isEditing}
+                weightLocked={isEditing && !spoolmanMode && !!spool?.weight_locked && !weightTouched}
+                unlockWeight={unlockWeight}
+                onUnlockWeightChange={setUnlockWeight}
                 onCreateLocation={async (name) => {
                   try {
                     const created = await api.createLocation({ name });
@@ -1116,6 +1156,14 @@ export function SpoolFormModal({
               <Unlink className="w-4 h-4" />
               {t('inventory.unassignSpool', 'Unassign')}
             </Button>
+            {/* A spool in no slot can be put into one from here: pick the slot,
+                then the usual assignment dialog takes over (AssignToSlotModal). */}
+            {spool && !spoolAssignment && !spool.archived_at && (
+              <Button variant="secondary" onClick={() => setShowAssignToSlot(true)} disabled={isPending}>
+                <Link2 className="w-4 h-4" />
+                {t('inventory.assignToSlot')}
+              </Button>
+            )}
           </div>
         )}
         <div className="flex gap-2 ml-auto">
@@ -1140,6 +1188,24 @@ export function SpoolFormModal({
         </Button>
         </div>
       </div>
+      {showAssignToSlot && spool && (
+        <AssignToSlotModal
+          spool={{
+            id: spool.id,
+            displayName: formatSpoolDisplayName(spool, uiPreferences?.spool_display_template),
+            source: spoolmanMode ? 'spoolman' : 'inventory',
+          }}
+          spoolmanMode={spoolmanMode}
+          onClose={() => setShowAssignToSlot(false)}
+          onAssigned={() => {
+            // The form's own «is it in a slot» reads — the assignment dialog
+            // refreshes the lists it knows about.
+            queryClient.invalidateQueries({ queryKey: ['spool-assignments'] });
+            queryClient.invalidateQueries({ queryKey: ['spoolman-slot-assignments-all'] });
+            refreshSpoolQueries();
+          }}
+        />
+      )}
     </Modal>
   );
 }

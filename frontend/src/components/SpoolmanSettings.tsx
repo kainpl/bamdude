@@ -194,6 +194,9 @@ export function SpoolmanSettings() {
       invalidateSpoolViews(queryClient);
       queryClient.invalidateQueries({ queryKey: ['inventory-spools'] });
       showToast(t('settings.amsSyncSuccess', { synced: data.synced, skipped: data.skipped }), 'success');
+      if (data.skipped_printers) {
+        showToast(t('settings.amsSyncSkippedPrinting', { count: data.skipped_printers }), 'warning');
+      }
       setShowAmsSyncConfirm(false);
     },
     onError: () => {
@@ -208,6 +211,9 @@ export function SpoolmanSettings() {
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ['spoolman-inventory-spools'] });
       showToast(t('settings.spoolmanAmsSyncSuccess', { synced: data.synced, skipped: data.skipped }), 'success');
+      if (data.skipped_printers) {
+        showToast(t('settings.amsSyncSkippedPrinting', { count: data.skipped_printers }), 'warning');
+      }
       setShowSpoolmanAmsSyncConfirm(false);
     },
     onError: (error: Error) => {

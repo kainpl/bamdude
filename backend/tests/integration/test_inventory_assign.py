@@ -1140,10 +1140,22 @@ class TestAutoUnlinkOccupiedSlot(TestARunoutIsNotASpoolRemoval):
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_a_blank_report_from_an_empty_slot_still_unlinks(
-        self, async_client: AsyncClient, printer_factory, spool_factory, db_session: AsyncSession
+        self, async_client: AsyncClient, printer_factory, spool_factory, db_session: AsyncSession, monkeypatch
     ):
+        """Still unlinks — once the slot has stayed empty (owner decision Р8): one
+        "empty" report alone is held for ``HOLD_SECONDS`` (services/slot_unlink_hold)."""
+        from backend.app.services import slot_unlink_hold
+
+        clock = [1000.0]
+        monkeypatch.setattr(slot_unlink_hold, "_now", lambda: clock[0])
+        monkeypatch.setattr(slot_unlink_hold, "schedule_recheck", lambda *_a, **_k: None)
+        slot_unlink_hold._holds.clear()
+
         printer = await self._assigned_printer(printer_factory, spool_factory, db_session)
         ams_data = [{"id": 0, "tray": [{"id": 0, "exists": False, "tray_type": "", "tray_color": "", "state": 9}]}]
+        await self._push(printer.id, ams_data, "IDLE")
+        assert len(await self._assignment_for(db_session, printer.id)) == 1
+        clock[0] += slot_unlink_hold.HOLD_SECONDS + 1
         await self._push(printer.id, ams_data, "IDLE")
         assert await self._assignment_for(db_session, printer.id) == []
 
@@ -1174,3 +1186,72 @@ class TestSpoolmanManualSyncKeepsAnOccupiedSlot:
 
         source = re.sub(r"\s+", " ", inspect.getsource(spoolman_routes))
         assert source.count("spool_present(tray_data) is not True") == 2
+
+
+class TestAssignSaysWhenAGenericWentOut:
+    """Upstream 02e39b18b·3: a fallback to a generic profile used to be silent."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_a_user_preset_on_a_printer_that_takes_none_is_reported(
+        self, async_client: AsyncClient, db_session, printer_factory, spool_factory
+    ):
+        from backend.app.models.user_filament import UserFilamentFamily
+
+        db_session.add(
+            UserFilamentFamily(
+                filament_id="P0f00aa1",
+                ecosystem="bambu",
+                alias="shop PETG",
+                vendor="shop",
+                filament_type="PETG",
+                origin="cloud_bambu",
+            )
+        )
+        await db_session.commit()
+        printer = await printer_factory(name="P1S")
+        spool = await spool_factory(filament_family_id="P0f00aa1", material="PETG")
+
+        mock_client = MagicMock()
+        mock_client.ams_set_filament_setting.return_value = True
+        mock_client.extrusion_cali_sel.return_value = True
+        status = _make_mock_status(ams_data=[{"id": 0, "tray": [{"id": 0, "tray_type": "PETG", "tray_info_idx": ""}]}])
+        status.support_user_preset = False
+
+        with patch("backend.app.services.printer_manager.printer_manager") as mock_pm:
+            mock_pm.get_client.return_value = mock_client
+            mock_pm.get_status.return_value = status
+            response = await async_client.post(
+                "/api/v1/inventory/assignments",
+                json={"spool_id": spool.id, "printer_id": printer.id, "ams_id": 0, "tray_id": 0},
+            )
+
+        assert response.status_code == 200, response.text
+        assert mock_client.ams_set_filament_setting.call_args.kwargs["tray_info_idx"] == "GFG99"
+        assert response.json()["slot_degraded"] == "user_preset_unsupported"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_a_spool_configured_as_itself_reports_nothing(
+        self, async_client: AsyncClient, printer_factory, spool_factory
+    ):
+        printer = await printer_factory(name="X1C")
+        spool = await spool_factory(slicer_filament="GFL05", material="PLA")
+
+        mock_client = MagicMock()
+        mock_client.ams_set_filament_setting.return_value = True
+        mock_client.extrusion_cali_sel.return_value = True
+        status = _make_mock_status(
+            ams_data=[{"id": 0, "tray": [{"id": 0, "tray_type": "PLA", "tray_info_idx": "GFL05"}]}]
+        )
+
+        with patch("backend.app.services.printer_manager.printer_manager") as mock_pm:
+            mock_pm.get_client.return_value = mock_client
+            mock_pm.get_status.return_value = status
+            response = await async_client.post(
+                "/api/v1/inventory/assignments",
+                json={"spool_id": spool.id, "printer_id": printer.id, "ams_id": 0, "tray_id": 0},
+            )
+
+        assert response.status_code == 200, response.text
+        assert response.json()["slot_degraded"] is None

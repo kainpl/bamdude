@@ -2635,10 +2635,16 @@ class TestTrayNowDualNozzleH2DSetup:
         }
         mqtt_client._process_message(payload)
 
-        # Dual-nozzle was detected; AMS 0 on right extruder (active by default);
-        # snow is 0xFF00FF (unloaded), so falls through to ams_extruder_map fallback.
-        # Single AMS on extruder 0 → global_id = 0*4+2 = 2
+        # Dual-nozzle was detected; snow is 0xFF00FF (unloaded), so the
+        # ams_extruder_map fallback runs. The map is built from this same
+        # report only after tray_now, so the slot can't be placed yet and
+        # nothing is guessed (upstream #3242).
         assert mqtt_client._is_dual_nozzle is True
+        assert mqtt_client.state.ams_extruder_map == {"0": 0}
+        assert mqtt_client.state.tray_now == 255
+
+        # The next report finds AMS 0 alone on the active extruder → 0*4+2 = 2
+        mqtt_client._process_message({"print": {"ams": {"tray_now": "2"}}})
         assert mqtt_client.state.tray_now == 2
 
 
@@ -2854,12 +2860,29 @@ class TestTrayNowDualNozzleH2DFallback(_H2DFixtureMixin):
         h2d_client._process_message(_ams_payload(1))
         assert h2d_client.state.tray_now == 5
 
-    def test_no_ams_on_extruder_uses_raw_slot(self, h2d_client):
-        """No AMS mapped to the active extruder → raw slot as global ID."""
+    def test_no_ams_on_extruder_keeps_current(self, h2d_client):
+        """No AMS mapped to the active extruder → the slot can't be placed, keep current (upstream #3242)."""
         # All AMS on left extruder, but right is active
         h2d_client.state.ams_extruder_map = {"0": 1, "128": 1}
+        h2d_client.state.tray_now = 255
         h2d_client._process_message(_ams_payload(2))
-        assert h2d_client.state.tray_now == 2
+        assert h2d_client.state.tray_now == 255
+
+    def test_no_ams_on_extruder_resolved_from_mapping(self, h2d_client):
+        """No AMS the map knows of, but the running print's mapping names one tray at the slot (upstream #3242)."""
+        h2d_client.state.ams_extruder_map = {"0": 1, "128": 1}
+        h2d_client.state.raw_data["mapping"] = [514]  # AMS 2 slot 2
+        h2d_client._was_running = True
+        h2d_client._process_message(_ams_payload(2))
+        assert h2d_client.state.tray_now == 10
+
+    def test_no_ams_on_extruder_idle_never_asks_the_last_prints_mapping(self, h2d_client):
+        """An idle printer keeps the last print's mapping: it is not asked, the current tray is kept."""
+        h2d_client.state.ams_extruder_map = {"0": 1, "128": 1}
+        h2d_client.state.raw_data["mapping"] = [514]
+        h2d_client.state.tray_now = 255
+        h2d_client._process_message(_ams_payload(2))
+        assert h2d_client.state.tray_now == 255
 
     def test_single_ams_ht_on_extruder_returns_unit_id(self, h2d_client):
         """AMS-HT 128 alone on left extruder, slot 0 → global ID 128 (not 512)."""
@@ -2898,7 +2921,7 @@ class TestTrayNowDualNozzleH2DFallback(_H2DFixtureMixin):
         h2d_client.state.tray_now = 255
         # Slot 3 → excludes AMS-HT, but AMS 0 and AMS 1 both remain → ambiguous
         h2d_client._process_message(_ams_payload(3))
-        assert h2d_client.state.tray_now == 3  # raw slot fallback
+        assert h2d_client.state.tray_now == 255  # kept, never the bare slot (upstream #3242)
 
 
 # ---------------------------------------------------------------------------

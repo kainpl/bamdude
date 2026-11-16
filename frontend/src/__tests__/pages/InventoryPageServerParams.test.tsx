@@ -975,3 +975,65 @@ describe('InventoryPage — the Forecast tab is not a second list (final review,
     expect(legacyArrayRequests()).toEqual([]);
   });
 });
+
+describe('InventoryPage — the material number', () => {
+  const NUMBERED = { ...baseSpool, id: 1, material: 'PLA', brand: 'eSun', material_number: '15' };
+  const PLAIN = { ...baseSpool, id: 2, material: 'PETG', brand: 'SUNLU', material_number: null };
+
+  beforeEach(() => {
+    localStorage.clear();
+    setupHandlers();
+    server.use(
+      http.get('/api/v1/inventory/spools/facets', () =>
+        HttpResponse.json({
+          materials: ['PLA', 'PETG'], brands: ['eSun', 'SUNLU'], categories: [],
+          material_numbers: ['15', 'A-7'], catalog_ids: [], colors: [],
+        })
+      ),
+      http.get('/api/v1/inventory/spools', ({ request }) => {
+        listRequests.push(new URL(request.url));
+        return HttpResponse.json({
+          items: [NUMBERED, PLAIN].map((s) => ({ ...s, k_profile_count: 0, k_profiles: [] })),
+          meta: { total: 2, current_page: 1, per_page: 24, last_page: 1 },
+        });
+      }),
+    );
+  });
+
+  it('its column is hidden until the operator switches it on', async () => {
+    render(<InventoryPageRouter />);
+    await waitFor(() => expect(screen.getAllByRole('columnheader').length).toBeGreaterThan(3));
+    expect(screen.queryByRole('columnheader', { name: /Material number/ })).toBeNull();
+  });
+
+  it('the shown column carries the number and its server sort key', async () => {
+    localStorage.setItem('bamdude-inventory-columns', JSON.stringify([
+      { id: 'id', label: '#', visible: true },
+      { id: 'material', label: 'Material', visible: true },
+      { id: 'material_number', label: 'Material number', visible: true },
+    ]));
+    localStorage.setItem('bamdude-inventory-sort', JSON.stringify({ column: 'material_number', direction: 'asc' }));
+    render(<InventoryPageRouter />);
+    await waitFor(() => expect(screen.getByRole('columnheader', { name: /Material number/ })).toBeInTheDocument());
+    expect(await screen.findByText('15', { selector: 'span' })).toBeInTheDocument();
+    await waitFor(() =>
+      expect(pageRequests().some((u) => u.searchParams.get('sort_by') === 'material_number_asc')).toBe(true)
+    );
+  });
+
+  it('its filter offers the served numbers and becomes the material_number param', async () => {
+    render(<InventoryPageRouter />);
+    const chip = await screen.findByRole('combobox', { name: 'Material number' });
+    expect(within(chip).getByRole('option', { name: 'A-7' })).toBeInTheDocument();
+
+    fireEvent.change(chip, { target: { value: 'A-7' } });
+    await waitFor(() =>
+      expect(pageRequests().some((u) => u.searchParams.get('material_number') === 'A-7')).toBe(true)
+    );
+
+    fireEvent.change(chip, { target: { value: '__none__' } });
+    await waitFor(() =>
+      expect(pageRequests().some((u) => u.searchParams.get('material_number') === '__none__')).toBe(true)
+    );
+  });
+});

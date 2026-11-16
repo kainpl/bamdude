@@ -85,6 +85,34 @@ async def _resolve_fc_id_for_audit(
     ).scalar()
 
 
+async def _write_verdict(client, sequence_id) -> tuple[bool, str, bool]:
+    """The printer's verdict on a K write, and whether to call it confirmed.
+
+    A missing answer is reported ("sent, not confirmed") only where this
+    connection has answered such a write before. Firmware that never answers
+    them would otherwise have every save reported that way; there silence says
+    nothing and the write is the quiet success it always was. A refusal is a
+    failure everywhere.
+    """
+    ack_ok, ack_detail, confirmed = await client.await_cali_verdict(sequence_id)
+    if ack_ok and not confirmed and sequence_id and not client.answers_cali_writes:
+        confirmed = True
+    return ack_ok, ack_detail, confirmed
+
+
+def _audit_result(audit_error: str | None, confirmed: bool) -> str:
+    """The audit's verdict on a K-profile write.
+
+    ``unconfirmed`` = sent, and the printer never answered. Silence is not a
+    refusal, so the request still succeeds — but it is not ``ok`` either: an
+    unanswered write and a confirmed one used to be the same row
+    (upstream f45cc599f).
+    """
+    if audit_error is not None:
+        return "error"
+    return "ok" if confirmed else "unconfirmed"
+
+
 async def _audit_kprofile(
     db: AsyncSession,
     *,
@@ -142,8 +170,22 @@ async def get_kprofiles(
     if not client or not client.state.connected:
         raise HTTPException(400, "Printer not connected")
 
-    # Request K-profiles from printer
-    profiles = await client.get_kprofiles(nozzle_diameter=nozzle_diameter)
+    # Request K-profiles from printer. No answer is NOT an empty table (upstream
+    # 080d866fb): answering 200 with nothing made the page offer "create the
+    # first profile" over profiles that exist, and left the Configure Slot
+    # dialog nothing to pre-select — its save then cleared the slot's K.
+    from backend.app.services.bambu_mqtt import KProfileReadError
+
+    try:
+        profiles = await client.get_kprofiles(nozzle_diameter=nozzle_diameter)
+    except KProfileReadError as exc:
+        raise HTTPException(
+            504,
+            detail={
+                "error": "kprofiles_unread",
+                "message": "The printer did not answer the K-profile request",
+            },
+        ) from exc
 
     # Mirror live profiles into our cache so every visible cali_idx maps to a
     # stable filament_calibration.id (Wave 7b sync wire-in). Idempotent.
@@ -301,7 +343,7 @@ async def set_kprofile(
     # the printer refused was reported to the user as saved. Awaited BEFORE the
     # audit row is written, so the audit records the printer's verdict rather
     # than the fact that bytes left the process.
-    ack_ok, ack_detail = await client.await_cali_ack(success)
+    ack_ok, ack_detail, confirmed = await _write_verdict(client, success)
 
     fc_id = await _resolve_fc_id_for_audit(db, printer_id=printer_id, profile=profile)
     if not success:
@@ -317,7 +359,7 @@ async def set_kprofile(
         action="kprofile_edit" if is_edit else "kprofile_add",
         payload=profile.model_dump(),
         filament_calibration_id=fc_id,
-        result="ok" if audit_error is None else "error",
+        result=_audit_result(audit_error, confirmed),
         error=audit_error,
     )
 
@@ -327,7 +369,7 @@ async def set_kprofile(
         raise HTTPException(500, f"Printer rejected the K-profile: {ack_detail}")
 
     message = "K-profile updated successfully" if is_edit else "K-profile added successfully"
-    return {"success": True, "message": message}
+    return {"success": True, "message": message, "confirmed": confirmed}
 
 
 @router.post("/batch", response_model=dict)
@@ -386,7 +428,7 @@ async def set_kprofiles_batch(
     nozzle_diameter = profiles[0].nozzle_diameter
 
     success = client.set_kprofiles_batch(profile_dicts, nozzle_diameter)
-    ack_ok, ack_detail = await client.await_cali_ack(success)
+    ack_ok, ack_detail, confirmed = await _write_verdict(client, success)
 
     if not success:
         audit_error = "set_kprofiles_batch MQTT publish failed"
@@ -401,7 +443,7 @@ async def set_kprofiles_batch(
         action="kprofile_batch_add",
         payload={"profiles": [p.model_dump() for p in profiles]},
         filament_calibration_id=None,
-        result="ok" if audit_error is None else "error",
+        result=_audit_result(audit_error, confirmed),
         error=audit_error,
     )
 
@@ -410,7 +452,7 @@ async def set_kprofiles_batch(
     if not ack_ok:
         raise HTTPException(500, f"Printer rejected the K-profiles: {ack_detail}")
 
-    return {"success": True, "message": f"Added {len(profiles)} K-profiles"}
+    return {"success": True, "message": f"Added {len(profiles)} K-profiles", "confirmed": confirmed}
 
 
 @router.delete("/", response_model=dict)
@@ -454,7 +496,7 @@ async def delete_kprofile(
         extruder_id=profile.extruder_id,
     )
 
-    ack_ok, ack_detail = await client.await_cali_ack(success)
+    ack_ok, ack_detail, confirmed = await _write_verdict(client, success)
 
     fc_id = await _resolve_fc_id_for_audit(db, printer_id=printer_id, profile=profile)
     if not success:
@@ -470,7 +512,7 @@ async def delete_kprofile(
         action="kprofile_delete",
         payload=profile.model_dump(),
         filament_calibration_id=fc_id,
-        result="ok" if audit_error is None else "error",
+        result=_audit_result(audit_error, confirmed),
         error=audit_error,
     )
 
@@ -482,7 +524,7 @@ async def delete_kprofile(
     # Wait for printer to process the delete before frontend refetches
     await asyncio.sleep(0.5)
 
-    return {"success": True, "message": "K-profile deleted successfully"}
+    return {"success": True, "message": "K-profile deleted successfully", "confirmed": confirmed}
 
 
 @router.get("/notes", response_model=KProfileNoteResponse)

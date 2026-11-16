@@ -125,6 +125,28 @@ describe('ArchivesPage', () => {
   });
 
   describe('archive info', () => {
+    it('marks the cost of a print still running as an estimate, and no other', async () => {
+      const priced = [
+        { ...mockArchives[0], status: 'printing', cost: 12.5, cost_is_estimate: true },
+        { ...mockArchives[1], cost: 20, cost_is_estimate: false },
+      ];
+      server.use(
+        http.get('/api/v1/archives/', () =>
+          HttpResponse.json({ data: priced, meta: { current_page: 1, per_page: 50, total: 2, last_page: 1 } }),
+        ),
+      );
+      render(<ArchivesPage />);
+
+      const estimate = await screen.findByText(/~.*12\.50/);
+      expect(estimate).toHaveAttribute(
+        'title',
+        'Estimate at the default filament price. The cost is taken from the spools when the print ends.',
+      );
+      const final = screen.getByText(/20\.00/);
+      expect(final.textContent).not.toContain('~');
+      expect(final).not.toHaveAttribute('title');
+    });
+
     it('shows print time', async () => {
       render(<ArchivesPage />);
 

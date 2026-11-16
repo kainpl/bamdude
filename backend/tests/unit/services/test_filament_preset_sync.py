@@ -93,6 +93,59 @@ async def test_orca_sync_resolves_root_child_and_skips_non_filament(db_session):
     assert fam_ids == {"P08cb51a"}
 
 
+def _orca_service(profiles):
+    svc = AsyncMock()
+    svc.credential_snapshot = CAPTURES["orca"]
+    svc.list_profiles = AsyncMock(return_value=profiles)
+    svc.close = AsyncMock()
+    return svc
+
+
+@pytest.mark.asyncio
+async def test_orca_sync_translates_orcas_own_ids_and_retires_a_family_minted_under_one(db_session):
+    """OrcaSlicer >= 2.5 ids ("OF…") never become a family (upstream dab7c60a9·7).
+
+    A pull made before the translation existed minted a user family under the
+    Orca id and the slot was told that id, which no printer resolves. The next
+    pull re-derives the mirror row and takes the stray family out of the picker.
+    """
+    db_session.add(
+        UserFilamentFamily(
+            filament_id="OF0UJcb6",
+            ecosystem="orca",
+            alias="PolyLite PETG",
+            vendor="Polymaker",
+            filament_type="PETG",
+            origin="cloud_orca",
+        )
+    )
+    await db_session.commit()
+    profiles = [
+        {
+            "id": "uuid-own-id",
+            "name": "PolyLite PETG @mine",
+            "content": {"type": "filament", "filament_id": "OF0UJcb6", "filament_type": ["PETG"]},
+        },
+        {
+            "id": "uuid-child",
+            "name": "PolyLite PETG slow",
+            "content": {"type": "filament", "inherits": "PolyLite PETG @mine"},
+        },
+    ]
+    with patch.object(sync, "build_authenticated_service", AsyncMock(return_value=_orca_service(profiles))):
+        outcome = await sync.sync_orca_presets_for_user(db_session, OWNER)
+
+    assert outcome.ok
+    rows = (await db_session.execute(select(UserFilamentPreset))).scalars().all()
+    # The child inherits the user's own profile, which carries the id (upstream #3216).
+    assert {r.name: r.family_filament_id for r in rows} == {
+        "PolyLite PETG @mine": "GFG60",
+        "PolyLite PETG slow": "GFG60",
+    }
+    families = (await db_session.execute(select(UserFilamentFamily))).scalars().all()
+    assert [(f.filament_id, f.orphaned) for f in families] == [("OF0UJcb6", True)]
+
+
 @pytest.mark.asyncio
 async def test_sync_is_idempotent(db_session):
     with patch.object(sync, "_build_bambu_cloud", AsyncMock(return_value=_bambu_cloud_mock())):

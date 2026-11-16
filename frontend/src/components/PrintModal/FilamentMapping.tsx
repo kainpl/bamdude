@@ -4,12 +4,13 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Circle, Check, AlertTriangle, RefreshCw, ChevronDown, ChevronUp, Palette, Info } from 'lucide-react';
 import { api } from '../../api/client';
 import { useFilamentMapping } from '../../hooks/useFilamentMapping';
-import { useSlotSpoolFacts, useSlotSpoolNames } from '../../hooks/useSlotSpoolNames';
+import { useSlotSpoolFacts, useSlotSpoolNames, useSlotSpoolSwatches } from '../../hooks/useSlotSpoolNames';
 import { filamentColorMatches, filamentRequirementMatches, filamentTypesCompatible } from '../../utils/amsHelpers';
 import { disambiguateColorNames, getColorName } from '../../utils/colors';
 import { arrangementAdvice, type Inlet } from '../../utils/ftsArrangement';
 import { autoAssignRackPositions, rackOptionsForGroup } from '../../utils/nozzleRack';
 import { Select } from '../Select';
+import { SlotPicker, type SlotOption } from './SlotPicker';
 import { useFilamentLabels } from './useFilamentLabels';
 import type { FilamentMappingProps, RackGroupInfo } from './types';
 
@@ -85,6 +86,9 @@ export function FilamentMapping({
   // binds to it — in Spoolman mode the Spoolman spool, priced the way the
   // print is charged — never from built-in rows that mode does not use.
   const slotFacts = useSlotSpoolFacts(printerId);
+  // A bound spool is drawn as itself (two-tone, glitter); an unbound slot by
+  // the colour the printer reports for it.
+  const slotSwatches = useSlotSpoolSwatches(printerId);
 
   const trayCostMap = useMemo(() => {
     const map = new Map<number, number | null>();
@@ -315,17 +319,19 @@ export function FilamentMapping({
             return (
             <div key={idx} className="space-y-1">
               <div
-                className="grid items-center gap-2 text-xs"
-                style={{
-                  // The rack picker sits inside the required-filament cell, so on
-                  // a rack machine that cell carries the name *and* a ~85px
-                  // dropdown. Raising only the floor (not the fraction) keeps
-                  // every other printer's layout exactly as it was, and keeps the
-                  // AMS dropdown the widest column.
-                  gridTemplateColumns: hasRack
-                    ? '16px minmax(210px, 1.4fr) auto 2fr 16px'
-                    : '16px minmax(70px, 1fr) auto 2fr 16px',
-                }}
+                data-testid="filament-mapping-row"
+                // The rack picker sits inside the required-filament cell, so on
+                // a rack machine that cell carries the name *and* a ~85px
+                // dropdown. Raising only the floor (not the fraction) keeps
+                // every other printer's layout exactly as it was, and keeps the
+                // slot picker the widest column. Below `sm` the picker takes a
+                // line of its own: on a rack machine the 210px floor left it
+                // ~16px on a phone held upright (upstream #3294).
+                className={`grid items-center gap-2 text-xs grid-cols-[16px_minmax(0,1fr)_16px] ${
+                  hasRack
+                    ? 'sm:grid-cols-[16px_minmax(210px,1.4fr)_auto_2fr_16px]'
+                    : 'sm:grid-cols-[16px_minmax(70px,1fr)_auto_2fr_16px]'
+                }`}
               >
                 {/* Required color */}
                 <span title={t('printModal.requiredFilament', { type: resolvedName, color: requiredColorLabel })}>
@@ -382,12 +388,16 @@ export function FilamentMapping({
                   <span className="text-bambu-gray shrink-0 whitespace-nowrap">({item.used_grams}g)</span>
                 </span>
                 {/* Arrow */}
-                <span className="text-bambu-gray">→</span>
-                {/* Slot selector dropdown */}
-                <select
-                  value={item.loaded?.globalTrayId ?? ''}
-                  onChange={(e) => handleSlotChange(slotId, e.target.value)}
-                  className={`flex-1 px-2 py-1 rounded border text-xs bg-bambu-dark-secondary focus:outline-none focus:ring-1 focus:ring-bambu-green ${
+                <span className="text-bambu-gray max-sm:hidden">→</span>
+                {/* Slot picker: every slot with a swatch of what is in it. */}
+                <div className="min-w-0 max-sm:col-span-3 max-sm:row-start-2">
+                <SlotPicker
+                  value={item.loaded?.globalTrayId ?? null}
+                  onChange={(value) => handleSlotChange(slotId, value == null ? '' : String(value))}
+                  placeholder={t('printModal.selectSlot')}
+                  ariaLabel={t('printModal.slotFor', { filament: resolvedName })}
+                  exactLabel={t('printModal.slotExactColor')}
+                  toneClass={`${
                     item.status === 'match'
                       ? 'border-bambu-green/50 text-bambu-green'
                       : item.status === 'type_only'
@@ -395,11 +405,8 @@ export function FilamentMapping({
                       : 'border-orange-500 dark:border-orange-400/50 text-orange-700 dark:text-orange-400'
                   } ${item.isManual ? 'ring-1 ring-blue-400/50' : ''}`}
                   title={item.isManual ? t('printModal.manuallySelected') : t('printModal.autoMatched')}
-                >
-                  <option value="" className="bg-bambu-dark text-bambu-gray">
-                    {t('printModal.selectSlot')}
-                  </option>
-                  {/*
+                  options={
+                  /*
                     #1722: every loaded slot is offered for every filament row,
                     regardless of which extruder the slot is wired to. Before this
                     a slot was only listed when its extruder matched the filament's
@@ -410,13 +417,13 @@ export function FilamentMapping({
                     intent; the dropdown now trusts the user's physical setup.
                     Printer firmware accepts/rejects the ams_mapping at start-print
                     — failure is loud, not silent.
-                  */}
-                  {loadedFilaments
+                  */
+                  loadedFilaments
                     // An old saved external pin remains visible so it can be
                     // corrected, but external is never newly selectable while
                     // FTS is connected.
                     .filter((f) => !ftsInstalled || !f.isExternal || f.globalTrayId === item.loaded?.globalTrayId)
-                    .map((f) => {
+                    .map((f): SlotOption => {
                       const remainingWeight = trayRemainingWeightMap.get(f.globalTrayId);
                       const remainingLabel = remainingWeight != null
                         ? t('printModal.slotRemainingShort', {
@@ -432,24 +439,34 @@ export function FilamentMapping({
                       // nozzle. Not translated: IN-A / IN-B are printed on the machine.
                       const ftsInlet = f.isExternal ? null : ftsInletForAms(f.amsId);
                       const ftsBadge = ftsInlet == null ? '' : ` [IN-${ftsInlet}]`;
-                      return (
-                        <option
-                          key={f.globalTrayId}
-                          value={f.globalTrayId}
-                          disabled={ftsInstalled && f.isExternal}
-                          className="bg-bambu-dark text-white"
-                        >
-                          {f.label}: {slotNames.get(f.globalTrayId) ?? `${f.traySubBrands || f.type} (${f.colorName})`}{remainingLabel}{ftsBadge}
-                          {ftsInstalled && f.isExternal ? ` — ${t('filamentRouting.feasibility.reason.fts_external_unsupported')}` : ''}
-                        </option>
-                      );
+                      // The swatch is the SPOOL's colour: the bound spool's own
+                      // when the inventory knows it, else the tray's — which
+                      // `buildLoadedFilaments` already reads from the actual
+                      // spool, not from what the printer was told. The mark is
+                      // what the row's own status compares (type and colour).
+                      const bound = slotSwatches.get(f.globalTrayId);
+                      return {
+                        value: f.globalTrayId,
+                        slot: f.label,
+                        name: slotNames.get(f.globalTrayId) ?? `${f.traySubBrands || f.type} (${f.colorName})`,
+                        color: bound?.rgba ?? f.color,
+                        extraColors: bound?.extraColors,
+                        effectType: bound?.effectType,
+                        subtype: bound?.subtype,
+                        detail: `${remainingLabel}${ftsBadge}`,
+                        exact: filamentRequirementMatches(item, f) && filamentColorMatches(item, f),
+                        disabled: ftsInstalled && f.isExternal,
+                        disabledReason: t('filamentRouting.feasibility.reason.fts_external_unsupported'),
+                      };
                   })}
-                </select>
+                />
+                </div>
                 {/* Status icon */}
                 {item.status === 'match' ? (
-                  <Check className="w-3 h-3 text-bambu-green" />
+                  <Check className="w-3 h-3 text-bambu-green max-sm:col-start-3 max-sm:row-start-1" />
                 ) : item.status === 'type_only' ? (
                   <span
+                    className="max-sm:col-start-3 max-sm:row-start-1"
                     title={
                       requiredColorLabel && loadedColorLabel
                         ? t('printModal.sameTypeDifferentColorDetail', {
@@ -462,7 +479,7 @@ export function FilamentMapping({
                     <AlertTriangle className="w-3 h-3 text-yellow-600 dark:text-yellow-400" />
                   </span>
                 ) : (
-                  <span title={routingReason || t(profileMismatch ? 'filamentRouting.feasibility.reason.variant_mismatch' : requireExactColor && rawColorMismatch ? 'printModal.filamentColorMismatch' : 'printModal.filamentTypeNotLoaded')}>
+                  <span className="max-sm:col-start-3 max-sm:row-start-1" title={routingReason || t(profileMismatch ? 'filamentRouting.feasibility.reason.variant_mismatch' : requireExactColor && rawColorMismatch ? 'printModal.filamentColorMismatch' : 'printModal.filamentTypeNotLoaded')}>
                     <AlertTriangle className="w-3 h-3 text-orange-600 dark:text-orange-400" />
                   </span>
                 )}

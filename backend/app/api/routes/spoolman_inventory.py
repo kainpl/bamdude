@@ -77,6 +77,7 @@ from backend.app.services.spoolman_native_tags import copy_extra_tags_to_native
 from backend.app.services.spoolman_tracking import get_fallback_spool_tag_for_slot
 from backend.app.services.spoolman_weights import spool_net_weight
 from backend.app.services.tag_conflict import native_tag_refused, tag_already_linked
+from backend.app.services.usage_tracker import print_is_unbooked
 from backend.app.utils.color_utils import spoolman_color_hex
 from backend.app.utils.filament_remaining import grams_remaining
 
@@ -326,9 +327,9 @@ class SpoolmanInventoryCreate(BaseModel):
     color_name: str | None = Field(None, max_length=64)
     rgba: str | None = Field(None, max_length=8, description="6-digit hex (RRGGBB) or 8-digit (RRGGBBAA)")
     label_weight: int = Field(1000, ge=1, le=100_000)
-    core_weight: int = Field(
-        250, ge=0, le=10_000
-    )  # Accepted for schema parity but not persisted to Spoolman (stored on filament type, not spool)
+    # Written to the spool's own ``spool_weight`` only when the caller names it;
+    # left off, Spoolman stamps the filament's (or the vendor's) empty weight.
+    core_weight: int = Field(250, ge=0, le=10_000)
     weight_used: float = Field(0.0, ge=0.0, le=100_000.0)
     note: str | None = Field(None, max_length=1000)
     cost_per_kg: float | None = Field(None, ge=0.0, le=1_000_000.0)
@@ -377,9 +378,8 @@ class SpoolmanInventoryUpdate(BaseModel):
     color_name: str | None = Field(None, max_length=64)
     rgba: str | None = Field(None, max_length=8, description="6-digit hex (RRGGBB) or 8-digit (RRGGBBAA)")
     label_weight: int | None = Field(None, ge=1, le=100_000)
-    core_weight: int | None = Field(
-        None, ge=0, le=10_000
-    )  # Accepted for schema parity but not persisted to Spoolman (stored on filament type, not spool)
+    # The spool's own empty weight (``spool_weight``); omitted = left alone.
+    core_weight: int | None = Field(None, ge=0, le=10_000)
     weight_used: float | None = Field(None, ge=0.0, le=100_000.0)
     note: str | None = Field(None, max_length=1000)
     cost_per_kg: float | None = Field(None, ge=0.0, le=1_000_000.0)
@@ -647,6 +647,12 @@ async def _resolve_filament_id(data: SpoolmanInventoryCreate, client: SpoolmanCl
         )
 
 
+def _named_tare(data: SpoolmanInventoryCreate) -> float | None:
+    """The empty weight a create request named, or None to let Spoolman choose.
+    0 g is a real tare; the schema default is not a named one."""
+    return float(data.core_weight) if "core_weight" in data.model_fields_set else None
+
+
 @router.post("/spools")
 async def create_spool(
     data: SpoolmanInventoryCreate,
@@ -681,6 +687,7 @@ async def create_spool(
                 # the filament's weight, the right size for a caller that did
                 # not say (upstream #3194).
                 initial_weight=(float(data.label_weight) if "label_weight" in data.model_fields_set else None),
+                spool_weight=_named_tare(data),
             )
     except HTTPException as exc:
         if exc.status_code == 404 and data.spoolman_filament_id is not None:
@@ -772,6 +779,7 @@ async def bulk_create_spools(
                 comment=data.note or None,
                 location=storage_location or None,
                 initial_weight=(float(data.label_weight) if "label_weight" in data.model_fields_set else None),
+                spool_weight=_named_tare(data),
             )
         except (SpoolmanUnavailableError, SpoolmanClientError, SpoolmanNotFoundError) as exc:
             logger.warning("Bulk spool creation: one spool failed: %s", exc)
@@ -1029,6 +1037,7 @@ async def update_spool(
                 comment=note or "",
                 price=new_price,
                 initial_weight=new_initial_weight,
+                spool_weight=(float(data.core_weight) if data.core_weight is not None else None),
                 extra=extra,
                 location=storage_location or None,
                 clear_location=storage_location_changed and not storage_location,
@@ -1476,9 +1485,10 @@ async def get_all_spoolman_slot_assignments(
 
     # Add synthetic fallback key (f"p{pid}a{ams_id}") for slots without a serial.
     all_serials: set[str] = set(serial_map.values())
+    # Every unit's position key, known serial or not: a label saved before the
+    # serial was read lives there (upstream 5eae04359).
     for s in slots:
-        if (s.printer_id, s.ams_id) not in serial_map:
-            all_serials.add(f"p{s.printer_id}a{s.ams_id}")
+        all_serials.add(f"p{s.printer_id}a{s.ams_id}")
 
     label_by_serial: dict[str, str] = {}
     if all_serials:
@@ -1490,9 +1500,7 @@ async def get_all_spoolman_slot_assignments(
         sn = serial_map.get((pid, ams_id))
         if sn and sn in label_by_serial:
             return label_by_serial[sn]
-        if not sn:
-            return label_by_serial.get(f"p{pid}a{ams_id}")
-        return None
+        return label_by_serial.get(f"p{pid}a{ams_id}")
 
     enriched: list[SpoolmanSlotAssignmentEnriched] = []
     for s in slots:
@@ -1541,6 +1549,7 @@ async def sync_spoolman_ams_weights(
 
     synced = 0
     skipped = 0
+    printing_printers: set[int] = set()
 
     def _find_tray(ams_data: list, ams_id: int, tray_id: int) -> dict | None:
         if not ams_data:
@@ -1567,7 +1576,19 @@ async def sync_spoolman_ams_weights(
             continue
 
         state = printer_manager.get_status(assignment.printer_id)
-        if not state or not state.raw_data:
+        if print_is_unbooked(assignment.printer_id, state):
+            # The print's own filament is still to be reported from the 3MF; the AMS reading already
+            # contains part of it, and writing it now would count that part twice.
+            logger.info(
+                "Spoolman AMS sync: printer %d has a print that is not booked yet, skipping spool %d",
+                assignment.printer_id,
+                assignment.spoolman_spool_id,
+            )
+            printing_printers.add(assignment.printer_id)
+            skipped += 1
+            continue
+        # A printer that dropped off keeps its last report: that is no reading.
+        if not state or not state.raw_data or getattr(state, "connected", True) is False:
             logger.info(
                 "Spoolman AMS sync: printer %d not connected, skipping spool %d",
                 assignment.printer_id,
@@ -1653,7 +1674,10 @@ async def sync_spoolman_ams_weights(
     if synced:
         # The Inventory page shows the weight this just changed.
         await ws_manager.broadcast({"type": "inventory_changed"})
-    return {"synced": synced, "skipped": skipped}
+    answer = {"synced": synced, "skipped": skipped}
+    if printing_printers:
+        answer["skipped_printers"] = len(printing_printers)
+    return answer
 
 
 @router.post("/slot-assignments")
@@ -1708,6 +1732,17 @@ async def assign_spoolman_slot(
                 raise HTTPException(
                     status_code=409, detail="Mid-print replacement needs a print that is paused or has been paused"
                 )
+
+        # A spool sits in one slot (owner decision Р7): the slot it would leave
+        # must not be feeding a running print. Asked before anything is written.
+        from backend.app.services import spool_single_slot
+
+        _keep = (body.printer_id, body.ams_id, body.tray_id)
+        for _other in await spool_single_slot.other_spoolman_slots(
+            db, spoolman_spool_id=body.spoolman_spool_id, keep=_keep
+        ):
+            if spool_single_slot.slot_feeds_running_print(*_other):
+                raise spool_single_slot.refusal(spool_single_slot.SpoolFeedsPrint(_other))
 
         # What the upsert below is about to displace, read BEFORE it (spec
         # 2026-09-13 §3.3) — the ON CONFLICT DO UPDATE overwrites the old spool id
@@ -1771,7 +1806,15 @@ async def assign_spoolman_slot(
                     "spool_id": body.spoolman_spool_id,
                 },
             )
+            # Its other ledger rows go with the same commit. Rows only: nothing
+            # is journalled for a vacated slot and nothing is sent to it.
+            _released = await spool_single_slot.release_other_spoolman_slots(
+                db, spoolman_spool_id=body.spoolman_spool_id, keep=_keep, refuse=True
+            )
             await db.commit()
+        except spool_single_slot.SpoolFeedsPrint as feeding:
+            await db.rollback()
+            raise spool_single_slot.refusal(feeding) from feeding
         except Exception as exc:
             await db.rollback()
             logger.error("Failed to persist slot assignment: %s", exc)
@@ -1791,6 +1834,8 @@ async def assign_spoolman_slot(
             )
         except Exception:
             logger.exception("note_assignment_change failed for printer %s", body.printer_id)
+
+    await spool_single_slot.announce(_released.vacated)
 
     # #1457: clear stale fallback-tag links on OTHER spools still bound to this
     # slot. Without this, a non-RFID slot's deterministic fallback tag stays

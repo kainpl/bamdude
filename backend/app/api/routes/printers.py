@@ -9,7 +9,7 @@ import zlib
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import Response
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -39,9 +39,6 @@ from backend.app.models.user import User
 from backend.app.schemas.archive import ArchivePartRow
 from backend.app.schemas.printer import (
     AmsLabelBody,
-    AMSTray,
-    AmsTrayActual,
-    AMSUnit,
     BackupCompatibilityApplyRequest,
     DiagnosticRequest,
     FilaSwitchResponse,
@@ -63,7 +60,13 @@ from backend.app.schemas.printer import (
     WaitingPrintOut,
 )
 from backend.app.schemas.timelapse import TimelapseStorage
-from backend.app.services import ams_advertised_overlay, archive_parts, drying_preflight, scheduled_drying
+from backend.app.services import (
+    ams_advertised_overlay,
+    archive_parts,
+    drying_preflight,
+    print_mapping_projection,
+    scheduled_drying,
+)
 from backend.app.services.ams_backup_compatibility import NAMESPACE as AMS_BACKUP_COMPAT_NAMESPACE
 from backend.app.services.ams_backup_compatibility_apply import bulk_apply, forget_printer_rebuild
 from backend.app.services.archive import (
@@ -107,7 +110,13 @@ from backend.app.services.printer_diagnostic import run_connection_diagnostic
 from backend.app.services.printer_files.factory import transport_for
 from backend.app.services.printer_location_service import load_tree, subtree_ids
 from backend.app.services.printer_manager import (
+    FILA_CTYPE_GRADIENT,  # noqa: F401 — re-exported: the tray colour rule moved beside the shared serialiser
+    FILA_CTYPE_MULTI,  # noqa: F401
+    FILA_CTYPE_SINGLE,  # noqa: F401
     _airduct_fans,
+    _tray_colours,  # noqa: F401
+    _tray_remain_g,  # noqa: F401
+    ams_units_for,
     display_temperatures,
     drying_screen_only,
     find_ams_unit,
@@ -115,6 +124,7 @@ from backend.app.services.printer_manager import (
     get_derived_status_name,
     get_stage_name,
     is_printer_busy,
+    nozzle_wiring,
     printer_manager,
     resolve_expected_tray,
     resolve_plate_id,
@@ -122,16 +132,12 @@ from backend.app.services.printer_manager import (
     supports_chamber_temp,
     supports_drying,
     supports_drying_while_printing,
-    uniform_tray_drying_hint,
-    wire_tray_state,
+    vt_trays_for,
 )
 from backend.app.services.printer_status_context import current_archive_ids, printers_with_waiting_rows
 from backend.app.services.printer_tag_service import delete_links_for_printer, replace_links
-from backend.app.utils.ams_drying import is_countdown_parked
-from backend.app.utils.ams_humidity import ams_humidity_percent
 from backend.app.utils.fila_switch import extruder_slots_payload, inlet_bindings, switch_ready
 from backend.app.utils.http import build_content_disposition
-from backend.app.utils.kprofile_lookup import build_slot_k_resolver
 from backend.app.utils.model_compatibility import compatibility_matrix, effective_model_for_state, model_compatibility
 from backend.app.utils.printer_configs import is_bed_slinger
 from backend.app.utils.printer_models import normalize_model_name
@@ -152,59 +158,6 @@ def _caller_can_view_printer_secrets(user: User | None) -> bool:
     if user is None:
         return False
     return user.has_permission(Permission.PRINTERS_UPDATE.value)
-
-
-# BS ``DevFilaColorType`` — ⚠️ 0 is MULTI and 2 is SINGLE, not the other way
-# round, so a bare ``ctype: 0`` must never be read as "no type".
-FILA_CTYPE_MULTI = 0
-FILA_CTYPE_GRADIENT = 1
-FILA_CTYPE_SINGLE = 2
-
-
-def _tray_remain_g(tray: dict) -> int:
-    """The firmware's own grams-remaining for a tray, or -1 when it has none.
-
-    BS reads this from both its tray parsers with a default of -1
-    (``DevFilaSystemParser`` and ``parse_vt_tray``), and prefers it over the
-    percentage wherever it is present.
-
-    ⚠️ **This is not a weight measurement, and no hardware measures weight.**
-    Bambu's AMS — including the 2 Pro — derives remaining filament from the RFID
-    tag plus how far the spool has turned; a load cell is an open feature
-    request, not a product. So the figure exists only for tagged spools and is
-    ``-1`` everywhere else. Reading it costs nothing and means the number is
-    used the day firmware or hardware starts providing it.
-    """
-    raw = tray.get("remain_g")
-    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
-        return -1
-    return int(raw)
-
-
-def _tray_colours(tray: dict, fallback_colour: str | None) -> tuple[list[str], int]:
-    """Every colour a tray carries, plus how it should be read.
-
-    BS applies both fallbacks in each of its two tray parsers, and we follow
-    them so a caller never has to special-case a firmware that omits a field:
-
-    * no ``cols`` → the single ``tray_color``, as a one-item list;
-    * no ``ctype`` → derived from the list, ``len > 1`` being MULTI.
-
-    Colours are returned without the leading ``#`` and lower-cased, matching
-    ``tray_color`` elsewhere in this response so the frontend has one shape to
-    handle.
-    """
-    raw = tray.get("cols")
-    cols: list[str] = []
-    if isinstance(raw, list):
-        cols = [str(c).replace("#", "").lower() for c in raw if isinstance(c, str) and c]
-    if not cols and fallback_colour:
-        cols = [fallback_colour.replace("#", "").lower()]
-
-    ctype = tray.get("ctype")
-    if not isinstance(ctype, int) or isinstance(ctype, bool):
-        ctype = FILA_CTYPE_MULTI if len(cols) > 1 else FILA_CTYPE_SINGLE
-    return cols, ctype
 
 
 def _serialize_printer(printer: Printer, *, include_secret: bool):
@@ -400,7 +353,7 @@ async def get_available_filaments(
 
     Used by the frontend to offer filament override options for model-based queue assignment.
     """
-    from backend.app.utils.printer_models import normalize_model_name
+    from backend.app.utils.printer_models import is_dual_nozzle_model, normalize_model_name
 
     # One helper, because the or-chain this replaces had a dead second branch:
     # ``normalize_printer_model`` returns an unknown code unchanged, so the code
@@ -446,6 +399,10 @@ async def get_available_filaments(
 
         # Get ams_extruder_map for dual-nozzle printers
         ams_extruder_map = status.raw_data.get("ams_extruder_map", {})
+        # Two hotends by MODEL, as the feed snapshot decides it: without an AMS
+        # the map above is empty, and it must not decide whether the two
+        # external holders are told apart (upstream 113f08a1a).
+        two_hotends = bool(ams_extruder_map) or is_dual_nozzle_model(normalize_model_name(printer.model))
 
         # AMS trays
         for ams_unit in status.raw_data.get("ams", []):
@@ -493,7 +450,7 @@ async def get_available_filaments(
             tray_info_idx = vt.get("tray_info_idx", "")
             tray_sub_brands = vt.get("tray_sub_brands", "") or ""
             vt_id = int(vt.get("id", 254))
-            extruder_id = (255 - vt_id) if ams_extruder_map else None
+            extruder_id = (255 - vt_id) if two_hotends else None
 
             key = (vt_type.upper(), rgb, tray_sub_brands.upper(), extruder_id)
             if key not in seen:
@@ -1316,15 +1273,22 @@ async def get_printer_status_batch(
     printers = list((await db.scalars(select(Printer).where(Printer.id.in_(wanted)))).all())
     subtasks = {}
     held = []
+    unmapped = []
     for printer in printers:
         state = printer_manager.get_status(printer.id)
         if state and state.state in ("RUNNING", "PAUSE"):
             subtasks[printer.id] = state.subtask_id or None
+            if print_mapping_projection.from_session(printer.id) is None:
+                unmapped.append(printer.id)
         if printer_manager.is_awaiting_plate_clear(printer.id):
             held.append(printer.id)
     archives = await current_archive_ids(db, subtasks)
     waiting = await printers_with_waiting_rows(db, held)
-    statuses = {p.id: await _build_printer_status(p, db, archive_ids=archives, waiting_ids=waiting) for p in printers}
+    mappings = await print_mapping_projection.from_rows(db, unmapped)
+    statuses = {
+        p.id: await _build_printer_status(p, db, archive_ids=archives, waiting_ids=waiting, print_mappings=mappings)
+        for p in printers
+    }
     logger.debug(
         "Printer status batch: requested=%s returned=%s elapsed=%.3fs",
         len(ids),
@@ -1340,6 +1304,7 @@ async def _build_printer_status(
     *,
     archive_ids: dict[int, int | None] | None = None,
     waiting_ids: set[int] | None = None,
+    print_mappings: dict[int, list[int]] | None = None,
 ) -> PrinterStatus:
     printer_id = printer.id
 
@@ -1393,183 +1358,13 @@ async def _build_printer_status(
         for e in (getattr(state, "hms_muted", None) or [])
     ]
 
-    # Parse AMS data from raw_data
-    ams_units = []
-    vt_tray = []
-    ams_exists = False
     raw_data = state.raw_data or {}
-
-    # K value for a slot's bound profile, resolved against the nozzle the slot
-    # feeds. Shared with the WebSocket shaper (printer_state_to_dict) so the two
-    # views of the same card cannot answer differently — see kprofile_lookup.
-    resolve_slot_k = build_slot_k_resolver(state)
-
-    # Cached active-cycle drying params (filament + target temp) we sent last;
-    # Bambu doesn't echo them on the per-tick AMS push, so the badge needs the
-    # cache to render "<filament> @ <temp>°C".
-    drying_targets = printer_manager.get_drying_targets(printer_id) or {}
-
-    if "ams" in raw_data and isinstance(raw_data["ams"], list):
-        ams_exists = True
-        for ams_data in raw_data["ams"]:
-            # Skip if ams_data is not a dict (defensive check)
-            if not isinstance(ams_data, dict):
-                continue
-            trays = []
-            for tray_data in ams_data.get("tray", []):
-                # Filter out empty/invalid tag values
-                tag_uid = tray_data.get("tag_uid", "")
-                if tag_uid in ("", "0000000000000000"):
-                    tag_uid = None
-                tray_uuid = tray_data.get("tray_uuid", "")
-                if tray_uuid in ("", "00000000000000000000000000000000"):
-                    tray_uuid = None
-
-                # Get K value: first try tray's k field, then lookup from K-profiles
-                k_value = tray_data.get("k")
-                cali_idx = tray_data.get("cali_idx")
-                if k_value is None:
-                    k_value = resolve_slot_k(cali_idx, int(ams_data.get("id", 0)), int(tray_data.get("id", 0)))
-
-                _tray_cols, _tray_ctype = _tray_colours(tray_data, tray_data.get("tray_color"))
-                # The spool behind an advertised profile, exactly as the
-                # WebSocket shaper builds it (printer_state_to_dict). The two
-                # payloads describe the same tray and the frontend merges them,
-                # so a field only one of them carries flickers away on every
-                # refetch — see AmsTrayActual.
-                _overlay_entry = ams_advertised_overlay.effective(
-                    printer_id, int(ams_data.get("id", 0)), int(tray_data.get("id", 0)), tray_data
-                )
-                trays.append(
-                    AMSTray(
-                        id=tray_data.get("id", 0),
-                        actual=(
-                            AmsTrayActual(
-                                tray_color=_overlay_entry.actual_color,
-                                tray_type=_overlay_entry.actual_material,
-                                tray_info_idx=_overlay_entry.actual_variant,
-                                cols=list(_overlay_entry.actual_cols),
-                            )
-                            if _overlay_entry
-                            else None
-                        ),
-                        tray_color=tray_data.get("tray_color"),
-                        cols=_tray_cols,
-                        ctype=_tray_ctype,
-                        tray_type=tray_data.get("tray_type"),
-                        tray_sub_brands=tray_data.get("tray_sub_brands"),
-                        tray_id_name=tray_data.get("tray_id_name"),
-                        tray_info_idx=tray_data.get("tray_info_idx"),
-                        remain=tray_data.get("remain", 0),
-                        remain_g=_tray_remain_g(tray_data),
-                        k=k_value,
-                        cali_idx=cali_idx,
-                        tag_uid=tag_uid,
-                        tray_uuid=tray_uuid,
-                        nozzle_temp_min=tray_data.get("nozzle_temp_min"),
-                        nozzle_temp_max=tray_data.get("nozzle_temp_max"),
-                        drying_temp=tray_data.get("drying_temp"),
-                        drying_time=tray_data.get("drying_time"),
-                        state=wire_tray_state(tray_data),
-                        exists=tray_data.get("exists"),
-                    )
-                )
-            # Percentage only. The 1-5 ``humidity`` index is never substituted
-            # for one -- it is inverted, so it would read as the opposite of
-            # what it means (#3140). See utils/ams_humidity.
-            humidity_pct = ams_humidity_percent(ams_data)
-            humidity_value = int(round(humidity_pct)) if humidity_pct is not None else None
-            # AMS-HT has 1 tray, regular AMS has 4 trays
-            is_ams_ht = len(trays) == 1
-
-            # Active-cycle filament + target temperature for the drying badge
-            # (cache first, then the loaded trays when they agree on a filament
-            # type — see uniform_tray_drying_hint in printer_manager).
-            ams_id_int = int(ams_data.get("id", 0))
-            target = drying_targets.get(ams_id_int) or {}
-            dry_target_temp: int | None = None
-            dry_filament: str | None = None
-            target_temp_val = target.get("temp")
-            target_fil_val = target.get("filament") or ""
-            if target_temp_val is not None:
-                try:
-                    dry_target_temp = int(target_temp_val)
-                except (TypeError, ValueError):
-                    dry_target_temp = None
-            if target_fil_val:
-                dry_filament = str(target_fil_val)
-            if dry_target_temp is None or not dry_filament:
-                hint_filament, hint_temp = uniform_tray_drying_hint(
-                    [(tray.tray_type or "", tray.drying_temp) for tray in trays]
-                )
-                if not dry_filament:
-                    dry_filament = hint_filament
-                if dry_target_temp is None:
-                    dry_target_temp = hint_temp
-
-            ams_units.append(
-                AMSUnit(
-                    id=ams_id_int,
-                    humidity=humidity_value,
-                    temp=ams_data.get("temp"),
-                    is_ams_ht=is_ams_ht,
-                    tray=trays,
-                    # Serial number: Bambu MQTT uses "sn" key on AMS unit objects
-                    serial_number=str(ams_data.get("sn") or ams_data.get("serial_number") or ""),
-                    # Firmware version: populated by _handle_version_info from info.module ams/* entries
-                    sw_ver=str(ams_data.get("sw_ver") or ""),
-                    # Drying: dry_time > 0 means drying is active (minutes remaining)
-                    dry_time=int(ams_data.get("dry_time") or 0),
-                    dry_countdown_stalled=is_countdown_parked(ams_data),
-                    dry_target_temp=dry_target_temp,
-                    dry_filament=dry_filament,
-                    module_type=str(ams_data.get("module_type") or ""),
-                )
-            )
-
-    # Virtual tray (external spool holder) - comes from vt_tray in raw_data (list)
-    if "vt_tray" in raw_data:
-        for vt_data in raw_data["vt_tray"]:
-            # Filter out empty/invalid tag values for vt_tray
-            vt_tag_uid = vt_data.get("tag_uid", "")
-            if vt_tag_uid in ("", "0000000000000000"):
-                vt_tag_uid = None
-            vt_tray_uuid = vt_data.get("tray_uuid", "")
-            if vt_tray_uuid in ("", "00000000000000000000000000000000"):
-                vt_tray_uuid = None
-
-            # Get K value: first try tray's k field, then lookup from K-profiles
-            vt_k_value = vt_data.get("k")
-            vt_cali_idx = vt_data.get("cali_idx")
-            tray_id = int(vt_data.get("id", 254))
-            if vt_k_value is None:
-                # External holder: 254 is Ext-L, 255 Ext-R; the resolver takes the 0/1 side.
-                vt_k_value = resolve_slot_k(vt_cali_idx, 255, tray_id - 254)
-
-            # The external spool carries the same colour fields as an AMS tray —
-            # BS parses them in both places, so a multi-colour spool on the
-            # external holder is not a different case.
-            _vt_cols, _vt_ctype = _tray_colours(vt_data, vt_data.get("tray_color"))
-            vt_tray.append(
-                AMSTray(
-                    id=tray_id,
-                    tray_color=vt_data.get("tray_color"),
-                    tray_type=vt_data.get("tray_type"),
-                    cols=_vt_cols,
-                    ctype=_vt_ctype,
-                    tray_sub_brands=vt_data.get("tray_sub_brands"),
-                    tray_id_name=vt_data.get("tray_id_name"),
-                    tray_info_idx=vt_data.get("tray_info_idx"),
-                    remain=vt_data.get("remain", 0),
-                    remain_g=_tray_remain_g(vt_data),
-                    k=vt_k_value,
-                    cali_idx=vt_cali_idx,
-                    tag_uid=vt_tag_uid,
-                    tray_uuid=vt_tray_uuid,
-                    nozzle_temp_min=vt_data.get("nozzle_temp_min"),
-                    nozzle_temp_max=vt_data.get("nozzle_temp_max"),
-                )
-            )
+    ams_exists = isinstance(raw_data.get("ams"), list)
+    # One serialiser for this answer and the WebSocket push — see
+    # ``printer_manager.ams_units_for``. The cached active-cycle drying params
+    # (filament + target temp) ride along: Bambu does not echo them per tick.
+    ams_units = ams_units_for(state, printer_id, printer_manager.get_drying_targets(printer_id) or {})
+    vt_tray = vt_trays_for(state)
 
     # Convert nozzle info to response format
     nozzles = [
@@ -1617,8 +1412,17 @@ async def _build_printer_status(
         filament_tangle_detect=state.print_options.filament_tangle_detect,
     )
 
-    # Get AMS mapping from raw_data (which AMS is connected to which nozzle)
-    ams_mapping = raw_data.get("ams_mapping", [])
+    # The trays the running print was dispatched to (the card's "P1 / P2" slot
+    # marks): a read-only view of the print session's mapping, from memory or,
+    # for a process that holds no session, from its durable row.
+    ams_mapping: list[int] = []
+    if state.state in print_mapping_projection.ACTIVE_STATES:
+        session_mapping = print_mapping_projection.from_session(printer_id)
+        if session_mapping is None:
+            if print_mappings is None:
+                print_mappings = await print_mapping_projection.from_rows(db, [printer_id])
+            session_mapping = print_mappings.get(printer_id, [])
+        ams_mapping = session_mapping
     # Get per-AMS extruder map from state attribute (not raw_data, to avoid race condition
     # where raw_data gets replaced during MQTT updates and ams_extruder_map is temporarily missing)
     ams_extruder_map = state.ams_extruder_map or {}
@@ -1727,6 +1531,8 @@ async def _build_printer_status(
                 state.tray_tar,
                 [(u.id, u.is_ams_ht) for u in ams_units],
                 raw_data.get("mapping"),
+                state.active_extruder,
+                nozzle_wiring(state),
             )
             if state.state == "PAUSE"
             else None
@@ -1736,6 +1542,8 @@ async def _build_printer_status(
                 state.tray_pre,
                 [(u.id, u.is_ams_ht) for u in ams_units],
                 raw_data.get("mapping"),
+                state.active_extruder,
+                nozzle_wiring(state),
             )
             if state.state == "PAUSE"
             else None
@@ -3142,6 +2950,18 @@ async def get_calibration_options(
 # ============================================================================
 
 
+def _kprofile_filament_id(value: str) -> str:
+    """The filament id a K-profile is filed under, for an id a client named it by."""
+    from backend.app.utils import filament_catalog as catalog
+
+    given = (value or "").strip()
+    if not given or catalog.get_family(given):
+        return given
+    base = given.split("_")[0] if given.startswith("GF") and "_" in given else given
+    preset = catalog.preset_for_setting_id(given) or catalog.preset_for_setting_id(base)
+    return preset.filament_id if preset else given
+
+
 @router.post("/{printer_id}/slots/{ams_id}/{tray_id}/configure")
 async def configure_ams_slot(
     printer_id: int,
@@ -3206,13 +3026,28 @@ async def configure_ams_slot(
     # ``tray_info_idx`` (when given) is a family id straight from the picker;
     # otherwise the material name routes to its generic family inside the
     # builder. The old slot-reuse and generic-table heuristics are gone.
+    from backend.app.services.filament_identity import resolve_raw, resolve_tray
     from backend.app.services.slot_assignment import build_slot_assignment
+
+    # ``tray_info_idx`` is a family id from our own dialog. An API client may
+    # send a Bambu SETTING id there instead (upstream d6de7aa69): it never
+    # reached the printer, but the slot went out as the material's Generic
+    # rather than the filament the client named. The one decoder of the old id
+    # forms answers; its guess from a bare material name is not an id and is not
+    # taken. The given value stays the preset when it is one and none was sent.
+    family_id = tray_info_idx or None
+    if family_id and not (await resolve_tray(db, family_id)).family:
+        decoded = await resolve_raw(db, family_id)
+        if decoded.family and decoded.origin != "legacy":
+            if not setting_id and decoded.setting_id:
+                setting_id = decoded.setting_id
+            family_id = decoded.family.filament_id
 
     state = printer_manager.get_status(printer_id)
     try:
         plan = await build_slot_assignment(
             db,
-            family_id=tray_info_idx or None,
+            family_id=family_id,
             preset_setting_id=setting_id or None,
             # ⚠️ The model lives in the manager's model cache, NOT on
             # PrinterInfo (name + serial only) — ``info.model`` 500'd every
@@ -3232,8 +3067,12 @@ async def configure_ams_slot(
     effective_tray_info_idx = plan.tray_info_idx
     effective_setting_id = plan.setting_id
 
-    # K-profile linkage keeps its own explicit id when the client sent one.
-    filament_id_for_kprofile = kprofile_filament_id if kprofile_filament_id else effective_tray_info_idx
+    # K-profile linkage keeps its own explicit id when the client sent one — as
+    # a FILAMENT id: the printer's K table is keyed by it, and a Bambu setting
+    # id sent here by an API client ("GFSL99") addressed nothing (upstream
+    # d6de7aa69). The catalog decides, full id before the bare one; anything it
+    # does not know as a setting id goes out as given.
+    filament_id_for_kprofile = _kprofile_filament_id(kprofile_filament_id) or effective_tray_info_idx
 
     # Always send ams_set_filament_setting - the user explicitly clicked
     # "Configure Slot", so honor that.  Previous versions skipped this for
@@ -3257,16 +3096,24 @@ async def configure_ams_slot(
     if not success:
         raise HTTPException(status_code=500, detail="Failed to send filament configuration command")
 
+    # What did NOT reach the printer, as codes the dialog words (upstream
+    # ab5ccc108): the results of the two K sends used to be dropped, so a K that
+    # never left was answered "Configured". And what went out as something else
+    # than was named (upstream 02e39b18b): a generic profile in place of the
+    # filament the operator picked.
+    warnings: list[str] = [plan.degraded] if plan.degraded else []
+
     # Method 1: Select existing calibration profile by cali_idx
     # Do NOT include setting_id - BambuStudio never sends it in extrusion_cali_sel,
     # and including it causes the firmware to mislink the profile on X1C/P1S.
-    client.extrusion_cali_sel(
+    if not client.extrusion_cali_sel(
         ams_id=ams_id,
         tray_id=tray_id,
         cali_idx=cali_idx,
         filament_id=filament_id_for_kprofile,
         nozzle_diameter=nozzle_diameter,
-    )
+    ):
+        warnings.append("k_profile_not_sent")
 
     # Method 2: Only send extrusion_cali_set when NO existing profile was selected
     # (cali_idx == -1). When cali_idx >= 0, extrusion_cali_sel already selected the
@@ -3283,7 +3130,7 @@ async def configure_ams_slot(
         else:
             global_tray_id = tray_id
 
-        client.extrusion_cali_set(
+        if not client.extrusion_cali_set(
             tray_id=global_tray_id,
             k_value=k_value,
             nozzle_diameter=nozzle_diameter,
@@ -3292,7 +3139,8 @@ async def configure_ams_slot(
             setting_id=kprofile_setting_id or "",
             name=tray_sub_brands or "",
             cali_idx=cali_idx,
-        )
+        ):
+            warnings = [w for w in warnings if w != "k_profile_not_sent"] + ["k_value_not_sent"]
 
     # Register a read-back verification (upstream #2582) so the tray telemetry
     # that the status push below returns can confirm the printer accepted this
@@ -3313,6 +3161,7 @@ async def configure_ams_slot(
     return {
         "success": True,
         "message": f"Configured AMS {ams_id} tray {tray_id} with {tray_sub_brands}",
+        "warnings": warnings,
     }
 
 
@@ -3471,6 +3320,13 @@ async def save_ams_label(
     else:
         db.add(AmsLabel(ams_serial_number=serial_key, ams_id=ams_id, label=body.label))
 
+    # A label saved while the unit reported no serial lives under the position
+    # key. The serial's row replaces it, or the old name would come back the day
+    # the serial is not known (upstream 5eae04359).
+    position_key = f"p{printer_id}a{ams_id}"
+    if serial_key != position_key:
+        await db.execute(delete(AmsLabel).where(AmsLabel.ams_serial_number == position_key))
+
     await db.commit()
     return {"ams_id": ams_id, "label": body.label}
 
@@ -3485,14 +3341,14 @@ async def delete_ams_label(
 ):
     """Delete the friendly name for a specific AMS unit, reverting to the auto label."""
     stripped = ams_serial.strip() if ams_serial else ""
-    serial_key = stripped if stripped else f"p{printer_id}a{ams_id}"
+    # Both keys: the serial's row and the one a label was saved under while
+    # the unit reported no serial, which the card falls back to.
+    keys = {f"p{printer_id}a{ams_id}"}
+    if stripped:
+        keys.add(stripped)
 
-    result = await db.execute(select(AmsLabel).where(AmsLabel.ams_serial_number == serial_key))
-    existing = result.scalar_one_or_none()
-
-    if existing:
-        await db.delete(existing)
-        await db.commit()
+    await db.execute(delete(AmsLabel).where(AmsLabel.ams_serial_number.in_(keys)))
+    await db.commit()
 
     return {"success": True}
 
@@ -3581,7 +3437,7 @@ async def stop_print(
     try:
         from backend.app.main import mark_printer_stopped_by_user
 
-        mark_printer_stopped_by_user(printer_id)
+        mark_printer_stopped_by_user(printer_id, unless_idle=True)
     except Exception as _mark_err:
         logger.warning("Failed to mark printer %s as user-stopped: %s", printer_id, _mark_err)
 
@@ -4905,6 +4761,16 @@ async def refresh_ams_slot(
     if not success:
         raise HTTPException(400, message)
 
+    # The printer's own verdict (silence counts as accepted). A refusal is
+    # reported, with the printer's reason, and schedules no PA re-apply: the
+    # slot did not change (upstream 1cc4bae5d).
+    accepted, reason = await client.await_rfid_refresh(ams_id, slot_id)
+    if not accepted:
+        logger.warning("Printer %s refused the RFID re-read of AMS %s slot %s: %s", printer_id, ams_id, slot_id, reason)
+        if reason:
+            raise HTTPException(400, f"The printer refused to re-read the RFID tag: {reason}")
+        raise HTTPException(400, "The printer refused to re-read the RFID tag")
+
     # Apply PA profile after delay (RFID re-read takes a few seconds)
     spawn_background_task(
         _apply_pa_after_refresh(printer_id, ams_id, slot_id),
@@ -4914,17 +4780,18 @@ async def refresh_ams_slot(
     return {"success": True, "message": message}
 
 
-_LOAD_TRAY_ID_ERROR = "tray_id must be 0..15 (AMS slot), 24..27 (A2L AMS-Lite), 254 (external / Ext-L), or 255 (Ext-R)"
+_LOAD_TRAY_ID_ERROR = (
+    "tray_id must be 0..15 (AMS slot), 24..27 (A2L AMS-Lite), 128..135 (AMS-HT), 254 (external / Ext-L), or 255 (Ext-R)"
+)
 
 
 def _is_valid_load_tray_id(tray_id: int) -> bool:
     """Whether ``tray_id`` names a slot the load/unload commands can address.
 
-    24-27 are the A2L AMS-Lite slots (normalised unit 6). An AMS-HT unit
-    (128-135) is addressed by its unit id, not ams*4+slot, so these commands
-    cannot name it.
+    24-27 are the A2L AMS-Lite slots (normalised unit 6). An AMS-HT holds
+    one tray, numbered by its unit id 128-135 — as ``tray_now`` reports it.
     """
-    return tray_id in range(16) or tray_id in range(24, 28) or tray_id in (254, 255)
+    return tray_id in range(16) or tray_id in range(24, 28) or tray_id in range(128, 136) or tray_id in (254, 255)
 
 
 @router.post("/{printer_id}/ams/load")
@@ -4932,7 +4799,10 @@ async def ams_load_filament(
     printer_id: int,
     tray_id: int = Query(
         ...,
-        description="0..15 = AMS slot; 24..27 = A2L AMS-Lite; 254 = ext spool / Ext-L; 255 = Ext-R (H2D)",
+        description=(
+            "0..15 = AMS slot; 24..27 = A2L AMS-Lite; 128..135 = AMS-HT (its unit id); "
+            "254 = ext spool / Ext-L; 255 = Ext-R (H2D)"
+        ),
     ),
     extruder_id: int | None = Query(
         None,

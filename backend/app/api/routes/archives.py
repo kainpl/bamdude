@@ -227,6 +227,9 @@ def archive_to_response(
         "tags": archive.tags,
         "notes": archive.notes,
         "cost": archive.cost,
+        # Only says what the stored figure is; no price is computed here (the rate rule stays the
+        # trackers' alone).
+        "cost_is_estimate": archive.cost is not None and archive.status == "printing",
         "photos": archive.photos,
         "failure_reason": archive.failure_reason,
         "quantity": archive.quantity,

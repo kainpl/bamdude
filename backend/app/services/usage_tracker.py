@@ -10,6 +10,7 @@ AMS remain% delta is the fallback for trays not covered by 3MF data.
 import asyncio
 import json
 import logging
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
@@ -326,6 +327,50 @@ _active_sessions: dict[int, PrintSession] = {}
 
 # Serialises the read-modify-write on the persisted tray-change log, per printer.
 _tray_change_locks: dict[int, asyncio.Lock] = {}
+
+# Printers whose finished print is being closed out: one token per completion still running. Process memory
+# only -- a restart starts with none -- and a token leaves with its own completion (``completion_in_progress``).
+_completing: dict[int, set[object]] = {}
+
+
+@contextmanager
+def completion_in_progress(printer_id: int):
+    """Mark ``printer_id`` as "its finished print is not booked yet" for the length of the block.
+
+    The printer already says FINISH and the session may have left memory, but the print's filament is still
+    to be charged -- by this tracker, or by the Spoolman report minutes later, after the swap macro. The mark
+    gates nothing but the remain% weight sync (``print_is_unbooked``); it never changes what is charged.
+    It ends with the block however the block ends (return, exception, cancellation), and the next print
+    start on the printer drops whatever is left.
+    """
+    token = object()
+    _completing.setdefault(printer_id, set()).add(token)
+    try:
+        yield
+    finally:
+        tokens = _completing.get(printer_id)
+        if tokens is not None:
+            tokens.discard(token)
+            if not tokens:
+                _completing.pop(printer_id, None)
+
+
+def completion_is_running(printer_id: int) -> bool:
+    """Whether a completion of this printer's print has begun and not ended (``completion_in_progress``)."""
+    return printer_id in _completing
+
+
+def print_is_unbooked(printer_id: int, printer_state) -> bool:
+    """Whether a print on this printer still has filament to charge -- the one question every remain%
+    weight sync asks before it writes (the automatic one, the Spoolman tagged-spool one, both Sync buttons).
+
+    True for a registered session, for a printer that reports RUNNING or PAUSE (a restart may have restored
+    no session; Spoolman mode never registers one), and while a completion is closing the print out.
+    ``printer_state`` is the printer's live status object, or None when there is none.
+    """
+    if printer_id in _active_sessions or printer_id in _completing:
+        return True
+    return (getattr(printer_state, "state", "") or "").upper() in ("RUNNING", "PAUSE")
 
 
 def _tray_key_to_str(key: tuple[int, int]) -> str:
@@ -1106,7 +1151,7 @@ async def apply_runout_zero_corrections(
     touched = False
     archived_ids: list[int] = []
     for event in runouts:
-        spool = (await db.execute(select(Spool).where(Spool.id == event.spool_id))).scalar_one_or_none()
+        spool = (await db.execute(_spool_charge_stmt(event.spool_id))).scalar_one_or_none()
         if spool is None:
             continue
         loads_after = [
@@ -1210,6 +1255,23 @@ async def apply_runout_zero_corrections(
     return results
 
 
+def _spool_charge_stmt(spool_id: int):
+    """The read every charge of a booking makes of the spool it is about to write.
+
+    ``FOR UPDATE``: on PostgreSQL the row is held from here to the booking's commit, so a weight typed by
+    hand meanwhile waits and then stands, as it does on SQLite, where the booking already owns the writer
+    (``_lock_usage_archive``) before it reads any spool. Without it PostgreSQL wrote ``old + grams`` over
+    the hand weight and left its lock flag standing over the wrong figure; and a spool deleted between the
+    read and the commit took the whole print's booking down with it. SQLite's dialect emits no
+    ``FOR UPDATE``: nothing changes there. ``populate_existing`` so the row read after a wait is the row
+    as committed, never a copy this session loaded earlier.
+
+    Not upstream's ``weight_used = weight_used + grams`` (5b34997df): that books the print on top of a
+    weight weighed AFTER it. Lock order: the archive first (the callers hold it), then spools.
+    """
+    return select(Spool).where(Spool.id == spool_id).with_for_update().execution_options(populate_existing=True)
+
+
 async def record_ams_sync_usage(
     db: AsyncSession,
     spool: Spool,
@@ -1279,6 +1341,52 @@ async def record_ams_sync_usage(
         new_used,
     )
     return delta
+
+
+async def sync_spool_weight_from_ams(
+    db: AsyncSession,
+    spool: Spool,
+    *,
+    printer_id: int,
+    ams_id: int,
+    tray_id: int,
+    new_used: float,
+) -> float:
+    """Write an AMS reading through ``record_ams_sync_usage`` -- unless the spool changed since the caller
+    compared it. The one door of both AMS-sync sites (``main.on_ams_change`` and the Sync button).
+
+    The caller decided on a copy of the spool it loaded earlier. Under the row's write hold the two columns
+    are read again: a weight entered by hand since then (which also locks the spool), or any other write,
+    means that decision is stale -- nothing is written, the copy is refreshed, and the next reading decides
+    on what is stored now. Without this the AMS figure overwrote the hand weight and its lock flag stayed
+    set over it (upstream 5b34997df, WL-6).
+
+    Returns the delta in grams, ``0.0`` when nothing was written.
+    """
+    from backend.app.core.database import take_write_lock
+
+    compared = float(spool.weight_used or 0.0)
+    with db.no_autoflush:
+        await take_write_lock(db, Spool.__table__, spool.id)
+        stored = (
+            await db.execute(
+                select(Spool.weight_used, Spool.weight_locked).where(Spool.id == spool.id).with_for_update()
+            )
+        ).first()
+    if stored is None:
+        return 0.0
+    if stored.weight_locked or abs(float(stored.weight_used or 0.0) - compared) > 1e-6:
+        logger.info(
+            "[UsageTracker] Spool %d changed since its AMS reading was compared (stored %s, locked=%s) — not synced",
+            spool.id,
+            stored.weight_used,
+            bool(stored.weight_locked),
+        )
+        await db.refresh(spool)
+        return 0.0
+    return await record_ams_sync_usage(
+        db, spool, printer_id=printer_id, ams_id=ams_id, tray_id=tray_id, new_used=new_used
+    )
 
 
 async def _resolve_spool_id_for_tray(
@@ -1374,6 +1482,9 @@ async def on_print_start(
     will deduct precisely" flag; registering a session the internal tracker will
     never complete would suppress a sync those users still need.
     """
+    # A new print is a new question: no completion mark of an earlier print outlives this start.
+    _completing.pop(printer_id, None)
+
     state = printer_manager.get_status(printer_id)
     if not state or not state.raw_data:
         logger.debug("[UsageTracker] No state for printer %d, skipping", printer_id)
@@ -1514,13 +1625,18 @@ async def _lock_usage_archive(db, archive_id, identity):
 
 
 async def on_print_complete(*args, **kwargs) -> list[dict]:
-    try:
-        return await _on_print_complete(*args, **kwargs)
-    except _UsageArchiveChanged:
-        # No spool/history mutation is allowed to escape onto a reused id.
-        db = kwargs.get("db") or args[3]
-        await db.rollback()
-        return []
+    # The session leaves memory at the top of the booking and the commit comes after the file analysis;
+    # the mark holds the remain% weight sync off across that gap for every caller (the reconcile has no
+    # completion callback around it) and ends with the booking, the rollback below included.
+    printer_id = kwargs.get("printer_id") if "printer_id" in kwargs else args[0]
+    with completion_in_progress(printer_id):
+        try:
+            return await _on_print_complete(*args, **kwargs)
+        except _UsageArchiveChanged:
+            # No spool/history mutation is allowed to escape onto a reused id.
+            db = kwargs.get("db") or args[3]
+            await db.rollback()
+            return []
 
 
 async def _on_print_complete(
@@ -1817,7 +1933,7 @@ async def _on_print_complete(
                         continue
 
                     # Load spool
-                    spool_result = await db.execute(select(Spool).where(Spool.id == spool_id))
+                    spool_result = await db.execute(_spool_charge_stmt(spool_id))
                     spool = spool_result.scalar_one_or_none()
                     if not spool:
                         continue
@@ -2278,6 +2394,14 @@ async def _track_from_3mf(
                 pass  # Fall back to linear scaling
 
     results = []
+    # File slots this pass has charged (or split): every slot is charged its own grams exactly once.
+    # A multi-plate file whose plate is unknown lists a slot once per plate, and only its first listing
+    # counts. This, not the tray, is what a repeat is recognised by: two DIFFERENT slots may share one
+    # tray (a slicer-sent print with two filaments on one spool), and each is owed its own charge
+    # (upstream 384903328, #3230).
+    charged_slots: set[int] = set()
+    # Trays some earlier writer covered before this pass: never charged again here, whatever names them.
+    covered_before = frozenset(handled_trays)
 
     for usage in filament_usage:
         slot_id = usage.get("slot_id", 0)
@@ -2424,9 +2548,12 @@ async def _track_from_3mf(
                         uncharged.append((tray_global, round(float(segment_grams), 2)))
                     continue
 
-                spool_result = await db.execute(select(Spool).where(Spool.id == seg_spool_id))
+                spool_result = await db.execute(_spool_charge_stmt(seg_spool_id))
                 spool = spool_result.scalar_one_or_none()
                 if not spool:
+                    # The spool was deleted since it was named: said, not dropped.
+                    if uncharged is not None:
+                        uncharged.append((tray_global, round(float(segment_grams), 2)))
                     continue
 
                 spool.weight_used = (spool.weight_used or 0) + segment_grams
@@ -2481,6 +2608,7 @@ async def _track_from_3mf(
             continue  # Skip normal single-tray processing for this slot
 
         # Map 3MF slot_id to physical (ams_id, tray_id) using resolved mapping
+        tray_is_a_guess = False
         if tray_now_override is not None:
             # Single-filament non-queue print: use actual tray from printer state
             global_tray_id = tray_now_override
@@ -2517,11 +2645,15 @@ async def _track_from_3mf(
                             if _ext_id in _lookup:
                                 global_tray_id = _ext_id
                                 break
+                        # ``-1`` does not say WHICH holder. With two of them the first is a
+                        # guess: a second ``-1`` filament is not added to the same spool on it.
+                        tray_is_a_guess = 254 in _lookup and 255 in _lookup
                     if global_tray_id is None:
                         global_tray_id = 254
             # Position-based default: sort available tray IDs so external spools (254/255)
             # naturally follow standard AMS trays, matching slicer slot numbering
             if global_tray_id is None:
+                tray_is_a_guess = True
                 _state = printer_manager.get_status(printer_id)
                 _raw = getattr(_state, "raw_data", None) if _state else None
                 if _raw:
@@ -2567,7 +2699,24 @@ async def _track_from_3mf(
         )
 
         key = (ams_id, tray_id)
-        if key in handled_trays:
+        if slot_id in charged_slots or key in covered_before:
+            continue  # the same file slot listed again, or a tray covered before this pass
+        tray_already_charged = key in handled_trays
+        if tray_already_charged and tray_is_a_guess:
+            # Nothing names this slot's tray; its position among the loaded trays is a guess, and the
+            # guess lands on a tray another slot was charged to. Not charged a second time on a guess --
+            # and said, instead of dropped.
+            missed_grams = layer_grams[slot_id] if layer_grams and slot_id in layer_grams else used_g * scale
+            logger.warning(
+                "[UsageTracker] 3MF: slot %d has no mapped tray and its position names AMS%d-T%d, already "
+                "charged for another slot — %.1f g not charged",
+                slot_id,
+                ams_id,
+                tray_id,
+                missed_grams,
+            )
+            if uncharged is not None and missed_grams > 0:
+                uncharged.append((global_tray_id, round(float(missed_grams), 2)))
             continue
 
         # --- Journal-driven split: a runout on this slot's tray ---
@@ -2593,6 +2742,7 @@ async def _track_from_3mf(
                 continue
 
             handled_trays.add(key)
+            charged_slots.add(slot_id)
             split = split_weight(
                 [start for start, _, _ in journal_segs], total_weight, slot_id, analysis.layer_usage, bound
             )
@@ -2614,7 +2764,12 @@ async def _track_from_3mf(
                 seg_grams = list(split.grams)
                 if split.unknown_start > 0 and uncharged is not None:
                     uncharged.append((global_tray_id, round(split.unknown_start, 2)))
-            _purge = _autoswitch_purge_for_tray(journal_events or [], global_tray_id, runout_purge_grams)
+            # The emergency-swap purge is the tray's, once: not again for a second slot sharing it.
+            _purge = (
+                0.0
+                if tray_already_charged
+                else _autoswitch_purge_for_tray(journal_events or [], global_tray_id, runout_purge_grams)
+            )
             if _purge > 0 and len(seg_grams) > 1:
                 seg_grams[1] += _purge
 
@@ -2633,9 +2788,11 @@ async def _track_from_3mf(
                     if uncharged is not None:
                         uncharged.append((global_tray_id, round(float(segment_grams), 2)))
                     continue
-                spool_result = await db.execute(select(Spool).where(Spool.id == seg_spool_id))
+                spool_result = await db.execute(_spool_charge_stmt(seg_spool_id))
                 spool = spool_result.scalar_one_or_none()
                 if not spool:
+                    if uncharged is not None:
+                        uncharged.append((global_tray_id, round(float(segment_grams), 2)))
                     continue
 
                 spool.weight_used = (spool.weight_used or 0) + segment_grams
@@ -2712,9 +2869,12 @@ async def _track_from_3mf(
             continue
 
         # Load spool
-        spool_result = await db.execute(select(Spool).where(Spool.id == spool_id))
+        spool_result = await db.execute(_spool_charge_stmt(spool_id))
         spool = spool_result.scalar_one_or_none()
         if not spool:
+            missed_grams = layer_grams[slot_id] if layer_grams and slot_id in layer_grams else used_g * scale
+            if uncharged is not None and missed_grams > 0:
+                uncharged.append((global_tray_id, round(float(missed_grams), 2)))
             continue
 
         # Use per-layer grams if available, otherwise linear scale
@@ -2753,6 +2913,7 @@ async def _track_from_3mf(
         db.add(history)
 
         handled_trays.add(key)
+        charged_slots.add(slot_id)
         results.append(
             {
                 "spool_id": spool.id,

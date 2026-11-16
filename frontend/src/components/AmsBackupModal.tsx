@@ -32,6 +32,7 @@ import {
   normalizeColor,
   type AmsUnitLike,
   type BackupGroup,
+  isAmsHtUnit,
 } from '../utils/amsHelpers';
 
 interface AmsBackupModalProps {
@@ -62,8 +63,10 @@ interface AmsBackupModalProps {
  * Compact slot label like "A·3" / "HT·1" — the ring is small, every char
  * counts toward readability.
  */
-function formatSlotLabel(amsId: number, slotIdx: number, totalTraysOnUnit: number): string {
-  const isHt = totalTraysOnUnit === 1 || amsId >= 128;
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept so the call sites need not change
+function formatSlotLabel(amsId: number, slotIdx: number, _totalTraysOnUnit?: number): string {
+  // The unit id decides: a regular AMS that listed one tray is not an AMS-HT.
+  const isHt = isAmsHtUnit(amsId);
   const normalizedId = amsId >= 128 ? amsId - 128 : amsId;
   const letter = String.fromCharCode(65 + normalizedId);
   return isHt ? `HT·${slotIdx + 1}` : `${letter}·${slotIdx + 1}`;

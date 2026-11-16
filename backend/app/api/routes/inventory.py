@@ -57,6 +57,8 @@ from backend.app.schemas.spool import (
     SpoolKProfileResponse,
     SpoolListItem,
     SpoolListPage,
+    SpoolPickerMiss,
+    SpoolPickerPage,
     SpoolResponse,
     SpoolUpdate,
 )
@@ -1313,6 +1315,7 @@ def _spool_to_list_item(
         storage_location=s.storage_location,
         location_id=s.location_id,
         purchase_location=s.purchase_location,
+        material_number=s.material_number,
         archived_at=s.archived_at,
         created_at=s.created_at,
         updated_at=s.updated_at,
@@ -1373,6 +1376,7 @@ async def list_spools(
     ),
     color_rgbas: list[str] = Query(default_factory=list, description="Raw rgba values, paired with a NULL color_name"),
     category: str | None = Query(None, description="Exact match, or '__none__' for uncategorised"),
+    material_number: str | None = Query(None, description="Exact match, or '__none__' for spools without one"),
     catalog_id: int | None = Query(None),
     location_id: str | None = Query(
         None,
@@ -1483,6 +1487,7 @@ async def list_spools(
         colors=colors or None,
         color_rgbas=color_rgbas or None,
         category=category,
+        material_number=material_number,
         catalog_id=catalog_id,
         location_id=location_id,
         stock=stock,
@@ -1593,6 +1598,7 @@ class SpoolFacetsResponse(BaseModel):
     materials: list[str]
     brands: list[str]
     categories: list[str]
+    material_numbers: list[str]
     catalog_ids: list[int]
     colors: list[SpoolColorFacet]
 
@@ -1606,6 +1612,7 @@ async def list_spool_ids(
     colors: list[str] = Query(default_factory=list, description="Raw color_name values"),
     color_rgbas: list[str] = Query(default_factory=list, description="Raw rgba values, paired with a NULL color_name"),
     category: str | None = Query(None, description="Exact match, or '__none__' for uncategorised"),
+    material_number: str | None = Query(None, description="Exact match, or '__none__' for spools without one"),
     catalog_id: int | None = Query(None),
     location_id: str | None = Query(
         None,
@@ -1639,6 +1646,7 @@ async def list_spool_ids(
         colors=colors or None,
         color_rgbas=color_rgbas or None,
         category=category,
+        material_number=material_number,
         catalog_id=catalog_id,
         location_id=location_id,
         stock=stock,
@@ -1720,7 +1728,36 @@ async def spool_family_colors(
     return [SpoolFamilyColor(hex_color=f"#{color}", color_name=name or "") for color, name in rows.all()]
 
 
-@router.get("/spools/picker", response_model=SpoolListPage)
+async def _picker_miss(
+    db: AsyncSession, spool_id: int, *, printer_id: int, ams_id: int, tray_id: int
+) -> SpoolPickerMiss:
+    """Why the picker offers nothing for ``#<spool_id>`` — read after the miss."""
+    spool = await db.get(Spool, spool_id) if spool_id <= 2**31 - 1 else None
+    if spool is None:
+        return SpoolPickerMiss(reason="not_found", spool_id=spool_id)
+    if spool.archived_at is not None:
+        return SpoolPickerMiss(reason="archived", spool_id=spool_id)
+    rows = await db.execute(
+        select(SpoolAssignment, Printer.name)
+        .outerjoin(Printer, Printer.id == SpoolAssignment.printer_id)
+        .where(SpoolAssignment.spool_id == spool_id)
+        .order_by(SpoolAssignment.id)
+    )
+    held = rows.all()
+    for assignment, printer_name in held:
+        if (assignment.printer_id, assignment.ams_id, assignment.tray_id) != (printer_id, ams_id, tray_id):
+            return SpoolPickerMiss(
+                reason="other_slot",
+                spool_id=spool_id,
+                printer_id=assignment.printer_id,
+                printer_name=printer_name,
+                ams_id=assignment.ams_id,
+                tray_id=assignment.tray_id,
+            )
+    return SpoolPickerMiss(reason="this_slot", spool_id=spool_id)
+
+
+@router.get("/spools/picker", response_model=SpoolPickerPage)
 async def spool_picker(
     printer_id: int,
     ams_id: int,
@@ -1734,9 +1771,13 @@ async def spool_picker(
     per_page: int = Query(50, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.INVENTORY_READ),
-) -> SpoolListPage:
+) -> SpoolPickerPage:
     """Server-filtered local assignment picker; legacy spool list is unchanged."""
     filters = [Spool.archived_at.is_(None)]
+    # ``#123`` asks for one spool by its number: the slot's material / profile
+    # filter steps aside (the mismatch confirmation still asks on assign), the
+    # other-slot and archived rules stay (upstream f652d3e0a).
+    asked_id = inventory_service.exact_spool_id(q)
     if replacing_spool_id is not None:
         filters.append(Spool.id != replacing_spool_id)
 
@@ -1756,7 +1797,7 @@ async def spool_picker(
         filters.append(~other_slot)
         profile = tray_profile.split("@", 1)[0].strip().upper()
         material = tray_material.strip().upper()
-        if profile or material:
+        if (profile or material) and asked_id is None:
             spool_profile = func.upper(
                 func.trim(
                     func.coalesce(func.nullif(func.trim(Spool.slicer_filament_name), ""), Spool.slicer_filament, "")
@@ -1817,7 +1858,10 @@ async def spool_picker(
             .group_by(SpoolKProfile.spool_id)
         )
         profile_counts = dict(rows.all())
-    return SpoolListPage(
+    miss = None
+    if asked_id is not None and total == 0:
+        miss = await _picker_miss(db, asked_id, printer_id=printer_id, ams_id=ams_id, tray_id=tray_id)
+    return SpoolPickerPage(
         items=[_spool_to_list_item(s, k_profile_count_override=profile_counts.get(s.id, 0)) for s in spools],
         meta=PaginationMeta(
             total=total,
@@ -1825,6 +1869,7 @@ async def spool_picker(
             per_page=per_page,
             last_page=max(1, math.ceil(total / per_page)),
         ),
+        miss=miss,
     )
 
 
@@ -1867,6 +1912,7 @@ async def export_spools_csv(
     colors: list[str] = Query(default_factory=list),
     color_rgbas: list[str] = Query(default_factory=list),
     category: str | None = Query(None),
+    material_number: str | None = Query(None),
     catalog_id: int | None = Query(None),
     location_id: str | None = Query(None, pattern=_LOCATION_ID_PATTERN),
     stock: Literal["stock", "configured"] | None = Query(None),
@@ -1894,6 +1940,7 @@ async def export_spools_csv(
         colors=colors or None,
         color_rgbas=color_rgbas or None,
         category=category,
+        material_number=material_number,
         catalog_id=catalog_id,
         location_id=location_id,
         stock=stock,
@@ -2048,6 +2095,7 @@ async def create_spool(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     await _derive_family_from_slicer(db, payload)
     await _validate_family_id(db, payload.get("filament_family_id"))
+    await inventory_service.inherit_material_number(db, payload)
     spool = Spool(**payload)
     db.add(spool)
     await db.commit()
@@ -2079,6 +2127,7 @@ async def bulk_create_spools(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     await _derive_family_from_slicer(db, template)
     await _validate_family_id(db, template.get("filament_family_id"))
+    await inventory_service.inherit_material_number(db, template)
     base_lot = template.get("lot")
     start_lot = base_lot if isinstance(base_lot, int) and base_lot > 0 else 1
     for i in range(data.quantity):
@@ -2111,8 +2160,13 @@ async def bulk_update_spools(
     isn't captured by the int ``spool_id`` matcher.
     """
     update_data = data.fields.model_dump(exclude_unset=True)
+    # The one thing a bulk edit may do to the weight lock is release it, for the selected spools: a lock
+    # is set by weighing ONE spool, never handed out to a selection.
+    unlock_weight = update_data.get("weight_locked") is False
     for protected in ("weight_used", "weight_used_baseline", "weight_locked", "tag_uid", "tray_uuid"):
         update_data.pop(protected, None)
+    if unlock_weight:
+        update_data["weight_locked"] = False
     if not update_data:
         raise HTTPException(400, "No editable fields provided")
     # Resolve location_id / storage_location into the FK-alongside-free-text
@@ -2150,6 +2204,66 @@ async def bulk_update_spools(
     return list(result.scalars().all())
 
 
+async def spool_delete_blockers(db: AsyncSession, spool_ids: list[int]) -> dict[int, list[str]]:
+    """Why each of these spools may not be hard-deleted: ``{spool_id: [reason, ...]}``.
+
+    A spool that anything names is archived, never deleted (owner decision Р6).
+    Deleting one took its usage history along on PostgreSQL (the forecast lost
+    that consumption, a print's cost fell back to an estimate) and left orphans
+    on SQLite — where the next spool created takes ``max(id) + 1``: delete the
+    newest spool mid-print, create another, and the running print, which froze
+    that id in its session and journal, is charged to a spool that was never in
+    the slot. Reasons:
+
+    * ``usage_history`` — it has booked usage;
+    * ``assigned`` — it sits in a slot;
+    * ``print_session`` — a running print's session names it (in memory, or the
+      saved row a restart restores it from);
+    * ``open_print`` — a journal event of a print that is still printing names it.
+
+    A read; the tracker's own tables are not touched.
+    """
+    from backend.app.models.active_print_session import ActivePrintSession
+    from backend.app.models.archive import PrintArchive
+    from backend.app.models.print_usage_event import PrintUsageEvent
+    from backend.app.models.spool_usage_history import SpoolUsageHistory
+    from backend.app.services import usage_tracker
+
+    wanted = set(spool_ids)
+    blockers: dict[int, list[str]] = {}
+    if not wanted:
+        return blockers
+
+    def block(spool_id, reason: str) -> None:
+        if spool_id in wanted and reason not in blockers.setdefault(spool_id, []):
+            blockers[spool_id].append(reason)
+
+    for spool_id in (
+        await db.execute(select(SpoolUsageHistory.spool_id).where(SpoolUsageHistory.spool_id.in_(wanted)).distinct())
+    ).scalars():
+        block(spool_id, "usage_history")
+    for spool_id in (
+        await db.execute(select(SpoolAssignment.spool_id).where(SpoolAssignment.spool_id.in_(wanted)).distinct())
+    ).scalars():
+        block(spool_id, "assigned")
+    for session in list(usage_tracker._active_sessions.values()):
+        for spool_id in (getattr(session, "spool_assignments", None) or {}).values():
+            block(spool_id, "print_session")
+    for saved in (await db.execute(select(ActivePrintSession.spool_assignments))).scalars():
+        for spool_id in (saved or {}).values() if isinstance(saved, dict) else ():
+            block(spool_id, "print_session")
+    for spool_id in (
+        await db.execute(
+            select(PrintUsageEvent.spool_id)
+            .join(PrintArchive, PrintArchive.id == PrintUsageEvent.archive_id)
+            .where(PrintUsageEvent.spool_id.in_(wanted), PrintArchive.status == "printing")
+            .distinct()
+        )
+    ).scalars():
+        block(spool_id, "open_print")
+    return blockers
+
+
 @router.post("/spools/bulk-delete")
 async def bulk_delete_spools(
     data: SpoolBulkIds,
@@ -2164,20 +2278,26 @@ async def bulk_delete_spools(
     untouched with no indication of how far it got. Declared before
     ``/spools/{spool_id}`` so the literal path isn't captured by the int
     matcher.
+
+    A spool that has been used or is in use is not deleted (see
+    :func:`spool_delete_blockers`): it is reported in ``refused`` — archive it
+    instead — and the rest of the selection goes through.
     """
     result = await db.execute(select(Spool).where(Spool.id.in_(data.spool_ids)))
     spools = list(result.scalars().all())
     found_ids = {s.id for s in spools}
     not_found = [i for i in data.spool_ids if i not in found_ids]
 
-    for spool in spools:
+    blockers = await spool_delete_blockers(db, sorted(found_ids))
+    deletable = [spool for spool in spools if spool.id not in blockers]
+    for spool in deletable:
         await db.delete(spool)
     await db.commit()
 
     # One broadcast for the whole batch, not one per row: the table refreshes
     # on a single re-fetch instead of N.
     await ws_manager.broadcast({"type": "inventory_changed"})
-    return {"deleted": len(spools), "not_found": not_found}
+    return {"deleted": len(deletable), "not_found": not_found, "refused": sorted(blockers)}
 
 
 @router.post("/spools/bulk-archive")
@@ -2279,14 +2399,27 @@ async def delete_spool(
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.INVENTORY_UPDATE),
 ):
-    """Hard delete a spool."""
+    """Hard delete a spool that nothing names; a used or in-use one is archived instead (409)."""
     result = await db.execute(select(Spool).where(Spool.id == spool_id))
     spool = result.scalar_one_or_none()
     if not spool:
         raise HTTPException(404, "Spool not found")
 
+    reasons = (await spool_delete_blockers(db, [spool_id])).get(spool_id)
+    if reasons:
+        raise HTTPException(
+            409,
+            detail={
+                "error": "spool_in_use",
+                "message": "This spool has usage history or is in use and cannot be deleted; archive it instead",
+                "reasons": reasons,
+            },
+        )
+
     await db.delete(spool)
     await db.commit()
+    # The single delete announced nothing: other tabs kept the spool in their lists.
+    await ws_manager.broadcast({"type": "inventory_changed"})
     return {"status": "deleted"}
 
 
@@ -2651,13 +2784,10 @@ async def list_assignments(
 
     # Fetch all relevant AMS labels keyed by serial number
     all_serials = set(serial_map.values())
-    # Also include synthetic fallback keys for assignments without a known serial
-    synthetic_keys: dict[str, tuple[int, int]] = {}
+    # Also the position keys: a label saved while the unit reported no serial
+    # lives there, and stays the unit's name until one is saved under the serial.
     for a in assignments:
-        if (a.printer_id, a.ams_id) not in serial_map:
-            synthetic = f"p{a.printer_id}a{a.ams_id}"
-            synthetic_keys[synthetic] = (a.printer_id, a.ams_id)
-            all_serials.add(synthetic)
+        all_serials.add(f"p{a.printer_id}a{a.ams_id}")
 
     label_by_serial: dict[str, str] = {}
     if all_serials:
@@ -2672,9 +2802,8 @@ async def list_assignments(
         sn = serial_map.get((a.printer_id, a.ams_id))
         if sn and sn in label_by_serial:
             resp.ams_label = label_by_serial[sn]
-        elif not sn:
-            synthetic = f"p{a.printer_id}a{a.ams_id}"
-            resp.ams_label = label_by_serial.get(synthetic)
+        else:
+            resp.ams_label = label_by_serial.get(f"p{a.printer_id}a{a.ams_id}")
         responses.append(resp)
 
     return responses
@@ -2714,13 +2843,37 @@ async def assign_spool(
 
     await _refuse_in_spoolman_mode(db)
 
+    from contextlib import AsyncExitStack
+
+    from backend.app.services import spool_single_slot
+
+    # A spool sits in one slot: assigning it here takes it out of its other
+    # slots, and the rows of ANOTHER printer are deleted under that printer's
+    # lock too (its AMS callback deletes rows through the ORM). Every lock this
+    # move needs is taken in ascending printer id — the one order — before
+    # anything is written.
+    keep = (data.printer_id, data.ams_id, data.tray_id)
+    lock_ids = sorted(
+        {data.printer_id, *await spool_single_slot.printers_holding(db, spool_id=data.spool_id, keep=keep)}
+    )
+
     # A manual answer must not race insertion/RFID reconciliation on this slot.
-    async with _get_ams_assignment_lock(data.printer_id):
-        return await _assign_spool(data, db, current_user)
+    async with AsyncExitStack() as locks:
+        for printer_id in lock_ids:
+            await locks.enter_async_context(_get_ams_assignment_lock(printer_id))
+        response, vacated = await _assign_spool(data, db, current_user, locked=set(lock_ids))
+    await spool_single_slot.announce(vacated)
+    return response
 
 
-async def _assign_spool(data: SpoolAssignmentCreate, db: AsyncSession, current_user: User | None):
+async def _assign_spool(
+    data: SpoolAssignmentCreate, db: AsyncSession, current_user: User | None, *, locked: set[int] | None = None
+):
+    from backend.app.services import spool_single_slot
     from backend.app.services.printer_manager import printer_manager
+
+    keep = (data.printer_id, data.ams_id, data.tray_id)
+    locked = {data.printer_id} if locked is None else locked
 
     # 1. Validate spool exists and is not archived
     result = await db.execute(select(Spool).options(selectinload(Spool.k_profiles)).where(Spool.id == data.spool_id))
@@ -2729,6 +2882,12 @@ async def _assign_spool(data: SpoolAssignmentCreate, db: AsyncSession, current_u
         raise HTTPException(404, "Spool not found")
     if spool.archived_at:
         raise HTTPException(400, "Cannot assign an archived spool")
+
+    # The slot it would leave must not be feeding a running print. Asked before
+    # anything below writes: a refusal leaves the journal and the slot untouched.
+    for other in await spool_single_slot.other_slots(db, spool_id=data.spool_id, keep=keep):
+        if spool_single_slot.slot_feeds_running_print(*other):
+            raise spool_single_slot.refusal(spool_single_slot.SpoolFeedsPrint(other))
 
     # 2. Get current AMS tray state for fingerprint + existing filament ID.
     #
@@ -2842,6 +3001,17 @@ async def _assign_spool(data: SpoolAssignmentCreate, db: AsyncSession, current_u
         if old:
             await db.delete(old)
             await db.flush()
+
+        # The spool's other slots go in the same transaction as the new binding
+        # (one spool, one slot). Only the rows — a vacated slot is not a loaded
+        # one, so nothing is journalled for it and nothing is sent to it.
+        try:
+            released = await spool_single_slot.release_other_slots(
+                db, spool_id=data.spool_id, keep=keep, locked=locked, refuse=True
+            )
+        except spool_single_slot.SpoolFeedsPrint as feeding:
+            await db.rollback()
+            raise spool_single_slot.refusal(feeding) from feeding
 
         assignment = SpoolAssignment(
             spool_id=data.spool_id,
@@ -2966,6 +3136,15 @@ async def _assign_spool(data: SpoolAssignmentCreate, db: AsyncSession, current_u
     response = SpoolAssignmentResponse.model_validate(resp)
     response.configured = configured
     response.pending_config = pending_config
+    if configured:
+        # The same computation the publish above read (spool_slot_plan), asked
+        # for one thing only: was a generic sent in place of the named filament.
+        try:
+            response.slot_degraded = (
+                await spool_slot_plan(db, spool, data.printer_id, data.ams_id, data.tray_id)
+            ).degraded
+        except Exception:  # noqa: BLE001 — a report, never the assignment's outcome
+            logger.debug("slot plan re-read failed for spool %s", spool.id, exc_info=True)
     response.replaced_spool_id = replaced_spool_id
 
     await ws_manager.broadcast(
@@ -2977,7 +3156,7 @@ async def _assign_spool(data: SpoolAssignmentCreate, db: AsyncSession, current_u
         }
     )
 
-    return response
+    return response, released.vacated
 
 
 @router.delete("/assignments/{printer_id}/{ams_id}/{tray_id}")
@@ -2989,20 +3168,29 @@ async def unassign_spool(
     _: User | None = RequirePermission(Permission.INVENTORY_UPDATE),
 ):
     """Unassign a spool from an AMS slot."""
-    await _refuse_in_spoolman_mode(db)
-    result = await db.execute(
-        select(SpoolAssignment).where(
-            SpoolAssignment.printer_id == printer_id,
-            SpoolAssignment.ams_id == ams_id,
-            SpoolAssignment.tray_id == tray_id,
-        )
-    )
-    assignment = result.scalar_one_or_none()
-    if not assignment:
-        raise HTTPException(404, "Assignment not found")
+    from backend.app.main import _get_ams_assignment_lock
 
-    await db.delete(assignment)
-    await db.commit()
+    await _refuse_in_spoolman_mode(db)
+    # The AMS callback's unlink pass deletes rows of this printer under the same lock: without it the two
+    # DELETEs of one row met, the second matched nothing, and the unassign that had happened answered 500
+    # (or the callback lost its pass's other unlinks). Nothing was written yet, so nothing is held while
+    # this waits.
+    async with _get_ams_assignment_lock(printer_id):
+        result = await db.execute(
+            select(SpoolAssignment)
+            .where(
+                SpoolAssignment.printer_id == printer_id,
+                SpoolAssignment.ams_id == ams_id,
+                SpoolAssignment.tray_id == tray_id,
+            )
+            .execution_options(populate_existing=True)
+        )
+        assignment = result.scalar_one_or_none()
+        if not assignment:
+            raise HTTPException(404, "Assignment not found")
+
+        await db.delete(assignment)
+        await db.commit()
 
     # With the assignment gone there is no spool left behind the mask, so the
     # printer's own tray values become the truth again.
@@ -3458,16 +3646,28 @@ async def sync_weights_from_ams(
     Overwrites the database weight_used for every assigned spool using the
     current AMS remain% from connected printers.  This is a manual recovery
     tool - it bypasses the normal "only increase" guard.
+
+    A printer whose print is not booked yet (``usage_tracker.print_is_unbooked``) is left alone and
+    counted in ``skipped_printers``: the print's own filament is still to be charged, and the AMS
+    reading already contains part of it.
     """
     from backend.app.services.printer_manager import printer_manager
-    from backend.app.services.usage_tracker import record_ams_sync_usage
+    from backend.app.services.usage_tracker import print_is_unbooked, sync_spool_weight_from_ams
 
-    result = await db.execute(select(SpoolAssignment).options(selectinload(SpoolAssignment.spool)))
+    # Ascending spool id: every write below holds its spool's row until the
+    # commit, so two requests walking the rows in different orders could hold
+    # them crosswise on PostgreSQL. One order for all of them.
+    result = await db.execute(
+        select(SpoolAssignment)
+        .options(selectinload(SpoolAssignment.spool))
+        .order_by(SpoolAssignment.spool_id, SpoolAssignment.id)
+    )
     assignments = list(result.scalars().all())
     logger.info("AMS weight sync: found %d assignments", len(assignments))
 
     synced = 0
     skipped = 0
+    printing_printers: set[int] = set()
 
     for assignment in assignments:
         spool = assignment.spool
@@ -3482,7 +3682,17 @@ async def sync_weights_from_ams(
             continue
 
         state = printer_manager.get_status(assignment.printer_id)
-        if not state or not state.raw_data:
+        if print_is_unbooked(assignment.printer_id, state):
+            logger.info(
+                "AMS weight sync: printer %d has a print that is not booked yet, skipping spool %d",
+                assignment.printer_id,
+                spool.id,
+            )
+            printing_printers.add(assignment.printer_id)
+            skipped += 1
+            continue
+        # A printer that dropped off keeps its last report: that is no reading.
+        if not state or not state.raw_data or getattr(state, "connected", True) is False:
             logger.info(
                 "AMS weight sync: printer %d not connected, skipping spool %d",
                 assignment.printer_id,
@@ -3543,7 +3753,7 @@ async def sync_weights_from_ams(
             # Shared with the live sync in ``main.on_ams_change``: an increase
             # earns a usage-history row (filament this instance never saw leave
             # the spool), a decrease re-arms the low-stock warning (m117).
-            await record_ams_sync_usage(
+            written = await sync_spool_weight_from_ams(
                 db,
                 spool,
                 printer_id=assignment.printer_id,
@@ -3551,12 +3761,20 @@ async def sync_weights_from_ams(
                 tray_id=assignment.tray_id,
                 new_used=new_used,
             )
-            synced += 1
+            # 0.0: the spool was weighed by hand (or written otherwise) after this request read it.
+            if written:
+                synced += 1
+            else:
+                skipped += 1
         else:
             skipped += 1
 
     await db.commit()
-    return {"synced": synced, "skipped": skipped}
+    # ``skipped_printers`` only when a printer was left alone because its print is not booked yet.
+    answer = {"synced": synced, "skipped": skipped}
+    if printing_printers:
+        answer["skipped_printers"] = len(printing_printers)
+    return answer
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -4239,8 +4457,9 @@ async def create_spool_from_slot(
     the user looked at the slot and chose to register it. Also assigns the new spool
     to the slot in the same call.
     """
+    from backend.app.main import _get_ams_assignment_lock
     from backend.app.services.printer_manager import printer_manager
-    from backend.app.services.spool_tag_matcher import auto_assign_spool, create_spool_from_tray
+    from backend.app.services.spool_tag_matcher import auto_assign_spool, create_spool_from_tray, get_spool_by_tag
 
     # A built-in spool and its slot row: the third writer of the built-in ledger.
     await _refuse_in_spoolman_mode(db)
@@ -4283,17 +4502,30 @@ async def create_spool_from_slot(
     if not is_valid_tag(tray.get("tag_uid", ""), tray.get("tray_uuid", "")):
         raise HTTPException(status_code=400, detail="Slot has no RFID tag")
 
-    spool = await create_spool_from_tray(db, tray)
-    await auto_assign_spool(
-        req.printer_id,
-        req.ams_id,
-        req.tray_id,
-        spool,
-        printer_manager,
-        db,
-        tray_info_idx=tray.get("tray_info_idx", ""),
-    )
-    await db.commit()
+    # Under the printer's assignment lock, and the tag looked up again inside it: a second click, or the
+    # AMS callback's own RFID pass, may have made this reel's spool a moment ago. Without the lock the
+    # second request answered 500 on PostgreSQL; without the second look SQLite ended with two spools
+    # carrying one tag, the first of them out of its slot. Nothing was written yet, so nothing is held
+    # while this waits.
+    async with _get_ams_assignment_lock(req.printer_id):
+        spool = await get_spool_by_tag(db, tray.get("tag_uid", ""), tray.get("tray_uuid", ""))
+        if spool is None:
+            spool = await create_spool_from_tray(db, tray)
+        await auto_assign_spool(
+            req.printer_id,
+            req.ams_id,
+            req.tray_id,
+            spool,
+            printer_manager,
+            db,
+            tray_info_idx=tray.get("tray_info_idx", ""),
+        )
+        await db.commit()
+    # A reel whose spool already existed may have had rows on other printers
+    # (one spool, one slot): vacated under those printers' locks, this one released.
+    from backend.app.services import spool_single_slot
+
+    await spool_single_slot.release_elsewhere(req.printer_id)
     await ws_manager.broadcast({"type": "inventory_changed"})
     await ws_manager.broadcast(
         {

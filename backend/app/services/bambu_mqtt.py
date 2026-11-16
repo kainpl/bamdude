@@ -175,7 +175,9 @@ _install_paho_publish_guard()
 #   "ams/<id>"  – original AMS (X1C, X1E, P1S, …)
 #   "n3f/<id>"  – AMS 2 Pro (H2D Pro and similar)
 #   "n3s/<id>"  – AMS HT (H2D Pro and similar; IDs typically start at 128)
-_AMS_MODULE_PREFIXES = ("ams/", "n3f/", "n3s/")
+#   "ams_f1/<id>" – AMS Lite (A1 / A1 mini as unit 0; the A2L names it 16,
+#                   which is filed under the normalised unit — upstream 5eae04359)
+_AMS_MODULE_PREFIXES = ("ams/", "n3f/", "n3s/", "ams_f1/")
 
 # The band of ``sequence_id`` values that means "this reply is to something WE
 # sent". BS carves out the same one (``DevUtil.h``: ``STUDIO_START_SEQ_ID``
@@ -408,6 +410,28 @@ def _fts_int(value: object, previous: int) -> int:
         return previous
 
 
+def change_filament_wire_ids(tray_id: int) -> tuple[int, int, int]:
+    """``(ams_id, slot_id, target)`` of a LOAD ``ams_change_filament`` for an AMS tray.
+
+    As BambuStudio builds them (``MachineObject::command_ams_change_filament``,
+    DeviceManager.cpp): a unit id below 16 is addressed by unit and local slot
+    with the global tray ``ams_id * 4 + slot`` as ``target``; for any other
+    unit the ``target`` is the unit id itself. That covers an AMS-HT — one
+    tray, numbered by its unit id 128-135, slot 0 — and the A2L AMS-Lite, whose
+    physical unit id is 16 (upstream 5a9415e2e).
+
+    The A2L ``target`` of 16 is read from BambuStudio's source, not captured
+    off an A2L; it replaces 64-67, which had no source at all. The
+    ``extrusion_cali`` ``tray_id`` that ``a2l_lite_wire_ids`` also returns is a
+    different value and is not decided here.
+    """
+    if 128 <= tray_id <= 135:
+        return tray_id, 0, tray_id
+    if (a2l := a2l_lite_wire_ids(tray_id // 4, tray_id)) is not None:
+        return a2l[0], a2l[1], a2l[0]
+    return tray_id // 4, tray_id % 4, tray_id
+
+
 def a2l_lite_wire_ids(ams_id: int, tray_id: int) -> tuple[int, int, int] | None:
     """Translate a normalised A2L slot back to the physical wire form.
 
@@ -463,6 +487,37 @@ def resolve_external_spools_in_mapping(ams_mapping: object, ams_mapping2: object
             continue
         resolved[i] = ams_id if is_dual_nozzle else 254
     return resolved
+
+
+def resolve_lite_trays_in_mapping(ams_mapping: object, ams_mapping2: object) -> object:
+    """Give an A2L AMS-Lite tray of a captured flat ``ams_mapping`` its global id (upstream be0ad787b).
+
+    A ``project_file`` names a Lite tray as its LOCAL slot 0-3 in the flat list and as
+    ``{ams_id: 16, slot_id: n}`` in ``ams_mapping2`` -- the form ``start_print`` sends, measured against the
+    firmware's own mapping. Everything that reads a captured mapping reads global trays, where the Lite is
+    24-27 (``A2L_LITE_GLOBAL_BASE``); kept flat, Lite slot 2 read as tray 1 of AMS 0.
+
+    Only that measured form is rewritten: the entry's ``ams_mapping2`` names unit 16 with a slot 0-3 AND the
+    flat value is that very slot. Every other entry is left exactly as captured, and a mapping with no such
+    entry is returned as the same object.
+    """
+    if not isinstance(ams_mapping, list) or not isinstance(ams_mapping2, list):
+        return ams_mapping
+    if len(ams_mapping2) != len(ams_mapping):
+        return ams_mapping
+    resolved = None
+    for i, (flat, detail) in enumerate(zip(ams_mapping, ams_mapping2, strict=True)):
+        if not isinstance(detail, dict) or isinstance(flat, bool) or not isinstance(flat, int):
+            continue
+        ams_id, slot = detail.get("ams_id"), detail.get("slot_id")
+        if isinstance(ams_id, bool) or ams_id != A2L_LITE_PHYSICAL_AMS_ID:
+            continue
+        if isinstance(slot, bool) or not isinstance(slot, int) or not 0 <= slot <= 3 or flat != slot:
+            continue
+        if resolved is None:
+            resolved = list(ams_mapping)
+        resolved[i] = A2L_LITE_GLOBAL_BASE + slot
+    return ams_mapping if resolved is None else resolved
 
 
 def decode_filam_bak_groups(value: object) -> list[list[int]] | None:
@@ -846,6 +901,30 @@ def _reports_an_ams_unit(ams_exist_bits: str | int | None) -> bool:
     except (TypeError, ValueError):
         return False
     return mask > 0
+
+
+def unit_reported_absent(ams_id, ams_list: list, ams_exist_bits) -> bool:
+    """Whether a push that does not list AMS unit ``ams_id`` says it is unplugged.
+
+    ``ams_exist_bits`` (hex) carries bit n for AMS unit n — upstream's
+    measurement (ad62d1063: an X1C, unit 1 -> "2", unplugged -> "0" with an
+    empty list; an H2C, units 0-2 and HT 128 -> "17"), not ours. So an AMS 0-3
+    whose bit is clear is gone, and an EMPTY unit list with no bit set means no
+    unit at all. Everything else keeps the unit, as the merge always did: a
+    partial push lists only some units, the push may carry no bits, and the
+    bit of an AMS-HT or an AMS Lite beside other units is not read (all-zero
+    bits beside a listed unit are also the shutdown shape, #765).
+    """
+    if ams_exist_bits is None or isinstance(ams_exist_bits, bool):
+        return False
+    try:
+        bits = int(ams_exist_bits, 16) if isinstance(ams_exist_bits, str) else int(ams_exist_bits)
+        unit = int(ams_id)
+    except (TypeError, ValueError):
+        return False
+    if bits == 0 and not ams_list:
+        return True
+    return 0 <= unit <= 3 and not (bits >> unit) & 1
 
 
 def apply_tray_exist_bits(
@@ -1328,6 +1407,16 @@ _DEVICE_BUSY_CLEAR_INTERVAL = 30.0
 HMS_MQTT_VERIFY_FAILED: str = "0500050000010007"
 
 
+class KProfileReadError(Exception):
+    """The printer's K-profile table could not be READ — not connected, or no reply.
+
+    Not the same thing as an empty table (upstream 080d866fb): a nozzle that
+    holds no profiles answers with an empty list. A caller that treats the two
+    alike clears a slot's K, re-creates profiles that exist, or files an
+    unanswered nozzle as read — so no answer is raised, and each caller decides.
+    """
+
+
 @dataclass
 class KProfile:
     """Pressure advance (K) calibration profile from printer."""
@@ -1707,6 +1796,9 @@ class PrinterState:
     # ``has_extra_flow_type`` — a nozzle frame that also carried ``flag3``
     # (``DeviceManager.cpp:3314-3321``).
     has_extra_flow_type: bool = False
+    # BS ``is_enable_ams_np`` — ``flag3`` bit 9 (``DeviceManager.cpp``). With
+    # ``enable_np`` it chooses the RFID re-read command; sticky like the two above.
+    enable_ams_np: bool = False
     # AI detection and print options
     print_options: PrintOptions = field(default_factory=PrintOptions)
     # Calibration stage tracking (from stg_cur and stg fields)
@@ -2640,8 +2732,10 @@ class BambuMQTTClient:
         self._kprofiles_by_nozzle: dict[str, list[KProfile]] = {}
         self._cali_history_by_nozzle: dict[str, list] = {}
         # One read of the fitted diameters' tables per connection — see
-        # ``_request_fitted_kprofile_tables``. Re-armed in ``_on_connect``.
+        # ``_request_fitted_kprofile_tables``. Re-armed in ``_on_connect``, and
+        # by ``rearm_fitted_kprofile_tables`` when a table went unanswered.
         self._kprofile_tables_requested = False
+        self._kprofile_table_attempts = 0
         # Verdicts on K-profile *writes* (``extrusion_cali_set`` /
         # ``extrusion_cali_del``), keyed by the sequence_id we sent — the printer
         # echoes it back. ``None`` = registered, not yet answered. Filled on the
@@ -2658,6 +2752,12 @@ class BambuMQTTClient:
         # acknowledgement can retire that packet from paho's retry queue
         # (see _drop_queued_message). Emptied on connect with the queue itself.
         self._mid_by_sequence: dict[str, int] = {}
+        # RFID re-read verdicts (see ``await_rfid_refresh``): ``ams_get_rfid`` answers
+        # keyed by the sequence id we sent (``None`` = not answered yet), the legacy
+        # gcode's ack listener by its own, and the attempt a route is waiting on, per slot.
+        self._pending_rfid_acks: dict[str, dict | None] = {}
+        self._rfid_gcode_acks: dict[str, tuple[threading.Event, dict]] = {}
+        self._rfid_attempts: dict[tuple[int, int], tuple[str, str]] = {}
 
         # Xcam hold timers - OrcaSlicer pattern: ignore incoming data for 3 seconds after command
         # Key: module_name, Value: timestamp when command was sent
@@ -2668,6 +2768,8 @@ class BambuMQTTClient:
         # slicer's own dispatch on the request topic, or the printer's echo of
         # it on the report topic. Both say what the print was told to use.
         self._captured_ams_mapping: list[int] | None = None
+        # Nozzles whose ``snow`` the frame being processed carried itself (``_parse_extruder_position``).
+        self._snow_in_frame: frozenset[int] = frozenset()
         # Why the last connection attempt did not produce a connection. Read by
         # ``connection_watchdog`` when a session rebuild fails; None means the
         # attempt has not failed (yet), never "we did not look".
@@ -3110,6 +3212,7 @@ class BambuMQTTClient:
             # The table may have changed while the link was down: read the
             # fitted diameters again once this connection's first push names them.
             self._kprofile_tables_requested = False
+            self._kprofile_table_attempts = 0
             client.subscribe(self.topic_subscribe)
             # Subscribe to request topic for ams_mapping capture (if supported by broker)
             if self._request_topic_supported:
@@ -3408,8 +3511,10 @@ class BambuMQTTClient:
     def _resolve_captured_mapping(self, print_data: dict) -> object:
         """A ``project_file``'s ``ams_mapping`` with its external holders named again from its
         own ``ams_mapping2`` (``resolve_external_spools_in_mapping``). The dispatched mapping
-        stays the first authority for attribution — this only keeps it from losing WHICH holder."""
-        flat = print_data.get("ams_mapping")
+        stays the first authority for attribution — this only keeps it from losing WHICH holder.
+        An A2L AMS-Lite tray, flat on the wire as its local slot, gets its global id the same way
+        (``resolve_lite_trays_in_mapping``)."""
+        flat = resolve_lite_trays_in_mapping(print_data.get("ams_mapping"), print_data.get("ams_mapping2"))
         if not isinstance(flat, list) or -1 not in flat:
             return flat
         return resolve_external_spools_in_mapping(
@@ -3422,6 +3527,7 @@ class BambuMQTTClient:
     def _process_message(self, payload: dict):
         """Process incoming MQTT message from printer."""
         self.state.feed_telemetry.observe(payload, self.model)
+        self._snow_in_frame = frozenset()
         # Handle top-level AMS data (comes outside of "print" key)
         # Wrap in try/except to prevent breaking the MQTT connection
         if "ams" in payload:
@@ -3589,6 +3695,10 @@ class BambuMQTTClient:
                         self._is_dual_nozzle = True
                         logger.info("[%s] Detected dual-nozzle printer from device.extruder.info", self.serial_number)
 
+            # The active nozzle and each nozzle's slot (``snow``) of THIS frame, before its AMS block:
+            # a bare ``tray_now`` is resolved against them (upstream e3824097f).
+            self._parse_extruder_position(print_data)
+
             # Handle AMS data that comes inside print key
             if "ams" in print_data:
                 try:
@@ -3697,6 +3807,7 @@ class BambuMQTTClient:
             self._parse_print_option_support(print_data)
 
             self._latch_flow_type_flags(print_data)
+            self._latch_ams_np(print_data)
             if "auto_recovery" in print_data and not _ps_hold("auto_recovery"):
                 po.auto_recovery_step_loss = bool(print_data["auto_recovery"])
             if "sound_enable" in print_data and not _ps_hold("sound_enable"):
@@ -3850,6 +3961,8 @@ class BambuMQTTClient:
                 # INFO level so the body lands in support bundles by default.
                 elif cmd == "ams_filament_drying":
                     logger.info("[%s] ams_filament_drying response: %s", self.serial_number, print_data)
+                elif cmd == "ams_get_rfid":
+                    self._route_rfid_ack(print_data)
                 # Check for developer mode probe response
                 if (
                     cmd == "ams_filament_setting"
@@ -4004,7 +4117,7 @@ class BambuMQTTClient:
             if not any(name.startswith(prefix) for prefix in _AMS_MODULE_PREFIXES):
                 continue
             try:
-                ams_id = int(name.split("/", 1)[1])
+                ams_id = normalize_am_unit_id(int(name.split("/", 1)[1]))
             except (ValueError, IndexError):
                 continue
             sw_ver = module.get("sw_ver", "")
@@ -4515,7 +4628,9 @@ class BambuMQTTClient:
             self.state.print_options.filament_tangle_detect = bool(xcam_data.get("filament_tangle_detect"))
 
     @staticmethod
-    def _resolve_local_slot_from_mapping(local_slot: int, mapping_raw: list | None) -> int | None:
+    def _resolve_local_slot_from_mapping(
+        local_slot: int, mapping_raw: list | None, units: set[int] | None = None
+    ) -> int | None:
         """Resolve a local AMS slot ID to a global tray ID using the MQTT mapping field.
 
         The MQTT mapping field is an array of snow-encoded values:
@@ -4523,16 +4638,19 @@ class BambuMQTTClient:
 
         Finds entries where the local slot matches, then computes the global tray ID.
         Returns the global ID if exactly one AMS matches, or None if ambiguous/unavailable.
+        ``units`` narrows the candidates to those AMS units (the ones on the active nozzle).
         """
         if not isinstance(mapping_raw, list) or not mapping_raw:
             return None
 
         candidates: set[int] = set()
         for value in mapping_raw:
-            if not isinstance(value, int) or value >= 65535:
+            if not isinstance(value, int) or isinstance(value, bool) or value >= 65535:
                 continue
             ams_hw_id = value >> 8
             slot = value & 0xFF
+            if units is not None and ams_hw_id not in units:
+                continue
             if 0 <= ams_hw_id <= 3 and (slot & 0x03) == local_slot:
                 candidates.add(ams_hw_id * 4 + local_slot)
             elif 128 <= ams_hw_id <= 135 and local_slot == 0:
@@ -4541,6 +4659,108 @@ class BambuMQTTClient:
         if len(candidates) == 1:
             return candidates.pop()
         return None
+
+    def _store_active_extruder(self, state_val: object) -> None:
+        """The printing nozzle out of ``device.extruder.state`` (bits 4-7); anything unreadable is skipped."""
+        if isinstance(state_val, bool) or not isinstance(state_val, int):
+            return
+        # ``device.extruder.state`` is a packed bitfield. BS
+        # ``DevExtruderSystem.cpp`` reads it as:
+        #
+        #   bits  0..3  total extruder count
+        #   bits  4..7  CURRENT extruder id      <- the one printing now
+        #   bits  8..11 TARGET extruder id       <- the one being switched to
+        #   bits 12..14 switch state
+        #   bits 15..18 currently-loading extruder id
+        #   bit  19     busy loading
+        #
+        # We read ``(state_val >> 8) & 0x1`` — the low bit of the
+        # **target** field. While a tool change is in flight target and
+        # current disagree, so the spool written to the archive (and
+        # pushed to Spoolman) was the one being switched TO, not the one
+        # that laid the plastic. On a two-extruder machine the values
+        # coincide the rest of the time, which is why it looked fine.
+        new_extruder = (state_val >> 4) & 0xF
+        if new_extruder != self.state.active_extruder:
+            logger.debug(
+                f"[{self.serial_number}] ACTIVE EXTRUDER CHANGED (state bits 4-7): "
+                f"{self.state.active_extruder} -> {new_extruder} (0=right, 1=left) "
+                f"[state={state_val}, target={(state_val >> 8) & 0xF}]"
+            )
+            self.state.active_extruder = new_extruder
+
+    def _store_extruder_snow(self, extruder_info: object) -> frozenset[int]:
+        """Each nozzle's ``snow`` (slot now) as a global tray id; returns the nozzles it stored.
+
+        snow encodes AMS ID in high byte: ams_id = snow >> 8, slot = snow & 0xFF. An entry that is not
+        readable is skipped: it must not cost the frame the fields that follow it.
+        """
+        stored: set[int] = set()
+        if not isinstance(extruder_info, list):
+            return frozenset()
+        for ext_info in extruder_info:
+            if not isinstance(ext_info, dict):
+                continue
+            ext_id = ext_info.get("id")
+            snow = ext_info.get("snow")
+            if isinstance(ext_id, bool) or not isinstance(ext_id, int) or ext_id > 1:
+                continue
+            if isinstance(snow, bool) or not isinstance(snow, int):
+                continue
+            # Normalize H2D snow value to global tray ID
+            ams_id = snow >> 8
+            slot = snow & 0xFF
+            if 0 <= ams_id <= 3:
+                # Regular AMS slot
+                global_tray = ams_id * 4 + (slot & 0x03)
+                old_val = self.state.h2d_extruder_snow.get(ext_id)
+                if old_val != global_tray:
+                    logger.debug(
+                        f"[{self.serial_number}] H2D extruder[{ext_id}] snow: "
+                        f"raw={snow} (AMS {ams_id} slot {slot}) -> global tray {global_tray}"
+                    )
+                self.state.h2d_extruder_snow[ext_id] = global_tray
+            elif ams_id == 254 or ams_id == 255:
+                # External spool or unloaded
+                normalized = 254 if slot != 255 else 255
+                old_val = self.state.h2d_extruder_snow.get(ext_id)
+                if old_val != normalized:
+                    logger.debug(
+                        f"[{self.serial_number}] H2D extruder[{ext_id}] snow: "
+                        f"raw={snow} -> {'external' if normalized == 254 else 'unloaded'}"
+                    )
+                self.state.h2d_extruder_snow[ext_id] = normalized
+            elif 128 <= ams_id <= 135:
+                # External spool with hub mapping
+                old_val = self.state.h2d_extruder_snow.get(ext_id)
+                if old_val != ams_id:
+                    logger.debug(
+                        f"[{self.serial_number}] H2D extruder[{ext_id}] snow: raw={snow} -> external hub {ams_id}"
+                    )
+                self.state.h2d_extruder_snow[ext_id] = ams_id
+            else:
+                continue  # the firmware's initial sentinel and anything else: says nothing
+            stored.add(ext_id)
+        return frozenset(stored)
+
+    def _parse_extruder_position(self, print_data: dict) -> None:
+        """Read THIS frame's nozzle data before its AMS block (upstream e3824097f).
+
+        A dual-nozzle printer's ``ams.tray_now`` is a bare slot; the active nozzle and that nozzle's
+        ``snow`` say which unit it belongs to. Read after the AMS block, a frame that carried the new slot
+        together with the new snow was resolved against the snow of the frame before -- the old tray --
+        and nothing recomputed it until the next ``tray_now`` report. ``_update_state`` reads the same
+        values again through the same two helpers; that second read changes nothing.
+        """
+        device = print_data.get("device")
+        extruder = device.get("extruder") if isinstance(device, dict) else None
+        if not isinstance(extruder, dict):
+            return
+        self._store_active_extruder(extruder.get("state"))
+        info = extruder.get("info")
+        # ``has_h2d_extruder_info`` in ``_update_state``: two nozzles or it is not this data.
+        if isinstance(info, list) and len(info) >= 2:
+            self._snow_in_frame = self._store_extruder_snow(info)
 
     def _normalize_a2l_am_units(self, ams_list) -> None:
         """A2L AMS-Lite normalisation: rewrite the physical unit id 16 → 6 in
@@ -4775,11 +4995,16 @@ class BambuMQTTClient:
                 # Single-nozzle printers with multiple AMS (e.g. P2S) also report local slot IDs (#420)
                 # - disambiguated below using MQTT mapping field
                 ams_map = self.state.ams_extruder_map
+                # Set when nothing says which unit a bare slot belongs to: such a report names no tray,
+                # and is kept out of the print's journal below (upstream 3ddd324f8, owner's P19).
+                unresolved = False
                 if self._is_dual_nozzle and 0 <= parsed_tray_now <= 3:
                     # First, check if we have a pending target that matches this slot
                     pending_target = self.state.pending_tray_target
                     if pending_target is not None:
-                        pending_slot = pending_target % 4
+                        # The same slot rule as the snow branch below: an AMS-HT
+                        # (128-135) holds its one tray in slot 0.
+                        pending_slot = 0 if 128 <= pending_target <= 135 else pending_target % 4
                         if pending_slot == parsed_tray_now:
                             # Slot matches our pending target - use the full global ID
                             logger.debug(
@@ -4817,13 +5042,24 @@ class BambuMQTTClient:
                                         f"extruder[{active_ext}] snow={snow_tray} (slot {snow_slot})"
                                     )
                                 self.state.tray_now = snow_tray
-                            else:
-                                # Slot mismatch - snow field may not have updated yet, trust snow
+                            elif active_ext in self._snow_in_frame:
+                                # This very frame says both, and they disagree: the nozzle's own snow is
+                                # the nozzle's truth.
                                 logger.debug(
                                     f"[{self.serial_number}] H2D tray_now: ams.tray_now slot {parsed_tray_now} "
                                     f"!= snow slot {snow_slot}, using snow value {snow_tray}"
                                 )
                                 self.state.tray_now = snow_tray
+                            else:
+                                # The snow is an earlier frame's and the slot does not fit it: one of the
+                                # two is out of date and nothing here says which. The tray stays what it
+                                # was (as before, when it was the snow's) and the report is not journalled.
+                                logger.debug(
+                                    f"[{self.serial_number}] H2D tray_now: ams.tray_now slot {parsed_tray_now} "
+                                    f"!= earlier snow slot {snow_slot} ({snow_tray}) - unresolved, keeping "
+                                    f"{self.state.tray_now}"
+                                )
+                                unresolved = True
                         else:
                             # Fallback: snow not available, use ams_extruder_map (less reliable)
                             # Find ALL AMS units on the active extruder
@@ -4882,19 +5118,63 @@ class BambuMQTTClient:
                                         )
                                         self.state.tray_now = resolved
                                     else:
-                                        # Genuinely ambiguous - use slot as-is (will be wrong for non-first AMS)
-                                        logger.warning(
-                                            f"[{self.serial_number}] H2D tray_now: multiple AMS {ams_on_extruder} on extruder {active_ext}, "
-                                            f"no snow field, using slot {parsed_tray_now} (may be incorrect)"
+                                        # The print's own live mapping may name the unit: asked only while
+                                        # a print runs (an idle printer keeps the last print's), and only
+                                        # of the units on this nozzle. It answers "which tray feeds now"
+                                        # and never enters the slot-to-tray attribution.
+                                        from_mapping = (
+                                            self._resolve_local_slot_from_mapping(
+                                                parsed_tray_now, self.state.raw_data.get("mapping"), set(candidates)
+                                            )
+                                            if self._was_running and not self._completion_triggered
+                                            else None
                                         )
-                                        self.state.tray_now = parsed_tray_now
+                                        if from_mapping is not None:
+                                            logger.debug(
+                                                f"[{self.serial_number}] H2D tray_now: multiple AMS {ams_on_extruder}, "
+                                                f"slot {parsed_tray_now} -> global ID {from_mapping} (from mapping)"
+                                            )
+                                            self.state.tray_now = from_mapping
+                                        else:
+                                            # Genuinely ambiguous: the current tray is KEPT until the
+                                            # nozzle's snow names one, and nothing is journalled. The
+                                            # bare slot is never written down — it would be a tray of
+                                            # AMS 0 (upstream #3242). BambuStudio derives no tray from
+                                            # ``ams.tray_now`` on a multi-extruder printer at all
+                                            # (DevExtruderSystem ParseV1_0 returns when the extruder
+                                            # count is not 1; the tray comes from each extruder's
+                                            # snow). Parity with both, read from code.
+                                            logger.debug(
+                                                f"[{self.serial_number}] H2D tray_now: multiple AMS {ams_on_extruder} on "
+                                                f"extruder {active_ext}, slot {parsed_tray_now} is ambiguous without "
+                                                f"snow, keeping {current_tray}"
+                                            )
+                                            unresolved = True
                             else:
-                                # No AMS on this extruder - use slot as-is
-                                logger.warning(
-                                    f"[{self.serial_number}] H2D tray_now: no AMS on extruder {active_ext}, "
-                                    f"using slot {parsed_tray_now}"
+                                # No AMS on this nozzle that the map knows of. The running print's
+                                # own mapping may still name one tray at this slot (same rule as
+                                # above: only while a print runs); otherwise the slot cannot be
+                                # placed and the current tray is kept (upstream #3242).
+                                from_mapping = (
+                                    self._resolve_local_slot_from_mapping(
+                                        parsed_tray_now, self.state.raw_data.get("mapping")
+                                    )
+                                    if self._was_running and not self._completion_triggered
+                                    else None
                                 )
-                                self.state.tray_now = parsed_tray_now
+                                if from_mapping is not None:
+                                    logger.debug(
+                                        f"[{self.serial_number}] H2D tray_now: no AMS on extruder {active_ext}, "
+                                        f"slot {parsed_tray_now} -> global ID {from_mapping} (from mapping)"
+                                    )
+                                    self.state.tray_now = from_mapping
+                                else:
+                                    logger.debug(
+                                        f"[{self.serial_number}] H2D tray_now: no AMS on extruder {active_ext}, "
+                                        f"slot {parsed_tray_now} can't be placed without snow, keeping "
+                                        f"{self.state.tray_now}"
+                                    )
+                                    unresolved = True
                 elif not self._is_dual_nozzle and 0 <= parsed_tray_now <= 3:
                     # #1822: on an all-external-spool print the slicer maps every slot to -1;
                     # the firmware still reports tray_now = the physical slot, which stuck the
@@ -4970,7 +5250,12 @@ class BambuMQTTClient:
                 # Valid physical trays: 0-15 (regular AMS), 24-27 (A2L AMS-Lite,
                 # normalised unit 6), 128-135 (AMS-HT), 254 (external spool)
                 tn = self.state.tray_now
-                if self._is_journal_tray(tn):
+                if unresolved:
+                    # Not a tray observation: journalled, it froze the spool of a tray that may not be
+                    # feeding, read as a return to the source by the stale-refill proof, and closed an
+                    # open runout tail as a false feed return.
+                    logger.debug("[%s] tray_now slot %s unresolved - not journalled", self.serial_number, tn)
+                elif self._is_journal_tray(tn):
                     # This packet's own layer: it is parsed after the tray branch, so the
                     # state still holds the layer of the packet before.
                     self._observe_journal_tray(tn, _packet_layer(printer_status))
@@ -5123,6 +5408,18 @@ class BambuMQTTClient:
                     # unit to preserve tray, sn, sw_ver, and other accumulated data.
                     ams_unit = {**existing_unit, **ams_unit}
                 existing_by_id[ams_id] = ams_unit
+
+        # The merge keeps a unit the push does not list, so an AMS unplugged
+        # while we run stayed on the card until a restart (upstream ad62d1063,
+        # #3356). A unit goes only on the printer's own word in THIS push — and
+        # only when the push carried a unit list at all: a presence-only push
+        # reaches here with a list we made up.
+        if isinstance(ams_data, dict) and isinstance(ams_data.get("ams"), list):
+            listed = {unit.get("id") for unit in ams_list if isinstance(unit, dict)}
+            for gone_id in [uid for uid in existing_by_id if uid not in listed]:
+                if unit_reported_absent(gone_id, ams_list, ams_data.get("ams_exist_bits")):
+                    logger.info("[%s] AMS %s is no longer attached; leaving the card", self.serial_number, gone_id)
+                    del existing_by_id[gone_id]
 
         # Convert back to list, sorted by ID for consistent ordering
         merged_ams = sorted(existing_by_id.values(), key=lambda x: x.get("id", 0))
@@ -6365,31 +6662,8 @@ class BambuMQTTClient:
                     )
                 self._device_id_logged = True
             if "extruder" in device and "state" in device["extruder"]:
-                state_val = device["extruder"]["state"]
-                # ``device.extruder.state`` is a packed bitfield. BS
-                # ``DevExtruderSystem.cpp`` reads it as:
-                #
-                #   bits  0..3  total extruder count
-                #   bits  4..7  CURRENT extruder id      <- the one printing now
-                #   bits  8..11 TARGET extruder id       <- the one being switched to
-                #   bits 12..14 switch state
-                #   bits 15..18 currently-loading extruder id
-                #   bit  19     busy loading
-                #
-                # We read ``(state_val >> 8) & 0x1`` — the low bit of the
-                # **target** field. While a tool change is in flight target and
-                # current disagree, so the spool written to the archive (and
-                # pushed to Spoolman) was the one being switched TO, not the one
-                # that laid the plastic. On a two-extruder machine the values
-                # coincide the rest of the time, which is why it looked fine.
-                new_extruder = (state_val >> 4) & 0xF
-                if new_extruder != self.state.active_extruder:
-                    logger.debug(
-                        f"[{self.serial_number}] ACTIVE EXTRUDER CHANGED (state bits 4-7): "
-                        f"{self.state.active_extruder} -> {new_extruder} (0=right, 1=left) "
-                        f"[state={state_val}, target={(state_val >> 8) & 0xF}]"
-                    )
-                    self.state.active_extruder = new_extruder
+                # Already read once before this frame's AMS block (``_parse_extruder_position``).
+                self._store_active_extruder(device["extruder"]["state"])
 
         # Log device.extruder structure for active extruder
         if "device" in data and isinstance(data.get("device"), dict):
@@ -6397,7 +6671,7 @@ class BambuMQTTClient:
             if "extruder" in device:
                 ext_data = device["extruder"]
                 # Log 'state' field - OrcaSlicer uses bits 12-14 for switch state
-                if "state" in ext_data:
+                if "state" in ext_data and isinstance(ext_data["state"], int):
                     state_val = ext_data["state"]
                     # Extract bits 12-14 (3 bits) for switch state
                     switch_state = (state_val >> 12) & 0x7
@@ -6657,42 +6931,8 @@ class BambuMQTTClient:
                     # Parse H2D snow field (slot now) for accurate tray_now disambiguation
                     # snow encodes AMS ID in high byte: ams_id = snow >> 8, slot = snow & 0xFF
                     if has_h2d_extruder_info:
-                        for ext_info in extruder_info:
-                            ext_id = ext_info.get("id")
-                            snow = ext_info.get("snow")
-                            if ext_id is not None and snow is not None and ext_id <= 1:
-                                # Normalize H2D snow value to global tray ID
-                                ams_id = snow >> 8
-                                slot = snow & 0xFF
-                                if 0 <= ams_id <= 3:
-                                    # Regular AMS slot
-                                    global_tray = ams_id * 4 + (slot & 0x03)
-                                    old_val = self.state.h2d_extruder_snow.get(ext_id)
-                                    if old_val != global_tray:
-                                        logger.debug(
-                                            f"[{self.serial_number}] H2D extruder[{ext_id}] snow: "
-                                            f"raw={snow} (AMS {ams_id} slot {slot}) -> global tray {global_tray}"
-                                        )
-                                    self.state.h2d_extruder_snow[ext_id] = global_tray
-                                elif ams_id == 254 or ams_id == 255:
-                                    # External spool or unloaded
-                                    normalized = 254 if slot != 255 else 255
-                                    old_val = self.state.h2d_extruder_snow.get(ext_id)
-                                    if old_val != normalized:
-                                        logger.debug(
-                                            f"[{self.serial_number}] H2D extruder[{ext_id}] snow: "
-                                            f"raw={snow} -> {'external' if normalized == 254 else 'unloaded'}"
-                                        )
-                                    self.state.h2d_extruder_snow[ext_id] = normalized
-                                elif 128 <= ams_id <= 135:
-                                    # External spool with hub mapping
-                                    old_val = self.state.h2d_extruder_snow.get(ext_id)
-                                    if old_val != ams_id:
-                                        logger.debug(
-                                            f"[{self.serial_number}] H2D extruder[{ext_id}] snow: "
-                                            f"raw={snow} -> external hub {ams_id}"
-                                        )
-                                    self.state.h2d_extruder_snow[ext_id] = ams_id
+                        # Already read once before this frame's AMS block (``_parse_extruder_position``).
+                        self._store_extruder_snow(extruder_info)
                 # Parse bed heating state from device.bed.info.temp encoding
                 # temp > 500 means encoded (target*65536+current), heating = target > 0 AND current < target
                 bed_data = device.get("bed", {})
@@ -7375,14 +7615,24 @@ class BambuMQTTClient:
                                 logger.warning("[%s] on_lights_report failed: %s", self.serial_number, e)
                         break
 
-        # Parse nozzle hardware info (single nozzle printers)
-        if "nozzle_type" in data:
+        # Parse nozzle hardware info (single nozzle printers).
+        #
+        # From a STATUS frame only (upstream f45cc599f): we put ``nozzle_diameter``
+        # on ``extrusion_cali_set`` / ``_del`` / ``_sel``, and a command's answer
+        # carries the sender's fields back in this same envelope. Read as
+        # hardware, saving a 0.6 profile on a printer with 0.4 fitted made
+        # ``slot_nozzle`` hand 0.6 to every binder until the next full status.
+        # BambuStudio takes only ``cali_idx`` from that answer (DevCalib.cpp) and
+        # the nozzle from status. Parity with its code; the echo on current
+        # firmware was not captured.
+        nozzle_is_status = is_printer_status_frame(data)
+        if "nozzle_type" in data and nozzle_is_status:
             material, flow = _parse_nozzle_type(str(data["nozzle_type"]))
             if material:
                 self.state.nozzles[0].nozzle_type = material
             if flow:
                 self.state.nozzles[0].nozzle_flow = flow
-        if "nozzle_diameter" in data:
+        if "nozzle_diameter" in data and nozzle_is_status:
             self.state.nozzles[0].nozzle_diameter = str(data["nozzle_diameter"])
 
         # Parse nozzle hardware info (dual nozzle printers - H2D series)
@@ -8848,10 +9098,28 @@ class BambuMQTTClient:
         if not diameters:
             return
         self._kprofile_tables_requested = True
+        self._kprofile_table_attempts = getattr(self, "_kprofile_table_attempts", 0) + 1
         try:
             self.on_kprofile_tables_due(diameters)
         except Exception as e:  # noqa: BLE001 — never into the push that carried the nozzle
             logger.warning("[%s] on_kprofile_tables_due failed: %s", self.serial_number, e)
+
+    # How many times one connection asks for the fitted nozzles' tables. More
+    # than one, because the printer is known to ignore a K-profile request now
+    # and then; bounded, because a printer that never answers must not be asked
+    # on every status push for as long as it stays connected.
+    KPROFILE_TABLE_ATTEMPTS_PER_CONNECTION = 3
+
+    def rearm_fitted_kprofile_tables(self) -> None:
+        """A fitted nozzle's table went unanswered: the read is still owed.
+
+        The next push that names a diameter asks again, up to
+        ``KPROFILE_TABLE_ATTEMPTS_PER_CONNECTION`` times per connection. Until a
+        table is read nothing can match a calibration to its live index, so no
+        binder — the pre-print one included — binds anything on that nozzle.
+        """
+        if getattr(self, "_kprofile_table_attempts", 0) < self.KPROFILE_TABLE_ATTEMPTS_PER_CONNECTION:
+            self._kprofile_tables_requested = False
 
     def _prime_kprofile_request(self):
         """Send a priming K-profile request on connect.
@@ -10324,18 +10592,24 @@ class BambuMQTTClient:
             max_retries: Maximum number of retry attempts
 
         Returns:
-            List of KProfile objects
+            List of KProfile objects — empty when the printer ANSWERED with an
+            empty table for that nozzle.
+
+        Raises:
+            KProfileReadError: the table was not read (not connected, or no
+            attempt was answered). Never an empty list for that: "not read"
+            and "holds nothing" lead every caller to different actions.
         """
         if not self._client or not self.state.connected:
             logger.warning("[%s] Cannot get K-profiles: not connected", self.serial_number)
-            return []
+            raise KProfileReadError("printer not connected")
 
         # Capture current event loop for thread-safe callback
         try:
             self._loop = asyncio.get_running_loop()
         except RuntimeError:
             logger.warning("[%s] No running event loop", self.serial_number)
-            return []
+            raise KProfileReadError("no running event loop") from None
 
         for attempt in range(max_retries):
             # One waiter per request, keyed by the sequence_id we are about to
@@ -10383,7 +10657,7 @@ class BambuMQTTClient:
                 self._kprofile_waiters.pop(seq_id, None)
 
         logger.error("[%s] Failed to get K-profiles after %s attempts", self.serial_number, max_retries)
-        return []
+        raise KProfileReadError(f"no answer for nozzle {nozzle_diameter} after {max_retries} attempts")
 
     def set_kprofile(
         self,
@@ -10718,6 +10992,14 @@ class BambuMQTTClient:
         ):
             self.state.has_extra_flow_type = True
 
+    def _latch_ams_np(self, print_data: dict) -> None:
+        """BS ``is_enable_ams_np``: ``flag3`` bit 9, latched like the flags above."""
+        if self.state.enable_ams_np:
+            return
+        flag3 = print_data.get("flag3")
+        if isinstance(flag3, int) and not isinstance(flag3, bool) and (flag3 >> 9) & 1:
+            self.state.enable_ams_np = True
+
     def _route_ack(self, print_data: dict) -> None:
         """Deliver an ``extrusion_cali_set`` / ``_del`` verdict to its waiter.
 
@@ -10741,11 +11023,25 @@ class BambuMQTTClient:
             print_data.get("sequence_id"),
         )
         logger.debug("[%s] %s full response: %s", self.serial_number, print_data.get("command"), print_data)
+        # This connection answers K writes — whoever sent the write. Read by
+        # ``answers_cali_writes``; a new connection has a new generation.
+        self._cali_ack_generation = getattr(self.state, "connection_generation", None)
         ack_seq = str(print_data.get("sequence_id", ""))
         # Only fill a slot somebody is waiting on. Writing every ack into the
         # dict would make it grow for the lifetime of the process.
         if ack_seq in self._pending_cali_acks:
             self._pending_cali_acks[ack_seq] = print_data
+
+    @property
+    def answers_cali_writes(self) -> bool:
+        """Whether THIS connection has answered an ``extrusion_cali_set`` / ``_del``.
+
+        Some firmware never answers one; there a missing answer says nothing
+        and is not worth reporting. Only where an answer has been seen is its
+        absence "sent, not confirmed".
+        """
+        seen = getattr(self, "_cali_ack_generation", None)
+        return seen is not None and seen == getattr(self.state, "connection_generation", None)
 
     async def await_cali_ack(self, sequence_id: str | None, timeout: float = 3.0) -> tuple[bool, str]:
         """Wait for the printer's verdict on a K-profile write.
@@ -10767,9 +11063,22 @@ class BambuMQTTClient:
         path. ``get_kprofiles`` uses an Event because it is async throughout.
 
         Returns ``(ok, detail)``; ``detail`` carries the printer's own reason.
+        A caller that must tell an answered success from silence asks
+        :meth:`await_cali_verdict`.
+        """
+        ok, detail, _confirmed = await self.await_cali_verdict(sequence_id, timeout)
+        return ok, detail
+
+    async def await_cali_verdict(self, sequence_id: str | None, timeout: float = 3.0) -> tuple[bool, str, bool]:
+        """:meth:`await_cali_ack`, plus whether the printer ANSWERED at all.
+
+        ``(ok, detail, confirmed)``. Silence is still ``ok`` — that rule stands —
+        but it is ``confirmed=False``: an unanswered write and a confirmed one
+        used to be indistinguishable to the operator and in the audit
+        (upstream f45cc599f).
         """
         if not sequence_id:
-            return True, ""
+            return True, "", False
         try:
             deadline = asyncio.get_running_loop().time() + timeout
             while asyncio.get_running_loop().time() < deadline:
@@ -10777,12 +11086,12 @@ class BambuMQTTClient:
                 if ack is not None:
                     result = str(ack.get("result", "")).lower()
                     if result in ("success", "ok", ""):
-                        return True, ""
+                        return True, "", True
                     reason = str(ack.get("reason", "") or "").strip()
-                    return False, reason or result
+                    return False, reason or result, True
                 await asyncio.sleep(0.05)
             logger.debug("[%s] No cali ack for seq=%s within %ss", self.serial_number, sequence_id, timeout)
-            return True, ""
+            return True, "", False
         finally:
             # Only this write's slot. Clearing the dict would drop the verdicts
             # other in-flight writes are still waiting on.
@@ -11834,7 +12143,8 @@ class BambuMQTTClient:
         """Load filament from a specific AMS tray.
 
         Args:
-            tray_id: Global tray ID — 0..15 for AMS slots, 254 for external
+            tray_id: Global tray ID — 0..15 for AMS slots, 24..27 for the A2L
+                AMS-Lite, 128..135 for an AMS-HT (its unit id), 254 for external
                 spool (single-external printers and Ext-L on dual-nozzle H2D),
                 255 for Ext-R on dual-nozzle H2D.
             extruder_id: Which hotend to feed (0 = right/main, 1 = left/deputy).
@@ -11853,7 +12163,8 @@ class BambuMQTTClient:
             return False
 
         # Build the ams_change_filament command. Encoding differs by target type:
-        #   - AMS slots (0..15): slot_id is the local slot, curr/tar_temp = -1.
+        #   - AMS slots (0..15, A2L 24..27, AMS-HT 128..135): see
+        #     change_filament_wire_ids; curr/tar_temp = -1.
         #   - External spool (tray_id=254): legacy capture from a single-extruder
         #     printer used slot_id=254, curr/tar_temp=-1; preserved here.
         #   - Ext-R on dual-nozzle H2D (tray_id=255): captured shape from
@@ -11875,16 +12186,10 @@ class BambuMQTTClient:
             slot_id = 254
             curr_temp = -1
             tar_temp = -1
-        elif (_a2l := a2l_lite_wire_ids(tray_id // 4, tray_id)) is not None:
-            # A2L AMS-Lite: physical unit 16 + local slot confirmed; the wire
-            # ``target`` (physical global 64-67) is extrapolated (no A2L load
-            # capture yet). See a2l_lite_wire_ids.
-            ams_id, slot_id, wire_target = _a2l
-            curr_temp = -1
-            tar_temp = -1
         else:
-            ams_id = tray_id // 4  # AMS unit (0, 1, 2, 3...)
-            slot_id = tray_id % 4  # Slot within AMS (0, 1, 2, 3)
+            # A regular AMS, the A2L AMS-Lite (physical unit 16) or an AMS-HT
+            # (128-135), each as BambuStudio addresses it.
+            ams_id, slot_id, wire_target = change_filament_wire_ids(tray_id)
             curr_temp = -1
             tar_temp = -1
 
@@ -11908,7 +12213,9 @@ class BambuMQTTClient:
         logger.info("[%s] Loading filament from tray %s (AMS %s slot %s)", self.serial_number, tray_id, ams_id, slot_id)
 
         # Track this load request for H2D dual-nozzle disambiguation
-        # H2D reports only slot number (0-3) in tray_now, so we use our tracked value
+        # H2D reports only slot number (0-3) in tray_now, so we use our tracked value.
+        # An AMS-HT too: its tray is matched as slot 0 (see the tray_now block),
+        # and remembering it replaces a target an earlier, unconfirmed load left.
         self.state.pending_tray_target = tray_id
         logger.info("[%s] Set pending_tray_target=%s for H2D disambiguation", self.serial_number, tray_id)
 
@@ -11940,13 +12247,11 @@ class BambuMQTTClient:
         logger.info("[%s] Unload requested, tray_now=%s, tray_id=%s", self.serial_number, tray_now, tray_id)
 
         # Determine source ams_id for the unload command
-        _a2l = None
         if source_tray == 255 or source_tray == 254:
             ams_id = 255  # No filament or external spool
-        elif (_a2l := a2l_lite_wire_ids(source_tray // 4, source_tray)) is not None:
-            ams_id = _a2l[0]  # A2L AMS-Lite: normalised 6 → physical 16
         else:
-            ams_id = source_tray // 4  # Source AMS
+            # Source AMS: the A2L AMS-Lite as physical 16, an AMS-HT as its unit id.
+            ams_id = change_filament_wire_ids(source_tray)[0]
 
         # The holder check exists only to tell two hotends apart. On one hotend
         # tray_now already names the loaded slot, and a single-nozzle ``snow``
@@ -11956,7 +12261,7 @@ class BambuMQTTClient:
         # at least one single-nozzle machine dual (#1386). 254/255 are not
         # ams*4+slot, so the local-slot arithmetic cannot describe them.
         if tray_id is not None and tray_id not in (254, 255) and self._is_dual_nozzle and self.state.extruder_slots:
-            local_slot = _a2l[1] if _a2l is not None else tray_id % 4
+            local_slot = change_filament_wire_ids(tray_id)[1]
             holder = next(
                 (ext for ext, slot in self.state.extruder_slots.items() if slot.holds(ams_id, local_slot)),
                 None,
@@ -12023,8 +12328,154 @@ class BambuMQTTClient:
         logger.info("[%s] AMS control: %s", self.serial_number, action)
         return True
 
+    def _rfid_refresh_refusal(self) -> str | None:
+        """Why an RFID re-read cannot start now, or ``None``.
+
+        The AMS has to move the filament to read a tag, which it cannot do with
+        one loaded — BambuStudio refuses up front for the same reason
+        (``StatusPanel``: "the filament is loaded to the toolhead").
+        """
+        tray_now = self.state.tray_now
+        if tray_now == 255:
+            return None
+        if tray_now == 254:
+            loaded_tray = "external spool"
+        elif tray_now >= 0 and tray_now < 128:
+            loaded_tray = f"AMS {tray_now // 4 + 1} slot {tray_now % 4 + 1}"
+        else:
+            loaded_tray = f"tray {tray_now}"
+        logger.warning("[%s] Cannot refresh AMS tray: filament loaded from %s", self.serial_number, loaded_tray)
+        return f"Please unload filament first. Currently loaded: {loaded_tray}"
+
+    def _rfid_gcode_allowed(self, ams_id: int, tray_id: int) -> bool:
+        """Whether the legacy ``M620 R`` may be sent for this slot right now.
+
+        A ``gcode_line`` runs inside whatever the printer is doing, so never
+        with a job loaded; and the gcode's tray index is ``ams * 4 + slot``,
+        which names only the regular units 0-3 — never an AMS-HT, the A2L
+        AMS-Lite or the external holder.
+        """
+        return self.state.state not in _ACTIVE_PRINT_STATES and 0 <= ams_id <= 3 and 0 <= tray_id <= 3
+
+    def _rfid_first_command(self, ams_id: int, tray_id: int) -> str:
+        """``"rfid"`` (``ams_get_rfid``) or ``"gcode"`` (``M620 R``), chosen as BambuStudio chooses.
+
+        BambuStudio decides by capability BEFORE sending, never by a refusal
+        (``StatusPanel.cpp`` / ``AmsControlWeb/ViewModelActions.cpp``):
+        ``is_enable_np || is_enable_ams_np`` → ``command_ams_refresh_rfid2``
+        (``ams_get_rfid``), otherwise ``command_ams_refresh_rfid`` (the gcode).
+
+        Both flags latch from status frames, so right after a connect "not
+        latched" may only mean "not reported yet". Until the printer has
+        reported its state the answer is ``ams_get_rfid`` — the command we
+        always sent — and the gcode stays a fallback.
+        """
+        new_protocol = self.state.enable_np or self.state.enable_ams_np
+        reported = self.state.state not in (None, "", "unknown")
+        if not new_protocol and reported and self._rfid_gcode_allowed(ams_id, tray_id):
+            return "gcode"
+        return "rfid"
+
+    def _publish_rfid_get(self, ams_id: int, tray_id: int) -> str:
+        """Publish ``ams_get_rfid`` as BambuStudio builds it; return its sequence id."""
+        # A2L AMS-Lite: physical unit 16 + local slot (matches ams_mapping2).
+        wire_ams_id, wire_slot_id = ams_id, tray_id
+        if (_a2l := a2l_lite_wire_ids(ams_id, tray_id)) is not None:
+            wire_ams_id, wire_slot_id, _ = _a2l
+        self._sequence_id += 1
+        seq = str(self._sequence_id)
+        # Registered before the publish, so a fast answer cannot arrive first.
+        self._pending_rfid_acks[seq] = None
+        command = {
+            "print": {
+                "command": "ams_get_rfid",
+                "sequence_id": seq,
+                "ams_id": wire_ams_id,
+                "slot_id": wire_slot_id,
+                # BambuStudio always sends it (``command_ams_refresh_rfid2``); 0 = this slot's own tag.
+                "mode": 0,
+            }
+        }
+        self._client.publish(self.topic_publish, json.dumps(command), qos=1)
+        logger.info("[%s] RFID re-read: ams_get_rfid AMS %s slot %s seq=%s", self.serial_number, ams_id, tray_id, seq)
+        return seq
+
+    def _publish_rfid_gcode(self, ams_id: int, tray_id: int) -> str:
+        """Publish the legacy re-read gcode exactly as BambuStudio writes it; return its sequence id."""
+        tray_index = ams_id * 4 + tray_id
+        seq = str(self._sequence_id + 1)
+        event, result = threading.Event(), {"success": False, "reason": ""}
+        self.register_ack_listener(seq, event, result)
+        self._rfid_gcode_acks[seq] = (event, result)
+        # ``command_ams_refresh_rfid``: "M620 R%1% \n" — the space and the newline are BambuStudio's.
+        self.send_gcode(f"M620 R{tray_index} \n")
+        logger.info(
+            "[%s] RFID re-read: M620 R%s (AMS %s slot %s) seq=%s", self.serial_number, tray_index, ams_id, tray_id, seq
+        )
+        return seq
+
+    def _route_rfid_ack(self, print_data: dict) -> None:
+        """Deliver an ``ams_get_rfid`` verdict to its waiter and say it in the log.
+
+        Runs on the MQTT thread; ``await_rfid_refresh`` only reads the slot.
+        """
+        logger.info(
+            "[%s] ams_get_rfid response: result=%s reason=%s seq=%s",
+            self.serial_number,
+            print_data.get("result"),
+            print_data.get("reason", ""),
+            print_data.get("sequence_id"),
+        )
+        ack_seq = str(print_data.get("sequence_id", ""))
+        # Only a slot somebody is waiting on — the topic is shared with the
+        # printer's screen and the Bambu app.
+        if ack_seq in self._pending_rfid_acks:
+            self._pending_rfid_acks[ack_seq] = print_data
+
+    async def _await_rfid_verdict(self, command: str, seq: str, timeout: float) -> tuple[bool, str]:
+        """``(accepted, reason)`` for one published re-read command.
+
+        Silence is acceptance: no answer is not evidence of a refusal, and some
+        firmware sends none. Only an explicit non-success verdict is a refusal.
+        """
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        try:
+            while loop.time() < deadline:
+                if command == "rfid":
+                    ack = self._pending_rfid_acks.get(seq)
+                    if ack is not None:
+                        result = str(ack.get("result", "")).lower()
+                        if result in ("success", "ok", ""):
+                            return True, ""
+                        return False, str(ack.get("reason", "") or "").strip() or result
+                else:
+                    event, outcome = self._rfid_gcode_acks[seq]
+                    if event.is_set():
+                        logger.info(
+                            "[%s] M620 R response: success=%s reason=%s seq=%s",
+                            self.serial_number,
+                            outcome["success"],
+                            outcome["reason"],
+                            seq,
+                        )
+                        if outcome["success"]:
+                            return True, ""
+                        return False, str(outcome["reason"] or "").strip() or "fail"
+                await asyncio.sleep(0.05)
+            logger.info("[%s] RFID re-read: no answer to seq=%s within %ss", self.serial_number, seq, timeout)
+            return True, ""
+        finally:
+            self._pending_rfid_acks.pop(seq, None)
+            if self._rfid_gcode_acks.pop(seq, None) is not None:
+                self._ack_listeners.pop(seq, None)
+
     def ams_refresh_tray(self, ams_id: int, tray_id: int) -> tuple[bool, str]:
         """Trigger RFID re-read for a specific AMS tray.
+
+        Sends the command BambuStudio would send to this printer (see
+        ``_rfid_first_command``) and returns once it is published. The
+        printer's answer is read by :meth:`await_rfid_refresh`.
 
         Args:
             ams_id: AMS unit ID (0-3, or 128 for H2D external tray)
@@ -12033,40 +12484,73 @@ class BambuMQTTClient:
         Returns:
             Tuple of (success, message)
         """
+        self._rfid_attempts.pop((ams_id, tray_id), None)
         if not self._client or not self.state.connected:
             logger.warning("[%s] Cannot refresh AMS tray: not connected", self.serial_number)
             return False, "Printer not connected"
 
         # Check if filament is currently loaded (tray_now != 255)
         # RFID refresh requires the AMS to move filament, which can't happen if one is loaded
-        tray_now = self.state.tray_now
-        if tray_now != 255:
-            # Decode which tray is loaded for the message
-            if tray_now == 254:
-                loaded_tray = "external spool"
-            elif tray_now >= 0 and tray_now < 128:
-                loaded_ams = tray_now // 4
-                loaded_slot = tray_now % 4
-                loaded_tray = f"AMS {loaded_ams + 1} slot {loaded_slot + 1}"
-            else:
-                loaded_tray = f"tray {tray_now}"
-            logger.warning("[%s] Cannot refresh AMS tray: filament loaded from %s", self.serial_number, loaded_tray)
-            return False, f"Please unload filament first. Currently loaded: {loaded_tray}"
+        refusal = self._rfid_refresh_refusal()
+        if refusal is not None:
+            return False, refusal
 
-        # A2L AMS-Lite: physical unit 16 + local slot (matches ams_mapping2).
-        wire_ams_id, wire_slot_id = ams_id, tray_id
-        if (_a2l := a2l_lite_wire_ids(ams_id, tray_id)) is not None:
-            wire_ams_id, wire_slot_id, _ = _a2l
-
-        # Use ams_get_rfid command to trigger RFID re-read
-        # This command is used by Bambu Studio to re-read the RFID tag
-        command = {
-            "print": {"command": "ams_get_rfid", "ams_id": wire_ams_id, "slot_id": wire_slot_id, "sequence_id": "0"}
-        }
-        self._client.publish(self.topic_publish, json.dumps(command), qos=1)
-        logger.info("[%s] Triggering RFID re-read: AMS %s, slot %s", self.serial_number, ams_id, tray_id)
+        command = self._rfid_first_command(ams_id, tray_id)
+        seq = (
+            self._publish_rfid_gcode(ams_id, tray_id) if command == "gcode" else self._publish_rfid_get(ams_id, tray_id)
+        )
+        self._rfid_attempts[(ams_id, tray_id)] = (command, seq)
 
         return True, f"Refreshing AMS {ams_id} tray {tray_id}"
+
+    async def await_rfid_refresh(self, ams_id: int, tray_id: int, timeout: float = 3.0) -> tuple[bool, str]:
+        """The printer's verdict on the re-read :meth:`ams_refresh_tray` just sent.
+
+        On an explicit refusal the other command is tried once, and its verdict
+        is read too (upstream 1cc4bae5d, owner's Р10):
+
+        * ``ams_get_rfid`` refused → the legacy ``M620 R``, only on a model
+          BambuStudio's older protocol covers, only with no job loaded, only for
+          the regular units 0-3;
+        * ``M620 R`` refused → ``ams_get_rfid``, the command every printer was
+          sent before.
+
+        Returns ``(accepted, reason)``; ``reason`` is the printer's own word.
+        """
+        attempt = self._rfid_attempts.pop((ams_id, tray_id), None)
+        if attempt is None:
+            return True, ""
+        command, seq = attempt
+        accepted, reason = await self._await_rfid_verdict(command, seq, timeout)
+        if accepted:
+            return True, ""
+
+        from backend.app.utils.printer_models import uses_legacy_rfid_refresh
+
+        if command == "rfid":
+            if not (uses_legacy_rfid_refresh(self.model) and self._rfid_gcode_allowed(ams_id, tray_id)):
+                return False, reason
+            fallback = "gcode"
+        else:
+            fallback = "rfid"
+        if not self._client or not self.state.connected or self._rfid_refresh_refusal() is not None:
+            return False, reason
+        logger.info(
+            "[%s] RFID re-read refused (%s: %s); trying %s",
+            self.serial_number,
+            command,
+            reason or "no reason",
+            fallback,
+        )
+        seq = (
+            self._publish_rfid_gcode(ams_id, tray_id)
+            if fallback == "gcode"
+            else self._publish_rfid_get(ams_id, tray_id)
+        )
+        accepted, fallback_reason = await self._await_rfid_verdict(fallback, seq, timeout)
+        if accepted:
+            return True, ""
+        return False, fallback_reason or reason
 
     def ams_set_filament_setting(
         self,

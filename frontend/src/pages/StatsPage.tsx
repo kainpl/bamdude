@@ -18,6 +18,7 @@ import {
   Eye,
   RotateCcw,
   Calculator,
+  Coins,
   Calendar,
   ChevronDown,
   BarChart3,
@@ -33,6 +34,7 @@ import {
   ResponsiveContainer,
 } from 'recharts';
 import { Button } from '../components/Button';
+import { RepriceUsageModal } from '../components/RepriceUsageModal';
 import { LoadingBlock } from '../components/LoadingBlock';
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
@@ -1213,6 +1215,8 @@ export function StatsPage() {
     }
   };
 
+  const [showReprice, setShowReprice] = useState(false);
+
   const handleRecalculateCosts = async () => {
     setIsRecalculating(true);
     try {
@@ -1348,6 +1352,16 @@ export function StatsPage() {
               <Calculator className="w-4 h-4" />
             )}
             {t('stats.recalculateCosts')}
+          </Button>
+          {/* Re-price recorded usage: the correction door, scoped and previewed */}
+          <Button
+            variant="outline"
+            onClick={() => setShowReprice(true)}
+            disabled={!hasPermission('archives:update_all')}
+            title={!hasPermission('archives:update_all') ? t('stats.noPermissionRecalculate') : t('stats.repriceUsageHint')}
+          >
+            <Coins className="w-4 h-4" />
+            {t('stats.repriceUsage')}
           </Button>
           {/* Export dropdown */}
           <div className="relative">
@@ -1488,6 +1502,16 @@ export function StatsPage() {
           storageKey="bambusy-dashboard-layout-v2"
           stackBelow={640}
           hideControls
+        />
+      )}
+      {showReprice && (
+        <RepriceUsageModal
+          currency={currency}
+          onClose={() => setShowReprice(false)}
+          onDone={(result) => {
+            showToast(t('stats.reprice.done', { count: result.archives_changed }));
+            void Promise.all([refetchStats(), refetchArchives()]);
+          }}
         />
       )}
     </div>

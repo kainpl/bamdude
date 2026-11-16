@@ -504,3 +504,71 @@ async def test_auto_refill_journal_splits_real_completion_at_runout(db_session, 
         assert new.weight_used == pytest.approx(90)
     finally:
         _active_sessions.clear()
+
+
+class TestAnInsertionWhileTheSlotsUnlinkIsHeld:
+    """An idle slot reported "no spool" keeps its row for a window (``slot_unlink_hold``). A reel put in
+    inside that window is still one insertion, witnessed once: if the row only waits there to be
+    unlinked, the stock claim must not be lost to it."""
+
+    @pytest.fixture(autouse=True)
+    def _holds(self):
+        from backend.app.services import slot_unlink_hold
+
+        slot_unlink_hold._holds.clear()
+        yield slot_unlink_hold
+        slot_unlink_hold._holds.clear()
+
+    async def _held_row(self, db, p, hold):
+        old = await spool(db, material="PETG", rgba="858585FF")
+        row = SpoolAssignment(
+            printer_id=p.id, ams_id=0, tray_id=0, spool_id=old.id, fingerprint_type="PETG", fingerprint_color="858585FF"
+        )
+        db.add(row)
+        await db.commit()
+        hold.offer((p.id, 0, 0), row_id=row.id, generation=1, report_stamp=1.0)
+        return old
+
+    @pytest.mark.asyncio
+    async def test_an_unreadable_reel_put_in_gets_its_stock_claim(self, db_session, printer_factory, _holds):
+        """Reel out, an untagged reel in 10 s later: the slot is occupied and blank. The held row was
+        about to be unlinked anyway, and the insertion was refused for it -- the slot ended with no spool."""
+        p = await printer(printer_factory)
+        old = await self._held_row(db_session, p, _holds)
+        stock = await spool(db_session)
+        pm, _state, tray = manager()
+        tray.update(tray_type="", tray_color="")
+
+        outcome = await claim_on_insertion(db_session, printer_id=p.id, event=event(), manager=pm)
+
+        assert outcome == {"reason": "assigned", "spool_id": stock.id}
+        assert (await db_session.execute(select(SpoolAssignment.spool_id))).scalars().all() == [stock.id]
+        assert old.id != stock.id
+
+    @pytest.mark.asyncio
+    async def test_the_same_filament_back_in_the_slot_keeps_its_spool(self, db_session, printer_factory, _holds):
+        """The one-push glitch: the slot reports what the row was assigned over. The row wins."""
+        p = await printer(printer_factory)
+        old = await self._held_row(db_session, p, _holds)
+        await spool(db_session)
+        pm, _state, tray = manager()
+        tray.update(tray_type="PETG", tray_color="858585FF")
+
+        outcome = await claim_on_insertion(db_session, printer_id=p.id, event=event(), manager=pm)
+
+        assert outcome == {"reason": "assignment_priority"}
+        assert (await db_session.execute(select(SpoolAssignment.spool_id))).scalars().all() == [old.id]
+
+    @pytest.mark.asyncio
+    async def test_a_row_that_is_not_held_wins_as_before(self, db_session, printer_factory, _holds):
+        p = await printer(printer_factory)
+        old = await self._held_row(db_session, p, _holds)
+        _holds._holds.clear()
+        await spool(db_session)
+        pm, _state, tray = manager()
+        tray.update(tray_type="", tray_color="")
+
+        outcome = await claim_on_insertion(db_session, printer_id=p.id, event=event(), manager=pm)
+
+        assert outcome == {"reason": "assignment_priority"}
+        assert (await db_session.execute(select(SpoolAssignment.spool_id))).scalars().all() == [old.id]

@@ -24,21 +24,12 @@ REST_ONLY = {
     "id",
     "name",
     "connector_identity",
-    # Top-level fields only the REST shaper builds today (found 2026-11-15, when
-    # this guard was written). The page MERGES a push over the REST answer, so
-    # these keep their loaded value rather than vanish — unlike a list such as
-    # the rack, which a push replaces whole. Listed so the set cannot grow
-    # unnoticed; moving one into the push is a change of its own.
-    "airduct_modes",
+    # Kept REST-only on purpose (upstream cacaaf4da, adapted): the stage names
+    # have a polling query of their own, and nothing reads the other two off a
+    # status. A push that carried them would pay 300-450 bytes for no reader.
     "ams_exists",
-    "ams_mapping",
-    "current_archive_id",
-    "developer_mode",
-    "macro_executing",
-    "nozzles",
     "print_options",
     "stg_names",
-    "supports_cooling_filter",
 }
 
 

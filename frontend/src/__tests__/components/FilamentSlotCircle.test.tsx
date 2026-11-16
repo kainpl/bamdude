@@ -104,4 +104,17 @@ describe('FilamentSlotCircle', () => {
     const text = screen.getByText('1');
     expectColor(text.style.color, '#fff', 'rgb(255, 255, 255)');
   });
+
+  it('draws the spool held for a blank slot in its colour, marked as not taken', () => {
+    const { container } = render(<FilamentSlotCircle isEmpty={true} emptyKind="reset" pendingColor="858585FF" slotNumber={2} />);
+    const circle = container.querySelector('[data-pending-config="true"]') as HTMLElement;
+    expect(circle).not.toBeNull();
+    expectColor(circle.style.backgroundColor, '#858585', 'rgb(133, 133, 133)');
+    expect(circle.style.borderStyle).toBe('dashed');
+  });
+
+  it('a configured slot ignores a pending colour', () => {
+    const { container } = render(<FilamentSlotCircle trayColor="FF0000" trayType="PLA" isEmpty={false} pendingColor="858585FF" slotNumber={2} />);
+    expect(container.querySelector('[data-pending-config="true"]')).toBeNull();
+  });
 });

@@ -3,14 +3,15 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Loader2, Package, Search } from 'lucide-react';
 import { api } from '../api/client';
-import type { InventorySpool, SpoolAssignment } from '../api/client';
+import type { InventorySpool, SpoolAssignment, SpoolPickerMiss } from '../api/client';
 import { Button } from './Button';
 import { ConfirmModal } from './ConfirmModal';
 import { Modal } from './Modal';
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
 import { DEFAULT_SPOOL_DISPLAY_TEMPLATE, formatSpoolDisplayName } from '../utils/spoolName';
-import { filterSpoolsByQuery } from '../utils/inventorySearch';
+import { exactSpoolId, filterSpoolsByQuery } from '../utils/inventorySearch';
+import { formatSlotLabel } from '../utils/amsHelpers';
 import { compareByOrder, parseSpoolSortOrder } from '../utils/spoolSort';
 import { getSwatchStyle, resolveSpoolColorName } from '../utils/colors';
 
@@ -40,9 +41,21 @@ interface AssignSpoolModalProps {
    * unchanged — an assign over an occupied slot has always replaced.
    */
   currentSpool?: { id: number; displayName: string; source: 'inventory' | 'spoolman' };
+  /**
+   * The spool is already decided — the dialog was reached from the spool's own
+   * form («Assign to slot»), where the operator picked the SLOT instead. There
+   * is then no list to choose from: the dialog names the spool and keeps
+   * everything else it does for any assignment — the freshness / archived
+   * check, the material-mismatch confirmation, the mid-print «replacement or
+   * correction?» question and the two routes. It exists so that door is not a
+   * second writer of assignments.
+   */
+  fixedSpool?: { id: number; displayName: string; source: 'inventory' | 'spoolman' };
+  /** Called after a successful assignment, before `onClose`. */
+  onAssigned?: () => void;
 }
 
-export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, trayInfo, spoolmanEnabled, currentSpool }: AssignSpoolModalProps) {
+export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, trayInfo, spoolmanEnabled, currentSpool, fixedSpool, onAssigned }: AssignSpoolModalProps) {
   const { t } = useTranslation();
   const { hasPermission } = useAuth();
   const queryClient = useQueryClient();
@@ -68,6 +81,12 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
   // windows — paused right now, or running with a pause behind the print —
   // ask through the same modal; only the wording differs.
   const [replacementPrompt, setReplacementPrompt] = useState<{ spoolId?: number; spoolmanId?: number } | null>(null);
+  // What "Assign" acts on: the operator's pick from the list, or the spool the
+  // dialog was opened for.
+  const pickedSpoolId = fixedSpool ? (fixedSpool.source === 'inventory' ? fixedSpool.id : null) : selectedSpoolId;
+  const pickedSpoolmanSpoolId = fixedSpool
+    ? (fixedSpool.source === 'spoolman' ? fixedSpool.id : null)
+    : selectedSpoolmanSpoolId;
 
   // Reset selected spool(s) when filtering mode changes
   useEffect(() => {
@@ -128,7 +147,7 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
       replacing_spool_id: currentSpool?.source === 'inventory' ? currentSpool.id : undefined,
       page: pickerPage,
     }, signal),
-    enabled: isOpen && !spoolmanEnabled && hasPermission('inventory:read'),
+    enabled: isOpen && !spoolmanEnabled && !fixedSpool && hasPermission('inventory:read'),
   });
   const spools = spoolPage?.items;
   const { data: selectedSpoolRecord } = useQuery({
@@ -147,7 +166,7 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
   const { data: spoolmanSpools, isLoading: spoolmanLoading } = useQuery({
     queryKey: ['spoolman-inventory-spools', 'assign-modal'],
     queryFn: () => api.getSpoolmanInventorySpools(false),
-    enabled: isOpen && !!spoolmanEnabled,
+    enabled: isOpen && !!spoolmanEnabled && !fixedSpool,
   });
 
   // Spoolman SlotAssignments across all printers — used to filter out spools
@@ -195,6 +214,7 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
   // name it reports must be the name the list showed, from the same template.
   const spoolDisplayTemplate = settings?.spool_display_template || DEFAULT_SPOOL_DISPLAY_TEMPLATE;
   const pickedDisplayName = (id: number, list: InventorySpool[] | undefined) => {
+    if (fixedSpool?.id === id) return fixedSpool.displayName;
     const picked = list?.find((spool: InventorySpool) => spool.id === id)
       ?? (selectedSpoolRecord?.id === id ? selectedSpoolRecord : undefined);
     return picked ? formatSpoolDisplayName(picked, spoolDisplayTemplate) : `#${id}`;
@@ -234,9 +254,15 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
           : t(newAssignment.pending_config ? 'inventory.assignPendingInsert' : 'inventory.assignSuccess'),
         'success',
       );
+      // The slot was told a generic profile instead of the spool's own filament
+      // (upstream 02e39b18b): said, because the slicer will see the generic.
+      if (newAssignment.slot_degraded) {
+        showToast(t(`configureAmsSlot.warnings.${newAssignment.slot_degraded}`, { defaultValue: newAssignment.slot_degraded }), 'warning');
+      }
       setShowMismatchConfirm(false);
       setPendingAssignId(null);
       setMismatchDetails(null);
+      onAssigned?.();
       onClose();
     },
     onError: (error: Error) => {
@@ -265,6 +291,7 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
           : t('inventory.assignSuccess'),
         'success',
       );
+      onAssigned?.();
       onClose();
     },
     onError: (error: Error) => {
@@ -366,6 +393,41 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
     availableSpoolmanSpools.sort(compareByOrder(spoolSortLevels, spoolDisplayTemplate));
   }
 
+  // A ``#n`` search that found nothing says why. The built-in inventory's
+  // reason is the server's; the Spoolman list is whole in the browser, where
+  // only "held by another slot" can be told apart from "no such active spool".
+  const missText = (miss: SpoolPickerMiss): string => {
+    if (miss.reason === 'other_slot' && miss.ams_id != null && miss.tray_id != null) {
+      const external = miss.ams_id === 254 || miss.ams_id === 255;
+      const slot = formatSlotLabel(miss.ams_id, miss.tray_id, miss.ams_id >= 128 && !external, external);
+      return t('inventory.pickerMiss.otherSlot', {
+        id: miss.spool_id,
+        where: miss.printer_name ? `${miss.printer_name} · ${slot}` : slot,
+      });
+    }
+    if (miss.reason === 'archived') return t('inventory.pickerMiss.archived', { id: miss.spool_id });
+    if (miss.reason === 'this_slot') return t('inventory.pickerMiss.thisSlot', { id: miss.spool_id });
+    return t('inventory.pickerMiss.notFound', { id: miss.spool_id });
+  };
+  const askedSpoolmanId = spoolmanEnabled ? exactSpoolId(searchFilter) : null;
+  const shownSpoolmanSpools = filterSpoolsByQuery(availableSpoolmanSpools, searchFilter);
+  const spoolmanMissText = (() => {
+    if (askedSpoolmanId === null || shownSpoolmanSpools.length > 0 || spoolmanLoading) return null;
+    const held = (allSpoolmanAssignments || []).find(a =>
+      a.spoolman_spool_id === askedSpoolmanId
+      && !(a.printer_id === printerId && a.ams_id === amsId && a.tray_id === trayId));
+    if (held) {
+      return missText({
+        reason: 'other_slot', spool_id: askedSpoolmanId,
+        printer_name: held.printer_name, ams_id: held.ams_id, tray_id: held.tray_id,
+      });
+    }
+    if (currentSpool?.source === 'spoolman' && currentSpool.id === askedSpoolmanId) {
+      return missText({ reason: 'this_slot', spool_id: askedSpoolmanId });
+    }
+    return t('inventory.pickerMiss.notActive', { id: askedSpoolmanId });
+  })();
+
   // The single funnel every assignment goes through. Inside either
   // replacement window with no answer yet, ask first; the answer re-enters
   // with the flag decided.
@@ -385,16 +447,16 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
   };
 
   const handleAssign = async () => {
-    if (selectedSpoolmanSpoolId !== null) {
-      fireAssign({ spoolmanId: selectedSpoolmanSpoolId });
+    if (pickedSpoolmanSpoolId !== null) {
+      fireAssign({ spoolmanId: pickedSpoolmanSpoolId });
       return;
     }
-    if (!selectedSpoolId) return;
+    if (!pickedSpoolId) return;
     let selectedSpool: InventorySpool;
     try {
       selectedSpool = await queryClient.fetchQuery({
-        queryKey: ['inventory-spools', 'selected', selectedSpoolId],
-        queryFn: () => api.getSpool(selectedSpoolId),
+        queryKey: ['inventory-spools', 'selected', pickedSpoolId],
+        queryFn: () => api.getSpool(pickedSpoolId),
         staleTime: 0,
       });
     } catch {
@@ -431,7 +493,7 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
           mismatchType = 'partial';
         }
 
-        setPendingAssignId(selectedSpoolId);
+        setPendingAssignId(pickedSpoolId);
         setMismatchDetails({
           type: mismatchType,
           spoolMaterial: selectedSpool.material || '',
@@ -443,7 +505,7 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
         return;
       }
     }
-    fireAssign({ spoolId: selectedSpoolId });
+    fireAssign({ spoolId: pickedSpoolId });
   };
 
   const handleConfirmMismatch = async () => {
@@ -500,7 +562,19 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
             </div>
           )}
 
+          {/* The spool, when it is already decided (opened from its own form). */}
+          {fixedSpool && (
+            <div className="p-3 bg-bambu-dark rounded-lg border border-bambu-green/50">
+              <p className="text-xs text-bambu-gray mb-1">{t('inventory.assignThisSpool')}:</p>
+              <div className="flex items-baseline gap-2">
+                <span className="text-white font-medium break-words min-w-0">{fixedSpool.displayName}</span>
+                <span className="text-[10px] font-mono text-bambu-gray shrink-0">#{fixedSpool.id}</span>
+              </div>
+            </div>
+          )}
+
           {/* Search filter */}
+          {!fixedSpool && (<>
           <div className="relative">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray" />
             <input
@@ -531,12 +605,16 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
                         : 'bg-bambu-dark border-bambu-dark-tertiary hover:border-bambu-gray'
                     }`}
                   >
-                    <p
-                      className="text-white text-sm font-medium truncate"
-                      title={formatSpoolDisplayName(spool, spoolDisplayTemplate)}
-                    >
-                      {formatSpoolDisplayName(spool, spoolDisplayTemplate)}
-                    </p>
+                    <div className="flex items-baseline gap-1.5">
+                      <p
+                        className="text-white text-sm font-medium truncate flex-1 min-w-0"
+                        title={formatSpoolDisplayName(spool, spoolDisplayTemplate)}
+                      >
+                        {formatSpoolDisplayName(spool, spoolDisplayTemplate)}
+                      </p>
+                      {/* The number on the printed label, whatever the naming template says. */}
+                      <span className="text-[10px] font-mono text-bambu-gray shrink-0">#{spool.id}</span>
+                    </div>
                     <div className="flex items-center gap-1.5 mt-1">
                       {spool.rgba && (
                         <span
@@ -561,7 +639,11 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
               </div>
             ) : availableSpools && availableSpools.length === 0 ? (
               <div className="text-center py-8 text-bambu-gray">
-                <p>{t(searchFilter.trim() ? 'inventory.noSpoolsMatch' : 'inventory.noAvailableSpools')}</p>
+                <p>
+                  {spoolPage?.miss
+                    ? missText(spoolPage.miss)
+                    : t(searchFilter.trim() ? 'inventory.noSpoolsMatch' : 'inventory.noAvailableSpools')}
+                </p>
                 {spoolPage && (
                   <p className="text-[10px] mt-2 opacity-60">
                     {t('common.pageOf', { page: pickerPage, total: spoolPage.meta.last_page })}
@@ -606,7 +688,7 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
                       {t('inventory.spoolmanSpools')}
                     </p>
                     <div className="max-h-64 overflow-y-auto grid grid-cols-2 sm:grid-cols-3 gap-2">
-                      {filterSpoolsByQuery(availableSpoolmanSpools, searchFilter)
+                      {shownSpoolmanSpools
                         .map((spool: InventorySpool) => (
                           <button
                             key={`spoolman-${spool.id}`}
@@ -621,12 +703,16 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
                                 : 'bg-bambu-dark border-bambu-dark-tertiary hover:border-bambu-gray'
                             }`}
                           >
-                            <p
-                              className="text-white text-sm font-medium truncate"
-                              title={formatSpoolDisplayName(spool, spoolDisplayTemplate)}
-                            >
-                              {formatSpoolDisplayName(spool, spoolDisplayTemplate)}
-                            </p>
+                            <div className="flex items-baseline gap-1.5">
+                              <p
+                                className="text-white text-sm font-medium truncate flex-1 min-w-0"
+                                title={formatSpoolDisplayName(spool, spoolDisplayTemplate)}
+                              >
+                                {formatSpoolDisplayName(spool, spoolDisplayTemplate)}
+                              </p>
+                              {/* The number on the printed label, whatever the naming template says. */}
+                              <span className="text-[10px] font-mono text-bambu-gray shrink-0">#{spool.id}</span>
+                            </div>
                             <div className="flex items-center gap-1.5 mt-1">
                               {spool.rgba && (
                                 <span
@@ -649,15 +735,22 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
                           </button>
                         ))}
                     </div>
+                    {spoolmanMissText && (
+                      <p className="text-center py-4 text-sm text-bambu-gray">{spoolmanMissText}</p>
+                    )}
                   </>
+                ) : spoolmanMissText ? (
+                  <p className="text-center py-4 text-sm text-bambu-gray">{spoolmanMissText}</p>
                 ) : null}
               </>
             )}
           </div>
+          </>)}
         </div>
 
         {/* Footer */}
         <div className="flex justify-between items-center p-4 border-t border-bambu-dark-tertiary">
+          {fixedSpool ? <span /> : (
           <label className="flex items-center gap-2 text-sm text-bambu-gray cursor-pointer select-none">
             <input
               type="checkbox"
@@ -667,13 +760,14 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
             />
             {t('inventory.showAllSpools')}
           </label>
+          )}
           <div className="flex gap-2">
             <Button variant="secondary" onClick={onClose}>
               {t('common.cancel')}
             </Button>
             <Button
               onClick={handleAssign}
-              disabled={(!selectedSpoolId && selectedSpoolmanSpoolId === null) || assignMutation.isPending || assignSpoolmanMutation.isPending}
+              disabled={(!pickedSpoolId && pickedSpoolmanSpoolId === null) || assignMutation.isPending || assignSpoolmanMutation.isPending}
             >
               {(assignMutation.isPending || assignSpoolmanMutation.isPending) ? (
                 <>
@@ -699,7 +793,7 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
 
       </Modal>
 
-      {showMismatchConfirm && trayInfo && selectedSpoolId && mismatchDetails && (() => {
+      {showMismatchConfirm && trayInfo && pickedSpoolId && mismatchDetails && (() => {
         let message = '';
 
         if (mismatchDetails.type === 'material') {

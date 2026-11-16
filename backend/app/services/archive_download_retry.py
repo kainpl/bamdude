@@ -242,6 +242,7 @@ class ArchiveDownloadRetryService:
                         )
                     return "failed"
 
+            attached_path: str | None = None
             async with async_session() as db2:
                 service = ArchiveService(db2)
                 ok = await service.attach_3mf_to_archive(
@@ -273,6 +274,26 @@ class ArchiveDownloadRetryService:
 
                         load_objects_from_archive_into_state(refreshed, archive.printer_id)
                         notify_current_print_source_ready(printer_manager, archive.printer_id, refreshed)
+                        attached_path = refreshed.file_path
+            if ok and attached_path:
+                # Spoolman's tracking row was written at print start, without this file: hand it the
+                # figures now, or the print is charged by the remain% change alone. Never fatal.
+                try:
+                    from backend.app.services.printer_manager import printer_manager as _printer_manager
+                    from backend.app.services.spoolman_tracking import attach_recovered_3mf
+
+                    async with async_session() as tracking_db:
+                        await attach_recovered_3mf(
+                            archive.printer_id,
+                            archive_id,
+                            attached_path,
+                            tracking_db,
+                            _printer_manager,
+                            plate_id=plate_index,
+                            archive_identity=archive_identity,
+                        )
+                except Exception as e:  # noqa: BLE001 -- the file is attached; accounting falls back as before
+                    logger.warning("Archive retry: Spoolman tracking not updated for archive %s: %s", archive_id, e)
             if ok:
                 logger.info("Archive retry: recovered 3MF for archive %s", archive_id)
                 await ws_manager.send_archive_updated({"id": archive_id, "recovered_3mf": True})

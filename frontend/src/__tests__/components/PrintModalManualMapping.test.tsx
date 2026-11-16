@@ -16,6 +16,7 @@ import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { server } from '../mocks/server';
 import { render } from '../utils';
+import { chooseSlot } from '../helpers/slotPicker';
 import { PrintModal } from '../../components/PrintModal';
 import type { PrintQueueItem } from '../../api/client';
 
@@ -175,7 +176,7 @@ describe('who chose the trays', () => {
     openAdd();
 
     // The other loaded tray — a real pick through the control the operator uses.
-    await user.selectOptions(await slotPicker('Auto-matched'), '1');
+    chooseSlot(await slotPicker('Auto-matched'), 1);
     await slotPicker('Manually selected');
     await user.click(screen.getByRole('button', { name: /add to queue/i }));
 
@@ -218,8 +219,8 @@ describe('who chose the trays', () => {
     await user.click(custom[1]);
     const picks = await screen.findAllByTitle('Auto-matched');
     // Server assignment wins over the local tray-0 provisional preference.
-    await waitFor(() => expect(picks[0]).toHaveValue('1'));
-    await user.selectOptions(picks[0], '0');
+    await waitFor(() => expect(picks[0]).toHaveAttribute('data-value', '1'));
+    chooseSlot(picks[0], 0);
     const submit = screen.getByRole('button', { name: /queue to 2 printers/i });
     await waitFor(() => expect(submit).toBeEnabled());
     await user.click(submit);

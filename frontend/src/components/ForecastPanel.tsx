@@ -28,6 +28,7 @@ import { invalidateSpoolViews } from '../utils/queryInvalidation';
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
 import { LoadingBlock } from './LoadingBlock';
+import { skuLabel } from '../utils/skuLabel';
 import { ListViewToggle } from './ListViewToggle';
 import { Modal } from './Modal';
 import { PaginationBar } from './PaginationBar';
@@ -121,14 +122,9 @@ function skuKey(
   return `${material ?? ''}||${subtype ?? ''}||${brand ?? ''}||${colorName ?? ''}`;
 }
 
-function rowLabel(r: {
-  material: string | null;
-  subtype: string | null;
-  brand: string | null;
-  color_name: string | null;
-}) {
-  return [r.brand, r.material, r.subtype, r.color_name].filter(Boolean).join(' ');
-}
+// One naming rule for every place a SKU is shown (alert banner, chart legend,
+// forecast row, shopping list, logistics row, add-to-list dialog).
+const rowLabel = skuLabel;
 
 function addDays(date: Date, days: number): Date {
   const d = new Date(date);
@@ -1669,7 +1665,7 @@ function ShoppingListPanel({
             </thead>
             <tbody className="divide-y divide-bambu-dark-tertiary">
               {items.map((item) => {
-                const lbl = [item.brand, item.material, item.subtype, item.color_name].filter(Boolean).join(' ');
+                const lbl = rowLabel(item);
                 const hasBreak = breakAlerts.some((a) => a.id === item.id);
                 const f = rowFor(item);
                 // The engine's archived-INCLUSIVE spool size, the same number
@@ -1831,7 +1827,7 @@ function CartLogisticsRow({
   onRemove: () => void;
 }) {
   const { t } = useTranslation();
-  const label = [item.brand, item.material, item.subtype, item.color_name].filter(Boolean).join(' ');
+  const label = rowLabel(item);
 
   const series = logistics?.series ?? null;
   const arrivalDay = logistics?.arrival_day ?? null;

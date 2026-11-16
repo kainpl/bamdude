@@ -1707,8 +1707,13 @@ class NotificationService:
         extra_data: dict | None = None,
         variables: dict[str, Any] | None = None,
         chat_filter: Callable[[Any], bool] | None = None,
+        inbox_unless_subscribed_to: str | None = None,
     ):
         """Send notification to multiple providers and log the results.
+
+        ``inbox_unless_subscribed_to`` narrows the in-app inbox the way
+        ``chat_filter`` narrows Telegram: users subscribed to that other event
+        are left out (they are told by it instead).
 
         All notifications are always sent immediately. If digest mode is enabled,
         the notification is ALSO queued for the daily digest summary.
@@ -1739,6 +1744,7 @@ class NotificationService:
                     printer_id=printer_id,
                     printer_name=printer_name,
                     extra_data=extra_data,
+                    unless_subscribed_to=inbox_unless_subscribed_to,
                 )
             except Exception:
                 logger.exception("Inbox delivery failed for %s", event_type)
@@ -3264,11 +3270,21 @@ class NotificationService:
 
     # ==================== Inventory Stock Alerts ====================
     #
-    # Scaffold only — no backend trigger fires these today. ForecastPanel
-    # renders reorder/break alerts client-side. Provider toggles + templates
-    # exist so a future scheduled aggregator can wire `notification_service
-    # .on_stock_reorder_alert(...)` without a schema change. Adapted from
-    # upstream Bambuddy ``37c9d5f2`` (#1184).
+    # Fired by ``stock_forecast_alerts.StockForecastAlerts`` (a background tick
+    # over ``forecast_engine``), never by a page. Adapted from upstream
+    # Bambuddy ``37c9d5f2`` (#1184), ``318430f0f`` (#3196).
+
+    @staticmethod
+    def _stock_filament_name(material: str, subtype: str | None, color: str | None) -> str:
+        """``{filament}`` — which SKU the alert is about: material, subtype and
+        colour. The forecast groups by colour, so the material alone names two
+        SKUs alike. A colour that only repeats the subtype is named once — in
+        Spoolman mode the subtype stands in for a colour name that is not stored."""
+        sub_text = (subtype or "").strip()
+        color_text = (color or "").strip()
+        if color_text.casefold() == sub_text.casefold():
+            color_text = ""
+        return " ".join(part for part in (material.strip(), sub_text, color_text) if part)
 
     async def on_stock_reorder_alert(
         self,
@@ -3278,14 +3294,57 @@ class NotificationService:
         rate_g_day: float,
         days_left: int,
         db: AsyncSession,
+        subtype: str | None = None,
+        color: str | None = None,
     ):
         """Fire when an inventory SKU reaches its reorder point."""
+        await self._send_stock_reorder(
+            material, brand, stock_g, rate_g_day, days_left, db, subtype=subtype, color=color
+        )
+
+    async def _send_stock_reorder(
+        self,
+        material: str,
+        brand: str | None,
+        stock_g: float,
+        rate_g_day: float,
+        days_left: int,
+        db: AsyncSession,
+        *,
+        subtype: str | None,
+        color: str | None,
+        skip_break_subscribers: bool = False,
+    ):
+        """The reorder message. ``skip_break_subscribers`` is the copy sent for a
+        SKU that is already in stock BREAK: it reaches only recipients who asked
+        for "reorder" and not for "break" — everyone else has just been told the
+        worse news — so each recipient gets one message. All three recipient
+        kinds are narrowed: providers by their subscription, Telegram by the
+        chat's, the inbox by the user's.
+        """
         providers = await self._get_providers_for_event(db, "on_stock_reorder_alert", None)
+        chat_filter = None
+        if skip_break_subscribers:
+            providers = [
+                p
+                for p in providers
+                if p.provider_type in ("telegram", "inbox") or not p.wants_event("on_stock_break_alert")
+            ]
+
+            def chat_filter(chat) -> bool:
+                from backend.app.models.telegram_chat import DEFAULT_NOTIFY_EVENTS
+
+                events = chat.notify_events if chat.notify_events is not None else DEFAULT_NOTIFY_EVENTS
+                return "stock_break_alert" not in events
+
         if not providers:
             return
 
         variables = {
             "material": material,
+            "subtype": subtype or "",
+            "color": color or "",
+            "filament": self._stock_filament_name(material, subtype, color),
             "brand": brand or "",
             "stock_g": f"{stock_g:.0f}",
             "rate_g_day": f"{rate_g_day:.1f}",
@@ -3293,7 +3352,16 @@ class NotificationService:
         }
 
         title, message = await self._build_message_from_template(db, "stock_reorder_alert", variables)
-        await self._send_to_providers(providers, title, message, db, "stock_reorder_alert", variables=variables)
+        await self._send_to_providers(
+            providers,
+            title,
+            message,
+            db,
+            "stock_reorder_alert",
+            variables=variables,
+            chat_filter=chat_filter,
+            inbox_unless_subscribed_to="stock_break_alert" if skip_break_subscribers else None,
+        )
 
     async def on_stock_break_alert(
         self,
@@ -3304,14 +3372,58 @@ class NotificationService:
         days_left: int,
         lead_time_days: int,
         db: AsyncSession,
+        subtype: str | None = None,
+        color: str | None = None,
     ):
-        """Fire when a stock break is detected (stock runs out before lead time)."""
+        """Fire when a stock break is detected (stock runs out before lead time).
+
+        A break is "reorder, urgently", and break and reorder are exclusive per
+        SKU — so a recipient subscribed to "reorder" alone would hear nothing
+        about a SKU first seen in break. They get the reorder text afterwards
+        (G05 Р31, upstream 318430f0f); nobody gets both.
+        """
+        try:
+            await self._send_stock_break(
+                material, brand, stock_g, rate_g_day, days_left, lead_time_days, db, subtype=subtype, color=color
+            )
+        finally:
+            try:
+                await self._send_stock_reorder(
+                    material,
+                    brand,
+                    stock_g,
+                    rate_g_day,
+                    days_left,
+                    db,
+                    subtype=subtype,
+                    color=color,
+                    skip_break_subscribers=True,
+                )
+            except Exception:
+                logger.exception("Stock reorder copy of a break failed for %s", material)
+
+    async def _send_stock_break(
+        self,
+        material: str,
+        brand: str | None,
+        stock_g: float,
+        rate_g_day: float,
+        days_left: int,
+        lead_time_days: int,
+        db: AsyncSession,
+        *,
+        subtype: str | None,
+        color: str | None,
+    ):
         providers = await self._get_providers_for_event(db, "on_stock_break_alert", None)
         if not providers:
             return
 
         variables = {
             "material": material,
+            "subtype": subtype or "",
+            "color": color or "",
+            "filament": self._stock_filament_name(material, subtype, color),
             "brand": brand or "",
             "stock_g": f"{stock_g:.0f}",
             "rate_g_day": f"{rate_g_day:.1f}",

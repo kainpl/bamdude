@@ -102,6 +102,7 @@ def spool_context(
         "purchase_date": spool.purchase_date.strftime("%Y-%m-%d") if spool.purchase_date else "",
         "filament_diameter": spool.filament_diameter or "",
         "lot": str(spool.lot) if spool.lot is not None else "",
+        "material_number": getattr(spool, "material_number", None) or "",
         "display_name": name or (spool.material or ""),
         "deeplink": f"{deeplink_base}/inventory?spool={spool.id}",
         "ean": ean,
@@ -168,6 +169,8 @@ def spoolman_context(
         "purchase_date": "",
         "filament_diameter": _num(filament.get("diameter"), 2) if filament.get("diameter") else "",
         "lot": "",
+        # Spoolman's own article number of the filament.
+        "material_number": str(filament.get("article_number") or "").strip(),
         "display_name": name,
         "deeplink": f"{deeplink_base}/inventory?spool={spool_id}",
         "ean": ean,

@@ -1100,7 +1100,7 @@ function ArchiveCard({
               {archive.cost != null && (
                 <div className="flex items-center gap-1.5">
                   <Coins className="w-3 h-3" />
-                  {currency}{archive.cost.toFixed(2)}
+                  <ArchiveCostFigure archive={archive} currency={currency} />
                 </div>
               )}
               <ArchiveEnergyFact archive={archive} currency={currency} className="flex items-center gap-1.5" iconClassName="w-3 h-3" />
@@ -1646,6 +1646,17 @@ function ArchiveCard({
  * out-of-band colours are a judgement about what counts as a good estimate,
  * and a second copy would drift the moment either view is retuned.
  */
+/** The archive's filament cost. While the print runs it is the start
+ *  placeholder (grams at the default price), marked `~` and explained; the
+ *  figure itself is the server's, never recomputed here. */
+function ArchiveCostFigure({ archive, currency }: { archive: Archive; currency: string }) {
+  const { t } = useTranslation();
+  if (archive.cost == null) return null;
+  const amount = `${currency}${archive.cost.toFixed(2)}`;
+  if (!archive.cost_is_estimate) return <span>{amount}</span>;
+  return <span title={t('archives.costEstimate')}>~{amount}</span>;
+}
+
 function TimeAccuracyBadge({ accuracy, className = '' }: { accuracy: number; className?: string }) {
   const tone =
     accuracy >= 95 && accuracy <= 105
@@ -2308,7 +2319,7 @@ function ArchiveListRow({
               facts.push(<span key="grams">{archive.filament_used_grams.toFixed(1)}g</span>);
             }
             if (archive.cost != null) {
-              facts.push(<span key="cost">{rowCurrency}{archive.cost.toFixed(2)}</span>);
+              facts.push(<ArchiveCostFigure key="cost" archive={archive} currency={rowCurrency} />);
             }
             // Energy sits beside filament cost, as it does on the card. The
             // bolt is what keeps them apart: the filament figure carries no

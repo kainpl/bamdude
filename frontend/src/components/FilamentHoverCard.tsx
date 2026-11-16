@@ -703,9 +703,13 @@ interface EmptySlotHoverCardProps {
   /** 'reset' ⇒ a spool is loaded but its type isn't configured; the header
    *  reads "slot not configured" instead of "empty slot" (#1694). */
   emptyKind?: 'physical' | 'reset' | null;
+  /** The spool BamDude holds for a slot the printer reports blank — one put in
+   *  after a runout, or assigned before the reel went in. The card names it;
+   *  `onAssignSpool` then replaces it instead of assigning. */
+  assigned?: { label: string; colorHex?: string | null; onUnassign?: () => void } | null;
 }
 
-export function EmptySlotHoverCard({ children, className = '', configureSlot, onAssignSpool, emptyKind }: EmptySlotHoverCardProps) {
+export function EmptySlotHoverCard({ children, className = '', configureSlot, onAssignSpool, emptyKind, assigned }: EmptySlotHoverCardProps) {
   const { t } = useTranslation();
   const [isVisible, setIsVisible] = useState(false);
   const triggerRef = useRef<HTMLDivElement>(null);
@@ -741,6 +745,7 @@ export function EmptySlotHoverCard({ children, className = '', configureSlot, on
     <div
       ref={triggerRef}
       className={`relative ${className}`}
+      data-testid="empty-slot"
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
     >
@@ -773,15 +778,28 @@ export function EmptySlotHoverCard({ children, className = '', configureSlot, on
             bg-bambu-dark-secondary border border-bambu-dark-tertiary
             rounded-md shadow-lg overflow-hidden
           ">
-            <div className="px-3 py-1.5 text-xs whitespace-nowrap">
-              {emptyKind === 'reset' ? (
-                <span className="text-amber-700 dark:text-amber-400">{t('ams.slotLoadedUnconfigured')}</span>
-              ) : (
-                <span className="text-bambu-gray">{t('ams.emptySlot')}</span>
-              )}
-            </div>
+            {assigned ? (
+              <div className="px-3 py-1.5 text-xs space-y-1">
+                <div className="flex items-center gap-1.5 text-white whitespace-nowrap">
+                  <span
+                    className="w-2.5 h-2.5 rounded-full border border-dashed border-amber-500 flex-shrink-0"
+                    style={{ backgroundColor: assigned.colorHex ? `#${assigned.colorHex.slice(0, 6)}` : 'transparent' }}
+                  />
+                  {assigned.label}
+                </div>
+                <div className="text-amber-700 dark:text-amber-400 max-w-[14rem] whitespace-normal">{t('ams.assignedNotConfigured')}</div>
+              </div>
+            ) : (
+              <div className="px-3 py-1.5 text-xs whitespace-nowrap">
+                {emptyKind === 'reset' ? (
+                  <span className="text-amber-700 dark:text-amber-400">{t('ams.slotLoadedUnconfigured')}</span>
+                ) : (
+                  <span className="text-bambu-gray">{t('ams.emptySlot')}</span>
+                )}
+              </div>
+            )}
             {/* Configure slot button */}
-            {(configureSlot?.enabled || onAssignSpool) && (
+            {(configureSlot?.enabled || onAssignSpool || assigned?.onUnassign) && (
               <div className="px-2 pb-2 space-y-1">
                 {/* ⚠️ Assign BEFORE Configure, matching the filled-slot card
                     above. The two cards are separate render paths and had
@@ -792,8 +810,17 @@ export function EmptySlotHoverCard({ children, className = '', configureSlot, on
                     onClick={(e) => { e.stopPropagation(); dismiss(); onAssignSpool(); }}
                     className="w-full flex items-center justify-center gap-1.5 px-2 py-1.5 text-xs font-medium rounded transition-colors bg-bambu-blue/20 hover:bg-bambu-blue/40 text-bambu-blue"
                   >
-                    <Package className="w-3.5 h-3.5" />
-                    {t('inventory.assignSpool')}
+                    {assigned ? <Repeat className="w-3.5 h-3.5" /> : <Package className="w-3.5 h-3.5" />}
+                    {assigned ? t('inventory.replaceSpool') : t('inventory.assignSpool')}
+                  </button>
+                )}
+                {assigned?.onUnassign && (
+                  <button
+                    onClick={(e) => { e.stopPropagation(); dismiss(); assigned.onUnassign?.(); }}
+                    className="w-full flex items-center justify-center gap-1.5 px-2 py-1.5 text-xs font-medium rounded transition-colors bg-red-100 dark:bg-red-500/20 hover:bg-red-200 dark:hover:bg-red-500/40 text-red-700 dark:text-red-400"
+                  >
+                    <Unlink className="w-3.5 h-3.5" />
+                    {t('inventory.unassignSpool')}
                   </button>
                 )}
                 {configureSlot?.enabled && (

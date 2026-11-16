@@ -917,6 +917,19 @@ async def link_spool(
             raise HTTPException(status_code=404, detail="Printer not found")
         printer_context = (request.printer_id, request.ams_id, request.tray_id)
 
+    # A link with a slot is an assignment, and a spool sits in one slot (owner
+    # decision Р7): the slot it would leave must not be feeding a running print.
+    # Asked before any tag is written anywhere.
+    from backend.app.services import spool_single_slot
+
+    if printer_context:
+        for _other in await spool_single_slot.other_spoolman_slots(
+            db, spoolman_spool_id=spool_id, keep=printer_context
+        ):
+            if spool_single_slot.slot_feeds_running_print(*_other):
+                raise spool_single_slot.refusal(spool_single_slot.SpoolFeedsPrint(_other))
+    _vacated: list = []
+
     try:
         if printer_context and (await client.get_spool(spool_id)).get("archived"):
             # A link with a slot is an assignment: as the assign routes refuse,
@@ -960,6 +973,13 @@ async def link_spool(
                 ),
                 {"printer_id": p_id, "ams_id": a_id, "tray_id": t_id, "spool_id": spool_id},
             )
+            # Its other ledger rows go with the same commit (rows only). A slot
+            # that began feeding a print since the check above keeps its row.
+            _vacated = (
+                await spool_single_slot.release_other_spoolman_slots(
+                    db, spoolman_spool_id=spool_id, keep=printer_context, refuse=False
+                )
+            ).vacated
             await db.commit()
         except Exception as e:
             await db.rollback()
@@ -992,6 +1012,7 @@ async def link_spool(
         await client.drop_previous_reel_tags(before, [spool_tag], bambu_reel=True)
 
     logger.info("Linked Spoolman spool %s to tag %s", spool_id, spool_tag)
+    await spool_single_slot.announce(_vacated)
 
     # #1457: clear stale tag links on OTHER spools still claiming this exact tag.
     # A given AMS-slot tag (RFID or deterministic fallback) belongs to one

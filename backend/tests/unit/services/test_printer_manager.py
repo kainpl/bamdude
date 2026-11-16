@@ -1116,19 +1116,28 @@ class TestPrinterStateToDict:
         assert result["cover_url"] is None
 
     def test_ams_ht_detection(self, mock_state):
-        """Verify AMS-HT is detected (1 tray vs 4)."""
+        """Verify AMS-HT is detected by its unit id (128-135), not by the tray count.
+
+        Until upstream cacaaf4da was adapted this pinned "one listed tray = AMS-HT"
+        on unit 0; a regular AMS that lists one of its trays is not an AMS-HT.
+        """
         mock_state.raw_data = {
             "ams": [
                 {
+                    "id": 128,
+                    "tray": [{"id": 0}],
+                },
+                {
                     "id": 0,
-                    "tray": [{"id": 0}],  # Only 1 tray = AMS-HT
-                }
+                    "tray": [{"id": 0}],  # a regular AMS that listed one tray
+                },
             ]
         }
 
         result = printer_state_to_dict(mock_state)
 
         assert result["ams"][0]["is_ams_ht"] is True
+        assert result["ams"][1]["is_ams_ht"] is False
 
     def test_regular_ams_detection(self, mock_state):
         """Verify regular AMS is detected (4 trays)."""

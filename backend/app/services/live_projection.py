@@ -148,8 +148,18 @@ STATUS_FIELDS = frozenset(
         "current_plate_id",
         "awaiting_plate_clear",
         "repeat_available",
+        "nozzles",
+        "developer_mode",
+        "macro_executing",
+        "airduct_modes",
+        "supports_cooling_filter",
     ]
 )
+# Sent by the producer only when it can answer from memory, so they are not
+# keys of its literal: an absent one keeps what the status read loaded.
+# ``ams_mapping`` is tray numbers; ``current_archive_id`` names a print, so
+# it follows the private names below.
+STATUS_FIELDS_WHEN_KNOWN = frozenset(["ams_mapping"])
 
 
 @dataclass
@@ -282,7 +292,7 @@ def shape(event: PreparedEvent, access: Entitlements, *, personal=False, credent
     if kind == "printer_status":
         if not access.allows("printers:read"):
             return None
-        result = {k: deepcopy(v) for k, v in data.items() if k in STATUS_FIELDS}
+        result = {k: deepcopy(v) for k, v in data.items() if k in STATUS_FIELDS or k in STATUS_FIELDS_WHEN_KNOWN}
         row = event.rows.get(("archive", event.run_archive))
         visible = bool(
             row
@@ -292,6 +302,14 @@ def shape(event: PreparedEvent, access: Entitlements, *, personal=False, credent
         )
         for key in ("current_print", "subtask_name", "gcode_file", "cover_url"):
             result[key] = None
+        if "current_archive_id" in data and (
+            (visible and data["current_archive_id"] == event.run_archive) or data["current_archive_id"] is None
+        ):
+            # The id of the running print's archive, for a viewer who may see
+            # that print; ``None`` (nothing is printing) is nobody's secret.
+            # Only the id of the run the right was judged for: the producer read
+            # the bound run on its own, and it may have changed in between.
+            result["current_archive_id"] = data["current_archive_id"]
         if visible:
             # A delayed payload cannot borrow a newer run's ownership to
             # disclose its predecessor's private names.

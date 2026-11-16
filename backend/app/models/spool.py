@@ -71,6 +71,11 @@ class Spool(Base):
     # Quick-add's N-quantity path can auto-number lots 1..N — see
     # SpoolBulkCreate.auto_increment_lot.
     lot: Mapped[int | None] = mapped_column(Integer)
+    # The operator's own article code for this filament ("15" = Acme PLA Basic
+    # Black 1 kg) — free text, not unique, shared by the spools of one filament
+    # (m230). A new spool of an already-numbered filament inherits it
+    # (``inventory_service.inherit_material_number``).
+    material_number: Mapped[str | None] = mapped_column(String(64))
     tag_uid: Mapped[str | None] = mapped_column(
         String(32)
     )  # RFID tag UID (16 hex chars; bumped to 32 for non-Bambu tag formats)

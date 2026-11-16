@@ -6,7 +6,7 @@ registry (see docs/superpowers/sdd/2026-08-28-cloud-portal-phase2-remote-invento
 import re
 from typing import Any
 
-from sqlalchemy import Integer, Numeric, String, and_, case, cast, func, literal, or_, select
+from sqlalchemy import Integer, Numeric, String, and_, case, cast, false, func, literal, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import raiseload, selectinload
 
@@ -56,6 +56,7 @@ _SEARCH_COLUMNS = (
     Spool.slicer_filament_name,
     cast(Spool.id, String),
     cast(Spool.lot, String),
+    Spool.material_number,
 )
 
 
@@ -136,6 +137,7 @@ def _display_name_columns() -> dict[str, Any]:
         "purchase_date": _as_text(Spool.purchase_date),
         "filament_diameter": _as_text(Spool.filament_diameter),
         "lot": _as_text(Spool.lot),
+        "material_number": _as_text(Spool.material_number),
     }
 
 
@@ -168,6 +170,26 @@ def display_name_expr(template: str | None):
     return composed
 
 
+# ``#123`` — the number on a spool's label — names that spool exactly.
+_ID_TOKEN = re.compile(r"#(\d+)")
+_MAX_ID = 2**31 - 1
+
+
+def _token_spool_id(token: str) -> int | None:
+    """The spool id a ``#<digits>`` token names, else None (``#A7`` is text)."""
+    match = _ID_TOKEN.fullmatch(token)
+    return int(match.group(1)) if match else None
+
+
+def exact_spool_id(q: str | None) -> int | None:
+    """The spool a query asks for by number and nothing else — ``#123`` alone.
+
+    That is the query the assignment picker answers past the slot's material
+    filter, and explains when it finds nothing."""
+    tokens = (q or "").split()
+    return _token_spool_id(tokens[0]) if len(tokens) == 1 else None
+
+
 def spool_search_filters(q: str | None, template: str | None) -> list:
     """The spool search, one filter per token — every search of spools uses it.
 
@@ -182,6 +204,14 @@ def spool_search_filters(q: str | None, template: str | None) -> list:
     assignment picker searched the composed name alone, so with the default
     template "Matte" found nothing, and without ``{brand}`` in it no brand did.
     ``%`` and ``_`` in a token are literal characters, not wildcards.
+
+    A token ``#<digits>`` is the spool of that id and no other (upstream
+    632930f02): the number an operator reads off the label. It does not lean on
+    the template; a bare number stays a substring search. One thing is kept
+    beside it: a ``#`` the operator's own template writes in front of something
+    else (``#{lot}``) is text on screen, and what is on screen stays findable —
+    there the token also matches the composed name. ``#{id}`` needs no such
+    help: the id match is that text.
     """
     if not q or not q.strip():
         return []
@@ -189,6 +219,14 @@ def spool_search_filters(q: str | None, template: str | None) -> list:
     columns = (*_SEARCH_COLUMNS, composed) if composed is not None else _SEARCH_COLUMNS
     filters = []
     for token in q.strip().split():
+        spool_id = _token_spool_id(token)
+        if spool_id is not None:
+            # Past the column's range no row can match; never a bind overflow.
+            by_id = Spool.id == spool_id if spool_id <= _MAX_ID else false()
+            if composed is not None and "#" in (template or "").replace("#{id}", ""):
+                by_id = or_(by_id, composed.ilike(f"%{token}%", escape="\\"))
+            filters.append(by_id)
+            continue
         escaped = token.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         filters.append(or_(*(col.ilike(f"%{escaped}%", escape="\\") for col in columns)))
     return filters
@@ -298,6 +336,7 @@ def _spool_sort_columns() -> dict[str, Any]:
         "slicer_filament": func.coalesce(Spool.slicer_filament_name, Spool.slicer_filament, ""),
         "storage_location": func.coalesce(func.lower(Spool.storage_location), ""),
         "purchase_location": func.coalesce(Spool.purchase_location, ""),
+        "material_number": func.coalesce(Spool.material_number, ""),
         "label_weight": Spool.label_weight,
         "net": net,
         "gross": net + Spool.core_weight,
@@ -422,6 +461,7 @@ SPOOL_ORDER_KEYS: tuple[str, ...] = (
     "storage_location",
     "cost_per_kg",
     "lot",
+    "material_number",
     "id",
 )
 
@@ -510,6 +550,7 @@ async def build_spool_filters(
     colors: list[str] | None = None,
     color_rgbas: list[str] | None = None,
     category: str | None = None,
+    material_number: str | None = None,
     catalog_id: int | None = None,
     location_id: str | None = None,
     stock: str | None = None,
@@ -581,6 +622,13 @@ async def build_spool_filters(
         # client's own wart (dropdown trimmed, filter exact-matched) — the API
         # contract must be self-consistent (T2 review, minor 1).
         filters.append(func.trim(Spool.category) == category.strip())
+
+    # Same contract as ``category``: the facet advertises trimmed values and
+    # ``__none__`` is "no number at all".
+    if material_number == "__none__":
+        filters.append(or_(Spool.material_number.is_(None), func.trim(Spool.material_number) == ""))
+    elif material_number:
+        filters.append(func.trim(Spool.material_number) == material_number.strip())
 
     if catalog_id is not None:
         filters.append(Spool.core_weight_catalog_id == catalog_id)
@@ -779,6 +827,15 @@ async def spool_facets(db: AsyncSession, *, filters: list) -> dict[str, list]:
     )
     categories = list((await db.execute(categories_q)).scalars().all())
 
+    trimmed_number = func.trim(Spool.material_number)
+    material_numbers_q = (
+        select(trimmed_number)
+        .where(*filters, Spool.material_number.isnot(None), trimmed_number != "")
+        .distinct()
+        .order_by(trimmed_number)
+    )
+    material_numbers = list((await db.execute(material_numbers_q)).scalars().all())
+
     catalog_ids_q = (
         select(Spool.core_weight_catalog_id)
         .where(*filters, Spool.core_weight_catalog_id.isnot(None))
@@ -799,6 +856,7 @@ async def spool_facets(db: AsyncSession, *, filters: list) -> dict[str, list]:
         "materials": materials,
         "brands": brands,
         "categories": categories,
+        "material_numbers": material_numbers,
         "catalog_ids": catalog_ids,
         "colors": colors,
     }
@@ -949,6 +1007,44 @@ def _spool_group_key_exprs() -> dict[str, Any]:
         "rgba": func.coalesce(Spool.rgba, ""),
         "label_weight": Spool.label_weight,
     }
+
+
+async def inherit_material_number(db: AsyncSession, spool: Spool | dict) -> None:
+    """Give a NEW spool the material number its filament already carries.
+
+    The number is the operator's article code for a filament, so a new spool of
+    an already-numbered filament should arrive with it (upstream 71d4b2f70).
+    "The same filament" is the identity the Filaments page groups by —
+    :func:`_spool_group_key_exprs`, NULL and '' alike — never a second notion of
+    it. The most recently touched numbered spool decides (newest row on a tie),
+    archived ones included: a filament out of stock keeps its number. A number
+    the caller gave is never replaced, and an edit never calls this — only the
+    create doors do (the form, a bundle, a spool read off a tag). The CSV import
+    does not: there a blank cell states "no number".
+
+    ``spool`` is the row about to be added, or the dict it is built from.
+    """
+    get = spool.get if isinstance(spool, dict) else lambda key: getattr(spool, key, None)
+    if (get("material_number") or "").strip() or not get("material"):
+        return
+    same = [
+        expr == (get(key) if key in ("material", "label_weight") else (get(key) or ""))
+        for key, expr in _spool_group_key_exprs().items()
+    ]
+    found = (
+        await db.execute(
+            select(Spool.material_number)
+            .where(Spool.material_number.isnot(None), func.trim(Spool.material_number) != "", *same)
+            .order_by(Spool.updated_at.desc(), Spool.id.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if not found:
+        return
+    if isinstance(spool, dict):
+        spool["material_number"] = found
+    else:
+        spool.material_number = found
 
 
 def _spool_group_single_id_expr():

@@ -129,7 +129,9 @@ async def claim_on_insertion(
         KIND_EXTERNAL,
         KIND_PAUSE,
     )
+    from backend.app.services import slot_unlink_hold
     from backend.app.services.print_usage_journal import active_archive_id, load_events, note_assignment_change
+    from backend.app.utils.color_utils import colors_similar
 
     ams_id, tray_id = event["ams_id"], event["tray_id"]
     state = manager.get_status(printer_id)
@@ -190,7 +192,20 @@ async def claim_on_insertion(
     ).scalar_one_or_none()
     if external and not existing:
         return {"reason": "assignment_priority"}
-    if existing:
+    # A row whose idle unlink is only waiting out its window (``slot_unlink_hold``) is on its way
+    # out; the reel now in the slot is witnessed once, here. Unless the slot shows the very filament
+    # the row was assigned over (the reel is back: a one-push glitch), the row does not outrank it.
+    leaving = (
+        existing is not None
+        and not external
+        and slot_unlink_hold.is_open((printer_id, ams_id, tray_id), row_id=existing.id)
+        and not (
+            (tray.get("tray_type") or "").strip()
+            and (tray.get("tray_type") or "").upper() == (existing.fingerprint_type or "").upper()
+            and colors_similar(tray.get("tray_color", ""), existing.fingerprint_color or "")
+        )
+    )
+    if existing and not leaving:
         # A deliberate pre-assignment or a manual answer after this signal wins.
         if not existing.fingerprint_type or existing.created_at > event["observed_at"]:
             return {"reason": "assignment_priority"}

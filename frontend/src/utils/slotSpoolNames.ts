@@ -43,6 +43,45 @@ export function slotSpoolNames(input: {
   return names;
 }
 
+/** How the spool bound to a slot is drawn: its own colours and effect. */
+export interface SlotSpoolSwatch {
+  rgba: string | null;
+  extraColors: string | null;
+  effectType: string | null;
+  subtype: string | null;
+}
+
+/**
+ * The colours of the spool bound to each slot, keyed by global tray id
+ * (upstream #3159). A tray record carries one colour; a two-tone or glitter
+ * spool is only itself in the inventory, so a bound spool is drawn from there
+ * and an unbound slot from what the printer reports. Display only.
+ */
+export function slotSpoolSwatches(input: {
+  spoolmanMode: boolean;
+  assignments?: readonly (SlotRow & { spool?: InventorySpool | null })[];
+  spoolmanAssignments?: readonly (SlotRow & { spoolman_spool_id: number })[];
+  spoolmanSpools?: readonly InventorySpool[];
+}): Map<number, SlotSpoolSwatch> {
+  const swatches = new Map<number, SlotSpoolSwatch>();
+  const put = (row: SlotRow, spool: InventorySpool | null | undefined) => {
+    if (!spool?.rgba) return;
+    swatches.set(getGlobalTrayId(row.ams_id, row.tray_id, row.ams_id === 255), {
+      rgba: spool.rgba,
+      extraColors: spool.extra_colors ?? null,
+      effectType: spool.effect_type ?? null,
+      subtype: spool.subtype ?? null,
+    });
+  };
+  if (input.spoolmanMode) {
+    const byId = new Map((input.spoolmanSpools ?? []).map((s) => [s.id, s]));
+    for (const row of input.spoolmanAssignments ?? []) put(row, byId.get(row.spoolman_spool_id));
+  } else {
+    for (const row of input.assignments ?? []) put(row, row.spool);
+  }
+  return swatches;
+}
+
 /** What the print dialog shows about the spool bound to a slot. */
 export interface SlotSpoolFacts {
   /** The per-kg rate a print off the spool is charged; null → the farm rate. */

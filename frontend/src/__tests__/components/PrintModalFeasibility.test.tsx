@@ -24,6 +24,7 @@ import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { server } from '../mocks/server';
 import { render } from '../utils';
+import { chooseSlot } from '../helpers/slotPicker';
 import { PrintModal } from '../../components/PrintModal';
 import type { FilamentRoutingSnapshot, PrintQueueItem, RoutingPreview } from '../../api/client';
 
@@ -230,7 +231,6 @@ describe('the print button and what the trays actually hold', () => {
   });
 
   it('a manually selected wrong material cannot clear the backend refusal', async () => {
-    const user = userEvent.setup();
     let manualSeen = false;
     server.use(needs(oneAbsChannel),
       http.get('/api/v1/printers/:id/status', () => HttpResponse.json(statusWith([{ tray_type: 'PETG', tray_color: 'FF0000FF' }]))),
@@ -242,7 +242,7 @@ describe('the print button and what the trays actually hold', () => {
       }));
     openQueueDialog();
     await screen.findByTestId('feasibility-notice');
-    await user.selectOptions(await screen.findByTitle('Auto-matched'), '0');
+    chooseSlot(await screen.findByTitle('Auto-matched'), 0);
     await waitFor(() => expect(manualSeen).toBe(true));
     expect(await submitButton()).toBeDisabled();
     expect(queuePosts).toBe(0);
@@ -258,7 +258,6 @@ describe('the print button and what the trays actually hold', () => {
   });
 
   it('sends a manually selected wrong-colour tray instead of hiding it as an absent pin', async () => {
-    const user = userEvent.setup();
     let manualMapping: number[] | undefined;
     server.use(needs(oneAbsChannel),
       http.get('/api/v1/printers/:id/status', () => HttpResponse.json(statusWith([{ tray_type: 'ABS', tray_color: '00FF00FF' }]))),
@@ -270,7 +269,7 @@ describe('the print button and what the trays actually hold', () => {
       }));
     openQueueDialog({ initialRouting: routing({ force_color_match: true }) });
     await screen.findByTestId('feasibility-notice');
-    await user.selectOptions(await screen.findByTitle('Auto-matched'), '0');
+    chooseSlot(await screen.findByTitle('Auto-matched'), 0);
     await waitFor(() => expect(manualMapping).toEqual([0]));
     expect(await submitButton()).toBeDisabled();
     expect(queuePosts).toBe(0);

@@ -61,13 +61,57 @@ export function amsSideBadge(
 }
 
 /**
- * AMS unit label using the codebase convention: "AMS-A / AMS-B / ..." for
- * regular AMS, "HT-A / HT-B / ..." for AMS-HT (single-tray modules with
- * IDs starting at 128). `trayCount` is required because the type can't be
- * inferred from the id alone — regular AMS IDs 0-3 can collide with the
- * normalized HT range otherwise.
+ * Whether a unit id names an AMS-HT: 128-135, as the printer numbers them.
+ *
+ * The id decides, never the number of trays a unit listed — a regular AMS can
+ * report only some of its trays, and one that listed a single tray was drawn
+ * as an AMS-HT (upstream cacaaf4da).
  */
-export function getAmsLabel(amsId: number | string, trayCount: number): string {
+export function isAmsHtUnit(amsId: number | string): boolean {
+  const id = typeof amsId === 'string' ? parseInt(amsId, 10) : amsId;
+  return id >= 128 && id <= 135;
+}
+
+/**
+ * The tray reported for a slot of a regular AMS, by its tray id. An AMS can
+ * report only some of its trays, and then a position in the list is not the
+ * slot. Only when the ids do not tell the trays apart (a firmware that sends
+ * none: they all read 0) does the position decide.
+ */
+export function trayForSlot<T extends { id: number }>(trays: T[], slotIdx: number): T | undefined {
+  const idsUsable = new Set(trays.map(tray => tray.id)).size === trays.length;
+  return idsUsable ? trays.find(tray => tray.id === slotIdx) : trays[slotIdx];
+}
+
+/**
+ * Whether some spool of this AMS is threaded into the feed tube. The AMS turns
+ * its spools together, so one loaded slot keeps it from rotating them while
+ * drying (the firmware refuses with dry_sf_reason 3).
+ *
+ * Tray state 11 says loaded, but the slot the printer reports as loaded
+ * (tray_now) counts too, and on a two-nozzle printer the slot each hotend is
+ * fed from (extruder_slots) — tray_now names only the active nozzle's.
+ */
+export function amsHasLoadedTray(
+  ams: { id: number; tray: { id: number; state?: number | null }[] } | undefined,
+  trayNow: number | null | undefined,
+  extruderSlots: Record<string, { ams_id: number | null; has_filament: boolean }> | null | undefined,
+): boolean {
+  if (!ams) return false;
+  if (ams.tray.some(tray => tray.state === 11)) return true;
+  if (trayNow != null && ams.tray.some(tray => getGlobalTrayId(ams.id, tray.id, false) === trayNow)) return true;
+  return Object.values(extruderSlots ?? {}).some(slot => slot.ams_id === ams.id && slot.has_filament);
+}
+
+/**
+ * AMS unit label using the codebase convention: "AMS-A / AMS-B / ..." for
+ * regular AMS, "HT-A / HT-B / ..." for an AMS-HT (unit ids 128-135). The unit
+ * id decides — see `isAmsHtUnit`. The second argument is what callers used to
+ * pass as the tray count; it no longer has a say and is kept only so they need
+ * not change.
+ */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept so the call sites need not change
+export function getAmsLabel(amsId: number | string, _trayCount?: number): string {
   const id = typeof amsId === 'string' ? parseInt(amsId, 10) : amsId;
   const safeId = isNaN(id) ? 0 : id;
   if (safeId === 255) return 'External';
@@ -75,7 +119,7 @@ export function getAmsLabel(amsId: number | string, trayCount: number): string {
   // ingest (see bambu_mqtt.normalize_am_unit_id). No regular AMS uses id 6, so
   // this is a safe, self-scoping label for the Lite's 4-slot unit.
   if (safeId === 6) return 'AMS Lite';
-  const isHt = trayCount === 1;
+  const isHt = isAmsHtUnit(safeId);
   const normalizedId = safeId >= 128 ? safeId - 128 : safeId;
   const letter = String.fromCharCode(65 + normalizedId);
   return isHt ? `HT-${letter}` : `AMS-${letter}`;

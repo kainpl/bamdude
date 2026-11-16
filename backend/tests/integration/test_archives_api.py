@@ -105,6 +105,30 @@ class TestArchivesAPI:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
+    async def test_a_running_prints_cost_is_marked_as_an_estimate(
+        self, async_client: AsyncClient, archive_factory, printer_factory
+    ):
+        """A print still running carries the placeholder ``archive.py`` wrote at its start -- grams at
+        the default rate, 12.50 for 500 g at 25/kg -- and completion replaces it with what the spools cost
+        (20.00 at 40/kg). The figure is the same number as before; the answer now says what it is
+        (upstream 879e40331, the mark only)."""
+        printer = await printer_factory()
+        running = await archive_factory(printer.id, print_name="Running", status="printing", cost=12.5)
+        finished = await archive_factory(printer.id, print_name="Finished", status="completed", cost=20.0)
+        unpriced = await archive_factory(printer.id, print_name="No rate set", status="printing", cost=None)
+
+        listed = await async_client.get("/api/v1/archives/")
+        assert listed.status_code == 200
+        rows = {a["id"]: a for a in listed.json()["data"]}
+        assert (rows[running.id]["cost"], rows[running.id]["cost_is_estimate"]) == (12.5, True)
+        assert (rows[finished.id]["cost"], rows[finished.id]["cost_is_estimate"]) == (20.0, False)
+        assert (rows[unpriced.id]["cost"], rows[unpriced.id]["cost_is_estimate"]) == (None, False)
+
+        detail = await async_client.get(f"/api/v1/archives/{running.id}")
+        assert detail.json()["cost_is_estimate"] is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
     async def test_archive_response_reports_the_printed_plate(
         self, async_client: AsyncClient, archive_factory, printer_factory
     ):

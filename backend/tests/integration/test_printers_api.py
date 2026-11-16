@@ -874,6 +874,8 @@ class TestAMSRefreshAPI:
 
         mock_client = MagicMock()
         mock_client.ams_refresh_tray.return_value = (True, "Refreshing AMS 0 tray 1")
+        # The route now waits for the printer's verdict on the command it sent.
+        mock_client.await_rfid_refresh = AsyncMock(return_value=(True, ""))
 
         with patch("backend.app.api.routes.printers.printer_manager") as mock_pm:
             mock_pm.get_client.return_value = mock_client

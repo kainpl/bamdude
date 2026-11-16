@@ -1745,7 +1745,9 @@ def _extract_filament_data_from_mqtt(data: dict, ams_mapping: list[int] | None =
     else:
         filaments = [loaded[g] for g in sorted(loaded.keys())]
 
-    types_joined = ",".join(f[0] for f in filaments)
+    # Comma + space, each material once — the form every other writer of the
+    # column uses (a two-slot PLA job is "PLA", not "PLA,PLA").
+    types_joined = ", ".join(dict.fromkeys(f[0] for f in filaments))
     colors_joined = ",".join(f[1] for f in filaments if f[1])
 
     # Column limits per backend/app/models/archive.py: filament_type=50,
@@ -1820,14 +1822,28 @@ async def _bump_library_file_usage_if_completed(db, item, queue_status: str) -> 
     await _bump_library_file_usage(db, item.library_file_id)
 
 
-def mark_printer_stopped_by_user(printer_id: int) -> None:
+def mark_printer_stopped_by_user(printer_id: int, *, unless_idle: bool = False) -> None:
     """Mark that the active print on this printer was stopped by the user from the queue UI.
 
     When on_print_complete fires with status 'failed' for a printer in this set we
     reclassify it as 'cancelled' so the correct 'print stopped' notification is sent
     rather than a 'print failed' notification.
+
+    ``unless_idle`` is the printer card's Stop: on a printer that REPORTS a state
+    with no print loaded the stop stops nothing, and its mark would wait for the
+    failure of some later print (upstream ab5ccc108). An unknown state is not
+    idle and still marks. The queue's Stop has a row behind it and always marks.
     """
     from backend.app.services.print_run_binding import current_print_run
+
+    if unless_idle:
+        status = printer_manager.get_status(printer_id)
+        state = getattr(status, "state", None)
+        if state and state != "unknown" and state not in printer_manager.ACTIVE_PRINT_STATES:
+            logging.getLogger(__name__).info(
+                "Stop on printer %s in state %s: nothing is printing, no user-stopped mark", printer_id, state
+            )
+            return
 
     run = current_print_run(printer_manager, printer_id)
     _user_stopped_printers[printer_id] = run.archive_id if run is not None else None
@@ -1836,6 +1852,16 @@ def mark_printer_stopped_by_user(printer_id: int) -> None:
         printer_id,
         _user_stopped_printers[printer_id],
     )
+
+
+def _forget_unbound_user_stop(printer_id: int) -> None:
+    """A mark that could name no run does not outlive the next run bound to the printer.
+
+    ``None`` matches any archive, so it ends before a later print can meet it;
+    a mark that names its archive is that run's own and stays.
+    """
+    if printer_id in _user_stopped_printers and _user_stopped_printers[printer_id] is None:
+        _user_stopped_printers.pop(printer_id, None)
 
 
 def _normalise_user_stopped_terminal(printer_id: int, archive_id: int | None, data: dict) -> dict:
@@ -2344,6 +2370,10 @@ def _printer_status_effect_key(state: PrinterState) -> str:
         else None
     )
     fts_key = _fts_status_key(state)
+    nozzles_key = tuple(
+        (n.nozzle_type, getattr(n, "nozzle_flow", ""), n.nozzle_diameter)
+        for n in (getattr(state, "nozzles", None) or [])
+    )
     return (
         f"{state.connected}:{state.state}:{state.progress}:{state.layer_num}:{state.total_layers}:"
         f"{nozzle_temp}:{bed_temp}:{nozzle_2_temp}:{chamber_temp}:"
@@ -2384,7 +2414,12 @@ def _printer_status_effect_key(state: PrinterState) -> str:
         f"{sorted(state.axis_at_home.items())}:{sorted(state.ext_has_filament.items())}:"
         # Whether a timelapse is possible changes when a card is pulled or
         # fills up — moments nothing else in this key notices.
-        f"{state.sdcard_state}:{state.has_timelapse_kit}:{sorted(state.timelapse_storage.items())}"
+        f"{state.sdcard_state}:{state.has_timelapse_kit}:{sorted(state.timelapse_storage.items())}:"
+        # Pushed since the status shapers were made to agree, and each moves
+        # exactly when nothing else here does: a nozzle swapped on an idle
+        # printer, a macro the server started or finished, developer mode
+        # switched on the printer's screen.
+        f"{nozzles_key}:{getattr(state, 'macro_executing', None)}:{getattr(state, 'developer_mode', None)}"
     )
 
 
@@ -2919,6 +2954,58 @@ async def on_stock_spool_inserted(printer_id: int, event: dict):
             logger.exception("Stock insertion assignment failed for printer %s", printer_id)
 
 
+def _unit_reported(ams_data: list, ams_id: int) -> bool:
+    """Whether the AMS list names unit ``ams_id`` at all (its trays aside)."""
+    for unit in ams_data or []:
+        if not isinstance(unit, dict):
+            continue
+        try:
+            if int(unit.get("id", -1)) == ams_id:
+                return True
+        except (TypeError, ValueError):
+            continue
+    return False
+
+
+def _slot_feeds_print(status, ams_id: int, tray_id: int) -> bool:
+    """Whether this slot is one the printer is feeding from right now.
+
+    ``tray_now`` names one slot for the whole printer, so on a dual-nozzle
+    machine each hotend's own fed slot is asked as well. Meaningful only while
+    a print runs; the caller checks that.
+    """
+    if status is None:
+        return False
+    if ams_id == 255:
+        global_id = 254 + tray_id
+    elif ams_id >= 128:
+        global_id = ams_id
+    else:
+        global_id = ams_id * 4 + tray_id
+    if getattr(status, "tray_now", None) == global_id:
+        return True
+    slots = getattr(status, "extruder_slots", None) or {}
+    return any(
+        getattr(slot, "has_filament", False) and slot.holds(ams_id, tray_id)
+        for slot in (slots.values() if isinstance(slots, dict) else [])
+    )
+
+
+async def _recheck_held_unlinks(printer_id: int) -> None:
+    """Run the AMS pass again for a printer with a held slot unlink (``slot_unlink_hold``).
+
+    The pass itself decides — under the same lock, from the state the printer
+    reports now. A printer that is gone or offline is left alone: cached state
+    confirms nothing, and a reconnect restarts the clock anyway.
+    """
+    state = printer_manager.get_status(printer_id)
+    if state is None or not getattr(state, "connected", False):
+        return
+    current = (getattr(state, "raw_data", None) or {}).get("ams")
+    if isinstance(current, list):
+        await on_ams_change(printer_id, current)
+
+
 async def on_ams_change(printer_id: int, ams_data: list):
     # Unlink/replay and insertion assignment must share the same lock. Otherwise
     # a delayed empty-slot callback could delete the freshly assigned refill.
@@ -2926,6 +3013,12 @@ async def on_ams_change(printer_id: int, ams_data: list):
         state = printer_manager.get_status(printer_id)
         current = getattr(state, "raw_data", {}).get("ams") if state else None
         await _on_ams_change(printer_id, current if isinstance(current, list) else ams_data)
+    # A spool sits in one slot: what the pass above put into a slot of this
+    # printer may still have rows on OTHER printers. Those are deleted under
+    # their own printers' locks, one at a time, with this one released.
+    from backend.app.services import spool_single_slot
+
+    await spool_single_slot.release_elsewhere(printer_id)
 
 
 async def _on_ams_change(printer_id: int, ams_data: list):
@@ -2949,8 +3042,9 @@ async def _on_ams_change(printer_id: int, ams_data: list):
     # Check if a print is actively running on this printer - if so, skip AMS
     # weight sync to avoid double-deducting spool weight (the usage tracker
     # handles weight deduction precisely during prints via 3MF/G-code data).
+    from backend.app.services import usage_tracker as _usage_tracker
     from backend.app.services.ams_sync_debounce import debounce as _ams_decrease_debounce
-    from backend.app.services.usage_tracker import _active_sessions, record_ams_sync_usage
+    from backend.app.services.usage_tracker import _active_sessions, print_is_unbooked
 
     _print_active = printer_id in _active_sessions
 
@@ -2964,6 +3058,12 @@ async def _on_ams_change(printer_id: int, ams_data: list):
     # have the same runout.
     _unlink_state = printer_manager.get_status(printer_id)
     printing_now = (getattr(_unlink_state, "state", "") or "").upper() in ("RUNNING", "PAUSE")
+
+    # The remain% weight sync asks one question, in both inventory backends: is a print on this printer
+    # still to be charged? A registered session, a printer that reports RUNNING/PAUSE (a restart may have
+    # restored no session) and a completion still closing the print out all answer yes -- syncing then
+    # writes the print's filament once from the AMS reading and the tracker adds it a second time.
+    _weight_sync_held = print_is_unbooked(printer_id, _unlink_state)
 
     # MQTT relay - publish AMS change
     try:
@@ -3035,6 +3135,17 @@ async def _on_ams_change(printer_id: int, ams_data: list):
             # (ams_id, tray_id) of every row we end up deleting — snapshotted so the
             # WS fan-out below can run after the session is released.
             unlinked_slots: list[tuple[int, int]] = []
+            # Slots whose "presence bit off while idle" unlink is waiting for a
+            # second report (services/slot_unlink_hold, owner decision Р8).
+            from backend.app.services import slot_unlink_hold as _unlink_hold
+
+            held_slots: set[tuple[int, int, int]] = set()
+            _hold_generation = getattr(_unlink_state, "connection_generation", None)
+            if not isinstance(_hold_generation, int) or isinstance(_hold_generation, bool):
+                _hold_generation = None
+            _hold_report = getattr(_unlink_state, "last_ams_update", None)
+            if not isinstance(_hold_report, (int, float)) or isinstance(_hold_report, bool):
+                _hold_report = None
             for assignment in result.scalars().all():
                 known = assignment.spool
                 partial_return = (
@@ -3059,6 +3170,21 @@ async def _on_ams_change(printer_id: int, ams_data: list):
                 else:
                     current_tray = _find_tray_in_ams_data(ams_data, assignment.ams_id, assignment.tray_id)
                 if not current_tray:
+                    if assignment.ams_id != 255 and not _unit_reported(ams_data, assignment.ams_id):
+                        # The whole unit is absent — unplugged, or not reported
+                        # yet. That is no word about its slots: the spools stay
+                        # (owner decision Р9). They feed and route nothing while
+                        # the unit is away; back on, the same reels are found on
+                        # it and a different one is caught by the checks below.
+                        # A hold opened for such a slot is not renewed here, so
+                        # the unit going away never confirms it.
+                        logger.info(
+                            "Auto-unlink skipped: spool %d AMS%d-T%d - the unit is not attached",
+                            assignment.spool_id,
+                            assignment.ams_id,
+                            assignment.tray_id,
+                        )
+                        continue
                     if printing_now or partial_return:
                         # A running print may have run out. With stock loading
                         # enabled, keep a known partial spool too: removal alone
@@ -3148,6 +3274,26 @@ async def _on_ams_change(printer_id: int, ams_data: list):
                     # "empty" signals authoritative over any stale tray_type
                     # that might survive the relay's auto-clearing.
                     loaded = tray_holds_filament(current_tray)
+                    # Not into the slot a running print feeds from (upstream
+                    # 1cc7f4f18): a reel put in after a runout leaves that slot
+                    # loaded and blank, and this went out on every AMS change for
+                    # the rest of the print. Held for THAT slot only; the first
+                    # change after the print sends it. Any other slot is
+                    # configured at once, as before.
+                    if (
+                        not fp_type.strip()
+                        and loaded
+                        and assignment.spool
+                        and printing_now
+                        and _slot_feeds_print(_unlink_state, assignment.ams_id, assignment.tray_id)
+                    ):
+                        logger.debug(
+                            "Pre-config held for spool %d AMS%d-T%d: the slot is feeding the print",
+                            assignment.spool_id,
+                            assignment.ams_id,
+                            assignment.tray_id,
+                        )
+                        continue
                     if not fp_type.strip() and loaded and assignment.spool:
                         try:
                             from backend.app.api.routes.inventory import (
@@ -3230,13 +3376,38 @@ async def _on_ams_change(printer_id: int, ams_data: list):
                         # the row threw away the identity the user had supplied
                         # (upstream #3100). A slot the bit calls empty, or one with no
                         # bit, still unlinks.
-                        if spool_present(current_tray) is True:
+                        _hold_key = (printer_id, assignment.ams_id, assignment.tray_id)
+                        _present = spool_present(current_tray)
+                        if _present is True and not _unlink_hold.is_open(_hold_key, row_id=assignment.id):
                             logger.info(
                                 "Auto-unlink skipped: spool %d AMS%d-T%d - slot still occupied, "
                                 "tray reports no filament data yet",
                                 assignment.spool_id,
                                 assignment.ams_id,
                                 assignment.tray_id,
+                            )
+                            continue
+                        # One "empty" report is not a reel taken out (owner
+                        # decision Р8, upstream 3497cf0d4): an idle printer was
+                        # seen to report a whole unit empty for a single push,
+                        # and nothing restores the assignment of an untagged
+                        # reel. The unlink of a slot whose presence bit reads 0
+                        # waits for a later report that still says so. A slot
+                        # that was reported empty and is now occupied-but-blank
+                        # keeps that clock running — a different, unreadable
+                        # reel may be in there and must not inherit the row.
+                        # A slot with no presence bit at all unlinks as before.
+                        if _present is not None and not _unlink_hold.offer(
+                            _hold_key, row_id=assignment.id, generation=_hold_generation, report_stamp=_hold_report
+                        ):
+                            held_slots.add(_hold_key)
+                            logger.info(
+                                "Auto-unlink held: spool %d AMS%d-T%d reports no spool — waiting %.0fs "
+                                "for a second report",
+                                assignment.spool_id,
+                                assignment.ams_id,
+                                assignment.tray_id,
+                                _unlink_hold.HOLD_SECONDS,
                             )
                             continue
                         logger.info(
@@ -3329,6 +3500,13 @@ async def _on_ams_change(printer_id: int, ams_data: list):
                             )
                             continue
                         stale.append(assignment)  # Spool changed
+            # A hold lives only while its slot keeps reporting empty: every slot
+            # this pass did not renew is dropped (the reel is back, a print
+            # started, the row changed). What is still waiting asks again by
+            # itself — a slot that stays empty produces no AMS change of its own.
+            _unlink_hold.keep_only(printer_id, held_slots)
+            if held_slots:
+                _unlink_hold.schedule_recheck(printer_id, lambda: _recheck_held_unlinks(printer_id))
             # Snapshot the slots before the delete — ORM attribute access after the
             # commit would refresh against a deleted row.
             unlinked_slots = [(a.ams_id, a.tray_id) for a in stale]
@@ -3394,6 +3572,20 @@ async def _on_ams_change(printer_id: int, ams_data: list):
             _auto_add_raw = await get_setting(db, "auto_add_unknown_rfid")
             _auto_add_unknown = _auto_add_raw is None or _auto_add_raw.lower() == "true"
             if not _spoolman_on or _spoolman_on.lower() != "true":
+                # Rows that were double before "a spool sits in one slot" was a
+                # rule are settled as printers report in (owner decision Р36):
+                # the slot that reports the tag keeps the spool, else the newest
+                # row. Nothing here touches a journal or a session.
+                try:
+                    from backend.app.services import spool_single_slot as _single_slot
+
+                    _settled = await _single_slot.resolve_duplicates(db, printer_id)
+                    await db.commit()
+                    if _settled.vacated:
+                        _single_slot._pending_announce.setdefault(printer_id, []).extend(_settled.vacated)
+                except Exception:  # noqa: BLE001 — a duplicate row survives until the next pass
+                    await db.rollback()
+                    logger.exception("Could not settle doubled spool assignments for printer %s", printer_id)
                 for ams_unit in ams_data:
                     if not isinstance(ams_unit, dict):
                         continue
@@ -3435,6 +3627,7 @@ async def _on_ams_change(printer_id: int, ams_data: list):
                             remain_raw = tray.get("remain")
                             if (
                                 remain_raw is not None
+                                and not _weight_sync_held
                                 and existing_assignment.spool
                                 and not existing_assignment.spool.weight_locked
                             ):
@@ -3457,7 +3650,7 @@ async def _on_ams_change(printer_id: int, ams_data: list):
                                             remain_val,
                                             tray.get("remain_g"),
                                         )
-                                        await record_ams_sync_usage(
+                                        await _usage_tracker.sync_spool_weight_from_ams(
                                             db,
                                             existing_assignment.spool,
                                             printer_id=printer_id,
@@ -3489,7 +3682,7 @@ async def _on_ams_change(printer_id: int, ams_data: list):
                                                 current_used,
                                                 new_used,
                                             )
-                                            await record_ams_sync_usage(
+                                            await _usage_tracker.sync_spool_weight_from_ams(
                                                 db,
                                                 existing_assignment.spool,
                                                 printer_id=printer_id,
@@ -3499,17 +3692,20 @@ async def _on_ams_change(printer_id: int, ams_data: list):
                                             )
                                             await db.commit()
 
-                            # Re-apply stored K-profile when the live tray's
-                            # cali_idx drifted from the spool's stored profile.
-                            # Catches "reset slot → re-read" + any other path
-                            # where the firmware loses the user's K-profile
-                            # selection while the SpoolAssignment row persists.
-                            # Per upstream maintainer's rule (b30a2831): any time
-                            # a spool tag is identified and matches inventory,
-                            # the slot must be configured with the spool's
-                            # stored settings. Without this block the existing-
-                            # assignment branch only ran weight-sync and let the
-                            # firmware-default cali_idx win.
+                            # Re-bind the K-profile of a tagged spool that has
+                            # a K link, when the slot is not on it: the binder
+                            # resolves link → active calibration → its LIVE
+                            # index, and is handed the index this very push
+                            # reports for the tray, so a slot already on the
+                            # resolved profile gets nothing. Before that
+                            # comparison the block published on every AMS change
+                            # while idle — a remain% tick included — whatever
+                            # the slot held. It catches "reset slot → re-read"
+                            # and any other loss of the selection while the
+                            # SpoolAssignment row persists. Upstream removed its
+                            # counterpart (f45cc599f); ours stays: a profile
+                            # picked for the slot in Bambu Studio is replaced by
+                            # the linked one at the next AMS change, as before.
                             try:
                                 spool = existing_assignment.spool
                                 if (
@@ -3530,9 +3726,18 @@ async def _on_ams_change(printer_id: int, ams_data: list):
                                         spool=spool, slot_tray_info_idx=tray_info_idx or None, db=db
                                     )
                                     if effective_filament_id:
-                                        # Helper fires only when the live cali_idx
-                                        # disagrees with the cached row's stable
-                                        # identity, so steady-state pushes are no-ops.
+                                        # The tray's index from the SAME data this
+                                        # callback was handed — a cached snapshot
+                                        # could be a push behind and skip a bind
+                                        # that is needed. Unreported is not "equal".
+                                        try:
+                                            bound_cali_idx = int(tray.get("cali_idx"))
+                                        except (TypeError, ValueError):
+                                            bound_cali_idx = None
+                                        try:
+                                            bound_k = float(tray.get("k"))
+                                        except (TypeError, ValueError):
+                                            bound_k = None
                                         fired, fc = await apply_active_calibration_to_slot(
                                             db=db,
                                             printer_id=printer_id,
@@ -3543,6 +3748,8 @@ async def _on_ams_change(printer_id: int, ams_data: list):
                                             nozzle_volume_type=nozzle.flow_or_standard,
                                             extruder_id=nozzle.extruder_or_default,
                                             spool_id=spool.id,
+                                            bound_cali_idx=bound_cali_idx,
+                                            bound_k=bound_k,
                                         )
                                         if fired and fc:
                                             logger.info(
@@ -3816,7 +4023,7 @@ async def _on_ams_change(printer_id: int, ams_data: list):
                         # never while a print runs (the per-print tracker owns
                         # weight then; #1119's no-weight rule stays for
                         # everything untagged).
-                        if result and result.get("id") and not printing_now and not _print_active:
+                        if result and result.get("id") and not _weight_sync_held:
                             try:
                                 await _spoolman_bidirectional_weight_sync(
                                     client, db, printer_id, ams_id, tray, tray_data, result
@@ -4264,6 +4471,7 @@ def _bind_print_file_analysis_context(
         client_generation=getattr(printer_manager, "current_client_generation", lambda _printer_id: None)(printer_id),
         origin=origin,
     )
+    _forget_unbound_user_stop(printer_id)
     from backend.app.services.layer_projection import bind_layer_grant
 
     bind_layer_grant(
@@ -10432,7 +10640,11 @@ async def on_print_complete(printer_id: int, data: dict) -> None:
 
     await _release_unseeded_journal(printer_id)
 
-    with defer_queue_repair_during_completion(printer_id):
+    # From here until the callback ends -- the swap macro and the Spoolman report included -- the finished
+    # print's filament is not booked yet, so the remain% weight sync stays off for this printer.
+    from backend.app.services.usage_tracker import completion_in_progress
+
+    with defer_queue_repair_during_completion(printer_id), completion_in_progress(printer_id):
         try:
             await _on_print_complete_impl(printer_id, data, analysis_completion)
         finally:
@@ -12443,6 +12655,13 @@ async def _application_lifespan(app: FastAPI):
         await camera_light.shutdown()
     except Exception as e:
         logging.warning("Failed to stop the camera-light lease: %s", e)
+    # Held slot unlinks ask again from a timer task (services/slot_unlink_hold).
+    try:
+        from backend.app.services import slot_unlink_hold
+
+        await slot_unlink_hold.cancel_all()
+    except Exception as e:
+        logging.warning("Failed to stop the slot unlink re-checks: %s", e)
     # Cancel any pending offline-notification debounce tasks (#1752) so the 60s
     # sleep doesn't outlive the asyncio loop on shutdown.
     for _t in list(_printer_offline_notify_tasks.values()):

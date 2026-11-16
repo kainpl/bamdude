@@ -20,7 +20,7 @@ import {
   StickyNote,
 } from 'lucide-react';
 import { SelectionBox } from './SelectionBox';
-import { api } from '../api/client';
+import { api, ApiError } from '../api/client';
 import type { KProfile, KProfileCreate, KProfileDelete, Permission } from '../api/client';
 import { Card, CardContent } from './Card';
 import { Button } from './Button';
@@ -264,7 +264,9 @@ function KProfileModal({
     },
     onSuccess: (result) => {
       console.log('[KProfile] Save success:', result);
-      showToast(t('kProfiles.toast.profileSaved'));
+      // A write the printer never answered is "sent", not "saved" (upstream f45cc599f).
+      if (result?.confirmed === false) showToast(t('kProfiles.toast.profileSentUnconfirmed'), 'warning');
+      else showToast(t('kProfiles.toast.profileSaved'));
       // Save note if it changed (including clearing it). Parent resolves
       // the editing profile to its stable filament_calibration_id via the
       // listing endpoint's fc_id_by_cali_idx map (m065).
@@ -294,7 +296,8 @@ function KProfileModal({
     },
     onSuccess: (result) => {
       console.log('[KProfile] Delete success:', result);
-      showToast(t('kProfiles.toast.profileDeleted'));
+      if (result?.confirmed === false) showToast(t('kProfiles.toast.deleteSentUnconfirmed'), 'warning');
+      else showToast(t('kProfiles.toast.profileDeleted'));
       // Show syncing indicator while printer processes the command
       setIsSyncing(true);
       // Add longer delay for delete - printer needs more time to process
@@ -409,8 +412,9 @@ function KProfileModal({
     console.log(`[KProfile] Saving ${batchPayload.length} profiles in batch:`, batchPayload);
 
     try {
-      await api.setKProfilesBatch(printerId, batchPayload);
-      showToast(t('kProfiles.toast.profilesSaved', { count: selectedExtruders.length }));
+      const batchResult = await api.setKProfilesBatch(printerId, batchPayload);
+      if (batchResult?.confirmed === false) showToast(t('kProfiles.toast.profileSentUnconfirmed'), 'warning');
+      else showToast(t('kProfiles.toast.profilesSaved', { count: selectedExtruders.length }));
       // Notes for freshly-created batch profiles can't attach reliably yet
       // — the printer hasn't returned the new cali_idx/setting_id, so the
       // backend has nothing to resolve. The user can attach a note after the
@@ -819,6 +823,9 @@ export function KProfilesView() {
     queryKey: ['kprofiles', selectedPrinter, '0.4'],
     queryFn: () => api.getKProfiles(selectedPrinter!, '0.4'),
     enabled: !!selectedPrinter,
+    // As the list above: a table the printer did not answer for (504) is not
+    // asked for three more times behind the operator's back.
+    retry: false,
     staleTime: 60000,  // Cache for 1 minute
   });
 
@@ -860,6 +867,10 @@ export function KProfilesView() {
 
   // Check if error is due to printer not being connected
   const isOfflineError = kprofilesError?.message?.includes('not connected');
+  // The printer was asked and did not answer: its table is unknown, NOT empty
+  // (upstream 080d866fb). Without this the page offered "create the first
+  // profile" over profiles that exist. Told by the refusal's code.
+  const isUnreadError = kprofilesError instanceof ApiError && kprofilesError.code === 'kprofiles_unread';
 
   // Auto-select first connected printer
   useEffect(() => {
@@ -1068,11 +1079,12 @@ export function KProfilesView() {
 
         // Import profiles one by one
         let imported = 0;
+        let importUnconfirmed = 0;
         for (const p of data.profiles) {
           if (!p.name || !p.k_value || !p.filament_id) continue;
 
           try {
-            await api.setKProfile(selectedPrinter!, {
+            const importResult = await api.setKProfile(selectedPrinter!, {
               name: p.name,
               k_value: parseFloat(p.k_value).toFixed(6),
               filament_id: p.filament_id,
@@ -1086,6 +1098,7 @@ export function KProfilesView() {
               slot_id: 0, // Always create new
             });
             imported++;
+            if (importResult?.confirmed === false) importUnconfirmed++;
             // Small delay between imports
             await new Promise(resolve => setTimeout(resolve, 500));
           } catch (err) {
@@ -1093,7 +1106,11 @@ export function KProfilesView() {
           }
         }
 
-        showToast(t('kProfiles.toast.importedProfiles', { count: imported, total: data.profiles.length }));
+        if (importUnconfirmed > 0) {
+          showToast(t('kProfiles.toast.importedProfilesUnconfirmed', { count: imported, total: data.profiles.length, unconfirmed: importUnconfirmed }), 'warning');
+        } else {
+          showToast(t('kProfiles.toast.importedProfiles', { count: imported, total: data.profiles.length }));
+        }
         refetchProfiles();
       } catch (err) {
         console.error('Import error:', err);
@@ -1133,9 +1150,10 @@ export function KProfilesView() {
     setBulkDeleteInProgress(true);
 
     let deleted = 0;
+    let deleteUnconfirmed = 0;
     for (const profile of profilesToDelete) {
       try {
-        await api.deleteKProfile(selectedPrinter!, {
+        const deleteResult = await api.deleteKProfile(selectedPrinter!, {
           slot_id: profile.slot_id,
           extruder_id: profile.extruder_id,
           nozzle_id: profile.nozzle_id,
@@ -1144,6 +1162,7 @@ export function KProfilesView() {
           setting_id: profile.setting_id,
         });
         deleted++;
+        if (deleteResult?.confirmed === false) deleteUnconfirmed++;
         // Small delay between deletes
         await new Promise(resolve => setTimeout(resolve, 300));
       } catch (err) {
@@ -1151,7 +1170,11 @@ export function KProfilesView() {
       }
     }
 
-    showToast(t('kProfiles.toast.profilesDeleted', { count: deleted }));
+    if (deleteUnconfirmed > 0) {
+      showToast(t('kProfiles.toast.profilesDeletedUnconfirmed', { count: deleted, unconfirmed: deleteUnconfirmed }), 'warning');
+    } else {
+      showToast(t('kProfiles.toast.profilesDeleted', { count: deleted }));
+    }
     setBulkDeleteInProgress(false);
     setShowBulkDeleteConfirm(false);
     setSelectionMode(false);
@@ -1432,6 +1455,20 @@ export function KProfilesView() {
             <h3 className="text-lg font-semibold text-white mb-2">{t('kProfiles.printerOffline')}</h3>
             <p className="text-bambu-gray mb-4">
               {t('kProfiles.printerOfflineDesc')}
+            </p>
+            <Button variant="secondary" onClick={() => refetchProfiles()}>
+              <RefreshCw className="w-4 h-4" />
+              {t('common.refresh')}
+            </Button>
+          </CardContent>
+        </Card>
+      ) : isUnreadError ? (
+        <Card>
+          <CardContent className="py-12 text-center">
+            <AlertCircle className="w-12 h-12 text-amber-500 mx-auto mb-4" />
+            <h3 className="text-lg font-semibold text-white mb-2">{t('kProfiles.readFailed')}</h3>
+            <p className="text-bambu-gray mb-4">
+              {t('kProfiles.readFailedDesc')}
             </p>
             <Button variant="secondary" onClick={() => refetchProfiles()}>
               <RefreshCw className="w-4 h-4" />

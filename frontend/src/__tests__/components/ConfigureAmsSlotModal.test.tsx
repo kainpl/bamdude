@@ -29,6 +29,7 @@ vi.mock('../../api/client', () => ({
     configureAmsSlot: vi.fn(),
     getCloudSettingDetail: vi.fn(),
     getSettings: vi.fn().mockResolvedValue({}),
+    getUiPreferences: vi.fn().mockResolvedValue({}),
     updateSettings: vi.fn().mockResolvedValue({}),
     getLocalPresets: vi.fn(),
     getBuiltinFilaments: vi.fn(),
@@ -391,6 +392,66 @@ describe('ConfigureAmsSlotModal', () => {
     await waitFor(() => {
       expect(screen.getAllByText(/Sunlu custom blend/).length).toBeGreaterThan(0);
     });
+  });
+
+  it('does not carry the old filament\'s K-profile into a slot re-configured for another filament (upstream 02e39b18b)', async () => {
+    // The slot holds PLA on "PLA K0.020" (index 7). Picking Generic PETG and
+    // saving without touching the K list used to send PETG + cali_idx 7 — a
+    // PETG slot bound to a PLA calibration. BambuStudio offers a slot only its
+    // own filament's profiles and sends -1 otherwise (AMSMaterialsSetting.cpp).
+    (api.getKProfiles as ReturnType<typeof vi.fn>).mockResolvedValue({
+      profiles: [
+        { id: 7, name: 'PLA K0.020', k_value: '0.020', filament_id: 'GFA00', setting_id: '', extruder_id: 0, cali_idx: 7, slot_id: 7 },
+      ],
+    });
+    const slotInfo = { ...defaultProps.slotInfo, trayInfoIdx: 'GFA00', caliIdx: 7, extruderId: 0 };
+    render(<ConfigureAmsSlotModal {...defaultProps} slotInfo={slotInfo} />);
+
+    await waitFor(() => expect(screen.getAllByText(/PLA K0.020/).length).toBeGreaterThan(0));
+    fireEvent.click(await screen.findByText('Generic PETG'));
+    await waitFor(() => expect(screen.queryByText(/PLA K0.020/)).not.toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: 'Configure Slot' }));
+    await waitFor(() => expect(api.configureAmsSlot).toHaveBeenCalledWith(1, 0, 0,
+      expect.objectContaining({ tray_info_idx: 'GFG99', cali_idx: -1 })));
+  });
+
+  describe('the K-profile table could not be read (upstream 080d866fb)', () => {
+    // "Not read" used to arrive as an empty list: nothing to pre-select, and a
+    // save that only meant to change the colour sent cali_idx -1 — the slot's
+    // K binding was cleared.
+    it('says so, and a save keeps the K-profile the slot is on', async () => {
+      (api.getKProfiles as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('The printer did not answer the K-profile request'));
+      const slotInfo = { ...defaultProps.slotInfo, trayInfoIdx: 'GFA00', caliIdx: 5, extruderId: 0 };
+      render(<ConfigureAmsSlotModal {...defaultProps} slotInfo={slotInfo} />);
+
+      expect(await screen.findByText(/K-profiles could not be read/)).toBeInTheDocument();
+      expect(screen.queryByText(/No matching K profiles found/)).not.toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: 'Configure Slot' }));
+      await waitFor(() => expect(api.configureAmsSlot).toHaveBeenCalledWith(1, 0, 0,
+        expect.objectContaining({ tray_info_idx: 'GFA00', cali_idx: 5 })));
+      // One request: the read is not retried behind the operator's back.
+      expect(api.getKProfiles).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not carry the old index over to another filament', async () => {
+      (api.getKProfiles as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('The printer did not answer the K-profile request'));
+      const slotInfo = { ...defaultProps.slotInfo, trayInfoIdx: 'GFA00', caliIdx: 5, extruderId: 0 };
+      render(<ConfigureAmsSlotModal {...defaultProps} slotInfo={slotInfo} />);
+
+      await screen.findByText(/K-profiles could not be read/);
+      fireEvent.click(await screen.findByText('Generic PETG'));
+      fireEvent.click(screen.getByRole('button', { name: 'Configure Slot' }));
+      await waitFor(() => expect(api.configureAmsSlot).toHaveBeenCalledWith(1, 0, 0,
+        expect.objectContaining({ tray_info_idx: 'GFG99', cali_idx: -1 })));
+    });
+  });
+
+  it('says when the K half of the configuration did not reach the printer (upstream ab5ccc108)', async () => {
+    (api.configureAmsSlot as ReturnType<typeof vi.fn>).mockResolvedValue({ success: true, message: 'ok', warnings: ['k_profile_not_sent'] });
+    render(<ConfigureAmsSlotModal {...defaultProps} slotInfo={{ ...defaultProps.slotInfo, trayInfoIdx: 'GFA00' }} />);
+    await screen.findByText('Bambu PLA Basic');
+    fireEvent.click(screen.getByRole('button', { name: 'Configure Slot' }));
+    expect(await screen.findByText(/K-profile selection was not sent/)).toBeInTheDocument();
   });
 
   describe('flow type of the fitted nozzle (upstream e5a18bf5)', () => {

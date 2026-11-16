@@ -1164,6 +1164,7 @@ class CalibrationService:
         # routes by session context. Push whichever value we computed.
         push_value = payload.pa_k_value if payload.pa_k_value is not None else payload.flow_ratio
         client = printer_manager.get_client(session.printer_id)
+        slot_selected = False
         if client and client.state.connected and push_value is not None:
             client.extrusion_cali_set(
                 tray_id=fil["tray_id"],
@@ -1183,6 +1184,9 @@ class CalibrationService:
             # no-op there.
             if new_row.cali_idx is None:
                 try:
+                    # A table that was not read raises (KProfileReadError) and
+                    # lands in the except below: the calibration is saved, but
+                    # its index is unknown, so it cannot be selected on the slot.
                     entries = await client.get_kprofiles(str(session.nozzle_diameter))
                     for kp in entries or []:
                         if (
@@ -1204,13 +1208,30 @@ class CalibrationService:
                     filament_id=fil["filament_id"],
                     nozzle_diameter=str(session.nozzle_diameter),
                 )
+                slot_selected = True
+            else:
+                # Saved, but NOT selected on the slot: the slot stays on its old
+                # K until the table is read and something binds it. Said, not
+                # silent — "saved" alone read as "the slot prints with it".
+                logger.warning(
+                    "save_result: calibration %s saved on printer %s but not selected on AMS%s-T%s "
+                    "(its index on the printer is unknown)",
+                    new_row.id,
+                    session.printer_id,
+                    fil.get("ams_id"),
+                    fil.get("tray_id"),
+                )
 
         session.status = "saved"
         await db.commit()
         await broadcast_calibration_event(
             printer_id=session.printer_id,
             event="saved",
-            payload={"session_id": session.id, "filament_calibration_id": new_row.id},
+            payload={
+                "session_id": session.id,
+                "filament_calibration_id": new_row.id,
+                "slot_selected": slot_selected,
+            },
         )
         return new_row
 
@@ -1389,8 +1410,37 @@ async def derive_effective_filament_id(*, spool=None, slot_tray_info_idx: str | 
 
         resolved = await resolve_spool(db, spool)
         if resolved.family:
-            return resolved.family.filament_id
+            # The id the slot is published under (``build_slot_assignment``): a
+            # family under an OrcaSlicer "OF…" id is known to the printer, and so
+            # to its K table, by Bambu's. Every other id is itself.
+            from backend.app.utils import filament_catalog
+
+            fid = resolved.family.filament_id
+            return filament_catalog.bambu_filament_id(fid) or fid
     return slot_tray_info_idx or None
+
+
+def _hotend_unknown(printer_id: int, state, ams_id: int, slot_id: int) -> bool:
+    """Whether a dual-nozzle printer leaves it open which hotend an AMS slot feeds.
+
+    True only for an AMS slot on a dual-nozzle model whose extruder map does not
+    name that AMS (it reports 0xE right after connect). A single-nozzle printer
+    has one hotend, and the external holder names its side itself. Behind a
+    Filament Track Switch 0xE is the steady state of every AMS, never resolved
+    by a later frame: there the binders keep their old default instead of
+    binding nothing for good.
+    """
+    from backend.app.utils.printer_models import is_dual_nozzle_model
+    from backend.app.utils.slot_nozzle import slot_extruder
+
+    if ams_id == 255:
+        return False
+    if getattr(getattr(state, "fila_switch", None), "installed", False) is True:
+        return False
+    model = printer_manager.get_model(printer_id)
+    if not isinstance(model, str) or not is_dual_nozzle_model(model):
+        return False
+    return slot_extruder(state, ams_id, slot_id) is None
 
 
 async def apply_active_calibration_to_slot(
@@ -1404,6 +1454,8 @@ async def apply_active_calibration_to_slot(
     nozzle_volume_type: str = "standard",
     extruder_id: int = 0,
     spool_id: int | None = None,
+    bound_cali_idx: int | None = None,
+    bound_k: float | None = None,
 ) -> tuple[bool, FilamentCalibration | None]:
     """Resolve the right calibration for a slot and fire ``extrusion_cali_sel``.
 
@@ -1422,12 +1474,36 @@ async def apply_active_calibration_to_slot(
     Returns ``(fired, cache_row)``. ``fired=True`` iff MQTT was published.
     Stale cache (live list lacks the profile) returns ``(False, cache_row)``
     so the caller can decide whether to fall back.
+
+    ``bound_cali_idx`` — the index the slot reports RIGHT NOW, for the one
+    caller that runs on every AMS change (``main.on_ams_change``). When it
+    already is the resolved profile's live index nothing is published and the
+    answer is ``(False, cache_row)``. Every other caller leaves it ``None`` and
+    publishes as before: a bind at assign or before a print is sent whatever
+    the slot holds. ``bound_k`` — the K the slot reports beside that index: an
+    index is numbered per nozzle table, so the same number with another K is
+    another table's profile and IS published. A slot that reports no K is
+    judged by its index alone.
     """
     if not filament_id:
         return False, None
 
     client = printer_manager.get_client(printer_id)
     if not client or not client.state.connected:
+        return False, None
+
+    if _hotend_unknown(printer_id, client.state, ams_id, slot_id):
+        # Every binder hands this helper ``extruder_or_default`` — 0 when the
+        # printer does not say which hotend the slot feeds. On a dual-nozzle
+        # machine that is the RIGHT hotend's calibration on a slot that may
+        # feed the left (upstream bff7f6810). Unknown binds nothing; the slot
+        # is bound by the next binder that runs once the map names it.
+        logger.info(
+            "K bind skipped printer=%s ams=%s slot=%s: the printer does not say which hotend this slot feeds",
+            printer_id,
+            ams_id,
+            slot_id,
+        )
         return False, None
 
     cache_row: FilamentCalibration | None = None
@@ -1505,6 +1581,13 @@ async def apply_active_calibration_to_slot(
             live_match = kp
             break
     if live_match is None:
+        return False, cache_row
+    if (
+        bound_cali_idx is not None
+        and bound_cali_idx >= 0
+        and int(live_match.slot_id) == bound_cali_idx
+        and (bound_k is None or abs(bound_k - float(target_k)) < 0.0005)
+    ):
         return False, cache_row
 
     try:

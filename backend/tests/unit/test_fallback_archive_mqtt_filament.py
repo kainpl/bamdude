@@ -48,7 +48,7 @@ class TestExtractFilamentDataFromMqtt:
             },
         }
         result = _extract_filament_data_from_mqtt(data)
-        assert result == {"filament_type": "PLA,PETG,ABS", "filament_color": "FF0000,00FF00,0000FF"}
+        assert result == {"filament_type": "PLA, PETG, ABS", "filament_color": "FF0000,00FF00,0000FF"}
 
     def test_ams_mapping_narrows_to_used_slots(self):
         data = {
@@ -67,7 +67,7 @@ class TestExtractFilamentDataFromMqtt:
             },
         }
         result = _extract_filament_data_from_mqtt(data, ams_mapping=[3, 0, 1])
-        assert result == {"filament_type": "TPU,PLA,PETG", "filament_color": "FFFF00,FF0000,00FF00"}
+        assert result == {"filament_type": "TPU, PLA, PETG", "filament_color": "FFFF00,FF0000,00FF00"}
 
     def test_ams_mapping_with_vt_tray_sentinels_filtered_out(self):
         data = {
@@ -84,7 +84,7 @@ class TestExtractFilamentDataFromMqtt:
             },
         }
         result = _extract_filament_data_from_mqtt(data, ams_mapping=[-1, 0, 1])
-        assert result == {"filament_type": "PLA,PETG", "filament_color": "FF0000,00FF00"}
+        assert result == {"filament_type": "PLA, PETG", "filament_color": "FF0000,00FF00"}
 
     def test_dual_ams_global_ids_use_unit4_offset(self):
         data = {
@@ -96,7 +96,7 @@ class TestExtractFilamentDataFromMqtt:
             },
         }
         result = _extract_filament_data_from_mqtt(data, ams_mapping=[4, 0])
-        assert result == {"filament_type": "PETG-CF,PLA", "filament_color": "112233,FF0000"}
+        assert result == {"filament_type": "PETG-CF, PLA", "filament_color": "112233,FF0000"}
 
     def test_mapping_pointing_at_unknown_slot_falls_through_to_known_only(self):
         data = {"ams": {"ams": [_ams_unit(0, [_tray(0, "PLA", "FF0000")])]}}
@@ -151,4 +151,19 @@ class TestCallbackWrapperShape:
         inner = {"ams": {"ams": [_ams_unit(0, [_tray(0, "PLA", "FF0000"), _tray(1, "PETG", "00FF00")])]}}
         wrapper = {"raw_data": inner}
         result = _extract_filament_data_from_mqtt(wrapper)
-        assert result == {"filament_type": "PLA,PETG", "filament_color": "FF0000,00FF00"}
+        assert result == {"filament_type": "PLA, PETG", "filament_color": "FF0000,00FF00"}
+
+
+class TestTypesAreJoinedLikeEveryOtherWriter:
+    """Every other writer of ``filament_type`` joins with comma + space and
+    names a material once; this one must too (upstream 30b7513bf)."""
+
+    def test_two_slots_of_one_material_name_it_once(self):
+        data = {"ams": {"ams": [_ams_unit(0, [_tray(0, "PLA", "FF0000"), _tray(1, "PLA", "00FF00")])]}}
+        result = _extract_filament_data_from_mqtt(data)
+        assert result == {"filament_type": "PLA", "filament_color": "FF0000,00FF00"}
+
+    def test_order_of_first_appearance_is_kept(self):
+        trays = [_tray(0, "PETG", "111111"), _tray(1, "PLA", "222222"), _tray(2, "PETG", "333333")]
+        data = {"ams": {"ams": [_ams_unit(0, trays)]}}
+        assert _extract_filament_data_from_mqtt(data)["filament_type"] == "PETG, PLA"

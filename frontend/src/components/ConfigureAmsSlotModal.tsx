@@ -25,7 +25,8 @@ interface SlotInfo {
 }
 
 // Get proper AMS label (handles HT AMS with ID 128+)
-function getAmsLabel(amsId: number, trayCount: number): string {
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept so the call sites need not change
+function getAmsLabel(amsId: number, _trayCount?: number): string {
   // External spool
   if (amsId === 255) return 'External';
 
@@ -38,9 +39,9 @@ function getAmsLabel(amsId: number, trayCount: number): string {
     isHt = true;
   } else if (amsId >= 0 && amsId <= 3) {
     // Regular AMS range: 0-3 → A-D
+    // A regular AMS whatever it listed: the unit id decides, never the
+    // tray count (a regular AMS can report only some of its trays).
     normalizedId = amsId;
-    // Check tray count as secondary indicator
-    isHt = trayCount === 1;
   } else {
     // Unknown range - fallback to A
     normalizedId = 0;
@@ -199,6 +200,8 @@ export function ConfigureAmsSlotModal({
   const [colorInput, setColorInput] = useState<string>(''); // User's text input (name or hex)
   const [searchQuery, setSearchQuery] = useState('');
   const [showSuccess, setShowSuccess] = useState(false);
+  // What the server says did NOT reach the printer (codes, worded here).
+  const [configureWarnings, setConfigureWarnings] = useState<string[]>([]);
   const [showExtendedColors, setShowExtendedColors] = useState(false);
   const scrolledToRef = useRef<string>('');
 
@@ -233,11 +236,18 @@ export function ConfigureAmsSlotModal({
     staleTime: 30_000,
   });
 
-  const { data: kprofilesData, isLoading: kprofilesLoading } = useQuery({
+  // A table the printer did not answer for is an ERROR, not an empty list
+  // (upstream 080d866fb). No retry: the server already asked the printer three
+  // times, and the dialog says the read failed instead of spinning for a minute.
+  const { data: kprofilesData, isLoading: kprofilesLoading, isError: kprofilesUnread } = useQuery({
     queryKey: ['kprofiles', printerId, nozzleDiameter],
     queryFn: () => api.getKProfiles(printerId, nozzleDiameter),
     enabled: isOpen && !!printerId,
+    retry: false,
   });
+  // Read at execute time for the same reason as the K selection below.
+  const kprofilesUnreadRef = useRef(false);
+  kprofilesUnreadRef.current = kprofilesUnread;
 
   // Fetch color catalog
   // Canonical Bambu printer-model registry ("Bambu Lab X1 Carbon" → "X1C").
@@ -256,7 +266,17 @@ export function ConfigureAmsSlotModal({
       // The K value and the profile's ids travel in the same payload and had
       // the same exposure, so they read the ref too.
       const kProfile = selectedKProfileRef.current;
-      const caliIdx = kProfile?.slot_id ?? -1;
+      // With the table unread nothing could be offered or picked, so "no
+      // profile selected" is not a choice of the default K: the slot keeps the
+      // index it is on. Only for the filament it already holds — an index is a
+      // profile of one filament, and another family starts from the default.
+      const keepLiveIdx =
+        !kProfile
+        && kprofilesUnreadRef.current
+        && slotInfo.caliIdx != null
+        && slotInfo.caliIdx >= 0
+        && selectedPresetId === slotInfo.trayInfoIdx;
+      const caliIdx = kProfile?.slot_id ?? (keepLiveIdx ? slotInfo.caliIdx! : -1);
       const color = colorHex || slotInfo.trayColor?.slice(0, 6) || 'FFFFFF';
       const kValue = kProfile?.k_value ? parseFloat(kProfile.k_value) : 0;
 
@@ -279,14 +299,17 @@ export function ConfigureAmsSlotModal({
       });
       return result;
     },
-    onSuccess: () => {
+    onSuccess: (result) => {
+      const warnings = result?.warnings ?? [];
+      setConfigureWarnings(warnings);
       setShowSuccess(true);
       onSuccess?.();
-      // Close after showing success briefly
+      // Close after showing success briefly — longer when there is something
+      // to read: "Configured" with a K that never left must not flash by.
       setTimeout(() => {
         setShowSuccess(false);
         onClose();
-      }, 1500);
+      }, warnings.length > 0 ? 6000 : 1500);
     },
   });
 
@@ -417,8 +440,17 @@ export function ConfigureAmsSlotModal({
     // `extrusion_cali_sel: -1` — silently CLEARING the printer's binding while
     // the printer card's hover-card still shows the profile. Gated on
     // activeIdx > 0 so caliIdx 0/null can't leak an unrelated profile in.
+    //
+    // Only while the dialog still names the filament the slot HOLDS (upstream
+    // 02e39b18b): the bound profile is a calibration of that filament, and
+    // offering — and pre-selecting — it after the operator picked another one
+    // saved a PETG slot bound to a PLA calibration. BambuStudio offers a slot
+    // its own filament's profiles only and sends -1 otherwise
+    // (AMSMaterialsSetting.cpp). A slot that reports no filament id has
+    // nothing to compare with and keeps the net.
+    const familyChanged = !!slotInfo.trayInfoIdx && !!selectedPresetId && selectedPresetId !== slotInfo.trayInfoIdx;
     const activeIdx = slotInfo.caliIdx;
-    if (activeIdx != null && activeIdx > 0 && !result.some(p => p.slot_id === activeIdx)) {
+    if (!familyChanged && activeIdx != null && activeIdx > 0 && !result.some(p => p.slot_id === activeIdx)) {
       const active = kprofilesData.profiles.find(
         p => p.slot_id === activeIdx && (slotInfo.extruderId === undefined || p.extruder_id === slotInfo.extruderId),
       );
@@ -426,7 +458,7 @@ export function ConfigureAmsSlotModal({
     }
 
     return result;
-  }, [kprofilesData?.profiles, selectedPresetInfo, targetFilamentId, nozzleFlow, slotInfo.extruderId, slotInfo.caliIdx]);
+  }, [kprofilesData?.profiles, selectedPresetInfo, targetFilamentId, nozzleFlow, slotInfo.extruderId, slotInfo.caliIdx, slotInfo.trayInfoIdx, selectedPresetId]);
 
   // Pre-select current profile when modal opens, reset when closes
   useEffect(() => {
@@ -451,6 +483,7 @@ export function ConfigureAmsSlotModal({
       setColorInput('');
       setSearchQuery('');
       setShowSuccess(false);
+      setConfigureWarnings([]);
       scrolledToRef.current = '';
     }
   }, [isOpen, slotInfo.trayInfoIdx, slotInfo.trayColor]);
@@ -577,6 +610,11 @@ export function ConfigureAmsSlotModal({
               <CheckCircle2 className="w-16 h-16 text-bambu-green mx-auto" />
               <p className="text-lg font-semibold text-white">{t('configureAmsSlot.slotConfigured')}</p>
               <p className="text-sm text-bambu-gray">{t('configureAmsSlot.settingsSentToPrinter')}</p>
+              {configureWarnings.map(code => (
+                <p key={code} role="alert" className="text-sm text-amber-700 dark:text-amber-400 max-w-sm mx-auto">
+                  {t(`configureAmsSlot.warnings.${code}`, { defaultValue: code })}
+                </p>
+              ))}
             </div>
           </div>
         )}
@@ -899,7 +937,11 @@ export function ConfigureAmsSlotModal({
                   </span>
                 )}
               </label>
-              {matchingKProfiles.length > 0 ? (
+              {kprofilesUnread ? (
+                <p role="status" className="text-sm text-amber-700 dark:text-amber-400 py-2">
+                  {t('configureAmsSlot.kProfilesUnread')}
+                </p>
+              ) : matchingKProfiles.length > 0 ? (
                 <Select
                   className="w-full"
                   value={selectedKProfile?.name || ''}

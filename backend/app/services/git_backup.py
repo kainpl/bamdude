@@ -24,6 +24,7 @@ from backend.app.models.settings import Settings
 from backend.app.models.user import User
 from backend.app.services import meter_watch, swap_compatibility
 from backend.app.services.bambu_cloud import BambuCloudService
+from backend.app.services.bambu_mqtt import KProfileReadError
 from backend.app.services.printer_manager import printer_manager
 
 logger = logging.getLogger(__name__)
@@ -582,6 +583,16 @@ class GitBackupService:
                         }
                         files[f"kprofiles/{serial}/{nozzle}.json"] = profile_data
                         printer_profiles[nozzle] = len(profiles)
+                except KProfileReadError as e:
+                    # Not read is not empty: the file of this nozzle is left as
+                    # the previous run wrote it, and that is said — it used to
+                    # look exactly like a nozzle that holds no profiles.
+                    logger.warning(
+                        "K-profiles of printer %s nozzle %s were not read (%s) — the backup keeps the previous file",
+                        serial,
+                        nozzle,
+                        e,
+                    )
                 except Exception as e:
                     logger.warning("Failed to get K-profiles for printer %s nozzle %s: %s", serial, nozzle, e)
 
@@ -696,9 +707,14 @@ class GitBackupService:
         from backend.app.models.spool import Spool
         from backend.app.models.spool_usage_history import SpoolUsageHistory
 
-        # Active spools
-        result = await db.execute(select(Spool).where(Spool.archived_at == None))  # noqa: E711
+        # Every spool, archived ones too: the usage history below names them,
+        # and a history row whose spool is not in the backup restores onto
+        # nothing (G05 Р33). ``archived_at`` says which is which.
+        result = await db.execute(select(Spool).order_by(Spool.id))
         spools = result.scalars().all()
+
+        def stamp(value):
+            return value.isoformat() if value else None
 
         spools_data = []
         for s in spools:
@@ -721,6 +737,28 @@ class GitBackupService:
                     "tag_uid": s.tag_uid,
                     "tray_uuid": s.tray_uuid,
                     "created_at": s.created_at.isoformat() if s.created_at else None,
+                    # What the restore has always read, and the operator's
+                    # bookkeeping (upstream 71d4b2f70). ``location_id`` stays
+                    # out — locations are not backed up; the text travels.
+                    "core_weight": s.core_weight,
+                    "weight_locked": bool(s.weight_locked),
+                    "weight_used_baseline": s.weight_used_baseline,
+                    "data_origin": s.data_origin,
+                    "tag_type": s.tag_type,
+                    "archived_at": stamp(s.archived_at),
+                    "category": s.category,
+                    "low_stock_threshold_pct": s.low_stock_threshold_pct,
+                    "storage_location": s.storage_location,
+                    "purchase_location": s.purchase_location,
+                    "purchase_date": stamp(s.purchase_date),
+                    "lot": s.lot,
+                    "material_number": s.material_number,
+                    "extra_colors": s.extra_colors,
+                    "effect_type": s.effect_type,
+                    "filament_diameter": s.filament_diameter,
+                    "last_dried_at": stamp(s.last_dried_at),
+                    "last_dried_temp": s.last_dried_temp,
+                    "last_dried_hours": s.last_dried_hours,
                 }
             )
 

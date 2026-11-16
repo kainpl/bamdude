@@ -355,6 +355,44 @@ describe('FilamentHoverCard', () => {
     expect(screen.queryByText(/unassign/i)).not.toBeInTheDocument();
   });
 
+  it('a blank slot that holds a spool names it and offers Replace and Unassign', async () => {
+    const onAssignSpool = vi.fn();
+    const onUnassign = vi.fn();
+    const result = render(
+      <EmptySlotHoverCard
+        emptyKind="reset"
+        configureSlot={{ enabled: true, onConfigure: vi.fn() }}
+        onAssignSpool={onAssignSpool}
+        assigned={{ label: 'Acme PETG Grey', colorHex: '858585FF', onUnassign }}
+      >
+        <div>trigger</div>
+      </EmptySlotHoverCard>
+    );
+    fireEvent.mouseEnter(result.container.firstElementChild as HTMLElement);
+    vi.advanceTimersByTime(100);
+    await waitFor(() => expect(screen.getByText('Acme PETG Grey')).toBeInTheDocument());
+
+    expect(screen.getByText(/the printer has not taken it yet/i)).toBeInTheDocument();
+    expect(screen.queryByText(/^assign spool$/i)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByText(/replace spool/i));
+    expect(onAssignSpool).toHaveBeenCalledTimes(1);
+  });
+
+  it('Unassign on a blank slot calls its handler', async () => {
+    const onUnassign = vi.fn();
+    const result = render(
+      <EmptySlotHoverCard assigned={{ label: 'Acme PETG Grey', onUnassign }}>
+        <div>trigger</div>
+      </EmptySlotHoverCard>
+    );
+    fireEvent.mouseEnter(result.container.firstElementChild as HTMLElement);
+    vi.advanceTimersByTime(100);
+    await waitFor(() => expect(screen.getByText('Acme PETG Grey')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByText(/unassign/i));
+    expect(onUnassign).toHaveBeenCalledTimes(1);
+  });
+
   it('lists Assign Spool above Configure on an empty slot too', async () => {
     const result = render(
       <EmptySlotHoverCard

@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useMemo } from 'react';
+import { useState, useRef, useEffect, useId, useMemo } from 'react';
 import { Scale } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useToast } from '../../contexts/ToastContext';
@@ -158,6 +158,7 @@ function SpoolWeightPicker({
           <input
             type="number"
             className="w-16 px-2 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm text-center font-mono focus:outline-none focus:border-bambu-green"
+            aria-label={t('inventory.coreWeight')}
             value={value}
             min={0}
             max={2000}
@@ -180,11 +181,15 @@ export function AdditionalSection({
   currencySymbol,
   quickAdd = false,
   categories = [],
+  materialNumbers = [],
   availableLocations = [],
   onCreateLocation,
   errors = {},
   spoolmanMode = false,
   showLastDried = false,
+  weightLocked = false,
+  unlockWeight = false,
+  onUnlockWeightChange,
 }: AdditionalSectionProps) {
   const { t } = useTranslation();
   const { showToast } = useToast();
@@ -195,6 +200,7 @@ export function AdditionalSection({
   const [newLocationName, setNewLocationName] = useState('');
   const [creatingLocation, setCreatingLocation] = useState(false);
 
+  const materialNumberId = useId();
   const remainingWeight = Math.max(0, formData.label_weight - formData.weight_used);
   // The shared conversion — the same one the server stores a Spoolman price by.
   const perSpoolPrice = spoolPriceFromCostPerKg(formData.cost_per_kg, formData.label_weight);
@@ -214,17 +220,17 @@ export function AdditionalSection({
 
   return (
     <div className="space-y-4">
-      {/* Empty Spool Weight — hidden in Spoolman mode (managed per filament type in Spoolman) */}
-      {spoolmanMode ? (
-        <p className="text-xs text-bambu-gray px-1">{t('inventory.spoolWeightManagedBySpoolman')}</p>
-      ) : (
-        <SpoolWeightPicker
-          catalog={spoolCatalog}
-          value={formData.core_weight}
-          onChange={(weight) => updateField('core_weight', weight)}
-          catalogId={formData.core_weight_catalog_id}
-          onCatalogIdChange={(id) => updateField('core_weight_catalog_id', id)}
-        />
+      {/* Empty Spool Weight — in Spoolman mode it is the spool's own
+          ``spool_weight``, written only when the operator changes it. */}
+      <SpoolWeightPicker
+        catalog={spoolCatalog}
+        value={formData.core_weight}
+        onChange={(weight) => updateField('core_weight', weight)}
+        catalogId={formData.core_weight_catalog_id}
+        onCatalogIdChange={(id) => updateField('core_weight_catalog_id', id)}
+      />
+      {spoolmanMode && (
+        <p className="text-xs text-bambu-gray px-1 -mt-2">{t('inventory.coreWeightSpoolmanHint')}</p>
       )}
 
       {/* Current Weight (remaining filament) */}
@@ -300,6 +306,22 @@ export function AdditionalSection({
         </div>
       </div>
 
+      {/* A hand-entered weight is locked against the AMS weight sync; this is the only way out of it. */}
+      {weightLocked && onUnlockWeightChange && (
+        <div className="rounded-lg border border-bambu-dark-tertiary px-3 py-2">
+          <p className="text-xs text-bambu-gray">{t('inventory.weightLockedNote')}</p>
+          <label className="mt-2 flex items-start gap-2 text-sm text-white cursor-pointer">
+            <input
+              type="checkbox"
+              checked={unlockWeight}
+              onChange={(e) => onUnlockWeightChange(e.target.checked)}
+              className="mt-0.5 w-4 h-4 accent-bambu-green flex-shrink-0"
+            />
+            <span>{t('inventory.unlockWeight')}</span>
+          </label>
+        </div>
+      )}
+
       {/* Purchase date */}
       <div>
         <label className="block text-sm font-medium text-bambu-gray mb-1">
@@ -353,6 +375,32 @@ export function AdditionalSection({
           <option value="1.75">1.75 mm</option>
           <option value="2.85">2.85 mm</option>
         </Select>
+      </div>
+
+      {/* Material number — the operator's own article code for the filament.
+          A new spool of an already-numbered filament gets it by itself, so
+          an empty field on a NEW spool means "take the filament's". */}
+      <div>
+        <label htmlFor={materialNumberId} className="block text-sm font-medium text-bambu-gray mb-1">
+          {t('inventory.materialNumber')}
+        </label>
+        <input
+          id={materialNumberId}
+          type="text"
+          maxLength={64}
+          list={`${materialNumberId}-known`}
+          disabled={spoolmanMode}
+          className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm placeholder:text-bambu-gray/50 focus:outline-none focus:border-bambu-green disabled:opacity-60"
+          placeholder={spoolmanMode ? '' : t('inventory.materialNumberPlaceholder')}
+          value={formData.material_number ?? ''}
+          onChange={(e) => updateField('material_number', e.target.value)}
+        />
+        <datalist id={`${materialNumberId}-known`}>
+          {materialNumbers.map((number) => <option key={number} value={number} />)}
+        </datalist>
+        <p className="text-xs text-bambu-gray mt-1">
+          {t(spoolmanMode ? 'inventory.materialNumberSpoolmanHint' : 'inventory.materialNumberHint')}
+        </p>
       </div>
 
       {/* Lot (bundle position). In quick-add mode an extra "auto-increment"

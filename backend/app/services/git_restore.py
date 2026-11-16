@@ -179,6 +179,25 @@ _PROTECTED_SETTING_PREFIXES = ("ldap_",)
 _KNOWN_NOZZLES = {"0.2", "0.4", "0.6", "0.8"}
 
 
+# Spool bookkeeping a backup carries since the record was widened (upstream
+# 71d4b2f70). Restored only when the backup names the key.
+_SPOOL_LATE_FIELDS = (
+    "weight_used_baseline",
+    "category",
+    "low_stock_threshold_pct",
+    "storage_location",
+    "purchase_location",
+    "lot",
+    "material_number",
+    "extra_colors",
+    "effect_type",
+    "filament_diameter",
+    "last_dried_temp",
+    "last_dried_hours",
+)
+_SPOOL_LATE_DATES = ("purchase_date", "last_dried_at")
+
+
 def _parse_dt(value) -> datetime | None:
     """Best-effort parse of a datetime the backup wrote via ``str(...)``.
 
@@ -1739,6 +1758,19 @@ class GitRestoreService:
                 "tag_type": entry.get("tag_type"),
                 "archived_at": _parse_dt(entry.get("archived_at")),
             }
+            # Bookkeeping a newer backup carries. Applied only when the file
+            # names the key: a backup written before it existed says nothing
+            # about it, and must not wipe a live value on overwrite.
+            for key in _SPOOL_LATE_FIELDS:
+                if key in entry:
+                    fields[key] = entry[key]
+            for key in _SPOOL_LATE_DATES:
+                if key in entry:
+                    fields[key] = _parse_dt(entry[key])
+            if fields.get("filament_diameter") not in ("1.75", "2.85"):
+                fields.pop("filament_diameter", None)
+            if "weight_used_baseline" in fields and not isinstance(fields["weight_used_baseline"], (int, float)):
+                fields.pop("weight_used_baseline")
 
             if existing is not None:
                 if old_id is not None:
@@ -1747,6 +1779,10 @@ class GitRestoreService:
                     tally.skipped += 1
                     continue
                 tags_kept += await self._guard_tag_overwrite(db, existing, fields, matched_on)
+                if existing.location_id is not None:
+                    # Filed under a structured location here: locations are not
+                    # backed up, so the backup's text must not contradict the link.
+                    fields.pop("storage_location", None)
                 for key, value in fields.items():
                     setattr(existing, key, value)
                 tally.restored += 1
@@ -2211,6 +2247,22 @@ class GitRestoreService:
                 # is a silent no-op — the printer drops it and we would still
                 # report the profile restored. So resolve the live index first.
                 current = await self._current_kprofile_index(client, nozzle, serial)
+                if current is None:
+                    # Not read is not "holds nothing" (upstream 080d866fb). With
+                    # no live table nothing can be matched, and sending the
+                    # nozzle anyway adds every profile as a NEW one beside its
+                    # original — duplicates that were tallied restored. The
+                    # nozzle is left as it is and its profiles are counted
+                    # failed; the other nozzles and printers go on.
+                    tally.failed += len(profiles)
+                    tally.note(
+                        "kprofilesUnread",
+                        f"{printer.name} ({serial}) did not answer for nozzle {nozzle} — its profiles were not restored",
+                        nozzle=nozzle,
+                        printer=printer.name,
+                        serial=serial,
+                    )
+                    continue
 
                 profile_dicts = []
                 unmatched = 0
@@ -2362,17 +2414,18 @@ class GitRestoreService:
             return True, ""
 
     @staticmethod
-    async def _current_kprofile_index(client, nozzle: str, serial: str) -> list:
+    async def _current_kprofile_index(client, nozzle: str, serial: str) -> list | None:
         """Read the printer's live profiles for one nozzle.
 
-        Best-effort: a read failure degrades to "nothing matched", which makes
-        every profile an add rather than aborting the restore.
+        ``None`` when the table could not be read — the caller skips that
+        nozzle. An answered empty table is ``[]``: there every profile is
+        rightly an add. A read failure never aborts the restore.
         """
         try:
             return list(await client.get_kprofiles(nozzle_diameter=nozzle) or [])
         except Exception as e:
             logger.warning("Could not read live K-profiles for %s nozzle %s: %s", serial, nozzle, e)
-            return []
+            return None
 
     @staticmethod
     def _match_kprofile(entry: dict, current: list, claimed: set[int]):

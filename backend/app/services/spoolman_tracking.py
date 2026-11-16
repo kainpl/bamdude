@@ -466,6 +466,143 @@ async def store_print_data(
         logger.debug("[SPOOLMAN] Layer usage data available for partial tracking")
 
 
+async def attach_recovered_3mf(
+    printer_id: int,
+    archive_id: int,
+    file_path: str,
+    db,
+    printer_manager,
+    *,
+    plate_id: int | None = None,
+    archive_identity: str | None = None,
+) -> str:
+    """Give the print's tracking the 3MF that arrived after print start (upstream 005b34af6).
+
+    ``store_print_data`` ran once, with whatever the start download left: a row with no 3MF figures, or no
+    row at all when no slot reported a remain%. Without this the completion charged the remain% change
+    alone -- whole percents for an RFID reel, nothing for a reel without one.
+
+    - A row with no 3MF figures gets ``filament_usage`` / ``layer_usage`` / ``filament_properties`` and
+      nothing else: the tray lookup, the mapping and the remain snapshot are the start's. A row exists only
+      until the print is charged, so this is safe at any moment, the completion's own last-chance download
+      included.
+    - A row that already has its figures is never rewritten.
+    - A missing row is made only while the print still runs: its usage session row
+      (``active_print_sessions``) is stamped with this very archive, and no completion of the printer has
+      begun. After that the charge has already taken the print's row and a new one would be left behind.
+      Its tray lookup is the printer's now, its mapping the session's dispatched one, and it carries no
+      remain snapshot -- a mid-print reading is not where the print began.
+
+    Returns ``"filled"``, ``"created"`` or ``"unchanged"``.
+    """
+    from backend.app.api.routes.settings import get_setting
+    from backend.app.models.active_print_session import ActivePrintSession
+    from backend.app.models.active_print_spoolman import ActivePrintSpoolman
+    from backend.app.models.print_queue import PrintQueueItem
+    from backend.app.services import usage_tracker
+    from backend.app.services.print_file_analysis import get_print_file_analysis
+
+    if not file_path:
+        return "unchanged"
+    spoolman_enabled = await get_setting(db, "spoolman_enabled")
+    if not spoolman_enabled or spoolman_enabled.lower() != "true":
+        return "unchanged"
+
+    async def _tracking_row():
+        result = await db.execute(
+            select(ActivePrintSpoolman)
+            .where(ActivePrintSpoolman.printer_id == printer_id)
+            .where(ActivePrintSpoolman.archive_id == archive_id)
+            .execution_options(populate_existing=True)
+        )
+        return result.scalar_one_or_none()
+
+    async def _running_session():
+        """The print's own start session, while no completion has begun -- else None."""
+        if archive_identity is None or usage_tracker.completion_is_running(printer_id):
+            return None
+        row = await db.get(ActivePrintSession, printer_id, populate_existing=True)
+        return row if row is not None and row.archive_identity == archive_identity else None
+
+    tracking = await _tracking_row()
+    if tracking is not None and tracking.filament_usage:
+        return "unchanged"
+    if tracking is None and await _running_session() is None:
+        return "unchanged"
+
+    queue_result = await db.execute(
+        select(PrintQueueItem).where(PrintQueueItem.archive_id == archive_id).where(PrintQueueItem.status == "printing")
+    )
+    candidates = list(queue_result.scalars().all())
+    queue_item = candidates[0] if len(candidates) == 1 else None
+    effective_plate_id = plate_id if plate_id is not None else (queue_item.plate_id if queue_item is not None else None)
+    queue_map = None
+    if queue_item and queue_item.ams_mapping:
+        try:
+            queue_map = json.loads(queue_item.ams_mapping)
+        except json.JSONDecodeError:
+            queue_map = None
+
+    # Nothing is held while the child parses the archive (as ``store_print_data``).
+    await db.commit()
+    analysis = await get_print_file_analysis(
+        printer_manager,
+        printer_id,
+        archive_id,
+        app_settings.base_dir / file_path,  # SEC-PATH-OK: archive.file_path, server-generated, read-only
+        effective_plate_id,
+    )
+    filament_usage = (analysis.filament_usage or None) if analysis is not None else None
+    if not filament_usage:
+        return "unchanged"
+    layer_usage_json = {str(k): v for k, v in analysis.layer_usage.items()} if analysis.layer_usage else None
+
+    # Decided again after the wait: the completion may have taken the row, or the start may have written it.
+    tracking = await _tracking_row()
+    if tracking is not None:
+        if tracking.filament_usage:
+            return "unchanged"
+        tracking.filament_usage = filament_usage
+        tracking.layer_usage = layer_usage_json
+        tracking.filament_properties = analysis.filament_properties
+        await db.commit()
+        logger.info("[SPOOLMAN] Late 3MF: archive %s tracking now carries the file's figures", archive_id)
+        return "filled"
+
+    session_row = await _running_session()
+    if session_row is None:
+        return "unchanged"
+    state = printer_manager.get_status(printer_id)
+    ams_trays = build_ams_tray_lookup(state.raw_data) if state and state.raw_data else {}
+    slot_to_tray = session_row.ams_mapping or None
+    slot_to_tray = unlose_external_markers(slot_to_tray, queue_map) if slot_to_tray else queue_map
+    made = ActivePrintSpoolman(
+        printer_id=printer_id,
+        archive_id=archive_id,
+        filament_usage=filament_usage,
+        ams_trays=ams_trays,
+        slot_to_tray=slot_to_tray,
+        layer_usage=layer_usage_json,
+        filament_properties=analysis.filament_properties,
+        tray_remain_start=None,
+    )
+    db.add(made)
+    await db.commit()
+    made_id = made.id
+    # The print may have ended while that commit was on its way: its report has
+    # then looked for the row already, or works from its own copy. Either way
+    # nothing would remove this one — it goes, by its own id only.
+    if await _running_session() is None:
+        await db.execute(delete(ActivePrintSpoolman).where(ActivePrintSpoolman.id == made_id))
+        await db.commit()
+        logger.info(
+            "[SPOOLMAN] Late 3MF: archive %s finished meanwhile; its late tracking row is withdrawn", archive_id
+        )
+        return "unchanged"
+    logger.info("[SPOOLMAN] Late 3MF: made the tracking row of archive %s (print still running)", archive_id)
+    return "created"
+
+
 async def cleanup_tracking(
     printer_id: int,
     archive_id: int,
