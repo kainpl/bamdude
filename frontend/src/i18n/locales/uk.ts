@@ -3062,6 +3062,7 @@ export default {
     },
     builtin: 'вбудований',
     doesNotFit: 'Не влазить у папір',
+    checking: 'Перевіряємо сітку…',
     preview: 'Показати сторінку',
     saved: 'Аркуш збережено',
     scaleHint:

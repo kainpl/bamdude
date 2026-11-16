@@ -3046,6 +3046,7 @@ export default {
     },
     builtin: 'built in',
     doesNotFit: 'Does not fit the paper',
+    checking: 'Checking the grid…',
     preview: 'Preview the page',
     saved: 'Sheet saved',
     scaleHint:
