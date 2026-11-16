@@ -407,3 +407,132 @@ class TestOrcaCloudIniLists:
     def test_a_stored_preset_states_its_material_through_the_same_decoder(self):
         setting = '{"filament_type": "\\"PETG\\"", "filament_colour": "\\"#112233\\""}'
         assert _parse_filament_metadata(setting) == ("PETG", "#112233")
+
+
+class TestPrinterPresetParent:
+    """A printer preset saved under a name of its own names the preset it was
+    saved from (upstream 3acc52d93, #3250): the slicer checks a process against
+    THAT name, and the dialog has to as well.
+
+    ⚠️ Only a preset that is not a system preset has such a parent. A system
+    "... 0.6 nozzle" preset inherits the 0.4 one as a matter of file layout,
+    and following that would offer 0.4 processes to a 0.6 nozzle."""
+
+    @pytest.mark.asyncio
+    async def test_local_user_preset_names_its_parent(self):
+        rows = [
+            MagicMock(
+                id=1,
+                preset_type="printer",
+                inherits="Bambu Lab H2D 0.4 nozzle",
+                setting='{"from": "User", "inherits": "Bambu Lab H2D 0.4 nozzle"}',
+            ),
+            MagicMock(
+                id=2,
+                preset_type="printer",
+                inherits="Bambu Lab X1 Carbon 0.4 nozzle",
+                setting='{"from": "system", "inherits": "Bambu Lab X1 Carbon 0.4 nozzle"}',
+            ),
+            MagicMock(id=3, preset_type="printer", inherits=None, setting="{}"),
+            MagicMock(id=4, preset_type="printer", inherits="  ", setting="not json"),
+        ]
+        for row, name in zip(
+            rows,
+            ["Bambu Lab H2D 0.4 nozzle - Skew", "Bambu Lab X1 Carbon 0.6 nozzle", "Root", "Blank"],
+            strict=True,
+        ):
+            row.name = name
+        result = MagicMock()
+        result.scalars.return_value.all.return_value = rows
+        db = MagicMock()
+        db.execute = AsyncMock(return_value=result)
+
+        slots = await sp._fetch_local_presets(db)
+
+        assert [p.inherits for p in slots["printer"]] == ["Bambu Lab H2D 0.4 nozzle", None, None, None]
+
+    @pytest.mark.asyncio
+    async def test_orca_cloud_printer_preset_names_its_parent(self):
+        sp._orca_cloud_cache.clear()
+        svc_mock = MagicMock()
+        svc_mock.list_profiles = AsyncMock(
+            return_value=[
+                {
+                    "id": "m1",
+                    "name": "Bambu Lab H2D 0.4 nozzle - Skew",
+                    "content": {"type": "printer", "from": "User", "inherits": " Bambu Lab H2D 0.4 nozzle "},
+                },
+                {"id": "m2", "name": "No parent", "content": {"type": "printer", "inherits": ""}},
+                {"id": "m3", "name": "Not text", "content": {"type": "printer", "inherits": ["x"]}},
+                {
+                    "id": "m4",
+                    "name": "Bambu Lab A1 0.6 nozzle",
+                    "content": {"type": "printer", "from": "system", "inherits": "Bambu Lab A1 0.4 nozzle"},
+                },
+                {
+                    "id": "f1",
+                    "name": "A filament",
+                    "content": {"type": "filament", "inherits": "Bambu PLA Basic @BBL X1C"},
+                },
+            ]
+        )
+        svc_mock.close = AsyncMock()
+        creds = MagicMock()
+        creds.token = "tok"
+        user = MagicMock(id=1)
+        user.has_permission = MagicMock(return_value=True)
+        with (
+            patch.object(sp, "_load_orca_credentials", AsyncMock(return_value=creds)),
+            patch.object(sp, "_build_orca_service", AsyncMock(return_value=svc_mock)),
+        ):
+            slots, _status = await sp._fetch_orca_cloud_presets(MagicMock(), user)
+        sp._orca_cloud_cache.clear()
+
+        assert [p.inherits for p in slots["printer"]] == ["Bambu Lab H2D 0.4 nozzle", None, None, None]
+        # The parent of a filament preset is not this field's business.
+        assert slots["filament"][0].inherits is None
+
+    @pytest.mark.asyncio
+    async def test_bambu_cloud_uses_only_what_the_list_already_carries(self):
+        """No detail request per preset: the parent is the list entry's own
+        ``inherits`` name, or its ``base_id`` when the same list names it."""
+        sp._cloud_cache.clear()
+        cloud = MagicMock()
+        cloud.get_slicer_settings = AsyncMock(
+            return_value={
+                "printer": {
+                    "private": [
+                        {"setting_id": "PMUS1", "name": "My H2D", "inherits": "Bambu Lab H2D 0.4 nozzle"},
+                        {"setting_id": "PMUS2", "name": "My A1", "base_id": "GM030"},
+                        {"setting_id": "PMUS3", "name": "Orphan", "base_id": "GM999"},
+                        {"setting_id": "PMUS4", "name": "Rootless"},
+                    ],
+                    "public": [
+                        {"setting_id": "GM030", "name": "Bambu Lab A1 0.4 nozzle"},
+                        {"setting_id": "GM031", "name": "Bambu Lab A1 0.6 nozzle", "base_id": "GM030"},
+                    ],
+                },
+            }
+        )
+        cloud.close = AsyncMock()
+        cloud.set_token = MagicMock()
+        user = MagicMock(id=7)
+        user.has_permission = MagicMock(return_value=True)
+        with (
+            patch.object(sp, "get_stored_token", AsyncMock(return_value=("tok", "e@x", "global"))),
+            patch.object(sp, "BambuCloudService", MagicMock(return_value=cloud)),
+        ):
+            slots, status = await sp._fetch_cloud_presets(MagicMock(), user)
+        sp._cloud_cache.clear()
+
+        assert status == "ok"
+        assert {p.name: p.inherits for p in slots["printer"]} == {
+            "My H2D": "Bambu Lab H2D 0.4 nozzle",
+            "My A1": "Bambu Lab A1 0.4 nozzle",
+            "Orphan": None,
+            "Rootless": None,
+            "Bambu Lab A1 0.4 nozzle": None,
+            # A stock preset's base is file layout, not "saved from".
+            "Bambu Lab A1 0.6 nozzle": None,
+        }
+        cloud.get_setting_detail.assert_not_called()

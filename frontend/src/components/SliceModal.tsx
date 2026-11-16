@@ -38,6 +38,7 @@ import {
   resizeColourOverrides,
 } from '../utils/sliceFilamentColours';
 import { Select } from './Select';
+import { buildPrinterParents } from '../utils/printerPresetParents';
 import {
   EMPTY_COMPATIBILITY_INDEX,
   buildCompatibilityIndex,
@@ -908,10 +909,14 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
   }, [presetsQuery.data, printerPreset]);
   // Compatibility ground truth: the slicer's own `compatible_printers` list
   // on local-imported presets, plus the @BBL <code> name fallback for cloud /
-  // standard presets via the backend Bambu printer-model registry.
+  // standard presets via the backend Bambu printer-model registry. Plus, for a
+  // printer preset saved under a name of its own, the preset it was saved from
+  // (upstream 3acc52d93): its model, nozzle and compatible presets are the
+  // parent's. The ref sent to the slicer stays the picked preset's own.
+  const printerParents = useMemo(() => buildPrinterParents(presetsQuery.data), [presetsQuery.data]);
   const compatIndex = useMemo<PrinterCompatibilityIndex>(
-    () => buildCompatibilityIndex(printerModelsQuery.data ?? {}),
-    [printerModelsQuery.data],
+    () => buildCompatibilityIndex(printerModelsQuery.data ?? {}, printerParents),
+    [printerModelsQuery.data, printerParents],
   );
 
   // Printer / process preset names the source 3MF was prepared with. The

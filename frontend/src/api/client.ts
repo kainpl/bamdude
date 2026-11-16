@@ -5938,6 +5938,11 @@ export interface UnifiedPreset {
   // against the selected printer; null on cloud / standard stubs, where the
   // matcher falls back to the `@BBL <model> <nozzle>` name convention (#1325).
   compatible_printers?: string[] | null;
+  // Printer slot only: the name of the preset this one was saved from, for a
+  // preset that is not a system preset. Read through `utils/printerPresetParents`
+  // — a renamed printer preset takes its model, nozzle and compatible presets
+  // from this parent. Never the identity sent to the slicer.
+  inherits?: string | null;
 }
 
 export interface UnifiedPresetsBySlot {

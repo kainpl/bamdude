@@ -17,6 +17,8 @@
 // stays in the main list, and only a preset that resolves to a *different*
 // printer is pushed into an "Other printers" group.
 
+import { printerPresetLineage, type PrinterParents } from './printerPresetParents';
+
 export type PrinterCompatibility = 'match' | 'mismatch' | 'unknown';
 
 // Lookup table consumed by `presetCompatibility`. `bambuModelByShortCode`
@@ -26,6 +28,11 @@ export type PrinterCompatibility = 'match' | 'mismatch' | 'unknown';
 // (raw-token comparison), and gracefully degrades otherwise.
 export interface PrinterCompatibilityIndex {
   bambuModelByShortCode: Record<string, string>;
+  // Printer preset name → the preset it was saved from (see
+  // `printerPresetParents`). A preset saved under a name of its own is in no
+  // `compatible_printers` list and its name may not parse as a model; the
+  // slicer checks against its parent, so the matcher counts both names.
+  printerParents?: PrinterParents;
 }
 
 /** An empty index — used when the model map hasn't loaded yet. */
@@ -95,9 +102,11 @@ function buildShortCodeMap(
  */
 export function buildCompatibilityIndex(
   printerModels: Record<string, string> = {},
+  printerParents: PrinterParents = {},
 ): PrinterCompatibilityIndex {
   return {
     bambuModelByShortCode: buildShortCodeMap(printerModels),
+    printerParents,
   };
 }
 
@@ -294,18 +303,58 @@ export function presetCompatibility(
   index: PrinterCompatibilityIndex,
 ): PrinterCompatibility {
   if (!selectedPrinterName) return 'unknown';
+  // The selected printer preset, then every preset it was saved from, nearest
+  // first (upstream 3acc52d93, #3250). The slicer checks a process against the
+  // parent of a printer preset saved under a name of its own, so any of these
+  // names counts as the selected printer.
+  const lineage = printerPresetLineage(selectedPrinterName, index.printerParents);
   // (1) Imported presets carry the slicer's own compatible_printers list —
   // authoritative when set.
   const compat = preset.compatible_printers;
   if (compat && compat.length > 0) {
     // Compared with the clone prefix off both sides: a list names the system
     // printer while the selected clone carries "# ", or the other way round.
-    const selected = stripUserClonePrefix(selectedPrinterName);
-    return compat.some((name) => stripUserClonePrefix(name) === selected) ? 'match' : 'mismatch';
+    const names = lineage.map(stripUserClonePrefix);
+    return compat.some((name) => names.includes(stripUserClonePrefix(name))) ? 'match' : 'mismatch';
   }
   // (2) BambuStudio's `@BBL <model>` name convention — covers cloud /
-  // standard presets that don't carry compatible_printers.
-  return classifyByBambuName(preset.name, selectedPrinterName, index.bambuModelByShortCode);
+  // standard presets that don't carry compatible_printers. A name of the
+  // user's own may not parse as a model at all (or parse as a wrong one), so
+  // the nearest parent that can be read decides whenever the own name does not
+  // already match.
+  const own = classifyByBambuName(preset.name, selectedPrinterName, index.bambuModelByShortCode);
+  if (own === 'match') return own;
+  // A match anywhere up the chain is a match; failing that, the farthest
+  // ancestor that can be read decides — it is the one nearest a system preset,
+  // whose name is the reliable one.
+  let inherited: PrinterCompatibility = 'unknown';
+  for (const ancestor of lineage.slice(1)) {
+    const answer = classifyByBambuName(preset.name, ancestor, index.bambuModelByShortCode);
+    if (answer === 'match') return answer;
+    if (answer !== 'unknown') inherited = answer;
+  }
+  return inherited === 'unknown' ? own : inherited;
+}
+
+/**
+ * The model fragment and nozzle of a printer preset ("X1 Carbon", "0.4"), read
+ * from its own name when that states both, else from the nearest preset it was
+ * saved from that does. `null` when no name in the lineage can be placed — a
+ * non-Bambu printer, or a renamed preset whose parent the listing did not give.
+ *
+ * The same lookup `presetCompatibility` runs for the name rule, exported for
+ * callers that need the model itself (the online-printers filter).
+ */
+export function printerPresetIdentity(
+  printerPresetName: string | null | undefined,
+  printerParents: PrinterParents | null | undefined,
+): { model: string; nozzle: string } | null {
+  if (!printerPresetName) return null;
+  for (const name of printerPresetLineage(printerPresetName, printerParents)) {
+    const parts = extractPrinterPresetModel(name);
+    if (parts && parts.nozzle !== null) return { model: parts.model, nozzle: parts.nozzle };
+  }
+  return null;
 }
 
 /**

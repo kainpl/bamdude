@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   buildCompatibilityIndex,
   presetCompatibility,
+  printerPresetIdentity,
   matchesPrinterModelSuffix,
   EMPTY_COMPATIBILITY_INDEX,
 } from '../../utils/slicerPrinterMatch';
@@ -429,5 +430,92 @@ describe('presetCompatibility — the GUI clone prefix on a printer preset', () 
   it('reads the model of a prefixed printer for the @BBL name rule', () => {
     expect(presetCompatibility({ name: '0.20mm Standard @BBL X1C' }, 'process', CLONE, idx)).toBe('match');
     expect(presetCompatibility({ name: '0.20mm Standard @BBL P2S' }, 'process', CLONE, idx)).toBe('mismatch');
+  });
+});
+
+
+describe('presetCompatibility — printer preset saved under a name of its own (upstream 3acc52d93)', () => {
+  const RENAMED = 'Bambu Lab H2D 0.4 nozzle - Apply Skew Calibration - Only use once';
+  const H2D = 'Bambu Lab H2D 0.4 nozzle';
+  const index = buildCompatibilityIndex(PRINTER_MODELS, { [RENAMED]: H2D });
+
+  it('matches a stock process by name through the parent', () => {
+    expect(presetCompatibility({ name: '0.16mm Balanced Quality @BBL H2D' }, 'process', RENAMED, index)).toBe('match');
+  });
+
+  it('still rules out a process for another printer', () => {
+    expect(presetCompatibility({ name: '0.20mm Standard @BBL X1C' }, 'process', RENAMED, index)).toBe('mismatch');
+  });
+
+  it('matches a list naming the parent', () => {
+    expect(
+      presetCompatibility({ name: 'Mine', compatible_printers: [H2D] }, 'process', RENAMED, index),
+    ).toBe('match');
+  });
+
+  it('matches a list naming the renamed preset itself', () => {
+    expect(
+      presetCompatibility({ name: 'Mine', compatible_printers: [RENAMED] }, 'process', RENAMED, index),
+    ).toBe('match');
+  });
+
+  it('rejects a list naming neither', () => {
+    expect(
+      presetCompatibility({ name: 'Mine', compatible_printers: [X1C] }, 'process', RENAMED, index),
+    ).toBe('mismatch');
+  });
+
+  it('follows a copy of a copy to the preset both were saved from', () => {
+    const chained = buildCompatibilityIndex(PRINTER_MODELS, { 'Garage H2D': RENAMED, [RENAMED]: H2D });
+    expect(
+      presetCompatibility({ name: '0.16mm Balanced Quality @BBL H2D' }, 'process', 'Garage H2D', chained),
+    ).toBe('match');
+    expect(
+      presetCompatibility({ name: 'Mine', compatible_printers: [H2D] }, 'filament', 'Garage H2D', chained),
+    ).toBe('match');
+  });
+
+  it('survives presets that name each other', () => {
+    const loop = buildCompatibilityIndex(PRINTER_MODELS, { A: 'B', B: 'A' });
+    expect(presetCompatibility({ name: '0.20mm Standard @BBL X1C' }, 'process', 'A', loop)).toBe('unknown');
+  });
+
+  it('without a known parent the name alone decides, as before', () => {
+    const noParents = buildCompatibilityIndex(PRINTER_MODELS);
+    expect(
+      presetCompatibility({ name: '0.16mm Balanced Quality @BBL H2D' }, 'process', RENAMED, noParents),
+    ).toBe('mismatch');
+  });
+
+  it('ignores names that collide with Object.prototype', () => {
+    expect(
+      presetCompatibility({ name: '0.16mm Balanced Quality @BBL H2D' }, 'process', 'constructor', index),
+    ).toBe('unknown');
+  });
+});
+
+describe('printerPresetIdentity — the model and nozzle of a printer preset', () => {
+  const RENAMED = 'Bambu Lab H2D 0.6 nozzle - Skew';
+  const parents = { [RENAMED]: 'Bambu Lab H2D 0.6 nozzle', 'My mini': 'Bambu Lab A1 mini 0.4 nozzle' };
+
+  it('reads a stock name directly', () => {
+    expect(printerPresetIdentity('Bambu Lab X1 Carbon 0.4 nozzle', parents)).toEqual({
+      model: 'X1 Carbon',
+      nozzle: '0.4',
+    });
+  });
+
+  it('reads a renamed preset through the preset it was saved from', () => {
+    expect(printerPresetIdentity(RENAMED, parents)).toEqual({ model: 'H2D', nozzle: '0.6' });
+    expect(printerPresetIdentity('My mini', parents)).toEqual({ model: 'A1 mini', nozzle: '0.4' });
+  });
+
+  it('reads a GUI clone under its default name', () => {
+    expect(printerPresetIdentity('# Bambu Lab P2S 0.4 nozzle', {})).toEqual({ model: 'P2S', nozzle: '0.4' });
+  });
+
+  it('says nothing about a name it cannot place', () => {
+    expect(printerPresetIdentity('Voron 2.4', parents)).toBeNull();
+    expect(printerPresetIdentity(null, parents)).toBeNull();
   });
 });

@@ -159,13 +159,33 @@ async def _fetch_cloud_presets(
             # names. Stock entries that share names with private ones get
             # deduped out within the cloud tier itself.
             seen_names: set[str] = set()
-            for entry in type_data.get("private", []) + type_data.get("public", []):
+            private = type_data.get("private", [])
+            public = type_data.get("public", [])
+            # A private printer preset's parent, from the list itself: never a
+            # detail request per preset (rate-limited, see below).
+            names_by_id = (
+                {
+                    str(e.get("setting_id") or e.get("id")): e.get("name")
+                    for e in private + public
+                    if isinstance(e.get("name"), str)
+                }
+                if slot == "printer"
+                else {}
+            )
+            for index, entry in enumerate(private + public):
                 name = entry.get("name")
                 setting_id = entry.get("setting_id") or entry.get("id")
                 if not name or not setting_id or name in seen_names:
                     continue
                 seen_names.add(name)
-                slots[slot].append(UnifiedPreset(id=setting_id, name=name, source="cloud"))
+                preset = UnifiedPreset(id=setting_id, name=name, source="cloud")
+                if slot == "printer" and index < len(private):
+                    preset.inherits = _saved_from(
+                        name,
+                        entry.get("inherits") or names_by_id.get(str(entry.get("base_id") or "")),
+                        "User",
+                    )
+                slots[slot].append(preset)
 
         # Cloud filament presets carry no metadata in this response on
         # purpose: the per-preset detail endpoint
@@ -271,6 +291,8 @@ async def _fetch_orca_cloud_presets(
                 # Matte @0.2") then reads as "can't tell", which the picker treats
                 # as usable and auto-picks for a printer it was never built for.
                 preset.compatible_printers = _content_compatible_printers(content)
+            elif slot == "printer":
+                preset.inherits = _saved_from(str(name), content.get("inherits"), content.get("from"))
             slots[slot].append(preset)
         _orca_cloud_cache[cache_key] = (now, slots)
         return slots, "ok"
@@ -298,10 +320,39 @@ async def _fetch_local_presets(db: AsyncSession) -> dict[str, list[UnifiedPreset
             # filter process / filament dropdowns by the selected printer
             # without the name-suffix heuristic (#1325).
             extra["compatible_printers"] = _parse_compatible_printers(p.compatible_printers)
+        if slot == "printer" and (p.inherits or "").strip():
+            extra["inherits"] = _saved_from(p.name, p.inherits, _setting_origin(p.setting))
         slots[slot].append(
             UnifiedPreset(id=str(p.id), name=p.name, source="local", **extra),
         )
     return slots
+
+
+def _saved_from(name: str, inherits: object, origin: object) -> str | None:
+    """The preset a printer preset was saved from, or ``None``.
+
+    The slicer's own rule (BambuStudio.cpp, the system name of a loaded
+    machine preset): a preset whose ``from`` is ``system`` IS its system name;
+    any other is known by its ``inherits``. So a parent is reported only for a
+    preset that is not a system one -- a system "... 0.6 nozzle" preset
+    inherits the 0.4 preset as file layout, which is no "saved from".
+    """
+    if isinstance(origin, str) and origin.strip().lower() == "system":
+        return None
+    if not isinstance(inherits, str):
+        return None
+    parent = inherits.strip()
+    return parent if parent and parent != name else None
+
+
+def _setting_origin(setting_json: str | None) -> str | None:
+    """The ``from`` of a stored preset JSON; ``None`` when it states none."""
+    try:
+        data = json.loads(setting_json or "")
+    except (ValueError, TypeError):
+        return None
+    origin = data.get("from") if isinstance(data, dict) else None
+    return origin if isinstance(origin, str) else None
 
 
 def _content_compatible_printers(content: dict) -> list[str] | None:

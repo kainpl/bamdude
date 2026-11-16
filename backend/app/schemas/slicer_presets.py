@@ -53,6 +53,15 @@ class UnifiedPreset(BaseModel):
     # cloud / standard stubs, where the matcher falls back to bundle membership
     # then the ``@BBL <model> <nozzle>`` name convention.
     compatible_printers: list[str] | None = None
+    # Printer slot only: the NAME of the preset this one was saved from, for a
+    # preset that is not a system preset (upstream 3acc52d93, #3250). A printer
+    # preset saved under a name of its own ("Bambu Lab H2D 0.4 nozzle - Skew")
+    # is in no ``compatible_printers`` list and its name may not state a model;
+    # the slicer checks a process against this parent, and so does the dialog.
+    # ⚠️ ``None`` on a system preset even though its JSON has an ``inherits``:
+    # "Bambu Lab H2D 0.6 nozzle" inherits the 0.4 preset as file layout, and
+    # reading that as "saved from" would offer 0.4 processes to a 0.6 nozzle.
+    inherits: str | None = None
 
 
 class UnifiedPresetsBySlot(BaseModel):
