@@ -6231,6 +6231,8 @@ export default {
       preview: 'Перегляд: {{name}}',
       closePreview: 'Закрити перегляд',
       backTo: 'Назад до «{{name}}»',
+      keysHint: 'Пробіл позначає файл у фокусі для групових дій.',
+      keysHintMove: 'M переміщує папку у фокусі.',
     },
     moveFolder: {
       action: 'Перемістити…',

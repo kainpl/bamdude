@@ -4018,6 +4018,8 @@ export function FileManagerPage() {
               onToggleFile={handleFileSelect}
               onOpenFile={openPreview}
               onDetails={setDetailsFile}
+              onMoveFolder={setMoveFolderTarget}
+              canMoveFolders={canMoveFolders(hasPermission)}
               onVisibleFilesChange={setColumnFiles}
               renderPreview={renderFileCard}
               thumbnailVersions={thumbnailVersions}

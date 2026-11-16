@@ -6177,6 +6177,8 @@ export default {
       preview: 'Preview: {{name}}',
       closePreview: 'Close preview',
       backTo: 'Back to {{name}}',
+      keysHint: 'Space ticks the focused file for the bulk actions.',
+      keysHintMove: 'M moves the focused folder.',
     },
     moveFolder: {
       action: 'Move…',
