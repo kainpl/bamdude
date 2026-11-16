@@ -109,9 +109,11 @@ lxml>=5.0
 
 # First-page thumbnails of library PDFs. Python bindings with a bundled PDFium,
 # no further dependency, wheels for every platform BamDude runs on (glibc and
-# musl Linux on x86_64 / aarch64 / armv7l, Windows, macOS). Imported ONLY by
-# the disposable preview child (services/pdf_thumbnail.py) - never by the
-# main process.
+# musl Linux on x86_64 / aarch64 / armv7l, Windows, macOS). Two importers:
+# the disposable preview child (services/pdf_thumbnail.py), the only place an
+# uploaded PDF is opened, and ONE module of the main process,
+# services/label_picture.py, which rasterises only the label PDFs BamDude
+# itself generated a moment earlier (colour preview, "save as PNG").
 #
 # Licences (the wheel's own dist-info/licenses carries every text): pypdfium2
 # is Apache-2.0 / BSD-3-Clause, PDFium BSD-3-Clause, and the libraries built

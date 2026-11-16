@@ -912,6 +912,7 @@
   "System preference not found": "Системне налаштування не знайдено",
   "System tags cannot be deleted": "Системні теги не можна видаляти",
   "System tags cannot be renamed": "Системні теги не можна перейменовувати",
+  "The picture renderer (pypdfium2) is not installed on this server — reinstall the requirements, then try again": "Модуль відтворення зображень (pypdfium2) не встановлено на цьому сервері — перевстановіть залежності та спробуйте ще раз",
   "TOTP code already used": "Код TOTP уже використано",
   "TOTP is not enabled": "TOTP не увімкнено",
   "TOTP secret unavailable": "Секрет TOTP недоступний",

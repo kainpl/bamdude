@@ -41,3 +41,15 @@ def test_the_pin_carries_its_licence_note():
         "sources ship with every release",
     ):
         assert needle in note, needle
+
+
+def test_the_note_says_who_imports_it():
+    """Two importers, both named: the preview child for uploads, and the one label module of main that
+    rasterises PDFs BamDude generated itself (review B-M9 — the note used to say "never by the main process")."""
+    start = REQUIREMENTS.index("# First-page thumbnails of library PDFs")
+    note = " ".join(
+        line.lstrip("# ").strip()
+        for line in REQUIREMENTS[start : REQUIREMENTS.index("pypdfium2>=", start)].splitlines()
+    )
+    assert "services/pdf_thumbnail.py" in note and "services/label_picture.py" in note
+    assert "never by the main process" not in note

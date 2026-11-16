@@ -224,3 +224,30 @@ class TestTheBundle:
         monkeypatch.setattr(label_picture, "MAX_BUNDLE_BYTES", 10)
         with pytest.raises(label_picture.BundleTooLarge):
             label_picture.bundle(["a.png", "b.png"], [b"123456", b"123456"])
+
+
+class TestWithoutThePdfRenderer:
+    """An install whose requirements were not refreshed has no ``pypdfium2`` (review B-M9)."""
+
+    async def test_the_door_answers_a_503_in_words(self, monkeypatch):
+        import sys
+
+        monkeypatch.setitem(sys.modules, "pypdfium2", None)  # ``import pypdfium2`` now raises ImportError
+
+        with pytest.raises(HTTPException) as refused:
+            await label_picture.label_pictures(_spec(), [CONTEXT], dpi=203)
+
+        assert refused.value.status_code == 503
+        assert refused.value.detail == (
+            "The picture renderer (pypdfium2) is not installed on this server — "
+            "reinstall the requirements, then try again"
+        )
+
+    async def test_the_sentence_has_its_ukrainian(self):
+        import json
+        from pathlib import Path
+
+        import backend.app as app
+
+        catalog = json.loads((Path(app.__file__).parent / "data" / "api_errors_uk.json").read_text(encoding="utf-8"))
+        assert catalog[label_picture.RENDERER_MISSING_DETAIL]

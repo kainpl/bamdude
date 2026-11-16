@@ -23,8 +23,11 @@ device prints, and what a thermal preview shows.
 from __future__ import annotations
 
 import io
+import logging
 import threading
 import zipfile
+
+from fastapi import HTTPException
 
 from backend.app.services import label_gate
 from backend.app.services.label_renderer import render_template_pdf
@@ -53,8 +56,19 @@ _ZIP_MOMENT = (1980, 1, 1, 0, 0, 0)
 _pdfium = threading.Lock()
 
 
+logger = logging.getLogger(__name__)
+
+RENDERER_MISSING_DETAIL = (
+    "The picture renderer (pypdfium2) is not installed on this server — reinstall the requirements, then try again"
+)
+
+
 class BundleTooLarge(Exception):
     """The pictures of one export add up to more than :data:`MAX_BUNDLE_BYTES`."""
+
+
+class RendererMissing(Exception):
+    """``pypdfium2`` cannot be imported: an install whose requirements were not refreshed."""
 
 
 def picture_size(spec: LabelTemplateSpec, dpi: float) -> tuple[int, int]:
@@ -76,7 +90,11 @@ async def label_pictures(
     in a worker thread.
     """
     checked(spec, dpi, labels=len(contexts))
-    return await label_gate.draw(render_pictures, spec, contexts, dpi=dpi)
+    try:
+        return await label_gate.draw(render_pictures, spec, contexts, dpi=dpi)
+    except RendererMissing as missing:
+        logger.error("Label pictures cannot be drawn: pypdfium2 is not installed (%s)", missing.__cause__)
+        raise HTTPException(503, RENDERER_MISSING_DETAIL) from None
 
 
 def render_pictures(
@@ -87,9 +105,12 @@ def render_pictures(
     if max(size) > MAX_PICTURE_SIDE_DOTS:
         raise ValueError(f"a {size[0]} × {size[1]} dot picture is past the {MAX_PICTURE_SIDE_DOTS} dot bound")
 
-    pdf, warnings = render_template_pdf(spec, contexts)
+    try:
+        import pypdfium2 as pdfium
+    except ImportError as error:
+        raise RendererMissing from error
 
-    import pypdfium2 as pdfium
+    pdf, warnings = render_template_pdf(spec, contexts)
 
     pictures: list[bytes] = []
     total = 0
@@ -178,8 +199,10 @@ __all__ = [
     "EXPORT_DPIS",
     "MAX_BUNDLE_BYTES",
     "MAX_PICTURES",
+    "RENDERER_MISSING_DETAIL",
     "SCREEN_DPI",
     "BundleTooLarge",
+    "RendererMissing",
     "bundle",
     "checked",
     "label_pictures",
