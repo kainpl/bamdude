@@ -14,19 +14,24 @@ destination mode, **the configured origin**:
 * Every request is built from that base plus a path the caller composed from
   validated ids — a URL found in a response is never fetched. The bearer token
   is attached here and only to the pinned origin (scheme + host + port).
+* A host has ONE spelling (:func:`normalise_host`): lower case, no trailing
+  dot, IDNA; a host of numeric parts must be a canonical dotted quad.
+* Every connection goes to an address that was checked: the name is resolved
+  here, EVERY answer is tested (:func:`address_refusal`), and the request is
+  sent to the tested address with the asked-for ``Host`` and TLS name — no
+  second resolution between check and connect.
 * No redirect is followed, with ONE exception a caller asks for by name
   (``foreign_hop=True``, file bytes only): one hop to another origin — object
-  storage behind the source — sent without the token, without cookies, to an
-  address that passes the same host rules, https only unless the configured
-  base itself is plain http, and that answer may not redirect again.
+  storage behind the source — sent without the token and without cookies,
+  https only, to PUBLIC addresses only (loopback, private, link-local,
+  carrier-grade NAT, unique-local and metadata addresses are refused wherever
+  the configured origin lives), and that answer may not redirect again.
 * Bodies are read through :meth:`GuardedAnswer.chunks` with a byte cap.
 
 Provider code holds a :class:`GuardedTransport`, never an HTTP client of its
 own (``tests/unit/test_model_providers_fetch_only_through_the_guard.py``).
 
-Limits, stated: host names are not resolved here (as in every URL validator of
-this code base), so a name that resolves to a refused address passes, and a
-proxy named by the environment is honoured like for every other httpx call.
+A proxy named by the environment is NOT used: it would resolve names itself.
 """
 
 from __future__ import annotations
@@ -34,12 +39,17 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import json
+import os
+import re
+import socket
+import ssl
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import unquote, urljoin, urlsplit
 
+import certifi
 import httpx
 
 from backend.app.api.routes._url_safety import CLOUD_METADATA_IPS, assert_safe_lan_service_url, unwrap_ipv4_mapped
@@ -50,6 +60,8 @@ USER_AGENT = f"BamDude/{APP_VERSION} (+https://github.com/kainpl/bamdude)"
 
 REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 _NAT64 = ipaddress.IPv6Network("64:ff9b::/96")
+_BROADCAST = ipaddress.IPv4Address("255.255.255.255")
+_NUMERIC_PART = re.compile(r"0x[0-9a-f]*|[0-9]+", re.I)
 #: connect / pause-between-chunks budgets; a whole-request deadline is the caller's.
 DEFAULT_TIMEOUT = httpx.Timeout(connect=10.0, read=60.0, write=30.0, pool=10.0)
 _JSON_CAP = 4 * 1024 * 1024
@@ -75,27 +87,89 @@ def _has_unsafe_text(value: str) -> bool:
     )
 
 
-def _refuse_host(url: str, hostname: str, label: str) -> None:
-    """The host rules shared by the configured address and the storage hop."""
-    if not hostname or not hostname.isascii() or "%" in hostname or " " in hostname:
+def normalise_host(raw: str | None, label: str) -> str:
+    """The ONE spelling of a host every check and comparison uses.
+
+    Lower case, no trailing dots (``host.`` is ``host`` to a resolver), IDNA for a non-ASCII name, the
+    canonical text of an IPv6 literal. A host made only of numeric parts must be a canonical dotted
+    quad: resolvers also read ``2852039166``, ``0xA9FEA9FE``, ``0251.0376.0251.0376`` and
+    ``169.254.43518`` as addresses, and Python's ``ipaddress`` reads none of them.
+    """
+    host = (raw or "").lower().rstrip(".")
+    if not host or "%" in host or any(char.isspace() for char in host):
         raise ValueError(f"{label} must include a plain hostname")
-    assert_safe_lan_service_url(url, label=label)
+    if ":" in host:
+        try:
+            return str(ipaddress.IPv6Address(host))
+        except ValueError as exc:
+            raise ValueError(f"{label} is not a valid address") from exc
+    if not host.isascii():
+        try:
+            host = host.encode("idna").decode("ascii")
+        except UnicodeError as exc:
+            raise ValueError(f"{label} is not a valid host name") from exc
+    parts = host.split(".")
+    if any(not part for part in parts):
+        raise ValueError(f"{label} is not a valid host name")
+    if all(_NUMERIC_PART.fullmatch(part) for part in parts):
+        try:
+            canonical = str(ipaddress.IPv4Address(host))
+        except ValueError:
+            canonical = None
+        if canonical != host:
+            raise ValueError(f"{label} must write an IP address as four decimal numbers")
+    return host
+
+
+def _is_ip(host: str) -> bool:
     try:
-        address = unwrap_ipv4_mapped(ipaddress.ip_address(hostname))
+        ipaddress.ip_address(host)
     except ValueError:
-        return
-    embedded = None
+        return False
+    return True
+
+
+def address_refusal(text: str, *, public_only: bool) -> str | None:
+    """Why a connection to this ADDRESS is refused, or None.
+
+    Always: cloud metadata, link-local, multicast, unspecified, broadcast — also when carried inside
+    an IPv4-mapped, 6to4 or NAT64 address. ``public_only`` (the storage hop) adds everything that is
+    not a public address: loopback, private, carrier-grade NAT, unique-local, reserved — and every
+    translation prefix, which no storage service lives behind.
+    """
+    try:
+        address = unwrap_ipv4_mapped(ipaddress.ip_address(text.split("%", 1)[0]))
+    except ValueError:
+        return "not an address"
+    candidates = [address]
     if isinstance(address, ipaddress.IPv6Address):
         embedded = address.sixtofour
         if address in _NAT64:
             embedded = ipaddress.IPv4Address(int(address) & 0xFFFFFFFF)
-    if embedded is not None and (embedded in CLOUD_METADATA_IPS or embedded.is_link_local):
-        raise ValueError(f"{label} must not point to a cloud metadata endpoint")
-    if address.is_link_local:
-        raise ValueError(f"{label} must not point to a link-local address")
+        if embedded is not None:
+            if public_only:
+                return "a translated address"
+            candidates.append(embedded)
+    for candidate in candidates:
+        if candidate in CLOUD_METADATA_IPS:
+            return "a cloud metadata address"
+        if candidate.is_link_local or candidate.is_multicast or candidate.is_unspecified:
+            return "a link-local, multicast or unspecified address"
+        if candidate == _BROADCAST:
+            return "the broadcast address"
+        if public_only and not candidate.is_global:
+            return "not a public address"
+    return None
+
+
+async def resolve_host(host: str, port: int) -> list[str]:
+    """Every address the system resolver gives for ``host`` (off the loop: the default executor)."""
+    infos = await asyncio.get_running_loop().getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    return list(dict.fromkeys(info[4][0] for info in infos))
 
 
 def _parse(url: str, label: str):
+    """The single parse: ``(parsed, scheme, normalised host, port)`` or ``ValueError``."""
     if not isinstance(url, str) or not 0 < len(url) <= 4096 or url != url.strip() or _has_unsafe_text(url):
         raise ValueError(f"{label} is not a valid address")
     try:
@@ -110,9 +184,30 @@ def _parse(url: str, label: str):
         raise ValueError(f"{label} must not contain credentials")
     if " " in parsed.netloc or parsed.netloc.endswith(":"):
         raise ValueError(f"{label} is not a valid address")
-    hostname = (parsed.hostname or "").lower()
-    _refuse_host(url, hostname, label)
-    return parsed, scheme, hostname, port or (443 if scheme == "https" else 80)
+    host = normalise_host(parsed.hostname, label)
+    # The shared LAN-service rules (metadata names, numeric forms), asked of the normalised host.
+    assert_safe_lan_service_url(f"{scheme}://{f'[{host}]' if ':' in host else host}/", label=label)
+    if _is_ip(host):
+        refusal = address_refusal(host, public_only=False)
+        if refusal:
+            raise ValueError(f"{label} must not point to {refusal}")
+    return parsed, scheme, host, port or (443 if scheme == "https" else 80)
+
+
+def _same_host(host: str | None) -> str | None:
+    try:
+        return normalise_host(host, "host")
+    except ValueError:
+        return None
+
+
+def _tls_context() -> ssl.SSLContext:
+    """What the rest of the app trusts: ``SSL_CERT_FILE`` / ``SSL_CERT_DIR``, else certifi."""
+    if os.environ.get("SSL_CERT_FILE"):
+        return ssl.create_default_context(cafile=os.environ["SSL_CERT_FILE"])
+    if os.environ.get("SSL_CERT_DIR"):
+        return ssl.create_default_context(capath=os.environ["SSL_CERT_DIR"])
+    return ssl.create_default_context(cafile=certifi.where())
 
 
 @dataclass(frozen=True)
@@ -138,7 +233,7 @@ class PinnedOrigin:
 
     def owns(self, url: httpx.URL) -> bool:
         port = url.port or (443 if url.scheme == "https" else 80)
-        return (url.scheme, (url.host or "").lower(), port) == (self.scheme, self.host, self.port)
+        return (url.scheme, _same_host(url.host), port) == (self.scheme, self.host, self.port)
 
 
 @dataclass
@@ -183,7 +278,11 @@ class GuardedTransport:
     def __init__(self, origin: PinnedOrigin, *, client: httpx.AsyncClient | None = None):
         self.origin = origin
         self._owns_client = client is None
-        self._client = client or httpx.AsyncClient(timeout=DEFAULT_TIMEOUT, follow_redirects=False)
+        # ``trust_env=False``: a proxy named by the environment would resolve the name itself, past
+        # the address check below. The trust store still follows SSL_CERT_FILE / SSL_CERT_DIR.
+        self._client = client or httpx.AsyncClient(
+            timeout=DEFAULT_TIMEOUT, follow_redirects=False, trust_env=False, verify=_tls_context()
+        )
 
     async def aclose(self) -> None:
         if self._owns_client:
@@ -204,13 +303,43 @@ class GuardedTransport:
             raise OutboundRefused("Refusing a request path that could leave the configured address", "bad_path")
         return f"{self.origin.base}{path}"
 
-    def _request(self, method: str, url: str, *, params=None, headers=None, bearer=None, data=None) -> httpx.Request:
+    async def _send(self, method: str, url: httpx.URL, *, headers=None, data=None, public_only=False):
+        """Resolve, check EVERY address, connect to the checked one.
+
+        The name is resolved here, once, and the connection goes to an address that passed — the
+        client never resolves it again, so an answer that changes between check and connect (DNS
+        rebinding) cannot move the request. ``Host`` and the TLS name stay the host that was asked
+        for, so virtual hosting and certificate verification are unchanged.
+        """
+        try:
+            host = normalise_host(url.host, "The address")
+        except ValueError as exc:
+            raise OutboundRefused(str(exc), "address_refused") from exc
+        port = url.port or (443 if url.scheme == "https" else 80)
+        if _is_ip(host):
+            addresses = [host]
+        else:
+            try:
+                addresses = await resolve_host(host, port)
+            except OSError as exc:
+                raise OutboundRefused(f"Could not resolve the host name: {type(exc).__name__}", "unreachable") from exc
+            if not addresses:
+                raise OutboundRefused("The host name has no address", "unreachable")
+        for address in addresses:
+            refusal = address_refusal(address, public_only=public_only)
+            if refusal:
+                raise OutboundRefused(f"Refusing to connect: the host resolves to {refusal}", "address_refused")
         # Built directly, never through ``client.build_request``: no client default and no cookie
         # an earlier answer set is merged in.
-        sent = {"User-Agent": USER_AGENT, "Accept": "*/*", **(headers or {})}
-        if bearer:
-            sent["Authorization"] = f"Bearer {bearer}"
-        return httpx.Request(method, url, params=params, headers=sent, data=data)
+        sent = {"User-Agent": USER_AGENT, "Accept": "*/*", **(headers or {}), "Host": url.netloc.decode("ascii")}
+        extensions = {"sni_hostname": host} if url.scheme == "https" and not _is_ip(host) else {}
+        pinned = url.copy_with(host=addresses[0].split("%", 1)[0])
+        request = httpx.Request(method, pinned, headers=sent, data=data, extensions=extensions)
+        try:
+            return await self._client.send(request, stream=True, follow_redirects=False)
+        except httpx.HTTPError as exc:
+            # The type only: an httpx message may carry the URL, and a URL may carry a signature.
+            raise OutboundRefused(f"Could not connect: {type(exc).__name__}", "unreachable") from exc
 
     def _classify(self, current: httpx.URL, location: str | None) -> tuple[str, str | None]:
         """``(kind, absolute target)`` of a redirect; raises for a Location nobody may follow."""
@@ -223,32 +352,30 @@ class GuardedTransport:
             raise OutboundRefused("The server sent a redirect without a usable address", "bad_redirect") from exc
         if self.origin.owns(parsed):
             return "same_origin", target
-        same_host = (parsed.host or "").lower() == self.origin.host
+        same_host = _same_host(parsed.host) == self.origin.host
         if same_host and self.origin.scheme == "http" and parsed.scheme == "https":
             return "scheme_upgrade", target
         return "foreign", target
 
-    def _admit_foreign(self, target: str) -> httpx.Request:
+    def _admit_foreign(self, target: str) -> httpx.URL:
+        """The storage hop's address: https, no credentials, a host that may be public.
+
+        Whether it IS public is decided on the resolved addresses, in ``_send(public_only=True)``.
+        """
         try:
-            _parsed, scheme, _host, _port = _parse(target, "The storage address")
+            _parsed, scheme, host, _port = _parse(target, "The storage address")
         except ValueError as exc:
             raise OutboundRefused(f"Refusing the redirect to file storage: {exc}", "foreign_refused") from exc
-        if scheme != "https" and self.origin.scheme != "http":
-            raise OutboundRefused("Refusing a redirect from https to plain http", "foreign_refused")
-        request = httpx.Request("GET", target, headers={"User-Agent": USER_AGENT, "Accept": "*/*"})
+        if scheme != "https":
+            raise OutboundRefused("Refusing a redirect to file storage over plain http", "foreign_refused")
+        if _is_ip(host) and address_refusal(host, public_only=True):
+            raise OutboundRefused("Refusing a redirect to an address that is not public", "foreign_refused")
+        url = httpx.URL(target)
         # A presigned address is signed over its exact bytes: send it only when the client keeps them.
-        url = request.url
         wire = f"{url.scheme}://{url.netloc.decode('ascii')}{url.raw_path.decode('ascii')}"
-        if wire != target.split("#", 1)[0]:
+        if wire.lower() != target.split("#", 1)[0].lower() or url.raw_path.decode("ascii") not in target:
             raise OutboundRefused("The storage address cannot be sent unchanged", "foreign_refused")
-        return request
-
-    async def _send(self, request: httpx.Request) -> httpx.Response:
-        try:
-            return await self._client.send(request, stream=True, follow_redirects=False)
-        except httpx.HTTPError as exc:
-            # The type only: an httpx message may carry the URL, and a URL may carry a signature.
-            raise OutboundRefused(f"Could not connect: {type(exc).__name__}", "unreachable") from exc
+        return url
 
     # ---- requests ------------------------------------------------------
 
@@ -265,17 +392,20 @@ class GuardedTransport:
         data: Mapping[str, str] | None = None,
     ) -> AsyncIterator[GuardedAnswer]:
         """One request to the pinned origin; the body is read by the caller through ``chunks``."""
-        headers = {"Accept": accept} if accept else None
-        request = self._request(method, self._url(path), params=params, headers=headers, bearer=bearer, data=data)
-        response = await self._send(request)
+        headers = {"Accept": accept} if accept else {}
+        if bearer:
+            # Only ever on this request: it goes to the pinned origin. The storage hop builds its own.
+            headers["Authorization"] = f"Bearer {bearer}"
+        url = httpx.URL(self._url(path), params=dict(params) if params else None)
+        response = await self._send(method, url, headers=headers, data=data)
         foreign = False
         redirect: str | None = None
         try:
             if response.status_code in REDIRECT_STATUSES:
-                redirect, target = self._classify(request.url, response.headers.get("Location"))
+                redirect, target = self._classify(url, response.headers.get("Location"))
                 if redirect == "foreign" and foreign_hop and method == "GET":
                     await response.aclose()
-                    response = await self._send(self._admit_foreign(target))
+                    response = await self._send("GET", self._admit_foreign(target), public_only=True)
                     foreign, redirect = True, None
                     if response.status_code in REDIRECT_STATUSES:
                         raise OutboundRefused("File storage redirected again", "redirect_chain")
