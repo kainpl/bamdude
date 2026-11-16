@@ -171,6 +171,36 @@ describe('LibraryFilePhotos', () => {
     await waitFor(() => expect(posted).toEqual(['dropped.jpg']));
   });
 
+  // A browser adds `Files` to the drag of an image and hands the picture over
+  // as a file on drop: a thumbnail moved a few pixels became a new photo.
+  it('takes only files dragged in from outside the page, never one of its own pictures', async () => {
+    stored = [photo(1, { caption: 'First print' })];
+    serve();
+    render(<LibraryFilePhotos fileId={7} canEdit />);
+
+    const thumbnail = await screen.findByRole('img', { name: 'First print' });
+    expect(thumbnail).toHaveAttribute('draggable', 'false');
+
+    const zone = screen.getByTestId('library-file-photos');
+    const dataTransfer = { files: [file('First print.jpg')], types: ['text/uri-list', 'Files'] };
+    // A drag that starts inside the page — whatever it started on.
+    fireEvent.dragStart(thumbnail, { dataTransfer });
+    const over = fireEvent.dragOver(zone, { dataTransfer });
+    // Not a drop target for it: the event is left alone.
+    expect(over).toBe(true);
+    fireEvent.drop(zone, { dataTransfer });
+    fireEvent.dragEnd(thumbnail, { dataTransfer });
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(posted).toEqual([]);
+
+    // A file from the desktop afterwards is taken as before.
+    const fromOutside = { files: [file('dropped.jpg')], types: ['Files'] };
+    expect(fireEvent.dragOver(zone, { dataTransfer: fromOutside })).toBe(false);
+    fireEvent.drop(zone, { dataTransfer: fromOutside });
+    await waitFor(() => expect(posted).toEqual(['dropped.jpg']));
+  });
+
   it('ignores a drop for a reader', async () => {
     serve();
     render(<LibraryFilePhotos fileId={7} canEdit={false} />);

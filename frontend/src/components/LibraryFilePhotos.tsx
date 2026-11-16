@@ -167,7 +167,20 @@ export function LibraryFilePhotos({ fileId, canEdit, dropZoneRef }: Props) {
   useEffect(() => {
     const zone = dropZoneRef?.current ?? rootRef.current;
     if (!zone || !canEdit) return;
-    const carriesFiles = (e: DragEvent) => Array.from(e.dataTransfer?.types ?? []).includes('Files');
+    // ⚠️ Only files that come from OUTSIDE the page. A browser adds `Files` to
+    // the drag of an image and hands the picture over as a file on drop, so a
+    // picture of this very page, moved a few pixels, would be uploaded as a new
+    // photo. `dragstart` fires only for a drag that begins in this document —
+    // a file from the desktop never fires one.
+    let fromThisPage = false;
+    const onPageDragStart = () => {
+      fromThisPage = true;
+    };
+    // After the drop's own handlers; `dragend` alone is not enough — it does
+    // not fire when the dragged element left the document meanwhile.
+    const onPageDragOver = () => setTimeout(() => (fromThisPage = false), 0);
+    const carriesFiles = (e: DragEvent) =>
+      !fromThisPage && Array.from(e.dataTransfer?.types ?? []).includes('Files');
     const onDragOver = (e: DragEvent) => {
       if (!carriesFiles(e)) return;
       e.preventDefault();
@@ -186,7 +199,13 @@ export function LibraryFilePhotos({ fileId, canEdit, dropZoneRef }: Props) {
     zone.addEventListener('dragover', onDragOver);
     zone.addEventListener('dragleave', onDragLeave);
     zone.addEventListener('drop', onDrop);
+    document.addEventListener('dragstart', onPageDragStart, true);
+    document.addEventListener('dragend', onPageDragOver, true);
+    document.addEventListener('drop', onPageDragOver, true);
     return () => {
+      document.removeEventListener('dragstart', onPageDragStart, true);
+      document.removeEventListener('dragend', onPageDragOver, true);
+      document.removeEventListener('drop', onPageDragOver, true);
       zone.removeEventListener('dragover', onDragOver);
       zone.removeEventListener('dragleave', onDragLeave);
       zone.removeEventListener('drop', onDrop);
@@ -267,6 +286,7 @@ export function LibraryFilePhotos({ fileId, canEdit, dropZoneRef }: Props) {
                       src={api.getLibraryFilePhotoThumbnailUrl(fileId, photo.id)}
                       alt={label}
                       loading="lazy"
+                      draggable={false}
                       className="h-full w-full object-cover"
                     />
                   </button>
