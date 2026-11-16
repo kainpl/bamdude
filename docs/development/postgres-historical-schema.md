@@ -204,3 +204,7 @@ the ordinary manual claim and complete verification still run. It neither
 clears debt nor adds attempts. `status` and automatic startup never adopt an
 old manifest. A different installed model/repair plan or any other old hash
 still needs its own reviewed recovery; this is not a generic force/rebase.
+The permanent CLI wiring test also pins the installed destination manifest.
+A final composition that changes models or repair contracts must explicitly
+retire this transition or regenerate it with a real old-target recovery proof;
+leaving a silently unreachable transition is not an accepted delivery choice.
