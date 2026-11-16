@@ -50,6 +50,15 @@ export default defineConfig({
     // (Upstream Bambuddy #1221 reverts PR #1195.)
     plugins: [react()],
     build: {
+        // The floor the bundle must PARSE on is Safari 16.0 / iOS 16.0 (see
+        // scripts/check-browser-baseline.mjs). Vite's default target sits at
+        // Safari 16.4 and leaves a class static block as written — PDF.js
+        // ships one in its library and one in its worker, and a module that
+        // does not parse is a viewer that never opens. An explicit target has
+        // them lowered, in the worker chunk too (it is built with this config).
+        // ⚠️ A target lowers SYNTAX only: it never rewrites a regex, so the
+        // baseline check stays the guard for lookbehinds.
+        target: 'safari16',
         outDir: '../static',
         emptyOutDir: true,
         chunkSizeWarningLimit: 3000,

@@ -6083,6 +6083,7 @@ export default {
     selectFile: 'Select file',
     viewPrintsOf: 'View prints of {{name}}',
     viewImage: 'View image',
+    viewPdf: 'View PDF',
     plate: 'Plate',
     plateSlot: 'Slot',
     plateGallery: 'Plate gallery',
@@ -6144,7 +6145,7 @@ export default {
     stlThumbnailGeneration: 'Thumbnail generation',
     zipMayContainStl: 'ZIP files may contain STL, OBJ or STEP models. Their thumbnails can be generated during extraction — STEP ones in the background.',
     thumbnailsCanBeGenerated: 'Thumbnails can be generated for STL, OBJ and STEP models. STEP thumbnails are made in the background after the upload.',
-    generateThumbnailsForStl: 'Generate thumbnails for STL, OBJ and STEP models',
+    generateThumbnailsForStl: 'Generate thumbnails for STL, OBJ and STEP models and PDF documents',
     threemfDetected: '3MF files detected',
     threemfExtractionInfo: 'Printer model, material, color, and print settings will be automatically extracted from 3MF files.',
     dedupUsedExisting: 'Already in your library as "{{name}}" — used that file',
@@ -12196,7 +12197,18 @@ export default {
     fullscreen: 'Fullscreen',
     exitFullscreen: 'Exit fullscreen',
     imageFailed: 'This image could not be loaded.',
-    imageTooLarge: 'This image is too large to preview. Download it to open it.'
+    imageTooLarge: 'This image is too large to preview. Download it to open it.',
+    pdf: {
+      page: 'Page',
+      previousPage: 'Previous page',
+      nextPage: 'Next page',
+      fitWidth: 'Fit width',
+      fitPage: 'Fit page',
+      encrypted: 'This PDF is password-protected and cannot be previewed.',
+      broken: 'This PDF could not be opened. The file may be damaged.',
+      tooLarge: 'This PDF is too large to preview. Download it to open it.',
+      pageFailed: 'This page could not be drawn.'
+    }
   },
 
   // Embedded Camera Viewer

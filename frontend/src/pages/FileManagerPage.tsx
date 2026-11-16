@@ -80,7 +80,7 @@ import type {
 } from '../api/client';
 import { useLibraryScanProgress, type LibraryScanState } from '../hooks/useLibraryScanProgress';
 import { useStepThumbnailJobs, type StepJobSummary } from '../hooks/useStepThumbnailJobs';
-import { isCadThumbnailType, isLegacyThumbnailType } from '../utils/meshPreviewTypes';
+import { isCadThumbnailType, offersThumbnail } from '../utils/meshPreviewTypes';
 import { countByReason, stepRefusalCode, thumbnailReasonKey } from '../utils/stepThumbnailReasons';
 import { Button } from '../components/Button';
 import { CardActionMenu, CardActionMenuItem } from '../components/CardActionMenu';
@@ -120,7 +120,8 @@ import { desktopSlicerAccepts, isApiSliceableFileType, openInSlicer, type Slicer
 import { LibraryTagsModal } from '../components/LibraryTagsModal';
 import { LibraryUserTagPills } from '../components/LibraryUserTagPills';
 import { ImagePreviewModal } from '../components/ImagePreviewModal';
-import { isViewableImage, previewKindOf } from '../utils/filePreview';
+import { PdfPreviewModal } from '../components/PdfPreviewModal';
+import { isPdf, isViewableImage, previewKindOf } from '../utils/filePreview';
 import { BulkTagsPickerModal } from '../components/BulkTagsPickerModal';
 import { FileTagsPopover, type TagsPopoverAnchor } from '../components/FileTagsPopover';
 import { QueueSequencer } from '../components/QueueSequencer';
@@ -783,6 +784,8 @@ interface FileCardProps {
   onOpen?: (file: LibraryFileListItem) => void;
   /** Open an image file in the viewer — offered for the picture types only. */
   onViewImage?: (file: LibraryFileListItem) => void;
+  /** Open a PDF in the viewer. */
+  onViewPdf?: (file: LibraryFileListItem) => void;
   onRename?: (file: LibraryFileListItem) => void;
   onSwapDeclaration?: (file: LibraryFileListItem) => void;
   onRelayout?: (file: LibraryFileListItem) => void;
@@ -862,7 +865,7 @@ function offersSliceEntry(
 }
 
 /**
- * The thumbnail entry of both per-file menus. STL/OBJ follow the file's own update right; a STEP picture is made in
+ * The thumbnail entry of both per-file menus. STL/OBJ and PDF follow the file's own update right; a STEP picture is made in
  * the background and its button is library:update_all's alone (spec §5). While a STEP job runs the entry cancels it.
  */
 function ThumbnailMenuEntry({ file, t, hasPermission, canModify, onGenerate, onCancel, jobActive, close }: {
@@ -875,8 +878,8 @@ function ThumbnailMenuEntry({ file, t, hasPermission, canModify, onGenerate, onC
   jobActive?: boolean;
   close: () => void;
 }) {
+  if (!offersThumbnail(file.file_type)) return null;
   const cad = isCadThumbnailType(file.file_type);
-  if (!cad && !isLegacyThumbnailType(file.file_type)) return null;
   if (cad && jobActive && onCancel && hasPermission('library:update_all')) {
     return (
       <button
@@ -903,7 +906,7 @@ function ThumbnailMenuEntry({ file, t, hasPermission, canModify, onGenerate, onC
   );
 }
 
-function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedule, onAddToOrder, onSlice, onRelayout, onOpenInSlicer, useSlicerApi, desktopSlicer, onPreview3d, onViewImage, onModelCard, onDownload, onRename, onSwapDeclaration, onGenerateThumbnail, onCancelThumbnail, thumbnailJobActive, onMove, onTags, onDelete }: {
+function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedule, onAddToOrder, onSlice, onRelayout, onOpenInSlicer, useSlicerApi, desktopSlicer, onPreview3d, onViewImage, onViewPdf, onModelCard, onDownload, onRename, onSwapDeclaration, onGenerateThumbnail, onCancelThumbnail, thumbnailJobActive, onMove, onTags, onDelete }: {
   file: LibraryFileListItem;
   t: TFunction;
   hasPermission: (permission: Permission) => boolean;
@@ -917,6 +920,7 @@ function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedul
   desktopSlicer?: SlicerType;
   onPreview3d: (f: LibraryFileListItem) => void;
   onViewImage?: (f: LibraryFileListItem) => void;
+  onViewPdf?: (f: LibraryFileListItem) => void;
   onModelCard?: (f: LibraryFileListItem) => void;
   onDownload: (id: number) => void;
   onRename: (f: LibraryFileListItem) => void;
@@ -1067,6 +1071,15 @@ function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedul
                 {t('fileManager.viewImage')}
               </button>
             )}
+            {onViewPdf && isPdf(file) && (
+              <button
+                className="w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 text-white hover:bg-bambu-dark"
+                onClick={() => { onViewPdf(file); closeMenu(); }}
+              >
+                <FileText className="w-3.5 h-3.5" />
+                {t('fileManager.viewPdf')}
+              </button>
+            )}
             {/* ⚠️ `.3mf` only — the card lives in the 3MF's `Metadata/` and
                 `Auxiliaries/`, and an STL has neither. `is3mf`, not
                 `file_type === '3mf'`: a sliced `.gcode.3mf` is a 3MF and its
@@ -1183,7 +1196,7 @@ function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedul
   );
 }
 
-function FileCard({ file, isSelected, onSelect, onOpenArchives, onDelete, onDownload, onAddToQueue, onPrint, onSlice, onRelayout, onOpenInSlicer, useSlicerApi, desktopSlicer, onPreview3d, onOpen, onViewImage, onModelCard, onRename, onSwapDeclaration, onLink, onGenerateThumbnail, onCancelThumbnail, thumbnailJobActive, onPlateGallery, onAddToOrder, onMove, onTags, onTagClick, thumbnailVersion, isRegeneratingThumbnail, hasPermission, canModify, authEnabled, timeFormat, dateFormat, t }: FileCardProps) {
+function FileCard({ file, isSelected, onSelect, onOpenArchives, onDelete, onDownload, onAddToQueue, onPrint, onSlice, onRelayout, onOpenInSlicer, useSlicerApi, desktopSlicer, onPreview3d, onOpen, onViewImage, onViewPdf, onModelCard, onRename, onSwapDeclaration, onLink, onGenerateThumbnail, onCancelThumbnail, thumbnailJobActive, onPlateGallery, onAddToOrder, onMove, onTags, onTagClick, thumbnailVersion, isRegeneratingThumbnail, hasPermission, canModify, authEnabled, timeFormat, dateFormat, t }: FileCardProps) {
   // ⚠️ The two modes need different permissions: slicing through the sidecar
   // writes a new library file, while opening in a desktop slicer is a download.
   const sliceDisabled = useSlicerApi ? !hasPermission('library:upload') : !hasPermission('library:read');
@@ -1577,6 +1590,15 @@ function FileCard({ file, isSelected, onSelect, onOpenArchives, onDelete, onDown
                   {t('fileManager.viewImage')}
                 </button>
               )}
+              {onViewPdf && isPdf(file) && (
+                <button
+                  className="w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 text-white hover:bg-bambu-dark"
+                  onClick={() => { onViewPdf(file); closeActions(); }}
+                >
+                  <FileText className="w-3.5 h-3.5" />
+                  {t('fileManager.viewPdf')}
+                </button>
+              )}
               {/* ⚠️ `.3mf` only — the card lives in the 3MF's `Metadata/` and
                   `Auxiliaries/`, and an STL has neither. `is3mf`, not
                   `file_type === '3mf'`: a sliced `.gcode.3mf` is a 3MF and its
@@ -1819,6 +1841,7 @@ export function FileManagerPage() {
   const [thumbnailVersions, setThumbnailVersions] = useState<Record<number, number>>({});
   const [viewerFile, setViewerFile] = useState<LibraryFileListItem | null>(null);
   const [imageFile, setImageFile] = useState<LibraryFileListItem | null>(null);
+  const [pdfFile, setPdfFile] = useState<LibraryFileListItem | null>(null);
   // Per-plate gallery modal — opened from list-mode "plates" button. Null when closed.
   // «Add to order…» (WS-13 E13 C): the file — and the gallery's plate — the dialog opens on.
   const [addToOrderTarget, setAddToOrderTarget] = useState<{ file: LibraryFileListItem; plateIndex: number | null } | null>(
@@ -2693,6 +2716,7 @@ export function FileManagerPage() {
     const kind = previewKindOf(file);
     if (kind === 'image') setImageFile(file);
     else if (kind === 'model') setViewerFile(file);
+    else if (kind === 'pdf') setPdfFile(file);
   }, []);
 
   const handleOpenArchives = useCallback((file: LibraryFileListItem) => {
@@ -2878,6 +2902,7 @@ export function FileManagerPage() {
       onPreview3d={setViewerFile}
       onOpen={openPreview}
       onViewImage={setImageFile}
+      onViewPdf={setPdfFile}
       onModelCard={setModelCardFile}
       onRename={(f) => setRenameItem({ type: 'file', id: f.id, name: f.filename })}
       onSwapDeclaration={setSwapDeclarationFile}
@@ -4177,6 +4202,7 @@ export function FileManagerPage() {
                         desktopSlicer={preferredSlicer}
                         onPreview3d={setViewerFile}
                         onViewImage={setImageFile}
+                        onViewPdf={setPdfFile}
                         onModelCard={setModelCardFile}
                             onDownload={handleDownload}
                         onRename={(f) => setRenameItem({ type: 'file', id: f.id, name: f.filename })}
@@ -4537,6 +4563,16 @@ export function FileManagerPage() {
           title={imageFile.print_name || imageFile.filename}
           fileSize={imageFile.file_size}
           onClose={() => setImageFile(null)}
+        />
+      )}
+
+      {pdfFile && (
+        <PdfPreviewModal
+          fileId={pdfFile.id}
+          title={pdfFile.print_name || pdfFile.filename}
+          fileSize={pdfFile.file_size}
+          onClose={() => setPdfFile(null)}
+          onDownload={() => handleDownload(pdfFile.id)}
         />
       )}
 

@@ -6129,6 +6129,7 @@ export default {
     selectFile: 'Вибрати файл',
     viewPrintsOf: 'Переглянути друки «{{name}}»',
     viewImage: 'Переглянути зображення',
+    viewPdf: 'Переглянути PDF',
     plate: 'Плита',
     plateSlot: 'Слот',
     plateGallery: 'Галерея плит',
@@ -6198,7 +6199,7 @@ export default {
     stlThumbnailGeneration: 'Генерація мініатюр',
     zipMayContainStl: 'ZIP файли можуть містити моделі STL, OBJ або STEP. Їхні мініатюри можна згенерувати під час розпаковки — для STEP у фоні.',
     thumbnailsCanBeGenerated: 'Для моделей STL, OBJ і STEP можна згенерувати мініатюри. Мініатюри STEP створюються у фоні після завантаження.',
-    generateThumbnailsForStl: 'Генерувати мініатюри для моделей STL, OBJ і STEP',
+    generateThumbnailsForStl: 'Генерувати мініатюри для моделей STL, OBJ і STEP та документів PDF',
     threemfDetected: 'Виявлено 3MF файли',
     threemfExtractionInfo: 'Модель принтера, матеріал, колір та налаштування друку будуть автоматично витягнуті з 3MF файлів.',
     dedupUsedExisting: 'Уже є в бібліотеці як «{{name}}» — використано той файл',
@@ -12411,7 +12412,18 @@ export default {
     fullscreen: 'На весь екран',
     exitFullscreen: 'Вийти з повноекранного режиму',
     imageFailed: 'Не вдалося завантажити зображення.',
-    imageTooLarge: 'Зображення завелике для перегляду. Завантажте файл, щоб відкрити його.'
+    imageTooLarge: 'Зображення завелике для перегляду. Завантажте файл, щоб відкрити його.',
+    pdf: {
+      page: 'Сторінка',
+      previousPage: 'Попередня сторінка',
+      nextPage: 'Наступна сторінка',
+      fitWidth: 'За шириною',
+      fitPage: 'Сторінка цілком',
+      encrypted: 'Цей PDF захищено паролем, тому переглянути його тут не можна.',
+      broken: 'Не вдалося відкрити цей PDF. Можливо, файл пошкоджено.',
+      tooLarge: 'Цей PDF завеликий для перегляду. Завантажте файл, щоб відкрити його.',
+      pageFailed: 'Не вдалося намалювати цю сторінку.'
+    }
   },
 
   // Embedded Camera Viewer

@@ -3,6 +3,7 @@
  *
  * An image in the library had a thumbnail and nothing that could open it; it
  * now opens in the image viewer, from the same menus that offer the 3D view.
+ * A PDF opens in the PDF viewer the same way.
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
@@ -23,6 +24,16 @@ vi.mock('../../components/ModelViewerModal', () => ({
   ModelViewerModal: ({ title }: { title: string }) => <div data-testid="model-viewer-modal">{title}</div>,
 }));
 
+// PDF.js stays out of this test: the viewer has its own.
+vi.mock('../../components/PdfPreviewModal', () => ({
+  PdfPreviewModal: ({ fileId, title, onClose }: { fileId: number; title: string; onClose: () => void }) => (
+    <div data-testid="pdf-viewer" data-file-id={fileId}>
+      {title}
+      <button onClick={onClose}>close pdf</button>
+    </div>
+  ),
+}));
+
 const base = {
   file_path: '/library/x',
   file_size: 2048,
@@ -41,6 +52,7 @@ const mockFiles = [
   { ...base, id: 8, filename: 'lamp.3mf', file_type: '3mf', file_tags: ['3mf', 'project'], print_name: 'Lamp' },
   { ...base, id: 9, filename: 'notes.txt', file_type: 'txt', file_tags: [], print_name: null },
   { ...base, id: 10, filename: 'scan.tiff', file_type: 'tiff', file_tags: [], print_name: null },
+  { ...base, id: 11, filename: 'manual.pdf', file_type: 'pdf', file_tags: [], print_name: null },
 ];
 
 function mockLibrary() {
@@ -101,10 +113,42 @@ describe.each(['grid', 'list'] as const)('opening an image from the %s view', (v
     expect(screen.queryByRole('dialog', { name: 'Photo.PNG' })).not.toBeInTheDocument();
   });
 
+  it('opens a PDF in the PDF viewer, by the id of the file', async () => {
+    render(<FileManagerPage />);
+
+    await openMenuOf('manual.pdf');
+    await userEvent.click(await screen.findByRole('button', { name: 'View PDF' }));
+
+    const viewer = await screen.findByTestId('pdf-viewer');
+    expect(viewer).toHaveTextContent('manual.pdf');
+    expect(viewer.dataset.fileId).toBe('11');
+
+    await userEvent.click(within(viewer).getByRole('button', { name: 'close pdf' }));
+    expect(screen.queryByTestId('pdf-viewer')).not.toBeInTheDocument();
+  });
+
+  it('offers the PDF viewer for a PDF only', async () => {
+    render(<FileManagerPage />);
+
+    for (const name of ['Lamp', 'notes.txt', 'Photo.PNG']) {
+      await openMenuOf(name);
+      await screen.findAllByRole('button', { name: /^Download$/ });
+      expect(screen.queryByRole('button', { name: 'View PDF' })).not.toBeInTheDocument();
+      await userEvent.keyboard('{Escape}');
+    }
+  });
+
+  it('offers Generate thumbnail for a PDF', async () => {
+    render(<FileManagerPage />);
+
+    await openMenuOf('manual.pdf');
+    expect(await screen.findByRole('button', { name: 'Generate Thumbnail' })).toBeInTheDocument();
+  });
+
   it('offers the image viewer for pictures a browser draws, and for nothing else', async () => {
     render(<FileManagerPage />);
 
-    for (const name of ['Lamp', 'notes.txt', 'scan.tiff']) {
+    for (const name of ['Lamp', 'notes.txt', 'scan.tiff', 'manual.pdf']) {
       await openMenuOf(name);
       // The menu is open (Download is always in it) and carries no image entry.
       await screen.findAllByRole('button', { name: /^Download$/ });

@@ -14,7 +14,7 @@ import {
 import { api } from '../api/client';
 import { useToast } from '../contexts/ToastContext';
 import type { LibraryFileUploadResponse, ThumbnailJobTicket } from '../api/client';
-import { isMeshUploadName } from '../utils/meshPreviewTypes';
+import { isThumbnailUploadName } from '../utils/meshPreviewTypes';
 import { countByReason, thumbnailReasonKey } from '../utils/stepThumbnailReasons';
 import { Button } from './Button';
 import { Modal } from './Modal';
@@ -237,8 +237,8 @@ export function FileUploadModal({ folderId, onClose, onUploadComplete, onFileUpl
   }, []);
 
   const hasZipFiles = files.some((f) => f.isZip && f.status === 'pending');
-  // STL, OBJ and STEP all get a picture; STEP's is made in the background after the upload.
-  const hasStlFiles = files.some((f) => isMeshUploadName(f.file.name) && f.status === 'pending');
+  // STL, OBJ, STEP and PDF all get a picture; STEP's is made in the background after the upload.
+  const hasStlFiles = files.some((f) => isThumbnailUploadName(f.file.name) && f.status === 'pending');
   const has3mfFiles = files.some((f) => f.is3mf && f.status === 'pending');
   const pendingCount = files.filter((f) => f.status === 'pending').length;
   const allDone = files.length > 0 && pendingCount === 0 && !isUploading;

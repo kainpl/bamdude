@@ -14932,6 +14932,22 @@ export const api = {
     document.body.removeChild(a);
     window.URL.revokeObjectURL(url);
   },
+  /**
+   * A library file's bytes, for a viewer that parses them itself (the PDF
+   * viewer). The download route with the session's headers — never a token in
+   * a URL — so the file's own visibility rule decides.
+   */
+  getLibraryFileBytes: async (id: number, signal?: AbortSignal): Promise<ArrayBuffer> => {
+    const headers: Record<string, string> = {};
+    if (authToken) {
+      headers['Authorization'] = `Bearer ${authToken}`;
+    }
+    const response = await fetch(`${API_BASE}/library/files/${id}/download`, { headers, signal });
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+    return response.arrayBuffer();
+  },
   // ``version`` is a cache-buster, applied BEFORE the token: appended after it,
   // a second ``?`` would land inside the token's value.
   getLibraryFileThumbnailUrl: (id: number, version?: string | number | null) =>
