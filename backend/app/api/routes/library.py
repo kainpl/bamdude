@@ -19,7 +19,7 @@ from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Response, UploadFile
 from fastapi.responses import FileResponse as FastAPIFileResponse, JSONResponse
-from sqlalchemy import and_, distinct, false, func, or_, select
+from sqlalchemy import and_, distinct, false, func, or_, select, true
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -193,6 +193,20 @@ def _library_file_visible(
         return False
     # Ownerless files (``created_by_id is None``) require ALL — fail-closed.
     return library_file.created_by_id is not None and library_file.created_by_id == user.id
+
+
+def _files_visible_to(user: User | None, can_read_all: bool):
+    """SQL: whose files the caller's COUNTERS may count (G11 U4) — the ownership half
+    of :func:`_library_file_visible`; the trash is the caller's own clause.
+
+    Folders are shared structure, so their names reach every library reader; the
+    numbers on them (file count, latest activity) and a file's duplicates are
+    facts about FILES and follow the files' rule, or a ``read_own`` caller reads
+    how many files others keep where, when they touched them and under what name.
+    """
+    if can_read_all or user is None:
+        return true()
+    return LibraryFile.created_by_id == user.id
 
 
 def file_name_visible(library_file: LibraryFile | None, user: User | None, scope: str) -> bool:
@@ -1147,7 +1161,7 @@ IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff", "
 async def list_folders(
     response: Response,
     db: AsyncSession = Depends(get_db),
-    _: tuple[User | None, bool] = Depends(
+    auth_result: tuple[User | None, bool] = Depends(
         require_ownership_permission(
             Permission.LIBRARY_READ_ALL,
             Permission.LIBRARY_READ_OWN,
@@ -1155,6 +1169,7 @@ async def list_folders(
     ),
 ):
     """Get all folders as a tree structure."""
+    counted = _files_visible_to(*auth_result)
     # Prevent browser caching of folder list
     response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
 
@@ -1178,7 +1193,7 @@ async def list_folders(
     # one's WHERE clause. Keep all four together.
     file_counts_result = await db.execute(
         select(LibraryFile.folder_id, func.count(LibraryFile.id))
-        .where(LibraryFile.folder_id.isnot(None), LibraryFile.deleted_at.is_(None))
+        .where(LibraryFile.folder_id.isnot(None), LibraryFile.deleted_at.is_(None), counted)
         .group_by(LibraryFile.folder_id)
     )
     file_counts = dict(file_counts_result.all())
@@ -1188,7 +1203,7 @@ async def list_folders(
     # Descendants are folded in afterwards, over the linked tree (#2680).
     latest_file_activity_result = await db.execute(
         select(LibraryFile.folder_id, func.max(_FILE_ACTIVITY))
-        .where(LibraryFile.folder_id.isnot(None), LibraryFile.deleted_at.is_(None))
+        .where(LibraryFile.folder_id.isnot(None), LibraryFile.deleted_at.is_(None), counted)
         .group_by(LibraryFile.folder_id)
     )
     latest_file_activity = dict(latest_file_activity_result.all())
@@ -1250,7 +1265,7 @@ async def list_folders(
 async def get_folders_by_product(
     product_id: int,
     db: AsyncSession = Depends(get_db),
-    _: tuple[User | None, bool] = Depends(
+    auth_result: tuple[User | None, bool] = Depends(
         require_ownership_permission(
             Permission.LIBRARY_READ_ALL,
             Permission.LIBRARY_READ_OWN,
@@ -1258,6 +1273,7 @@ async def get_folders_by_product(
     ),
 ):
     """Get all folders linked to a specific product (via the M2M pivot)."""
+    counted = _files_visible_to(*auth_result)
     result = await db.execute(
         select(LibraryFolder)
         .join(product_folders, product_folders.c.library_folder_id == LibraryFolder.id)
@@ -1277,6 +1293,7 @@ async def get_folders_by_product(
             ).where(
                 LibraryFile.folder_id == folder.id,
                 LibraryFile.deleted_at.is_(None),
+                counted,
             )
         )
         file_count, latest_file = agg_result.one()
@@ -1422,7 +1439,7 @@ async def create_folder(
 async def get_folder(
     folder_id: int,
     db: AsyncSession = Depends(get_db),
-    _: tuple[User | None, bool] = Depends(
+    auth_result: tuple[User | None, bool] = Depends(
         require_ownership_permission(
             Permission.LIBRARY_READ_ALL,
             Permission.LIBRARY_READ_OWN,
@@ -1430,6 +1447,7 @@ async def get_folder(
     ),
 ):
     """Get a folder by ID."""
+    counted = _files_visible_to(*auth_result)
     result = await db.execute(
         select(LibraryFolder).options(selectinload(LibraryFolder.products)).where(LibraryFolder.id == folder_id)
     )
@@ -1446,6 +1464,7 @@ async def get_folder(
         ).where(
             LibraryFile.folder_id == folder_id,
             LibraryFile.deleted_at.is_(None),
+            counted,
         )
     )
     file_count, latest_file = agg_result.one()
@@ -1539,7 +1558,7 @@ async def update_folder(
     folder_id: int,
     data: FolderUpdate,
     db: AsyncSession = Depends(get_db),
-    _: User | None = Depends(require_permission(Permission.LIBRARY_UPDATE_ALL)),
+    editor: User | None = Depends(require_permission(Permission.LIBRARY_UPDATE_ALL)),
     creds: RequestCredentials = Depends(request_credentials),
 ):
     """Update a folder.
@@ -1683,7 +1702,9 @@ async def update_folder(
         )
     ).scalar_one()
 
-    # Get file count + latest file activity (#1770) in one trip
+    # Get file count + latest file activity (#1770) in one trip — of the files
+    # the editor may see, as every other folder answer counts them.
+    counted = _files_visible_to(editor, editor is None or editor.has_permission(Permission.LIBRARY_READ_ALL.value))
     agg_result = await db.execute(
         select(
             func.count(LibraryFile.id),
@@ -1691,6 +1712,7 @@ async def update_folder(
         ).where(
             LibraryFile.folder_id == folder_id,
             LibraryFile.deleted_at.is_(None),
+            counted,
         )
     )
     file_count, latest_file = agg_result.one()
@@ -2353,7 +2375,12 @@ async def list_files(
             # dedup; a duplicate badge against a trashed sibling is misleading.
             dup_result = await db.execute(
                 select(LibraryFile.file_hash, func.count(LibraryFile.id))
-                .where(LibraryFile.file_hash.in_(hashes), LibraryFile.deleted_at.is_(None))
+                .where(
+                    LibraryFile.file_hash.in_(hashes),
+                    LibraryFile.deleted_at.is_(None),
+                    # Another user's copy of the same bytes is not the caller's to count.
+                    _files_visible_to(user, can_read_all),
+                )
                 .group_by(LibraryFile.file_hash)
             )
             hash_counts = {h: c - 1 for h, c in dup_result.all()}  # -1 to exclude self
@@ -5692,6 +5719,8 @@ async def get_file(
                 LibraryFile.file_hash == file.file_hash,
                 LibraryFile.id != file.id,
                 LibraryFile.deleted_at.is_(None),
+                # …nor named: its file name and folder are that user's (G11 U4).
+                _files_visible_to(user, can_read_all),
             )
         )
         for dup_file, dup_folder_name in dup_result.all():
