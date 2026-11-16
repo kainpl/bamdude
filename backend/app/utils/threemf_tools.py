@@ -1291,9 +1291,67 @@ def plate_picture_entry(zf: zipfile.ZipFile, plate_id: int | None) -> str | None
 
 # paint_color attr on <triangle> elements (per-face filament painting).
 _PAINT_COLOR_ATTR_RE = re.compile(rb'paint_color="([0-9A-Fa-f]+)"')
-# Min share of painted triangles an extruder must cover to count as "used"
-# — filters one-off paint edit artifacts.
-_PAINT_NOISE_THRESHOLD = 0.05
+
+
+def _painted_states(paint_color: bytes | str) -> set[int]:
+    """Filament numbers (1-based) a triangle's ``paint_color`` paints with.
+
+    The string is BambuStudio's TriangleSelector tree, read as its own loader
+    does (``FacetsAnnotation::set_triangle_from_string`` +
+    ``TriangleSelector::deserialize``, mirrored from v02.09.01.70 — code
+    parity, the slicer was not run): one hex digit per 4-bit node, **the last
+    digit is the first node**. In a node, bits 0-1 are the number of split
+    sides. A split node (1-3) keeps its special side in bits 2-3 and is
+    followed by ``split + 1`` children. A leaf keeps its state in bits 2-3:
+    0 unpainted, 1 or 2 that filament; ``0b11`` there means the state is
+    written after it as ``state - 3`` — every ``0xF`` digit adds 15 and the
+    first other digit ends the number. So filament 1 is ``4``, 2 is ``8``, 3 is
+    ``0C``, 18 is ``0FC``, 33 is ``0FFC``.
+
+    Reading each digit as a filament number (upstream #3355) left the painted
+    filaments out and invented others. Unpainted leaves print with the
+    object's or part's own filament, which the caller counts.
+
+    As in the slicer: a string with anything but ``0-9A-F`` paints nothing, a
+    stream that ends early keeps what was read before it ended, and digits
+    left over once the tree is complete are ignored.
+    """
+    if isinstance(paint_color, str):
+        paint_color = paint_color.encode("ascii", "replace")
+    nibbles: list[int] = []
+    for char in reversed(paint_color):
+        if 0x30 <= char <= 0x39:
+            nibbles.append(char - 0x30)
+        elif 0x41 <= char <= 0x46:
+            nibbles.append(char - 0x37)
+        else:
+            return set()
+    states: set[int] = set()
+    end = len(nibbles)
+    pos = 0
+    pending = 1  # nodes of the tree still to read
+    while pending and pos < end:
+        pending -= 1
+        code = nibbles[pos]
+        pos += 1
+        split_sides = code & 0b11
+        if split_sides:
+            pending += split_sides + 1
+            continue
+        if code & 0b1100 == 0b1100:
+            run = 0
+            while pos < end and nibbles[pos] == 0b1111:
+                run += 1
+                pos += 1
+            if pos >= end:
+                break  # the number never ended: the stream is truncated
+            state = nibbles[pos] + 15 * run + 3
+            pos += 1
+        else:
+            state = code >> 2
+        if state:
+            states.add(state)
+    return states
 
 
 def extract_plate_extruder_set_from_3mf(zf: zipfile.ZipFile, plate_id: int) -> set[int]:
@@ -1307,16 +1365,18 @@ def extract_plate_extruder_set_from_3mf(zf: zipfile.ZipFile, plate_id: int) -> s
     2. ``model_settings.config`` — per-``<part>`` ``<metadata key="extruder">``
        overrides (used when the user split an object into multiple parts
        with distinct filaments).
-    3. ``3D/Objects/object_*.model`` — ``paint_color`` attributes on
-       individual ``<triangle>`` elements (used when the user "painted" a
-       face with a different filament). Each nibble is a TriangleSelector
-       tree node: ``0`` = unpainted leaf, ``F`` = branch, ``1``..``E`` = leaf
-       painted with extruder N. A flat hex scan yields the set without
-       decoding the tree.
+    3. ``paint_color`` attributes on individual ``<triangle>`` elements
+       (used when the user "painted" a face with a different filament) — in
+       the object's ``3D/Objects/object_*.model``, or in ``3D/3dmodel.model``
+       itself when the mesh is kept there. Decoded by
+       :func:`_painted_states`. **Every painted leaf counts, however small**:
+       the slicer prints that facet with that filament
+       (``ModelVolume::get_extruders``), so the slot is used. There is no
+       noise threshold — the one that used to be here only hid misread digits.
 
     Without (3) the painted-face data is invisible: model_settings says
     every object on a multi-color plate uses extruder 1 by default but the
-    actual print uses 3, 4, 12 etc. via face paint (#1150 follow-up).
+    actual print also uses the filaments painted on (#1150 follow-up).
     """
     if "Metadata/model_settings.config" not in zf.namelist():
         return set()
@@ -1329,6 +1389,8 @@ def extract_plate_extruder_set_from_3mf(zf: zipfile.ZipFile, plate_id: int) -> s
     # plus the per-object .model file path so we can later scan source 3.
     object_extruders: dict[str, set[int]] = {}
     object_model_paths: dict[str, list[str]] = {}
+    # Paint on a mesh kept inside 3D/3dmodel.model itself, by object id.
+    inline_paint: dict[str, set[int]] = {}
     for obj_elem in root.findall(".//object"):
         obj_id = obj_elem.get("id")
         if not obj_id:
@@ -1364,20 +1426,34 @@ def extract_plate_extruder_set_from_3mf(zf: zipfile.ZipFile, plate_id: int) -> s
             stripped = re.sub(r"<(/?)\w+:", r"<\1", stripped)
             stripped = re.sub(r" \w+:(\w+=)", r" \1", stripped)
             model_root = ET.fromstring(stripped)
+            inline_components: dict[str, list[str]] = {}
             for obj_elem in model_root.findall(".//object"):
                 oid = obj_elem.get("id")
                 if not oid:
                     continue
                 comps = obj_elem.find("components")
                 if comps is None:
+                    # The mesh is here, not in 3D/Objects: read its paint now.
+                    painted: set[int] = set()
+                    for paint in {t.get("paint_color") for t in obj_elem.iter("triangle")} - {None}:
+                        painted |= _painted_states(paint)
+                    if painted:
+                        inline_paint[oid] = painted
                     continue
                 paths = []
                 for c in comps.findall("component"):
                     p = c.get("path")
                     if p:
                         paths.append(p.lstrip("/"))
+                    elif c.get("objectid"):
+                        # A component in this same file.
+                        inline_components.setdefault(oid, []).append(c.get("objectid"))
                 if paths:
                     object_model_paths[oid] = paths
+            for oid, parts in inline_components.items():
+                painted = set().union(*(inline_paint.get(part, set()) for part in parts))
+                if painted:
+                    inline_paint[oid] = inline_paint.get(oid, set()) | painted
         except (ET.ParseError, OSError):
             pass  # No 3dmodel — paint scan just won't apply
 
@@ -1397,25 +1473,9 @@ def extract_plate_extruder_set_from_3mf(zf: zipfile.ZipFile, plate_id: int) -> s
         except OSError:
             paint_cache[path] = out
             return out
-        extruder_triangles: dict[int, int] = {}
-        total_painted = 0
-        for match in _PAINT_COLOR_ATTR_RE.finditer(data):
-            total_painted += 1
-            seen: set[int] = set()
-            for ch in match.group(1):
-                # Hex digit → 4-bit value. 0 = unpainted leaf, F = branch,
-                # 1-E = leaf painted with extruder N.
-                if ch in b"123456789":
-                    seen.add(ch - 0x30)
-                elif ch in b"ABCDEabcde":
-                    seen.add((ch & 0x4F) - 0x37)
-            for e in seen:
-                extruder_triangles[e] = extruder_triangles.get(e, 0) + 1
-        if total_painted > 0:
-            cutoff = max(1, int(total_painted * _PAINT_NOISE_THRESHOLD))
-            for ext, count in extruder_triangles.items():
-                if count >= cutoff:
-                    out.add(ext)
+        # Whole-triangle paints repeat ("4", "8", ...): decode each string once.
+        for paint in {match.group(1) for match in _PAINT_COLOR_ATTR_RE.finditer(data)}:
+            out |= _painted_states(paint)
         paint_cache[path] = out
         return out
 
@@ -1440,6 +1500,7 @@ def extract_plate_extruder_set_from_3mf(zf: zipfile.ZipFile, plate_id: int) -> s
                 if not obj_id:
                     continue
                 used.update(object_extruders.get(obj_id, set()))
+                used.update(inline_paint.get(obj_id, set()))
                 for path in object_model_paths.get(obj_id, []):
                     used.update(_scan_paint(path))
         break
