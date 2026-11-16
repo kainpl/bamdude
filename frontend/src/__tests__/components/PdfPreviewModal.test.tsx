@@ -164,6 +164,21 @@ describe('PdfPreviewModal', () => {
     await waitFor(() => expect(percent()).toBe('50%'));
   });
 
+  it('follows the scrollbar: the page box names the page on screen, also right after a zoom', async () => {
+    const { handle, rendered } = fakeHandle(40);
+    openPdf.mockResolvedValue(handle);
+    show();
+    await waitFor(() => expect(rendered.length).toBeGreaterThan(0));
+
+    // A zoom on page 1 moves nothing — the next scroll is the operator's, not ours.
+    fireEvent.click(screen.getByRole('button', { name: 'Zoom in' }));
+    await waitFor(() => expect(screen.getByTestId('pdf-zoom').textContent).toBe('125%'));
+    stage().scrollTop = 5 * (1000 + 12);
+    fireEvent.scroll(stage());
+    await waitFor(() => expect(pageBox().value).toBe('6'));
+    await waitFor(() => expect(renderedPages(rendered)).toContain(6));
+  });
+
   it('cancels what it was drawing and frees the document when it closes', async () => {
     const { handle, rendered } = fakeHandle(3);
     openPdf.mockResolvedValue(handle);

@@ -220,8 +220,10 @@ export function PdfPreviewModal({ fileId, title, fileSize, onClose, onDownload }
     scaleSeen.current = scale;
     const stage = stageRef.current;
     if (!stage) return;
+    const before = stage.scrollTop;
     stage.scrollTop = layout.tops[pageRef.current - 1] ?? 0;
-    heading.current = pageRef.current;
+    // As in goTo: no scroll event follows a scroll that went nowhere.
+    heading.current = stage.scrollTop === before ? null : pageRef.current;
     setScrollTop(stage.scrollTop);
   }, [scale, layout.tops]);
 
