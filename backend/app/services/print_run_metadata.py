@@ -8,6 +8,7 @@ RUN_METADATA_KEYS = frozenset(
         "dispatch_intent",
         "bamdude_terminal_acceptance",
         "bamdude_terminal_effects",
+        "first_layer_announced",  # first_layer_announcement.MARKER
     }
 )
 

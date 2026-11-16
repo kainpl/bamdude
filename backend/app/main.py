@@ -544,8 +544,14 @@ def _estimated_total_print_minutes(progress: int, remaining_minutes: int | None)
     return remaining_minutes / (1.0 - progress / 100.0)
 
 
-# Track whether first layer complete notification has been sent for current print
+# Track whether first layer complete notification has been sent for current print.
+# A cache: the fact itself is the run's (``services/first_layer_announcement``), claimed on its execution archive
+# before the send and seeded back here where a run is bound, so a restart cannot announce a print twice.
 _first_layer_notified: dict[int, bool] = {}
+# The restart recoveries (``on_print_running_observed``) still looking their run up, per printer. A layer edge
+# that overtakes one waits for it: until the run is bound nothing can say whether it was announced.
+_running_print_adoptions: dict[int, list[asyncio.Event]] = {}
+_RUN_ADOPTION_WAIT_SECONDS = 30.0
 
 # Track HMS errors that have been notified: {printer_id: set of error codes}
 # This prevents sending duplicate notifications for the same error
@@ -2273,11 +2279,40 @@ async def on_printer_layer_change(printer_id: int, layer_num: int, previous_laye
     # premature tick doesn't burn the one-shot. Widened to <=10 to tolerate the extra
     # early ticks the gate now skips (#1837).
     if 2 <= layer_num <= 10 and not _first_layer_notified.get(printer_id, False):
+        # A restart recovery still looking this print's run up binds it -- and seeds the cache above from the
+        # run's marker -- before anything here can know whether the print was announced already.
+        for adoption in list(_running_print_adoptions.get(printer_id, ())):
+            try:
+                await asyncio.wait_for(adoption.wait(), _RUN_ADOPTION_WAIT_SECONDS)
+            except TimeoutError:
+                break
+        if not printer_manager.session_still_lives(printer_id) or _first_layer_notified.get(printer_id, False):
+            return
         client = printer_manager.get_client(printer_id)
         state = client.state if client else None
         if not state or state.state != "RUNNING" or getattr(state, "mc_print_sub_stage", 0) not in (None, 0):
             return
-        _first_layer_notified[printer_id] = True
+        # Once per RUN, not per process: the run's execution archive is claimed before the send, addressed by
+        # its immutable identity. A run with no such address yet keeps the process-memory rule alone.
+        from backend.app.services import first_layer_announcement
+        from backend.app.services.print_run_binding import current_print_run
+
+        run = current_print_run(printer_manager, printer_id)
+        if run is not None and run.archive_identity:
+            try:
+                ours = await first_layer_announcement.claim(async_session, run.archive_id, run.archive_identity)
+            except Exception as e:
+                # Outcome unknown: never a second announcement. The cache stays empty, so the next edge asks.
+                logging.getLogger(__name__).warning("First layer announcement claim failed: %s", e)
+                return
+            if not printer_manager.session_still_lives(printer_id):
+                return
+            _first_layer_notified[printer_id] = True
+            current = current_print_run(printer_manager, printer_id)
+            if not ours or current is None or current.archive_identity != run.archive_identity:
+                return
+        else:
+            _first_layer_notified[printer_id] = True
         from backend.app.services.layer_projection import capture_first_layer_total, first_layer_total_is_current
 
         try:
@@ -4489,6 +4524,11 @@ def _bind_print_file_analysis_context(
         origin=origin,
     )
     _forget_unbound_user_stop(printer_id)
+    # The run's first layer was announced before this process bound it (a restart): the cache follows the run.
+    from backend.app.services import first_layer_announcement
+
+    if bound.archive_id == archive.id and first_layer_announcement.announced(archive):
+        _first_layer_notified[printer_id] = True
     from backend.app.services.layer_projection import bind_layer_grant
 
     bind_layer_grant(
@@ -7163,6 +7203,24 @@ def _request_published_run_recovery(printer_id: int, data: dict, epoch: int) -> 
 
 
 async def on_print_running_observed(printer_id: int, data: dict):
+    """Restart-recovery of a print already running, registered while it looks its run up.
+
+    Registered before the first await: a layer edge scheduled after this callback finds the registration and
+    waits for the run's binding before it decides the print's once-only first-layer announcement.
+    """
+    settled = asyncio.Event()
+    pending = _running_print_adoptions.setdefault(printer_id, [])
+    pending.append(settled)
+    try:
+        await _recover_running_print(printer_id, data)
+    finally:
+        settled.set()
+        pending.remove(settled)
+        if not pending and _running_print_adoptions.get(printer_id) is pending:
+            del _running_print_adoptions[printer_id]
+
+
+async def _recover_running_print(printer_id: int, data: dict):
     """Restart-recovery: capture a fresh timelapse baseline for a print that
     started before BamDude came up.
 

@@ -228,3 +228,45 @@ class TestFiring:
         await macro_trigger.fire_layer_macros(printer.id, 50, 49, factory, pm)
 
         assert len(dispatched) == 2
+
+
+def _a_restart() -> None:
+    """What a backend restart leaves of the process's memory: nothing."""
+    macro_trigger._fired_layer_macros.clear()
+    main._active_macro_selection.clear()
+
+
+@pytest.mark.asyncio
+class TestARestartMidPrint:
+    """A process-fresh MQTT client starts at layer 0, so its first report re-crosses every target behind it."""
+
+    async def test_a_macro_that_fired_before_the_restart_does_not_fire_again(
+        self, test_engine, db_session, printer_factory, archive_factory, dispatched
+    ):
+        printer = await printer_factory(name="P1", model="P1S")
+        macro_id = await _a_layer_macro(db_session, printer.id)
+        await archive_factory(printer.id, status="printing", extra_data={"selected_macro_ids": [macro_id]})
+        factory = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+        pm = _manager(_running_client())
+        main.register_macro_selection(printer.id, {"selected_macro_ids": [macro_id]})
+
+        await macro_trigger.fire_layer_macros(printer.id, 50, 49, factory, pm)
+        _a_restart()
+        await macro_trigger.fire_layer_macros(printer.id, 62, 0, factory, pm)
+
+        assert dispatched == [f"macro-layer-{macro_id}"]
+
+    async def test_a_macro_missed_while_down_still_fires_once(
+        self, test_engine, db_session, printer_factory, archive_factory, dispatched
+    ):
+        printer = await printer_factory(name="P1", model="P1S")
+        macro_id = await _a_layer_macro(db_session, printer.id)
+        await archive_factory(printer.id, status="printing", extra_data={"selected_macro_ids": [macro_id]})
+        factory = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+        pm = _manager(_running_client())
+
+        await macro_trigger.fire_layer_macros(printer.id, 62, 0, factory, pm)
+        _a_restart()
+        await macro_trigger.fire_layer_macros(printer.id, 63, 0, factory, pm)
+
+        assert dispatched == [f"macro-layer-{macro_id}"]

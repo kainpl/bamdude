@@ -48,6 +48,7 @@ PRINTER_KEYED_REGISTRIES = (
     ("backend.app.main", "_expected_print_registered_at"),
     ("backend.app.main", "_expected_prints"),
     ("backend.app.main", "_first_layer_notified"),
+    ("backend.app.main", "_running_print_adoptions"),
     ("backend.app.main", "_hms_last_seen"),
     ("backend.app.main", "_inprint_bank_in_flight"),
     ("backend.app.main", "_inprint_frame_bank"),
