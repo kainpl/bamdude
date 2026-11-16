@@ -117,6 +117,7 @@ PUBLIC_ROUTES: dict[str, tuple[str, str]] = {
     "/api/v1/archives/{archive_id}/qrcode": ("media-token", "QR image for the print"),
     "/api/v1/archives/{archive_id}/timelapse": ("media-token", "timelapse <video>"),
     "/api/v1/library/files/{file_id}/card-file/{zip_path:path}": ("media-token", "model-card pictures"),
+    "/api/v1/library/files/{file_id}/image": ("media-token", "an image file, opened in the viewer"),
     "/api/v1/products/{product_id}/attachment-image/{filename}": ("media-token", "product gallery"),
     "/api/v1/products/{product_id}/cover-image": ("media-token", "product cover"),
     "/api/v1/product-parts/{part_id}/image": ("media-token", "a part's picture"),

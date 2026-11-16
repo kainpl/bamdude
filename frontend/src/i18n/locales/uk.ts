@@ -6128,6 +6128,7 @@ export default {
     },
     selectFile: 'Вибрати файл',
     viewPrintsOf: 'Переглянути друки «{{name}}»',
+    viewImage: 'Переглянути зображення',
     plate: 'Плита',
     plateSlot: 'Слот',
     plateGallery: 'Галерея плит',
@@ -12400,6 +12401,15 @@ export default {
   // File Manager Modal
   fileManagerModal: {
     threeView: '3D перегляд'
+  },
+
+  // The file preview shell and its renderers (image viewer)
+  filePreview: {
+    zoomIn: 'Збільшити',
+    zoomOut: 'Зменшити',
+    resetZoom: 'Скинути масштаб',
+    imageFailed: 'Не вдалося завантажити зображення.',
+    imageTooLarge: 'Зображення завелике для перегляду. Завантажте файл, щоб відкрити його.'
   },
 
   // Embedded Camera Viewer

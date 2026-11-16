@@ -43,6 +43,7 @@ MEDIA_ROUTES = frozenset(
         "/archives/{archive_id}/plate-thumbnail/{plate_index}",
         "/archives/{archive_id}/project-image/{image_path:path}",
         "/library/files/{file_id}/card-file/{zip_path:path}",
+        "/library/files/{file_id}/image",
         "/library/files/{file_id}/plate-thumbnail/{plate_index}",
         "/library/files/{file_id}/thumbnail",
         "/makerworld/thumbnail",

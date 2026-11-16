@@ -12953,6 +12953,10 @@ PUBLIC_API_PATTERNS: tuple[re.Pattern[str], ...] = (
     # route's own media-token gate is what authenticates it, this entry only
     # lets the request reach that gate.
     re.compile(r"^/api/v1/library/files/\d+/card-file/.+$"),
+    # /library/files/{id}/image — the full picture of an image file, loaded by
+    # <img> from the File Manager's viewer. Serves picture types only; the
+    # bearer /download beside it has no pattern and stays behind the header.
+    re.compile(r"^/api/v1/library/files/\d+/image$"),
     # /products/{id}/attachment-image/{filename} — a product's gallery
     # pictures, loaded by <img> from the product page. Same reasoning: the
     # bearer-only attachment download deliberately lives under /attachments/

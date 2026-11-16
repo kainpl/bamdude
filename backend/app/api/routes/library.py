@@ -6149,6 +6149,47 @@ async def get_thumbnail(
     return FastAPIFileResponse(str(abs_thumb_path), media_type=media_type)
 
 
+# What ``/files/{id}/image`` serves: the picture types every browser draws in an
+# ``<img>``. Deliberately narrower than the thumbnailer's list — no TIFF (only
+# Safari decodes it) — and never SVG, which is a document a browser would run.
+_VIEWABLE_IMAGE_TYPES = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".bmp": "image/bmp",
+}
+
+
+@router.get("/files/{file_id}/image")
+async def get_image(
+    file_id: int,
+    db: AsyncSession = Depends(get_db),
+    auth_result: tuple[User | None, bool] = _LIBRARY_MEDIA_READ,
+):
+    """The full picture of an image file, for the File Manager's viewer.
+
+    Media token or headers, owner-scoped like the thumbnail beside it. It is
+    NOT a download route behind a URL token: anything that is not a picture
+    type is the same 404 as a missing file, so a model or a G-code file still
+    needs the bearer ``/download``.
+    """
+    user, can_read_all = auth_result
+    result = await db.execute(select(LibraryFile).where(LibraryFile.id == file_id))
+    file = _ensure_library_file_visible(result.scalar_one_or_none(), user, can_read_all)
+
+    media_type = _VIEWABLE_IMAGE_TYPES.get(Path(file.filename).suffix.lower())
+    if media_type is None:
+        raise HTTPException(404, "File not found")
+
+    abs_path = to_absolute_path(file.file_path)
+    if not abs_path or not abs_path.exists():
+        raise HTTPException(status_code=404, detail="File not found on disk")
+
+    return FastAPIFileResponse(str(abs_path), media_type=media_type, headers={"Cache-Control": "private, max-age=300"})
+
+
 @router.get("/files/{file_id}/gcode")
 async def get_gcode(
     file_id: int,

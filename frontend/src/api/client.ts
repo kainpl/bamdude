@@ -14936,6 +14936,8 @@ export const api = {
   // a second ``?`` would land inside the token's value.
   getLibraryFileThumbnailUrl: (id: number, version?: string | number | null) =>
     withMediaToken(`${API_BASE}/library/files/${id}/thumbnail${version ? `?v=${encodeURIComponent(String(version))}` : ''}`),
+  /** The full picture of an image file — the viewer's `<img>`; picture types only. */
+  getLibraryFileImageUrl: (id: number) => withMediaToken(`${API_BASE}/library/files/${id}/image`),
   getLibraryFilePlateThumbnail: (id: number, plateIndex: number) =>
     withMediaToken(`${API_BASE}/library/files/${id}/plate-thumbnail/${plateIndex}`),
   getLibraryFileGcodeUrl: (id: number, plateId?: number | null) =>

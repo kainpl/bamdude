@@ -6082,6 +6082,7 @@ export default {
     },
     selectFile: 'Select file',
     viewPrintsOf: 'View prints of {{name}}',
+    viewImage: 'View image',
     plate: 'Plate',
     plateSlot: 'Slot',
     plateGallery: 'Plate gallery',
@@ -12185,6 +12186,15 @@ export default {
   // File Manager Modal
   fileManagerModal: {
     threeView: '3D View'
+  },
+
+  // The file preview shell and its renderers (image viewer)
+  filePreview: {
+    zoomIn: 'Zoom in',
+    zoomOut: 'Zoom out',
+    resetZoom: 'Reset zoom',
+    imageFailed: 'This image could not be loaded.',
+    imageTooLarge: 'This image is too large to preview. Download it to open it.'
   },
 
   // Embedded Camera Viewer
