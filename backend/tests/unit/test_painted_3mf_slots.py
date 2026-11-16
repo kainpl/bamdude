@@ -135,6 +135,44 @@ class TestPaintedStates:
         """BambuStudio drops the whole triangle on anything but 0-9A-F."""
         assert _painted_states(b"0c") == set()
 
+    def test_a_state_above_the_filament_count_paints_nothing(self):
+        """BambuStudio clamps it to "unpainted" (``clamp_paint_state``); a run
+        of F's must not invent an arbitrary slot number."""
+        from backend.app.utils.threemf_tools import MAX_PAINT_STATE
+
+        assert MAX_PAINT_STATE == 96  # BambuStudio MAX_FILAMENT_COUNT: 32 physical + 64 mixed
+        assert _painted_states(_encode(MAX_PAINT_STATE).encode()) == {MAX_PAINT_STATE}
+        assert _painted_states(_encode(MAX_PAINT_STATE + 1).encode()) == set()
+        assert _painted_states(b"0" + b"F" * 5000 + b"C") == set()
+        # ...and the leaves beside it still count.
+        assert _painted_states(_encode((0, [MAX_PAINT_STATE + 12, 2])).encode()) == {2}
+
+    def test_no_more_than_the_capped_number_of_digits_is_read(self):
+        """A hostile attribute is decoded as a stream that ends early: what is
+        within the cap counts, what lies beyond it is never reached."""
+        from backend.app.utils.threemf_tools import MAX_PAINT_DIGITS
+
+        def chain(pairs: int) -> bytes:
+            # nodes: (split-1-side, unpainted leaf) * pairs, then a leaf of filament 2
+            return b"8" + b"01" * pairs
+
+        assert _painted_states(chain(100)) == {2}
+        assert _painted_states(chain((MAX_PAINT_DIGITS - 1) // 2)) == {2}  # just within the cap
+        assert _painted_states(chain(MAX_PAINT_DIGITS // 2 + 50)) == set()
+
+    def test_decoding_does_not_allocate_several_times_the_string(self):
+        import tracemalloc
+
+        paint = b"8" + b"01" * 200_000  # 400 kB, well-formed
+        tracemalloc.start()
+        try:
+            assert _painted_states(paint) == {2}
+            _current, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        # A list of the digits as Python ints costs 8 bytes a digit.
+        assert peak < 2 * len(paint)
+
 
 # ------------------------------------------------------------- the 3MF reader
 

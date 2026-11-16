@@ -1386,6 +1386,16 @@ def plate_picture_entry(zf: zipfile.ZipFile, plate_id: int | None) -> str | None
 _PAINT_COLOR_ATTR_RE = re.compile(rb'paint_color="([0-9A-Fa-f]+)"')
 
 
+# BambuStudio's ``MAX_FILAMENT_COUNT`` (Model.hpp, v02.09.01.70: 32 physical +
+# 64 mixed filaments) — the highest state a painted leaf can carry; its loader
+# reads anything above as unpainted.
+MAX_PAINT_STATE = 96
+# The slicer has no limit on one triangle's string. Real ones are tens to a few
+# thousand digits (one digit per node of that triangle's subdivision); a
+# million is far past any brush and bounds the work a hostile file can ask for.
+MAX_PAINT_DIGITS = 1_000_000
+
+
 def _painted_states(paint_color: bytes | str) -> set[int]:
     """Filament numbers (1-based) a triangle's ``paint_color`` paints with.
 
@@ -1406,43 +1416,46 @@ def _painted_states(paint_color: bytes | str) -> set[int]:
     object's or part's own filament, which the caller counts.
 
     As in the slicer: a string with anything but ``0-9A-F`` paints nothing, a
-    stream that ends early keeps what was read before it ended, and digits
-    left over once the tree is complete are ignored.
+    stream that ends early keeps what was read before it ended, digits left
+    over once the tree is complete are ignored, and a state above the filament
+    count is unpainted (``clamp_paint_state``).
+
+    The file is not ours: at most :data:`MAX_PAINT_DIGITS` digits of one
+    attribute are read — a longer one is a stream that ends early.
     """
     if isinstance(paint_color, str):
         paint_color = paint_color.encode("ascii", "replace")
-    nibbles: list[int] = []
-    for char in reversed(paint_color):
-        if 0x30 <= char <= 0x39:
-            nibbles.append(char - 0x30)
-        elif 0x41 <= char <= 0x46:
-            nibbles.append(char - 0x37)
-        else:
-            return set()
+    # Only the end of an over-long string is read (the tree starts there), and
+    # the digits are read in place: no list of them is built.
+    if len(paint_color) > MAX_PAINT_DIGITS:
+        paint_color = paint_color[-MAX_PAINT_DIGITS:]
+    if paint_color.translate(None, b"0123456789ABCDEF"):
+        return set()
     states: set[int] = set()
-    end = len(nibbles)
-    pos = 0
+    pos = len(paint_color) - 1  # the last digit is the first node
     pending = 1  # nodes of the tree still to read
-    while pending and pos < end:
+    while pending and pos >= 0:
         pending -= 1
-        code = nibbles[pos]
-        pos += 1
+        char = paint_color[pos]
+        code = char - 0x30 if char <= 0x39 else char - 0x37
+        pos -= 1
         split_sides = code & 0b11
         if split_sides:
             pending += split_sides + 1
             continue
         if code & 0b1100 == 0b1100:
             run = 0
-            while pos < end and nibbles[pos] == 0b1111:
+            while pos >= 0 and paint_color[pos] == 0x46:  # "F"
                 run += 1
-                pos += 1
-            if pos >= end:
+                pos -= 1
+            if pos < 0:
                 break  # the number never ended: the stream is truncated
-            state = nibbles[pos] + 15 * run + 3
-            pos += 1
+            char = paint_color[pos]
+            state = (char - 0x30 if char <= 0x39 else char - 0x37) + 15 * run + 3
+            pos -= 1
         else:
             state = code >> 2
-        if state:
+        if 0 < state <= MAX_PAINT_STATE:
             states.add(state)
     return states
 
