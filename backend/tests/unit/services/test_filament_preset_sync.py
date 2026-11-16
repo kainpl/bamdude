@@ -368,3 +368,31 @@ async def test_bambu_numeric_update_time_is_stored_as_text(db_session):
     rows = (await db_session.execute(select(UserFilamentPreset))).scalars().all()
     assert rows and all(isinstance(r.updated_time, str) for r in rows)
     assert {r.updated_time for r in rows} == {"1782055611"}
+
+
+@pytest.mark.asyncio
+async def test_orca_sync_reads_ini_quoted_options(db_session):
+    """Orca Cloud can hand a list option over as ONE quoted string (upstream
+    c4c5c7042): the mirror must store the material, not the quotes."""
+    profiles = [
+        {
+            "id": "99999999-1111-5111-8111-111111111111",
+            "name": "Quoted PETG @Bambu Lab A1 mini 0.4 nozzle",
+            "updated_time": "2026-08-22T12:00:00Z",
+            "content": {
+                "type": "filament",
+                "name": "Quoted PETG @Bambu Lab A1 mini 0.4 nozzle",
+                "filament_id": '"P08cb51a"',
+                "filament_vendor": '"TEST"',
+                "filament_type": '"PETG"',
+                "nozzle_temperature_range_low": '"220"',
+                "nozzle_temperature_range_high": '"260"',
+            },
+        }
+    ]
+    with patch.object(sync, "build_authenticated_service", AsyncMock(return_value=_orca_service(profiles))):
+        outcome = await sync.sync_orca_presets_for_user(db_session, OWNER)
+    assert outcome.ok
+    row = (await db_session.execute(select(UserFilamentPreset))).scalars().one()
+    assert (row.filament_type, row.vendor, row.family_filament_id) == ("PETG", "TEST", "P08cb51a")
+    assert (row.nozzle_temp_min, row.nozzle_temp_max) == (220, 260)

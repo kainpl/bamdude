@@ -57,6 +57,7 @@ from backend.app.services.slicer_api import (
     SlicerApiUnavailableError,
 )
 from backend.app.utils.printer_models import PRINTER_MODEL_MAP
+from backend.app.utils.slicer_strings import first_slicer_string, slicer_strings
 
 logger = logging.getLogger(__name__)
 
@@ -251,18 +252,10 @@ async def _fetch_orca_cloud_presets(
             filament_colour: str | None = None
             if slot == "filament":
                 # Bambu/Orca filament profiles store these as single-element
-                # arrays (the historical multi-extruder shape). Extract the
-                # first non-empty element for both.
-                ft = content.get("filament_type")
-                if isinstance(ft, list) and ft and isinstance(ft[0], str):
-                    filament_type = ft[0]
-                elif isinstance(ft, str):
-                    filament_type = ft
-                fc = content.get("default_filament_colour")
-                if isinstance(fc, list) and fc and isinstance(fc[0], str):
-                    filament_colour = fc[0]
-                elif isinstance(fc, str):
-                    filament_colour = fc
+                # lists (the historical multi-extruder shape) -- a JSON array,
+                # or the slicer's INI string. Take the first non-empty element.
+                filament_type = first_slicer_string(content.get("filament_type"))
+                filament_colour = first_slicer_string(content.get("default_filament_colour"))
             preset = UnifiedPreset(
                 id=str(preset_id),
                 name=str(name),
@@ -318,17 +311,15 @@ def _content_compatible_printers(content: dict) -> list[str] | None:
     ``content``, and an entry of the sidecar's bundled listing.
 
     Orca profiles carry it as a list of printer-preset names (the same shape
-    ``orca_profiles.py`` stores on import); a single-printer profile may store a
-    bare string. Returns ``None`` for missing / empty / malformed values so the
-    caller leaves the field unset and the SliceModal falls back to the name-based
-    matcher, rather than treating "no data" as "compatible with nothing".
+    ``orca_profiles.py`` stores on import), a bare string for a single printer,
+    or -- from Orca Cloud -- ONE string of quoted names joined by ``;`` (see
+    :func:`slicer_strings`, the one decoder of all three). Returns ``None`` for
+    missing / empty / malformed values so the caller leaves the field unset and
+    the SliceModal falls back to the name-based matcher, rather than treating
+    "no data" as "compatible with nothing".
     """
     raw = content.get("compatible_printers") if isinstance(content, dict) else None
-    if isinstance(raw, str):
-        raw = [raw]
-    if not isinstance(raw, list):
-        return None
-    names = [x.strip() for x in raw if isinstance(x, str) and x.strip()]
+    names = [x.strip() for x in slicer_strings(raw)]
     return names or None
 
 
@@ -362,7 +353,7 @@ def _parse_filament_metadata(setting_json: str | None) -> tuple[str | None, str 
         return None, None
     if not isinstance(data, dict):
         return None, None
-    return _first_scalar(data.get("filament_type")), _first_scalar(data.get("filament_colour"))
+    return first_slicer_string(data.get("filament_type")), first_slicer_string(data.get("filament_colour"))
 
 
 def _parse_filament_flow_ratio(setting_json: str | None) -> float | None:
@@ -391,14 +382,6 @@ def _parse_filament_flow_ratio(setting_json: str | None) -> float | None:
         except ValueError:
             return None
         return v if v > 0 else None
-    return None
-
-
-def _first_scalar(value: object) -> str | None:
-    if isinstance(value, list) and value:
-        return value[0] if isinstance(value[0], str) else None
-    if isinstance(value, str) and value:
-        return value
     return None
 
 

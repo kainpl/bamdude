@@ -23,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.models.user import User
 from backend.app.models.user_filament import UserFilamentFamily, UserFilamentPreset
 from backend.app.utils import filament_catalog as catalog
+from backend.app.utils.slicer_strings import first_slicer_string
 
 logger = logging.getLogger(__name__)
 
@@ -63,8 +64,17 @@ def _alias_of(name: str) -> str:
 
 
 def _scalar(value):
+    """The first item of an option a profile stores per extruder.
+
+    A JSON list gives its first element as before. A string goes through the
+    one decoder of the slicer's INI form (:func:`first_slicer_string`): Orca
+    Cloud can hand ``filament_type`` over as ``'"PETG"'``, and stored raw the
+    mirror's material would carry the quotes.
+    """
     if isinstance(value, list):
         value = value[0] if value else None
+    if isinstance(value, str):
+        return first_slicer_string(value)
     return value
 
 

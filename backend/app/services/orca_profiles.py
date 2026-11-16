@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.models.local_preset import LocalPreset
 from backend.app.models.orca_base_cache import OrcaBaseProfile
+from backend.app.utils.slicer_strings import first_slicer_string, slicer_strings
 
 logger = logging.getLogger(__name__)
 
@@ -166,15 +167,15 @@ def extract_core_fields(data: dict) -> dict:
     ft = data.get("filament_type")
     if isinstance(ft, list) and ft:
         fields["filament_type"] = str(ft[0])
-    elif isinstance(ft, str):
-        fields["filament_type"] = ft
+    elif isinstance(ft, str) and first_slicer_string(ft):
+        fields["filament_type"] = first_slicer_string(ft)
 
     # filament_vendor
     fv = data.get("filament_vendor")
     if isinstance(fv, list) and fv:
         fields["filament_vendor"] = str(fv[0])
-    elif isinstance(fv, str):
-        fields["filament_vendor"] = fv
+    elif isinstance(fv, str) and first_slicer_string(fv):
+        fields["filament_vendor"] = first_slicer_string(fv)
 
     # nozzle_temp_min / max - from nozzle_temperature array or range fields
     nozzle_temp = data.get("nozzle_temperature")
@@ -208,7 +209,15 @@ def extract_core_fields(data: dict) -> dict:
 
     # default_filament_colour
     colour = data.get("default_filament_colour")
-    if colour is not None:
+    if isinstance(colour, str):
+        # A bare colour is stored as it is; the slicer's INI form (ONE string
+        # of quoted items joined by ``;``) is stored as the list it encodes.
+        decoded = slicer_strings(colour)
+        if decoded == [colour]:
+            fields["default_filament_colour"] = colour
+        elif decoded:
+            fields["default_filament_colour"] = json.dumps(decoded)
+    elif colour is not None:
         fields["default_filament_colour"] = json.dumps(colour) if isinstance(colour, list) else str(colour)
 
     # filament_cost
@@ -229,6 +238,9 @@ def extract_core_fields(data: dict) -> dict:
     compat = data.get("compatible_printers")
     if isinstance(compat, list):
         fields["compatible_printers"] = json.dumps(compat)
+    elif isinstance(compat, str) and slicer_strings(compat):
+        # Orca Cloud's INI form of the list, or a bare single name.
+        fields["compatible_printers"] = json.dumps(slicer_strings(compat))
 
     return fields
 

@@ -40,6 +40,7 @@ from backend.app.services.bambu_cloud import (
     BambuCloudError,
 )
 from backend.app.services.orca_cloud import OrcaCloudAuthError, OrcaCloudError
+from backend.app.utils.slicer_strings import unescape_strings_cstyle
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +66,12 @@ _SLOT_TO_PROFILE_TYPE = {
     "process": "process",
     "filament": "filament",
 }
+
+
+# List options Orca Cloud can return in the slicer's INI form -- ONE string of
+# quoted items joined by ``;`` (upstream c4c5c7042, #3381). The CLI and the
+# sidecar read them as arrays, so they are sent as arrays.
+_ORCA_STRING_LIST_FIELDS = ("compatible_printers", "filament_type", "default_filament_colour")
 
 
 async def resolve_preset_ref(
@@ -253,6 +260,14 @@ async def _resolve_orca_cloud(
         # same forced pin to ``"system"`` for the same reason — see the Bambu
         # Cloud branch above.
         content = {**content, "type": _SLOT_TO_PROFILE_TYPE[slot], "from": "system"}
+        for key in _ORCA_STRING_LIST_FIELDS:
+            raw = content.get(key)
+            # Parsed the way the slicer would, empty items included, so the
+            # per-extruder positions survive. A real array is never re-read,
+            # and a string the slicer could not parse is forwarded as it is.
+            items = unescape_strings_cstyle(raw) if isinstance(raw, str) else None
+            if items is not None:
+                content[key] = items
     return json.dumps(content)
 
 

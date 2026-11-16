@@ -331,3 +331,79 @@ class TestFetchOrcaCloudPresets:
             await sp._fetch_orca_cloud_presets(MagicMock(), user)
         # Build is the cache miss signal — second call reused the cache.
         build.assert_awaited_once()
+
+
+class TestOrcaCloudIniLists:
+    """Orca Cloud can hand a list option over the way the slicer writes it to
+    an INI file: ONE string of quoted items joined by ``;`` (upstream c4c5c7042,
+    #3381). Read raw, the whole string is one "printer name"."""
+
+    def _orca_creds(self) -> MagicMock:
+        creds = MagicMock()
+        creds.token = "tok"
+        return creds
+
+    @pytest.mark.asyncio
+    async def test_quoted_lists_are_decoded_in_the_listing(self):
+        sp._orca_cloud_cache.clear()
+        svc_mock = MagicMock()
+        svc_mock.list_profiles = AsyncMock(
+            return_value=[
+                {
+                    "id": "f1",
+                    "name": "SUNLU PLA Meta @Bambu Lab X1 Carbon 0.4 nozzle",
+                    "content": {
+                        "type": "filament",
+                        "filament_type": '"PLA"',
+                        "default_filament_colour": '""',
+                        "compatible_printers": '"Bambu Lab X1 Carbon 0.4 nozzle";"Bambu Lab H2C 0.4 nozzle"',
+                    },
+                },
+                {"id": "f2", "name": "Only quotes", "content": {"type": "filament", "compatible_printers": '""'}},
+                {
+                    "id": "f3",
+                    "name": "Escaped",
+                    "content": {
+                        "type": "filament",
+                        "default_filament_colour": '"#FF0000"',
+                        "compatible_printers": '"Printer \\"A\\"";"Bambu Lab A1 0.4 nozzle"',
+                    },
+                },
+                {
+                    "id": "f4",
+                    "name": "Text after a closing quote",
+                    "content": {"type": "filament", "filament_type": "PLA", "compatible_printers": '"X1C" P1S'},
+                },
+                {
+                    "id": "f5",
+                    "name": "A real list",
+                    "content": {"type": "filament", "compatible_printers": ["My X1C; tuned"]},
+                },
+            ]
+        )
+        svc_mock.close = AsyncMock()
+        user = MagicMock(id=1)
+        user.has_permission = MagicMock(return_value=True)
+        with (
+            patch.object(sp, "_load_orca_credentials", AsyncMock(return_value=self._orca_creds())),
+            patch.object(sp, "_build_orca_service", AsyncMock(return_value=svc_mock)),
+        ):
+            slots, _status = await sp._fetch_orca_cloud_presets(MagicMock(), user)
+        sp._orca_cloud_cache.clear()
+
+        meta, only_quotes, escaped, bad, real_list = slots["filament"]
+        assert meta.compatible_printers == ["Bambu Lab X1 Carbon 0.4 nozzle", "Bambu Lab H2C 0.4 nozzle"]
+        assert meta.filament_type == "PLA"
+        assert meta.filament_colour is None
+        assert only_quotes.compatible_printers is None
+        assert escaped.compatible_printers == ['Printer "A"', "Bambu Lab A1 0.4 nozzle"]
+        assert escaped.filament_colour == "#FF0000"
+        # A value the slicer itself cannot read is "no data"; the rest survives.
+        assert bad.compatible_printers is None
+        assert bad.filament_type == "PLA"
+        # A JSON list is never INI-encoded: a ";" in a name stays in the name.
+        assert real_list.compatible_printers == ["My X1C; tuned"]
+
+    def test_a_stored_preset_states_its_material_through_the_same_decoder(self):
+        setting = '{"filament_type": "\\"PETG\\"", "filament_colour": "\\"#112233\\""}'
+        assert _parse_filament_metadata(setting) == ("PETG", "#112233")

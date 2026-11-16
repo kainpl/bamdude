@@ -283,3 +283,16 @@ class TestTheRouteWiring:
         )
         # The patch is a later top-level statement, after the whole slot loop.
         assert loop.end_lineno < patch.lineno
+
+
+class TestThePresetDefaultReaderOnOrcaCloudShapes:
+    """Orca Cloud can hand the option over INI-encoded (upstream c4c5c7042)."""
+
+    def test_reads_a_quoted_string(self):
+        assert _preset_default_colour({"default_filament_colour": '"#123456"'}) == "#123456"
+
+    def test_skips_the_empty_positions_of_a_quoted_list(self):
+        assert _preset_default_colour({"default_filament_colour": '"";"#123456"'}) == "#123456"
+
+    def test_only_quotes_is_no_colour(self):
+        assert _preset_default_colour({"default_filament_colour": '""'}) == ""

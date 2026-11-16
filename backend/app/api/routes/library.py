@@ -159,6 +159,7 @@ from backend.app.utils.filename import (
 )
 from backend.app.utils.http import build_content_disposition
 from backend.app.utils.safe_path import PathTraversalError, safe_join_under
+from backend.app.utils.slicer_strings import first_slicer_string
 from backend.app.utils.threemf_tools import (
     expand_to_project_slots,
     extract_embedded_presets_from_3mf,
@@ -2578,10 +2579,7 @@ def _preset_default_colour(profile: dict) -> str:
     ``filament_colour`` because the CLI does not read it itself (measured:
     Bambu Studio consumes it in the GUI when a project is created).
     """
-    raw = profile.get("default_filament_colour")
-    if isinstance(raw, list):
-        raw = raw[0] if raw else None
-    return raw.strip() if isinstance(raw, str) else ""
+    return first_slicer_string(profile.get("default_filament_colour")) or ""
 
 
 def _patch_filament_colours(
