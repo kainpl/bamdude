@@ -4795,9 +4795,12 @@ export default {
     toast: {
       filesDeleted: 'Deleted {{count}} file(s)',
       deleteFailed: 'Delete failed: {{error}}',
+      deletePartial: 'Deleted {{deleted}} of {{total}}. {{kept}} stayed on the printer: {{reason}}',
+      deleteStopped: 'Deleted {{deleted}} of {{total}}, then stopped: {{reason}} {{notAttempted}} file(s) were not attempted.',
       clearing: 'Clearing SD card...',
       sdCardCleared: 'SD card cleared - deleted {{count}} file(s)',
       sdCardClearedPartial: 'Cleared SD card: deleted {{deleted}}, {{failed}} could not be removed',
+      sdCardClearStopped: 'Clearing stopped because a print is starting on this printer. Deleted {{deleted}} file(s); the rest stayed.',
       clearFailed: 'Clear SD card failed: {{error}}',
       importStarted: 'Importing {{count}} file(s)...',
       importDone: 'Imported {{imported}} of {{total}} ({{existing}} already in library)',

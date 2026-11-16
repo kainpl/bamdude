@@ -4,9 +4,10 @@
 // `utils/sliceFarmFilter`; this hook holds the two switches, their memory and
 // the one read they share (`components/SliceFarmFilters` draws them).
 //
-// ⚠️ Display only. A filter narrows what a list OFFERS; it never picks,
-// replaces or clears a preset — the dropdown keeps the chosen one listed even
-// when the filter would hide it — and the dialog's auto-picks do not read it.
+// ⚠️ A filter narrows what a list OFFERS; it never replaces or clears a chosen
+// preset — the dropdown keeps the chosen one listed even when the filter would
+// hide it. One thing reads it beyond the lists: the dialog's AUTOMATIC filament
+// pick tries the loaded presets first (`pickFilament`, upstream 7f00816f7).
 // A filter that cannot be answered (the read failed, or has not arrived) hides
 // nothing. One that WAS answered and cannot be answered again keeps narrowing
 // by the last good answer and says that it may be out of date (`stale`) —
@@ -22,7 +23,12 @@ import { useTranslation } from 'react-i18next';
 import { ApiError, api, type UnifiedPreset, type UnifiedPresetsBySlot, type UnifiedPresetsResponse } from '../api/client';
 import { useAuth } from '../contexts/AuthContext';
 import { buildPrinterParents, type PrinterParents } from '../utils/printerPresetParents';
-import { filamentPresetIsLoaded, printerPresetIsOnline, printersCountedFor } from '../utils/sliceFarmFilter';
+import {
+  filamentPresetIsLoaded,
+  loadedFilamentsFor,
+  printerPresetIsOnline,
+  printersCountedFor,
+} from '../utils/sliceFarmFilter';
 
 const STORAGE_KEYS = {
   online: 'bamdude:slice-modal:only-online-printers',
@@ -82,6 +88,13 @@ export interface SliceFarmFilters {
   keepPrinter: PresetKeep | undefined;
   /** Which filament presets the lists offer; undefined = no filter applied. */
   keepFilament: PresetKeep | undefined;
+  /**
+   * Which filament presets an AUTOMATIC pick tries first: `keepFilament` while
+   * the farm answer is good. Undefined with the switch off, and when the answer
+   * is refused or could not be read again — a stale answer still narrows the
+   * lists, it steers no pick.
+   */
+  pickFilament: PresetKeep | undefined;
   /** Why the printer list is empty under the filter, when it is. */
   printerNote: string | null;
   /** Why the filament lists are empty under the filter, when they are. */
@@ -124,6 +137,13 @@ export function useSliceFarmFilters(
     () => Object.fromEntries(TIERS.map((tier) => [tier, buildPrinterParents(presets, tier)])),
     [presets],
   );
+  // Its own memo: the automatic pick runs again when THIS changes, so it must
+  // not change with a sentence, the other switch or anything else below.
+  const pickFilament = useMemo<PresetKeep | undefined>(() => {
+    if (!farm || !onlyLoaded || failed) return undefined;
+    const loaded = loadedFilamentsFor(farm, selectedPrinterName, printerParents);
+    return (preset) => filamentPresetIsLoaded(preset, loaded, farm.families);
+  }, [farm, failed, onlyLoaded, printerParents, selectedPrinterName]);
   const { refetch } = farmQuery;
   const retry = useCallback(() => {
     void refetch();
@@ -168,6 +188,7 @@ export function useSliceFarmFilters(
       setOnlyLoaded,
       keepPrinter,
       keepFilament,
+      pickFilament,
       printerNote,
       filamentNote,
       offered,
@@ -184,6 +205,7 @@ export function useSliceFarmFilters(
     onlyOnline,
     onlyLoaded,
     parentsBySource,
+    pickFilament,
     presets,
     printerParents,
     retry,

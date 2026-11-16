@@ -162,9 +162,16 @@ async def remove_verified_copies(
         try:
             if may_run is not None and not may_run():
                 break
-            await delete(path)
+            result = await delete(path)
         except Exception as exc:  # noqa: BLE001 — same as above
             logger.debug("[CLEANUP] %s: could not delete %s: %s", label, path, exc)
+            continue
+        # ⚠️ A transport answers a refused or failed delete with a result, not an
+        # exception (G10 B): only ``deleted`` counts. An answer of nothing is
+        # not a removal either — every transport returns a ``DeleteResult``.
+        outcome = getattr(result, "value", result)
+        if outcome != "deleted":
+            logger.debug("[CLEANUP] %s: %s was not deleted (%s)", label, path, outcome)
             continue
         removed += 1
         logger.info("[CLEANUP] %s: removed the printer's copy %s", label, path)

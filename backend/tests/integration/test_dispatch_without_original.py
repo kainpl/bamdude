@@ -24,6 +24,7 @@ import time
 import zipfile
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -230,6 +231,13 @@ def dispatch_mocks(monkeypatch, factory, *, upload=None):
     monkeypatch.setattr(bd, "list_files_async", AsyncMock(return_value=[]))
     monkeypatch.setattr(bd, "get_ftp_retry_settings", AsyncMock(return_value=(False, 0, 0, 30)))
     monkeypatch.setattr(bd.printer_manager, "ensure_fresh_connection_for_printer", AsyncMock(return_value=True))
+    # The printer this harness stands in for has just reported and is idle: that
+    # is what the file guard needs before the runner may clear or upload anything
+    # (G10 B). A test about a busy or silent printer replaces this itself.
+    monkeypatch.setattr(
+        "backend.app.services.printer_file_guard.observe",
+        lambda _printer_id: SimpleNamespace(connected=True, state="FINISH", gcode_file=None, subtask_name=None),
+    )
     monkeypatch.setattr(bd, "_warn_on_filament_deficit", AsyncMock())
     monkeypatch.setattr(bd, "_apply_calibrations_for_print", AsyncMock(return_value=frozenset()))
     monkeypatch.setattr(bd, "_calibration_bind_keys", AsyncMock(return_value=frozenset()))

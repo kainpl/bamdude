@@ -303,6 +303,8 @@ class TunnelTransport:
         local_path: Path,
         remote_name: str,
         progress_cb: Callable[[int, int], None] | None = None,
+        *,
+        may_run: Callable[[], bool] | None = None,
     ) -> bool:
         """⚠️ Only ``TunnelError`` is caught.
 
@@ -313,6 +315,9 @@ class TunnelTransport:
 
         async def operation() -> bool:
             async with self._client() as client:
+                # After the lane wait and the connection, before the first byte (G10 B).
+                if may_run is not None and not may_run():
+                    return False
                 await client.upload_file(local_path, remote_name, WIRE_EMMC, progress_cb=progress_cb)
                 return True
 

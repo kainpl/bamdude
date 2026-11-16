@@ -270,11 +270,18 @@ async def remove_recording_after_attach(printer, remote_path: str) -> bool:
     is the whole justification for removing somebody's video, and it is not the
     same claim as "we tried to take a copy".
 
+    ⚠️ **The answer is read** (G10 B). The transport reports a refused or failed
+    delete as a result, not an exception, so "no exception" used to be logged as
+    "removed" while the recording was still there. It also asks the file guard:
+    nothing is deleted on a printer whose state is not freshly known.
+
     Never raises: a recording that cannot be removed is a full disk later, and
     an exception here would abandon the archive that was just completed.
     """
     from backend.app.api.routes.settings import get_setting
     from backend.app.core.database import async_session
+    from backend.app.services import printer_file_guard
+    from backend.app.services.bambu_ftp import DeleteResult
     from backend.app.services.printer_files.factory import transport_for
 
     try:
@@ -284,9 +291,20 @@ async def remove_recording_after_attach(printer, remote_path: str) -> bool:
             return False
 
         storage = "internal" if remote_path.startswith(INTERNAL_TIMELAPSE_ROOT) else "external"
-        await transport_for(printer, storage).delete(remote_path)
+        result = await transport_for(printer, storage).delete(
+            remote_path, may_run=printer_file_guard.may_delete(printer.id, remote_path)
+        )
     except Exception as exc:  # noqa: BLE001 — tidying up must not cost an archive
         logger.warning("[TIMELAPSE] Could not remove %s from %s: %s", remote_path, printer.name, exc)
+        return False
+
+    if result != DeleteResult.DELETED:
+        logger.info(
+            "[TIMELAPSE] %s stays on %s (%s) — BamDude has its copy either way",
+            remote_path,
+            printer.name,
+            getattr(result, "value", result),
+        )
         return False
 
     logger.info("[TIMELAPSE] Removed %s from %s — BamDude has it now", remote_path, printer.name)

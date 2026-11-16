@@ -55,6 +55,7 @@ import {
   pickDefault,
   pickEmbeddedFilament,
   pickFilamentForSlot,
+  pickOfferedFilamentForSlot,
   pickProcessDefault,
   statesDifferentMaterial,
 } from '../utils/slicePresetPicker';
@@ -1100,8 +1101,9 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
     () => buildCompatibilityIndex(printerModelsQuery.data ?? {}, printerParents),
     [printerModelsQuery.data, printerParents],
   );
-  // "Only online printers" / "only loaded filaments": what the lists OFFER.
-  // Never read by the pre-pick effects below — a filter replaces no choice.
+  // "Only online printers" / "only loaded filaments": what the lists OFFER. A
+  // filter replaces no choice; the one thing a pre-pick effect below reads is
+  // `pickFilament` — the loaded presets an AUTOMATIC filament pick tries first.
   const farmFilters = useSliceFarmFilters(presetsQuery.data, selectedPrinterName, printerParents);
 
   // Printer / process preset names the source 3MF was prepared with. The
@@ -1234,6 +1236,37 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
   // still compatible with the selected printer, while null slots and
   // printer-incompatible automatic picks are re-picked (#1325). A slot chosen
   // by hand is kept while the listing has its preset.
+  //
+  // With "only loaded filaments" on and the farm readable, an automatic pick
+  // prefers what is loaded (upstream 7f00816f7). The sources, in order: the
+  // preset the project names, a loaded preset that suits the slot, the whole
+  // listing (`autoFilamentPick`).
+  const preferFilament = farmFilters.pickFilament;
+  const onlyLoadedFilaments = farmFilters.onlyLoaded;
+  const autoFilamentPick = (data: UnifiedPresetsResponse, slot: { slot_id: number; type: string; color: string }) =>
+    // The preset the project itself names for this slot comes first (a file
+    // from "Assemble project" names the one chosen there), when it is listed
+    // and fits the printer and the plate's material. A name that several
+    // sources hold is told apart by what the project was built from, else by
+    // the printer preset's source — never by tier order.
+    pickEmbeddedFilament(
+      data,
+      embeddedFilaments?.[slot.slot_id - 1],
+      { type: slot.type },
+      selectedPrinterName,
+      compatIndex,
+      { built: builtFrom?.filament, printerSource },
+    )
+    ?? (preferFilament
+      ? pickOfferedFilamentForSlot(
+          data,
+          preferFilament,
+          { type: slot.type, color: slot.color },
+          selectedPrinterName,
+          compatIndex,
+        )
+      : null)
+    ?? pickFilamentForSlot(data, { type: slot.type, color: slot.color }, selectedPrinterName, compatIndex);
   useEffect(() => {
     const data = presetsQuery.data;
     if (!data) return;
@@ -1261,30 +1294,33 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
             return cur;
           }
         }
-        // The preset the project itself names for this slot comes first (a
-        // file from "Assemble project" names the one chosen there), when it is
-        // listed and fits the printer and the plate's material. A name that
-        // several sources hold is told apart by what the project was built
-        // from, else by the printer preset's source — never by tier order.
-        return (
-          pickEmbeddedFilament(
-            data,
-            embeddedFilaments?.[slot.slot_id - 1],
-            { type: slot.type },
-            selectedPrinterName,
-            compatIndex,
-            { built: builtFrom?.filament, printerSource },
-          )
-          ?? pickFilamentForSlot(
-            data,
-            { type: slot.type, color: slot.color },
-            selectedPrinterName,
-            compatIndex,
-          )
-        );
+        return autoFilamentPick(data, slot);
       });
     });
+    // `autoFilamentPick` closes over nothing but the dependencies below and
+    // `preferFilament`, whose changes the next effect answers.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [presetsQuery.data, filamentSlots, selectedPrinterName, compatIndex, embeddedFilaments, builtFrom, printerSource]);
+
+  // Turning "only loaded filaments" on or off, or a new farm answer, runs the
+  // AUTOMATIC filament picks again — only those: a slot chosen by hand keeps
+  // its preset and an empty slot stays empty. An answer that merely stopped
+  // being readable (the switch is on, nothing to prefer) re-picks nothing.
+  useEffect(() => {
+    const data = presetsQuery.data;
+    if (!data || (preferFilament === undefined && onlyLoadedFilaments)) return;
+    setFilamentPresets((current) => {
+      const next = filamentSlots.map((slot, i) => {
+        const cur = current[i] ?? null;
+        return cur && !explicitFilamentSlots.current.has(i) ? autoFilamentPick(data, slot) : cur;
+      });
+      const same = next.length === current.length
+        && next.every((ref, i) => ref?.source === current[i]?.source && ref?.id === current[i]?.id);
+      return same ? current : next;
+    });
+    // Only the preference re-runs the picks; everything else is the effect above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [preferFilament, onlyLoadedFilaments]);
 
 
   const enqueueMutation = useMutation({
