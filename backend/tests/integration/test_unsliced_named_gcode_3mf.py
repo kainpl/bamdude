@@ -323,3 +323,179 @@ async def test_the_dispatcher_still_takes_sliced_names(tmp_path):
     raw.write_text("G1 X0\n")
     await BackgroundDispatchService._require_sliced_source(NAME, a_3mf(tmp_path / NAME, sliced=True))
     await BackgroundDispatchService._require_sliced_source("lamp.gcode", raw)
+
+
+# --------------------------------------------------------------------------- #
+# An ARCHIVE as the source: Reprint, add to queue, run next (review B-I2)
+# --------------------------------------------------------------------------- #
+
+
+async def an_archive_row(db, printer, path: Path, base: Path):
+    """An archive holding ``path`` as its file — a run from before the gate keeps a project."""
+    from backend.app.models.archive import PrintArchive
+
+    row = PrintArchive(
+        printer_id=printer.id,
+        filename=path.name,
+        print_name="Lamp",
+        file_path=str(path.relative_to(base)),
+        file_size=path.stat().st_size,
+        status="failed",
+    )
+    db.add(row)
+    await db.commit()
+    return row
+
+
+def _archive_item(queue, archive, **extra) -> PrintQueueItemCreate:
+    return PrintQueueItemCreate(queue_id=queue.id, archive_id=archive.id, plate_id=PLATE, **extra)
+
+
+class TestTheArchiveQuestion:
+    async def test_a_known_project_is_refused_whatever_it_is_called(self, tmp_path):
+        from backend.app.services.library_helpers import archive_source_refusal
+
+        named = await archive_source_refusal(NAME, a_3mf(tmp_path / NAME, sliced=False))
+        plain = await archive_source_refusal("lamp.3mf", a_3mf(tmp_path / "lamp.3mf", sliced=False))
+        assert named is not None and "Slice it first" in named
+        assert plain is not None and "Not a sliced file" in plain
+
+    async def test_a_sliced_archive_passes_under_any_name(self, tmp_path):
+        from backend.app.services.library_helpers import archive_source_refusal
+
+        assert await archive_source_refusal(NAME, a_3mf(tmp_path / NAME, sliced=True)) is None
+        # An external print is archived as ``Foo.3mf`` with its G-code inside.
+        assert await archive_source_refusal("lamp.3mf", a_3mf(tmp_path / "lamp.3mf", sliced=True)) is None
+
+    async def test_content_nobody_could_read_refuses_nothing(self, tmp_path):
+        """An archive never had a name rule: unknown content is sent as it always was."""
+        from backend.app.services.library_helpers import archive_source_refusal
+
+        junk = tmp_path / "lamp.3mf"
+        junk.write_bytes(b"not a zip at all")
+        raw = tmp_path / "lamp.gcode"
+        raw.write_text("G1 X0\n")
+        assert await archive_source_refusal("lamp.3mf", junk) is None
+        assert await archive_source_refusal("lamp.3mf", tmp_path / "gone.3mf") is None
+        assert await archive_source_refusal("lamp.3mf", None) is None
+        assert await archive_source_refusal("lamp.gcode", raw) is None
+
+
+async def test_the_queue_refuses_an_archive_that_holds_a_project(
+    db_session, tmp_path, printer_factory, monkeypatch, sessions
+):
+    from backend.app.services.queue_add import add_items_to_printer_queue
+
+    _src, printer, queue, _mqtt = await setup_source(db_session, tmp_path, printer_factory, monkeypatch)
+    monkeypatch.setattr("backend.app.services.filament_intake.settings.base_dir", tmp_path)
+    archive = await an_archive_row(db_session, printer, a_3mf(tmp_path / NAME, sliced=False), tmp_path)
+
+    # The capture's own plate check closes this door: the queue reads the plate it is asked for.
+    with pytest.raises(HTTPException) as refused:
+        await add_items_to_printer_queue(db_session, _archive_item(queue, archive), None)
+
+    assert refused.value.status_code == 422
+    assert refused.value.detail["code"] == "plate_gcode_missing"
+
+
+async def test_the_queue_still_takes_a_sliced_archive(db_session, tmp_path, printer_factory, monkeypatch, sessions):
+    from backend.app.services.queue_add import add_items_to_printer_queue
+
+    _src, printer, queue, _mqtt = await setup_source(db_session, tmp_path, printer_factory, monkeypatch)
+    monkeypatch.setattr("backend.app.services.filament_intake.settings.base_dir", tmp_path)
+    archive = await an_archive_row(db_session, printer, a_3mf(tmp_path / NAME, sliced=True), tmp_path)
+
+    items, _q = await add_items_to_printer_queue(db_session, _archive_item(queue, archive), None)
+
+    assert len(items) == 1 and items[0].queue_source_id is not None
+
+
+async def test_run_next_refuses_an_archive_that_holds_a_project(
+    db_session, tmp_path, printer_factory, monkeypatch, sessions
+):
+    from backend.app.services.queue_add import add_next_block_to_printer_queue
+
+    _src, printer, queue, _mqtt = await setup_source(db_session, tmp_path, printer_factory, monkeypatch)
+    monkeypatch.setattr("backend.app.services.filament_intake.settings.base_dir", tmp_path)
+    archive = await an_archive_row(db_session, printer, a_3mf(tmp_path / NAME, sliced=False), tmp_path)
+
+    with pytest.raises(HTTPException) as refused:
+        await add_next_block_to_printer_queue(
+            db_session, [_archive_item(queue, archive, enqueue_position="next")], None
+        )
+
+    assert refused.value.status_code == 422
+    assert refused.value.detail["code"] == "plate_gcode_missing"
+
+
+async def test_run_next_still_takes_a_sliced_archive(db_session, tmp_path, printer_factory, monkeypatch, sessions):
+    from backend.app.services.queue_add import add_next_block_to_printer_queue
+
+    _src, printer, queue, _mqtt = await setup_source(db_session, tmp_path, printer_factory, monkeypatch)
+    monkeypatch.setattr("backend.app.services.filament_intake.settings.base_dir", tmp_path)
+    archive = await an_archive_row(db_session, printer, a_3mf(tmp_path / NAME, sliced=True), tmp_path)
+
+    items, _q = await add_next_block_to_printer_queue(
+        db_session, [_archive_item(queue, archive, enqueue_position="next")], None
+    )
+
+    assert len(items) == 1
+
+
+async def _reprint(async_client, archive, printer, tmp_path):
+    with (
+        patch("backend.app.api.routes.archives.settings.base_dir", tmp_path),
+        patch("backend.app.services.filament_intake.settings.base_dir", tmp_path),
+        patch("backend.app.services.printer_manager.printer_manager.is_connected", return_value=True),
+        patch(
+            "backend.app.services.background_dispatch.background_dispatch.dispatch_reprint_archive",
+            new=AsyncMock(return_value={"dispatch_job_id": 22, "dispatch_position": 1}),
+        ),
+    ):
+        return await async_client.post(f"/api/v1/archives/{archive.id}/reprint?printer_id={printer.id}", json={})
+
+
+async def test_reprint_refuses_an_archive_that_holds_a_project(async_client, db_session, tmp_path, printer_factory):
+    printer = await printer_factory()
+    archive = await an_archive_row(db_session, printer, a_3mf(tmp_path / NAME, sliced=False), tmp_path)
+
+    response = await _reprint(async_client, archive, printer, tmp_path)
+
+    assert response.status_code == 400, response.text
+    assert "Slice it first" in response.json()["detail"]
+
+
+async def test_reprint_still_sends_a_sliced_archive(async_client, db_session, tmp_path, printer_factory):
+    printer = await printer_factory()
+    archive = await an_archive_row(db_session, printer, a_3mf(tmp_path / NAME, sliced=True), tmp_path)
+
+    response = await _reprint(async_client, archive, printer, tmp_path)
+
+    assert response.status_code == 200, response.text
+
+
+async def test_the_archive_runner_refuses_a_project_as_its_last_gate(tmp_path):
+    from backend.app.services.background_dispatch import BackgroundDispatchService
+
+    with pytest.raises(RuntimeError, match="Slice it first"):
+        await BackgroundDispatchService._require_sliced_archive_source(NAME, a_3mf(tmp_path / NAME, sliced=False))
+
+
+async def test_the_archive_runner_sends_sliced_and_unreadable_bytes_as_before(tmp_path):
+    from backend.app.services.background_dispatch import BackgroundDispatchService
+
+    await BackgroundDispatchService._require_sliced_archive_source(
+        "lamp.3mf", a_3mf(tmp_path / "lamp.3mf", sliced=True)
+    )
+    await BackgroundDispatchService._require_sliced_archive_source("lamp.3mf", tmp_path / "gone.3mf")
+
+
+def test_the_archive_runner_asks_its_gate():
+    """The runner is too heavy to drive here: pin that its body reaches the gate before it patches or uploads."""
+    import inspect
+
+    from backend.app.services.background_dispatch import BackgroundDispatchService
+
+    body = inspect.getsource(BackgroundDispatchService._run_reprint_archive)
+    assert "_require_sliced_archive_source(" in body
+    assert body.index("_require_sliced_archive_source(") < body.index("apply_3mf_transforms")

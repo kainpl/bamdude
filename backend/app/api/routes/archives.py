@@ -3683,6 +3683,14 @@ async def reprint_archive(
     if not file_path.is_file():
         raise HTTPException(404, "Archive file not found")
 
+    # A run from before the content gate may have archived a project under a
+    # sliced name: say so here rather than as a failed dispatch a moment later.
+    from backend.app.services.library_helpers import archive_source_refusal
+
+    refusal = await archive_source_refusal(archive.filename, file_path)
+    if refusal is not None:
+        raise HTTPException(400, refusal)
+
     plate_name = body.plate_name
     if not plate_name and body.plate_id is not None:
         plate_name = f"Plate {body.plate_id}"

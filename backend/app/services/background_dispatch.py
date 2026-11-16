@@ -2632,6 +2632,10 @@ class BackgroundDispatchService:
 
             file_path = job.source.path if job.source is not None else settings.base_dir / source_archive.file_path
             await require_source_file(file_path)
+            # A run from before the content gate may have archived a project under
+            # a sliced name; Reprint, a queued archive job and the plate's Repeat
+            # all end here, so this is where it stops going to the printer again.
+            await self._require_sliced_archive_source(archive_filename, file_path)
 
             # Unified 3MF post-processing: M970 commenting (mesh-mode-fast-check
             # off) and per-plate G-code injection (#422) share a single
@@ -4760,6 +4764,19 @@ class BackgroundDispatchService:
         refusal = await sliced_source_refusal(
             filename, file_path, named=BackgroundDispatchService._is_sliced_file(filename)
         )
+        if refusal is not None:
+            raise SourceRejected(refusal)
+
+    @staticmethod
+    async def _require_sliced_archive_source(filename: str, file_path: Path) -> None:
+        """The archive runner's last gate: bytes KNOWN to hold no sliced G-code are not sent.
+
+        An archive has no name rule (see ``library_helpers.archive_source_refusal``):
+        a sliced ``Foo.3mf`` and a file that cannot be read go on as before.
+        """
+        from backend.app.services.library_helpers import archive_source_refusal
+
+        refusal = await archive_source_refusal(filename, file_path)
         if refusal is not None:
             raise SourceRejected(refusal)
 

@@ -139,6 +139,25 @@ async def sliced_source_refusal(
     return UNSLICED_PROJECT_DETAIL if named else NOT_SLICED_DETAIL
 
 
+async def archive_source_refusal(filename: str, path: str | Path | None) -> str | None:
+    """The same question asked of an ARCHIVE's own file: refused only on content that is known.
+
+    An archive never had a name rule — an external print is archived as
+    ``Foo.3mf`` with its G-code inside, and a run from before the content gate
+    may hold a project under a sliced name. So the name refuses nothing here:
+    a container that opened and holds no sliced G-code is refused, and bytes
+    nobody could read are sent as they always were. The name only picks the
+    sentence. An archive row stores no sliced fact, so the container is read
+    (central directory, off the loop).
+    """
+    refusal = await sliced_source_refusal(filename, path, named=True)
+    if refusal is None:
+        return None
+    from backend.app.utils.filename import is_sliced_file
+
+    return refusal if is_sliced_file(filename) else NOT_SLICED_DETAIL
+
+
 def detect_file_type(filename: str) -> str:
     """Return the canonical ``library_files.file_type`` value for ``filename``.
 
