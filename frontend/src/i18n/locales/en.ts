@@ -1774,6 +1774,11 @@ export default {
     // HMS errors
     clickToViewHmsErrors: 'Click to view HMS errors',
     estimatedCompletion: 'Estimated completion time',
+    nextPause: {
+      inMinutes: 'Pause in ~{{minutes}} min (layer {{layer}})',
+      atLayer: 'Pause at layer {{layer}}',
+      title: 'The next pause added in the slicer is at layer {{layer}}. The time is an estimate.',
+    },
     usageProjection: {
       soFar: 'Filament so far: {{consumed}} of ~{{estimate}} g',
       split: 'split across spools',

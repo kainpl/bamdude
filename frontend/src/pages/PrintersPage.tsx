@@ -12,6 +12,7 @@ import { PrinterLocationSelect } from '../components/PrinterLocationSelect';
 import { PrinterTagsSelect } from '../components/PrinterTagsSelect';
 import { PrinterTagChip } from '../components/PrinterTagChip';
 import { UsageProjection } from '../components/UsageProjection';
+import { NextPauseLine } from '../components/NextPauseLine';
 import { farmPollInterval, farmQueryResumeOptions, farmRead, farmReadRetry, farmReadRetryDelay, farmStatusPollInterval } from '../api/farmReadBudget';
 import { CardSizeSwitch } from '../components/CardSizeSwitch';
 import { ListViewToggle } from '../components/ListViewToggle';
@@ -4420,6 +4421,12 @@ const PrinterCard = memo(function PrinterCard({
                         </span>
                       )}
                     </div>
+                    {/* The next slicer pause, on a line of its own: the metrics
+                        line above is one clipped row and has no room for it. */}
+                    <NextPauseLine
+                      nextPause={status.next_pause}
+                      className="mt-1 text-[length:var(--pc-t11,11px)] leading-none"
+                    />
                     {/* Filament so far — the same line the expanded card shows
                         under the file name; it polls only while printing. */}
                     <UsageProjection printerId={printer.id} printing archiveId={status.current_archive_id} />
@@ -4543,6 +4550,7 @@ const PrinterCard = memo(function PrinterCard({
                               </span>
                             )}
                           </div>
+                          <NextPauseLine nextPause={status.next_pause} className="mt-1 text-xs" />
                           <UsageProjection
                             printerId={printer.id}
                             printing={status.state === 'RUNNING' || status.state === 'PAUSE'}

@@ -1336,6 +1336,10 @@ export interface PrinterStatus {
   layer_num: number | null;
   total_layers: number | null;
   total_layers_source?: 'mqtt' | 'file' | 'unknown';
+  /** The next pause the slicer put into the running print. `minutes` is an
+   *  estimate the server gives only at Standard speed for a file with time
+   *  markers; absent/null when nothing is known — never computed here. */
+  next_pause?: { layer: number; minutes: number | null } | null;
   temperatures: {
     bed?: number;
     bed_target?: number;

@@ -1793,6 +1793,11 @@ export default {
     // HMS errors
     clickToViewHmsErrors: 'Натисніть для перегляду помилок HMS',
     estimatedCompletion: 'Орієнтовний час завершення',
+    nextPause: {
+      inMinutes: 'Пауза через ~{{minutes}} хв (шар {{layer}})',
+      atLayer: 'Пауза на шарі {{layer}}',
+      title: 'Наступна пауза, додана у слайсері, — на шарі {{layer}}. Час орієнтовний.',
+    },
     usageProjection: {
       soFar: 'Філаменту вже: {{consumed}} з ~{{estimate}} г',
       split: 'розділено між котушками',
