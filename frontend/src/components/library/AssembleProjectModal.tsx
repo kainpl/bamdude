@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { AlertTriangle, CheckCircle2, LayoutGrid, Loader2, Minus, Plus, Trash2, XCircle } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, Cog, LayoutGrid, Loader2, Minus, Plus, Trash2, XCircle } from 'lucide-react';
 
 import {
   api,
@@ -48,6 +48,12 @@ interface AssembleProjectModalProps {
   onClose: () => void;
   /** Show one of the written files in the library (the summary's file links). */
   onOpenFile?: (fileId: number) => void;
+  /**
+   * Open the Slice dialog for one of the written files (the summary's "Slice"). Given only where the page
+   * offers in-app slicing to this user; the dialog reads the printer, process and filament the assembly
+   * embedded off the file itself, so nothing about them is handed over.
+   */
+  onSliceFile?: (fileId: number, name: string) => void;
 }
 
 const POLL_MS = 1500;
@@ -308,10 +314,12 @@ function PrinterSummary({
   row,
   partNames,
   onOpenFile,
+  onSliceFile,
 }: {
   row: AssemblyPrinterResult;
   partNames: string[];
   onOpenFile?: (fileId: number) => void;
+  onSliceFile?: (fileId: number, name: string) => void;
 }) {
   const { t } = useTranslation();
   const good = row.status === 'ok';
@@ -346,17 +354,30 @@ function PrinterSummary({
         <ul className="text-sm space-y-1">
           {row.files.map((file) => (
             <li key={file.library_file_id}>
-              {onOpenFile ? (
-                <button
-                  type="button"
-                  className="text-bambu-green hover:underline text-left break-all"
-                  onClick={() => onOpenFile(file.library_file_id)}
-                >
-                  {file.name}
-                </button>
-              ) : (
-                <span className="text-white break-all">{file.name}</span>
-              )}
+              <span className="flex items-start justify-between gap-3">
+                {onOpenFile ? (
+                  <button
+                    type="button"
+                    className="text-bambu-green hover:underline text-left break-all"
+                    onClick={() => onOpenFile(file.library_file_id)}
+                  >
+                    {file.name}
+                  </button>
+                ) : (
+                  <span className="text-white break-all">{file.name}</span>
+                )}
+                {onSliceFile && (
+                  <button
+                    type="button"
+                    className="shrink-0 inline-flex items-center gap-1.5 rounded-md border border-bambu-dark-tertiary px-2 py-1 text-xs text-white hover:border-bambu-gray transition-colors"
+                    aria-label={t('fileManager.assemble.sliceFile', { name: file.name })}
+                    onClick={() => onSliceFile(file.library_file_id, file.name)}
+                  >
+                    <Cog className="w-3.5 h-3.5" />
+                    {t('slice.action')}
+                  </button>
+                )}
+              </span>
               {file.fallback_reason && (
                 <span className="block text-xs text-amber-400">
                   {t(`fileManager.assemble.fallback.${file.fallback_reason}`, {
@@ -397,7 +418,7 @@ function PrinterSummary({
   );
 }
 
-export function AssembleProjectModal({ mode, onClose, onOpenFile }: AssembleProjectModalProps) {
+export function AssembleProjectModal({ mode, onClose, onOpenFile, onSliceFile }: AssembleProjectModalProps) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { trackJob } = useSliceJobTracker();
@@ -531,7 +552,13 @@ export function AssembleProjectModal({ mode, onClose, onOpenFile }: AssembleProj
           <p className="text-sm text-amber-400">{t('fileManager.assemble.doneInPart')}</p>
         )}
         {result?.printers.map((row, index) => (
-          <PrinterSummary key={index} row={row} partNames={partNames} onOpenFile={onOpenFile} />
+          <PrinterSummary
+            key={index}
+            row={row}
+            partNames={partNames}
+            onOpenFile={onOpenFile}
+            onSliceFile={onSliceFile}
+          />
         ))}
         {result && result.trashed.length > 0 && (
           <p className="text-xs text-bambu-gray">{t('fileManager.assemble.trashed', { count: result.trashed.length })}</p>

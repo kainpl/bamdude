@@ -10,9 +10,12 @@ import math
 import zipfile
 from contextlib import contextmanager
 
+import pytest
+
 from backend.app.utils.threemf_tools import (
     expand_to_project_slots,
     extract_bed_type_from_3mf,
+    extract_embedded_filament_presets_from_3mf,
     extract_embedded_presets_from_3mf,
     extract_filament_usage_from_3mf,
     extract_support_filament_slots_from_3mf,
@@ -900,3 +903,40 @@ class TestPlatePictureEntry:
             {"Metadata/slice_info.config": self._slice_info(1), "Metadata/plate_1_small.png": b"thumb"}
         ) as zf:
             assert plate_picture_entry(zf, 1) is None
+
+
+class TestEmbeddedFilamentPresets:
+    """The filament preset a project names for each slot (``filament_settings_id``)."""
+
+    def test_one_name_per_slot_in_slot_order(self):
+        config = json.dumps({"filament_settings_id": ["Bambu PETG HF @BBL X1C", "Bambu PLA Basic @BBL X1C"]})
+        with _make_3mf_with({"Metadata/project_settings.config": config}) as zf:
+            assert extract_embedded_filament_presets_from_3mf(zf) == [
+                "Bambu PETG HF @BBL X1C",
+                "Bambu PLA Basic @BBL X1C",
+            ]
+
+    def test_a_slot_without_a_name_keeps_its_place(self):
+        config = json.dumps({"filament_settings_id": ["Generic PLA", "", 7, "  Generic PETG  "]})
+        with _make_3mf_with({"Metadata/project_settings.config": config}) as zf:
+            assert extract_embedded_filament_presets_from_3mf(zf) == ["Generic PLA", None, None, "Generic PETG"]
+
+    def test_a_single_name_is_one_slot(self):
+        config = json.dumps({"filament_settings_id": "Generic PLA"})
+        with _make_3mf_with({"Metadata/project_settings.config": config}) as zf:
+            assert extract_embedded_filament_presets_from_3mf(zf) == ["Generic PLA"]
+
+    @pytest.mark.parametrize(
+        "files",
+        [
+            {"3D/3dmodel.model": "<model/>"},
+            {"Metadata/project_settings.config": "not json"},
+            {"Metadata/project_settings.config": "[1, 2]"},
+            {"Metadata/project_settings.config": json.dumps({"filament_settings_id": {"a": 1}})},
+            {"Metadata/project_settings.config": json.dumps({"print_settings_id": "x"})},
+        ],
+        ids=["no-config", "malformed", "not-an-object", "wrong-shape", "absent"],
+    )
+    def test_nothing_readable_is_an_empty_list(self, files):
+        with _make_3mf_with(files) as zf:
+            assert extract_embedded_filament_presets_from_3mf(zf) == []

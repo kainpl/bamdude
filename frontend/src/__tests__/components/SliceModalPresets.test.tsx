@@ -240,3 +240,50 @@ describe('SliceModal — how wide it gets', () => {
     expect(process.className.split(/\s+/)).toEqual(expect.arrayContaining(['flex-1', 'min-w-0']));
   });
 });
+
+describe('SliceModal — a project that names its filament presets', () => {
+  // What "Assemble project" writes: the printer, process and filament the
+  // operator chose, by name. The dialog opened from its summary starts on them.
+  const listing: Listing = {
+    standard: {
+      printer: [{ name: A1 }, { name: H2D }],
+      process: [{ name: '0.20mm Standard @BBL A1' }, { name: '0.20mm Standard @BBL H2D' }],
+      filament: [
+        { name: 'Generic PLA @BBL H2D', filament_type: 'PLA' },
+        { name: 'Bambu PLA Matte @BBL H2D', filament_type: 'PLA' },
+        { name: 'Bambu PLA Matte @BBL A1', filament_type: 'PLA' },
+      ],
+    },
+  };
+  const project = (embedded_filaments: (string | null)[]) =>
+    http.get('*/api/v1/library/files/:id/plates', () =>
+      HttpResponse.json({
+        plates: [{ index: 1, name: 'Plate 1' }],
+        embedded_printer: H2D,
+        embedded_process: '0.20mm Standard @BBL H2D',
+        embedded_filaments,
+      }),
+    );
+
+  it('starts on the printer, process and filament the project names', async () => {
+    serve(listing);
+    server.use(project(['Bambu PLA Matte @BBL H2D']));
+    open();
+
+    const printer = (await picker('Printer profile')) as HTMLSelectElement;
+    await waitFor(() => expect(printer.value).toBe(`standard:${H2D}`));
+    const process = (await picker('Process profile')) as HTMLSelectElement;
+    await waitFor(() => expect(process.value).toBe('standard:0.20mm Standard @BBL H2D'));
+    const filament = (await picker('Filament profile')) as HTMLSelectElement;
+    await waitFor(() => expect(filament.value).toBe('standard:Bambu PLA Matte @BBL H2D'));
+  });
+
+  it('falls back to its own pick when the named filament is not in the listing', async () => {
+    serve(listing);
+    server.use(project(['A filament nobody has']));
+    open();
+
+    const filament = (await picker('Filament profile')) as HTMLSelectElement;
+    await waitFor(() => expect(filament.value).toBe('standard:Generic PLA @BBL H2D'));
+  });
+});

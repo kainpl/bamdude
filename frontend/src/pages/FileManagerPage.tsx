@@ -1922,7 +1922,9 @@ export function FileManagerPage() {
   // re-fetches everything it needs about them from `parts-preview`.
   const [planFiles, setPlanFiles] = useState<number[] | null>(null);
   const [assembleMode, setAssembleMode] = useState<AssembleMode | null>(null);
-  const [sliceFile, setSliceFile] = useState<LibraryFileListItem | null>(null);
+  // Only what the Slice dialog needs of a file: a row hands over itself, the
+  // "Assemble project" summary a file it has just written.
+  const [sliceFile, setSliceFile] = useState<Pick<LibraryFileListItem, 'id' | 'filename'> | null>(null);
   const [renameItem, setRenameItem] = useState<{ type: 'file' | 'folder'; id: number; name: string } | null>(null);
   const [swapDeclarationFile, setSwapDeclarationFile] = useState<LibraryFileListItem | null>(null);
   const [thumbnailVersions, setThumbnailVersions] = useState<Record<number, number>>({});
@@ -4755,6 +4757,16 @@ export function FileManagerPage() {
             setSelectedFiles([id]);
             setAssembleMode(null);
           }}
+          onSliceFile={
+            // The file rows' own gate for in-app slicing: the sidecar is on and
+            // the user may write the sliced file. The same SliceModal opens.
+            (settings?.use_slicer_api ?? false) && hasPermission('library:upload')
+              ? (id, filename) => {
+                  setAssembleMode(null);
+                  setSliceFile({ id, filename });
+                }
+              : undefined
+          }
         />
       )}
 

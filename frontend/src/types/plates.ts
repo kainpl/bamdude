@@ -64,6 +64,9 @@ export interface ArchivePlatesResponse {
   // the 3MF carries no embedded preset ids.
   embedded_printer?: string | null;
   embedded_process?: string | null;
+  // See LibraryFilePlatesResponse.embedded_filaments. The archive route does
+  // not send it; declared here because the SliceModal reads both shapes.
+  embedded_filaments?: (string | null)[];
   // See LibraryFilePlatesResponse.design_overrides (#2622). Present here too
   // because the SliceModal re-slices archives through this endpoint — offering
   // the designer's settings from one door and not the other would look like a
@@ -79,6 +82,11 @@ export interface LibraryFilePlatesResponse {
   // See ArchivePlatesResponse.embedded_printer / embedded_process (#1325).
   embedded_printer?: string | null;
   embedded_process?: string | null;
+  // The filament preset the project names for each slot (index 0 is slot 1;
+  // null where a slot names none). The SliceModal starts a slot on it when the
+  // preset is in the listing and fits the printer and the plate's material —
+  // which is how a file from "Assemble project" opens on what was chosen there.
+  embedded_filaments?: (string | null)[];
   // Process settings the designer changed away from the stock preset, read from
   // the 3MF's own `different_settings_to_system` (#2622). Offered in the
   // SliceModal so a re-slice for another printer can carry them instead of

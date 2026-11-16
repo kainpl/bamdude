@@ -71,11 +71,15 @@ let posted: { url: string; body: Record<string, unknown> }[];
 let jobState: Record<string, unknown>;
 let cancelled: number;
 
-function open(mode: AssembleMode = { kind: 'new', files: FILES }, onOpenFile = vi.fn()) {
+function open(
+  mode: AssembleMode = { kind: 'new', files: FILES },
+  onOpenFile = vi.fn(),
+  onSliceFile?: (fileId: number, name: string) => void,
+) {
   const onClose = vi.fn();
   render(
     <SliceJobTrackerProvider>
-      <AssembleProjectModal mode={mode} onClose={onClose} onOpenFile={onOpenFile} />
+      <AssembleProjectModal mode={mode} onClose={onClose} onOpenFile={onOpenFile} onSliceFile={onSliceFile} />
     </SliceJobTrackerProvider>,
   );
   return { onClose, onOpenFile };
@@ -184,6 +188,34 @@ describe('AssembleProjectModal', () => {
     expect(within(summary).getByText('lid.stl — 14 per plate')).toBeInTheDocument();
     fireEvent.click(within(summary).getByRole('button', { name: 'jar +1 — X1C.3mf' }));
     expect(onOpenFile).toHaveBeenCalledWith(77);
+  });
+
+  it('offers to slice each file it wrote, and hands over that file', async () => {
+    const onSliceFile = vi.fn();
+    const { onOpenFile } = open(undefined, vi.fn(), onSliceFile);
+    const dialog = await screen.findByRole('dialog', { name: 'Assemble project' });
+    await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Assemble' })).toBeEnabled());
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Assemble' }));
+
+    const summary = await screen.findByTestId('assemble-summary');
+    const files = okResult().printers.flatMap((row) => row.files);
+    expect(within(summary).getAllByRole('button', { name: /^Slice / })).toHaveLength(files.length);
+    fireEvent.click(within(summary).getByRole('button', { name: 'Slice jar +1 — X1C.3mf' }));
+
+    expect(onSliceFile).toHaveBeenCalledTimes(1);
+    expect(onSliceFile).toHaveBeenCalledWith(77, 'jar +1 — X1C.3mf');
+    // slicing a file is not opening it
+    expect(onOpenFile).not.toHaveBeenCalled();
+  });
+
+  it('offers no slicing where the page gave it no way to slice', async () => {
+    open();
+    const dialog = await screen.findByRole('dialog', { name: 'Assemble project' });
+    await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Assemble' })).toBeEnabled());
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Assemble' }));
+
+    const summary = await screen.findByTestId('assemble-summary');
+    expect(within(summary).queryByRole('button', { name: /^Slice / })).not.toBeInTheDocument();
   });
 
   it('names the parts a printer could not take, beside the printer that could', async () => {

@@ -6407,6 +6407,7 @@ export default {
       pollFailed: 'Стан збирання більше не вдається прочитати. Перевірте файли в бібліотеці.',
       plate: 'Стіл {{number}}',
       plateAlt: 'Розкладка столу {{number}}',
+      sliceFile: 'Нарізати {{name}}',
       perPlate_one: '{{count}} на стіл',
       perPlate_few: '{{count}} на стіл',
       perPlate_many: '{{count}} на стіл',

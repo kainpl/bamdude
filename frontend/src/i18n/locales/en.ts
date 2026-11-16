@@ -6347,6 +6347,7 @@ export default {
       pollFailed: 'The state of the assembly can no longer be read. Check the library for its files.',
       plate: 'Plate {{number}}',
       plateAlt: 'Layout of plate {{number}}',
+      sliceFile: 'Slice {{name}}',
       perPlate_one: '{{count}} per plate',
       perPlate_other: '{{count}} per plate',
       trashed_one: '{{count}} previous file was moved to the trash.',

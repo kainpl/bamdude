@@ -164,6 +164,30 @@ export function statesDifferentMaterial(
   return Boolean(required) && Boolean(stated) && !filamentTypesCompatible(stated, required);
 }
 
+/**
+ * The filament preset the source project NAMES for a slot, when it can stand as
+ * that slot's default: it is in the listing, it is not made for another printer
+ * than the selected one, and it does not state another material than the plate
+ * asks for. `null` otherwise — the caller falls back to `pickFilamentForSlot`.
+ *
+ * The filament counterpart of honouring the embedded printer and process names
+ * (#1325); a file written by "Assemble project" names the preset chosen there.
+ */
+export function pickEmbeddedFilament(
+  by: UnifiedPresetsResponse,
+  embeddedName: string | null | undefined,
+  required: { type: string },
+  printerName: string | null,
+  compatIndex: PrinterCompatibilityIndex,
+): PresetRef | null {
+  const ref = findPresetByName(by, 'filament', embeddedName);
+  const preset = findPreset(by, ref, 'filament');
+  if (!ref || !preset) return null;
+  if (statesDifferentMaterial(preset, required.type)) return null;
+  if (presetCompatibility(preset, 'filament', printerName, compatIndex) === 'mismatch') return null;
+  return ref;
+}
+
 export function pickFilamentForSlot(
   by: UnifiedPresetsResponse,
   required: { type: string; color: string },

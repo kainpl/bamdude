@@ -590,6 +590,32 @@ def extract_embedded_presets_from_3mf(zf: zipfile.ZipFile) -> dict[str, str | No
     return result
 
 
+def extract_embedded_filament_presets_from_3mf(zf: zipfile.ZipFile) -> list[str | None]:
+    """The filament preset a 3MF project names for each slot, in slot order.
+
+    ``filament_settings_id`` of ``Metadata/project_settings.config`` — one name
+    per filament slot (index 0 is slot 1). The SliceModal offers each as that
+    slot's default, as it does the printer and the process
+    (:func:`extract_embedded_presets_from_3mf`). A slot that names nothing is
+    ``None`` and keeps its place; anything unreadable is an empty list, and the
+    modal falls back to its own pick.
+    """
+    try:
+        if "Metadata/project_settings.config" not in zf.namelist():
+            return []
+        data = json.loads(zf.read("Metadata/project_settings.config").decode())
+    except (KeyError, ValueError, OSError):
+        return []
+    if not isinstance(data, dict):
+        return []
+    value = data.get("filament_settings_id")
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, list):
+        return []
+    return [item.strip() if isinstance(item, str) and item.strip() else None for item in value]
+
+
 # Bound on the dense slot list. The slot IDs are whatever the file says, so a
 # corrupt or hostile 3MF declaring `filament id="50000000"` would otherwise
 # allocate a fifty-million-entry list on the dispatch path.

@@ -53,6 +53,7 @@ import {
   findPreset,
   findPresetByName,
   pickDefault,
+  pickEmbeddedFilament,
   pickFilamentForSlot,
   pickProcessDefault,
   statesDifferentMaterial,
@@ -1041,6 +1042,7 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
   // it), so these are known by the time the pre-pick effects run.
   const embeddedPrinter = platesQuery.data?.embedded_printer ?? null;
   const embeddedProcess = platesQuery.data?.embedded_process ?? null;
+  const embeddedFilaments = platesQuery.data?.embedded_filaments;
 
   // "Slice as designed" (upstream #2611). When on, the backend honours the
   // source 3MF's embedded project_settings.config (the designer's own wall
@@ -1163,15 +1165,27 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
             return cur;
           }
         }
-        return pickFilamentForSlot(
-          data,
-          { type: slot.type, color: slot.color },
-          selectedPrinterName,
-          compatIndex,
+        // The preset the project itself names for this slot comes first (a
+        // file from "Assemble project" names the one chosen there), when it is
+        // listed and fits the printer and the plate's material.
+        return (
+          pickEmbeddedFilament(
+            data,
+            embeddedFilaments?.[slot.slot_id - 1],
+            { type: slot.type },
+            selectedPrinterName,
+            compatIndex,
+          )
+          ?? pickFilamentForSlot(
+            data,
+            { type: slot.type, color: slot.color },
+            selectedPrinterName,
+            compatIndex,
+          )
         );
       });
     });
-  }, [presetsQuery.data, filamentSlots, selectedPrinterName, compatIndex]);
+  }, [presetsQuery.data, filamentSlots, selectedPrinterName, compatIndex, embeddedFilaments]);
 
 
   const enqueueMutation = useMutation({

@@ -162,6 +162,7 @@ from backend.app.utils.safe_path import PathTraversalError, safe_join_under
 from backend.app.utils.slicer_strings import first_slicer_string
 from backend.app.utils.threemf_tools import (
     expand_to_project_slots,
+    extract_embedded_filament_presets_from_3mf,
     extract_embedded_presets_from_3mf,
     extract_nozzle_mapping_from_3mf,
     extract_project_filaments_from_3mf,
@@ -4716,6 +4717,8 @@ async def get_library_file_plates(
     # back to its own defaults. Done outside the fast/slow plate split so both
     # return paths carry it.
     embedded_presets: dict[str, str | None] = {"printer": None, "process": None}
+    # ... and the filament preset it names for each slot, offered the same way.
+    embedded_filaments: list[str | None] = []
     # Process settings the designer changed away from the stock preset (#2622).
     # Offered in the SliceModal so a cross-printer re-slice can carry them
     # instead of silently losing them to the picked process profile. Read from
@@ -4725,6 +4728,7 @@ async def get_library_file_plates(
     try:
         with zipfile.ZipFile(file_path, "r") as zf:
             embedded_presets = extract_embedded_presets_from_3mf(zf)
+            embedded_filaments = extract_embedded_filament_presets_from_3mf(zf)
             if _PROJECT_SETTINGS_PATH in zf.namelist():
                 try:
                     design_overrides = [
@@ -4758,6 +4762,7 @@ async def get_library_file_plates(
             "is_multi_plate": len(plates) > 1,
             "embedded_printer": embedded_presets["printer"],
             "embedded_process": embedded_presets["process"],
+            "embedded_filaments": embedded_filaments,
             "design_overrides": design_overrides,
         }
 
@@ -4789,6 +4794,7 @@ async def get_library_file_plates(
         "is_multi_plate": len(plates) > 1,
         "embedded_printer": embedded_presets["printer"],
         "embedded_process": embedded_presets["process"],
+        "embedded_filaments": embedded_filaments,
         "design_overrides": design_overrides,
     }
 

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { pickFilamentForSlot, pickDefault } from '../../utils/slicePresetPicker';
+import { pickEmbeddedFilament, pickFilamentForSlot, pickDefault } from '../../utils/slicePresetPicker';
 import { buildCompatibilityIndex } from '../../utils/slicerPrinterMatch';
 import type { UnifiedPresetsResponse, UnifiedPresetsBySlot } from '../../api/client';
 
@@ -134,5 +134,57 @@ describe('pickFilamentForSlot — printer-compat contract (#1851)', () => {
     expect(pickFilamentForSlot(makeUnified(), { type: 'PLA', color: '#FF0000' }, 'Bambu Lab A1 0.4 nozzle', index)).toBe(
       pickDefault(makeUnified(), 'filament'),
     );
+  });
+});
+
+// The filament preset a project names for a slot ("Assemble project" writes the
+// one the operator chose) is that slot's default — when it is in the listing,
+// fits the selected printer and is of the plate's material. Otherwise the
+// ordinary pick answers.
+describe('pickEmbeddedFilament', () => {
+  const index = buildCompatibilityIndex({ 'Bambu Lab A1': 'A1', 'Bambu Lab H2C': 'H2C' });
+  const A1 = 'Bambu Lab A1 0.4 nozzle';
+  const filament = (name: string, filament_type: string) => ({ id: name, name, source: 'standard' as const, filament_type });
+  const presets = makeUnified({
+    standard: {
+      printer: [],
+      process: [],
+      filament: [
+        filament('Generic PLA @BBL A1', 'PLA'),
+        filament('Bambu PLA Matte @BBL A1', 'PLA'),
+        filament('Bambu PLA Matte @BBL H2C', 'PLA'),
+        filament('Bambu PETG HF @BBL A1', 'PETG'),
+      ],
+    },
+  });
+
+  it('takes the named preset over the one the scoring would pick', () => {
+    expect(pickFilamentForSlot(presets, { type: 'PLA', color: '' }, A1, index)).toEqual({
+      source: 'standard',
+      id: 'Generic PLA @BBL A1',
+    });
+    expect(pickEmbeddedFilament(presets, 'Bambu PLA Matte @BBL A1', { type: 'PLA' }, A1, index)).toEqual({
+      source: 'standard',
+      id: 'Bambu PLA Matte @BBL A1',
+    });
+  });
+
+  it('answers nothing for a name that is not in the listing, or no name', () => {
+    expect(pickEmbeddedFilament(presets, 'Some PLA nobody has', { type: 'PLA' }, A1, index)).toBeNull();
+    expect(pickEmbeddedFilament(presets, null, { type: 'PLA' }, A1, index)).toBeNull();
+    expect(pickEmbeddedFilament(presets, undefined, { type: 'PLA' }, A1, index)).toBeNull();
+  });
+
+  it('answers nothing for a preset made for another printer', () => {
+    expect(pickEmbeddedFilament(presets, 'Bambu PLA Matte @BBL H2C', { type: 'PLA' }, A1, index)).toBeNull();
+  });
+
+  it('answers nothing for a preset of another material than the plate asks for', () => {
+    expect(pickEmbeddedFilament(presets, 'Bambu PETG HF @BBL A1', { type: 'PLA' }, A1, index)).toBeNull();
+    // a plate that states no material has nothing to contradict the name with
+    expect(pickEmbeddedFilament(presets, 'Bambu PETG HF @BBL A1', { type: '' }, A1, index)).toEqual({
+      source: 'standard',
+      id: 'Bambu PETG HF @BBL A1',
+    });
   });
 });
