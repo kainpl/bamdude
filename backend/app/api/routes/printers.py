@@ -2656,16 +2656,86 @@ async def delete_printer_file(
     if not printer:
         raise HTTPException(404, "Printer not found")
 
+    from backend.app.services import printer_file_guard
     from backend.app.services.bambu_ftp import DeleteResult
 
+    # The file the printer is printing from, or is about to, stays (G10 B). Asked
+    # here for the answer, and again by ``may_run`` after the wait for the
+    # printer's file channel — a print can start while this request waits.
+    _refuse_file_delete(printer_file_guard.file_refusal(printer_id, path))
+
     resolved = _resolve_storage(storage, printer.model, printer_manager.get_status(printer_id))
-    result = await transport_for(printer, resolved).delete(path)
+    result = await transport_for(printer, resolved).delete(
+        path, may_run=printer_file_guard.may_delete(printer_id, path)
+    )
     if result == DeleteResult.NOT_FOUND:
         raise HTTPException(404, f"File not found on printer: {path}")
     if result == DeleteResult.FAILED:
+        # A refusal that appeared during the wait reads as a failed delete; say which it was.
+        _refuse_file_delete(printer_file_guard.file_refusal(printer_id, path))
         raise HTTPException(500, f"Failed to delete file: {path}")
 
     return {"status": "deleted", "path": path}
+
+
+def _refuse_file_delete(refusal: str | None) -> None:
+    """Answer a single-file deletion the guard refused: 409 with a code the file browser reads."""
+    if refusal is None:
+        return
+    if refusal == "active_print":
+        raise HTTPException(
+            409,
+            {
+                "error": "active_print",
+                "message": "This file belongs to the print in progress and cannot be deleted until the print ends",
+            },
+        )
+    if refusal == "expected_print":
+        raise HTTPException(
+            409,
+            {
+                "error": "expected_print",
+                "message": "This file belongs to a print that is about to start and cannot be deleted",
+            },
+        )
+    raise HTTPException(
+        409,
+        {
+            "error": "printer_state_unknown",
+            "message": "The printer's current state is not known, so nothing is deleted from it. "
+            "Wait for it to reconnect and try again",
+        },
+    )
+
+
+def _refuse_wide_delete(refusal: str | None) -> None:
+    """Answer a bulk deletion the guard refused — a card clear, or a file the printer picks itself."""
+    if refusal is None:
+        return
+    if refusal == "active_print":
+        raise HTTPException(
+            409,
+            {
+                "error": "active_print",
+                "message": "Files cannot be removed while the printer is printing or preparing a print",
+            },
+        )
+    if refusal == "expected_print":
+        raise HTTPException(
+            409,
+            {
+                "error": "expected_print",
+                "message": "Files cannot be removed while a print is about to start on this printer",
+            },
+        )
+    raise HTTPException(
+        409,
+        {
+            "error": "printer_state_unknown",
+            "message": "The printer's current state is not known, so nothing is deleted from it. "
+            "Wait for it to reconnect and try again",
+        },
+    )
 
 
 @router.post("/{printer_id}/files/clear-sdcard")
@@ -2676,28 +2746,40 @@ async def clear_printer_sdcard(
 ):
     """Recursively delete every file on the SD card (root + all nested folders).
 
-    Folder structure is left intact; only files are removed. Refused while a
-    print is RUNNING/PAUSE because Bambu streams the active job from the SD
-    card — wiping it mid-print would abort the print.
+    Folder structure is left intact; only files are removed. Allowed only on a
+    printer freshly observed idle with no print about to start (G10 B): Bambu
+    streams the active job from the card, so wiping it mid-print, or while a
+    job is being prepared, would abort the print. A print that starts or
+    becomes expected during the walk stops it; what was deleted stays deleted.
     """
     result = await db.execute(select(Printer).where(Printer.id == printer_id))
     printer = result.scalar_one_or_none()
     if not printer:
         raise HTTPException(404, "Printer not found")
 
-    state = printer_manager.get_status(printer_id)
-    if state.state in ("RUNNING", "PAUSE"):
-        raise HTTPException(409, "Cannot clear the SD card while a print is in progress")
+    from backend.app.services import printer_file_guard
 
-    summary = await clear_sdcard_async(printer.ip_address, printer.access_code, printer_model=printer.model)
+    _refuse_wide_delete(printer_file_guard.wide_refusal(printer_id))
+
+    summary = await clear_sdcard_async(
+        printer.ip_address,
+        printer.access_code,
+        printer_model=printer.model,
+        may_run=printer_file_guard.may_delete_wide(printer_id),
+    )
     if not summary.get("connected"):
         raise HTTPException(502, "Could not connect to the printer over FTP")
+    stopped = bool(summary.get("stopped"))
+    if stopped and not (summary["deleted"] or summary["failed"] or summary.get("folders_removed", 0)):
+        # Stopped before the first deletion: nothing happened, so it is a plain refusal.
+        _refuse_wide_delete(printer_file_guard.wide_refusal(printer_id) or "active_print")
 
     return {
-        "status": "cleared",
+        "status": "stopped" if stopped else "cleared",
         "deleted": summary["deleted"],
         "failed": summary["failed"],
         "folders_removed": summary.get("folders_removed", 0),
+        "stopped": stopped,
     }
 
 
@@ -3989,6 +4071,12 @@ async def delete_oldest_timelapse(
     # default, which on any machine with internal storage was always
     # "internal" — so an operator freeing space for a print destined for the
     # card had the oldest eMMC video dropped instead, and the card stayed full.
+    # The printer picks the file itself, so this is a bulk deletion: only on a
+    # printer freshly observed idle with no print about to start (G10 B).
+    from backend.app.services import printer_file_guard
+
+    _refuse_wide_delete(printer_file_guard.wide_refusal(printer_id))
+
     target = _timelapse_target(capability, client.state, storage)
     if not client.delete_oldest_timelapse(target, total_layer):
         raise HTTPException(500, "Failed to delete the oldest timelapse")

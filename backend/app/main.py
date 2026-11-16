@@ -1461,12 +1461,30 @@ def is_expected_print_file(printer_id: int, remote_path: str) -> bool:
     that name belongs to the NEXT job. Checked per destructive call, not at
     candidate-list time — the registration can land mid-cleanup.
     """
+    return expected_print_archive(printer_id, remote_path) is not None
+
+
+def expected_print_archive(printer_id: int, remote_path: str) -> int | None:
+    """The archive of the dispatch that registered this path as its next print, else ``None``.
+
+    The dispatcher that made the registration may clear its own file; nobody
+    else may (``services/printer_file_guard``).
+    """
     name = remote_path.rsplit("/", 1)[-1]
-    forms = {name}
+    forms = [name]
     for suffix in (".gcode.3mf", ".3mf"):
         if name.endswith(suffix):
-            forms.add(name[: -len(suffix)])
-    return any((printer_id, f) in _expected_prints for f in forms)
+            forms.append(name[: -len(suffix)])
+    for form in forms:
+        archive_id = _expected_prints.get((printer_id, form))
+        if archive_id is not None:
+            return archive_id
+    return None
+
+
+def printer_has_expected_print(printer_id: int) -> bool:
+    """Whether any dispatch has registered a print that has not started yet on this printer."""
+    return any(key[0] == printer_id for key in tuple(_expected_prints))
 
 
 def register_macro_selection(printer_id: int, options: dict) -> None:
@@ -8383,6 +8401,24 @@ async def _on_print_complete_impl(
     # ⚠️ Bounded as well as detached, so a printer that never answers cannot
     # leave this running into the NEXT print on the same machine, where the
     # names it deletes by would belong to that job instead.
+    cleanup_deadline: list[float | None] = [None]
+
+    def _cleanup_may_run() -> bool:
+        """This run still owns the printer AND the cleanup's budget is not spent."""
+        deadline = cleanup_deadline[0]
+        return _owns_printer_effect() and (deadline is None or time.monotonic() < deadline)
+
+    def _cleanup_gate(path: str):
+        """``may_run`` of one destructive step: ``_cleanup_may_run`` plus the file guard.
+
+        The guard is what keeps the file a NEWER job prints from — one this
+        process did not recognise as a new run, started from the slicer or the
+        printer's own screen under the same name with the same bytes (G10 B).
+        """
+        from backend.app.services import printer_file_guard
+
+        return printer_file_guard.may_delete(printer_id, path, also=_cleanup_may_run)
+
     async def _post_print_printer_cleanup() -> None:
         if not _owns_printer_effect():
             logger.info(
@@ -8403,22 +8439,26 @@ async def _on_print_complete_impl(
             )
             return
         try:
-            cleanup_result = await asyncio.wait_for(_cleanup_printer_after_print(), timeout=_POST_PRINT_CLEANUP_BUDGET)
+            # ⚠️ A cooperative deadline, not ``asyncio.wait_for`` (G10 B, OD-8). A
+            # timeout that cancels the coroutine walks away from a transfer still
+            # running on the printer's file channel and reports the cleanup over;
+            # here the step in flight ends by itself, owned to its end, and
+            # ``_cleanup_may_run`` starts no further delete, patch or move.
+            cleanup_deadline[0] = time.monotonic() + _POST_PRINT_CLEANUP_BUDGET
+            cleanup_result = await _cleanup_printer_after_print()
+            out_of_time = time.monotonic() >= cleanup_deadline[0]
             await _record_terminal_effect_stage(
                 archive_id,
                 "printer_cleanup",
-                "skipped" if cleanup_result is False else "finished",
+                "uncertain" if out_of_time else "skipped" if cleanup_result is False else "finished",
                 expected_identity=terminal_archive_identity,
             )
-        except TimeoutError:
-            await _record_terminal_effect_stage(
-                archive_id, "printer_cleanup", "uncertain", expected_identity=terminal_archive_identity
-            )
-            logger.warning(
-                "Post-print cleanup on printer %s gave up after %ss — files may linger",
-                printer_id,
-                _POST_PRINT_CLEANUP_BUDGET,
-            )
+            if out_of_time:
+                logger.warning(
+                    "Post-print cleanup on printer %s ran out of its %ss — files may linger",
+                    printer_id,
+                    _POST_PRINT_CLEANUP_BUDGET,
+                )
         except Exception:
             await _record_terminal_effect_stage(
                 archive_id, "printer_cleanup", "failed", expected_identity=terminal_archive_identity
@@ -8465,7 +8505,7 @@ async def _on_print_complete_impl(
                     # The DB read above may have yielded long enough for a
                     # direct/external B to begin.  Do not open FTP against a
                     # printer it now owns merely to clean A's old files.
-                    if not _owns_printer_effect():
+                    if not _cleanup_may_run():
                         logger.info(
                             "Skipping post-print cleanup for archive %s after lookup: printer %s has a newer run",
                             archive_id,
@@ -8539,6 +8579,8 @@ async def _on_print_complete_impl(
                     if not printed_to_internal:
                         # Process /cache/ files: delete .gcode, patch .bbl (disable auto_recovery)
                         try:
+                            if not _cleanup_may_run():
+                                return False
                             cache_files = await list_files_async(
                                 printer.ip_address,
                                 printer.access_code,
@@ -8547,7 +8589,7 @@ async def _on_print_complete_impl(
                             )
                             sanitized_base = subtask_name.replace(" ", "_")
                             for f in cache_files:
-                                if not _owns_printer_effect():
+                                if not _cleanup_may_run():
                                     return False
                                 fname = f.get("name", "")
                                 # ⚠️ ``is_directory``, not ``is_dir`` — the key the FTP
@@ -8571,14 +8613,23 @@ async def _on_print_complete_impl(
                                     and is_matching_gcode
                                 ):
                                     try:
-                                        await delete_file_async(
+                                        cache_result = await delete_file_async(
                                             printer.ip_address,
                                             printer.access_code,
                                             f"/cache/{fname}",
                                             printer_model=printer.model,
-                                            may_run=_owns_printer_effect,
+                                            may_run=_cleanup_gate(f"/cache/{fname}"),
                                         )
-                                        logger.info("Deleted /cache/%s from printer %s", fname, printer.name)
+                                        # The answer is read (G10 B): a kept or failed delete is not "Deleted".
+                                        if cache_result == DeleteResult.DELETED:
+                                            logger.info("Deleted /cache/%s from printer %s", fname, printer.name)
+                                        else:
+                                            logger.debug(
+                                                "/cache/%s stays on printer %s (%s)",
+                                                fname,
+                                                printer.name,
+                                                cache_result.value,
+                                            )
                                     except Exception:
                                         pass
 
@@ -8617,14 +8668,20 @@ async def _on_print_complete_impl(
                                             if modified:
                                                 # Preserve original formatting (4-space indent)
                                                 patched = _json.dumps(bbl_json, indent=4).encode("utf-8")
-                                                await upload_bytes_async(
+                                                bbl_written = await upload_bytes_async(
                                                     printer.ip_address,
                                                     printer.access_code,
                                                     patched,
                                                     bbl_path,
                                                     printer_model=printer.model,
-                                                    may_run=_owns_printer_effect,
+                                                    may_run=_cleanup_gate(bbl_path),
                                                 )
+                                                if not bbl_written:
+                                                    # Kept by the gate or refused by the printer: not "Patched".
+                                                    logger.debug(
+                                                        "/cache/%s on printer %s was not patched", fname, printer.name
+                                                    )
+                                                    continue
                                                 logger.info(
                                                     "Patched .bbl /cache/%s on printer %s (auto_recovery=false%s)",
                                                     fname,
@@ -8674,11 +8731,11 @@ async def _on_print_complete_impl(
                                         printer.access_code,
                                         p,
                                         printer_model=printer.model,
-                                        may_run=_owns_printer_effect,
+                                        may_run=_cleanup_gate(p),
                                     ),
                                     label=f"{printer.name} /cache",
                                     allow_unverified=archive_id is not None,
-                                    may_run=_owns_printer_effect,
+                                    may_run=_cleanup_may_run,
                                 )
                         except Exception:
                             pass  # best-effort
@@ -8697,7 +8754,9 @@ async def _on_print_complete_impl(
                         if should_delete:
                             names = [p.split("/")[-1] for p in threemf_candidates]
                             transport = transport_for(printer, INTERNAL)
-                            removed = await delete_internal_by_name(transport, *names, may_run=_owns_printer_effect)
+                            removed = await delete_internal_by_name(
+                                transport, *names, may_run=_cleanup_may_run, gate=_cleanup_gate
+                            )
                             logger.info(
                                 "Internal-storage cleanup on %s: %s",
                                 printer.name,
@@ -8728,9 +8787,13 @@ async def _on_print_complete_impl(
                                     remote_3mf,
                                 )
                                 continue
+                            if not _cleanup_gate(remote_3mf)():
+                                # Kept on purpose (a newer job reads it, or the printer's state is
+                                # not known) — not a failed delete to retry and warn about.
+                                continue
                             deleted = False
                             for attempt in range(1, 4):
-                                if not _owns_printer_effect():
+                                if not _cleanup_may_run():
                                     return False
                                 try:
                                     r = await delete_file_async(
@@ -8738,7 +8801,7 @@ async def _on_print_complete_impl(
                                         printer.access_code,
                                         remote_3mf,
                                         printer_model=printer.model,
-                                        may_run=_owns_printer_effect,
+                                        may_run=_cleanup_gate(remote_3mf),
                                     )
                                 except Exception as e:
                                     r = DeleteResult.FAILED
@@ -8784,10 +8847,12 @@ async def _on_print_complete_impl(
                                     remote_3mf,
                                 )
                                 continue
+                            if not _cleanup_gate(remote_3mf)():
+                                continue
                             cache_3mf = f"/cache/{remote_3mf.lstrip('/')}"
                             moved = False
                             for attempt in range(1, 4):
-                                if not _owns_printer_effect():
+                                if not _cleanup_may_run():
                                     return False
                                 try:
                                     r = await rename_file_async(
@@ -8796,7 +8861,7 @@ async def _on_print_complete_impl(
                                         remote_3mf,
                                         cache_3mf,
                                         printer_model=printer.model,
-                                        may_run=_owns_printer_effect,
+                                        may_run=_cleanup_gate(remote_3mf),
                                     )
                                     if r:
                                         logger.info("Moved %s to %s on printer %s", remote_3mf, cache_3mf, printer.name)
@@ -8827,7 +8892,7 @@ async def _on_print_complete_impl(
                     # ourselves once the print is over.
                     if should_delete and derived_copy_names_wanted:
                         capability = storage_capability_for(printer.model, printer_manager.get_status(printer_id))
-                        if capability["can_browse_internal"]:
+                        if capability["can_browse_internal"] and _cleanup_may_run():
                             try:
                                 internal = transport_for(printer, INTERNAL)
                                 await remove_verified_copies(
@@ -8842,10 +8907,10 @@ async def _on_print_complete_impl(
                                     },
                                     expected_hashes=expected_hashes,
                                     read_bytes=internal.read_bytes,
-                                    delete=lambda p: internal.delete(p, may_run=_owns_printer_effect),
+                                    delete=lambda p: internal.delete(p, may_run=_cleanup_gate(p)),
                                     label=f"{printer.name} internal",
                                     allow_unverified=archive_id is not None,
-                                    may_run=_owns_printer_effect,
+                                    may_run=_cleanup_may_run,
                                 )
                             except Exception as exc:  # noqa: BLE001 — best-effort, like every branch here
                                 logger.debug("Internal-storage copy cleanup on %s failed: %s", printer.name, exc)

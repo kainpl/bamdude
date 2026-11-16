@@ -40,6 +40,7 @@ import { GcodePreview } from './GcodePreview';
 import type { PlateMetadata } from '../types/plates';
 import { useToast } from '../contexts/ToastContext';
 import { formatFileSize } from '../utils/file';
+import { deletePrinterFilesOneByOne } from '../utils/printerFileBulkDelete';
 import { FolderTreePicker } from './FolderTreePicker';
 import { Select } from './Select';
 
@@ -467,16 +468,41 @@ export function FileManagerModal({ printerId, printerName, onClose }: FileManage
   });
 
   const deleteMutation = useMutation({
-    mutationFn: async (paths: string[]) => {
-      // Delete files one by one
-      for (const path of paths) {
-        await api.deletePrinterFile(printerId, path, storage ?? undefined);
+    // One request per file, and every file answered on its own: the file a job
+    // prints from is refused while the others go (`printerFileBulkDelete`).
+    mutationFn: (paths: string[]) =>
+      deletePrinterFilesOneByOne(paths, (path) => api.deletePrinterFile(printerId, path, storage ?? undefined)),
+    onSuccess: (report) => {
+      const total = report.deleted.length + report.kept.length + report.notAttempted.length;
+      if (report.stopMessage !== undefined) {
+        showToast(
+          t('printerFiles.toast.deleteStopped', {
+            deleted: report.deleted.length,
+            total,
+            notAttempted: report.notAttempted.length,
+            reason: report.stopMessage,
+          }),
+          'error',
+        );
+      } else if (report.kept.length > 0) {
+        showToast(
+          report.deleted.length === 0 && report.kept.length === 1
+            ? t('printerFiles.toast.deleteFailed', { error: report.kept[0].message })
+            : t('printerFiles.toast.deletePartial', {
+                deleted: report.deleted.length,
+                total,
+                kept: report.kept.length,
+                reason: report.kept[0].message,
+              }),
+          'error',
+        );
+      } else {
+        showToast(t('printerFiles.toast.filesDeleted', { count: report.deleted.length }));
       }
-    },
-    onSuccess: () => {
-      showToast(t('printerFiles.toast.filesDeleted', { count: filesToDelete.length }));
       queryClient.invalidateQueries({ queryKey: ['printerFiles', printerId] });
-      setSelectedFiles(new Set());
+      queryClient.invalidateQueries({ queryKey: ['printerStorage', printerId] });
+      // What is still on the printer stays selected, so the operator sees which files those are.
+      setSelectedFiles(new Set([...report.kept.map((file) => file.path), ...report.notAttempted]));
       setFilesToDelete([]);
     },
     onError: (error: Error) => {
@@ -487,7 +513,10 @@ export function FileManagerModal({ printerId, printerName, onClose }: FileManage
   const clearSdCardMutation = useMutation({
     mutationFn: () => api.clearPrinterSdCard(printerId),
     onSuccess: (result) => {
-      if (result.failed > 0) {
+      if (result.stopped) {
+        // A print started, or became expected, during the walk: the rest stayed.
+        showToast(t('printerFiles.toast.sdCardClearStopped', { deleted: result.deleted }), 'error');
+      } else if (result.failed > 0) {
         showToast(
           t('printerFiles.toast.sdCardClearedPartial', { deleted: result.deleted, failed: result.failed }),
           'error',

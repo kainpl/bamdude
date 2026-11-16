@@ -11332,7 +11332,7 @@ export const api = {
       { method: 'DELETE' },
     ),
   clearPrinterSdCard: (printerId: number) =>
-    request<{ status: string; deleted: number; failed: number; folders_removed: number }>(
+    request<{ status: string; deleted: number; failed: number; folders_removed: number; stopped?: boolean }>(
       `/printers/${printerId}/files/clear-sdcard`,
       { method: 'POST' },
     ),

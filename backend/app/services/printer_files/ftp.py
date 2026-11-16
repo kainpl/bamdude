@@ -96,14 +96,16 @@ class FtpTransport:
             progress=progress,
         )
 
-    async def delete(self, path: str) -> DeleteResult:
-        return await delete_file_async(self._ip, self._access_code, path, printer_model=self._model)
+    async def delete(self, path: str, *, may_run: Callable[[], bool] | None = None) -> DeleteResult:
+        return await delete_file_async(self._ip, self._access_code, path, printer_model=self._model, may_run=may_run)
 
     async def upload(
         self,
         local_path: Path,
         remote_name: str,
         progress_cb: Callable[[int, int], None] | None = None,
+        *,
+        may_run: Callable[[], bool] | None = None,
     ) -> bool:
         """The printer's FTP root is the card, so the name is the whole path."""
         return bool(
@@ -114,6 +116,7 @@ class FtpTransport:
                 f"/{remote_name}",
                 progress_callback=progress_cb,
                 printer_model=self._model,
+                may_run=may_run,
             )
         )
 

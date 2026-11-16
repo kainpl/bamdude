@@ -59,6 +59,11 @@ async def run_reprint(
     source_line_id: int | None = None,
     job_project_id: int | None = None,
     job_line_id: int | None = None,
+    printer_state: str | None = "FINISH",
+    during_clear=None,
+    doubles: dict | None = None,
+    cache_files: list[str] | None = None,
+    free_after_refusal: bool = False,
 ) -> dict:
     """Run ``_run_reprint_archive`` for one 'failed' source archive with the hardware mocked.
 
@@ -162,6 +167,13 @@ async def run_reprint(
     mqtt._process_message(
         {"print": {"ams": {"ams": []}, "vt_tray": {"id": 254, "tray_type": "PLA", "tray_color": "FFFFFF"}}}
     )
+    # What the file guard observes (G10 B): a printer that reported just now. ``None``
+    # leaves it as the double is — connected, and silent about what it is doing.
+    if printer_state is not None:
+        import time as _time
+
+        mqtt.state.state = printer_state
+        mqtt._last_message_time = _time.time()
     monkeypatch.setitem(printer_manager._clients, printer_id, mqtt)
     monkeypatch.setitem(printer_manager._models, printer_id, "P1S")
     queue = PrinterQueue(printer_id=printer_id)
@@ -199,6 +211,26 @@ async def run_reprint(
 
     service = BackgroundDispatchService()
 
+    from backend.app.services.bambu_ftp import DeleteResult
+
+    async def _delete(*_args, may_run=None, **_kwargs):
+        if during_clear is not None:
+            during_clear(mqtt)  # what happens on the printer while the delete waits for the file channel
+        allowed = may_run is None or may_run()
+        if not allowed and free_after_refusal:
+            mqtt.state.state = "FINISH"  # the print that kept the file has ended by the next command
+        return DeleteResult.NOT_FOUND if allowed else DeleteResult.FAILED
+
+    async def _upload(*_args, may_run=None, **_kwargs):
+        # As the real upload does: nothing is written unless the gate allows it.
+        return may_run is None or bool(may_run())
+
+    delete_mock = AsyncMock(side_effect=_delete)
+    upload_mock = AsyncMock(side_effect=_upload)
+    if doubles is not None:
+        # For a caller whose run ends in a refusal and so returns nothing.
+        doubles.update(delete=delete_mock, upload=upload_mock, mqtt=mqtt)
+
     fake_status = MagicMock()
     fake_status.state = "FINISH"
     fake_status.subtask_id = None
@@ -226,18 +258,16 @@ async def run_reprint(
         patch("backend.app.services.background_dispatch.printer_manager.set_current_print_user"),
         patch(
             "backend.app.services.background_dispatch.delete_file_async",
-            new_callable=AsyncMock,
-            return_value=True,
+            new=delete_mock,
         ),
         patch(
             "backend.app.services.background_dispatch.list_files_async",
             new_callable=AsyncMock,
-            return_value=[],
+            return_value=[{"name": name, "is_directory": False} for name in (cache_files or [])],
         ),
         patch(
             "backend.app.services.background_dispatch.upload_file_async",
-            new_callable=AsyncMock,
-            return_value=True,
+            new=upload_mock,
         ),
         patch(
             "backend.app.services.background_dispatch.get_ftp_retry_settings",
@@ -262,6 +292,8 @@ async def run_reprint(
         "printer_id": printer_id,
         "register": captured_register_args,
         "job": job,
+        "delete": delete_mock,
+        "upload": upload_mock,
     }
 
 

@@ -163,11 +163,15 @@ class PrinterFileTransport(Protocol):
         """
         ...
 
-    async def delete(self, path: str) -> DeleteResult: ...
+    async def delete(self, path: str, *, may_run: Callable[[], bool] | None = None) -> DeleteResult:
+        """Delete one file. ``may_run`` is asked after the lane wait, immediately before the command."""
+        ...
 
     async def upload(
         self,
         local_path: Path,
         remote_name: str,
         progress_cb: Callable[[int, int], None] | None = None,
+        *,
+        may_run: Callable[[], bool] | None = None,
     ) -> bool: ...
