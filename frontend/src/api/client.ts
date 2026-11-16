@@ -1336,6 +1336,10 @@ export interface PrinterStatus {
   layer_num: number | null;
   total_layers: number | null;
   total_layers_source?: 'mqtt' | 'file' | 'unknown';
+  /** The next pause the slicer put into the running print. `minutes` is an
+   *  estimate the server gives only at Standard speed for a file with time
+   *  markers; absent/null when nothing is known — never computed here. */
+  next_pause?: { layer: number; minutes: number | null } | null;
   temperatures: {
     bed?: number;
     bed_target?: number;
@@ -5096,6 +5100,8 @@ export interface AppSettings {
   prometheus_token: string;
   // Bed cooled threshold
   bed_cooled_threshold: number;
+  // Minutes before a slicer pause at which the pause-coming-up event fires (0 = never)
+  pause_warning_minutes: number;
   // Inventory low stock threshold
   low_stock_threshold: number;
   // Session policy (#1706, adapted): admin ceiling on session lifetime in hours (default 720 = 30d)
@@ -7770,6 +7776,8 @@ export interface NotificationProvider {
   on_bed_cooled: boolean;
   // First layer complete
   on_first_layer_complete: boolean;
+  // A pause the slicer put into the print is coming up
+  on_pause_coming_up: boolean;
   // Print queue events
   on_queue_job_added: boolean;
   on_queue_job_started: boolean;
@@ -7848,6 +7856,7 @@ export interface NotificationProviderCreate {
   on_bed_cooled?: boolean;
   // First layer complete
   on_first_layer_complete?: boolean;
+  on_pause_coming_up?: boolean;
   // Print queue events
   on_queue_job_added?: boolean;
 
@@ -7919,6 +7928,7 @@ export interface NotificationProviderUpdate {
   on_bed_cooled?: boolean;
   // First layer complete
   on_first_layer_complete?: boolean;
+  on_pause_coming_up?: boolean;
   // Print queue events
   on_queue_job_added?: boolean;
 

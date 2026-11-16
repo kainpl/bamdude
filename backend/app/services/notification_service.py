@@ -2974,6 +2974,46 @@ class NotificationService:
             variables=variables,
         )
 
+    async def on_pause_coming_up(
+        self,
+        printer_id: int,
+        printer_name: str,
+        filename: str,
+        layer: int,
+        total_layers: int,
+        minutes: int | None,
+        db: AsyncSession,
+    ):
+        """A pause the slicer put into the running print is coming up (``services/pause_warning``).
+
+        ``minutes`` is the estimate, or ``None`` when only the layer is known -- the
+        heads-up is then sent on the layer before the pause.
+        """
+        providers = await self._get_providers_for_event(db, "on_pause_coming_up", printer_id)
+        if not providers:
+            return
+
+        from backend.app.i18n import get_language, t
+
+        language = await get_language()
+        variables = {
+            "printer": printer_name,
+            "filename": self._clean_filename(filename),
+            "layer": str(layer),
+            "total_layers": str(total_layers),
+            "minutes": "" if minutes is None else str(minutes),
+            "time_to_pause": (
+                t(language, "pause_warning", "next_layer")
+                if minutes is None
+                else t(language, "pause_warning", "in_minutes", minutes=minutes)
+            ),
+        }
+
+        title, message = await self._build_message_from_template(db, "pause_coming_up", variables)
+        await self._send_to_providers(
+            providers, title, message, db, "pause_coming_up", printer_id, printer_name, variables=variables
+        )
+
     def clear_template_cache(self):
         """Clear the template cache. Call this when templates are updated."""
         self._template_cache.clear()
