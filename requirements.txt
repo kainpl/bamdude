@@ -175,7 +175,16 @@ numpy>=1.24.0
 # Development
 pytest>=9.0.3  # CVE-2025-71176 (tmp_path traversal)
 pytest-asyncio>=0.23.0
-httpx>=0.26.0
+# Bounded on purpose: the configured-origin transport of self-hosted model sources
+# (services/model_providers/outbound.py) runs httpx's client over a connection pool of its own
+# built from httpcore's public API, and may only connect through its checked-address socket
+# layer. It proves that at first use and switches itself off when the proof fails, so a release
+# outside this range cannot connect unpinned — but it can switch model sources off. Before
+# raising either bound, these must pass against the new versions:
+#   backend/tests/unit/services/test_model_provider_outbound_fail_closed.py
+#   backend/tests/unit/services/test_model_provider_outbound_pinning.py
+httpx>=0.28,<0.29
+httpcore>=1.0,<2
 # CA bundle. Already a transitive dep of httpx, but
 # services/model_providers/makerworld/http.py imports it directly to pin the
 # S3 presigned download's urllib opener to the same trust store httpx uses —

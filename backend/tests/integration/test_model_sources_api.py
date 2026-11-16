@@ -15,6 +15,7 @@ from backend.app.services import library_import_meta
 from backend.app.services.model_providers import outbound
 from backend.app.services.model_providers.manyfold import service as manyfold
 from backend.tests._fixtures.manyfold import BASE, CLIENT_ID, CLIENT_SECRET, DNS, MODEL, STL, FakeManyfold, openapi
+from backend.tests._fixtures.wire import WireSockets
 from backend.tests.auth_helpers import mint_test_access
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
@@ -27,8 +28,11 @@ SUPPORTED_FILE = "k7l8m9n0p1q2"
 
 @pytest.fixture
 def fake(monkeypatch, tmp_path: Path):
-    """The fake Manyfold behind the real transport: its socket layer is the only thing replaced."""
+    """The fake Manyfold behind the REAL transport and HTTP client: only the sockets are stubs."""
     server = FakeManyfold()
+    sockets = WireSockets(server.handle)
+    server.sockets = sockets
+    real_layer = outbound._pinned_http
 
     async def resolve(host, port):
         if host not in DNS:
@@ -36,7 +40,7 @@ def fake(monkeypatch, tmp_path: Path):
         return list(DNS[host])
 
     monkeypatch.setattr(outbound, "resolve_host", resolve)
-    monkeypatch.setattr(outbound, "_pinned_http", lambda sockets=None: httpx.MockTransport(server.handle))
+    monkeypatch.setattr(outbound, "_pinned_http", lambda _sockets=None: real_layer(sockets))
     monkeypatch.setattr(app_settings, "archive_dir", str(tmp_path / "data"), raising=False)
     manyfold.clear_caches()
     yield server

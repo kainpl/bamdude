@@ -42,6 +42,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote, unquote, urlsplit
 
+from backend.app.services.model_providers import outbound
 from backend.app.services.model_providers.base import (
     BrowsableService,
     ProviderDownload,
@@ -216,6 +217,13 @@ def _from_transport(exc: OutboundRefused) -> ManyfoldError:
         return ManyfoldUnavailable("The file is larger than BamDude accepts from Manyfold", "manyfold_too_large", 413)
     if exc.reason == "unreachable":
         return ManyfoldUnavailable(f"Could not reach Manyfold. {exc}", "manyfold_unreachable")
+    if exc.reason == "transport_disabled":
+        return ManyfoldUnavailable(
+            "Manyfold is unavailable: this BamDude installation cannot pin its connections to checked "
+            "addresses. Reinstall its Python packages from requirements.txt.",
+            "manyfold_transport_unavailable",
+            503,
+        )
     if exc.reason in {"foreign_refused", "redirect_chain", "bad_redirect", "address_refused"}:
         return ManyfoldUnavailable(
             f"Manyfold keeps this file in storage BamDude will not fetch from. {exc}", "manyfold_storage_refused"
@@ -677,7 +685,12 @@ class ManyfoldService(ProviderService, BrowsableService):
     # ---- ProviderService -----------------------------------------------
 
     async def get_status(self, db) -> ProviderStatus:
-        usable = self._config.configured and self._config.enabled and self._transport is not None
+        usable = (
+            self._config.configured
+            and self._config.enabled
+            and self._transport is not None
+            and not outbound.transport_disabled()
+        )
         return ProviderStatus(authenticated=usable, can_download=usable, configured=self._config.configured)
 
     async def resolve(self, ref: ProviderResourceRef) -> ProviderResolvedModel:

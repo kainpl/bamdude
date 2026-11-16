@@ -21,6 +21,13 @@ destination mode, **the configured origin**:
   opened to the tested address by the transport's own socket layer — no second
   resolution between check and connect. The request keeps the host NAME, so
   the connection pool, ``Host``, SNI and certificate verification are by name.
+* The pin fails CLOSED. The HTTP layer is a pool this module owns, built from
+  httpcore's public API (``_PinnedHTTP``) — never a private attribute of the
+  client library. A request without a pin opens no socket; an answer is accepted
+  only from a connection our socket layer opened for that name; and the first
+  use in a process proves the mechanism with a sentinel over stub sockets
+  (``_prove_pinning``) — a failed proof switches the transport off until a
+  restart (``transport_disabled``), it never falls back to an ordinary client.
 * No redirect is followed, with ONE exception a caller asks for by name
   (``foreign_hop=True``, file bytes only): one hop to another origin — object
   storage behind the source — sent without the token and without cookies,
@@ -40,6 +47,7 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import json
+import logging
 import os
 import re
 import socket
@@ -58,6 +66,8 @@ import httpx
 from backend.app.api.routes._url_safety import CLOUD_METADATA_IPS, assert_safe_lan_service_url, unwrap_ipv4_mapped
 from backend.app.core.config import APP_VERSION
 from backend.app.services.model_providers.base import ProviderUnavailableError
+
+logger = logging.getLogger(__name__)
 
 USER_AGENT = f"BamDude/{APP_VERSION} (+https://github.com/kainpl/bamdude)"
 
@@ -217,6 +227,29 @@ def _tls_context() -> ssl.SSLContext:
 _PIN: ContextVar[tuple[str, int, str] | None] = ContextVar("model_provider_outbound_pin", default=None)
 
 
+class _CheckedStream(httpcore.AsyncNetworkStream):
+    """A connection OUR socket layer opened; it remembers the name and port it was checked for."""
+
+    def __init__(self, inner: httpcore.AsyncNetworkStream, checked: tuple[str, int]):
+        self._inner = inner
+        self.checked = checked
+
+    async def read(self, max_bytes, timeout=None):
+        return await self._inner.read(max_bytes, timeout)
+
+    async def write(self, buffer, timeout=None):
+        await self._inner.write(buffer, timeout)
+
+    async def aclose(self):
+        await self._inner.aclose()
+
+    async def start_tls(self, ssl_context, server_hostname=None, timeout=None):
+        return _CheckedStream(await self._inner.start_tls(ssl_context, server_hostname, timeout), self.checked)
+
+    def get_extra_info(self, info):
+        return self._inner.get_extra_info(info)
+
+
 class _PinnedSockets(httpcore.AsyncNetworkBackend):
     """The socket layer: a connection for a host is opened to the address ``_send`` checked for it.
 
@@ -231,9 +264,10 @@ class _PinnedSockets(httpcore.AsyncNetworkBackend):
         pin = _PIN.get()
         if pin is None or (_same_host(host), port) != pin[:2]:
             raise httpcore.ConnectError("No checked address for this host")
-        return await self._inner.connect_tcp(
+        stream = await self._inner.connect_tcp(
             pin[2], port, timeout=timeout, local_address=local_address, socket_options=socket_options
         )
+        return _CheckedStream(stream, pin[:2])
 
     async def connect_unix_socket(self, path, timeout=None, socket_options=None):
         raise httpcore.ConnectError("Unix sockets are not a model source")
@@ -242,26 +276,196 @@ class _PinnedSockets(httpcore.AsyncNetworkBackend):
         await self._inner.sleep(seconds)
 
 
-def _pinned_http(inner: httpcore.AsyncNetworkBackend | None = None) -> httpx.AsyncHTTPTransport:
-    """httpx's own HTTP transport over the pinning socket layer.
+def _from_core(exc: Exception) -> httpx.HTTPError:
+    """httpcore's failure under httpx's name for it (the two libraries name them alike)."""
+    kind = getattr(httpx, type(exc).__name__, None)
+    if not (isinstance(kind, type) and issubclass(kind, httpx.TransportError)):
+        kind = httpx.TimeoutException if isinstance(exc, httpcore.TimeoutException) else httpx.TransportError
+    return kind(type(exc).__name__)
 
-    Certificate verification is ON (``_tls_context``: CERT_REQUIRED, host name checked) and is done
-    for the request's host name. httpx 0.28 has no public parameter for the socket layer, so the
-    pool it built is replaced by one that differs only in ``network_backend``
-    (``test_model_provider_outbound_pinning.py`` fails if a version stops honouring it).
+
+_CORE_ERRORS = (
+    httpcore.TimeoutException,
+    httpcore.NetworkError,
+    httpcore.ProtocolError,
+    httpcore.ProxyError,
+    httpcore.UnsupportedProtocol,
+    httpcore.ConnectionNotAvailable,
+)
+
+
+class _Body(httpx.AsyncByteStream):
+    def __init__(self, stream):
+        self._stream = stream
+
+    async def __aiter__(self):
+        try:
+            async for part in self._stream:
+                yield part
+        except _CORE_ERRORS as exc:
+            raise _from_core(exc) from exc
+
+    async def aclose(self) -> None:
+        await self._stream.aclose()
+
+
+class _PinnedHTTP(httpx.AsyncBaseTransport):
+    """The HTTP layer: a connection pool WE own, over the pinning socket layer.
+
+    Built from httpcore's public constructor (``network_backend=``) — no attribute of httpx's own
+    transport is reached into, so a client-library release cannot quietly put its own sockets
+    back. Two runtime properties, neither left to a test:
+
+    * a request without a pin is refused before the pool is asked;
+    * an answer is accepted only when it arrived on a connection our socket layer opened for this
+      request's name and port (``_CheckedStream``) — anything else is closed unread.
     """
-    context = _tls_context()
-    transport = httpx.AsyncHTTPTransport(verify=context, trust_env=False, http2=False)
-    transport._pool = httpcore.AsyncConnectionPool(
-        ssl_context=context,
-        max_connections=20,
-        max_keepalive_connections=10,
-        keepalive_expiry=5.0,
-        http1=True,
-        http2=False,
-        network_backend=_PinnedSockets(inner),
-    )
-    return transport
+
+    def __init__(self, inner: httpcore.AsyncNetworkBackend | None = None, *, ssl_context: ssl.SSLContext | None = None):
+        self.sockets = _PinnedSockets(inner)
+        self.ssl_context = ssl_context
+        self._pool = httpcore.AsyncConnectionPool(
+            ssl_context=ssl_context,
+            max_connections=20,
+            max_keepalive_connections=10,
+            keepalive_expiry=5.0,
+            http1=True,
+            http2=False,
+            retries=0,
+            network_backend=self.sockets,
+        )
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        pin = _PIN.get()
+        host = _same_host(request.url.host)
+        port = request.url.port or (443 if request.url.scheme == "https" else 80)
+        if pin is None or (host, port) != pin[:2]:
+            raise httpx.ConnectError("No checked address for this request")
+        core = httpcore.Request(
+            method=request.method,
+            url=httpcore.URL(
+                scheme=request.url.raw_scheme,
+                host=request.url.raw_host,
+                port=request.url.port,
+                target=request.url.raw_path,
+            ),
+            headers=request.headers.raw,
+            content=request.stream,
+            extensions=request.extensions,
+        )
+        try:
+            answer = await self._pool.handle_async_request(core)
+        except _CORE_ERRORS as exc:
+            raise _from_core(exc) from exc
+        stream = answer.extensions.get("network_stream")
+        if not isinstance(stream, _CheckedStream) or stream.checked != pin[:2]:
+            await answer.aclose()
+            raise OutboundRefused("The answer did not come over a checked connection", "transport_disabled")
+        return httpx.Response(
+            status_code=answer.status,
+            headers=answer.headers,
+            stream=_Body(answer.stream),
+            extensions=answer.extensions,
+        )
+
+    async def aclose(self) -> None:
+        await self._pool.aclose()
+
+
+def _pinned_http(inner: httpcore.AsyncNetworkBackend | None = None) -> _PinnedHTTP:
+    """The pinning HTTP layer with certificate verification ON (``_tls_context``: CERT_REQUIRED,
+    host name checked), done for the request's host name."""
+    return _PinnedHTTP(inner, ssl_context=_tls_context())
+
+
+# ---- the proof that the pin holds in THIS process --------------------------------------------
+
+#: A name nothing resolves (RFC 6761) pinned to an address nothing routes (RFC 5737).
+PROBE_HOST = "pin-check.invalid"
+PROBE_ADDRESS = "192.0.2.1"
+#: None until the first use proved (True) or disproved (False) the socket layer.
+_pinning_proven: bool | None = None
+
+
+class _ProbeStream(httpcore.AsyncNetworkStream):
+    def __init__(self):
+        self._answer = b""
+
+    async def read(self, max_bytes, timeout=None):
+        data, self._answer = self._answer[:max_bytes], self._answer[max_bytes:]
+        return data
+
+    async def write(self, buffer, timeout=None):
+        if b"\r\n\r\n" in bytes(buffer):
+            self._answer += b"HTTP/1.1 204 No Content\r\n\r\n"
+
+    async def aclose(self):
+        pass
+
+    def get_extra_info(self, info):
+        return None
+
+
+class _ProbeSockets(httpcore.AsyncNetworkBackend):
+    """Sockets that connect nowhere: they record what they were asked for."""
+
+    def __init__(self):
+        self.asked: list[tuple[str, int]] = []
+
+    async def connect_tcp(self, host, port, timeout=None, local_address=None, socket_options=None):
+        self.asked.append((host, port))
+        return _ProbeStream()
+
+    async def sleep(self, seconds: float) -> None:
+        return None
+
+
+async def _prove_pinning() -> bool:
+    """One request to a sentinel name pinned to a sentinel address, over stub sockets.
+
+    True only when it reached OUR socket layer, at the pinned address, and nothing else — and a
+    request without a pin reached nothing. Any surprise (an exception included) is False.
+    """
+    probe = _ProbeSockets()
+    try:
+        async with httpx.AsyncClient(
+            transport=_PinnedHTTP(probe), trust_env=False, follow_redirects=False, timeout=5.0
+        ) as client:
+            token = _PIN.set((PROBE_HOST, 80, PROBE_ADDRESS))
+            try:
+                answer = await client.send(httpx.Request("GET", f"http://{PROBE_HOST}/"))
+            finally:
+                _PIN.reset(token)
+            if answer.status_code != 204 or probe.asked != [(PROBE_ADDRESS, 80)]:
+                return False
+            try:
+                await client.send(httpx.Request("GET", f"http://unpinned.{PROBE_HOST}/"))
+            except (httpx.HTTPError, OutboundRefused):
+                return probe.asked == [(PROBE_ADDRESS, 80)]
+            return False
+    except Exception:
+        return False
+
+
+def transport_disabled() -> bool:
+    """True once this process found that it cannot pin connections. Stays so until a restart."""
+    return _pinning_proven is False
+
+
+async def _require_pinning() -> None:
+    global _pinning_proven
+    if _pinning_proven is None:
+        _pinning_proven = await _prove_pinning()
+        if not _pinning_proven:
+            logger.error(
+                "Model sources with a configured address are switched off: the installed HTTP library "
+                "does not connect through BamDude's checked-address socket layer"
+            )
+    if not _pinning_proven:
+        raise OutboundRefused(
+            "Model sources are switched off: this installation cannot pin its connections to checked addresses",
+            "transport_disabled",
+        )
 
 
 @dataclass(frozen=True)
@@ -332,15 +536,27 @@ class GuardedTransport:
     def __init__(self, origin: PinnedOrigin, *, client: httpx.AsyncClient | None = None, sockets=None):
         self.origin = origin
         self._owns_client = client is None
-        # ``trust_env=False``: a proxy named by the environment would resolve the name itself, past
-        # the address check below. The trust store still follows SSL_CERT_FILE / SSL_CERT_DIR.
-        # ``sockets`` replaces the real socket layer under the pinning one (tests).
-        self._client = client or httpx.AsyncClient(
-            timeout=DEFAULT_TIMEOUT, follow_redirects=False, trust_env=False, transport=_pinned_http(sockets)
-        )
+        # ``client`` and ``sockets`` are TEST seams (a scripted client; stub sockets under the
+        # pinning layer). Application code passes neither — a guard test scans for it.
+        self._client = client
+        self._sockets = sockets
+
+    async def _http(self) -> httpx.AsyncClient:
+        """The client, built at first use — only ever over the pinning HTTP layer."""
+        if self._client is None:
+            layer = _pinned_http(self._sockets)
+            if not isinstance(layer, _PinnedHTTP):
+                # Never an ordinary client instead: it would resolve names itself.
+                raise OutboundRefused("The checked-address transport could not be built", "transport_disabled")
+            # ``trust_env=False``: a proxy named by the environment would resolve the name itself,
+            # past the address check below. The trust store still follows SSL_CERT_FILE / SSL_CERT_DIR.
+            self._client = httpx.AsyncClient(
+                timeout=DEFAULT_TIMEOUT, follow_redirects=False, trust_env=False, transport=layer
+            )
+        return self._client
 
     async def aclose(self) -> None:
-        if self._owns_client:
+        if self._owns_client and self._client is not None:
             await self._client.aclose()
 
     # ---- building ------------------------------------------------------
@@ -367,6 +583,8 @@ class GuardedTransport:
         connection pool, ``Host``, the TLS server name and certificate verification are all by
         name, so two names on one address never share a connection.
         """
+        await _require_pinning()
+        client = await self._http()
         try:
             host = normalise_host(url.host, "The address")
         except ValueError as exc:
@@ -394,7 +612,7 @@ class GuardedTransport:
         # task): two requests never see each other's address, whatever policy checked it.
         token = _PIN.set((host, port, address))
         try:
-            return await self._client.send(request, stream=True, follow_redirects=False)
+            return await client.send(request, stream=True, follow_redirects=False)
         except httpx.HTTPError as exc:
             # The type only: an httpx message may carry the URL, and a URL may carry a signature.
             raise OutboundRefused(f"Could not connect: {type(exc).__name__}", "unreachable") from exc

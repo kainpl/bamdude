@@ -153,8 +153,10 @@ async def test_a_host_nobody_checked_gets_no_socket():
     """The socket layer itself refuses a name the transport did not resolve and check."""
     sockets = Sockets(ok)
     transport = transport_over(sockets, "https://a.example.com")
+    layer = (await transport._http())._transport
+    assert isinstance(layer, outbound._PinnedHTTP)
     with pytest.raises(httpcore.ConnectError):
-        await transport._client._transport._pool._network_backend.connect_tcp("unchecked.example.com", 443)
+        await layer.sockets.connect_tcp("unchecked.example.com", 443)
     await transport.aclose()
     assert sockets.opened == []
 
@@ -169,9 +171,26 @@ async def test_plain_http_to_a_lan_address_is_pinned_too():
     assert b"host: lan.example.com:3214\r\n" in stream.requests[0].lower()
 
 
-def test_the_default_client_verifies_certificates_and_ignores_the_environment():
+async def test_the_default_client_verifies_certificates_and_ignores_the_environment():
     transport = GuardedTransport(PinnedOrigin.admit("https://a.example.com", label="x"))
-    pool = transport._client._transport._pool
-    assert pool._ssl_context.verify_mode == ssl.CERT_REQUIRED and pool._ssl_context.check_hostname is True
-    assert transport._client.trust_env is False
-    assert transport._client.follow_redirects is False
+    client = await transport._http()
+    context = client._transport.ssl_context
+    assert context.verify_mode == ssl.CERT_REQUIRED and context.check_hostname is True
+    assert client.trust_env is False
+    assert client.follow_redirects is False
+    await transport.aclose()
+
+
+async def test_the_handshake_gets_the_verifying_context():
+    """What the socket layer is actually handed for TLS — not what an attribute says."""
+    import httpx
+
+    from backend.tests._fixtures.wire import WireSockets
+
+    sockets = WireSockets(lambda request: httpx.Response(200, content=b"ok"))
+    transport = GuardedTransport(PinnedOrigin.admit("https://a.example.com", label="x"), sockets=sockets)
+    await transport.get("/models")
+    await transport.aclose()
+    (context,) = sockets.tls_contexts
+    assert context.verify_mode == ssl.CERT_REQUIRED and context.check_hostname is True
+    assert sockets.opened[0].server_hostname == "a.example.com"
