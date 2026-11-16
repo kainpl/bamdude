@@ -8,14 +8,20 @@
 // replaces or clears a preset — the dropdown keeps the chosen one listed even
 // when the filter would hide it — and the dialog's auto-picks do not read it.
 // A filter that cannot be answered (the read failed, or has not arrived) hides
-// nothing.
+// nothing. One that WAS answered and cannot be answered again keeps narrowing
+// by the last good answer and says that it may be out of date (`stale`) —
+// never "every profile is shown" beside a list that is still narrowed.
+//
+// The answer is read once per dialog; `useWebSocket` marks it stale when a
+// printer connects or disconnects and when a spool is assigned or unassigned,
+// which refetches it while a switch is on.
 import { useCallback, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 
 import { api, type UnifiedPreset, type UnifiedPresetsBySlot, type UnifiedPresetsResponse } from '../api/client';
 import type { PrinterParents } from '../utils/printerPresetParents';
-import { filamentPresetIsLoaded, loadedFilamentsFor, printerPresetIsOnline } from '../utils/sliceFarmFilter';
+import { filamentPresetIsLoaded, printerPresetIsOnline, printersCountedFor } from '../utils/sliceFarmFilter';
 
 const STORAGE_KEYS = {
   online: 'bamdude:slice-modal:only-online-printers',
@@ -72,6 +78,10 @@ export interface SliceFarmFilters {
   filamentNote: string | null;
   /** The farm could not be read: nothing is filtered. */
   unavailable: boolean;
+  /** The farm could not be read AGAIN: the lists are narrowed by the last good answer. */
+  stale: boolean;
+  /** Read the farm again. */
+  retry: () => void;
 }
 
 export function useSliceFarmFilters(
@@ -91,6 +101,10 @@ export function useSliceFarmFilters(
     staleTime: 15_000,
   });
   const farm = farmQuery.data;
+  const { refetch } = farmQuery;
+  const retry = useCallback(() => {
+    void refetch();
+  }, [refetch]);
 
   return useMemo<SliceFarmFilters>(() => {
     const all = (slot: keyof UnifiedPresetsBySlot): UnifiedPreset[] =>
@@ -107,10 +121,21 @@ export function useSliceFarmFilters(
       }
     }
     if (farm && onlyLoaded) {
-      const loaded = loadedFilamentsFor(farm, selectedPrinterName, printerParents);
+      const counted = printersCountedFor(farm, selectedPrinterName, printerParents);
+      const loaded = counted.printers.flatMap((p) => p.filaments);
       keepFilament = (preset) => filamentPresetIsLoaded(preset, loaded, farm.families);
       if (presets && !all('filament').some(keepFilament)) {
-        filamentNote = loaded.length === 0 ? t('slice.farmFilter.nothingLoaded') : t('slice.farmFilter.noLoadedPresets');
+        // Three different reasons, three sentences: nobody of the chosen model
+        // is online; they are online and empty; something is loaded that no
+        // listed profile matches.
+        filamentNote =
+          loaded.length > 0
+            ? t('slice.farmFilter.noLoadedPresets')
+            : !counted.byModel
+              ? t('slice.farmFilter.nothingLoaded')
+              : counted.printers.length === 0
+                ? t('slice.farmFilter.noOnlineOfModel')
+                : t('slice.farmFilter.nothingLoadedOnModel');
       }
     }
     return {
@@ -122,7 +147,9 @@ export function useSliceFarmFilters(
       keepFilament,
       printerNote,
       filamentNote,
-      unavailable: (onlyOnline || onlyLoaded) && farmQuery.isError,
+      unavailable: (onlyOnline || onlyLoaded) && farmQuery.isError && !farm,
+      stale: (onlyOnline || onlyLoaded) && farmQuery.isError && Boolean(farm),
+      retry,
     };
   }, [
     farm,
@@ -131,6 +158,7 @@ export function useSliceFarmFilters(
     onlyLoaded,
     presets,
     printerParents,
+    retry,
     selectedPrinterName,
     setOnlyOnline,
     setOnlyLoaded,

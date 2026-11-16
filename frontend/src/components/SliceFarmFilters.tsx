@@ -50,9 +50,16 @@ export function SliceFarmFilterToggles({ filters, disabled }: TogglesProps) {
           {t('slice.farmFilter.onlyLoaded')}
         </label>
       </div>
-      {filters.unavailable && (
+      {(filters.unavailable || filters.stale) && (
         <p role="status" className="text-xs text-amber-700 dark:text-amber-400">
-          {t('slice.farmFilter.unavailable')}
+          {filters.stale ? t('slice.farmFilter.stale') : t('slice.farmFilter.unavailable')}{' '}
+          <button
+            type="button"
+            onClick={filters.retry}
+            className="underline underline-offset-2 hover:text-white transition-colors"
+          >
+            {t('common.retry')}
+          </button>
         </p>
       )}
       {filters.printerNote
