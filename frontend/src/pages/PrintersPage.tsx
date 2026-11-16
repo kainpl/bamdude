@@ -2235,6 +2235,33 @@ const PrinterCard = memo(function PrinterCard({
     caliIdx?: number | null;
     savedPresetId?: string;
   } | null>(null);
+  // What BamDude holds for a slot the printer reports BLANK (no filament type):
+  // a reel put in after a runout, or a spool assigned before the reel went in.
+  // The blank-slot card names it and offers Replace / Unassign through the same
+  // dialog and handlers as a filled slot; a blank slot with no spool offers
+  // Assign only where the caller says a reel is there (`offerAssign`).
+  const blankSlotSpool = (amsId: number, trayId: number, location: string, offerAssign: boolean) => {
+    if (inventoryModeUnknown || spoolmanUnreachable || (spoolmanEnabled && spoolmanLoading)) return {};
+    const open = (currentSpool?: { id: number; displayName: string; source: 'inventory' | 'spoolman' }) =>
+      setAssignSpoolModal({ printerId: printer.id, amsId, trayId, trayInfo: { type: '', profile: '', color: '', location }, currentSpool });
+    if (spoolmanEnabled) {
+      const row = spoolmanSlotAssignments?.find((a) => a.printer_id === printer.id && a.ams_id === amsId && a.tray_id === trayId);
+      const held = row ? spoolmanSpools?.find((s) => s.id === row.spoolman_spool_id) : undefined;
+      if (!held) return { onAssignSpool: offerAssign ? () => open() : undefined };
+      const displayName = formatSpoolDisplayName(held, effectiveSpoolTemplate);
+      return {
+        assigned: { label: displayName, colorHex: held.rgba ?? null, onUnassign: () => onUnassignSpoolmanSpool?.(held.id) },
+        onAssignSpool: () => open({ id: held.id, displayName, source: 'spoolman' }),
+      };
+    }
+    const held = onGetAssignment?.(printer.id, amsId, trayId)?.spool;
+    if (!held) return { onAssignSpool: offerAssign ? () => open() : undefined };
+    const displayName = formatSpoolDisplayName(held, effectiveSpoolTemplate);
+    return {
+      assigned: { label: displayName, colorHex: held.rgba ?? null, onUnassign: () => onUnassignSpool?.(printer.id, amsId, trayId) },
+      onAssignSpool: () => open({ id: held.id, displayName, source: 'inventory' }),
+    };
+  };
   const [showFirmwareModal, setShowFirmwareModal] = useState(false);
   const [plateCheckResult, setPlateCheckResult] = useState<PlateDetectionResult | null>(null);
   const [isCheckingPlate, setIsCheckingPlate] = useState(false);
@@ -5337,6 +5364,11 @@ const PrinterCard = memo(function PrinterCard({
                                 const activePrintSlotIdx = activeMapping.indexOf(globalTrayId);
                                 const activePrintSlotLabel = activePrintSlotIdx >= 0 ? `P${activePrintSlotIdx + 1}` : null;
 
+                                // The spool held for this slot while the printer reports it blank.
+                                const blankSpool = isEmpty
+                                  ? blankSlotSpool(ams.id, slotIdx, t('configureAmsSlot.slotLabel', { ams: getAmsLabel(ams.id, ams.tray.length), slot: slotIdx + 1 }), emptyKind === 'reset')
+                                  : {};
+
                                 // Slot visual content (goes inside hover card)
                                 const slotVisual = (
                                   <div
@@ -5377,6 +5409,7 @@ const PrinterCard = memo(function PrinterCard({
                                       isEmpty={isEmpty}
                                       slotNumber={slotIdx + 1}
                                       emptyKind={emptyKind}
+                                      pendingColor={blankSpool.assigned?.colorHex}
                                     />
                                     <div
                                       className="text-[length:var(--pc-t9,9px)] text-white font-bold truncate"
@@ -5616,6 +5649,7 @@ const PrinterCard = memo(function PrinterCard({
                                     ) : (
                                       <EmptySlotHoverCard
                                         emptyKind={emptyKind}
+                                        {...blankSpool}
                                         configureSlot={{
                                           enabled: hasPermission('printers:control'),
                                           onConfigure: () => setConfigureSlotModal({
@@ -5730,6 +5764,9 @@ const PrinterCard = memo(function PrinterCard({
                         const activePrintSlotLabel = activePrintSlotIdx >= 0 ? `P${activePrintSlotIdx + 1}` : null;
 
                         // Slot visual content (goes inside hover card)
+                        const blankSpool = isEmpty
+                          ? blankSlotSpool(ams.id, htSlotId, getAmsLabel(ams.id, ams.tray.length), emptyKind === 'reset')
+                          : {};
                         const slotVisual = (
                           <div
                             className={`relative bg-bambu-dark-tertiary rounded p-1 text-center ${isEmpty ? 'opacity-50' : ''} ${
@@ -5769,6 +5806,7 @@ const PrinterCard = memo(function PrinterCard({
                               isEmpty={isEmpty}
                               slotNumber={1}
                               emptyKind={emptyKind}
+                              pendingColor={blankSpool.assigned?.colorHex}
                             />
                             <div
                               className="text-[length:var(--pc-t9,9px)] text-white font-bold truncate"
@@ -6101,6 +6139,7 @@ const PrinterCard = memo(function PrinterCard({
                                 ) : (
                                   <EmptySlotHoverCard
                                     emptyKind={emptyKind}
+                                    {...blankSpool}
                                     configureSlot={{
                                       enabled: hasPermission('printers:control'),
                                       onConfigure: () => setConfigureSlotModal({
@@ -6225,6 +6264,9 @@ const PrinterCard = memo(function PrinterCard({
                               };
 
                               const isEmpty = !extTray.tray_type;
+                              const blankSpool = isEmpty
+                                ? blankSlotSpool(255, slotTrayId, extLabel || t('printers.external'), false)
+                                : {};
                               const extSlotContent = (
                                 <div className={`bg-bambu-dark-tertiary rounded p-1 text-center ${isEmpty ? 'opacity-50' : ''} ${isExtActive ? 'ring-2 ring-bambu-green ring-offset-1 ring-offset-bambu-dark' : ''}`}>
                                   {/* Filament color circle with 1-based slot number centered inside */}
@@ -6235,6 +6277,7 @@ const PrinterCard = memo(function PrinterCard({
                                     trayType={extTray.tray_type}
                                     isEmpty={isEmpty}
                                     slotNumber={isDualNozzle ? (extTrayId === 254 ? 'L' : 'R') : slotTrayId + 1}
+                                    pendingColor={blankSpool.assigned?.colorHex}
                                   />
                                   <div className={`text-[length:var(--pc-t9,9px)] font-bold truncate ${isEmpty ? 'text-white/40' : 'text-white'}`}>
                                     {extTray.tray_type || '-'}
@@ -6440,6 +6483,7 @@ const PrinterCard = memo(function PrinterCard({
                                     </FilamentHoverCard>
                                   ) : (
                                     <EmptySlotHoverCard
+                                      {...blankSpool}
                                       configureSlot={{
                                         enabled: hasPermission('printers:control'),
                                         onConfigure: () => setConfigureSlotModal({

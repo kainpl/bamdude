@@ -14,6 +14,9 @@
  *                ('reset'). A 'reset' slot gets a solid amber border so it
  *                reads as "needs attention" rather than an empty dashed slot
  *                (#1694). null / undefined ⇒ configured (or caller doesn't know).
+ *   pendingColor - Colour (hex, no '#') of a spool BamDude holds for a slot the
+ *                printer reports blank. Drawn with an amber dashed border:
+ *                assigned here, not configured on the printer yet.
  */
 
 interface FilamentSlotCircleProps {
@@ -33,6 +36,7 @@ interface FilamentSlotCircleProps {
   isEmpty: boolean;
   slotNumber: number | string;
   emptyKind?: 'physical' | 'reset' | null;
+  pendingColor?: string | null;
 }
 
 /**
@@ -90,20 +94,25 @@ export function FilamentSlotCircle({
   isEmpty,
   slotNumber,
   emptyKind,
+  pendingColor,
 }: FilamentSlotCircleProps) {
   const colours = (trayColors ?? []).filter(Boolean);
   const fill = isEmpty ? '' : multiColourFill(colours, ctype);
   // A spool physically loaded but not yet configured ('reset') gets a solid
   // amber border so it stands out from a truly empty slot's dashed grey (#1694).
   const isUnconfigured = isEmpty && emptyKind === 'reset';
+  // The spool BamDude holds for a blank slot: its colour, marked as not taken.
+  const pending = isEmpty && pendingColor ? pendingColor.slice(0, 6) : null;
+  const solid = pending ?? trayColor;
   return (
     <div
       className="w-3.5 h-3.5 rounded-full mx-auto mb-0.5 border-2 flex items-center justify-center"
+      data-pending-config={pending ? 'true' : undefined}
       style={{
-        backgroundColor: trayColor ? `#${trayColor}` : (trayType ? '#333' : 'transparent'),
+        backgroundColor: solid ? `#${solid}` : (trayType ? '#333' : 'transparent'),
         backgroundImage: fill || undefined,
-        borderColor: isUnconfigured ? '#f59e0b' : (isEmpty ? '#666' : 'rgba(255,255,255,0.1)'),
-        borderStyle: isEmpty && !isUnconfigured ? 'dashed' : 'solid',
+        borderColor: pending || isUnconfigured ? '#f59e0b' : (isEmpty ? '#666' : 'rgba(255,255,255,0.1)'),
+        borderStyle: pending || (isEmpty && !isUnconfigured) ? 'dashed' : 'solid',
       }}
     >
       <span
@@ -112,7 +121,7 @@ export function FilamentSlotCircle({
         // one. On a banded dot the digit sits over all of them, and picking by
         // the first makes a black-and-white spool read as one or the other at
         // random depending on which colour firmware happened to list first.
-        style={{ color: isLightFilamentColor(averageHex(colours, trayColor)) ? '#000' : '#fff' }}
+        style={{ color: isLightFilamentColor(averageHex(colours, solid)) ? '#000' : '#fff' }}
       >
         {slotNumber}
       </span>

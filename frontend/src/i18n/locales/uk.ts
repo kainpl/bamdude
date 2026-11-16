@@ -10169,6 +10169,7 @@ export default {
   ams: {
     emptySlot: 'Порожній слот',
     slotLoadedUnconfigured: 'Котушку завантажено — слот не налаштовано',
+    assignedNotConfigured: 'Призначено в BamDude, але принтер ще не отримав налаштування. Слот, з якого йде друк, отримає його після завершення друку.',
     configureSlot: 'Налаштувати слот',
     profile: 'Профіль',
     kFactor: 'K фактор',

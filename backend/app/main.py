@@ -2967,6 +2967,30 @@ def _unit_reported(ams_data: list, ams_id: int) -> bool:
     return False
 
 
+def _slot_feeds_print(status, ams_id: int, tray_id: int) -> bool:
+    """Whether this slot is one the printer is feeding from right now.
+
+    ``tray_now`` names one slot for the whole printer, so on a dual-nozzle
+    machine each hotend's own fed slot is asked as well. Meaningful only while
+    a print runs; the caller checks that.
+    """
+    if status is None:
+        return False
+    if ams_id == 255:
+        global_id = 254 + tray_id
+    elif ams_id >= 128:
+        global_id = ams_id
+    else:
+        global_id = ams_id * 4 + tray_id
+    if getattr(status, "tray_now", None) == global_id:
+        return True
+    slots = getattr(status, "extruder_slots", None) or {}
+    return any(
+        getattr(slot, "has_filament", False) and slot.holds(ams_id, tray_id)
+        for slot in (slots.values() if isinstance(slots, dict) else [])
+    )
+
+
 async def _recheck_held_unlinks(printer_id: int) -> None:
     """Run the AMS pass again for a printer with a held slot unlink (``slot_unlink_hold``).
 
@@ -3250,6 +3274,26 @@ async def _on_ams_change(printer_id: int, ams_data: list):
                     # "empty" signals authoritative over any stale tray_type
                     # that might survive the relay's auto-clearing.
                     loaded = tray_holds_filament(current_tray)
+                    # Not into the slot a running print feeds from (upstream
+                    # 1cc7f4f18): a reel put in after a runout leaves that slot
+                    # loaded and blank, and this went out on every AMS change for
+                    # the rest of the print. Held for THAT slot only; the first
+                    # change after the print sends it. Any other slot is
+                    # configured at once, as before.
+                    if (
+                        not fp_type.strip()
+                        and loaded
+                        and assignment.spool
+                        and printing_now
+                        and _slot_feeds_print(_unlink_state, assignment.ams_id, assignment.tray_id)
+                    ):
+                        logger.debug(
+                            "Pre-config held for spool %d AMS%d-T%d: the slot is feeding the print",
+                            assignment.spool_id,
+                            assignment.ams_id,
+                            assignment.tray_id,
+                        )
+                        continue
                     if not fp_type.strip() and loaded and assignment.spool:
                         try:
                             from backend.app.api.routes.inventory import (

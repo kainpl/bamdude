@@ -9955,6 +9955,7 @@ export default {
   ams: {
     emptySlot: 'Empty slot',
     slotLoadedUnconfigured: 'Spool loaded — slot not configured',
+    assignedNotConfigured: 'Assigned in BamDude; the printer has not taken it yet. A slot that is feeding a print gets its setting once the print is over.',
     configureSlot: 'Configure Slot',
     profile: 'Profile',
     kFactor: 'K Factor',
