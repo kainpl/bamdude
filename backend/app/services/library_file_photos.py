@@ -57,6 +57,7 @@ from sqlalchemy import delete, event, func, select, update
 from sqlalchemy.orm import Session
 
 from backend.app.core.config import settings
+from backend.app.core.database import take_write_lock
 from backend.app.models.library import LibraryFile
 from backend.app.models.library_file_photo import LibraryFilePhoto
 from backend.app.services.part_images import PHOTO_FORMATS, _saved_again
@@ -74,6 +75,9 @@ MAX_PHOTO_BYTES = 20 * 1024 * 1024
 #: Checked from the header, before a pixel is decoded.
 MAX_PHOTO_PIXELS = 40_000_000
 MAX_PHOTOS_PER_FILE = 30
+#: Photos decoded at once, server-wide. One allowed picture (40 MP) is hundreds
+#: of megabytes while it is decoded, turned upright and saved again; the rest wait.
+PHOTO_DECODES_AT_ONCE = 2
 CAPTION_MAX_LENGTH = 500
 #: The longer side of the gallery's small copy.
 THUMBNAIL_SIDE = 480
@@ -284,6 +288,38 @@ def _encode_and_write(content: bytes, directory: Path, stem: str) -> tuple[str, 
     return ext, len(photo), width, height
 
 
+_decode_slots: tuple[asyncio.AbstractEventLoop, asyncio.Semaphore] | None = None
+
+
+def _slots() -> asyncio.Semaphore:
+    """The decode slots of the running loop (a semaphore belongs to the loop it first waited on)."""
+    global _decode_slots
+    loop = asyncio.get_running_loop()
+    if _decode_slots is None or _decode_slots[0] is not loop:
+        _decode_slots = (loop, asyncio.Semaphore(PHOTO_DECODES_AT_ONCE))
+    return _decode_slots[1]
+
+
+async def _decoded(content: bytes, directory: Path, stem: str) -> tuple[str, int, int, int]:
+    """:func:`_encode_and_write` in a thread, at most :data:`PHOTO_DECODES_AT_ONCE` at a time."""
+    async with _slots():
+        return await disk(_encode_and_write, content, directory, stem)
+
+
+def _lock_file_stmt(library_file_id: int):
+    return select(LibraryFile.id).where(LibraryFile.id == library_file_id).with_for_update()
+
+
+async def _lock_file(db, library_file_id: int) -> bool:
+    """The file row, locked for a read-decide-write; ``False`` when it is gone.
+
+    SQLite's write lock first (``take_write_lock`` — its dialect emits no
+    ``FOR UPDATE``), then the row lock PostgreSQL honours.
+    """
+    await take_write_lock(db, LibraryFile.__table__, library_file_id)
+    return await db.scalar(_lock_file_stmt(library_file_id)) is not None
+
+
 # -- reads -----------------------------------------------------------------------------
 
 
@@ -356,11 +392,13 @@ async def add_photo(
         raise HTTPException(422, "The photo must be a PNG, JPEG or WebP picture")
     if len(content) > MAX_PHOTO_BYTES:
         raise HTTPException(413, f"A photo may be at most {MAX_PHOTO_BYTES} bytes")
-    held = await db.scalar(
+    full = HTTPException(409, f"A file may have at most {MAX_PHOTOS_PER_FILE} photos")
+    count = (
         select(func.count()).select_from(LibraryFilePhoto).where(LibraryFilePhoto.library_file_id == library_file_id)
     )
-    if int(held or 0) >= MAX_PHOTOS_PER_FILE:
-        raise HTTPException(409, f"A file may have at most {MAX_PHOTOS_PER_FILE} photos")
+    # A first look, so a full file is refused before anything is decoded. It decides nothing.
+    if int(await db.scalar(count) or 0) >= MAX_PHOTOS_PER_FILE:
+        raise full
 
     directory = photos_dir(library_file_id)
     stem = uuid4().hex
@@ -368,7 +406,7 @@ async def add_photo(
     sent = False
     try:
         try:
-            ext, stored_bytes, width, height = await disk(_encode_and_write, content, directory, stem)
+            ext, stored_bytes, width, height = await _decoded(content, directory, stem)
         except _Refused as refused:
             if refused.reason == "bytes":
                 raise HTTPException(
@@ -377,6 +415,13 @@ async def add_photo(
             if refused.reason == "pixels":
                 raise HTTPException(422, f"The photo may have at most {MAX_PHOTO_PIXELS} pixels") from refused
             raise HTTPException(422, "The photo must be a PNG, JPEG or WebP picture") from refused
+        # ⚠️ The cap is decided HERE, under the file row's lock and after the slow
+        # decode: counted before it, parallel uploads each saw room for one more.
+        # The lock is held only for the count, the insert and the commit.
+        if not await _lock_file(db, library_file_id):
+            raise HTTPException(404, "File not found")  # purged while its photo was decoded
+        if int(await db.scalar(count) or 0) >= MAX_PHOTOS_PER_FILE:
+            raise full
         photo = LibraryFilePhoto(
             library_file_id=library_file_id,
             stored_name=f"{stem}.{ext}",
