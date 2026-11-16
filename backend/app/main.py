@@ -12535,6 +12535,9 @@ async def _application_lifespan(app: FastAPI):
     from backend.app.services import part_images
 
     await part_images.shutdown()  # events and photo removals already started finish, or are cancelled
+    from backend.app.services import label_gate
+
+    await label_gate.shutdown()  # the label workers: queued draws dropped, a running one ends by itself
     # jobs before the runtime their attempts run on; bounded, so a job stuck on a hung share cannot hold shutdown
     if not await stop_library_preview_jobs_within("shutdown", 10):
         logging.getLogger(__name__).warning("Library preview jobs did not prove their end at shutdown")

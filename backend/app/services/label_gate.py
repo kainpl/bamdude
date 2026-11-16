@@ -14,7 +14,11 @@ whole list.
 from __future__ import annotations
 
 import asyncio
+import contextvars
+import functools
+import threading
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, TypeVar
 
 from fastapi import HTTPException
@@ -42,6 +46,22 @@ _SHEET_FIELDS = (
 )
 
 T = TypeVar("T")
+
+#: Threads that draw labels — every renderer call of the server shares these two.
+#: ⚠️ Not the loop's default executor: a renderer handed the worst design the
+#: bounds allow works for many seconds and a closed connection does not stop a
+#: thread, so a few label requests held every thread the rest of the server
+#: works through (print gates opening a 3MF, upload hashing, preview disk I/O).
+DRAW_WORKERS = 2
+#: How long one draw may wait for a worker and work, in seconds. The worst
+#: draws the bounds allow measured 9–15 s of one worker on the dev machine
+#: (2026-11-16); this leaves a host several times slower room to finish, and is
+#: what stops requests piling up behind two busy workers without end.
+DRAW_CEILING_SECONDS = 120.0
+DRAW_BUSY_DETAIL = "Label drawing is busy — try again in a moment"
+
+_executor: ThreadPoolExecutor | None = None
+_executor_guard = threading.Lock()
 
 
 def _refuse(problems: list[str]) -> None:
@@ -97,14 +117,56 @@ def sheet_of(row: Any) -> LabelSheetSpec:
     return checked_sheet({field: getattr(row, field) for field in _SHEET_FIELDS})
 
 
+def _workers() -> ThreadPoolExecutor:
+    global _executor
+    with _executor_guard:
+        if _executor is None:
+            _executor = ThreadPoolExecutor(max_workers=DRAW_WORKERS, thread_name_prefix="label-draw")
+        return _executor
+
+
 async def draw(render: Callable[..., T], *args: Any, **kwargs: Any) -> T:
-    """Run a renderer in a thread.
+    """Run a renderer on one of the label workers.
 
     ⚠️ The renderers are synchronous and pure, and five hundred labels with a QR
     each is seconds of them. On the event loop that is seconds in which no
-    request, socket push or printer callback is served.
+    request, socket push or printer callback is served; on the shared thread
+    pool it is a thread nothing else gets.
+
+    A draw that is not finished within :data:`DRAW_CEILING_SECONDS` answers 503.
+    One still waiting for a worker is taken out of the queue; one already being
+    drawn runs to its end (a thread cannot be stopped) and its result is dropped.
     """
-    return await asyncio.to_thread(render, *args, **kwargs)
+    call = functools.partial(contextvars.copy_context().run, render, *args, **kwargs)
+    work = asyncio.get_running_loop().run_in_executor(_workers(), call)
+    try:
+        return await asyncio.wait_for(work, DRAW_CEILING_SECONDS)
+    except TimeoutError:
+        raise HTTPException(503, DRAW_BUSY_DETAIL) from None
 
 
-__all__ = ["checked_design", "checked_picture", "checked_sheet", "design_of", "draw", "refuse", "sheet_of"]
+async def shutdown() -> None:
+    """Let the label workers go: queued draws are dropped, the ones running end by themselves.
+
+    The next draw makes new workers, so a second lifespan in one process works.
+    """
+    global _executor
+    with _executor_guard:
+        executor, _executor = _executor, None
+    if executor is not None:
+        executor.shutdown(wait=False, cancel_futures=True)
+
+
+__all__ = [
+    "DRAW_BUSY_DETAIL",
+    "DRAW_CEILING_SECONDS",
+    "DRAW_WORKERS",
+    "checked_design",
+    "checked_picture",
+    "checked_sheet",
+    "design_of",
+    "draw",
+    "refuse",
+    "sheet_of",
+    "shutdown",
+]

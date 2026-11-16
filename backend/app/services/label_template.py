@@ -430,6 +430,13 @@ MAX_PICTURE_SIDE_DOTS = 4000
 #: Labels in one export of pictures. Measured 2026-11-16: a 100 × 50 mm label at
 #: 600 dpi is ~70 ms of a worker thread and ~65 kB, so this many is ~15 s and 13 MB.
 MAX_LABEL_PICTURES = 200
+#: Every picture of one export added up, in megapixels. ⚠️ The count alone let
+#: 200 labels of 169 × 169 mm at 600 dpi through — 3 187 MP, a minute or two of
+#: one worker thread. Drawing costs by the dot, so the dots are what is bounded:
+#: the worst 500 MP measured ~9 s on the dev machine (2026-11-16; 31 such labels,
+#: or 200 of 63 × 63 mm). Fifty 100 × 150 mm shipping labels at 600 dpi are
+#: 418 MP, two hundred of them at 300 dpi 105 MP.
+MAX_EXPORT_MEGAPIXELS = 500
 
 #: The sentences those refusals are made of. A named map so the refusal catalog
 #: (``scripts/api_error_catalog.py``, ``FORWARDED_MESSAGE_MAPS``) can see them:
@@ -460,6 +467,9 @@ LABEL_GEOMETRY_MESSAGES = {
     "picture": "At {} dots per millimetre this design is more than {} dots on a side — lower the resolution.",
     "picture_dpi": "At {} dpi this design is more than {} dots on a side — choose a lower resolution.",
     "picture_count": "One export takes at most {} labels as pictures — select fewer.",
+    "picture_budget": (
+        "At {} dpi these {} labels come to more than {} megapixels — select fewer or choose a lower resolution."
+    ),
 }
 
 
@@ -524,6 +534,9 @@ def colour_picture_problems(spec: LabelTemplateSpec, dpi: float, *, labels: int 
         return [say["picture_count"].format(MAX_LABEL_PICTURES)]
     if max(spec.width_mm, spec.height_mm) * dpi / 25.4 > MAX_PICTURE_SIDE_DOTS + 0.5:
         return [say["picture_dpi"].format(f"{dpi:g}", MAX_PICTURE_SIDE_DOTS)]
+    dots = round(spec.width_mm * dpi / 25.4) * round(spec.height_mm * dpi / 25.4)
+    if labels > 1 and dots * labels > MAX_EXPORT_MEGAPIXELS * 1_000_000:
+        return [say["picture_budget"].format(f"{dpi:g}", labels, MAX_EXPORT_MEGAPIXELS)]
     return []
 
 
