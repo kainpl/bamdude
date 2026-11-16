@@ -356,6 +356,8 @@ async def test_f21b_real_notification_branch_preserves_legacy_fallback_and_once(
         # This is exactly the legacy live read, not the immutable display pair.
         rig.c.state.total_layers = 17
     monkeypatch.setattr(main, "_first_layer_notified", {})
+    # The session below is a mock: the run's durable claim (its own test file) is granted, not exercised.
+    monkeypatch.setattr("backend.app.services.first_layer_announcement.claim", AsyncMock(return_value=True))
     monkeypatch.setattr(layer_timelapse, "on_layer_change", AsyncMock())
     monkeypatch.setattr(main, "_maybe_bank_inprint_frame", AsyncMock())
     monkeypatch.setattr(macro_trigger, "fire_layer_macros", AsyncMock())
