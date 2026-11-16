@@ -9,6 +9,7 @@ import { render } from '../utils';
 import { ModelViewerModal } from '../../components/ModelViewerModal';
 import { http, HttpResponse } from 'msw';
 import { server } from '../mocks/server';
+import i18n from '../../i18n';
 import { openInSlicer } from '../../utils/slicer';
 
 vi.mock('../../utils/slicer', async () => {
@@ -237,6 +238,20 @@ describe('ModelViewerModal', () => {
         );
         expect(fullscreenButton).toBeInTheDocument();
       });
+    });
+  });
+
+  describe('the fill-the-window toggle', () => {
+    it('is named in the interface language, both ways', async () => {
+      await i18n.changeLanguage('uk');
+      try {
+        render(<ModelViewerModal archiveId={1} title="Test Model" onClose={mockOnClose} />);
+
+        fireEvent.click(await screen.findByTitle('На все вікно'));
+        expect(await screen.findByTitle('Звичайний розмір')).toBeInTheDocument();
+      } finally {
+        await i18n.changeLanguage('en');
+      }
     });
   });
 

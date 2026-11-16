@@ -522,7 +522,7 @@ export function ModelViewerModal({ archiveId, libraryFileId, title, fileType, ar
               variant="secondary"
               size="sm"
               onClick={() => setIsFullscreen((prev) => !prev)}
-              title={isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
+              title={isFullscreen ? t('modelViewer.restoreSize') : t('modelViewer.fillWindow')}
             >
               {isFullscreen ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
             </Button>

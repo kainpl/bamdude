@@ -11411,8 +11411,12 @@ export default {
     moreSlicerOptions: 'Інші варіанти слайсера',
     tabs: {
       model: '3D модель',
-      gcode: 'Попередній перегляд G-code'
+      gcode: 'Попередній перегляд G-code',
+      modelUnavailable: '(недоступно)',
+      gcodeUnavailable: '(не нарізано)'
     },
+    fillWindow: 'На все вікно',
+    restoreSize: 'Звичайний розмір',
     buildVolumeLabel: 'Стіл',
     buildVolumeUnit: 'мм',
     buildVolumeTooltip: 'Розмір стола, зображеного під переглядом - береться з 3MF (printable_area + printable_height) якщо є, інакше дефолт X1/P1/A1: 256×256×256.',

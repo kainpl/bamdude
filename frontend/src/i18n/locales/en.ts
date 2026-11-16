@@ -11202,8 +11202,12 @@ export default {
     moreSlicerOptions: 'More slicer options',
     tabs: {
       model: '3D Model',
-      gcode: 'G-code Preview'
+      gcode: 'G-code Preview',
+      modelUnavailable: '(not available)',
+      gcodeUnavailable: '(not sliced)'
     },
+    fillWindow: 'Fill the window',
+    restoreSize: 'Restore size',
     buildVolumeLabel: 'Bed',
     buildVolumeUnit: 'mm',
     buildVolumeTooltip: 'Build volume drawn under the preview - parsed from the 3MF (printable_area + printable_height) when present, otherwise the X1/P1/A1 default 256×256×256.',
