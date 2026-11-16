@@ -516,6 +516,10 @@ async def delete_user(
         # archive that takes it.
         await spool_usage_service.detach_archives(db, list(_doomed_archive_ids))
         await spoolman_usage_history.detach_archives(db, list(_doomed_archive_ids))
+        # The video registry rows go with their archives (m237): no FK action on SQLite.
+        from backend.app.services import archive_media
+
+        await archive_media.forget_archives(db, list(_doomed_archive_ids))
         await db.execute(delete(PrintArchive).where(PrintArchive.created_by_id == user_id))
         # Detach print_queue back-references before the bulk delete — SQLite
         # foreign_keys=OFF means ON DELETE clauses won't fire on their own.

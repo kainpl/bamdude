@@ -240,3 +240,37 @@ class TestItRefusesWhatItCannotAnswer:
         data = _data_dir(tmp_path)
         _populate(data)
         assert prune.main(["--data-dir", str(data)]) == 0
+
+
+class TestTheVideoRegistryIsRead:
+    """A video ``archive_media_assets`` names (m237) is wanted even where no ``print_archives`` column points at it."""
+
+    def test_a_video_only_the_registry_names_is_kept(self, tmp_path):
+        data = tmp_path / "data"
+        TestItKeepsEveryFileAnArchiveOwns._db(data)
+        conn = sqlite3.connect(data / "bamdude.db")
+        conn.execute("CREATE TABLE archive_media_assets (archive_id INTEGER, relative_path TEXT, remote_path TEXT)")
+        # Archive 8's 3MF lies at the root of archive/, so it owns no folder: only the registry names this copy.
+        conn.execute("INSERT INTO archive_media_assets VALUES (8, 'archive/loose_variant.mp4', '/timelapse/v.mp4')")
+        conn.commit()
+        conn.close()
+        archive = data / "archive"
+        kept = _write(archive / "loose_variant.mp4")
+        _write(archive / "loose.3mf")
+        gone = _write(archive / "loose_unnamed.mp4")
+
+        assert prune.main(["--data-dir", str(data), "--apply"]) == 0
+
+        assert kept.exists()
+        assert not gone.exists()
+
+    def test_a_database_from_before_the_registry_is_swept_as_before(self, tmp_path):
+        data = tmp_path / "data"
+        TestItKeepsEveryFileAnArchiveOwns._db(data)
+        archive = data / "archive"
+        _write(archive / "loose.3mf")
+        gone = _write(archive / "loose_unnamed.mp4")
+
+        assert prune.main(["--data-dir", str(data), "--apply"]) == 0
+
+        assert not gone.exists()
