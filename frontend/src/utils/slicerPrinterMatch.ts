@@ -358,6 +358,30 @@ export function printerPresetIdentity(
 }
 
 /**
+ * The model fragment of a printer preset and, when a name states one, its
+ * nozzle. Like `printerPresetIdentity`, but a preset that names a model and no
+ * nozzle still answers: the name in the lineage that states both wins, else the
+ * nearest that states a model. `null` when no name can be placed.
+ *
+ * For the online-printers filter, where a nozzle nobody stated must not rule a
+ * printer out.
+ */
+export function printerPresetModel(
+  printerPresetName: string | null | undefined,
+  printerParents: PrinterParents | null | undefined,
+): { model: string; nozzle: string | null } | null {
+  if (!printerPresetName) return null;
+  let modelOnly: { model: string; nozzle: string | null } | null = null;
+  for (const name of printerPresetLineage(printerPresetName, printerParents)) {
+    const parts = extractPrinterPresetModel(name);
+    if (!parts) continue;
+    if (parts.nozzle !== null) return parts;
+    modelOnly ??= parts;
+  }
+  return modelOnly;
+}
+
+/**
  * Collapse a raw model token extracted from a preset name ("A1M",
  * "A1 mini", "X1C", "X1 Carbon"...) onto ONE canonical display fragment
  * from the backend registry ("A1 Mini", "X1 Carbon"). The cloud tabs' printer

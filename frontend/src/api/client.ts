@@ -5978,6 +5978,41 @@ export interface UnifiedPresetsResponse {
   orca_cloud_status: SlicerCloudStatus;
 }
 
+// GET /slicer/loaded-filaments — the Slice dialog's two farm filters. Online
+// means active, not archived and connected; a filament is the SPOOL a slot
+// holds, never the profile the slot was advertised under.
+export interface LoadedFilament {
+  kind: 'ams' | 'external';
+  material: string;
+  // The filament id of the spool's family, when one is known.
+  family_id: string | null;
+  // The source states only a material: presets of the same type match it.
+  by_material: boolean;
+}
+
+export interface OnlinePrinter {
+  printer_id: number;
+  // Normalised short model; `accepts` are the file models it takes besides its own.
+  model: string | null;
+  accepts: string[];
+  nozzle_diameters: number[];
+  filaments: LoadedFilament[];
+}
+
+// The presets that ARE one family, by the id each tier of /slicer/presets lists them under.
+export interface FamilyPresetRefs {
+  name: string;
+  cloud: string[];
+  orca_cloud: string[];
+  local: string[];
+  standard: string[];
+}
+
+export interface LoadedFilamentsResponse {
+  printers: OnlinePrinter[];
+  families: Record<string, FamilyPresetRefs>;
+}
+
 export interface SliceResponse {
   library_file_id: number;
   name: string;
@@ -15372,6 +15407,10 @@ export const api = {
   // cache aggressively.
   getPrinterModels: () =>
     request<Record<string, string>>('/slicer/printer-models'),
+  // Online printers and the filaments loaded on them — the Slice dialog's
+  // "only online printers" / "only loaded filaments" filters.
+  getSlicerLoadedFilaments: () =>
+    request<LoadedFilamentsResponse>('/slicer/loaded-filaments'),
   // Resolve one filament preset's flow-rate-relevant metadata on demand.
   // The unified listing exposes filament_flow_ratio only for local presets
   // (cloud / standard listings are thin); the Flow Rate verify-download

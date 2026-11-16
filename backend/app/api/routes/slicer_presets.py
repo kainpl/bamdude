@@ -18,7 +18,7 @@ import json
 import logging
 import time
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -36,6 +36,7 @@ from backend.app.models.user import User
 from backend.app.schemas.slicer import PresetRef
 from backend.app.schemas.slicer_presets import (
     FilamentPresetInfo,
+    LoadedFilamentsResponse,
     UnifiedPreset,
     UnifiedPresetsBySlot,
     UnifiedPresetsResponse,
@@ -713,6 +714,33 @@ async def list_unified_presets(
         standard=UnifiedPresetsBySlot(**standard),
         cloud_status=cloud_status,
         orca_cloud_status=orca_cloud_status,
+    )
+
+
+@router.get("/loaded-filaments", response_model=LoadedFilamentsResponse)
+async def list_loaded_filaments(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user: User | None = Depends(require_permission(Permission.LIBRARY_UPLOAD)),
+) -> LoadedFilamentsResponse:
+    """Online printers and the filaments loaded on them, for the Slice dialog's
+    "only online printers" / "only loaded filaments" filters.
+
+    Online is active, not archived and connected; an API key sees the printers
+    on its list. A filament is the spool a slot holds and its family — read
+    from the feed snapshot, so a slot advertised under another profile answers
+    with its real spool. Read-only: nothing is asked of a printer or of
+    Spoolman. Gated like the preset listing — whoever can slice can filter.
+    """
+    from backend.app.core.api_key_scope import key_printer_scope
+    from backend.app.services.printer_manager import printer_manager
+    from backend.app.services.slice_loaded_filaments import loaded_filaments
+
+    return await loaded_filaments(
+        db,
+        printer_manager,
+        allowed=key_printer_scope(request),
+        user_id=current_user.id if current_user is not None else None,
     )
 
 

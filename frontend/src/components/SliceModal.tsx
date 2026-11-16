@@ -39,6 +39,8 @@ import {
   resizeColourOverrides,
 } from '../utils/sliceFilamentColours';
 import { Select } from './Select';
+import { SliceFarmFilterToggles } from './SliceFarmFilters';
+import { useSliceFarmFilters, type PresetKeep } from '../hooks/useSliceFarmFilters';
 import { buildPrinterParents } from '../utils/printerPresetParents';
 import {
   EMPTY_COMPATIBILITY_INDEX,
@@ -298,6 +300,10 @@ interface PresetDropdownProps {
   // compatibility partition.
   selectedPrinterName?: string | null;
   compatIndex?: PrinterCompatibilityIndex;
+  // A farm filter ("only online printers" / "only loaded filaments"): the
+  // presets the list offers. The chosen preset stays listed whatever it says —
+  // a filter never replaces a choice. Omitted ⇒ everything is offered.
+  keep?: PresetKeep;
 }
 
 /** Cloud/local/standard preset dropdown with optgroup tiers. */
@@ -313,6 +319,7 @@ function PresetDropdown({
   swatchColorLabel,
   selectedPrinterName,
   compatIndex,
+  keep,
 }: PresetDropdownProps) {
   const { t } = useTranslation();
   // A `<div>` with explicit `htmlFor` labels, not one wrapping `<label>`: the
@@ -334,7 +341,9 @@ function PresetDropdown({
     const groupLabel = (group: PresetGroup) => t(PRESET_GROUP_LABELS[group].key, PRESET_GROUP_LABELS[group].fallback);
     const toSections = (entries: UnifiedPreset[]) =>
       groupPresetsForDisplay(entries, slot).map((g) => ({ tierLabel: groupLabel(g.group), entries: g.entries }));
-    const all = SLICE_MODAL_TIER_ORDER.flatMap((tier) => (data[tier] as UnifiedPresetsBySlot)[slot]);
+    const listed = SLICE_MODAL_TIER_ORDER.flatMap((tier) => (data[tier] as UnifiedPresetsBySlot)[slot]);
+    const isChosen = (p: UnifiedPreset) => value !== null && p.source === value.source && p.id === value.id;
+    const all = keep ? listed.filter((p) => keep(p) || isChosen(p)) : listed;
     // The same sections with the printer filter never applied, for the
     // all-filtered-out case below.
     const unfiltered = toSections(all);
@@ -363,7 +372,7 @@ function PresetDropdown({
         sourceLabel: groupLabel(presetGroupOf(preset)),
       })),
     };
-  }, [data, slot, t, selectedPrinterName, compatIndex]);
+  }, [data, slot, t, selectedPrinterName, compatIndex, keep, value]);
 
   const totalEntries =
     sections.reduce((sum, s) => sum + s.entries.length, 0) + otherEntries.length;
@@ -1023,6 +1032,9 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
     () => buildCompatibilityIndex(printerModelsQuery.data ?? {}, printerParents),
     [printerModelsQuery.data, printerParents],
   );
+  // "Only online printers" / "only loaded filaments": what the lists OFFER.
+  // Never read by the pre-pick effects below — a filter replaces no choice.
+  const farmFilters = useSliceFarmFilters(presetsQuery.data, selectedPrinterName, printerParents);
 
   // Printer / process preset names the source 3MF was prepared with. The
   // plates query resolves before the presets query (the latter is gated on
@@ -1760,11 +1772,13 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
             {/* Any manual re-pick retires the "bundle had missing presets"
                 banner — it describes the state right after a load, and the
                 user is now driving the slots by hand. */}
+            <SliceFarmFilterToggles filters={farmFilters} disabled={isEnqueuing || useEmbedded} />
             <PresetDropdown
               label={t('slice.printer', 'Printer profile')}
               slot="printer"
               data={presetsQuery.data}
               value={printerPreset}
+              keep={farmFilters.keepPrinter}
               onChange={(ref) => {
                 setUnresolvedBundleSlots(null);
                 setPrinterPreset(ref);
@@ -1825,6 +1839,7 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
                     slot="filament"
                     data={presetsQuery.data}
                     value={filamentPresets[idx] ?? null}
+                    keep={farmFilters.keepFilament}
                     onChange={(ref) => {
                       explicitFilamentSlots.current.add(idx);
                       setUnresolvedBundleSlots(null);
