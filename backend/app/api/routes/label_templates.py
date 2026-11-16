@@ -31,7 +31,7 @@ from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.core.auth import RequirePermission
+from backend.app.core.auth import RequireAnyPermission, RequirePermission
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.i18n import current_language
@@ -103,10 +103,19 @@ async def _load(db: AsyncSession, template_id: int) -> LabelTemplate:
     return row
 
 
+#: Who may READ the catalogue: the label editor's readers, and anyone who may
+#: print labels. ⚠️ Printing asks ``inventory:read``, and the print dialog lists
+#: exactly these two tables — asking only ``label_templates:read`` here left a
+#: group with the first right and not the second looking at "no designs yet"
+#: while the print API answered them by name. Only the two lists open this way:
+#: every door that draws or writes a design keeps its own right.
+_CatalogueReader = RequireAnyPermission(Permission.LABEL_TEMPLATES_READ, Permission.INVENTORY_READ)
+
+
 @router.get("", response_model=list[LabelTemplateOut])
 async def list_templates(
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.LABEL_TEMPLATES_READ),
+    _: User | None = _CatalogueReader,
 ) -> list[LabelTemplateOut]:
     """Every design, built-ins first — they are what a fresh install prints."""
     result = await db.execute(select(LabelTemplate).order_by(LabelTemplate.builtin_key.is_(None), LabelTemplate.name))
@@ -201,7 +210,7 @@ def _as_sheet_spec(body: LabelSheetIn) -> LabelSheetSpec:
 @router.get("/sheets", response_model=list[LabelSheetOut])
 async def list_sheets(
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.LABEL_TEMPLATES_READ),
+    _: User | None = _CatalogueReader,
 ) -> list[LabelSheetOut]:
     """Paper geometries, each carrying whatever about it does not fit."""
     result = await db.execute(select(LabelSheet).order_by(LabelSheet.name))
