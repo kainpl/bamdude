@@ -2840,7 +2840,7 @@ export function FileManagerPage() {
             <p className="hidden sm:block text-sm text-bambu-gray">{t('fileManager.subtitle')}</p>
           </div>
         </div>
-        <div className="flex items-center gap-2 sm:gap-3 flex-wrap">
+        <div className="flex items-center gap-2 sm:gap-3 flex-wrap sm:flex-1 sm:justify-end min-w-0">
           <ListViewToggle value={viewMode} onChange={setViewMode} options={[
             { value: 'grid', icon: LayoutGrid, label: t('list.view.cards') },
             { value: 'list', icon: List, label: t('list.view.list') },
@@ -3781,18 +3781,23 @@ export function FileManagerPage() {
               </div>
             </div>
           ) : (
-            <div className="flex-1 lg:overflow-y-auto">
+            <div className="flex-1 min-w-0 overflow-x-auto lg:overflow-y-auto">
               {/* Outer grid carries the column-template; header + every row
                   use ``grid-cols-subgrid`` so they share track widths. The
                   Actions column is therefore sized to the WIDEST row's
                   buttons (e.g. a sliced .gcode.3mf with all of: project,
                   notes, print, schedule, plate gallery, 3D, menu) — all
-                  other rows then use that same width and align cleanly. */}
+                  other rows then use that same width and align cleanly.
+                  ⚠️ The name has a FLOOR and the tags a CEILING: a subgrid
+                  track is as wide as its widest row, so one file with six
+                  tags in an unbounded track squeezed every row's name to
+                  nothing. Past the floors the list scrolls sideways in its
+                  own box (`min-w-min` keeps the rows' ground under them). */}
               <div
-                className={`grid ${
+                className={`grid min-w-min ${
                   authEnabled
-                    ? 'grid-cols-[auto_minmax(0,1fr)_max-content_max-content_max-content_max-content_max-content]'
-                    : 'grid-cols-[auto_minmax(0,1fr)_max-content_max-content_max-content_max-content]'
+                    ? 'grid-cols-[auto_minmax(16rem,1fr)_max-content_fit-content(14rem)_max-content_max-content_max-content]'
+                    : 'grid-cols-[auto_minmax(16rem,1fr)_fit-content(14rem)_max-content_max-content_max-content]'
                 } bg-bambu-dark-secondary rounded-lg border border-bambu-dark-tertiary`}
               >
                 {/* List header - hidden on mobile, show simplified on small screens */}
@@ -3989,7 +3994,7 @@ export function FileManagerPage() {
                           key={tag.id}
                           type="button"
                           onClick={(e) => { e.stopPropagation(); toggleTagFilter(tag.id); }}
-                          className="text-[11px] px-1.5 py-0.5 rounded-full bg-bambu-green/15 text-bambu-green border border-bambu-green/30 hover:bg-bambu-green/25 transition-colors max-w-full truncate"
+                          className="text-[11px] px-1.5 py-0.5 rounded-full bg-bambu-green/15 text-bambu-green border border-bambu-green/30 hover:bg-bambu-green/25 transition-colors max-w-[12rem] truncate"
                           title={tag.name}
                         >
                           {tag.name}
