@@ -409,3 +409,29 @@ async def test_the_export_writes_nothing(db_session):
     assert again == stored
     # The rows are the address's that was left: not the current Spoolman's.
     assert [e["current_source"] for e in files[SPOOLMAN_USAGE_PATH]["usage_history"]] == [False, False, False]
+
+
+async def test_no_cloud_sign_in_token_of_the_installation_is_exported(db_session):
+    """The ownerless Bambu / Orca Cloud sign-in lives in ``Settings`` rows: the
+    access token, the refresh token (which mints access tokens) and a pending
+    device code never reach ``settings/app_settings.json``."""
+    from backend.app.models.settings import Settings
+
+    secrets = {
+        "bambu_cloud_token": "fabricated-bambu-access",
+        "bambu_cloud_refresh_token": "fabricated-bambu-refresh",
+        "orca_cloud_token": "fabricated-orca-access",
+        "orca_cloud_refresh_token": "fabricated-orca-refresh",
+        "orca_cloud_pending_verifier": "fabricated-device-code",
+    }
+    db_session.add_all([Settings(key=key, value=value) for key, value in secrets.items()])
+    db_session.add(Settings(key="bambu_cloud_region", value="global"))
+    await db_session.commit()
+    files: dict = {}
+
+    await GitBackupService()._collect_settings(db_session, files)
+
+    exported = files["settings/app_settings.json"]["settings"]
+    assert not set(secrets) & set(exported)
+    assert not [value for value in secrets.values() if value in json.dumps(files)]
+    assert exported["bambu_cloud_region"] == "global"
