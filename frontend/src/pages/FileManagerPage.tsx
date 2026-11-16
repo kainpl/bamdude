@@ -4766,12 +4766,13 @@ export function FileManagerPage() {
           }}
           onSliceFile={
             // The file rows' own gate for in-app slicing: the sidecar is on and
-            // the user may write the sliced file. The same SliceModal opens.
+            // the user may write the sliced file. The same SliceModal opens —
+            // OVER the summary, which stays: an assembly can write several
+            // files and the others' "Slice" buttons must outlive the first
+            // slice, and closing the Slice dialog gives the focus back to the
+            // button that opened it instead of leaving it on <body>.
             (settings?.use_slicer_api ?? false) && hasPermission('library:upload')
-              ? (id, filename) => {
-                  setAssembleMode(null);
-                  setSliceFile({ id, filename, can_relayout: true });
-                }
+              ? (id, filename) => setSliceFile({ id, filename, can_relayout: true })
               : undefined
           }
         />
