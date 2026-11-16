@@ -128,7 +128,6 @@ class FileUpdate(BaseModel):
     filename: str | None = Field(None, min_length=1, max_length=255)
     folder_id: int | None = None
     product_ids: list[int] | None = None
-    notes: str | None = None
 
 
 class FileExternalUrlUpdate(BaseModel):
@@ -178,8 +177,6 @@ class FileResponse(BaseModel):
 
     last_printed_at: datetime | None
     print_count: int = 0
-
-    notes: str | None
 
     # Provenance (m033) — populated for MakerWorld imports + slicer outputs.
     # ``source_type`` ∈ {"makerworld", "sliced", ...}; ``source_url`` is the

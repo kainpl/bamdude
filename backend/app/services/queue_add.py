@@ -27,7 +27,7 @@ from sqlalchemy.orm import selectinload
 
 from backend.app.core.permissions import Permission
 from backend.app.models.archive import PrintArchive
-from backend.app.models.library import LibraryFile
+from backend.app.models.library import LibraryFile, owner_scope_sees
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.printer_queue import PrinterQueue
 from backend.app.models.queue_source import QueueSource
@@ -45,7 +45,7 @@ from backend.app.services.filament_intake import (
 )
 from backend.app.services.filament_policy import choices_policy, record_queue_source, serialize_policy
 from backend.app.services.filament_requirements import PrintRequirementsCache
-from backend.app.services.library_helpers import sliced_by_content
+from backend.app.services.library_helpers import NOT_SLICED_DETAIL, UNSLICED_PROJECT_DETAIL, sliced_source_refusal
 from backend.app.services.order_filing import resolve_line_id, resolve_link
 from backend.app.services.printer_manager import printer_manager
 from backend.app.services.queue_ops import place_pending_block, queue_scope_lock
@@ -61,7 +61,7 @@ from backend.app.services.queue_source_capture import (
     swap_request,
 )
 from backend.app.services.source_io import SourceUnavailable
-from backend.app.utils.filename import InvalidFilenameError, is_sliced_file, validate_print_filename
+from backend.app.utils.filename import InvalidFilenameError, validate_print_filename
 from backend.app.utils.model_compatibility import model_compatibility
 
 
@@ -181,14 +181,16 @@ async def add_items_to_printer_queue(
         # pending and the refusal reaches nobody. Held by the bulk library route
         # until that route was replaced by the Schedule dialog; it belongs here,
         # where every caller passes. A sliced 3MF named ``Foo.3mf`` passes on its
-        # contents (upstream #2993) — the file manager offers it Print.
-        if not is_sliced_file(library_file.filename) and not await sliced_by_content(
+        # contents (upstream #2993) — the file manager offers it Print — and a
+        # project saved as ``Foo.gcode.3mf`` is refused on them (upstream #3435).
+        refusal = await sliced_source_refusal(
             library_file.filename,
             resolve_source_path(library_file=library_file),
             file_metadata=library_file.file_metadata,
-        ):
+        )
+        if refusal is not None:
             raise HTTPException(
-                400, "Not a sliced file. Only G-code, or a 3MF with sliced G-code inside, can be printed."
+                400, UNSLICED_PROJECT_DETAIL if refusal == UNSLICED_PROJECT_DETAIL else NOT_SLICED_DETAIL
             )
 
     # The order and its line, through the one check every door of new work asks
@@ -314,7 +316,7 @@ async def _add_items_from_queue_source(
         raise HTTPException(422, routing_detail("source_unreadable")) from exc
     # The snapshot keeps the name it was captured under, so a sliced ``Foo.3mf``
     # is judged on the captured bytes, exactly as the job that owns them was.
-    if not is_sliced_file(filename) and not await sliced_by_content(filename, descriptor.path):
+    if await sliced_source_refusal(filename, descriptor.path) is not None:
         raise HTTPException(422, routing_detail("source_unreadable"))
 
     # Read only the immutable object, pinned against collection.  The original
@@ -757,7 +759,7 @@ def ensure_source_visible(
     if (
         library_file is not None
         and not current_user.has_permission(Permission.LIBRARY_READ_ALL.value)
-        and library_file.created_by_id != current_user.id
+        and not owner_scope_sees(library_file, current_user.id)
     ):
         raise HTTPException(404, "Library file not found")
 
@@ -831,20 +833,21 @@ async def add_next_block_to_printer_queue(
         if (
             current_user is not None
             and not current_user.has_permission(Permission.LIBRARY_READ_ALL.value)
-            and library_file.created_by_id != current_user.id
+            and not owner_scope_sees(library_file, current_user.id)
         ):
             raise HTTPException(404, "Library file not found")
         try:
             validate_print_filename(library_file.filename)
         except InvalidFilenameError as exc:
             raise HTTPException(400, str(exc)) from exc
-        if not is_sliced_file(library_file.filename) and not await sliced_by_content(
+        refusal = await sliced_source_refusal(
             library_file.filename,
             resolve_source_path(library_file=library_file),
             file_metadata=library_file.file_metadata,
-        ):
+        )
+        if refusal is not None:
             raise HTTPException(
-                400, "Not a sliced file. Only G-code, or a 3MF with sliced G-code inside, can be printed."
+                400, UNSLICED_PROJECT_DETAIL if refusal == UNSLICED_PROJECT_DETAIL else NOT_SLICED_DETAIL
             )
 
     effective_project_ids = await _effective_project_ids(db, data_items)
@@ -970,7 +973,7 @@ async def _add_next_block_from_queue_source(
         validate_print_filename(filename)
     except (SourceUnavailable, InvalidFilenameError) as exc:
         raise HTTPException(422, routing_detail("source_unreadable")) from exc
-    if not is_sliced_file(filename) and not await sliced_by_content(filename, descriptor.path):
+    if await sliced_source_refusal(filename, descriptor.path) is not None:
         raise HTTPException(422, routing_detail("source_unreadable"))
 
     effective_project_ids = await _effective_project_ids(db, data_items)

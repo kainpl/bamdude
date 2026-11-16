@@ -42,7 +42,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.core.auth import RequirePermission, require_ownership_permission
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
-from backend.app.models.library import LibraryFile, LibraryFileTag, LibraryTag
+from backend.app.models.library import LibraryFile, LibraryFileTag, LibraryTag, owner_scope_clause
 from backend.app.models.user import User
 from backend.app.schemas.library import (
     TagBulkAssignRequest,
@@ -93,7 +93,7 @@ async def list_tags(
     # counts shown in the management modal.
     file_filter = LibraryFile.deleted_at.is_(None)
     if user is not None and not can_read_all:
-        file_filter = file_filter & (LibraryFile.created_by_id == user.id)
+        file_filter = file_filter & owner_scope_clause(user.id)
 
     count_subq = (
         select(

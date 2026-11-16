@@ -4750,15 +4750,18 @@ class BackgroundDispatchService:
 
         The name rule stays this runner's own, narrower than the queue's; the
         content arm is the one every print gate shares (upstream #2993) — a
-        sliced ``Foo.3mf`` the queue accepted must not be refused here. It reads
-        the bytes about to be sent (the job's snapshot when there is one), and
-        the container is opened only when the name has not already settled it.
+        sliced ``Foo.3mf`` the queue accepted must not be refused here, and a
+        project saved as ``Foo.gcode.3mf`` must not reach the printer (upstream
+        #3435). It reads the bytes about to be sent (the job's snapshot when
+        there is one); a file that cannot be read is judged by its name.
         """
-        from backend.app.services.library_helpers import sliced_by_content
+        from backend.app.services.library_helpers import sliced_source_refusal
 
-        if BackgroundDispatchService._is_sliced_file(filename) or await sliced_by_content(filename, file_path):
-            return
-        raise SourceRejected("Not a sliced file. Only G-code, or a 3MF with sliced G-code inside, can be printed.")
+        refusal = await sliced_source_refusal(
+            filename, file_path, named=BackgroundDispatchService._is_sliced_file(filename)
+        )
+        if refusal is not None:
+            raise SourceRejected(refusal)
 
 
 background_dispatch = BackgroundDispatchService()

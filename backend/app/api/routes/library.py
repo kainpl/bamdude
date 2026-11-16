@@ -19,7 +19,7 @@ from urllib.parse import quote, urlsplit
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Response, UploadFile
 from fastapi.responses import FileResponse as FastAPIFileResponse, JSONResponse
-from sqlalchemy import and_, distinct, false, func, or_, select
+from sqlalchemy import and_, distinct, false, func, or_, select, true
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -33,10 +33,16 @@ from backend.app.core.auth import (
     require_permission,
 )
 from backend.app.core.config import settings as app_settings
-from backend.app.core.database import get_db
+from backend.app.core.database import get_db, take_write_lock
 from backend.app.core.permissions import Permission
 from backend.app.models.archive import PrintArchive
-from backend.app.models.library import LibraryFile, LibraryFileTag, LibraryFolder
+from backend.app.models.library import (
+    LibraryFile,
+    LibraryFileTag,
+    LibraryFolder,
+    owner_scope_clause,
+    owner_scope_sees,
+)
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.product import Product, product_files, product_folders
 from backend.app.models.user import User
@@ -98,11 +104,13 @@ from backend.app.services.design_settings import (
 from backend.app.services.entity_codes import code_for
 from backend.app.services.filament_requirements import annotate_rack_groups
 from backend.app.services.library_helpers import (
+    NOT_SLICED_DETAIL,
+    UNSLICED_PROJECT_DETAIL,
     answered_file_tags,
     detect_file_type,
     folder_activity_at,
     skip_objects_supported_from_metadata,
-    sliced_by_content,
+    sliced_source_refusal,
     sync_system_tags,
 )
 from backend.app.services.library_ingest import IngestResult, find_reusable_row, read_access
@@ -144,7 +152,6 @@ from backend.app.services.track_switch_plan import read_track_switch_plan
 from backend.app.utils.filename import (
     MAX_FILENAME_BYTES,
     InvalidFilenameError,
-    is_sliced_file,
     safe_path_component,
     validate_print_filename,
 )
@@ -191,8 +198,23 @@ def _library_file_visible(
         return True
     if user is None:
         return False
-    # Ownerless files (``created_by_id is None``) require ALL — fail-closed.
-    return library_file.created_by_id is not None and library_file.created_by_id == user.id
+    # The caller's own, or an ownerless file of an external folder; an ownerless
+    # file in managed storage requires ALL — fail-closed.
+    return owner_scope_sees(library_file, user.id)
+
+
+def _files_visible_to(user: User | None, can_read_all: bool):
+    """SQL: whose files the caller's COUNTERS may count (G11 U4) — the ownership half
+    of :func:`_library_file_visible`; the trash is the caller's own clause.
+
+    Folders are shared structure, so their names reach every library reader; the
+    numbers on them (file count, latest activity) and a file's duplicates are
+    facts about FILES and follow the files' rule, or a ``read_own`` caller reads
+    how many files others keep where, when they touched them and under what name.
+    """
+    if can_read_all or user is None:
+        return true()
+    return owner_scope_clause(user.id)
 
 
 def file_name_visible(library_file: LibraryFile | None, user: User | None, scope: str) -> bool:
@@ -204,13 +226,14 @@ def file_name_visible(library_file: LibraryFile | None, user: User | None, scope
 
 def library_file_name_visible(scope: str, user_id: int | None):
     """The SQL twin of :func:`file_name_visible` (WS-13 E1 LV3) over ``LibraryFile``:
-    outside the trash, and ``all`` → every file, ``own`` → the caller's own (an
-    ownerless file stays hidden), ``none`` → no file. One predicate for every search
+    outside the trash, and ``all`` → every file, ``own`` → the caller's own and the
+    ownerless files of external folders (an ownerless managed file stays hidden),
+    ``none`` → no file. One predicate for every search
     that matches a file name and for everything counted under the same ``q``."""
     if scope == "all":
         return LibraryFile.deleted_at.is_(None)
     if scope == "own" and user_id is not None:
-        return and_(LibraryFile.deleted_at.is_(None), LibraryFile.created_by_id == user_id)
+        return and_(LibraryFile.deleted_at.is_(None), owner_scope_clause(user_id))
     return false()
 
 
@@ -229,7 +252,8 @@ def _ensure_library_file_visible(
       - Missing / soft-deleted → 404 (not 403, to avoid id-enumeration leaks).
       - ``can_read_all`` true (LIBRARY_READ_ALL or auth disabled) → file returned.
       - ``can_read_all`` false and ``created_by_id != user.id`` → 404.
-      - Ownerless files (``created_by_id is None``) require ALL — fail-closed.
+      - Ownerless files (``created_by_id is None``) require ALL — fail-closed —
+        unless they live in an external folder: those are shared.
     """
     # ``library_file is None`` is restated only to narrow the return type — the
     # predicate already answers False for it.
@@ -1147,7 +1171,7 @@ IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff", "
 async def list_folders(
     response: Response,
     db: AsyncSession = Depends(get_db),
-    _: tuple[User | None, bool] = Depends(
+    auth_result: tuple[User | None, bool] = Depends(
         require_ownership_permission(
             Permission.LIBRARY_READ_ALL,
             Permission.LIBRARY_READ_OWN,
@@ -1155,6 +1179,7 @@ async def list_folders(
     ),
 ):
     """Get all folders as a tree structure."""
+    counted = _files_visible_to(*auth_result)
     # Prevent browser caching of folder list
     response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
 
@@ -1178,7 +1203,7 @@ async def list_folders(
     # one's WHERE clause. Keep all four together.
     file_counts_result = await db.execute(
         select(LibraryFile.folder_id, func.count(LibraryFile.id))
-        .where(LibraryFile.folder_id.isnot(None), LibraryFile.deleted_at.is_(None))
+        .where(LibraryFile.folder_id.isnot(None), LibraryFile.deleted_at.is_(None), counted)
         .group_by(LibraryFile.folder_id)
     )
     file_counts = dict(file_counts_result.all())
@@ -1188,7 +1213,7 @@ async def list_folders(
     # Descendants are folded in afterwards, over the linked tree (#2680).
     latest_file_activity_result = await db.execute(
         select(LibraryFile.folder_id, func.max(_FILE_ACTIVITY))
-        .where(LibraryFile.folder_id.isnot(None), LibraryFile.deleted_at.is_(None))
+        .where(LibraryFile.folder_id.isnot(None), LibraryFile.deleted_at.is_(None), counted)
         .group_by(LibraryFile.folder_id)
     )
     latest_file_activity = dict(latest_file_activity_result.all())
@@ -1250,7 +1275,7 @@ async def list_folders(
 async def get_folders_by_product(
     product_id: int,
     db: AsyncSession = Depends(get_db),
-    _: tuple[User | None, bool] = Depends(
+    auth_result: tuple[User | None, bool] = Depends(
         require_ownership_permission(
             Permission.LIBRARY_READ_ALL,
             Permission.LIBRARY_READ_OWN,
@@ -1258,6 +1283,7 @@ async def get_folders_by_product(
     ),
 ):
     """Get all folders linked to a specific product (via the M2M pivot)."""
+    counted = _files_visible_to(*auth_result)
     result = await db.execute(
         select(LibraryFolder)
         .join(product_folders, product_folders.c.library_folder_id == LibraryFolder.id)
@@ -1277,6 +1303,7 @@ async def get_folders_by_product(
             ).where(
                 LibraryFile.folder_id == folder.id,
                 LibraryFile.deleted_at.is_(None),
+                counted,
             )
         )
         file_count, latest_file = agg_result.one()
@@ -1422,7 +1449,7 @@ async def create_folder(
 async def get_folder(
     folder_id: int,
     db: AsyncSession = Depends(get_db),
-    _: tuple[User | None, bool] = Depends(
+    auth_result: tuple[User | None, bool] = Depends(
         require_ownership_permission(
             Permission.LIBRARY_READ_ALL,
             Permission.LIBRARY_READ_OWN,
@@ -1430,6 +1457,7 @@ async def get_folder(
     ),
 ):
     """Get a folder by ID."""
+    counted = _files_visible_to(*auth_result)
     result = await db.execute(
         select(LibraryFolder).options(selectinload(LibraryFolder.products)).where(LibraryFolder.id == folder_id)
     )
@@ -1446,6 +1474,7 @@ async def get_folder(
         ).where(
             LibraryFile.folder_id == folder_id,
             LibraryFile.deleted_at.is_(None),
+            counted,
         )
     )
     file_count, latest_file = agg_result.one()
@@ -1500,7 +1529,7 @@ async def get_folder_readme(
         func.lower(LibraryFile.filename).like("%.md"),
     )
     if user is not None and not can_read_all:
-        query = query.where(LibraryFile.created_by_id == user.id)
+        query = query.where(owner_scope_clause(user.id))
     result = await db.execute(query)
     candidates = result.scalars().all()
     if not candidates:
@@ -1539,7 +1568,7 @@ async def update_folder(
     folder_id: int,
     data: FolderUpdate,
     db: AsyncSession = Depends(get_db),
-    _: User | None = Depends(require_permission(Permission.LIBRARY_UPDATE_ALL)),
+    editor: User | None = Depends(require_permission(Permission.LIBRARY_UPDATE_ALL)),
     creds: RequestCredentials = Depends(request_credentials),
 ):
     """Update a folder.
@@ -1562,26 +1591,100 @@ async def update_folder(
     if data.product_ids is not None and set(data.product_ids) != {p.id for p in folder.products}:
         await creds.check(_products_update)
 
-    if data.name is not None:
-        folder.name = data.name
-
+    # Every check before the first field is written (G11 U3, upstream #3306).
+    moving = False
+    new_parent_id: int | None = None
     if data.parent_id is not None:
-        # Prevent circular reference
-        if data.parent_id == folder_id:
-            raise HTTPException(status_code=400, detail="Folder cannot be its own parent")
+        new_parent_id = data.parent_id or None  # 0 means the root
+        # ⚠️ A move is a read-decide-write over the WHOLE tree: two opposite moves
+        # (A under B, B under A) each pass a cycle check that read before the
+        # other wrote, and both folders then vanish from the tree. So the writer
+        # is taken first — SQLite's single write lock, on PostgreSQL every folder
+        # row in id order (NO KEY: an upload into a folder is not held up) — and
+        # the folder and its would-be ancestors are read only after it.
+        await take_write_lock(db, LibraryFolder.__table__, folder_id)
+        await db.execute(select(LibraryFolder.id).order_by(LibraryFolder.id).with_for_update(key_share=True))
+        await db.refresh(folder, attribute_names=["name", "parent_id", "is_external"])
+        # The parent it already has is no move: a client may send the whole form back.
+        moving = new_parent_id != folder.parent_id
 
-        # Check for circular reference in ancestors
-        if data.parent_id != 0:  # 0 means move to root
-            current_id = data.parent_id
-            while current_id is not None:
+    if moving:
+        # An external folder is a directory of its share: the scanner walks
+        # ``parent_id`` down from the mount point, so a subfolder moved out is
+        # filed a second time by the next scan, and a mount point is placed by
+        # mounting it.
+        if folder.is_external:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "folder_external_fixed",
+                    "message": "An external folder and its subfolders cannot be moved.",
+                },
+            )
+        if new_parent_id == folder_id:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "folder_own_subtree",
+                    "message": "A folder cannot be moved into itself or one of its subfolders.",
+                },
+            )
+        if new_parent_id is not None:
+            parent_row = (
+                await db.execute(
+                    select(LibraryFolder.parent_id, LibraryFolder.is_external).where(LibraryFolder.id == new_parent_id)
+                )
+            ).first()
+            if parent_row is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail={"error": "folder_parent_not_found", "message": "Parent folder not found"},
+                )
+            # A row under an external folder must be a real directory there
+            # (``create_folder`` makes one); a moved row would be a phantom.
+            if parent_row.is_external:
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "error": "folder_parent_external",
+                        "message": "A folder cannot be moved into an external folder.",
+                    },
+                )
+            seen = {new_parent_id}
+            current_id = parent_row.parent_id
+            while current_id is not None and current_id not in seen:
                 if current_id == folder_id:
-                    raise HTTPException(status_code=400, detail="Cannot move folder into its own subtree")
+                    raise HTTPException(
+                        status_code=400,
+                        detail={
+                            "error": "folder_own_subtree",
+                            "message": "A folder cannot be moved into itself or one of its subfolders.",
+                        },
+                    )
+                seen.add(current_id)
                 parent_result = await db.execute(select(LibraryFolder.parent_id).where(LibraryFolder.id == current_id))
                 current_id = parent_result.scalar()
 
-            folder.parent_id = data.parent_id
-        else:
-            folder.parent_id = None
+    if data.name is not None and data.name != folder.name and folder.is_external and folder.parent_id is not None:
+        # The scanner knows a subfolder of a share by its PATH; a new name here
+        # would change the row alone and the tree would name a directory the
+        # share does not have. A mount point's name is only our label for it.
+        under_external = await db.scalar(select(LibraryFolder.is_external).where(LibraryFolder.id == folder.parent_id))
+        if under_external:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "folder_external_rename",
+                    "message": "A subfolder of an external folder cannot be renamed here. "
+                    "Rename the directory itself and scan the folder again.",
+                },
+            )
+
+    if data.name is not None:
+        folder.name = data.name
+
+    if moving:
+        folder.parent_id = new_parent_id
 
     # Replace the folder's product list AND cascade it to every child file, so
     # that linking a folder to a product backfills the file→product pivot for
@@ -1609,7 +1712,9 @@ async def update_folder(
         )
     ).scalar_one()
 
-    # Get file count + latest file activity (#1770) in one trip
+    # Get file count + latest file activity (#1770) in one trip — of the files
+    # the editor may see, as every other folder answer counts them.
+    counted = _files_visible_to(editor, editor is None or editor.has_permission(Permission.LIBRARY_READ_ALL.value))
     agg_result = await db.execute(
         select(
             func.count(LibraryFile.id),
@@ -1617,6 +1722,7 @@ async def update_folder(
         ).where(
             LibraryFile.folder_id == folder_id,
             LibraryFile.deleted_at.is_(None),
+            counted,
         )
     )
     file_count, latest_file = agg_result.one()
@@ -1900,7 +2006,9 @@ def _validate_external_path(path_str: str) -> Path:
 async def create_external_folder(
     data: ExternalFolderCreate,
     db: AsyncSession = Depends(get_db),
-    _: User | None = Depends(require_permission(Permission.LIBRARY_UPLOAD)),
+    # ⚠️ Mounting names a directory of the HOST: an administrator's act, never
+    # ``library:upload`` (Operators hold it) — upstream b7d7c8250.
+    _: User | None = Depends(require_permission(Permission.SETTINGS_UPDATE)),
 ):
     """Create an external folder that points to a host directory."""
     resolved = _validate_external_path(data.external_path)
@@ -1997,17 +2105,28 @@ async def scan_external_folder(
 async def get_scan_job(
     job_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User | None = Depends(require_permission(Permission.LIBRARY_READ)),
+    _: tuple[User | None, bool] = Depends(
+        require_ownership_permission(
+            Permission.LIBRARY_READ_ALL,
+            Permission.LIBRARY_READ_OWN,
+        )
+    ),
 ):
     """One scan's state.
 
     For a client that missed the socket or reloaded mid-scan — the events are
     the fast path, not the only one.
+
+    Asked with the folder routes' own gate: the job describes a folder (its
+    error text may name the share's path, which a folder answer shows too), so
+    whoever reads folders reads it — the legacy ``library:read`` alone opens no
+    folder and no job. A job whose folder is gone is a 404 like a missing one
+    (SQLite runs no FK action, the row outlives its folder).
     """
     from backend.app.models.library_scan import LibraryScanJob
 
     job = await db.get(LibraryScanJob, job_id)
-    if job is None:
+    if job is None or await db.scalar(select(LibraryFolder.id).where(LibraryFolder.id == job.folder_id)) is None:
         raise HTTPException(status_code=404, detail="Scan job not found")
     return {
         "id": job.id,
@@ -2120,7 +2239,7 @@ async def list_files(
     filters: list = [LibraryFile.deleted_at.is_(None)]
 
     if user is not None and not can_read_all:
-        filters.append(LibraryFile.created_by_id == user.id)
+        filters.append(owner_scope_clause(user.id))
 
     if tag_ids:
         # #1268 — cross-cutting AND filter: the file must carry EVERY requested
@@ -2279,7 +2398,12 @@ async def list_files(
             # dedup; a duplicate badge against a trashed sibling is misleading.
             dup_result = await db.execute(
                 select(LibraryFile.file_hash, func.count(LibraryFile.id))
-                .where(LibraryFile.file_hash.in_(hashes), LibraryFile.deleted_at.is_(None))
+                .where(
+                    LibraryFile.file_hash.in_(hashes),
+                    LibraryFile.deleted_at.is_(None),
+                    # Another user's copy of the same bytes is not the caller's to count.
+                    _files_visible_to(user, can_read_all),
+                )
                 .group_by(LibraryFile.file_hash)
             )
             hash_counts = {h: c - 1 for h, c in dup_result.all()}  # -1 to exclude self
@@ -4368,12 +4492,19 @@ async def batch_generate_stl_thumbnails(
     request: BatchThumbnailRequest,
     db: AsyncSession = Depends(get_db),
     creds: RequestCredentials = Depends(request_credentials),
-    _: User | None = Depends(require_permission(Permission.LIBRARY_UPDATE_ALL)),
+    auth_result: tuple[User | None, bool] = Depends(
+        require_ownership_permission(
+            Permission.LIBRARY_UPDATE_ALL,
+            Permission.LIBRARY_UPDATE_OWN,
+        )
+    ),
 ):
     """Generate thumbnails for STL files in batch.
 
-    Note: Requires library:update_all permission since this is a batch operation
-    that may affect files owned by different users.
+    ``library:update_all`` works on any file. ``library:update_own`` works on the
+    caller's own files only — whatever the selection names (upstream #2990: the
+    button was offered to such a user and the route answered 403); the picture is
+    then published under that right, onto a row that is still theirs.
 
     Can generate thumbnails for:
     - Specific file IDs (file_ids)
@@ -4397,9 +4528,19 @@ async def batch_generate_stl_thumbnails(
     else:
         return BatchThumbnailResponse(processed=0, succeeded=0, failed=0, results=[])
 
+    user, can_modify_all = auth_result
+    owner_id = None if can_modify_all or user is None else user.id
+    permission = Permission.LIBRARY_UPDATE_ALL if owner_id is None else Permission.LIBRARY_UPDATE_OWN
+    if owner_id is not None:
+        query = query.where(LibraryFile.created_by_id == owner_id)
+
     rows = (await db.execute(query)).scalars().all()
     cad_files = [(row.id, row.filename) for row in rows if is_cad_preview(row.file_type)]
-    sources = [PreviewSource.capture(row, authority=authority) for row in rows if not is_cad_preview(row.file_type)]
+    sources = [
+        PreviewSource.capture(row, authority=authority, permission=permission.value, owner_id=owner_id)
+        for row in rows
+        if not is_cad_preview(row.file_type)
+    ]
     # This route owns only an auth/selection read transaction.
     await db.commit()
     picture_pause = PreviewPauseBudget()  # one bound for the whole batch on a backup's pause
@@ -5455,12 +5596,12 @@ async def print_library_file(
 
     # Validate file is sliced — by name, or by what the 3MF holds: the file
     # manager offers Print for a sliced ``Foo.3mf`` (its tag follows the content).
-    if not is_sliced_file(lib_file.filename) and not await sliced_by_content(
-        lib_file.filename, file_path, file_metadata=lib_file.file_metadata
-    ):
+    # A project saved as ``Foo.gcode.3mf`` is refused on its content (upstream #3435).
+    refusal = await sliced_source_refusal(lib_file.filename, file_path, file_metadata=lib_file.file_metadata)
+    if refusal is not None:
         raise HTTPException(
             status_code=400,
-            detail="Not a sliced file. Only G-code, or a 3MF with sliced G-code inside, can be printed.",
+            detail=UNSLICED_PROJECT_DETAIL if refusal == UNSLICED_PROJECT_DETAIL else NOT_SLICED_DETAIL,
         )
 
     if not file_path.exists():
@@ -5625,6 +5766,8 @@ async def get_file(
                 LibraryFile.file_hash == file.file_hash,
                 LibraryFile.id != file.id,
                 LibraryFile.deleted_at.is_(None),
+                # …nor named: its file name and folder are that user's (G11 U4).
+                _files_visible_to(user, can_read_all),
             )
         )
         for dup_file, dup_folder_name in dup_result.all():
@@ -5671,7 +5814,6 @@ async def get_file(
         thumbnail_path=file.thumbnail_path,
         metadata=file.file_metadata,
         last_printed_at=file.last_printed_at,
-        notes=file.notes,
         duplicates=duplicates if duplicates else None,
         duplicate_count=duplicate_count,
         created_by_id=file.created_by_id,
@@ -5902,9 +6044,6 @@ async def update_file(
 
     if data.folder_id is not None:
         file.folder_id = data.folder_id or None
-
-    if data.notes is not None:
-        file.notes = data.notes if data.notes else None
 
     # One call, on the final list: the sync owns ``product_files`` and the
     # plates both, so the collection is never assigned here. The refresh puts
@@ -6573,7 +6712,7 @@ async def get_library_stats(
     user, can_read_all = auth_result
     file_filters = []
     if user is not None and not can_read_all:
-        file_filters.append(LibraryFile.created_by_id == user.id)
+        file_filters.append(owner_scope_clause(user.id))
 
     # ⚠️ Counts exclude the trash; the SIZE below does not, deliberately.
     # "How many files do I have" and "how much disk is this using" are different

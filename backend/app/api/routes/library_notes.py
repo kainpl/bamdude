@@ -6,7 +6,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.core.auth import get_current_user_optional, require_permission
+from backend.app.api.routes.library import _ensure_library_file_visible
+from backend.app.core.auth import get_current_user_optional, require_ownership_permission, require_permission
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.core.websocket import ws_manager
@@ -22,6 +23,18 @@ from backend.app.schemas.library_file_note import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/library", tags=["library-notes"])
+
+# Notes are part of a file: every route resolves the file through the library's
+# own visibility rule first — a file the caller cannot see, or one in the trash,
+# is the same 404 as a missing one (G11 U2). The route's own permission
+# (``library:read`` / ``library:notes_write``) is asked on top.
+_SEES_FILE = Depends(require_ownership_permission(Permission.LIBRARY_READ_ALL, Permission.LIBRARY_READ_OWN))
+
+
+async def _visible_file(db: AsyncSession, file_id: int, auth_result: tuple[User | None, bool]) -> LibraryFile:
+    user, can_read_all = auth_result
+    row = (await db.execute(select(LibraryFile).where(LibraryFile.id == file_id))).scalar_one_or_none()
+    return _ensure_library_file_visible(row, user, can_read_all)
 
 
 def _to_response(note: LibraryFileNote, username: str | None, current_user: User | None) -> LibraryFileNoteResponse:
@@ -59,11 +72,10 @@ async def list_file_notes(
     db: AsyncSession = Depends(get_db),
     current_user: User | None = Depends(get_current_user_optional),
     _: User | None = Depends(require_permission(Permission.LIBRARY_READ)),
+    auth_result: tuple[User | None, bool] = _SEES_FILE,
 ):
     """List notes for a library file (newest first)."""
-    file_result = await db.execute(select(LibraryFile.id).where(LibraryFile.id == file_id))
-    if file_result.scalar_one_or_none() is None:
-        raise HTTPException(404, "Library file not found")
+    await _visible_file(db, file_id, auth_result)
 
     rows = await db.execute(
         select(LibraryFileNote, User.username)
@@ -81,11 +93,10 @@ async def create_file_note(
     db: AsyncSession = Depends(get_db),
     current_user: User | None = Depends(get_current_user_optional),
     _: User | None = Depends(require_permission(Permission.LIBRARY_NOTES_WRITE)),
+    auth_result: tuple[User | None, bool] = _SEES_FILE,
 ):
     """Create a note on a library file."""
-    file_result = await db.execute(select(LibraryFile.id).where(LibraryFile.id == file_id))
-    if file_result.scalar_one_or_none() is None:
-        raise HTTPException(404, "Library file not found")
+    await _visible_file(db, file_id, auth_result)
 
     note = LibraryFileNote(
         library_file_id=file_id,
@@ -122,6 +133,7 @@ async def update_file_note(
     db: AsyncSession = Depends(get_db),
     current_user: User | None = Depends(get_current_user_optional),
     _: User | None = Depends(require_permission(Permission.LIBRARY_NOTES_WRITE)),
+    auth_result: tuple[User | None, bool] = _SEES_FILE,
 ):
     """Update a note. Only the original author can edit it.
 
@@ -132,6 +144,7 @@ async def update_file_note(
     if loaded is None:
         raise HTTPException(404, "Note not found")
     note, username = loaded
+    await _visible_file(db, note.library_file_id, auth_result)
 
     if current_user is not None and note.user_id != current_user.id:
         raise HTTPException(403, "Cannot edit another user's note")
@@ -152,12 +165,14 @@ async def delete_file_note(
     db: AsyncSession = Depends(get_db),
     current_user: User | None = Depends(get_current_user_optional),
     _: User | None = Depends(require_permission(Permission.LIBRARY_NOTES_WRITE)),
+    auth_result: tuple[User | None, bool] = _SEES_FILE,
 ):
     """Delete a note. Only the original author can delete it."""
     loaded = await _load_note_with_username(db, note_id)
     if loaded is None:
         raise HTTPException(404, "Note not found")
     note, _username = loaded
+    await _visible_file(db, note.library_file_id, auth_result)
 
     if current_user is not None and note.user_id != current_user.id:
         raise HTTPException(403, "Cannot delete another user's note")

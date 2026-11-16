@@ -136,7 +136,10 @@ class LibraryFile(Base):
     print_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     last_printed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
-    # User notes
+    # ⚠️ LEGACY, unused: Bambuddy's single notes text. m231 moved whatever it held
+    # into the notes thread (``library_file_notes`` / ``file_notes`` below) and the
+    # API no longer reads or writes it. The column stays only because dropping it
+    # would mean recreating the table; never read it, never offer it again.
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Provenance — populated by MakerWorld import + slicer output (m033). NULL
@@ -260,6 +263,31 @@ class LibraryFile(Base):
         passive_deletes=False,
         uselist=False,
     )
+
+
+def owner_scope_sees(row, user_id: int | None) -> bool:
+    """May a caller WITHOUT ``library:read_all`` see this file? THE ownership rule
+    of library reads — ``routes/library._library_file_visible`` and every other
+    reader ask it; the trash and the caller's right to read at all are theirs.
+
+    The caller's own file — and a file nobody owns that lives in an EXTERNAL
+    folder: the scanner files what it finds on a share without an owner, and a
+    mounted share is shared (owner, 2026-11-16). An ownerless file in managed
+    storage still needs ``read_all``. ``row`` may be a narrow result row: one
+    without ``is_external`` stays hidden.
+    """
+    owner = getattr(row, "created_by_id", None)
+    if owner is None:
+        return bool(getattr(row, "is_external", False))
+    return user_id is not None and owner == user_id
+
+
+def owner_scope_clause(user_id: int | None):
+    """The SQL twin of :func:`owner_scope_sees`, over ``LibraryFile``."""
+    shared = and_(LibraryFile.created_by_id.is_(None), LibraryFile.is_external.is_(True))
+    if user_id is None:
+        return shared
+    return or_(LibraryFile.created_by_id == user_id, shared)
 
 
 class LibraryTag(Base):

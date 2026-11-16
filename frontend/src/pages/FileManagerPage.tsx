@@ -2993,8 +2993,8 @@ export function FileManagerPage() {
             size="sm"
             data-library-action="external"
             onClick={() => setShowExternalFolderModal(true)}
-            disabled={!hasPermission('library:upload')}
-            title={!hasPermission('library:upload') ? t('fileManager.noPermissionCreateFolder') : t('fileManager.linkExternalFolder')}
+            disabled={!hasPermission('settings:update')}
+            title={!hasPermission('settings:update') ? t('fileManager.noPermissionLinkExternal') : t('fileManager.linkExternalFolder')}
           >
             <FolderSymlink className="w-4 h-4 mr-2" />
             {t('fileManager.linkExternal')}
@@ -3049,7 +3049,7 @@ export function FileManagerPage() {
               {(close) => <>
                 {[
                   { label: t('fileManager.generateThumbnails'), icon: Image, disabled: batchThumbnailMutation.isPending || !hasAnyPermission('library:update_own', 'library:update_all'), title: !hasAnyPermission('library:update_own', 'library:update_all') ? t('fileManager.noPermissionGenerateThumbnail') : t('fileManager.generateThumbnailsForMissing'), action: () => batchThumbnailMutation.mutate() },
-                  { label: t('fileManager.linkExternal'), icon: FolderSymlink, disabled: !hasPermission('library:upload'), title: !hasPermission('library:upload') ? t('fileManager.noPermissionCreateFolder') : t('fileManager.linkExternalFolder'), dialog: 'external', action: () => setShowExternalFolderModal(true) },
+                  { label: t('fileManager.linkExternal'), icon: FolderSymlink, disabled: !hasPermission('settings:update'), title: !hasPermission('settings:update') ? t('fileManager.noPermissionLinkExternal') : t('fileManager.linkExternalFolder'), dialog: 'external', action: () => setShowExternalFolderModal(true) },
                   { label: t('fileManager.newFolder'), icon: FolderPlus, disabled: !hasPermission('library:upload') || atExternalRoot, title: !hasPermission('library:upload') ? t('fileManager.noPermissionCreateFolder') : atExternalRoot ? t('fileManager.newFolderExternalRootHint') : undefined, dialog: 'new-folder', action: () => setShowNewFolderModal(true) },
                   { label: t('fileManager.tags.manage'), icon: TagIcon, title: t('fileManager.tags.manageTitle'), dialog: 'tags', action: () => setShowTagsModal(true) },
                   ...(filteredAndSortedFiles.length > 0 ? [{ label: t('fileManager.selectAll'), icon: CheckSquare, action: handleSelectAll }] : []),
