@@ -95,7 +95,7 @@ _ORIGINAL_NAME_MAX = 255
 
 
 def photos_root() -> Path:
-    return Path(settings.library_dir) / PHOTOS_DIRECTORY
+    return Path(settings.library_dir) / PHOTOS_DIRECTORY  # SEC-PATH-OK: a module constant, never input
 
 
 def photos_dir(library_file_id: int) -> Path:
