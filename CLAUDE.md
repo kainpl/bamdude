@@ -369,6 +369,7 @@ MCP diagnostic history correlates archive/job IDs, never filenames, and applies 
 - **Notification trigger** — `notification_service.py` + BOTH `notification_templates_{en,uk}.json`.
 - **Maintenance type** — `DEFAULT_MAINTENANCE_TYPES` in `routes/maintenance.py` with `type_code` + BOTH `maintenance_types_{en,uk}.json`. Model-specific → `_ROD_TYPE_REQUIREMENTS`.
 - **Public frontend feature** — `npm run build` in verify; `static/` ships same commit. The maintainer explicitly reaffirmed this workflow on 2026-11-03: GitHub builds do not replace the committed bundle.
+- **Anything a user can see or an operator relies on** — bring the public documentation up to date in the same batch: the docs site (separate repo `docs.bamdude.top`; every page that describes the changed behaviour, in English and its `.uk.md` twin, and `docs/reference/settings.md` for a new or changed setting) and, when a feature is new or its scope changes, the landing (`bamdude.top`). Correct the statements the change made false, not only add new text; labels come from the locale files, claims from the code; no "since version X" notes. A change that needs no documentation says so in its report. This is part of "done", not a follow-up (maintainer, 2026-11-16).
 - **Any of the above** — update the matching vault note in the same batch (see *Knowledge base*, rule 4). New subsystem → new note per `00-index/_design.md`; new invariant → `40-invariants/`. This is part of "done", not a follow-up.
 
 ## Upstream (Bambuddy)

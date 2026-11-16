@@ -6,7 +6,7 @@ first whatever assistant you are. It covers the architecture, the commands that
 actually verify a change, the invariants that must not be broken, and the
 checklist for adding an endpoint, a column, a permission or a translation.
 
-The six things that most often go wrong for an agent here:
+The seven things that most often go wrong for an agent here:
 
 1. **Every user-facing string exists in `en` and `uk`** — frontend locales and
    backend `data/*_en.json` / `*_uk.json` alike. One language is a failing test.
@@ -29,6 +29,13 @@ The six things that most often go wrong for an agent here:
    stale-claim guards for Retry, Clone and plate-clear Repeat. MQTT changes
    must cover PREPARE/SLICING and reconnects as well as direct IDLE → RUNNING;
    follow the layer-order and observed-run invariants in `CLAUDE.md`.
+
+7. **A change is not done until what describes it is current.** When behaviour
+   changes, update in the same batch the CHANGELOG, the documentation site
+   (`docs.bamdude.top`, English and Ukrainian pages), the landing when a
+   feature is new or its scope changes, and the maintainer's knowledge base —
+   and correct the statements the change made false. See *Adding Features*
+   in `CLAUDE.md`.
 
 `CONTRIBUTING.md` has the setup, the CI checks and the house rules, including
 a section on working with an AI assistant.
