@@ -10,6 +10,7 @@ import logging
 import os
 import re
 import shutil
+import unicodedata
 import uuid
 import zipfile
 from datetime import datetime, timezone
@@ -6084,6 +6085,9 @@ def _clean_external_url(value: str | None) -> str | None:
     The server never fetches it, so this is not an SSRF guard: it keeps a
     ``javascript:`` or ``data:`` address — which a click would RUN — out of an
     ``href``, and a control character out of anything that prints the value.
+    A Unicode FORMAT character (a bidi override, a zero-width space, a soft
+    hyphen — category ``Cf``) is refused too: with one, a link can display as
+    another address than the one a click opens.
     """
     text = (value or "").strip()
     if not text:
@@ -6091,7 +6095,7 @@ def _clean_external_url(value: str | None) -> str | None:
     if len(text) > EXTERNAL_URL_MAX_LENGTH:
         raise HTTPException(422, "The link is too long: 2000 characters at most.")
     refusal = HTTPException(422, "The link must be a web address that starts with http:// or https://.")
-    if any(ch.isspace() or ord(ch) < 0x20 or ord(ch) == 0x7F for ch in text):
+    if any(ch.isspace() or unicodedata.category(ch) in ("Cc", "Cf") for ch in text):
         raise refusal
     try:
         parts = urlsplit(text)

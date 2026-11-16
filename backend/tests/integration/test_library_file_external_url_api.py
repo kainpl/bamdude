@@ -186,3 +186,37 @@ async def test_a_reader_without_an_update_right_writes_nothing(async_client, db_
     )
     assert write.status_code == 403
     assert await _stored(db_session, mine.id) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "https://example.com/‮gpj.exe",  # right-to-left override: shows as another address
+        "https://exa​mple.com/model",  # zero-width space
+        "https://example.com/⁦x⁩",  # isolates
+        "https://example.com/a﻿b",  # zero-width no-break space
+        "https://exam­ple.com/",  # soft hyphen
+        "‎https://example.com/",  # a mark the trim does not remove
+    ],
+)
+async def test_a_link_with_an_invisible_format_character_is_refused(async_client, db_session, bad):
+    """A link that can display as another address than the one a click opens (review B-M10)."""
+    file_id = (await _row(db_session, external_url=LINK)).id
+
+    got = await async_client.put(f"/api/v1/library/files/{file_id}/external-url", json={"external_url": bad})
+
+    assert got.status_code == 422, f"{bad!r} was accepted: {got.status_code} {got.text}"
+    assert isinstance(got.json()["detail"], str)
+    assert await _stored(db_session, file_id) == LINK
+
+
+@pytest.mark.asyncio
+async def test_a_link_with_letters_of_another_alphabet_is_still_a_link(async_client, db_session):
+    file_id = (await _row(db_session)).id
+    link = "https://приклад.ua/модель?q=лампа"
+
+    got = await async_client.put(f"/api/v1/library/files/{file_id}/external-url", json={"external_url": link})
+
+    assert got.status_code == 200, got.text
+    assert await _stored(db_session, file_id) == link
