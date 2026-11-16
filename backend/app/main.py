@@ -4434,16 +4434,18 @@ def _bind_print_file_analysis_context(
 ) -> bool:
     """Bind one manager-owned analysis context to the print archive. False when the start is no longer current.
 
-    This is intentionally only lifecycle wiring.  A bind or a later 3MF
-    arrival does not parse G-code; the shared analysis remains lazy until the
-    printer card or final accounting needs it.
+    This is intentionally only lifecycle wiring.  Nothing is parsed here: once
+    the archive's file is known (now, or when a later 3MF is attached) the one
+    shared analysis is STARTED as a bounded background read, so what the status
+    shows from the file (the next slicer pause) does not wait for a printer card
+    or for final accounting to ask.
 
     ``origin`` is what the CALLER proved about the run: ``dispatch`` (our own
     expected print), ``external`` (a new start observed live) or
     ``exact_subtask`` (the device's unique id); everything found by a name, an
     alias or a hash stays ``observed`` (``print_run_binding.PROVEN_ORIGINS``).
     """
-    from backend.app.services.print_file_analysis import bind_print_file_analysis
+    from backend.app.services.print_file_analysis import bind_print_file_analysis, start_print_file_analysis
     from backend.app.services.print_run_binding import (
         PrintEffectToken,
         bind_print_run,
@@ -4516,6 +4518,7 @@ def _bind_print_file_analysis_context(
         getattr(archive, "plate_index", None),
         expected_identity=getattr(archive, "recovery_identity", None),
     )
+    start_print_file_analysis(printer_manager, printer_id, archive.id)
     return True
 
 

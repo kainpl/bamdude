@@ -64,6 +64,11 @@ class PrintFileAnalysis:
     retained_bytes: int = 0
     layer_numbers: tuple[int, ...] = ()
     final_mm_by_filament: dict[int, float] = field(default_factory=dict)
+    # Slicer pauses of this plate, ``(layer, slicer minutes left there | None)`` by
+    # ascending layer; empty when the file has none or its layers are not comparable
+    # with the live counter (``threemf_tools.GcodeLayerScan``). A fact of the file:
+    # whether one lies ahead is ``pause_forecast``'s question, asked of a proven run.
+    pause_points: tuple[tuple[int, int | None], ...] = ()
 
     def __post_init__(self) -> None:
         """Build only the small lookup index; retain the canonical mm table."""
@@ -105,6 +110,8 @@ class _Context:
     retry_at: float | None = None
     started_at: float | None = None
     worker: Literal["service", "thread"] | None = None
+    # The reader ``start_print_file_analysis`` runs for a print nobody is looking at.
+    early_reader: asyncio.Task[None] | None = None
 
 
 @dataclass
@@ -177,6 +184,8 @@ def _parse_3mf(path_text: str, plate_id: int | None, source_descriptor=None) -> 
         filament_properties=filament_properties,
         slicer_estimates=slicer_estimates,
         timeline_error=timeline_error,
+        # Read by the same pass over the plate's G-code as the timeline above.
+        pause_points=tuple(getattr(layer_usage, "pause_points", ()) or ()),
     )
     entries = sum(len(values) for values in (analysis.layer_usage or {}).values())
     if entries > _MAX_LAYER_CHANNEL_ENTRIES:
@@ -396,6 +405,8 @@ def _new_context(
 def _retire(context: _Context) -> None:
     """Detach an obsolete context without publishing any later worker result."""
     context.lifecycle = "retired"
+    if context.early_reader is not None and not context.early_reader.done():
+        context.early_reader.cancel()
     if context.task is not None and not context.task.done():
         # This cancels our awaiter (and queued executor work when possible).
         # A process already executing parser code is bounded by the worker
@@ -789,6 +800,77 @@ async def get_print_file_analysis(
         context.worker,
     )
     return analysis
+
+
+def start_print_file_analysis(printer_manager: PrinterManager, printer_id: int, archive_id: int) -> bool:
+    """Start the current print's analysis now instead of at its first reader.
+
+    A live feature over the analysis (the next slicer pause, its heads-up) must
+    work on a farm with no printer card open, so the lifecycle calls this where
+    it binds an archive and where a late 3MF is attached. It is the ordinary
+    reader in a task of its own: the same one bounded parse per context, off the
+    event loop, shared with every later reader, cancelled with its context. It
+    follows that context's own retry backoff and gives up with it; a print whose
+    3MF never arrives starts nothing. Returns whether a reader is running or the
+    analysis is already there.
+    """
+    context = _contexts(printer_manager).get(printer_id)
+    if context is None or context.archive_id != archive_id or context.lifecycle != "active" or context.source is None:
+        return False
+    if context.analysis is not None or (context.early_reader is not None and not context.early_reader.done()):
+        return True
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    context.early_reader = asyncio.create_task(
+        _read_early(printer_manager, printer_id, context), name=f"3mf-analysis-early-{printer_id}-{archive_id}"
+    )
+    return True
+
+
+async def _read_early(printer_manager: PrinterManager, printer_id: int, context: _Context) -> None:
+    source = context.source
+    assert source is not None
+    while _contexts(printer_manager).get(printer_id) is context and context.lifecycle == "active":
+        analysis = await get_print_file_analysis(
+            printer_manager,
+            printer_id,
+            context.archive_id,
+            Path(source[0]),
+            source[1],
+            expected_identity=context.archive_identity,
+        )
+        if analysis is not None:
+            # The status carries facts of this analysis; say it changed.
+            from backend.app.services.layer_projection import request_layer_publication
+
+            request_layer_publication(printer_manager, printer_id)
+            return
+        if context.error is None or context.retry_at is None:
+            return
+        await asyncio.sleep(max(0.0, context.retry_at - time.monotonic()) + 0.05)
+
+
+def current_pause_points(
+    printer_manager: PrinterManager, printer_id: int, archive_id: int, archive_identity: str | None
+) -> tuple[tuple[int, int | None], ...] | None:
+    """The slicer pauses of the current print's plate, from memory; ``None`` while unknown.
+
+    Addressed by the archive and its incarnation: a finished, replaced or not yet
+    analysed print answers ``None``, never a previous print's pauses. No I/O.
+    """
+    context = _contexts(printer_manager).get(printer_id)
+    if (
+        context is None
+        or context.lifecycle != "active"
+        or context.archive_id != archive_id
+        or not archive_identity
+        or context.archive_identity != archive_identity
+        or context.analysis is None
+    ):
+        return None
+    return context.analysis.pause_points
 
 
 def discard_print_file_analysis(

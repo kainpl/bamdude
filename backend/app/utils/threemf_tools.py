@@ -147,7 +147,25 @@ def supports_enabled_in_config(cfg: dict[str, object]) -> bool:
     return cfg.get("enable_support") not in _SUPPORTS_DISABLED_VALUES
 
 
-def parse_gcode_layer_filament_usage(gcode_content: str) -> dict[int, dict[int, float]]:
+# A plate holds a handful of slicer pauses; this only bounds a hostile file.
+MAX_PAUSE_POINTS = 512
+
+
+class GcodeLayerScan(dict):
+    """The per-layer usage map, plus the slicer pauses the same pass met.
+
+    ``pause_points`` is ``((layer, slicer_minutes_left | None), ...)`` in print
+    order: one point per layer that holds a slicer pause (``M400 U1`` --
+    BambuStudio's and OrcaSlicer's ``machine_pause_gcode``), with the last
+    normal-mode ``M73 R`` read before it. It is empty when the layer numbers
+    cannot be compared with a live layer counter: a plate printed object by
+    object restarts them for each object.
+    """
+
+    pause_points: tuple[tuple[int, int | None], ...] = ()
+
+
+def parse_gcode_layer_filament_usage(gcode_content: str) -> GcodeLayerScan:
     """Parse G-code to extract per-layer, per-filament cumulative extrusion in mm.
 
     This function tracks filament extrusion across layers and tool changes,
@@ -173,8 +191,17 @@ def parse_gcode_layer_filament_usage(gcode_content: str) -> dict[int, dict[int, 
         - M73 L<layer>: Layer change marker
         - M620 S<filament>: Filament/tool change (S255 = unload)
         - G0/G1/G2/G3 E<amount>: Extrusion moves
+        - M400 U1 / M73 R<minutes>: slicer pauses (see ``GcodeLayerScan``)
     """
-    layer_filaments: dict[int, dict[int, float]] = {}
+    layer_filaments = GcodeLayerScan()
+    # Pauses do not depend on the extrusion mode or on a comment being skipped:
+    # they are collected by this pass and attached to whatever it returns.
+    pauses: list[tuple[int, int | None]] = []
+    paused_layers: set[int] = set()
+    seen_layer = False
+    comparable_layers = True  # False once the numbers restart or the file says "by object"
+    slicer_minutes_left: int | None = None
+    absolute_extrusion = False
     current_layer = 0
     active_filament: int | None = None
     cumulative_extrusion: dict[int, float] = {}  # filament_id -> total mm
@@ -188,6 +215,10 @@ def parse_gcode_layer_filament_usage(gcode_content: str) -> dict[int, dict[int, 
         if line.startswith(";"):
             # Some slicers use comment-based layer markers
             # e.g., "; CHANGE_LAYER" or ";LAYER_CHANGE"
+            if comparable_layers and "print_sequence" in line:
+                key, _, value = line.lstrip("; ").partition("=")
+                if key.strip() == "print_sequence" and value.strip().lower() == "by object":
+                    comparable_layers = False
             continue
 
         # Split line into command and inline comment
@@ -209,17 +240,41 @@ def parse_gcode_layer_filament_usage(gcode_content: str) -> dict[int, dict[int, 
                     try:
                         new_layer = int(part[1:])
                         # Save current state before layer change
-                        if cumulative_extrusion:
+                        if cumulative_extrusion and not absolute_extrusion:
                             layer_filaments[current_layer] = cumulative_extrusion.copy()
+                        if seen_layer and new_layer < current_layer:
+                            comparable_layers = False
+                        seen_layer = True
                         current_layer = new_layer
                     except ValueError:
                         pass  # Skip G-code lines with unparseable layer numbers
+                elif part_upper.startswith("R"):
+                    # Normal-mode minutes left; the silent mode's ``Q``/``S`` pair is another clock.
+                    try:
+                        slicer_minutes_left = max(0, int(part[1:]))
+                    except ValueError:
+                        pass  # A broken value keeps the last good one
+
+        # A slicer pause. One point per layer; before the first layer marker it
+        # is part of the start sequence, not a pause on a layer.
+        elif cmd == "M400":
+            if (
+                seen_layer
+                and current_layer > 0
+                and current_layer not in paused_layers
+                and len(pauses) < MAX_PAUSE_POINTS
+                and any(part.upper() == "U1" for part in parts[1:])
+            ):
+                paused_layers.add(current_layer)
+                pauses.append((current_layer, slicer_minutes_left))
 
         # Absolute extrusion (M82): cumulative E-sums would be garbage — every
         # move's E is a position, not a delta. Bambu-sliced G-code is always
         # relative (M83); anything else falls back to the linear estimate.
+        # The pass goes on only for the pauses.
         elif cmd == "M82":
-            return {}
+            absolute_extrusion = True
+            layer_filaments.clear()
 
         # Filament change: M620 S<filament>
         # Bambu uses M620 for AMS filament switching
@@ -244,7 +299,7 @@ def parse_gcode_layer_filament_usage(gcode_content: str) -> dict[int, dict[int, 
         # Extrusion moves: G0/G1/G2/G3 with E parameter
         # Only G1 typically has extrusion, but check all for safety
         elif cmd in ("G0", "G1", "G2", "G3"):
-            if active_filament is None:
+            if active_filament is None or absolute_extrusion:
                 continue
             for part in parts[1:]:
                 part_upper = part.upper()
@@ -259,9 +314,11 @@ def parse_gcode_layer_filament_usage(gcode_content: str) -> dict[int, dict[int, 
                         pass  # Skip G-code lines with unparseable extrusion values
 
     # Save final layer state
-    if cumulative_extrusion:
+    if cumulative_extrusion and not absolute_extrusion:
         layer_filaments[current_layer] = cumulative_extrusion.copy()
 
+    if comparable_layers:
+        layer_filaments.pause_points = tuple(pauses)
     return layer_filaments
 
 
@@ -318,6 +375,11 @@ def extract_layer_filament_usage_from_3mf(
     Returns:
         Dictionary mapping layers to filament usage, or None if parsing fails.
         Format: {layer: {filament_id: cumulative_mm}, ...}
+
+        The map is a ``GcodeLayerScan``: its ``pause_points`` are the slicer
+        pauses of the plate that was NAMED. The usage fallback to another plate
+        never lends that plate's pauses -- a pause is shown against a live
+        layer, so it must come from the plate that is printing.
     """
     try:
         with _zip_source(file_path) as zf:
@@ -326,9 +388,11 @@ def extract_layer_filament_usage_from_3mf(
                 return None
 
             gcode_path = None
+            plate_is_named = len(gcode_files) == 1 and not plate_id
             if plate_id:
                 wanted = f"plate_{int(plate_id)}.gcode"
                 gcode_path = next((f for f in gcode_files if f.endswith(wanted)), None)
+                plate_is_named = gcode_path is not None
             if gcode_path is None:
                 # Lowest plate number, then name, so the answer never depends on
                 # how the archive was written.
@@ -340,7 +404,10 @@ def extract_layer_filament_usage_from_3mf(
                 gcode_path = sorted(gcode_files, key=_plate_no)[0]
             gcode_content = zf.read(gcode_path).decode("utf-8", errors="ignore")
 
-            return parse_gcode_layer_filament_usage(gcode_content)
+            scan = parse_gcode_layer_filament_usage(gcode_content)
+            if not plate_is_named:
+                scan.pause_points = ()
+            return scan
     except Exception:
         return None
 
