@@ -20,6 +20,7 @@ from backend.app.models.label_template import LabelTemplate
 from backend.app.models.spool import Spool
 from backend.app.schemas.label_device import LabelDeviceReport, LabelSpoolEntry
 from backend.app.services.label_context import spool_context
+from backend.app.services.label_gate import design_of, draw
 from backend.app.services.label_raster import render_template_png
 from backend.app.services.label_template import LabelTemplateSpec, resolve
 
@@ -48,13 +49,7 @@ def _now() -> datetime:
 
 
 def _spec_of(row: LabelTemplate) -> LabelTemplateSpec:
-    return LabelTemplateSpec(
-        name=row.name,
-        width_mm=row.width_mm,
-        height_mm=row.height_mm,
-        shape=row.shape,
-        elements=row.elements or [],
-    )
+    return design_of(row)
 
 
 async def resolve_cassette(db: AsyncSession, barcode: str | None) -> tuple[float, float] | None:
@@ -209,7 +204,7 @@ async def enqueue_jobs(
     jobs: list[LabelJob] = []
     warnings: list[str] = []
     for spool_id, context in zip(spool_ids, contexts, strict=True):
-        png, found = render_job_png(spec, context)
+        png, found = await draw(render_job_png, spec, context)
         for warning in found:
             if warning not in warnings:
                 warnings.append(warning)

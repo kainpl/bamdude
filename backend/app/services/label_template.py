@@ -14,6 +14,7 @@ design that reads well at 50 × 30 is mush at 25 × 10.
 
 from __future__ import annotations
 
+import math
 import re
 from typing import Annotated, Literal
 
@@ -340,6 +341,141 @@ class LabelSheetSpec(BaseModel):
         return self.cols * self.rows
 
 
+#: ── What a door refuses before anything is drawn ──
+#:
+#: ⚠️ **Checked by functions, not by ``Field`` limits on the models above.** A
+#: row saved before these existed (or written past the API) still has to load:
+#: the catalogue lists it and the editor opens it so somebody can fix it. A
+#: field limit would turn such a row into a 500 on every read; the functions
+#: let every door that DRAWS — save, preview, print, queue — refuse it in words.
+MAX_SHEET_COLS = 50
+MAX_SHEET_ROWS = 100
+#: A cell smaller than this holds no label anybody can read, and is how a page
+#: comes to hold a hundred million of them.
+MIN_CELL_SIDE_MM = 5.0
+#: No paper is longer; every length of a sheet is refused past it.
+MAX_SHEET_LENGTH_MM = 2000.0
+#: An element may hang off the label (it is clipped, with a warning) but not be
+#: larger than the largest label, nor sit further away than one.
+MAX_ELEMENT_SIDE_MM = 500.0
+MAX_ELEMENT_OFFSET_MM = 500.0
+#: 50 mm capitals are ~140 pt — a poster, not a label.
+MAX_FONT_SIZE_MM = 50.0
+MAX_ELEMENTS = 100
+#: All the type on one design, added up. ⚠️ The shrink-to-fit loop walks down
+#: from the authored size a dot at a time, loading a face at each step, so this
+#: sum is the work a design can ask of a renderer: a hundred boxes of 50 mm type
+#: measured 36 s of a worker thread at 8 dots/mm. Ten lines of 5 mm type are 50.
+MAX_TYPE_TOTAL_MM = 500.0
+#: The longest side of a rendered picture, in dots: a 500 mm label at the
+#: 8 dots/mm every supported head prints at.
+MAX_PICTURE_SIDE_DOTS = 4000
+
+#: The sentences those refusals are made of. A named map so the refusal catalog
+#: (``scripts/api_error_catalog.py``, ``FORWARDED_MESSAGE_MAPS``) can see them:
+#: they reach the wire one at a time, and the sheet editor shows them as typed.
+LABEL_GEOMETRY_MESSAGES = {
+    "not_finite": "Every measurement must be an ordinary number.",
+    "sheet_cols": "A sheet takes at most {} columns.",
+    "sheet_rows": "A sheet takes at most {} rows.",
+    "sheet_cell": "A cell must be at least {} mm on each side.",
+    "sheet_length": "No measurement of a sheet may be more than {} mm.",
+    "grid_wide": (
+        "The grid is {}mm wide but {} is {}mm — reduce the columns, the cell width, the gap or the left margin."
+    ),
+    "grid_high": (
+        "The grid is {}mm in height but {} is {}mm — reduce the rows, the cell height, the gap or the top margin."
+    ),
+    "elements": "A design takes at most {} elements.",
+    "element_not_finite": "Element {} has a measurement that is not an ordinary number.",
+    "element_side": "Element {} is more than {} mm on a side.",
+    "element_offset": "Element {} sits more than {} mm away from the label.",
+    "element_font": "Element {} has type larger than {} mm.",
+    "type_total": "The type sizes of one design may add up to at most {} mm.",
+    "picture": "At {} dots per millimetre this design is more than {} dots on a side — lower the resolution.",
+}
+
+
+def _finite(*values: float) -> bool:
+    return all(math.isfinite(value) for value in values)
+
+
+def design_problems(spec: LabelTemplateSpec) -> list[str]:
+    """What about this design no renderer should be handed, in words."""
+    say = LABEL_GEOMETRY_MESSAGES
+    if not _finite(spec.width_mm, spec.height_mm):
+        return [say["not_finite"]]
+    if len(spec.elements) > MAX_ELEMENTS:
+        return [say["elements"].format(MAX_ELEMENTS)]
+
+    problems: list[str] = []
+    for index, element in enumerate(spec.elements, start=1):
+        numbers = [element.x_mm, element.y_mm, element.w_mm, element.h_mm]
+        if element.type == "text":
+            numbers.append(element.size_mm)
+        if not _finite(*numbers):
+            problems.append(say["element_not_finite"].format(index))
+            continue
+        if element.w_mm > MAX_ELEMENT_SIDE_MM or element.h_mm > MAX_ELEMENT_SIDE_MM:
+            problems.append(say["element_side"].format(index, f"{MAX_ELEMENT_SIDE_MM:g}"))
+        if abs(element.x_mm) > MAX_ELEMENT_OFFSET_MM or abs(element.y_mm) > MAX_ELEMENT_OFFSET_MM:
+            problems.append(say["element_offset"].format(index, f"{MAX_ELEMENT_OFFSET_MM:g}"))
+        if element.type == "text" and element.size_mm > MAX_FONT_SIZE_MM:
+            problems.append(say["element_font"].format(index, f"{MAX_FONT_SIZE_MM:g}"))
+    if not problems and _type_total(spec) > MAX_TYPE_TOTAL_MM:
+        problems.append(say["type_total"].format(f"{MAX_TYPE_TOTAL_MM:g}"))
+    return problems
+
+
+def _type_total(spec: LabelTemplateSpec) -> float:
+    return sum(element.size_mm for element in spec.elements if element.type == "text")
+
+
+def picture_problems(spec: LabelTemplateSpec, dots_per_mm: float) -> list[str]:
+    """Whether a raster of this design at this resolution is a picture or a denial of service.
+
+    Asked after :func:`design_problems`, so every number here is finite.
+    """
+    longest = max(
+        [spec.width_mm, spec.height_mm, _type_total(spec)]
+        + [side for element in spec.elements for side in (element.w_mm, element.h_mm)]
+    )
+    if longest * dots_per_mm > MAX_PICTURE_SIDE_DOTS + 1e-6:
+        return [LABEL_GEOMETRY_MESSAGES["picture"].format(f"{dots_per_mm:g}", MAX_PICTURE_SIDE_DOTS)]
+    return []
+
+
+def sheet_problems(sheet: LabelSheetSpec) -> list[str]:
+    """Everything about this page that stops it being printed, in words.
+
+    The bounds first — an absurd grid is refused before its size is even
+    multiplied out — then :func:`sheet_overflow`, which is only arithmetic on
+    numbers known to be sane.
+    """
+    say = LABEL_GEOMETRY_MESSAGES
+    lengths = (
+        sheet.cell_width_mm,
+        sheet.cell_height_mm,
+        sheet.margin_top_mm,
+        sheet.margin_left_mm,
+        sheet.gap_x_mm,
+        sheet.gap_y_mm,
+    )
+    if not _finite(*lengths):
+        return [say["not_finite"]]
+
+    problems: list[str] = []
+    if sheet.cols > MAX_SHEET_COLS:
+        problems.append(say["sheet_cols"].format(MAX_SHEET_COLS))
+    if sheet.rows > MAX_SHEET_ROWS:
+        problems.append(say["sheet_rows"].format(MAX_SHEET_ROWS))
+    if sheet.cell_width_mm < MIN_CELL_SIDE_MM or sheet.cell_height_mm < MIN_CELL_SIDE_MM:
+        problems.append(say["sheet_cell"].format(f"{MIN_CELL_SIDE_MM:g}"))
+    if max(lengths) > MAX_SHEET_LENGTH_MM:
+        problems.append(say["sheet_length"].format(f"{MAX_SHEET_LENGTH_MM:g}"))
+    return problems or sheet_overflow(sheet)
+
+
 def sheet_overflow(sheet: LabelSheetSpec) -> list[str]:
     """What about this grid does not fit its page, in words.
 
@@ -359,17 +495,11 @@ def sheet_overflow(sheet: LabelSheetSpec) -> list[str]:
 
     used_w = sheet.margin_left_mm + sheet.cols * sheet.cell_width_mm + (sheet.cols - 1) * sheet.gap_x_mm
     if used_w > page_w + _FIT_TOLERANCE_MM:
-        problems.append(
-            f"The grid is {used_w:.1f}mm wide but {sheet.page_size} is {page_w:.1f}mm — "
-            f"reduce the columns, the cell width, the gap or the left margin."
-        )
+        problems.append(LABEL_GEOMETRY_MESSAGES["grid_wide"].format(f"{used_w:.1f}", sheet.page_size, f"{page_w:.1f}"))
 
     used_h = sheet.margin_top_mm + sheet.rows * sheet.cell_height_mm + (sheet.rows - 1) * sheet.gap_y_mm
     if used_h > page_h + _FIT_TOLERANCE_MM:
-        problems.append(
-            f"The grid is {used_h:.1f}mm in height but {sheet.page_size} is {page_h:.1f}mm — "
-            f"reduce the rows, the cell height, the gap or the top margin."
-        )
+        problems.append(LABEL_GEOMETRY_MESSAGES["grid_high"].format(f"{used_h:.1f}", sheet.page_size, f"{page_h:.1f}"))
 
     return problems
 
@@ -396,6 +526,7 @@ def orientation(width_mm: float, height_mm: float, head_mm: float) -> Literal["a
 
 
 __all__ = [
+    "LABEL_GEOMETRY_MESSAGES",
     "PLACEHOLDERS",
     "BarcodeElement",
     "LabelElement",
@@ -405,6 +536,9 @@ __all__ = [
     "QrElement",
     "SwatchElement",
     "TextElement",
+    "design_problems",
     "orientation",
+    "picture_problems",
     "resolve",
+    "sheet_problems",
 ]

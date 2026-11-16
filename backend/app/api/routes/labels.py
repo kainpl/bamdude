@@ -52,6 +52,7 @@ from backend.app.models.spool import Spool
 from backend.app.models.user import User
 from backend.app.services.inventory_service import spool_display_template
 from backend.app.services.label_context import spool_context, spoolman_context
+from backend.app.services.label_gate import checked_design, checked_sheet, design_of, draw, sheet_of
 from backend.app.services.label_renderer import render_template_pdf, render_template_sheet_pdf
 from backend.app.services.label_seed import BUILTIN_SHEETS, BUILTIN_TEMPLATES, sheet_cell_template
 from backend.app.services.label_template import LabelSheetSpec, LabelTemplateSpec, resolve
@@ -149,31 +150,14 @@ async def _resolve_design(db: AsyncSession, body: LabelRequest) -> tuple[LabelTe
         sheet_row = await db.get(LabelSheet, body.sheet_id)
         if sheet_row is None:
             raise HTTPException(404, f"Label sheet {body.sheet_id} not found")
-        sheet_raw = {
-            "name": sheet_row.name,
-            "page_size": sheet_row.page_size,
-            "cell_width_mm": sheet_row.cell_width_mm,
-            "cell_height_mm": sheet_row.cell_height_mm,
-            "cols": sheet_row.cols,
-            "rows": sheet_row.rows,
-            "margin_top_mm": sheet_row.margin_top_mm,
-            "margin_left_mm": sheet_row.margin_left_mm,
-            "gap_x_mm": sheet_row.gap_x_mm,
-            "gap_y_mm": sheet_row.gap_y_mm,
-        }
-        return LabelTemplateSpec(**sheet_cell_template(sheet_row)), LabelSheetSpec(**sheet_raw)
+        sheet = sheet_of(sheet_row)
+        return _cell_design(sheet_row, sheet), sheet
 
     if body.template_id is not None:
         row = await db.get(LabelTemplate, body.template_id)
         if row is None:
             raise HTTPException(404, f"Label template {body.template_id} not found")
-        spec = LabelTemplateSpec(
-            name=row.name,
-            width_mm=row.width_mm,
-            height_mm=row.height_mm,
-            shape=row.shape,
-            elements=row.elements or [],
-        )
+        spec = design_of(row)
 
         if body.sheet_id is None:
             return spec, None
@@ -181,18 +165,7 @@ async def _resolve_design(db: AsyncSession, body: LabelRequest) -> tuple[LabelTe
         sheet_row = await db.get(LabelSheet, body.sheet_id)
         if sheet_row is None:
             raise HTTPException(404, f"Label sheet {body.sheet_id} not found")
-        sheet = LabelSheetSpec(
-            name=sheet_row.name,
-            page_size=sheet_row.page_size,
-            cell_width_mm=sheet_row.cell_width_mm,
-            cell_height_mm=sheet_row.cell_height_mm,
-            cols=sheet_row.cols,
-            rows=sheet_row.rows,
-            margin_top_mm=sheet_row.margin_top_mm,
-            margin_left_mm=sheet_row.margin_left_mm,
-            gap_x_mm=sheet_row.gap_x_mm,
-            gap_y_mm=sheet_row.gap_y_mm,
-        )
+        sheet = sheet_of(sheet_row)
         if spec.width_mm > sheet.cell_width_mm + 1e-6 or spec.height_mm > sheet.cell_height_mm + 1e-6:
             raise HTTPException(
                 400,
@@ -217,7 +190,7 @@ async def _resolve_design(db: AsyncSession, body: LabelRequest) -> tuple[LabelTe
             else dict(next(t for t in BUILTIN_TEMPLATES if t["builtin_key"] == body.template))
         )
         raw.pop("builtin_key", None)
-        return LabelTemplateSpec(**raw), None
+        return checked_design(raw), None
 
     assert body.template in _SHEET_NAMES  # the Literal admits nothing else
     # A sheet name. It describes a page and never a design, so the design is
@@ -246,7 +219,25 @@ async def _resolve_design(db: AsyncSession, body: LabelRequest) -> tuple[LabelTe
             "gap_y_mm": source.gap_y_mm,
         }
     )
-    return LabelTemplateSpec(**sheet_cell_template(source)), LabelSheetSpec(**sheet_raw)
+    sheet = checked_sheet(sheet_raw)
+    return _cell_design(source, sheet), sheet
+
+
+def _cell_design(source: Any, sheet: LabelSheetSpec) -> LabelTemplateSpec:
+    """The built-in layout, drawn to one cell of ``sheet``.
+
+    ⚠️ That layout needs room: a swatch, a text column and a QR side by side.
+    In a cell too narrow for the three the text column comes out with a negative
+    width, which used to surface as a 500. A sheet of small cells is still
+    printable — with a design drawn for them.
+    """
+    try:
+        return checked_design(sheet_cell_template(source))
+    except HTTPException as refusal:
+        raise HTTPException(
+            422,
+            f"The cells of '{sheet.name}' are too small for the built-in layout — choose a design that fits them",
+        ) from refusal
 
 
 def _without_swatches(spec: LabelTemplateSpec) -> LabelTemplateSpec:
@@ -379,7 +370,9 @@ async def render_local_inventory_labels(
             context = _apply_naming_template(context, naming)
         contexts.append(context)
 
-    pdf, warnings = _render(spec, sheet, contexts, monochrome=body.monochrome, starting_position=body.starting_position)
+    pdf, warnings = await draw(
+        _render, spec, sheet, contexts, monochrome=body.monochrome, starting_position=body.starting_position
+    )
     return _stream_pdf(pdf, _filename(spec, sheet), warnings)
 
 
@@ -435,5 +428,7 @@ async def render_spoolman_labels(
             context = _apply_naming_template(context, naming)
         contexts.append(context)
 
-    pdf, warnings = _render(spec, sheet, contexts, monochrome=body.monochrome, starting_position=body.starting_position)
+    pdf, warnings = await draw(
+        _render, spec, sheet, contexts, monochrome=body.monochrome, starting_position=body.starting_position
+    )
     return _stream_pdf(pdf, _filename(spec, sheet, prefix="spoolman-"), warnings)

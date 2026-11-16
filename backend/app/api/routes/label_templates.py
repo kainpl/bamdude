@@ -47,13 +47,14 @@ from backend.app.schemas.label_template import (
     LabelTestPrintRequest,
 )
 from backend.app.services.label_context import example_context, spool_context
+from backend.app.services.label_gate import checked_design, checked_picture, checked_sheet, design_of, draw
 from backend.app.services.label_raster import render_template_png
 from backend.app.services.label_template import (
     PLACEHOLDERS,
     LabelSheetSpec,
     LabelTemplateSpec,
     Placeholder,
-    sheet_overflow,
+    sheet_problems,
 )
 
 logger = logging.getLogger(__name__)
@@ -85,10 +86,7 @@ def _as_spec(body: LabelTemplateIn) -> LabelTemplateSpec:
     a request body, the spec one is what every renderer takes — and this is the
     single place they meet.
     """
-    try:
-        return LabelTemplateSpec(**body.model_dump())
-    except ValidationError as error:
-        raise HTTPException(422, f"Invalid template: {error}") from error
+    return checked_design(body.model_dump())
 
 
 async def _load(db: AsyncSession, template_id: int) -> LabelTemplate:
@@ -165,7 +163,7 @@ def _overflow_of(row: LabelSheet) -> list[str]:
         # A row the current spec cannot express — an old page size, say. Saying
         # nothing is right: the list still draws, and the editor refuses on save.
         return []
-    return sheet_overflow(spec)
+    return sheet_problems(spec)
 
 
 async def _load_sheet(db: AsyncSession, sheet_id: int) -> LabelSheet:
@@ -183,14 +181,7 @@ def _as_sheet_spec(body: LabelSheetIn) -> LabelSheetSpec:
     adhesive stock. The editor sees the same sentences while drawing, so nothing
     arrives here as a surprise.
     """
-    try:
-        spec = LabelSheetSpec(**body.model_dump())
-    except ValidationError as error:
-        raise HTTPException(422, f"Invalid sheet: {error}") from error
-    problems = sheet_overflow(spec)
-    if problems:
-        raise HTTPException(422, " ".join(problems))
-    return spec
+    return checked_sheet(body.model_dump())
 
 
 @router.get("/sheets", response_model=list[LabelSheetOut])
@@ -295,19 +286,11 @@ async def preview_sheet(
 
     sheet = _as_sheet_spec(body.sheet)
 
-    template = await _load(db, body.template_id)
-    spec = LabelTemplateSpec(
-        name=template.name,
-        width_mm=template.width_mm,
-        height_mm=template.height_mm,
-        shape=template.shape,
-        target=template.target,
-        elements=template.elements,
-    )
+    spec = design_of(await _load(db, body.template_id))
 
     deeplink_base = f"{request.url.scheme}://{request.url.netloc}"
     context = example_context(deeplink_base=deeplink_base)
-    pdf, warnings = render_template_sheet_pdf(spec, [context] * sheet.per_page, sheet)
+    pdf, warnings = await draw(render_template_sheet_pdf, spec, [context] * sheet.per_page, sheet)
 
     if spec.width_mm > sheet.cell_width_mm or spec.height_mm > sheet.cell_height_mm:
         # ⚠️ Said rather than scaled. A design is printed at its own size or
@@ -445,6 +428,7 @@ async def preview_template(
     header is what the editor turns into the warning strip.
     """
     spec = _as_spec(body.template)
+    checked_picture(spec, body.dots_per_mm)
 
     deeplink_base = f"{request.url.scheme}://{request.url.netloc}"
     if body.spool_id is not None:
@@ -455,7 +439,7 @@ async def preview_template(
     else:
         context = example_context(deeplink_base=deeplink_base)
 
-    png, warnings = render_template_png(spec, context, dots_per_mm=body.dots_per_mm)
+    png, warnings = await draw(render_template_png, spec, context, dots_per_mm=body.dots_per_mm)
 
     headers = {"Content-Length": str(len(png)), "Cache-Control": "no-store"}
     if warnings:

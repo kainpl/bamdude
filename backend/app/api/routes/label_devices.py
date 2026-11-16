@@ -51,6 +51,7 @@ from backend.app.services.label_dispatch import (
     resolve_template,
     upsert_device,
 )
+from backend.app.services.label_gate import draw
 
 logger = logging.getLogger(__name__)
 
@@ -263,7 +264,7 @@ async def preview_job(
     naming = await spool_display_template(db)
     contexts = await build_contexts(db, [body.spool], deeplink_base=deeplink_base, naming_template=naming)
 
-    png, warnings = render_job_png(spec, contexts[0])
+    png, warnings = await draw(render_job_png, spec, contexts[0])
     headers = {"Content-Length": str(len(png)), "Cache-Control": "no-store"}
     if warnings:
         headers["X-Label-Warnings"] = " | ".join(warnings)
