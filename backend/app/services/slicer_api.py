@@ -127,7 +127,10 @@ _shared_http_client: httpx.AsyncClient | None = None
 #   1  presets in subfolders and with "/" in the name, the 422
 #      ``preset_unresolved`` refusal, a renamed printer preset, OrcaSlicer's
 #      filament library, the ordered filament listing.
-REQUIRED_SIDECAR_VERSION = 1
+#   2  a printer profile named as a stock preset is that stock preset (a
+#      cloud / imported copy of a 0.2 / 0.6 / 0.8 printer is no longer sliced
+#      as a user preset of its 0.4 sibling).
+REQUIRED_SIDECAR_VERSION = 2
 
 
 def sidecar_version_of(health_body: object) -> int | None:

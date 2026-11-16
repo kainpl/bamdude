@@ -52,6 +52,12 @@ class TestOlderThanNeeded:
         assert isinstance(REQUIRED_SIDECAR_VERSION, int)
         assert REQUIRED_SIDECAR_VERSION >= 1
 
+    def test_a_sidecar_without_the_stock_named_printer_fix_is_older(self):
+        # Sidecar 1 hands a cloud / imported copy of a stock 0.6 printer preset
+        # to the CLI as a user preset of its 0.4 sibling; 2 does not.
+        assert sidecar_is_outdated(1) is True
+        assert sidecar_is_outdated(2) is False
+
 
 @pytest.fixture
 def sidecar(monkeypatch):
