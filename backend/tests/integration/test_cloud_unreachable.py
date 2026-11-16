@@ -394,6 +394,32 @@ class TestAPastedToken:
         assert (await _stored(db_session, user_id))[0] == "pasted"
 
 
+def RENEWED_EACH_TIME(request: httpx.Request) -> httpx.Response:
+    """A refresh endpoint that rotates the pair on every call (acc-2, acc-3, …)."""
+    import json
+
+    spent = json.loads(request.content)["refreshToken"]
+    n = 2 if spent == "ref" else int(spent.rsplit("-", 1)[1]) + 1
+    return httpx.Response(200, json={"accessToken": f"acc-{n}", "refreshToken": f"ref-{n}"})
+
+
+class TestOneRenewalPerRequest:
+    """An endpoint that answers the expiry body for a reason other than expiry
+    must not spend a second refresh token: the repeat is not renewed again,
+    and nothing is marked invalid: the request alone is refused (401)."""
+
+    async def test_a_cloud_route_renews_once(self, async_client, db_session, bambu):
+        user_id = await _sign_in(db_session)
+        fake = bambu({("GET", BIND): EXPIRED, ("POST", REFRESH): RENEWED_EACH_TIME})
+
+        resp = await async_client.get("/api/v1/cloud/devices")
+
+        assert resp.status_code == 401, resp.text
+        assert fake.count("POST", REFRESH) == 1
+        assert fake.bearers("GET", BIND) == ["Bearer acc", "Bearer acc-2"]
+        assert await _stored(db_session, user_id) == ("acc-2", "ref-2", False)
+
+
 class TestTheStatus:
     async def test_an_expired_token_the_refresh_renews_is_still_signed_in(self, async_client, db_session, bambu):
         user_id = await _sign_in(db_session)
@@ -537,6 +563,19 @@ class TestMakerWorldOnTheSameToken:
         assert resp.status_code == 502, resp.text
         assert resp.json()["detail"].startswith(UNREACHABLE)
         assert await _stored(db_session, user_id) == ("acc", "ref", False)
+
+    async def test_an_endpoint_that_answers_expired_to_the_renewed_token_renews_once(
+        self, async_client, db_session, bambu
+    ):
+        user_id = await _sign_in(db_session)
+        fake = bambu({("GET", self.DESIGN): EXPIRED, ("POST", REFRESH): RENEWED_EACH_TIME})
+
+        resp = await async_client.post("/api/v1/makerworld/resolve", json=self.URL)
+
+        assert resp.status_code == 401, resp.text
+        assert fake.count("POST", REFRESH) == 1
+        assert fake.bearers("GET", self.DESIGN) == ["Bearer acc", "Bearer acc-2"]
+        assert await _stored(db_session, user_id) == ("acc-2", "ref-2", False)
 
     async def test_a_network_failure_never_touches_the_token(self, async_client, db_session, bambu):
         user_id = await _sign_in(db_session)

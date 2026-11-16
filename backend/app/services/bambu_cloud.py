@@ -435,6 +435,12 @@ class BambuCloudService:
                 response = await call()
             except httpx.HTTPError as exc:
                 raise BambuCloudError(f"Bambu Cloud could not be reached: {exc}") from exc
+            if attempt == 1 and response.status_code == 401 and is_expiry_401(response):
+                # The token was renewed a moment ago and Bambu still answers
+                # "expired". One renewal per request: no second refresh token
+                # is spent on the repeat, and nothing is marked — the sign-in
+                # was renewed, it is this request that Bambu keeps refusing.
+                raise BambuCloudAuthError("Bambu Cloud session expired")
             if not await self._note_response(response):
                 break
             if self._auth_failure_outcome == RENEWED and attempt == 0:

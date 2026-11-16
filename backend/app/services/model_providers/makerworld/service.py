@@ -209,6 +209,10 @@ class MakerWorldService(ProviderService):
         attempt). Otherwise raises: 502 when the renewal could not reach
         Bambu, the "sign in again" 401 when the sign-in is dead.
         """
+        if attempt > 0 and is_expiry_401(response):
+            # Renewed a moment ago and still "expired". One renewal per
+            # request: no second refresh token is spent, nothing is marked.
+            raise MakerWorldAuthError(_SIGN_IN_EXPIRED_MESSAGE)
         outcome = await self._note_auth_failure(response)
         if outcome == RENEWED and attempt == 0:
             return True
