@@ -47,13 +47,22 @@ STEP_PRINT_INPUT_BYTES = 64 * 1024**2
 CAD_PRINT_FACE_OCCURRENCES = 60_000
 CAD_PRINT_TRIANGLES = 2_000_000
 STEP_PRINT_DATA_LIMIT_BYTES = 2 * 1024**3
+# A library PDF's first page (an untrusted document): how long the attempt may run from its admission, the input
+# main and the service accept, the page side past which nothing is rasterised (200 inches — the PDF format's own
+# implementation limit), the picture's longer side and its bytes, and the child's RSS watchdog.
+PDF_SECONDS = 20
+PDF_INPUT_BYTES = 64 * 1024**2
+PDF_PAGE_POINTS = 14_400
+PDF_THUMBNAIL_PIXELS = 512
+PDF_PNG_BYTES = 2 * 1024**2
+PDF_RSS_BYTES = 512 * 1024**2
 JSON_BYTES = 16 * 1024
 LOG_BYTES = 64 * 1024
 TTL_SECONDS = 900
 TERMINAL_LIMIT = 256
-ROLES = frozenset({"mesh", "sliced", "source_png", "preview", "checkpoint", "output"})
+ROLES = frozenset({"mesh", "sliced", "source_png", "document", "preview", "checkpoint", "output"})
 OPERATIONS = frozenset({"ready", "run", "status", "cancel", "checkpoint-receipt", "shutdown"})
-KINDS = frozenset({"stl", "obj", "3mf", "png", "step", "stp"})
+KINDS = frozenset({"stl", "obj", "3mf", "png", "step", "stp", "pdf"})
 CAD_KINDS = frozenset({"step", "stp"})
 OUTCOMES = frozenset(
     {
@@ -86,7 +95,7 @@ PREVIEW_OWNER: contextvars.ContextVar[str | None] = contextvars.ContextVar("prev
 
 
 #: who decided a failure: a disposable child, by its operation, or the preview service itself
-DECIDERS = frozenset({"convert", "cad_png", "mesh", "source", "plates", "service"})
+DECIDERS = frozenset({"convert", "cad_png", "mesh", "pdf_png", "source", "plates", "service"})
 _WHY = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}\Z")
 
 
@@ -190,6 +199,7 @@ class Artifact:
             "mesh": {"stl", "obj", "step", "stp"},
             "sliced": {"3mf"},
             "source_png": {"png"},
+            "document": {"pdf"},
             "preview": {"png"},
             "checkpoint": {"3mf"},
             "output": {"3mf"},
@@ -242,6 +252,8 @@ class Command:
         step = any(x.role == "mesh" and x.kind in CAD_KINDS for x in manifest)
         if step and any(x.role == "sliced" for x in manifest):
             raise PreviewError("protocol_error")  # STEP never rides a slicing attempt
+        if any(x.role == "document" for x in manifest) and len(manifest) != 1:
+            raise PreviewError("protocol_error")  # a document is an attempt of its own
         cad = data["cad"]
         if step != (cad is not None) or (
             cad is not None
@@ -274,10 +286,13 @@ class Command:
 
 
 def attempt_kind(manifest) -> str:
-    """From the ROLES, never from the first entry: 'sliced', 'step' (a CAD mesh) or 'mesh' (STL/OBJ)."""
+    """From the ROLES, never from the first entry: 'sliced', 'pdf' (a document), 'step' (a CAD mesh) or 'mesh'
+    (STL/OBJ)."""
     roles = {x.role: x for x in manifest}
     if "sliced" in roles:
         return "sliced"
+    if "document" in roles:
+        return "pdf"
     if "mesh" in roles and roles["mesh"].kind in CAD_KINDS:
         return "step"
     return "mesh"

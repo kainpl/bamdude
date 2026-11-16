@@ -115,8 +115,9 @@ from backend.app.services.library_trash import library_trash_service
 from backend.app.services.line_composition import counted, default_options, standard_composition
 from backend.app.services.mesh_preview_types import (
     CAD_TYPES as CAD_PREVIEW_TYPES,
-    LEGACY_TYPES as LEGACY_PREVIEW_TYPES,
+    INLINE_TYPES as INLINE_PREVIEW_TYPES,
     is_cad as is_cad_preview,
+    is_pdf as is_pdf_preview,
 )
 from backend.app.services.order_filing import order_candidates, resolve_link
 from backend.app.services.plate_summaries import cached_plates, plate_summary, split_types
@@ -3991,7 +3992,10 @@ async def store_library_upload(
     # recipe automatically.
     await inherit_folder_products(db, library_file, target_folder)
     await db.commit()
-    if ext in (".stl", ".obj") and generate_stl_thumbnails and len(content) >= MIN_USABLE_STL_BYTES:
+    # A mesh, or a PDF (its first page): one picture rendered by the preview child, attached by main. A PDF has
+    # no smallest usable size of a mesh's kind.
+    pictured = (ext in (".stl", ".obj") and len(content) >= MIN_USABLE_STL_BYTES) or is_pdf_preview(file_type)
+    if pictured and generate_stl_thumbnails:
         # Ingest is durable, including product/folder inheritance. No checked-out
         # connection during admission, file transfer or rendering.
         source = PreviewSource.capture(library_file, authority=authority, permission=Permission.LIBRARY_UPLOAD.value)
@@ -4362,7 +4366,7 @@ async def batch_generate_stl_thumbnails(
     creds: RequestCredentials = Depends(request_credentials),
     _: User | None = Depends(require_permission(Permission.LIBRARY_UPDATE_ALL)),
 ):
-    """Generate thumbnails for STL files in batch.
+    """Generate thumbnails for STL / OBJ files and PDFs (their first page) in batch.
 
     Note: Requires library:update_all permission since this is a batch operation
     that may affect files owned by different users.
@@ -4374,11 +4378,11 @@ async def batch_generate_stl_thumbnails(
     """
     authority = await creds.capture()
     results: list[BatchThumbnailResult] = []
-    query = LibraryFile.active().where(LibraryFile.file_type.in_(LEGACY_PREVIEW_TYPES))
+    query = LibraryFile.active().where(LibraryFile.file_type.in_(INLINE_PREVIEW_TYPES))
     if request.file_ids:
         # An explicit STEP id is answered, never lost as processed=0: it renders only through the background jobs.
         query = LibraryFile.active().where(
-            LibraryFile.file_type.in_(LEGACY_PREVIEW_TYPES + CAD_PREVIEW_TYPES), LibraryFile.id.in_(request.file_ids)
+            LibraryFile.file_type.in_(INLINE_PREVIEW_TYPES + CAD_PREVIEW_TYPES), LibraryFile.id.in_(request.file_ids)
         )
     elif request.folder_id is not None:
         query = query.where(LibraryFile.folder_id == request.folder_id)
@@ -4412,7 +4416,7 @@ async def batch_generate_stl_thumbnails(
         try:
             path = to_absolute_path(source.file_path)
             size = await preview_disk(lambda path=path: path.stat().st_size if path else 0)
-            if size < MIN_USABLE_STL_BYTES:
+            if size < MIN_USABLE_STL_BYTES and not is_pdf_preview(source.file_type):
                 error, error_code = "File too small to contain a usable mesh", "too_small"
             else:
                 success = await generate_library_preview(db, source, pause_budget=picture_pause)
