@@ -133,8 +133,6 @@ async def _resolve_cloud(
     cloud = await build_authenticated_cloud(db, user)
     if cloud is None:
         raise HTTPException(400, "No Bambu Cloud credential is connected")
-    if credential_snapshots is not None:
-        credential_snapshots.append(cloud.credential_snapshot)
     try:
         detail = await cloud.get_setting_detail(ref.id)
     except BambuCloudAuthError:
@@ -148,6 +146,10 @@ async def _resolve_cloud(
             detail=f"Bambu Cloud unreachable while fetching {slot} preset: {e}",
         ) from e
     finally:
+        # Read after the call: a token renewed by this very request moves the
+        # service's snapshot on, and the stale one would refuse the slice.
+        if credential_snapshots is not None:
+            credential_snapshots.append(cloud.credential_snapshot)
         await cloud.close()
 
     # ``get_setting_detail`` returns the wrapper envelope; the actual preset

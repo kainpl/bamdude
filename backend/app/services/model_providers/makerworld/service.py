@@ -32,7 +32,7 @@ from urllib.parse import urlparse
 
 import httpx
 
-from backend.app.services.bambu_cloud import is_captcha_challenge, is_expiry_401
+from backend.app.services.bambu_cloud import RENEW_UNREACHABLE, RENEWED, is_captcha_challenge, is_expiry_401
 from backend.app.services.model_providers.base import (
     ProviderDownload,
     ProviderDownloadInfo,
@@ -91,6 +91,10 @@ _SIGN_IN_EXPIRED_MESSAGE = (
     "Your Bambu Cloud sign-in has expired. Open the Profiles page and sign in to Bambu Cloud again."
 )
 
+# The access token expired and the attempt to renew it could not reach Bambu:
+# nothing is known about the sign-in, so nobody is told to sign in again.
+_RENEWAL_UNREACHABLE_MESSAGE = "Bambu Cloud could not be reached to renew the expired sign-in. Try again shortly."
+
 
 def _is_readable_zip(data: bytes) -> bool:
     """Whether ``data`` is a zip whose directory can be read. Only that: the
@@ -127,6 +131,7 @@ class MakerWorldService(ProviderService):
         self._on_auth_failure = on_auth_failure
         self.credential_snapshot = None  # The provider builder binds a selected cloud credential explicitly.
         self._auth_failure_reported = False
+        self._auth_failure_outcome: str | None = None
         # SSRF allowlists for the thumbnail proxy and the 3MF download guard.
         # Default to MakerWorld's CDN hosts; ``MakerWorldProvider.build_service``
         # passes ``ModelProvider.thumbnail_hosts()`` / ``download_hosts()`` so
@@ -156,25 +161,60 @@ class MakerWorldService(ProviderService):
         if self._owns_client:
             await self._client.aclose()
 
-    async def _note_auth_failure(self, response: httpx.Response) -> None:
-        """Durably record a dead credential — only for Bambu's genuine expiry 401.
+    async def _note_auth_failure(self, response: httpx.Response) -> str | None:
+        """Answer Bambu's genuine expiry 401 — renew the token, else record it dead.
 
         A MakerWorld 401 without the ``{"code":4,"error":"Please login."}``
         signature is endpoint- or edge-specific noise, not an expired token;
         invalidating on it would sign the user out of the whole cloud
         integration on a single stray rejection (the #2562 follow-up
-        regression). Best-effort, once per service instance.
+        regression). Best-effort, once per service instance and token.
+
+        The handler (the credential seam's ``renew_or_invalidate``) may renew
+        the access token with the stored refresh token. Returns ``RENEWED``
+        when it did — the new bearer is loaded and the request is worth
+        repeating once — ``RENEW_UNREACHABLE`` when the renewal could not reach
+        Bambu (the token is left alone), and None when the sign-in is dead.
         """
         if not is_expiry_401(response):
             logger.info("MakerWorld returned 401 without the expiry signature — not signing the stored token out")
-            return
+            return None
         if self._on_auth_failure is None or self._auth_failure_reported:
-            return
+            return self._auth_failure_outcome
         self._auth_failure_reported = True
+        self._auth_failure_outcome = None
         try:
-            await self._on_auth_failure()
+            answer = await self._on_auth_failure()
         except Exception:
             logger.exception("Failed to record Bambu Cloud auth failure from MakerWorld")
+            return None
+        if not isinstance(answer, tuple) or len(answer) != 3:
+            return None
+        outcome, token, snapshot = answer
+        if outcome == RENEWED and isinstance(token, str) and token:
+            self._auth_token = token
+            if snapshot is not None:
+                # The stored pair moved on; what this request guards later is it.
+                self.credential_snapshot = snapshot
+            self._auth_failure_reported = False  # the new token may expire too
+            return RENEWED
+        if outcome == RENEW_UNREACHABLE:
+            self._auth_failure_outcome = RENEW_UNREACHABLE
+        return self._auth_failure_outcome
+
+    async def _expired(self, response: httpx.Response, attempt: int) -> bool:
+        """What to do with a 401 on a request made with the stored token.
+
+        True: the token was renewed — repeat the request (only on the first
+        attempt). Otherwise raises: 502 when the renewal could not reach
+        Bambu, the "sign in again" 401 when the sign-in is dead.
+        """
+        outcome = await self._note_auth_failure(response)
+        if outcome == RENEWED and attempt == 0:
+            return True
+        if outcome == RENEW_UNREACHABLE:
+            raise MakerWorldUnavailableError(_RENEWAL_UNREACHABLE_MESSAGE)
+        raise MakerWorldAuthError(_SIGN_IN_EXPIRED_MESSAGE)
 
     def _headers(self) -> dict[str, str]:
         headers = dict(_CLIENT_HEADERS)
@@ -329,17 +369,24 @@ class MakerWorldService(ProviderService):
         """
         url = f"{MAKERWORLD_API_BASE}{path}"
 
-        for attempt in range(2):
-            try:
-                response = await self._client.get(url, headers=self._headers(), timeout=30.0)
-            except httpx.TimeoutException as exc:
-                raise MakerWorldUnavailableError(f"MakerWorld request timed out: {exc}") from exc
-            except httpx.HTTPError as exc:
-                raise MakerWorldUnavailableError(f"MakerWorld request failed: {exc}") from exc
+        for renewal in range(2):
+            for attempt in range(2):
+                try:
+                    response = await self._client.get(url, headers=self._headers(), timeout=30.0)
+                except httpx.TimeoutException as exc:
+                    raise MakerWorldUnavailableError(f"MakerWorld request timed out: {exc}") from exc
+                except httpx.HTTPError as exc:
+                    raise MakerWorldUnavailableError(f"MakerWorld request failed: {exc}") from exc
 
-            if response.status_code == 418 and attempt == 0:
-                logger.info("MakerWorld returned 418 for %s; retrying once after backoff", path)
-                await asyncio.sleep(1.5)
+                if response.status_code == 418 and attempt == 0:
+                    logger.info("MakerWorld returned 418 for %s; retrying once after backoff", path)
+                    await asyncio.sleep(1.5)
+                    continue
+                break
+            # An expired access token the refresh token renews: the request is
+            # repeated once with the new bearer, and the caller sees only its
+            # answer. Otherwise ``_expired`` raises.
+            if response.status_code == 401 and self._auth_token and await self._expired(response, renewal):
                 continue
             break
 
@@ -350,11 +397,10 @@ class MakerWorldService(ProviderService):
         # because the UI remedy is completely different: 401 → re-login,
         # 403 → user has to go to MakerWorld and meet the access requirement.
         if response.status_code == 401:
+            # With a token this 401 was answered above (``_expired`` raises
+            # unless the renewed token is worth one repeat) — reaching here
+            # with one means the repeat was refused as well.
             if self._auth_token:
-                # We sent a token and Bambu refused it — the credential is dead,
-                # not merely absent. Record that before raising so the rest of the
-                # app stops claiming the user is connected.
-                await self._note_auth_failure(response)
                 raise MakerWorldAuthError(_SIGN_IN_EXPIRED_MESSAGE)
             raise MakerWorldAuthError(f"Signing in to Bambu Cloud is required for {path}")
         if response.status_code == 403:
@@ -523,23 +569,28 @@ class MakerWorldService(ProviderService):
         if not self._auth_token:
             raise MakerWorldAuthError("Downloading files from MakerWorld requires a Bambu Cloud login")
 
-        headers = dict(_CLIENT_HEADERS)
-        headers["Authorization"] = f"Bearer {self._auth_token}"
+        for renewal in range(2):
+            headers = dict(_CLIENT_HEADERS)
+            headers["Authorization"] = f"Bearer {self._auth_token}"
 
-        try:
-            response = await self._client.get(
-                url,
-                headers=headers,
-                params=params,
-                timeout=30.0,
-            )
-        except httpx.TimeoutException as exc:
-            raise MakerWorldUnavailableError(f"Bambu Lab API request timed out: {exc}") from exc
-        except httpx.HTTPError as exc:
-            raise MakerWorldUnavailableError(f"Bambu Lab API request failed: {exc}") from exc
+            try:
+                response = await self._client.get(
+                    url,
+                    headers=headers,
+                    params=params,
+                    timeout=30.0,
+                )
+            except httpx.TimeoutException as exc:
+                raise MakerWorldUnavailableError(f"Bambu Lab API request timed out: {exc}") from exc
+            except httpx.HTTPError as exc:
+                raise MakerWorldUnavailableError(f"Bambu Lab API request failed: {exc}") from exc
+
+            # Repeated once when the refresh token renewed the expired bearer.
+            if response.status_code == 401 and await self._expired(response, renewal):
+                continue
+            break
 
         if response.status_code == 401:
-            await self._note_auth_failure(response)
             raise MakerWorldAuthError(_SIGN_IN_EXPIRED_MESSAGE)
         if response.status_code == 403:
             upstream = _extract_upstream_error(response)
