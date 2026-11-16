@@ -229,7 +229,7 @@ function SearchableSelect({
   const boxId = useId();
   const selectRef = useRef<HTMLSelectElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
-  const boxRef = useRef<HTMLInputElement>(null);
+  const groupRef = useRef<HTMLDivElement>(null);
 
   const words = open ? query.toLowerCase().split(/\s+/).filter(Boolean) : [];
   const matched: string[] = [];
@@ -244,14 +244,15 @@ function SearchableSelect({
     if (returnFocus) buttonRef.current?.focus();
   };
 
-  // Escape belongs to the search box while it is open. On `document`, and
+  // Escape belongs to the search while it is open and the keyboard is anywhere
+  // in this field — the box, or the narrowed list below it. On `document`, and
   // stopped there: every modal's Escape is ONE listener on `window`
   // (`modalStack`), so a handler on the box itself would close the search AND
   // the dialog around it.
   useEffect(() => {
     if (!open) return;
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape' || document.activeElement !== boxRef.current) return;
+      if (event.key !== 'Escape' || !groupRef.current?.contains(document.activeElement)) return;
       event.stopPropagation();
       setOpen(false);
       setQuery('');
@@ -274,10 +275,9 @@ function SearchableSelect({
   };
 
   return (
-    <div className={`flex flex-col gap-1 ${className}`}>
+    <div ref={groupRef} className={`flex flex-col gap-1 ${className}`}>
       {open && (
         <input
-          ref={boxRef}
           id={boxId}
           type="search"
           value={query}

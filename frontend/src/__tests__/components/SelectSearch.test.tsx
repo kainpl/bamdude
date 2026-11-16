@@ -177,6 +177,30 @@ describe('Select — search', () => {
     }
   });
 
+  it('takes Escape for the search from the narrowed list as well', async () => {
+    // ArrowDown moves the keyboard from the box to the list. The search is
+    // still open there, so Escape still belongs to it — not to the dialog.
+    const user = userEvent.setup();
+    const modalEscape = vi.fn();
+    const onWindowKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') modalEscape();
+    };
+    window.addEventListener('keydown', onWindowKey);
+    try {
+      render(<Field />);
+      await user.click(searchButton());
+      await user.type(screen.getByRole('searchbox'), 'petg{ArrowDown}');
+      expect(select()).toHaveFocus();
+      await user.keyboard('{Escape}');
+
+      expect(modalEscape).not.toHaveBeenCalled();
+      expect(screen.queryByRole('searchbox')).toBeNull();
+      expect(searchButton()).toHaveFocus();
+    } finally {
+      window.removeEventListener('keydown', onWindowKey);
+    }
+  });
+
   it('closes on the button too, and forgets the query', async () => {
     const user = userEvent.setup();
     render(<Field />);
