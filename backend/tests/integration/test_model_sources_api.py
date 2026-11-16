@@ -389,3 +389,27 @@ class TestImport:
         response = await async_client.post("/api/v1/makerworld/import", json={"model_id": 1, "source_type": "manyfold"})
         assert response.status_code >= 400
         assert (await db_session.execute(select(LibraryFile))).all() == []
+
+
+class TestProvenance:
+    async def test_the_file_details_say_where_an_imported_file_came_from(self, async_client, fake):
+        await connect(async_client)
+        imported = (await async_client.post(f"{API}/import", json={"model_id": MODEL, "file_id": STL_FILE})).json()
+        details = (await async_client.get(f"/api/v1/library/files/{imported['library_file_id']}")).json()
+        assert details["source_type"] == "manyfold"
+        assert details["source_url"] == f"{BASE}/models/{MODEL}#file-{STL_FILE}"
+        assert details["import_origin"] == {
+            "source_type": "manyfold",
+            "title": "Cable Clip",
+            "creator": "Jane Doe",
+            "license": "CC-BY-4.0",
+            "url": f"{BASE}/models/{MODEL}",
+        }
+
+    async def test_a_file_nobody_imported_has_no_origin(self, async_client, fake):
+        upload = await async_client.post(
+            "/api/v1/library/files", files={"file": ("plain.stl", STL, "application/octet-stream")}
+        )
+        assert upload.status_code == 200, upload.text
+        details = (await async_client.get(f"/api/v1/library/files/{upload.json()['id']}")).json()
+        assert details["import_origin"] is None

@@ -133,6 +133,34 @@ describe('LibraryFileDetailsModal', () => {
     expect(within(dialog).queryByDisplayValue('https://makerworld.com/models/1')).not.toBeInTheDocument();
   });
 
+  it('says which model an imported file came from, who made it and under which licence', async () => {
+    const page = 'http://manyfold.lan:3214/models/x7q3k2pdbm4z';
+    serve(
+      detail({
+        source_type: 'manyfold',
+        source_url: `${page}#file-f1c2d3g4h5j6`,
+        import_origin: { source_type: 'manyfold', title: 'Cable Clip', creator: 'Jane Doe', license: 'CC-BY-4.0', url: page },
+      }),
+    );
+    const dialog = await show();
+
+    expect(await within(dialog).findByText('Cable Clip')).toBeInTheDocument();
+    expect(within(dialog).getByText('Creator')).toBeInTheDocument();
+    expect(within(dialog).getByText('Jane Doe')).toBeInTheDocument();
+    expect(within(dialog).getByText('Licence')).toBeInTheDocument();
+    expect(within(dialog).getByText('CC-BY-4.0')).toBeInTheDocument();
+    expect(within(dialog).getByRole('link', { name: `${page}#file-f1c2d3g4h5j6` })).toHaveAttribute('target', '_blank');
+  });
+
+  it('shows no origin facts for a file nobody imported', async () => {
+    serve(detail());
+    const dialog = await show();
+
+    await within(dialog).findByText('Hash');
+    expect(within(dialog).queryByText('Creator')).not.toBeInTheDocument();
+    expect(within(dialog).queryByText('Licence')).not.toBeInTheDocument();
+  });
+
   it('saves a link the operator types, and shows it as a link that opens apart from the app', async () => {
     serve(detail());
     const dialog = await show();

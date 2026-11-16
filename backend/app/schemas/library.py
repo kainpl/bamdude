@@ -150,6 +150,16 @@ class FileDuplicate(BaseModel):
     created_at: datetime
 
 
+class ImportOrigin(BaseModel):
+    """The origin a model source recorded for an imported file (m235)."""
+
+    source_type: str
+    title: str | None = None
+    creator: str | None = None
+    license: str | None = None
+    url: str | None = None
+
+
 class FileResponse(BaseModel):
     """Schema for file response."""
 
@@ -187,6 +197,9 @@ class FileResponse(BaseModel):
     external_url: str | None = None
     # Photos attached to the file (m233).
     photos_count: int = 0
+    # Where a model source imported the file from (m235): the model, its creator
+    # and its licence as they were at the import. None for every other file.
+    import_origin: ImportOrigin | None = None
 
     # Duplicate detection
     duplicates: list[FileDuplicate] | None = None

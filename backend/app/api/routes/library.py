@@ -5863,6 +5863,10 @@ async def get_file(
     from backend.app.services import library_file_photos
 
     photos_count = (await library_file_photos.counts(db, [file.id])).get(file.id, 0)
+    from backend.app.schemas.library import ImportOrigin
+    from backend.app.services import library_import_meta
+
+    origin = await library_import_meta.for_file(db, file.id)
 
     return FileResponseSchema(
         id=file.id,
@@ -5896,6 +5900,15 @@ async def get_file(
         source_url=file.source_url,
         external_url=file.external_url,
         photos_count=photos_count,
+        import_origin=ImportOrigin(
+            source_type=origin.source_type,
+            title=origin.title,
+            creator=origin.creator,
+            license=origin.license,
+            url=origin.canonical_url,
+        )
+        if origin is not None
+        else None,
     )
 
 
