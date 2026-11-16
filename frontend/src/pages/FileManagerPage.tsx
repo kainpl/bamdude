@@ -135,6 +135,8 @@ import { plateFileOf } from '../components/projects/add-to-order/addToOrderState
 import { invalidateProductCatalog, invalidateProductFiles, invalidateQueueViews } from '../utils/queryInvalidation';
 import { canLinkFile, canLinkFolder, moveChangesProducts } from '../utils/workshopRights';
 import { writableFolders } from '../utils/folderTree';
+import { MoveFolderModal } from '../components/library/MoveFolderModal';
+import { canMoveFolders, isMovableFolder } from '../utils/folderMove';
 
 type SortField = 'name' | 'date' | 'size' | 'type';
 type SortDirection = 'asc' | 'desc';
@@ -517,6 +519,11 @@ interface FolderTreeItemProps {
   onDelete: (id: number) => void;
   onLink: (folder: LibraryFolderTree) => void;
   onRename: (folder: LibraryFolderTree) => void;
+  onMove: (folder: LibraryFolderTree) => void;
+  /** Branches opened or closed by hand (or by a selection), by folder id — kept by the
+   *  page so a folder that moves elsewhere in the tree keeps its branch as it was. */
+  expandedOverrides: Record<number, boolean>;
+  onExpandedChange: (folderId: number, expanded: boolean) => void;
   depth?: number;
   wrapNames?: boolean;
   defaultExpanded?: boolean;
@@ -564,20 +571,22 @@ function containsFolder(folder: LibraryFolderTree, folderId: number): boolean {
   return folder.id === folderId || folder.children.some((child) => containsFolder(child, folderId));
 }
 
-function FolderTreeItem({ folder, selectedFolderId, onSelect, onDelete, onLink, onRename, depth = 0, wrapNames = false, defaultExpanded = true, hasPermission, t, timeFormat, dateFormat }: FolderTreeItemProps) {
+function FolderTreeItem({ folder, selectedFolderId, onSelect, onDelete, onLink, onRename, onMove, expandedOverrides, onExpandedChange, depth = 0, wrapNames = false, defaultExpanded = true, hasPermission, t, timeFormat, dateFormat }: FolderTreeItemProps) {
   const hasChildren = folder.children.length > 0;
   // Start compact, but never hide a folder selected through a deep-link (or
-  // after returning from another page): every ancestor mounts expanded until
+  // after returning from another page): every ancestor is expanded until
   // the selected row is visible.
   const containsSelectedFolder = selectedFolderId !== null && containsFolder(folder, selectedFolderId);
-  const [expanded, setExpanded] = useState(() => defaultExpanded || containsSelectedFolder);
+  const expanded = expandedOverrides[folder.id] ?? (defaultExpanded || containsSelectedFolder);
+  const setExpanded = (next: boolean) => onExpandedChange(folder.id, next);
   const [showActions, setShowActions] = useState(false);
+  const folderId = folder.id;
 
   useEffect(() => {
     if (hasChildren && containsSelectedFolder) {
-      setExpanded(true);
+      onExpandedChange(folderId, true);
     }
-  }, [containsSelectedFolder, hasChildren]);
+  }, [containsSelectedFolder, hasChildren, folderId, onExpandedChange]);
   // m158: folders link to PRODUCTS. A product that has left the catalog keeps
   // its chip — the link is a fact about the folder, not an offer to make one.
   const linkedTo = folder.products;
@@ -596,6 +605,7 @@ function FolderTreeItem({ folder, selectedFolderId, onSelect, onDelete, onLink, 
   return (
     <div>
       <div
+        data-folder-row={folder.id}
         className={`group flex items-center gap-1 px-2 py-1.5 rounded cursor-pointer transition-colors ${
           selectedFolderId === folder.id
             ? 'bg-bambu-green/20 text-bambu-green'
@@ -683,6 +693,29 @@ function FolderTreeItem({ folder, selectedFolderId, onSelect, onDelete, onLink, 
                   <Pencil className="w-3.5 h-3.5" />
                   {t('common.rename')}
                 </button>
+                {/* Moving asks what renaming asks. An external folder is a
+                    directory of its share and stays where the share has it;
+                    the entry says so rather than vanishing. */}
+                {(() => {
+                  const why = !canMoveFolders(hasPermission)
+                    ? t('fileManager.moveFolder.noPermission')
+                    : !isMovableFolder(folder)
+                      ? t('fileManager.moveFolder.externalFixed')
+                      : undefined;
+                  return (
+                <button
+                  className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${
+                    why ? 'text-bambu-gray cursor-not-allowed' : 'text-white hover:bg-bambu-dark'
+                  }`}
+                  onClick={() => { if (!why) { onMove(folder); setShowActions(false); } }}
+                  disabled={!!why}
+                  title={why}
+                >
+                  <MoveRight className="w-3.5 h-3.5" />
+                  {t('fileManager.moveFolder.action')}
+                </button>
+                  );
+                })()}
                 <button
                   className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${
                     canLink ? 'text-white hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'
@@ -746,6 +779,9 @@ function FolderTreeItem({ folder, selectedFolderId, onSelect, onDelete, onLink, 
               onDelete={onDelete}
               onLink={onLink}
               onRename={onRename}
+              onMove={onMove}
+              expandedOverrides={expandedOverrides}
+              onExpandedChange={onExpandedChange}
               depth={depth + 1}
               wrapNames={wrapNames}
               defaultExpanded={defaultExpanded}
@@ -1842,6 +1878,13 @@ export function FileManagerPage() {
   const dragCounterRef = useRef(0);
   const [showPurgeModal, setShowPurgeModal] = useState(false);
   const [linkFolder, setLinkFolder] = useState<LibraryFolderTree | null>(null);
+  const [moveFolderTarget, setMoveFolderTarget] = useState<LibraryFolderTree | null>(null);
+  // Which branches of the folder tree are open, by folder id — here rather than in
+  // each row, so a folder moved elsewhere in the tree keeps its branch as it was.
+  const [expandedOverrides, setExpandedOverrides] = useState<Record<number, boolean>>({});
+  const setFolderExpanded = useCallback((folderId: number, expanded: boolean) => {
+    setExpandedOverrides((prev) => (prev[folderId] === expanded ? prev : { ...prev, [folderId]: expanded }));
+  }, []);
   const [linkFile, setLinkFile] = useState<LibraryFileListItem | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<{ type: 'file' | 'folder' | 'bulk'; id: number; count?: number } | null>(null);
   const [printFile, setPrintFile] = useState<LibraryFileListItem | null>(null);
@@ -2531,6 +2574,20 @@ export function FileManagerPage() {
     },
   });
 
+  // A folder under another parent (`null` = the library root; the API's word for
+  // the root is 0, since a missing `parent_id` means "leave it where it is").
+  // Selection is by id, so an open folder stays open wherever it lands; the
+  // dialog and a drop both show a refusal themselves, by its code.
+  const moveFolderMutation = useMutation({
+    mutationFn: ({ id, parentId }: { id: number; parentId: number | null }) =>
+      api.updateLibraryFolder(id, { parent_id: parentId ?? 0 }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['library-folders'] });
+      queryClient.invalidateQueries({ queryKey: ['library-files'] });
+      showToast(t('fileManager.moveFolder.moved'), 'success');
+    },
+  });
+
   // The page's one owner of STEP thumbnail jobs: it polls only active receipts and reports through the ordinary
   // library invalidation, so every other view learns from the same refetch. What one poll ended is told once per
   // kind (a batch, a restart that drops every job), never one identical toast per file.
@@ -2881,6 +2938,9 @@ export function FileManagerPage() {
       onDelete={(id) => setDeleteConfirm({ type: 'folder', id })}
       onLink={setLinkFolder}
       onRename={(f) => setRenameItem({ type: 'folder', id: f.id, name: f.name })}
+      onMove={setMoveFolderTarget}
+      expandedOverrides={expandedOverrides}
+      onExpandedChange={setFolderExpanded}
       wrapNames={wrapFolderNames}
       defaultExpanded={expandFoldersByDefault}
       hasPermission={hasPermission}
@@ -3254,6 +3314,8 @@ export function FileManagerPage() {
                   onClick={() => {
                     const newValue = !expandFoldersByDefault;
                     setExpandFoldersByDefault(newValue);
+                    // The switch is "all open" / "all closed": hand-made changes go with it.
+                    setExpandedOverrides({});
                     localStorage.setItem('library-collapse-folders', String(!newValue));
                   }}
                   className={`p-1 rounded transition-colors ${
@@ -4397,6 +4459,15 @@ export function FileManagerPage() {
           }}
           isLoading={moveFilesMutation.isPending}
           t={t}
+        />
+      )}
+
+      {moveFolderTarget && folders && (
+        <MoveFolderModal
+          folder={moveFolderTarget}
+          folders={folders}
+          onMove={(parentId) => moveFolderMutation.mutateAsync({ id: moveFolderTarget.id, parentId })}
+          onClose={() => setMoveFolderTarget(null)}
         />
       )}
 
