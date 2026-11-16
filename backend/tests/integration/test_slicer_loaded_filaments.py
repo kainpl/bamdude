@@ -276,3 +276,34 @@ class TestLoaded:
         filaments = _printer(await _answer(async_client), printer.id)["filaments"]
 
         assert filaments == [{"kind": "ams", "material": "PLA", "family_id": PLA_BASIC, "by_material": False}]
+
+
+class TestRights:
+    """The answer is printer facts — who is online and what is loaded — so it
+    needs the right to read printers beside the right to slice."""
+
+    async def test_a_user_who_may_slice_but_not_read_printers_is_refused(self, async_client, printer_factory, farm):
+        from backend.tests.integration.test_external_folder_rights import _make_user
+
+        farm(await printer_factory(name="p"), _state("X1C", trays=[_tray(0, "PLA", PLA_BASIC)]))
+        slicer_only, _id = await _make_user(async_client, username="lf_slicer", permissions=["library:upload"])
+        both, _id = await _make_user(async_client, username="lf_both", permissions=["library:upload", "printers:read"])
+
+        refused = await async_client.get(URL, headers=slicer_only)
+        allowed = await async_client.get(URL, headers=both)
+
+        assert refused.status_code == 403, refused.text
+        assert "printers" not in refused.json()
+        assert allowed.status_code == 200, allowed.text
+        assert len(allowed.json()["printers"]) == 1
+
+    async def test_an_api_key_without_the_status_scope_is_refused(self, async_client, printer_factory, farm):
+        farm(await printer_factory(name="p"), _state("X1C", trays=[_tray(0, "PLA", PLA_BASIC)]))
+        created = await async_client.post(
+            "/api/v1/api-keys/", json={"name": "library", "can_manage_library": True, "can_read_status": False}
+        )
+        assert created.status_code == 200, created.text
+
+        response = await async_client.get(URL, headers={"X-API-Key": created.json()["key"], "Authorization": ""})
+
+        assert response.status_code == 403, response.text

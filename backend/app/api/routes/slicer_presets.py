@@ -721,7 +721,7 @@ async def list_unified_presets(
 async def list_loaded_filaments(
     request: Request,
     db: AsyncSession = Depends(get_db),
-    current_user: User | None = Depends(require_permission(Permission.LIBRARY_UPLOAD)),
+    current_user: User | None = Depends(require_permission(Permission.LIBRARY_UPLOAD, Permission.PRINTERS_READ)),
 ) -> LoadedFilamentsResponse:
     """Online printers and the filaments loaded on them, for the Slice dialog's
     "only online printers" / "only loaded filaments" filters.
@@ -730,7 +730,8 @@ async def list_loaded_filaments(
     on its list. A filament is the spool a slot holds and its family — read
     from the feed snapshot, so a slot advertised under another profile answers
     with its real spool. Read-only: nothing is asked of a printer or of
-    Spoolman. Gated like the preset listing — whoever can slice can filter.
+    Spoolman. Needs the right to slice AND the right to read printers: the
+    answer is printer facts (who is online, what is loaded).
     """
     from backend.app.core.api_key_scope import key_printer_scope
     from backend.app.services.printer_manager import printer_manager
