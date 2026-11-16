@@ -203,6 +203,28 @@ describe('the columns of a path', () => {
     expect(new URLSearchParams(window.location.search).get('folder')).toBe('6');
   });
 
+  // The address names the open folder in EVERY view: a link copied after
+  // leaving the columns opens the folder on screen, not the one the columns left there.
+  it('keeps the address true after the view changes: a folder opened in the cards view is the address’s', async () => {
+    open('/files?folder=1');
+    await column('Alpha');
+
+    await userEvent.click(screen.getByRole('button', { name: 'Cards' }));
+    await waitFor(() => expect(screen.queryByRole('listbox')).not.toBeInTheDocument());
+    expect(new URLSearchParams(window.location.search).get('folder')).toBe('1');
+
+    // Another folder, from the tree.
+    const steps = window.history.length;
+    await userEvent.click(screen.getAllByText('Other')[0]);
+    await waitFor(() => expect(new URLSearchParams(window.location.search).get('folder')).toBe('6'));
+    // Outside the columns a folder click is no step of the browser's history.
+    expect(window.history.length).toBe(steps);
+
+    // And the top level names no folder at all.
+    await userEvent.click(screen.getAllByText('Internal')[0]);
+    await waitFor(() => expect(new URLSearchParams(window.location.search).get('folder')).toBeNull());
+  });
+
   it('walks back along the path with the browser’s Back', async () => {
     open('/files');
     await userEvent.click(await option('Library', 'Alpha'));
