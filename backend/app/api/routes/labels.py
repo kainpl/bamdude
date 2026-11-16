@@ -56,7 +56,14 @@ from backend.app.models.user import User
 from backend.app.services import label_picture
 from backend.app.services.inventory_service import spool_display_template
 from backend.app.services.label_context import spool_context, spoolman_context
-from backend.app.services.label_gate import checked_design, checked_sheet, design_of, draw, sheet_of
+from backend.app.services.label_gate import (
+    checked_design,
+    checked_sheet,
+    design_of,
+    draw,
+    sheet_of,
+    warning_headers,
+)
 from backend.app.services.label_renderer import render_template_pdf, render_template_sheet_pdf
 from backend.app.services.label_seed import BUILTIN_SHEETS, BUILTIN_TEMPLATES, sheet_cell_template
 from backend.app.services.label_template import LabelSheetSpec, LabelTemplateSpec, fits_within, resolve
@@ -310,8 +317,7 @@ def _stream_pdf(pdf: bytes, filename: str, warnings: list[str]) -> StreamingResp
         # — a barcode whose payload will not encode — still prints every other
         # field, and refusing the batch would leave a shelf unlabelled over one
         # empty column.
-        headers["X-Label-Warnings"] = " | ".join(warnings)
-        headers["Access-Control-Expose-Headers"] = "X-Label-Warnings"
+        headers.update(warning_headers(warnings))
         logger.info("label render warnings: %s", "; ".join(warnings))
     return StreamingResponse(io.BytesIO(pdf), media_type="application/pdf", headers=headers)
 
@@ -459,8 +465,7 @@ async def _save_as_pictures(
 
     headers = {"Content-Disposition": disposition, "Content-Length": str(len(content)), "Cache-Control": "no-store"}
     if warnings:
-        headers["X-Label-Warnings"] = " | ".join(warnings)
-        headers["Access-Control-Expose-Headers"] = "X-Label-Warnings"
+        headers.update(warning_headers(warnings))
     return StreamingResponse(io.BytesIO(content), media_type=media_type, headers=headers)
 
 

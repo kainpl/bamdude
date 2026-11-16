@@ -20,6 +20,7 @@ import threading
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, TypeVar
+from urllib.parse import quote
 
 from fastapi import HTTPException
 from pydantic import ValidationError
@@ -145,6 +146,29 @@ async def draw(render: Callable[..., T], *args: Any, **kwargs: Any) -> T:
         raise HTTPException(503, DRAW_BUSY_DETAIL) from None
 
 
+#: What a header value may carry as typed: printable ASCII, except the escape itself.
+_HEADER_SAFE = "".join(chr(code) for code in range(0x20, 0x7F) if chr(code) != "%")
+
+
+def warning_headers(warnings: list[str]) -> dict[str, str]:
+    """The ``X-Label-Warnings`` header of a response that still carries its label — every door's one writer.
+
+    ⚠️ A header value is Latin-1 on the wire, and a warning quotes what would
+    not encode: a barcode fed a Cyrillic spool name. Written as typed, that
+    sentence failed the whole response with a 500 — the opposite of "the label
+    arrives, with a warning". So whatever is not printable ASCII goes as
+    percent-encoded UTF-8, and so does ``%`` itself: an all-ASCII warning reads
+    exactly as before, and ``decodeURIComponent`` gives back any other. A line
+    break is encoded too, so a payload cannot start a header of its own.
+    """
+    if not warnings:
+        return {}
+    return {
+        "X-Label-Warnings": quote(" | ".join(warnings), safe=_HEADER_SAFE),
+        "Access-Control-Expose-Headers": "X-Label-Warnings",
+    }
+
+
 async def shutdown() -> None:
     """Let the label workers go: queued draws are dropped, the ones running end by themselves.
 
@@ -169,4 +193,5 @@ __all__ = [
     "refuse",
     "sheet_of",
     "shutdown",
+    "warning_headers",
 ]

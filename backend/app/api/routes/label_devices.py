@@ -52,7 +52,7 @@ from backend.app.services.label_dispatch import (
     resolve_template,
     upsert_device,
 )
-from backend.app.services.label_gate import draw
+from backend.app.services.label_gate import draw, warning_headers
 from backend.app.services.label_template import fitting_ids
 
 logger = logging.getLogger(__name__)
@@ -251,8 +251,7 @@ async def create_jobs(
         user_id=user.id if user else None,
     )
     if warnings:
-        response.headers["X-Label-Warnings"] = " | ".join(warnings)
-        response.headers["Access-Control-Expose-Headers"] = "X-Label-Warnings"
+        response.headers.update(warning_headers(warnings))
     return [_job_out(job) for job in jobs]
 
 
@@ -280,8 +279,7 @@ async def preview_job(
     png, warnings = await draw(render_job_png, spec, contexts[0])
     headers = {"Content-Length": str(len(png)), "Cache-Control": "no-store"}
     if warnings:
-        headers["X-Label-Warnings"] = " | ".join(warnings)
-        headers["Access-Control-Expose-Headers"] = "X-Label-Warnings"
+        headers.update(warning_headers(warnings))
     return StreamingResponse(io.BytesIO(png), media_type="image/png", headers=headers)
 
 

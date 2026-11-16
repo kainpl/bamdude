@@ -52,7 +52,14 @@ from backend.app.schemas.label_template import (
 )
 from backend.app.services import label_picture
 from backend.app.services.label_context import example_context, spool_context
-from backend.app.services.label_gate import checked_design, checked_picture, checked_sheet, design_of, draw
+from backend.app.services.label_gate import (
+    checked_design,
+    checked_picture,
+    checked_sheet,
+    design_of,
+    draw,
+    warning_headers,
+)
 from backend.app.services.label_raster import render_template_png
 from backend.app.services.label_template import (
     PLACEHOLDERS,
@@ -348,8 +355,7 @@ async def preview_sheet(
 
     headers = {"Content-Length": str(len(pdf)), "Cache-Control": "no-store"}
     if warnings:
-        headers["X-Label-Warnings"] = " | ".join(warnings)
-        headers["Access-Control-Expose-Headers"] = "X-Label-Warnings"
+        headers.update(warning_headers(warnings))
     return StreamingResponse(io.BytesIO(pdf), media_type="application/pdf", headers=headers)
 
 
@@ -504,8 +510,7 @@ async def preview_template(
     if warnings:
         # Header, not body: the response is an image, and a JSON envelope
         # carrying base64 would make the editor decode a picture to show it.
-        headers["X-Label-Warnings"] = " | ".join(warnings)
-        headers["Access-Control-Expose-Headers"] = "X-Label-Warnings"
+        headers.update(warning_headers(warnings))
     return StreamingResponse(io.BytesIO(png), media_type="image/png", headers=headers)
 
 
