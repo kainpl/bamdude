@@ -97,7 +97,7 @@ async def run_claimed(engine, metadata, debt, *, phase_hook=None):
         async with engine.begin() as conn:
             accepted = await _accepted(conn, debt)
         if engine.dialect.name == "postgresql":
-            from backend.app.migrations.m234_postgres_historical_schema import replay
+            from backend.app.migrations.m235_postgres_historical_schema import replay
 
             await phase("B", replay)
             await phase("D4-indexes", lambda conn: repair_indexes(conn, accepted_calibration=accepted))

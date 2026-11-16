@@ -12,7 +12,7 @@ from sqlalchemy import inspect, text
 from backend.app.migrations._pg_schema_228_contract import REPAIRS
 from backend.app.migrations._pg_schema_228_fts import ensure_archive_fts
 
-version = 234
+version = 235
 name = "postgres_historical_schema"
 logger = logging.getLogger(__name__)
 
@@ -240,7 +240,7 @@ async def _repair(conn, *, check_fts_data):
     await ensure_archive_fts(conn, check_data=check_fts_data)
     if residuals:
         # Count-only, exact object names; never log row data, grants or paths.
-        logger.warning("m234 PG residuals before any import-only conform: %s", residuals)
+        logger.warning("m235 PG residuals before any import-only conform: %s", residuals)
 
 
 async def upgrade(conn):

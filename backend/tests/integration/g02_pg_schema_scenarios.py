@@ -76,7 +76,7 @@ async def load_failed_pg(database, name):
 async def run(case):
     from backend.app.core import database
     from backend.app.core.config import settings
-    from backend.app.migrations import m234_postgres_historical_schema as repair
+    from backend.app.migrations import m235_postgres_historical_schema as repair
 
     d4 = case.startswith("d4:")
     if d4:
@@ -147,7 +147,7 @@ async def run(case):
                 )
         async with database.engine.connect() as conn:
             level = await conn.scalar(text("SELECT max(version) FROM _migrations"))
-            assert await conn.scalar(text("SELECT count(*) FROM _migrations WHERE version=234")) == 1
+            assert await conn.scalar(text("SELECT count(*) FROM _migrations WHERE version=235")) == 1
             redundant = await conn.scalar(
                 text(
                     "SELECT count(*) FROM sqlite_master WHERE type='index' AND name='uq_user_notifications_dedupe_key'"
@@ -164,7 +164,7 @@ async def run(case):
         await exercise_deletes(database)
     await exercise_roundtrips(database)
     async with database.engine.connect() as conn:
-        assert await conn.scalar(text("SELECT count(*) FROM _migrations WHERE version=234")) == 1
+        assert await conn.scalar(text("SELECT count(*) FROM _migrations WHERE version=235")) == 1
         before = await capture(conn)
     writes = []
 
@@ -427,7 +427,7 @@ async def exercise_failed_start(database):
             {"id": archive_id},
         )
         await conn.execute(text("ALTER TABLE cameras ALTER COLUMN created_at DROP DEFAULT"))
-        await conn.execute(text("DELETE FROM _migrations WHERE version=234"))
+        await conn.execute(text("DELETE FROM _migrations WHERE version=235"))
     try:
         await database.init_db()
     except DBAPIError as exc:
@@ -435,7 +435,7 @@ async def exercise_failed_start(database):
     else:
         raise AssertionError("FTS failure did not stop startup")
     async with database.engine.begin() as conn:
-        assert await conn.scalar(text("SELECT count(*) FROM _migrations WHERE version=234")) == 0
+        assert await conn.scalar(text("SELECT count(*) FROM _migrations WHERE version=235")) == 0
         assert (
             await conn.scalar(
                 text(
@@ -451,7 +451,7 @@ async def exercise_failed_start(database):
         await conn.execute(text("DELETE FROM print_archives WHERE id=:id"), {"id": archive_id})
     await database.init_db()
     async with database.engine.connect() as conn:
-        assert await conn.scalar(text("SELECT count(*) FROM _migrations WHERE version=234")) == 1
+        assert await conn.scalar(text("SELECT count(*) FROM _migrations WHERE version=235")) == 1
 
 
 async def exercise_deletes(database):

@@ -10,7 +10,7 @@ from backend.app.migrations import (
     m043_print_options_preferences as m043,
     m127_sensor_thresholds as m127,
     m221_active_print_session_owner as m221,
-    m234_postgres_historical_schema as m228,
+    m235_postgres_historical_schema as m228,
 )
 from backend.app.migrations.helpers import _to_postgres_column_def
 

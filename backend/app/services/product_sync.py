@@ -292,6 +292,27 @@ async def inherit_folder_products(db: AsyncSession, library_file: LibraryFile, f
     await sync_product_for_file(db, library_file_id=library_file.id, product_ids=[p.id for p in folder_products])
 
 
+async def join_folder_products(db: AsyncSession, library_file_id: int, folder_id: int | None) -> None:
+    """A file that arrived in a folder by a move on the share joins that folder's products and keeps its own.
+
+    The folder's link is a standing rule for whatever lands in it (the rule
+    :func:`inherit_folder_products` applies to a new file). ⚠️ Added, never
+    replaced: the external-folder scan has no operator to ask ``products:update``
+    of, so it withdraws no link — neither the file's own nor one a folder it left
+    once gave it. The in-app move, which a person makes, replaces.
+    """
+    if folder_id is None:
+        return
+    of_folder = set(
+        (await db.execute(select(product_folders.c.product_id).where(product_folders.c.library_folder_id == folder_id)))
+        .scalars()
+        .all()
+    )
+    linked = await _linked_product_ids(db, library_file_id)
+    if of_folder - linked:
+        await sync_product_for_file(db, library_file_id=library_file_id, product_ids=sorted(linked | of_folder))
+
+
 async def purge_file_product_links(db: AsyncSession, library_file_ids: Sequence[int]) -> None:
     """Drop a file's product links and plates BEFORE its row is hard-deleted.
 
@@ -341,6 +362,7 @@ __all__ = [
     "apply_folder_products",
     "inherit_folder_products",
     "is_plan_eligible",
+    "join_folder_products",
     "purge_file_product_links",
     "purge_folder_product_links",
     "resync_file_products",

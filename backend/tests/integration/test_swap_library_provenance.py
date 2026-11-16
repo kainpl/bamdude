@@ -25,6 +25,7 @@ from backend.tests.integration.test_swap_library_ingest import (  # noqa: F401 -
     fresh,
     mount,
     row_of,
+    rows_of,
     sessions,
     sha,
     touch_later,
@@ -428,7 +429,7 @@ async def test_a_makerworld_redownload_declares_its_new_bytes_by_the_rows_name(
     assert "swap" in row.file_tags
 
 
-async def test_a_file_renamed_on_the_share_is_a_new_ingestion_without_the_old_declaration(db_session, mount):
+async def test_a_file_renamed_on_the_share_keeps_its_row_but_not_its_declaration(db_session, mount):
     root, folder = mount
     content = a_3mf(root / "plate.gcode.3mf", "v1")
     await via_scan(db_session, folder)
@@ -450,6 +451,56 @@ async def test_a_file_renamed_on_the_share_is_a_new_ingestion_without_the_old_de
         .scalars()
         .all()
     )
-    assert [r.id for r in rows] != [old_id] and len(rows) == 1  # a new row at the new path, not the old one moved
+    assert [r.id for r in rows] == [old_id]  # the row itself, under its new address
+    assert await rows_of(db_session, content) == 1  # and the only row of these bytes in the mount
     assert carrier_of(rows[0]) == classifier(True, rows[0])  # the new share name declares; nothing carried over
     assert carrier_of(rows[0]).get("origin") != "operator"
+
+
+async def test_a_file_moved_to_another_directory_of_the_share_is_declared_again_by_its_name(db_session, mount):
+    """A move is a new ingestion at the new path for the declaration, whatever the basename: the classifier's
+    answer for the name, never the operator's declaration made at the old address."""
+    root, folder = mount
+    content = a_3mf(root / "plate.swaps.gcode.3mf", "v1")
+    await via_scan(db_session, folder)
+    row = await row_of(db_session, content)
+    an_operator_declaration(row, False)
+    await db_session.commit()
+    old_id = row.id
+
+    (root / "done").mkdir()
+    (root / "plate.swaps.gcode.3mf").rename(root / "done" / "plate.swaps.gcode.3mf")
+    await via_scan(db_session, folder)
+
+    moved = await row_of(db_session, content)
+    assert moved.id == old_id and moved.file_path == str(root / "done" / "plate.swaps.gcode.3mf")
+    assert carrier_of(moved) == classifier(True, moved)
+    assert moved.swap_compatible is True and sc.library_fact(moved) is True
+    assert "swap" in moved.file_tags
+
+
+async def test_a_queued_job_keeps_its_link_and_its_captured_fact_when_its_file_is_renamed(
+    db_session, mount, sessions, printer_factory
+):
+    """The job owns its bytes and the fact captured with them; the rename changes neither, and -- the row being
+    kept -- no longer cuts the job's link to its library file."""
+    from backend.app.services.filament_intake import item_descriptor
+
+    root, folder = mount
+    content = a_3mf(root / "plate.gcode.3mf", "v1")
+    await via_scan(db_session, folder)
+    row = await row_of(db_session, content)
+    queue = await a_queue(db_session, printer_factory)
+    job = await a_captured_job(sessions, db_session, queue, row)
+    snapshot, source_id, identity = dict(job.source_snapshot), job.queue_source_id, sc.job_identity(job)
+    assert (await item_descriptor(db_session, job)).swap_fact.value is False
+
+    (root / "plate.gcode.3mf").rename(root / "moved.swaps.gcode.3mf")
+    await via_scan(db_session, folder)
+
+    moved = await row_of(db_session, content)
+    assert moved.id == row.id and sc.library_fact(moved) is True  # the SOURCE declares anew, by its new name
+    await db_session.refresh(job)
+    assert job.library_file_id == row.id and job.queue_source_id == source_id
+    assert job.source_snapshot == snapshot and sc.job_identity(job) == identity
+    assert (await item_descriptor(db_session, job, fresh=True)).swap_fact.value is False  # the job's own, as captured

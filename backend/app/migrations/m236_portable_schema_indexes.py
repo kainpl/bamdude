@@ -7,7 +7,7 @@ marker are committed by the caller; replay does not use live model metadata.
 
 from backend.app.core.schema_index_repair import native_upgrade
 
-version = 235
+version = 236
 name = "portable_schema_indexes"
 
 

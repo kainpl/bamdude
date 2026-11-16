@@ -853,10 +853,10 @@ async def conform_imported_schema(engine, models_metadata, *, debt=None) -> None
         return
     _conform_pending = False
 
-    # The source can already carry m234 from SQLite (where it is a no-op),
+    # The source can already carry m235 from SQLite (where it is a no-op),
     # or from a portable PG backup whose DDL lacks migration-only objects.
     # Always replay the frozen PG repair on import, not just its FTS half.
-    from backend.app.migrations.m234_postgres_historical_schema import replay
+    from backend.app.migrations.m235_postgres_historical_schema import replay
 
     async with engine.begin() as conn:
         await replay(conn)
