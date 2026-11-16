@@ -552,6 +552,10 @@ async def delete_user(
         from backend.app.services import library_file_photos
 
         await library_file_photos.forget_files(db, list(_doomed_file_ids))
+        # And their notes: the bulk DELETE below goes past the ORM cascade, SQLite runs none.
+        from backend.app.services.library_trash import forget_file_notes
+
+        await forget_file_notes(db, list(_doomed_file_ids))
         await db.execute(delete(LibraryFile).where(LibraryFile.created_by_id == user_id))
     else:
         # Explicitly set created_by_id to NULL for all items (ensures consistent behavior
