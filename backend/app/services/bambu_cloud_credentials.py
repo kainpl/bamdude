@@ -92,6 +92,22 @@ async def mark_cloud_token_invalid(captured) -> None:
         logger.exception("Could not record the Bambu Cloud token as invalid")
 
 
+def _renewed_values(captured, access_token: str, refresh_token: str | None) -> dict:
+    """A renewed pair in the words of the storage that holds the credential.
+
+    A ``User`` credential is columns; the ownerless one is ``Settings`` rows
+    under their own keys, whose value is never NULL — there "not known to be
+    dead" is the empty string (see :data:`CLOUD_TOKEN_INVALID_KEY`), and a
+    refresh token Bambu did not rotate keeps its row.
+    """
+    if captured.user_id is not None:
+        return {"cloud_token": access_token, "cloud_refresh_token": refresh_token, "cloud_token_invalid_at": None}
+    values = {CLOUD_TOKEN_KEY: access_token, CLOUD_TOKEN_INVALID_KEY: ""}
+    if refresh_token:
+        values[CLOUD_REFRESH_TOKEN_KEY] = refresh_token
+    return values
+
+
 async def _persist_renewed(captured, access_token: str, refresh_token: str | None):
     """Store a renewed pair under the snapshot that began the request.
 
@@ -106,15 +122,7 @@ async def _persist_renewed(captured, access_token: str, refresh_token: str | Non
 
     try:
         async with async_session() as db:
-            return await write(
-                db,
-                captured,
-                {
-                    "cloud_token": access_token,
-                    "cloud_refresh_token": refresh_token,
-                    "cloud_token_invalid_at": None,
-                },
-            )
+            return await write(db, captured, _renewed_values(captured, access_token, refresh_token))
     except HTTPException as exc:
         if exc.status_code not in (401, 403, 409, 503):
             raise

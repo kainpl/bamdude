@@ -131,3 +131,105 @@ class TestTheGitBackup:
 
         assert files == {}
         assert await _stored(db_session, user.id) == ("acc", "ref", False)
+
+
+class TestTheOwnerlessCredential:
+    """The installation-level sign-in lives in ``Settings`` rows under its own
+    keys; a renewed pair must land in those rows, not under ``User`` column names."""
+
+    KEYS = ("bambu_cloud_token", "bambu_cloud_refresh_token", "bambu_cloud_token_invalid_at")
+
+    async def _sign_in_ownerless(self, db_session, *, invalid: str | None = None) -> None:
+        from backend.app.models.settings import Settings
+
+        db_session.add_all(
+            [
+                Settings(key="bambu_cloud_token", value="acc"),
+                Settings(key="bambu_cloud_refresh_token", value="ref"),
+                Settings(key="bambu_cloud_region", value="global"),
+            ]
+        )
+        if invalid is not None:
+            db_session.add(Settings(key="bambu_cloud_token_invalid_at", value=invalid))
+        await db_session.commit()
+
+    async def _rows(self, db_session) -> dict:
+        from backend.app.models.settings import Settings
+
+        db_session.expire_all()
+        rows = (await db_session.execute(select(Settings))).scalars().all()
+        return {r.key: r.value for r in rows}
+
+    async def test_a_renewed_pair_is_stored_under_the_ownerless_keys(self, async_client, db_session, bambu):
+        from backend.app.services.bambu_cloud_credentials import is_cloud_token_invalid
+
+        await self._sign_in_ownerless(db_session)
+        fake = bambu({("GET", SETTINGS): [EXPIRED, (200, LISTING)], ("POST", REFRESH): RENEWED_PAIR})
+        files: dict = {}
+
+        await GitBackupService()._collect_cloud_profiles(db_session, files)
+
+        assert files["cloud_profiles/filament.json"]["profiles"] == LISTING["filament"]["private"]
+        assert fake.count("POST", REFRESH) == 1
+        rows = await self._rows(db_session)
+        assert rows["bambu_cloud_token"] == "acc-2"
+        assert rows["bambu_cloud_refresh_token"] == "ref-2"
+        assert not await is_cloud_token_invalid(db_session, None)
+        # Nothing is written under the User column names.
+        assert not {"cloud_token", "cloud_refresh_token", "cloud_token_invalid_at"} & set(rows)
+
+    async def test_a_renewal_clears_an_earlier_invalid_mark(self, async_client, db_session, bambu):
+        from backend.app.services.bambu_cloud import BambuCloudService
+        from backend.app.services.bambu_cloud_credentials import (
+            is_cloud_token_invalid,
+            renew_for_service,
+            renewal_credentials,
+        )
+
+        await self._sign_in_ownerless(db_session, invalid="2026-01-01T00:00:00+00:00")
+        bambu({("POST", REFRESH): RENEWED_PAIR})
+        captured, refresh = await renewal_credentials(db_session, None, allow_global=True)
+        await db_session.commit()
+        cloud = BambuCloudService(region="global")
+        cloud.set_token("acc")
+        cloud.set_refresh_token(refresh)
+
+        outcome = await renew_for_service(cloud, captured)
+
+        assert outcome == bambu_cloud.RENEWED
+        rows = await self._rows(db_session)
+        assert (rows["bambu_cloud_token"], rows["bambu_cloud_refresh_token"]) == ("acc-2", "ref-2")
+        assert not await is_cloud_token_invalid(db_session, None)
+
+    async def test_a_refused_renewal_marks_the_ownerless_sign_in_invalid(self, async_client, db_session, bambu):
+        from backend.app.services.bambu_cloud_credentials import is_cloud_token_invalid
+
+        await self._sign_in_ownerless(db_session)
+        bambu({("GET", SETTINGS): EXPIRED, ("POST", REFRESH): (401, {"error": "Please login."})})
+
+        await GitBackupService()._collect_cloud_profiles(db_session, {})
+
+        rows = await self._rows(db_session)
+        assert (rows["bambu_cloud_token"], rows["bambu_cloud_refresh_token"]) == ("acc", "ref")
+        assert await is_cloud_token_invalid(db_session, None)
+
+
+class TestTheUserCredential:
+    async def test_a_renewal_clears_an_earlier_invalid_mark(self, async_client, db_session, bambu):
+        from datetime import datetime, timezone
+
+        from backend.app.services.bambu_cloud import BambuCloudService
+        from backend.app.services.bambu_cloud_credentials import renew_for_service, renewal_credentials
+
+        user = await _sign_in(db_session)
+        user.cloud_token_invalid_at = datetime.now(timezone.utc)
+        await db_session.commit()
+        bambu({("POST", REFRESH): RENEWED_PAIR})
+        captured, refresh = await renewal_credentials(db_session, user)
+        await db_session.commit()
+        cloud = BambuCloudService(region="global")
+        cloud.set_token("acc")
+        cloud.set_refresh_token(refresh)
+
+        assert await renew_for_service(cloud, captured) == bambu_cloud.RENEWED
+        assert await _stored(db_session, user.id) == ("acc-2", "ref-2", False)
