@@ -409,3 +409,25 @@ async def test_the_export_writes_nothing(db_session):
     assert again == stored
     # The rows are the address's that was left: not the current Spoolman's.
     assert [e["current_source"] for e in files[SPOOLMAN_USAGE_PATH]["usage_history"]] == [False, False, False]
+
+
+async def test_reused_archive_id_between_categories_does_not_capture_spoolman_usage(db_session):
+    await seeded(db_session)
+    files = await backed_up(db_session)
+    old_id = await db_session.scalar(select(PrintArchive.id))
+    await db_session.execute(delete(SpoolmanUsageHistory))
+    await db_session.commit()
+
+    class ReusingRestore(GitRestoreService):
+        async def _restore_spools(self, db, *args, **kwargs):
+            await db.execute(delete(PrintArchive).where(PrintArchive.id == old_id))
+            db.add(PrintArchive(id=old_id, filename="other-print", file_path="", file_size=0, status="completed"))
+            await db.commit()
+            await self._begin_record_category(db)
+            return await super()._restore_spools(db, *args, **kwargs)
+
+    result = await ReusingRestore()._apply(db_session, files, [RestoreCategory.ARCHIVES, RestoreCategory.SPOOLS], False)
+    restored = await rows(db_session)
+    assert len(restored) == 3
+    assert all(row.archive_id is None for row in restored)
+    assert any(note["code"] == "spoolUsageUnlinked" for note in result["spools"].notes)

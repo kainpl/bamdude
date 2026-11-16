@@ -28,11 +28,11 @@ ADDED_PRINTER_FIELDS = {
 }
 
 
-async def _info(printer_factory, test_engine, monkeypatch):
+async def _info(printer_factory, test_engine, monkeypatch, process_collector=None):
     """Collect against the TEST database, without touching a printer.
 
-    ⚠️ All three patches are required, and the first two were missing when this
-    file was written. ``_collect_support_info`` opens its OWN ``async_session``,
+    ⚠️ The database, diagnostics and port patches are required. The first two
+    were missing when this file was written. ``_collect_support_info`` opens its OWN ``async_session``,
     so without redirecting it the test reads the operator's real database; its
     ``diagnostics`` section then runs ``run_connection_diagnostic`` against
     those real printers over the network, and ``_check_port`` opens a TCP
@@ -52,6 +52,10 @@ async def _info(printer_factory, test_engine, monkeypatch):
         "backend.app.services.diagnostic_snapshot.collect_diagnostic_snapshot",
         AsyncMock(return_value={}),
     )
+    # These assertions concern queue/printer fields, not a census of pytest's
+    # heap. Process diagnostics have their own tests; walking every object in
+    # a full-suite worker can also entangle the capture/timeout threads.
+    monkeypatch.setattr(support, "_collect_process_info", process_collector or (lambda: {}))
     with patch.object(support, "_check_port", AsyncMock(return_value=False)):
         return await support._collect_support_info()
 
@@ -101,3 +105,31 @@ async def test_the_camera_light_policy_is_reported_per_printer(printer_factory, 
     by_exclusion = [entry["camera_light_excluded"] for entry in info["printers"]]
     assert by_exclusion.count(True) == 1 and by_exclusion.count(False) == 1, by_exclusion
     assert excluded.camera_light_auto == "off"
+
+
+async def test_fd_snapshot_survives_zip_and_issue_projection(printer_factory, test_engine, monkeypatch, tmp_path):
+    import io
+    import json
+    import zipfile
+
+    from backend.app.api.routes import support
+    from backend.app.services.support_projection import project_for_issue
+
+    def fd_only():
+        return {"file_descriptors": support.collect_fd_info()}
+
+    info = await _info(printer_factory, test_engine, monkeypatch, process_collector=fd_only)
+    projected, _ = project_for_issue(info)
+    assert projected["process"]["file_descriptors"] == info["process"]["file_descriptors"]
+    monkeypatch.setattr(support.settings, "log_dir", tmp_path)
+    with (
+        patch.object(support, "_check_port", AsyncMock(return_value=False)),
+        patch.object(support, "_get_debug_setting", AsyncMock(return_value=(True, None))),
+    ):
+        response = await support.generate_support_bundle()
+    chunks = [chunk async for chunk in response.body_iterator]
+    data = b"".join(chunk if isinstance(chunk, bytes) else chunk.encode() for chunk in chunks)
+    with zipfile.ZipFile(io.BytesIO(data)) as archive:
+        zipped = json.loads(archive.read("support-info.json"))["process"]["file_descriptors"]
+    assert set(zipped) == {"count", "kinds", "soft_limit", "hard_limit", "kinds_truncated"}
+    assert set(zipped) == set(projected["process"]["file_descriptors"])

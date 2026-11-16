@@ -23,7 +23,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from enum import Enum
 
-from sqlalchemy import BigInteger, Boolean, DateTime, Integer, String
+from sqlalchemy import BigInteger, Boolean, DateTime, Index, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, validates
 
 from backend.app.core.database import Base
@@ -264,3 +264,8 @@ class AuthRateLimitEvent(Base):
     @validates("occurred_at")
     def _utc_datetime(self, _name, value):
         return value.astimezone(timezone.utc).replace(tzinfo=None) if value is not None and value.tzinfo else value
+
+
+# Canonical declarations also carry migration-owned indexes into portable DDL.
+Index("ix_auth_eph_type_exp", AuthEphemeralToken.token_type, AuthEphemeralToken.expires_at)
+Index("ix_auth_rl_type_time", AuthRateLimitEvent.event_type, AuthRateLimitEvent.occurred_at)

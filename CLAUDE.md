@@ -74,9 +74,9 @@ bash docker-publish.sh 0.X.Y --parallel          # EMERGENCY ONLY — a v* tag a
 
 ## Migrations
 
-Startup: `init_db()` → legacy `bambuddy.db` rename → `Base.metadata.create_all()` (idempotent) → SQLite→PG auto-migrate (if PG empty) → `_ensure_migrations_table` → `_bootstrap_existing` (marks m000+m001 applied for legacy) → `_run_pending` → `conform_imported_schema` (only after an import in this process).
+Startup: `init_db()` → legacy `bambuddy.db` rename → claim existing durable import debt before DDL; when absent, eligible SQLite→PG source-level preflight → `Base.metadata.create_all()` → SQLite→PG auto-migrate (unused PG target only). Existing PG debt skips create_all/local re-import so pending AS-IS converters retain their legacy input; SQLite keeps its historical create_all even under debt (legacy migrations need create_all-only tables), after spending its attempt → `_ensure_migrations_table` → `_bootstrap_existing` (marks m000+m001 applied for legacy) → `_run_pending` → `conform_imported_schema` (while durable import-repair debt is pending).
 
-⚠️ **The SQLite→PG move imports the file AS IS at ITS migration level, `_migrations` included, and the chain resumes at N+1** (`db_portable._reflect_sqlite_schema`; 2026-09-09). Never build the target schema from `Base.metadata` before the load — the models lack exactly the legacy columns/tables the later converters read (m157 `printer_id`, m158 project pivots), and re-running the whole chain on PG is how a dialect bug in an old migration reached a tester while the maintainer's own SQLite→PG path never executed it. What no migration ever did on SQLite (FK rules, NOT NULL, UNIQUE, CHECK, m001's tsvector half) is added once, after the chain, by `conform_imported_schema` — never on an ordinary boot. Model columns marked `info={"migration_shim": True}` (notification.py) are not canon and are skipped there. Vault: `40-invariants/inv-sqlite-move-imports-file-as-is.md`.
+⚠️ **The SQLite→PG move imports the file AS IS at ITS migration level, `_migrations` included, and the chain resumes at N+1** (`db_portable._reflect_sqlite_schema`; 2026-09-09). Never build the target schema from `Base.metadata` before the load — the models lack exactly the legacy columns/tables the later converters read (m157 `printer_id`, m158 project pivots), and re-running the whole chain on PG is how a dialect bug in an old migration reached a tester while the maintainer's own SQLite→PG path never executed it. What no migration ever did on SQLite (FK rules, NOT NULL, UNIQUE, CHECK, m001's tsvector half) is added after the chain under durable import-repair ownership by `conform_imported_schema` — never by a generic pass on an ordinary native boot. A process flag or an imported migration marker is not proof of completion. Model columns marked `info={"migration_shim": True}` (notification.py) are not canon and are skipped there. Vault: `40-invariants/inv-sqlite-move-imports-file-as-is.md`.
 
 Each `mNNN_*.py` has `version`, `name`, `async def upgrade(conn)` (DDL), optional `async def seed(session_factory)` (DML). Helpers in `helpers.py`: `add_column`, `column_exists`, `table_exists`, `recreate_table`. Per-migration rationale lives in migration docstring — read there, don't duplicate here. Two branches can each take the same next number; `tests/unit/test_migration_versions_are_unique.py` fails when two files share a `version` or a file's number is not its `version` — renumber the unreleased one.
 
@@ -84,7 +84,33 @@ Each `mNNN_*.py` has `version`, `name`, `async def upgrade(conn)` (DDL), optiona
 
 Migration seeds name historical columns for reads and writes. For INSERT use a lightweight SQLAlchemy `table`/`column` definition; ORM inserts and `Model.__table__` both inherit future Python defaults and can reference columns absent at that migration step.
 
+G02 B's historical PG repair uses a frozen literal whitelist, never ordinary-startup reconciliation against live models. Unknown NULLs, duplicate identities and unsafe native orphan repairs remain named/count residuals. Its guarded FTS helper is shared by import conformance; a failed backfill rolls back and stops startup. A migration may provide an explicit repeat-safe `replay(conn)` for DEBUG without deleting its completed marker. The narrow released-DDL exception changes only missing-table PG arms in m043/m127; SQLite rendered DDL stays byte-identical. SQLite-file→PG has a preflight floor; ordinary SQLite/native-PG upgrades do not. See `docs/development/postgres-historical-schema.md`.
+
+PostgreSQL import owns one prepared DB/WAL source through identity/floor,
+effective-type validation and load. Pass that owner explicitly; validators
+must not make independent copies or open the original with SQLite. The
+reflected PG types own width/NUL validation, including unknown legacy columns.
+Before commit/consumption recheck the original fingerprint. Notification
+UNIQUE name-collision translation is exact and proof-based, never a generic
+index-name dedupe.
+
 ## Key Invariants
+
+**Import repair stays owned across process death.** Replacement writes a new
+private `_bamdude.*` debt in its own transaction (inside the SQLite image).
+Spend the durable automatic budget before any repair DDL, preserve debt through
+all migrations/conform phases, and combine complete verification with an exact
+owner clear. Known data failures require both a canonical violation proof and
+an actually missing guard; technical/unknown structure failures keep the web
+process in closed maintenance. Only `/health`'s safe 503 shell remains; ASGI
+startup.complete must not open farm/auth admission there. Ordinary native boots
+retry only persisted exact residuals, bound to their own server-normalised
+object definition rather than the whole model hash. Optional retry errors
+retain the record and diagnostic without inventing a hard startup debt.
+Public settings reset, read, Git export
+and partial restore do not own this namespace. Offline status never initializes
+configuration, migrations or farm, and retry has no clear/force bypass.
+Vault: `40-invariants/inv-import-repair-is-durable.md`.
 
 **Live delivery needs current authority and owned cleanup.** The live coordinator
 batches exact credential/account/target reads; admission rereads after accept,
@@ -107,6 +133,42 @@ admission stays closed and actual threads remain owned until interpreter exit.
 Only lifespan startup reopens admission. This owner adds no database or queue
 spool lock and covers the initial raw write, not the whole ingest transaction.
 Vault: `40-invariants/inv-library-upload-write-is-restore-owned.md`.
+
+**Restore owns VP retirement until actual completion.** The canonical restore
+restart latch closes every ordinary VP runtime door; generic crash/operator
+holds do not. FTP and MQTT lease local business before acknowledgement, and a
+timeout/cancel leaves one reachable owner running. Never cancel that business
+between library and queue commits. Only close listeners and publish ownership
+under the manager's non-reentrant sync lock; DB/network/task joins stay outside.
+Close idle writers (short TLS grace, then abort) before joining services.
+Transparent proxies are cut/joined and reported as interruptions, not completed
+uploads. A replacement waits for predecessor proof and the latest configuration.
+Git goes from VP proof to its categories; ZIP retains its other quiesce/fence
+contracts. Both use the existing operation guard; scheduled local busy is a
+retry, not failure. VP drain does not make physical-print writers quiet.
+ZIP closes G01 admission synchronously before yielding, proves VP completion,
+then joins those owners. Keep the later upload-write/connector barriers and
+restore-actor validation under the storage guard before file replacement.
+Exited business errors and completed failed syncs are not pending I/O. Finish
+independent idle teardown before reporting failure; retain an explicit unproven
+owner rather than a failed retirement task that blocks unrelated VPs. Pending
+roots permit retry, completed unproven roots require restart. Delete reserves
+the VP ID through commit and retirement proof, cleaning its uploads before reuse.
+Every retirement outcome wakes deletion-reservation waiters; failure keeps the
+ID reserved. Mark the saved VP pending before joining a busy sync coordinator,
+including target detaches committed by physical-printer deletion.
+Vault: `40-invariants/inv-vp-retirement-is-restore-owned.md`.
+
+**Git metadata restore cannot claim a different physical print.** Archives match
+their execution UUID; legacy keys must be usable and unambiguous, and never
+become a fallback match for a different UUID. Active or uncertain snapshots
+and local prints allow only operator fields. File paths, order links and
+existing execution identity stay local. Energy numbers and provenance form one
+bundle. Usage links recheck the committed archive UUID, not just its integer id,
+and retain spool/printer row lifetimes through their write. Categories commit
+separately; metadata import never replays physical accounting or completion.
+Until restore admission/drain is accepted, the farm must be idle.
+Vault: 40-invariants/inv-git-restore-keeps-execution-identity.md.
 
 **A retained integration credential belongs to its effective destination.** Public reads expose presence, never the value, and save and draft tests share keep/clear/replace resolution. Every pair writer takes the pre-existing installation credential anchor before authoritative adapter rows (existing outer resource guards stay outermost); PostgreSQL locks it and SQLite reserves its writer before reads. Missing anchor fails closed; bootstrap/full restore creates it before admission. Freeze the validated pair and finish the short transaction before network I/O. Partial restore cannot rebind local credential destinations; full private backups retain credentials. Vault: `40-invariants/inv-integration-credential-belongs-to-destination.md`.
 
@@ -280,7 +342,7 @@ MCP diagnostic history correlates archive/job IDs, never filenames, and applies 
 
 **Async-first.** All I/O async. FastAPI `Depends()` for DI. Pair every `asyncio.create_task` with shutdown cancel. Autouse `_cancel_leaked_asyncio_tasks` drains pending tasks between tests. ⚠️ **Never call paho's `loop_stop()` on the event loop** — it joins the network thread with no timeout, and a thread parked in a TLS handshake against a printer that answers but never finishes it holds that join indefinitely (upstream #3068: the whole web UI stopped while the process stayed up). Let a paho client go through `utils/paho_teardown.py::retire_paho_client`, which detaches its callbacks inline and runs DISCONNECT + `loop_stop` on a named daemon thread. Vault: `40-invariants/inv-a-replaced-mqtt-client-is-closed.md`.
 
-**The start-up heap is frozen once, first, and a running server never (spec process-gc-latency r2, 2026-10-29).** `core/process_gc.py` is the cyclic collector's ONE owner — `tests/unit/test_collector_has_one_owner.py` (an AST scan: aliases, `from gc import`, the module handed on) fails any other module that disables, enables, freezes, unfreezes, retunes or runs it. `main.lifespan` calls `prepare_startup_heap()` as its FIRST statement — before the farm guard, `init_db`, any connection or manager: one `gc.collect()` + `gc.freeze()` takes the ~0.8 M imported objects out of every later full collection (measured: ~400 ms → 30–70 ms on a server-like process), once per process — a second lifespan, a failed start or a restore never decide again, and the outcome is logged once. `BAMDUDE_GC_STARTUP_FREEZE=off` keeps the stock collector; a value other than on/off refuses the start. It skips, with one record and a stable reason, a host that switched the collector off or froze objects AFTER the import (`already_frozen` counts from the module's import — CPython 3.12 starts with a frozen set of its own), an interpreter outside the measured cells (CPython 3.12 with the GIL only — others `unverified_interpreter` / `free_threaded`), and a process already working (engine pool connections, printer clients: `late_start`). The suite runs with it off (conftest assigns `off`, not setdefault); the real start-up is proven in children that remove the variable and never import conftest (`integration/test_process_gc_startup.py`). ⚠️ A frozen object is never examined for cyclic garbage again: never freeze later, periodically or after a restore — an evicted import-time object in a cycle with runtime objects would keep them for the life of the process (the restore probe found none; the end-of-process unfreeze oracle is in the evidence). ⚠️ The support census (`gc.get_objects()`) walks only the unfrozen heap and reports `gc_frozen_objects` beside it. Vault: `40-invariants/inv-collector-startup-boundary.md`.
+**The start-up heap is frozen once, first, and a running server never (spec process-gc-latency r2, 2026-10-29).** `core/process_gc.py` is the cyclic collector's ONE owner — `tests/unit/test_collector_has_one_owner.py` (an AST scan: aliases, `from gc import`, the module handed on) fails any other module that disables, enables, freezes, unfreezes, retunes or runs it. `main.lifespan` calls `prepare_startup_heap()` as its FIRST statement — before the farm guard, `init_db`, any connection or manager: one `gc.collect()` + `gc.freeze()` takes the ~0.8 M imported objects out of every later full collection (measured: ~400 ms → 30–70 ms on a server-like process), once per process — a second lifespan, a failed start or a restore never decide again, and the outcome is logged once. `BAMDUDE_GC_STARTUP_FREEZE=off` keeps the stock collector; a value other than on/off refuses the start. It skips, with one record and a stable reason, a host that switched the collector off or froze objects AFTER the import (`already_frozen` counts from the module's import — CPython 3.12 starts with a frozen set of its own), an interpreter outside the measured cells (CPython 3.12 with the GIL only — others `unverified_interpreter` / `free_threaded`), and a process already working (engine pool connections, printer clients: `late_start`). The suite runs with it off (conftest assigns `off`, not setdefault); the real start-up is proven in children that remove the variable and never import conftest (`integration/test_process_gc_startup.py`). ⚠️ A frozen object is never examined for cyclic garbage again: never freeze later, periodically or after a restore — an evicted import-time object in a cycle with runtime objects would keep them for the life of the process (the restore probe found none; the end-of-process unfreeze oracle is in the evidence). ⚠️ The support census (`gc.get_objects()`) walks only the unfrozen heap and reports `gc_frozen_objects` beside it. Vault: `40-invariants/inv-collector-startup-boundary.md`. Soft descriptor limits are adjusted by `core/process_resources.py` immediately after this heap boundary and before child processes; the helper never lowers soft or changes hard. Its FD diagnostics import dependencies before exhaustion, classify procfs link text without target filesystem access, and expose no paths.
 
 **Labels are data, not layout code.** `label_templates` / `label_sheets` (m146) hold a design as a list of mm-positioned boxes; one walk (`label_canvas.draw_template`) feeds two backends — PDF and a 1-bit raster. Editor lives in Settings → Filament → Marking and NOWHERE else. Direct-to-device printing (m147, `label_devices`/`label_jobs`) has the server hold a queue a desktop bridge polls. ⚠️ The template is the truth and the cassette is the gate: a design is printed at its own size or refused, never scaled — fractional scaling of 1-bit destroys bar ratios silently. ⚠️ An un-adopted device is frozen by design. The designs and sheets BamDude ships (`builtin_key`) are ordinary rows: editable and deletable (owner, confirmed 2026-11-16). Full detail: vault `20-systems/label-templates` + `20-systems/label-devices`.
 

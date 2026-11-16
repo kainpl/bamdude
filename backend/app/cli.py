@@ -37,6 +37,13 @@ import asyncio
 import logging
 import sys
 
+# The read-only recovery command must dispatch before normal imports resolve
+# config (which may create an embedded password/port and application folders).
+if __name__ == "__main__" and sys.argv[1:2] == ["schema_repair"]:
+    from backend.app.core.schema_repair_cli import main as _schema_repair_main
+
+    raise SystemExit(_schema_repair_main(sys.argv[2:]))
+
 from sqlalchemy import delete, select
 
 from backend.app.core.auth import has_any_admin
@@ -219,6 +226,8 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("reset_admin", help="Clear setup flag so the next boot re-enters the setup flow.")
     sub.add_parser("list_users", help="List local accounts (username, role, source, active, email).")
+    schema = sub.add_parser("schema_repair", help="Offline schema repair status/retry; stop BamDude first.")
+    schema.add_argument("operation", choices=("status", "retry"))
     reset_pw = sub.add_parser(
         "reset_password",
         help="Set a local account's password from the server console (no e-mail needed).",
@@ -241,6 +250,11 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
+
+    if args.command == "schema_repair":
+        from backend.app.core.schema_repair_cli import main as schema_main
+
+        return schema_main([args.operation])
 
     if args.command == "reset_admin":
         return asyncio.run(_reset_admin())

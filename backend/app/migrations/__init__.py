@@ -140,10 +140,19 @@ async def _run_pending(engine, session_factory) -> None:
     if app_settings.debug and migrations and applied:
         latest = max(m["version"] for m in migrations)
         if latest in applied:
-            async with engine.begin() as conn:
-                await conn.execute(text("DELETE FROM _migrations WHERE version = :v"), {"v": latest})
-            applied.discard(latest)
-            logger.info("Dev mode: re-running migration %d", latest)
+            try:
+                head = next(m["module"] for m in migrations if m["version"] == latest)
+                if hasattr(head, "replay"):
+                    async with engine.begin() as conn:
+                        await head.replay(conn)
+                else:
+                    async with engine.begin() as conn:
+                        await conn.execute(text("DELETE FROM _migrations WHERE version = :v"), {"v": latest})
+                    applied.discard(latest)
+                logger.info("Dev mode: re-running migration %d", latest)
+            except Exception as exc:
+                logger.error("Migration %d failed during DEBUG replay (%s)", latest, type(exc).__name__)
+                raise
 
     pending = [m for m in migrations if m["version"] not in applied]
 
@@ -159,23 +168,30 @@ async def _run_pending(engine, session_factory) -> None:
 
         logger.info("Applying migration %d: %s ...", version, name)
 
-        # DDL phase (schema changes) - FK off for safety (SQLite only)
-        if hasattr(mod, "upgrade"):
-            async with engine.begin() as conn:
-                from backend.app.core.db_dialect import is_sqlite
+        try:
+            phase = "DDL"
+            # DDL phase (schema changes) - FK off for safety (SQLite only)
+            if hasattr(mod, "upgrade"):
+                async with engine.begin() as conn:
+                    from backend.app.core.db_dialect import is_sqlite
 
-                if is_sqlite():
-                    await conn.execute(text("PRAGMA foreign_keys = OFF"))
-                await mod.upgrade(conn)
-                if is_sqlite():
-                    await conn.execute(text("PRAGMA foreign_keys = ON"))
+                    if is_sqlite():
+                        await conn.execute(text("PRAGMA foreign_keys = OFF"))
+                    await mod.upgrade(conn)
+                    if is_sqlite():
+                        await conn.execute(text("PRAGMA foreign_keys = ON"))
 
-        # Seed phase (data, uses ORM session)
-        if hasattr(mod, "seed"):
-            await mod.seed(session_factory)
+            phase = "seed"
+            # Seed phase (data, uses ORM session)
+            if hasattr(mod, "seed"):
+                await mod.seed(session_factory)
 
-        # Record as applied
-        await _record_migration(engine, version, name)
+            phase = "record"
+            # Record as applied
+            await _record_migration(engine, version, name)
+        except Exception as exc:
+            logger.error("Migration %d failed during %s (%s)", version, phase, type(exc).__name__)
+            raise
         logger.info("Migration %d applied successfully", version)
 
 
@@ -183,7 +199,7 @@ async def run_all_migrations(engine, session_factory) -> bool:
     """Main entry point - called from init_db().
 
     Simple flow:
-    1. create_all() - ensures all tables exist from models
+    1. Preflight an eligible local SQLite→PG source, then create_all()
     2. Ensure _migrations table
     3. Handle BamDude 3.0.1 upgrade (rename + bootstrap)
     4. Run all pending migrations
@@ -213,38 +229,84 @@ async def run_all_migrations(engine, session_factory) -> bool:
                 if wal.exists():
                     wal.rename(db_path.parent / (db_path.name + suffix))
 
-    # Create/update all tables from models
-    async with engine.begin() as conn:
-        created_schema = not await conn.run_sync(lambda sync: inspect(sync).get_table_names())
-        await conn.run_sync(Base.metadata.create_all)
+    from backend.app.core.schema_repair import claim, retry_residuals
+    from backend.app.core.schema_repair_state import SchemaRepairPending, fail_attempt
 
-    # Auto-migrate SQLite → PostgreSQL if PG is empty and local SQLite exists
-    if not is_sqlite():
-        from backend.app.core.db_portable import auto_migrate_sqlite_to_pg
+    # Existing replacement ownership wins before any local-source preparation.
+    # In particular, never overwrite an AS-IS legacy import with current-model
+    # create_all before its pending converters have resumed on PG. SQLite
+    # keeps its pre-D4 create_all: some legacy migrations depend on its tables.
+    debt = await claim(engine, Base.metadata)
+    prepared = None
+    if not is_sqlite() and debt is None:
+        from backend.app.core.db_portable import preflight_sqlite_to_pg
 
-        # A failed or declined import is not proof this is a new installation.
-        if any((Path(settings.data_dir) / name).exists() for name in ("bamdude.db", "bambuddy.db", "bambutrack.db")):
-            created_schema = False
-        await auto_migrate_sqlite_to_pg(engine, Base.metadata)
+        prepared = await preflight_sqlite_to_pg(engine)
 
-    # Ensure _migrations table
-    await _ensure_migrations_table(engine)
+    # An existing debt must spend its attempt before even create_all; an
+    # exhausted installation must not perform another automatic DDL pass.
+    try:
+        created_schema = False
+        if debt is None or is_sqlite():
+            async with engine.begin() as conn:
+                created_schema = not await conn.run_sync(lambda sync: inspect(sync).get_table_names())
+                await conn.run_sync(Base.metadata.create_all)
 
-    # Check if this is an existing install (has user tables with data)
-    is_existing = await _has_existing_data(engine)
-    if is_existing:
-        await _bootstrap_existing(engine)
+        # Auto-migrate SQLite → PostgreSQL if PG is empty and local SQLite exists
+        if not is_sqlite() and debt is None:
+            from backend.app.core.db_portable import auto_migrate_sqlite_to_pg
 
-    # Run all pending migrations sequentially
-    await _run_pending(engine, session_factory)
+            # A failed or declined import is not proof this is a new installation.
+            if any(
+                (Path(settings.data_dir) / name).exists() for name in ("bamdude.db", "bambuddy.db", "bambutrack.db")
+            ):
+                created_schema = False
+            await auto_migrate_sqlite_to_pg(engine, Base.metadata, prepared=prepared or False)
+    except Exception as exc:
+        if debt is None:
+            raise
+        logger.error("Import schema bootstrap failed (%s)", type(exc).__name__)
+        try:
+            async with engine.begin() as conn:
+                await fail_attempt(conn, debt, "bootstrap_failure")
+        except Exception:
+            logger.warning("Repair bootstrap failed; durable ownership remains pending")
+        raise SchemaRepairPending("bootstrap_failure") from None
+    finally:
+        if prepared is not None:
+            from backend.app.core.db_portable import _file_work
+
+            await _file_work(prepared.close)
+
+    # Spend a durable attempt BEFORE pending migrations as well as conform.
+    # A killed child cannot refund it; an ordinary boot has no such debt.
+    if debt is None:
+        debt = await claim(engine, Base.metadata)
+    try:
+        await _ensure_migrations_table(engine)
+        if await _has_existing_data(engine):
+            await _bootstrap_existing(engine)
+        await _run_pending(engine, session_factory)
+    except Exception:
+        if debt is None:
+            raise
+        try:
+            async with engine.begin() as conn:
+                await fail_attempt(conn, debt, "migration_failure")
+        except Exception:
+            logger.warning("Repair attempt failed; durable ownership remains pending")
+        raise SchemaRepairPending("migration_failure") from None
 
     # A SQLite file imported this boot arrived at ITS migration level and the
     # chain has just brought it to the head; now add what the models declare
     # and no migration ever created. A no-op on every other boot.
-    if not is_sqlite():
+    if debt is not None or not is_sqlite():
         from backend.app.core.db_portable import conform_imported_schema
 
-        await conform_imported_schema(engine, Base.metadata)
+        await conform_imported_schema(engine, Base.metadata, debt=debt)
+    # Focused residual retry only. Do not reconcile a running native schema
+    # against live models on each startup.
+    await retry_residuals(engine, Base.metadata)
 
     # Every boot, not once, and on every engine: the FILE is what matters, and a
     # PostgreSQL install with a stray bambuddy.db in its data directory deserves

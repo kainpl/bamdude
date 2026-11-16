@@ -319,13 +319,16 @@ def test_autoqueue_waiting_projection_and_notification_lifecycle(tmp_path):
     assert result.returncode == 0, result.stdout[-20000:] + result.stderr[-4000:]
 
 
-def _wipe(url: str) -> None:
+def _wipe(url: str, *, all_objects=False) -> None:
     psycopg = pytest.importorskip("asyncpg", reason="asyncpg is required to talk to PostgreSQL")
     import asyncio
 
     async def go():
         conn = await psycopg.connect(url, timeout=20)
         try:
+            if all_objects:
+                await conn.execute("DROP SCHEMA public CASCADE; CREATE SCHEMA public")
+                return
             await conn.execute(
                 "DO $$ DECLARE r RECORD; BEGIN "
                 "FOR r IN (SELECT tablename FROM pg_tables WHERE schemaname='public') LOOP "
@@ -356,6 +359,91 @@ def _run(mode: str, data_dir: Path, url: str | None, *extra: str) -> dict:
     if proc.returncode != 0:
         pytest.fail(f"scenario {mode!r} failed:\n{proc.stdout[-3000:]}\n{proc.stderr[-3000:]}")
     return json.loads(proc.stdout.strip().splitlines()[-1])
+
+
+@pytest.fixture(scope="module")
+def g02_schema_reference(tmp_path_factory):
+    from backend.app.core.pg_schema_contract import retained_pairs
+
+    url = _pg_url()
+    _wipe(url, all_objects=True)
+    directory = tmp_path_factory.mktemp("g02_reference")
+    reference = _run("g02_schema:fresh", directory, url)
+    (directory / "fresh.json").write_text(json.dumps(reference, indent=2))
+    accepted = retained_pairs()
+    return reference, accepted
+
+
+@pytest.fixture(scope="module")
+def d4_fresh_verified(tmp_path_factory):
+    """Always run fresh before the historical population gate, once per module."""
+    tmp_path = tmp_path_factory.mktemp("d4_fresh")
+    url = _pg_url()
+    _wipe(url, all_objects=True)
+    result = _run("g02_schema:d4_model_fresh", tmp_path, url)
+    (tmp_path / "d4-model-fresh.json").write_text(json.dumps(result, indent=2))
+    assert result["expected_tables"] > 100, result
+    assert result["differences"] == [], result
+    assert result["residuals"] == {}, result
+    return result
+
+
+def test_d4_fresh_model_plan_has_no_accepted_drift_or_residual(d4_fresh_verified):
+    assert d4_fresh_verified["differences"] == []
+
+
+@pytest.mark.timeout(300)
+@pytest.mark.parametrize(
+    "case",
+    ["v042", "v051", "v061", "pre075", "pre144", "repair", "retry043", "retry071", "retry221", "deletes", "head_v061"],
+)
+def test_d4_historical_population_clears_full_durable_debt(tmp_path, case, d4_fresh_verified):
+    url = _pg_url()
+    _wipe(url, all_objects=True)
+    if case == "head_v061":
+        _run("g02_schema:prepare_head_v061", tmp_path / case, None)
+    mode = case if case in ("repair", "deletes", "head_v061") or case.startswith("retry") else "import:" + case
+    result = _run("g02_schema:d4:" + mode, tmp_path / case, url)
+    (tmp_path / ("d4-" + case + ".json")).write_text(json.dumps(result, indent=2))
+    assert result["debt"] is None and len(result["phases"]) == 7
+
+
+@pytest.mark.timeout(120)
+@pytest.mark.parametrize(
+    "case",
+    [
+        "v042",
+        "v051",
+        "v061",
+        "pre075",
+        "pre144",
+        "repair",
+        "retry043",
+        "retry071",
+        "retry221",
+        "deletes",
+        "head_v061",
+        "head_fresh",
+        "head_fresh_affected",
+    ],
+)
+def test_g02_historical_schema_and_repair(tmp_path, case, g02_schema_reference):
+    """Addressed CI leg: real historical producers, exact drift, repeat/no-op."""
+    from backend.tests.integration.pg_schema_oracle import unexpected
+
+    reference, accepted = g02_schema_reference
+    url = _pg_url()
+    _wipe(url, all_objects=True)
+    if case.startswith("head_"):
+        prepared = _run("g02_schema:prepare_" + case, tmp_path / case, None)
+        assert prepared["source_level"] >= 228 and prepared["has_b_marker"]
+        (tmp_path / (case + "-source.json")).write_text(json.dumps(prepared, indent=2))
+    mode = case if case in ("repair", "deletes") or case.startswith(("retry", "head_")) else "import:" + case
+    actual = _run("g02_schema:" + mode, tmp_path / case, url)
+    differences = unexpected(reference, actual, accepted)
+    (tmp_path / (case + ".json")).write_text(json.dumps(actual, indent=2))
+    (tmp_path / (case + "-differences.json")).write_text(json.dumps(differences, indent=2))
+    assert not differences, (case, differences)
 
 
 class TestPrintStateRecovery:

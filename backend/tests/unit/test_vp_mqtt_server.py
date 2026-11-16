@@ -474,7 +474,7 @@ class TestHandleClientTCPKeepaliveTuning:
         platform can be diagnosed from a support bundle. Inspecting the
         source keeps this pinned without spinning up a real socket in
         the unit test (that's covered separately by integration)."""
-        source = inspect.getsource(SimpleMQTTServer._handle_client)
+        source = inspect.getsource(SimpleMQTTServer._owned_handle_client)
         for name in ("TCP_KEEPIDLE", "TCP_KEEPINTVL", "TCP_KEEPCNT"):
             assert name in source, (
                 f"_handle_client must reference {name} so the Linux "
