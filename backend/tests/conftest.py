@@ -450,6 +450,24 @@ def _current_credential_admission_bootstrap():
 
 
 @pytest.fixture(autouse=True)
+def _printer_file_admission_bootstrap():
+    """Every test starts with printer file admission open, as lifespan startup leaves it (G10 A).
+
+    A restore test closes it for good, as production does until the restart, and
+    every printer file test after it in the same process was refused as
+    ``restoring``. Reopen the way lifespan does: with an operation still in
+    flight it stays closed, so a leaked worker never gets a drain proof.
+    """
+    from backend.app.services.printer_file_lanes import printer_file_runtime
+
+    if printer_file_runtime.closed:
+        try:
+            printer_file_runtime.reopen()
+        except RuntimeError:
+            pass
+
+
+@pytest.fixture(autouse=True)
 async def _cancel_leaked_asyncio_tasks():
     """Cancel asyncio tasks that leaked past the test body.
 

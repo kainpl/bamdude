@@ -387,6 +387,76 @@ describe('FileManagerModal', () => {
     });
   });
 
+  describe('listing states (G10 A)', () => {
+    const renderModal = () =>
+      render(<FileManagerModal printerId={1} printerName="X1 Carbon" onClose={mockOnClose} />);
+
+    it('says the printer did not answer instead of showing an empty folder', async () => {
+      server.use(
+        http.get('/api/v1/printers/:id/files', () =>
+          HttpResponse.json({ files: [], status: 'unavailable', stale: false, reason: 'timeout' })
+        )
+      );
+      renderModal();
+      await waitFor(() => {
+        expect(screen.getByTestId('printer-files-listing-state')).toHaveTextContent(
+          "The printer's file service did not answer"
+        );
+      });
+      expect(screen.queryByText('No files in this directory')).not.toBeInTheDocument();
+    });
+
+    it('treats a failed request as unavailable, not empty', async () => {
+      server.use(http.get('/api/v1/printers/:id/files', () => new HttpResponse(null, { status: 500 })));
+      renderModal();
+      await waitFor(() => {
+        expect(screen.getByTestId('printer-files-listing-state')).toHaveTextContent(
+          "The printer's file service did not answer"
+        );
+      });
+    });
+
+    it('keeps the last listing on screen, marked stale, while a slow one runs', async () => {
+      server.use(
+        http.get('/api/v1/printers/:id/files', () =>
+          HttpResponse.json({ files: mockFiles, status: 'slow', stale: true, reason: 'in_progress' })
+        )
+      );
+      renderModal();
+      await waitFor(() => {
+        expect(screen.getByTestId('printer-files-stale')).toHaveTextContent(
+          'Showing the last complete listing of this folder.'
+        );
+      });
+      expect(screen.getByText(mockFiles[0].name)).toBeInTheDocument();
+    });
+
+    it('explains that the file channel is busy when a listing is slow and nothing is known yet', async () => {
+      server.use(
+        http.get('/api/v1/printers/:id/files', () =>
+          HttpResponse.json({ files: [], status: 'slow', stale: false, reason: 'in_progress' })
+        )
+      );
+      renderModal();
+      await waitFor(() => {
+        expect(screen.getByTestId('printer-files-listing-state')).toHaveTextContent('one transfer at a time');
+      });
+    });
+
+    it.each([
+      ['unreadable', 'The printer refused to list this folder.'],
+      ['missing', 'This folder is not on the printer.'],
+    ])('names a %s folder for what it is', async (status, text) => {
+      server.use(
+        http.get('/api/v1/printers/:id/files', () => HttpResponse.json({ files: [], status, stale: false }))
+      );
+      renderModal();
+      await waitFor(() => {
+        expect(screen.getByTestId('printer-files-listing-state')).toHaveTextContent(text);
+      });
+    });
+  });
+
   describe('empty state', () => {
     it('shows empty message when directory has no files', async () => {
       server.use(

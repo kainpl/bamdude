@@ -1303,6 +1303,9 @@ export interface AirductFan {
 /** Printer storage: what exists, what the browser opens, where a print may go. */
 export type PrinterStorage = 'external' | 'internal';
 
+/** How much a printer listing proves: see GET /printers/{id}/files. */
+export type PrinterListingStatus = 'complete' | 'missing' | 'unreadable' | 'unavailable' | 'slow';
+
 /** The two catalogues internal storage serves. ⚠️ On the card these are
  *  directories, not catalogues — there the path says which is meant. */
 export type PrinterFileType = 'model' | 'timelapse';
@@ -11167,12 +11170,19 @@ export const api = {
       path: string;
       storage: PrinterStorage;
       type: PrinterFileType;
+      // What the listing proves (G10 A). Absent from an older server, where every
+      // answer reads as complete.
+      status?: PrinterListingStatus;
+      // ``files`` is the last complete listing, shown while the current one is not.
+      stale?: boolean;
+      reason?: string | null;
       files: Array<{
         name: string;
         is_directory: boolean;
         size: number;
         path: string;
         mtime?: string;
+        mtime_quality?: string;
       }>;
     }>(
       `/printers/${printerId}/files?path=${encodeURIComponent(path)}${storageParam(storage)}` +

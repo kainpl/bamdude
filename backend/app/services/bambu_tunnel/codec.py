@@ -73,23 +73,46 @@ def frame_kind(type_word: int) -> int:
     return (type_word >> 16) & 0xFF
 
 
-def split_envelope(payload: bytes) -> tuple[dict, bytes]:
-    """Split a payload into its JSON envelope and the binary tail.
+def split_envelope(payload: bytes, max_scan: int | None = None) -> tuple[dict, bytes]:
+    """Split a payload into its JSON envelope and the binary tail (a copy of it).
+
+    See :func:`split_envelope_view`, which this wraps for callers that want bytes.
+    """
+    envelope, body = split_envelope_view(payload, max_scan)
+    return envelope, bytes(body)
+
+
+class EnvelopeTooLong(ValueError):
+    """A payload starts like an envelope but its JSON does not close within the scan bound."""
+
+
+def split_envelope_view(payload: bytes, max_scan: int | None = None) -> tuple[dict, memoryview]:
+    """Split a payload into its JSON envelope and a VIEW of the binary tail — no copy of the bytes.
 
     Scans bytes rather than decoding, because the tail is arbitrary binary and
     is routinely not valid UTF-8 (it is usually the head of a ZIP).
+
+    ``max_scan`` bounds the scan (G10 CR5): the envelope is a few hundred bytes,
+    and scanning a whole 8 MiB frame of binary for a brace that never comes cost
+    most of a second of the event loop (U0 probe T5). A payload that does not
+    even start with ``{`` has no envelope at all and is not scanned.
 
     ⚠️ A single ``\\n\\n`` after the envelope is framing and is dropped. Keeping
     it would put two stray bytes at the front of every file read back from the
     printer — a corruption that survives a download, an import and a thumbnail,
     and only shows up when something finally tries to open the archive.
     """
+    if not payload or payload[:1] != b"{":
+        raise ValueError("tunnel payload has no JSON envelope")
     depth = 0
     in_string = False
     escaped = False
     end = -1
+    limit = len(payload) if max_scan is None else min(len(payload), max_scan)
+    view = memoryview(payload)
 
-    for index, byte in enumerate(payload):
+    for index in range(limit):
+        byte = view[index]
         if in_string:
             if escaped:
                 escaped = False
@@ -109,10 +132,12 @@ def split_envelope(payload: bytes) -> tuple[dict, bytes]:
                 break
 
     if end < 0:
+        if limit < len(payload):
+            raise EnvelopeTooLong(f"tunnel envelope does not close within {limit} bytes")
         raise ValueError("tunnel payload has no complete JSON envelope")
 
-    body = payload[end:]
-    if body.startswith(ENVELOPE_SEPARATOR):
+    body = view[end:]
+    if body[: len(ENVELOPE_SEPARATOR)] == ENVELOPE_SEPARATOR:
         body = body[len(ENVELOPE_SEPARATOR) :]
 
-    return json.loads(payload[:end].decode("utf-8")), body
+    return json.loads(bytes(view[:end]).decode("utf-8")), body

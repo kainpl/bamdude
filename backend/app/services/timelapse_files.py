@@ -15,7 +15,9 @@ Over the tunnel they are a *catalogue* asked for by name, rooted at
 
 from __future__ import annotations
 
+import hashlib
 import logging
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -36,15 +38,45 @@ INTERNAL_TIMELAPSE_ROOT = "/userdata/media/timelapse/"
 # answered", and a baseline recorded from the second is not evidence of anything.
 _listing_answered: dict[int, bool] = {}
 
+# Automatic scans of a card whose file service did not let us connect wait
+# before they knock again (upstream 36991dadc, G10 spec r4 §5.2): per endpoint,
+# 30 s doubling to 5 min. A manual scan is never held back, and any answer from
+# the card — or a changed address or access code, or a restart — starts over.
+_BACKOFF_FIRST = 30.0
+_BACKOFF_MAX = 300.0
+_backoff: dict[str, tuple[float, float]] = {}
+
+
+def _endpoint(printer) -> str:
+    code = getattr(printer, "access_code", "") or ""
+    return f"{printer.ip_address}|{hashlib.sha256(code.encode('utf-8')).hexdigest()[:12]}"
+
+
+def _held_back(printer) -> bool:
+    entry = _backoff.get(_endpoint(printer))
+    return entry is not None and time.monotonic() < entry[0]
+
+
+def _note_unreachable(printer) -> None:
+    key = _endpoint(printer)
+    previous = _backoff.get(key)
+    step = _BACKOFF_FIRST if previous is None else min(previous[1] * 2, _BACKOFF_MAX)
+    _backoff[key] = (time.monotonic() + step, step)
+
+
+def _note_answered(printer) -> None:
+    _backoff.pop(_endpoint(printer), None)
+
 
 def last_listing_answered(printer_id: int) -> bool:
     """Whether the last :func:`list_timelapse_videos` for *printer_id* heard from every medium it asked.
 
-    False when the card did not answer, or when the internal catalogue was
-    needed and could not be read. A printer never listed counts as answered —
-    there is nothing to distrust.
+    False when the card did not answer completely for every directory it was
+    asked (a 550 the parent listing cannot settle counts as no answer), when the
+    internal catalogue was needed and could not be read, and for a printer never
+    listed: nothing has been heard from it (G10 CR2).
     """
-    return _listing_answered.get(printer_id, True)
+    return _listing_answered.get(printer_id, False)
 
 
 def _videos_only(entries: list[dict]) -> list[dict]:
@@ -66,31 +98,41 @@ def _supports_internal_timelapse(printer) -> bool:
     return bool(support.get("internal_timelapse"))
 
 
-async def list_timelapse_videos(printer) -> tuple[list[dict], str | None]:
+async def list_timelapse_videos(printer, *, automatic: bool = False) -> tuple[list[dict], str | None]:
     """Every recording on the printer, from whichever medium has them.
 
     Returns ``(videos, source)`` where ``source`` is the directory the files
     came from, or ``"internal"`` for the tunnel catalogue. ``([], None)`` when
     there are none — which is an ordinary answer, not a failure — or when the
     printer did not answer; :func:`last_listing_answered` tells the two apart.
+
+    ``automatic`` — a scan nobody asked for (the baseline at print start, the
+    retries after completion): it skips a card that refused its last connect
+    for a bounded while, and the internal catalogue is still read.
     """
-    videos, source, answered = await _list_both_media(printer)
+    videos, source, answered = await _list_both_media(printer, automatic=automatic)
     _listing_answered[printer.id] = answered
     return videos, source
 
 
-async def _list_both_media(printer) -> tuple[list[dict], str | None, bool]:
+async def _list_both_media(printer, *, automatic: bool = False) -> tuple[list[dict], str | None, bool]:
     """``(videos, source, answered)`` — the listing, and whether every medium asked replied."""
-    from backend.app.services.bambu_ftp import list_files_checked_async
+    from backend.app.services.bambu_ftp import BambuFTPClient, list_files_checked_async
 
     card_answered = True
-    for directory in FTP_TIMELAPSE_DIRS:
+    card_skipped = automatic and _held_back(printer)
+    if card_skipped:
+        logger.info("[TIMELAPSE] %s refused its last FTP connect — the automatic scan skips the card", printer.name)
+        card_answered = False
+    started = time.monotonic()
+    for directory in () if card_skipped else FTP_TIMELAPSE_DIRS:
         try:
             found, answered = await list_files_checked_async(
                 printer.ip_address, printer.access_code, directory, printer_model=printer.model
             )
-        except Exception as exc:  # noqa: BLE001 — a missing directory is normal
+        except Exception as exc:  # noqa: BLE001 — an error is no answer (G10 CR2), not an empty directory
             logger.debug("[TIMELAPSE] %s failed on %s: %s", directory, printer.name, exc)
+            card_answered = False
             continue
         if not answered:
             # ⚠️ Stop the whole FTP leg, not just this directory. The printer's
@@ -103,10 +145,15 @@ async def _list_both_media(printer) -> tuple[list[dict], str | None, bool]:
                 printer.name,
             )
             card_answered = False
+            if BambuFTPClient.connect_failure_since(printer.ip_address, started):
+                _note_unreachable(printer)
             break
         videos = _videos_only(found)
         if videos:
-            return videos, directory, True
+            _note_answered(printer)
+            return videos, directory, card_answered
+    if card_answered:
+        _note_answered(printer)
 
     # Nothing on the card. On a machine that records internally there is a
     # whole catalogue FTP cannot see — this is the gap that left an archive

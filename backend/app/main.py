@@ -5656,9 +5656,11 @@ async def _on_print_start_impl(printer_id: int, data: dict):
         # session for a file already on its way and attaches on top of ours,
         # cutting a second archive directory and orphaning the first.
         archive_identity = archive.recovery_identity
-        async with archive_download_retry.claim(archive.id):
+        async with archive_download_retry.claim(archive.id) as claimed:
             try:
-                download_result = await try_download_3mf(printer, subtask_name, filename, temp_dir)
+                # Another download of this archive is already on its way: it
+                # attaches the file. Neither fetch nor mark it unavailable here.
+                download_result = await try_download_3mf(printer, subtask_name, filename, temp_dir) if claimed else None
                 if download_result:
                     temp_path, downloaded_filename = download_result
                 pinned = await db.get(PrintArchive, archive.id, populate_existing=True)
@@ -5817,7 +5819,12 @@ async def _on_print_start_impl(printer_id: int, data: dict):
                                     await db.commit()
 
                 # File identity cannot change the execution decision made at start.
-                if not downloaded_filename or not temp_path:
+                if not claimed:
+                    logger.info(
+                        "3MF for archive %s is already being fetched by another trigger; it attaches the file",
+                        archive.id,
+                    )
+                elif not downloaded_filename or not temp_path:
                     # The row already exists and is fully wired up — what is
                     # missing is only the file. Record that the attempt was
                     # made and failed, which is what Archives renders as "3MF
@@ -5952,7 +5959,7 @@ async def _capture_timelapse_baseline_at_start(printer, printer_id: int, logger:
     baseline. Shared by ``on_print_start`` and the restart-recovery hook
     ``on_print_running_observed`` (#1485 follow-up)."""
     try:
-        baseline_files, _ = await _list_timelapse_videos(printer)
+        baseline_files, _ = await _list_timelapse_videos(printer, automatic=True)
         _timelapse_baselines[printer_id] = {f.get("name", "") for f in baseline_files}
         if _last_listing_answered(printer.id):
             _untrusted_timelapse_baselines.discard(printer_id)
@@ -6053,7 +6060,7 @@ async def _scan_for_timelapse_with_retries(
                     logger.warning("[TIMELAPSE] Printer not found for archive %s, aborting", archive_id)
                     return
 
-                baseline_files, _ = await _list_timelapse_videos(printer)
+                baseline_files, _ = await _list_timelapse_videos(printer, automatic=True)
                 baseline_names = {f.get("name", "") for f in baseline_files}
                 if not _last_listing_answered(printer.id):
                     baseline_trusted = False
@@ -6119,7 +6126,7 @@ async def _scan_for_timelapse_with_retries(
                     return
 
             # I/O phase (no DB connection held): FTP list + download.
-            video_files, found_path = await _list_timelapse_videos(printer)
+            video_files, found_path = await _list_timelapse_videos(printer, automatic=True)
 
             if not video_files:
                 logger.info("[TIMELAPSE] Attempt %s: No video files found, will retry", attempt)
@@ -6199,7 +6206,7 @@ async def _scan_for_timelapse_with_retries(
                     return
 
             # I/O phase (no DB connection held): FTP list + download.
-            video_files, found_path = await _list_timelapse_videos(printer)
+            video_files, found_path = await _list_timelapse_videos(printer, automatic=True)
             for f in video_files:
                 fname = f.get("name", "")
                 if base_name.lower() in fname.lower():
@@ -7005,7 +7012,10 @@ async def _download_for_adopted_print(printer_id: int, archive_id: int, logger, 
     from backend.app.services.archive_download_retry import archive_download_retry
 
     try:
-        async with archive_download_retry.claim(archive_id):
+        async with archive_download_retry.claim(archive_id) as claimed:
+            if not claimed:
+                # Another trigger is fetching this archive's 3MF right now (G10 A7).
+                return
             async with async_session() as db:
                 archive = await db.get(PrintArchive, archive_id)
                 if (
@@ -12505,6 +12515,14 @@ async def _application_lifespan(app: FastAPI):
         await start_library_file_runtime(Path(app_settings.base_dir))
     except Exception:
         logging.getLogger(__name__).exception("Library file service unavailable at startup")
+    from backend.app.services.printer_file_lanes import printer_file_runtime
+
+    # Only lifespan startup reopens printer file admission (a refused restore drain
+    # left it closed on purpose).
+    try:
+        printer_file_runtime.reopen()
+    except RuntimeError:
+        logging.getLogger(__name__).exception("Printer file operations still running at startup")
     from backend.app.services.part_render_scheduler import start_part_render, stop_part_render
 
     try:
@@ -12689,6 +12707,12 @@ async def _application_lifespan(app: FastAPI):
     from backend.app.services.library_scan import cancel_running_scans
 
     cancel_running_scans()
+    # Printer file workers own sessions until their threads end; a drain that is not
+    # proven keeps admission closed and is logged, never treated as done (G10 A).
+    if not await printer_file_runtime.quiesce(10):
+        logging.getLogger(__name__).warning(
+            "Printer file operations did not end before shutdown; admission stays closed"
+        )
     printer_manager.disconnect_all()
     await stop_library_file_runtime()
     await stop_assembly_runtime()

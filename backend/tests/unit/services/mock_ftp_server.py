@@ -700,7 +700,11 @@ class _ControlSession:
         target = self._normalize(argument or "/")
         local = self._local(argument or "/")
         if local is None or not local.is_dir():
-            self._respond(550, f"{argument}: No such file or directory.")
+            # The printer's own words, the same for a missing and a refused
+            # directory (vsftpd; field capture in the vault's
+            # bambu-internal-external-storage-ftp note). A friendlier invented
+            # text would let a client "recognise" missing from 550 — G10 CR2.
+            self._respond(550, "Failed to change directory.")
             return
         self._cwd = target
         self._respond(250, "Directory successfully changed.")
@@ -792,7 +796,7 @@ class _ControlSession:
     def _cmd_retr(self, argument: str) -> None:
         local = self._local(argument)
         if local is None or not local.is_file():
-            self._respond(550, f"{argument}: No such file or directory.")
+            self._respond(550, "Failed to open file.")  # vsftpd: missing and forbidden alike
             self._close_pasv()
             return
         try:

@@ -70,7 +70,7 @@ class ArchiveDownloadRetryService:
         return archive_id in self._in_progress
 
     @asynccontextmanager
-    async def claim(self, archive_id: int) -> AsyncIterator[None]:
+    async def claim(self, archive_id: int) -> AsyncIterator[bool]:
         """Hold the in-progress guard for a download this service isn't running.
 
         ``on_print_start`` creates the archive row before it fetches the 3MF,
@@ -88,13 +88,17 @@ class ArchiveDownloadRetryService:
 
         Deliberately in-memory. A crash mid-download leaves nothing behind,
         which is the correct state — the startup sweep should pick that row up.
+
+        ⚠️ Yields whether the claim is THIS caller's (G10 A7). A caller that got
+        ``False`` must not download or attach — another download of the same
+        archive is already on its way, and a second would attach on top of it.
         """
         async with self._lock:
             mine = archive_id not in self._in_progress
             if mine:
                 self._in_progress.add(archive_id)
         try:
-            yield
+            yield mine
         finally:
             # Only release what we took: releasing on behalf of whoever really
             # holds it would reopen the very window this guard closes.

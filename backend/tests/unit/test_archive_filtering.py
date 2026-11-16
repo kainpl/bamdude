@@ -322,7 +322,7 @@ class TestScanForTimelapseWithRetries:
 
         call_count = 0
 
-        async def mock_list_mp4s(printer):
+        async def mock_list_mp4s(printer, **_kwargs):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
@@ -371,7 +371,7 @@ class TestScanForTimelapseWithRetries:
         ]
 
         # Always return same files - no new file ever appears
-        async def mock_list_mp4s(printer):
+        async def mock_list_mp4s(printer, **_kwargs):
             return baseline_files, "/timelapse"
 
         mock_service = MagicMock()
@@ -417,7 +417,7 @@ class TestScanForTimelapseWithRetries:
             },
         ]
 
-        async def mock_list_mp4s(printer):
+        async def mock_list_mp4s(printer, **_kwargs):
             return baseline_files, "/timelapse"
 
         mock_service = MagicMock()
@@ -505,7 +505,7 @@ class TestScanForTimelapseWithRetries:
         mock_archive, mock_printer = self._make_mocks(archive_filename="test.gcode.3mf")
 
         # Never find any files
-        async def mock_list_mp4s(printer):
+        async def mock_list_mp4s(printer, **_kwargs):
             return [], None
 
         mock_service = MagicMock()
@@ -610,7 +610,7 @@ class TestListTimelapseVideosAvi:
 
         call_count = 0
 
-        async def mock_list_videos(printer):
+        async def mock_list_videos(printer, **_kwargs):
             nonlocal call_count
             call_count += 1
             if call_count == 1:

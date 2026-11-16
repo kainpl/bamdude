@@ -2179,19 +2179,37 @@ async def list_printer_files(
     type: str | None = None,
     _=RequirePermission(Permission.PRINTERS_FILES),
 ):
-    """List files on the printer at the specified path."""
+    """List files on the printer at the specified path.
+
+    ``status`` says what the listing proves (G10 A, M03): ``complete``,
+    ``missing`` (proven absent), ``unreadable`` (the printer refused — missing
+    or forbidden alike), ``unavailable`` or ``slow`` (still running; a refresh
+    joins it). ``stale`` marks ``files`` as the last complete listing shown in
+    the meantime. ``files`` stays the list every older client reads.
+    """
+    from backend.app.services.printer_files.listing import listing_coalescer
+
     printer = await _load_printer_or_404(printer_id)
     resolved = _resolve_storage(storage, printer.model, printer_manager.get_status(printer_id))
     file_type = _resolve_file_type(type)
 
-    files = await transport_for(printer, resolved).list_files(path, file_type=file_type)
+    answer = await listing_coalescer.list(
+        printer, resolved, path, file_type, transport_for(printer, resolved), wait=_LISTING_WAIT_SECONDS
+    )
 
     return {
         "path": path,
         "storage": resolved,
         "type": file_type,
-        "files": [entry.as_dict() for entry in files],
+        "status": answer.status,
+        "stale": answer.stale,
+        "reason": answer.reason,
+        "files": [entry.as_dict() for entry in answer.files],
     }
+
+
+#: How long one request waits for a listing before it answers "slow" (the listing goes on).
+_LISTING_WAIT_SECONDS = 20.0
 
 
 @router.get("/{printer_id}/files/download")

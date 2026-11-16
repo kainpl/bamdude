@@ -307,9 +307,17 @@ async def test_internal_storage_names_the_entry_it_read(tmp_path, monkeypatch):
     from unittest.mock import AsyncMock
 
     from backend.app.services import archive_download
+    from backend.app.services.printer_files.base import TransferOutcome
 
     entries = [SimpleNamespace(name="lamp.swap.gcode.3mf", path="/lamp.swap.gcode.3mf")]
-    transport = SimpleNamespace(list_files=AsyncMock(return_value=entries), read_bytes=AsyncMock(return_value=b"PK"))
+
+    async def download_to_file(path, destination, **kwargs):
+        # Internal recovery streams to disk (G10 A7); this test only needs the bytes to land.
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(b"PK")
+        return TransferOutcome("completed", 2, "length_verified")
+
+    transport = SimpleNamespace(list_files=AsyncMock(return_value=entries), download_to_file=download_to_file)
     monkeypatch.setattr(
         "backend.app.utils.printer_storage.storage_capability_for", lambda *a: {"can_browse_internal": True}
     )
