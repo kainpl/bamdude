@@ -240,7 +240,7 @@ async def _repair(conn, *, check_fts_data):
     await ensure_archive_fts(conn, check_data=check_fts_data)
     if residuals:
         # Count-only, exact object names; never log row data, grants or paths.
-        logger.warning("m228 PG residuals before any import-only conform: %s", residuals)
+        logger.warning("m231 PG residuals before any import-only conform: %s", residuals)
 
 
 async def upgrade(conn):

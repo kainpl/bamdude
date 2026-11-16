@@ -40,7 +40,7 @@ async def ensure_archive_fts(conn, *, check_data=False):
         await conn.execute(text("ALTER TABLE public.print_archives ADD COLUMN search_vector tsvector"))
         dirty = True
     elif column != "tsvector":
-        raise RuntimeError("m228: unexpected print_archives.search_vector type")
+        raise RuntimeError("m231: unexpected print_archives.search_vector type")
 
     function = (
         (
@@ -123,7 +123,7 @@ async def ensure_archive_fts(conn, *, check_data=False):
     )
     expected = "CREATE INDEX idx_archives_search_vector ON public.print_archives USING gin (search_vector)"
     if index is not None and index["definition"] != expected:
-        raise RuntimeError("m228: unexpected idx_archives_search_vector definition")
+        raise RuntimeError("m231: unexpected idx_archives_search_vector definition")
     if index is not None and (not index["indisvalid"] or not index["indisready"]):
         await conn.execute(text("DROP INDEX public.idx_archives_search_vector"))
         index = None

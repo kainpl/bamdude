@@ -2268,8 +2268,8 @@ class GitRestoreService:
         if outcome.unlinked:
             tally.note(
                 "spoolUsageUnlinked",
-                f"{outcome.unlinked} usage record(s) restored without their print-history link — "
-                "select Print archives alongside Spool inventory to keep it.",
+                f"{outcome.unlinked} usage record(s) restored without a proven print-history link — "
+                "select both categories and retain the same execution identity.",
                 count=outcome.unlinked,
             )
 

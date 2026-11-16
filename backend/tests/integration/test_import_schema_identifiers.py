@@ -41,6 +41,8 @@ async def test_real_import_repairs_fk_with_literal_identifiers(tmp_path, monkeyp
             f"CREATE TABLE {quoted(child)} (id INTEGER PRIMARY KEY, {quoted(column)} INTEGER, "
             f"CONSTRAINT {quoted(constraint)} FOREIGN KEY ({quoted(column)}) "
             f"REFERENCES {quoted(parent)} ({quoted(key)})" + (" ON DELETE SET NULL" if set_null else "") + ");"
+            "CREATE TABLE _migrations (version INTEGER PRIMARY KEY, name TEXT, applied_at TIMESTAMP);"
+            "INSERT INTO _migrations VALUES (41, 'fixture', CURRENT_TIMESTAMP);"
             "CREATE TABLE sentinel (value TEXT); INSERT INTO sentinel VALUES ('untouched');"
             f"INSERT INTO {quoted(parent)} VALUES (1);"
             f"INSERT INTO {quoted(child)} VALUES (1, 1), (2, 99), (3, NULL);"
