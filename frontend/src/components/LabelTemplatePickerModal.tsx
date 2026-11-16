@@ -35,11 +35,6 @@ interface LabelTemplatePickerModalProps {
   spoolDisplayTemplate?: string;
 }
 
-/** ⚠️ The same slack ``label_template.py`` allows, and it has to be: a design
- *  drawn to exactly the cell size is a design the backend accepts and this
- *  dialog must not grey out. */
-const FIT_TOLERANCE_MM = 0.5;
-
 /** How a batch is going out. ``driver`` is the OS print driver — a PDF, which
  *  may be one label per page or a whole sheet of them, and may be in colour.
  *  ``device`` is a thermal printer on somebody's desk, reached through the
@@ -226,17 +221,16 @@ export function LabelTemplatePickerModal({
    * different stock loaded, so "does not fit" is a fact about a pair — showing
    * it on the design alone would be wrong as soon as there are two machines.
    *
-   * ⚠️ Only LARGER is refused, exactly as ``assert_fits`` does on the server. A
-   * design smaller than the stock prints fine with a margin, and greying it out
-   * would forbid something that works. A printer that has not reported its
-   * cassette is not judged at all — it cannot rule on what it was never told.
+   * ⚠️ The SERVER says which designs fit (``fitting_design_ids``); nothing is
+   * compared here. This dialog once carried its own half millimetre, the print
+   * a different one, and it offered what the print then refused. A printer
+   * that has not reported its cassette answers ``null`` and is not judged at
+   * all — it cannot rule on what it was never told.
    */
   const cassetteComplaint = (device: LabelDevice): string | null => {
     const design = designs.find((row) => row.id === deviceTemplateId);
-    if (!design || !device.cassette_width_mm || !device.cassette_height_mm) return null;
-    const fits =
-      design.width_mm <= device.cassette_width_mm + FIT_TOLERANCE_MM &&
-      design.height_mm <= device.cassette_height_mm + FIT_TOLERANCE_MM;
+    if (!design || device.fitting_design_ids === null) return null;
+    const fits = device.fitting_design_ids.includes(design.id);
     return fits
       ? null
       : t('inventory.labels.doesNotFitCassette', {
@@ -252,12 +246,11 @@ export function LabelTemplatePickerModal({
    * ⚠️ Said here as well as refused there. A design prints at its own size or
    * not at all — fractional scaling of a label destroys bar ratios silently —
    * so the honest answer is a sentence, and it is cheaper to read it before
-   * clicking than after. */
-  const cellComplaint = (design: { width_mm: number; height_mm: number }): string | null => {
+   * clicking than after. Whether it fits is the server's answer, read off the
+   * sheet — the same function a print is refused by. */
+  const cellComplaint = (design: { id: number; width_mm: number; height_mm: number }): string | null => {
     if (!sheet) return null;
-    const fits =
-      design.width_mm <= sheet.cell_width_mm + FIT_TOLERANCE_MM &&
-      design.height_mm <= sheet.cell_height_mm + FIT_TOLERANCE_MM;
+    const fits = sheet.fitting_design_ids.includes(design.id);
     return fits
       ? null
       : t('inventory.labels.doesNotFitCell', {

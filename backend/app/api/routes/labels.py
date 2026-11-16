@@ -55,7 +55,7 @@ from backend.app.services.label_context import spool_context, spoolman_context
 from backend.app.services.label_gate import checked_design, checked_sheet, design_of, draw, sheet_of
 from backend.app.services.label_renderer import render_template_pdf, render_template_sheet_pdf
 from backend.app.services.label_seed import BUILTIN_SHEETS, BUILTIN_TEMPLATES, sheet_cell_template
-from backend.app.services.label_template import LabelSheetSpec, LabelTemplateSpec, resolve
+from backend.app.services.label_template import LabelSheetSpec, LabelTemplateSpec, fits_within, resolve
 from backend.app.services.spoolman import get_spoolman_client
 from backend.app.utils.http import build_content_disposition
 
@@ -166,7 +166,7 @@ async def _resolve_design(db: AsyncSession, body: LabelRequest) -> tuple[LabelTe
         if sheet_row is None:
             raise HTTPException(404, f"Label sheet {body.sheet_id} not found")
         sheet = sheet_of(sheet_row)
-        if spec.width_mm > sheet.cell_width_mm + 1e-6 or spec.height_mm > sheet.cell_height_mm + 1e-6:
+        if not fits_within(spec.width_mm, spec.height_mm, sheet.cell_width_mm, sheet.cell_height_mm):
             raise HTTPException(
                 400,
                 f"'{spec.name}' is {spec.width_mm:g} × {spec.height_mm:g} mm and does not fit "

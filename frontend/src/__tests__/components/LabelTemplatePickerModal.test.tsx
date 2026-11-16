@@ -30,6 +30,9 @@ vi.mock('../../api/client', () => ({
     printSpoolLabels: vi.fn(),
     printSpoolmanSpoolLabels: vi.fn(),
     getSettings: vi.fn().mockResolvedValue({}),
+    // The dialog reads the preferences door; these tests set what it answers
+    // through ``getSettings``, so one stands in for the other.
+    getUiPreferences: vi.fn(),
     getAuthStatus: vi.fn().mockResolvedValue({ auth_enabled: false }),
     getLabelTemplates: vi.fn(),
     getLabelSheets: vi.fn(),
@@ -76,6 +79,9 @@ const AVERY = {
   gap_y_mm: 0,
   is_builtin: true,
   overflow: [],
+  // ⚠️ The server's answer, not this dialog's arithmetic: a 25.4mm cell holds
+  // none of the designs these tests draw.
+  fitting_design_ids: [] as number[],
 };
 
 /** A4 stock with roomier cells — 63.5 × 38.1mm holds the 40 × 30 design. */
@@ -88,6 +94,7 @@ const L7160 = {
   cell_width_mm: 63.5,
   cell_height_mm: 38.1,
   rows: 7,
+  fitting_design_ids: [7],
 };
 
 const DEVICE = {
@@ -99,6 +106,9 @@ const DEVICE = {
   printer_reachable: true,
   cassette_width_mm: 50,
   cassette_height_mm: 30,
+  // What the server says fits the loaded 50 × 30: the tests below name their
+  // designs 9, and the one drawn larger than the stock is left out by the test.
+  fitting_design_ids: [9],
 };
 
 const show = (over: Record<string, unknown> = {}) =>
@@ -132,6 +142,7 @@ beforeEach(() => {
   vi.mocked(api.getLabelSheets).mockResolvedValue([] as never);
   vi.mocked(api.getLabelDevices).mockResolvedValue([] as never);
   vi.mocked(api.getSettings).mockResolvedValue({} as never);
+  vi.mocked(api.getUiPreferences).mockImplementation((() => api.getSettings()) as never);
   Object.defineProperty(window.URL, 'createObjectURL', {
     value: vi.fn(() => 'blob:mock'),
     configurable: true,
@@ -270,6 +281,50 @@ describe('LabelTemplatePickerModal', () => {
     const option = screen.getByRole('option', { name: /Box label 40 × 30/ });
     expect(option).toBeDisabled();
     expect(option).toHaveTextContent(/prints at its own size or not at all/i);
+  });
+});
+
+describe('whether a design fits is the server\'s answer', () => {
+  // The dialog used to compare sizes itself, with its own half millimetre —
+  // against a print that allowed a millionth. It offered what the print
+  // refused. These pin that it no longer has an opinion.
+  it('offers a design the server says fits, whatever the sizes look like', async () => {
+    vi.mocked(api.getLabelTemplates).mockResolvedValue([design({ width_mm: 70 })] as never);
+    vi.mocked(api.getLabelSheets).mockResolvedValue([L7160] as never);
+    show();
+
+    await choose(PAPER, /Avery L7160/);
+    fireEvent.click(screen.getByRole('combobox', { name: DESIGN }));
+
+    expect(screen.getByRole('option', { name: /Box label 40 × 30/ })).not.toBeDisabled();
+  });
+
+  it('refuses one the server says does not, whatever the sizes look like', async () => {
+    vi.mocked(api.getLabelSheets).mockResolvedValue([{ ...L7160, fitting_design_ids: [] }] as never);
+    show();
+
+    await choose(PAPER, /Avery L7160/);
+    fireEvent.click(screen.getByRole('combobox', { name: DESIGN }));
+
+    expect(screen.getByRole('option', { name: /Box label 40 × 30/ })).toBeDisabled();
+  });
+
+  it('does not judge a printer that has not said what is loaded', async () => {
+    vi.mocked(api.getSettings).mockResolvedValue({ device_labels_enabled: true } as never);
+    vi.mocked(api.getLabelDevices).mockResolvedValue([
+      { ...DEVICE, cassette_width_mm: null, cassette_height_mm: null, fitting_design_ids: null },
+    ] as never);
+    vi.mocked(api.createLabelJobs).mockResolvedValue([{ id: 1 }] as never);
+    vi.mocked(api.getLabelTemplates).mockResolvedValue([
+      design({ id: 9, name: 'Roll 50 × 30', target: 'thermal' }),
+    ] as never);
+    show();
+
+    fireEvent.click(await screen.findByText(/On a label printer/i));
+    await choose(DESIGN, /Roll 50 × 30/);
+    fireEvent.click(screen.getByText('Niimbot B1'));
+
+    await waitFor(() => expect(api.createLabelJobs).toHaveBeenCalled());
   });
 });
 
@@ -430,6 +485,7 @@ describe('when a label printer is set up', () => {
     vi.mocked(api.getLabelTemplates).mockResolvedValue([
       design({ id: 9, name: 'Big roll', target: 'thermal', width_mm: 60, height_mm: 40 }),
     ] as never);
+    vi.mocked(api.getLabelDevices).mockResolvedValue([{ ...DEVICE, fitting_design_ids: [] }] as never);
     show();
 
     fireEvent.click(await screen.findByText(/On a label printer/i));

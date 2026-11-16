@@ -54,6 +54,8 @@ from backend.app.services.label_template import (
     LabelSheetSpec,
     LabelTemplateSpec,
     Placeholder,
+    fits_within,
+    fitting_ids,
     sheet_problems,
 )
 
@@ -119,7 +121,13 @@ async def list_placeholders(
     return list(PLACEHOLDERS)
 
 
-def _sheet_out(row: LabelSheet) -> LabelSheetOut:
+async def _design_sizes(db: AsyncSession) -> list[tuple[int, float, float]]:
+    """Every design as ``(id, width, height)`` — all "does it fit" needs."""
+    rows = await db.execute(select(LabelTemplate.id, LabelTemplate.width_mm, LabelTemplate.height_mm))
+    return [(row.id, row.width_mm, row.height_mm) for row in rows]
+
+
+def _sheet_out(row: LabelSheet, designs: list[tuple[int, float, float]]) -> LabelSheetOut:
     """One row as the editor sees it — including what does not fit.
 
     ⚠️ The overflow travels with every read, not only with a save. A geometry
@@ -142,6 +150,7 @@ def _sheet_out(row: LabelSheet) -> LabelSheetOut:
         gap_y_mm=row.gap_y_mm,
         is_builtin=row.builtin_key is not None,
         overflow=_overflow_of(row),
+        fitting_design_ids=fitting_ids(designs, row.cell_width_mm, row.cell_height_mm),
     )
 
 
@@ -191,7 +200,8 @@ async def list_sheets(
 ) -> list[LabelSheetOut]:
     """Paper geometries, each carrying whatever about it does not fit."""
     result = await db.execute(select(LabelSheet).order_by(LabelSheet.name))
-    return [_sheet_out(row) for row in result.scalars().all()]
+    designs = await _design_sizes(db)
+    return [_sheet_out(row, designs) for row in result.scalars().all()]
 
 
 @router.post("/sheets", response_model=LabelSheetOut, status_code=201)
@@ -206,7 +216,7 @@ async def create_sheet(
     db.add(row)
     await db.commit()
     await db.refresh(row)
-    return _sheet_out(row)
+    return _sheet_out(row, await _design_sizes(db))
 
 
 @router.put("/sheets/{sheet_id}", response_model=LabelSheetOut)
@@ -222,7 +232,7 @@ async def update_sheet(
         setattr(row, field, value)
     await db.commit()
     await db.refresh(row)
-    return _sheet_out(row)
+    return _sheet_out(row, await _design_sizes(db))
 
 
 @router.post("/sheets/{sheet_id}/duplicate", response_model=LabelSheetOut, status_code=201)
@@ -248,7 +258,7 @@ async def duplicate_sheet(
     db.add(copy)
     await db.commit()
     await db.refresh(copy)
-    return _sheet_out(copy)
+    return _sheet_out(copy, await _design_sizes(db))
 
 
 @router.delete("/sheets/{sheet_id}", status_code=204, response_model=None)
@@ -292,7 +302,7 @@ async def preview_sheet(
     context = example_context(deeplink_base=deeplink_base)
     pdf, warnings = await draw(render_template_sheet_pdf, spec, [context] * sheet.per_page, sheet)
 
-    if spec.width_mm > sheet.cell_width_mm or spec.height_mm > sheet.cell_height_mm:
+    if not fits_within(spec.width_mm, spec.height_mm, sheet.cell_width_mm, sheet.cell_height_mm):
         # ⚠️ Said rather than scaled. A design is printed at its own size or
         # refused — fractional scaling destroys bar ratios silently.
         warnings.append(

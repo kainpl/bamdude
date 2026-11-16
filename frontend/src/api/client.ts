@@ -8686,6 +8686,10 @@ export interface LabelSheet {
    *  read — a geometry can stop fitting without anyone editing it, by changing
    *  the paper under it. */
   overflow: string[];
+  /** The designs that fit one cell of this sheet, as the server judges it.
+   *  ⚠️ Read this; never compare sizes here. The rule and its slack live in one
+   *  backend function, which is also what a print is refused by. */
+  fitting_design_ids: number[];
 }
 
 /** A rendered preview plus whatever went wrong drawing it. */
@@ -8714,6 +8718,9 @@ export interface LabelDevice {
   /** Null when nobody has taught this barcode a size yet. */
   cassette_width_mm: number | null;
   cassette_height_mm: number | null;
+  /** The designs that fit the loaded stock, as the server judges it. Null when
+   *  the printer has not said what is loaded — it is then not judged at all. */
+  fitting_design_ids: number[] | null;
   /** 0 = the printer says it has none; null = it did not say. */
   paper_state: number | null;
   power_level: number | null;

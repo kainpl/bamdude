@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import math
 import re
+from collections.abc import Iterable
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field, model_validator
@@ -313,7 +314,36 @@ class LabelTemplateSpec(BaseModel):
 
 #: Paper is cut to a tolerance and so is the stock on it; a tenth of a
 #: millimetre over is a rounding artefact, not an overflow.
-_FIT_TOLERANCE_MM = 0.5
+#:
+#: ⚠️ **The one slack for every "does it fit"** — a grid on its page, a design
+#: in a cell, a design on the stock loaded in a desk printer. There used to be
+#: three for the cell alone (the dialog's half millimetre, the print's
+#: millionth, the preview's none), so the dialog offered what the print refused.
+FIT_TOLERANCE_MM = 0.5
+
+
+def fits_within(width_mm: float, height_mm: float, space_width_mm: float, space_height_mm: float) -> bool:
+    """Whether a design of this size goes into a space of that size.
+
+    ⚠️ The ONLY place this is decided. The print dialog does not repeat the
+    arithmetic — the sheet and device lists tell it which designs fit — so what
+    it offers and what a print accepts cannot drift apart again.
+
+    Only LARGER is refused: a design smaller than its space prints with a
+    margin, which is fine.
+    """
+    return width_mm <= space_width_mm + FIT_TOLERANCE_MM and height_mm <= space_height_mm + FIT_TOLERANCE_MM
+
+
+def fitting_ids(
+    designs: Iterable[tuple[int, float, float]], space_width_mm: float, space_height_mm: float
+) -> list[int]:
+    """The ids of the ``(id, width, height)`` designs that fit this space."""
+    return [
+        design_id
+        for design_id, width_mm, height_mm in designs
+        if fits_within(width_mm, height_mm, space_width_mm, space_height_mm)
+    ]
 
 
 class LabelSheetSpec(BaseModel):
@@ -494,11 +524,11 @@ def sheet_overflow(sheet: LabelSheetSpec) -> list[str]:
     problems: list[str] = []
 
     used_w = sheet.margin_left_mm + sheet.cols * sheet.cell_width_mm + (sheet.cols - 1) * sheet.gap_x_mm
-    if used_w > page_w + _FIT_TOLERANCE_MM:
+    if used_w > page_w + FIT_TOLERANCE_MM:
         problems.append(LABEL_GEOMETRY_MESSAGES["grid_wide"].format(f"{used_w:.1f}", sheet.page_size, f"{page_w:.1f}"))
 
     used_h = sheet.margin_top_mm + sheet.rows * sheet.cell_height_mm + (sheet.rows - 1) * sheet.gap_y_mm
-    if used_h > page_h + _FIT_TOLERANCE_MM:
+    if used_h > page_h + FIT_TOLERANCE_MM:
         problems.append(LABEL_GEOMETRY_MESSAGES["grid_high"].format(f"{used_h:.1f}", sheet.page_size, f"{page_h:.1f}"))
 
     return problems
@@ -537,6 +567,8 @@ __all__ = [
     "SwatchElement",
     "TextElement",
     "design_problems",
+    "fits_within",
+    "fitting_ids",
     "orientation",
     "picture_problems",
     "resolve",

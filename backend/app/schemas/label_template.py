@@ -100,6 +100,10 @@ class LabelSheetOut(BaseModel):
     is_builtin: bool = False
     #: What about this grid does not fit its paper, in words. Empty is fine.
     overflow: list[str] = Field(default_factory=list)
+    #: The designs that fit one cell of this sheet. ⚠️ The print dialog reads
+    #: this instead of comparing sizes itself: the rule and its slack live in
+    #: ``label_template.fits_within`` and nowhere else.
+    fitting_design_ids: list[int] = Field(default_factory=list)
 
 
 class LabelPreviewRequest(BaseModel):

@@ -39,6 +39,7 @@ function device(overrides: Partial<LabelDevice> = {}): LabelDevice {
     cassette_barcode: null,
     cassette_width_mm: null,
     cassette_height_mm: null,
+    fitting_design_ids: null,
     paper_state: 1,
     power_level: 3,
     printer_reachable: true,
