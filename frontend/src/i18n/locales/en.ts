@@ -9988,6 +9988,14 @@ export default {
       noSpoolsToShow: 'No spools to show. Adjust your filter and try again.',
       noMatches: 'No spools match the current search or filter.',
       error: 'Could not generate labels: {{msg}}',
+      preview: {
+        title: 'Preview',
+        firstOf: 'the first of {{count}} selected — {{name}}',
+        onDevice: '{{name}}, as {{device}} will print it',
+        drawing: 'Drawing the preview…',
+        refused: 'No preview: {{msg}}',
+        alt: 'Preview of the label for {{name}}',
+      },
       png: {
         save: 'Save as PNG',
         resolution: 'Resolution of the pictures',

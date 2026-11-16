@@ -8,6 +8,7 @@ import { Button } from './Button';
 import { Modal } from './Modal';
 import { Select } from './Select';
 import { CardSelect, type CardOption } from './labels/CardSelect';
+import { LabelPicturePreview } from './labels/LabelPicturePreview';
 import { useToast } from '../contexts/ToastContext';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import type { LabelDevice } from '../api/client';
@@ -129,6 +130,10 @@ function showPdfInTab(tab: Window | null, blob: Blob): void {
 /** The resolutions a label is saved as a picture at: the two thermal heads in
  *  common use and an office printer. The server takes exactly these. */
 const PICTURE_DPIS: LabelPictureDpi[] = [203, 300, 600];
+
+/** What the dialog's preview is drawn at: 8 dots per millimetre, a thermal
+ *  head's own resolution and plenty for a screen. */
+const PREVIEW_DPI: LabelPictureDpi = 203;
 
 /** Hand a finished file to the browser's downloads. Nothing to look at first —
  *  a picture is for another program — so no tab is involved. */
@@ -510,6 +515,18 @@ export function LabelTemplatePickerModal({
   const startValid =
     cellsPerSheet === null ||
     (Number.isInteger(startPosition) && startPosition >= 1 && startPosition <= cellsPerSheet);
+
+  // ── The picture before the print ─────────────────────────────────────
+  // One label is shown: the first selected spool, in the order they will print.
+  const firstSpool = sortedSpools.find((s) => selectedIds.has(s.id)) ?? null;
+  const firstName = firstSpool ? displayNameById.get(firstSpool.id) || firstSpool.material || `#${firstSpool.id}` : '';
+  const firstEntry = firstSpool ? { id: firstSpool.id, display_name: displayNameById.get(firstSpool.id) ?? null } : null;
+  const previewCaption =
+    selectedCount > 1 ? t('inventory.labels.preview.firstOf', { count: selectedCount, name: firstName }) : firstName;
+  /** ⚠️ A desk printer's picture is ITS picture: the one-bit raster the bridge
+   *  is handed, for the stock that printer reports. With several printers the
+   *  first that can take the design is shown, and named. */
+  const previewDevice = devices.find((device) => cassetteComplaint(device) === null) ?? null;
 
   async function sendToDevice(device: LabelDevice) {
     if (noSelection || sending !== null) return;
@@ -922,6 +939,20 @@ export function LabelTemplatePickerModal({
                   onChange={setDriverTemplateId}
                   disabled={pending !== null}
                 />
+                {driverTemplateId !== null && driverReady && firstEntry !== null && (
+                  <LabelPicturePreview
+                    requestKey={[spoolmanMode, driverTemplateId, firstEntry.id, firstEntry.display_name, monochrome].join('|')}
+                    load={(signal) =>
+                      api.renderSpoolLabelPictures(
+                        { spools: [firstEntry], template_id: driverTemplateId, monochrome, dpi: PREVIEW_DPI },
+                        spoolmanMode,
+                        signal,
+                      )
+                    }
+                    name={firstName}
+                    caption={previewCaption}
+                  />
+                )}
                 <Button
                   className="w-full"
                   disabled={noSelection || pending !== null || !driverReady || !startValid}
@@ -975,6 +1006,32 @@ export function LabelTemplatePickerModal({
                 onChange={setDeviceTemplateId}
                 disabled={sending !== null}
               />
+
+              {previewDevice !== null && firstEntry !== null && (
+                <LabelPicturePreview
+                  requestKey={['device', previewDevice.id, deviceTemplateId, firstEntry.id, firstEntry.display_name].join('|')}
+                  load={async (signal) => ({
+                    blob: await api.previewDeviceLabel(
+                      {
+                        device_id: previewDevice.id,
+                        spool: firstEntry,
+                        ...(deviceTemplateId !== null ? { template_id: deviceTemplateId } : {}),
+                      },
+                      signal,
+                    ),
+                    warnings: [],
+                  })}
+                  name={firstName}
+                  caption={
+                    devices.length > 1
+                      ? t('inventory.labels.preview.onDevice', {
+                          device: previewDevice.name || previewDevice.model || previewDevice.installation_id,
+                          name: firstName,
+                        })
+                      : previewCaption
+                  }
+                />
+              )}
 
               {devices.map((device) => {
                 const complaint = cassetteComplaint(device);

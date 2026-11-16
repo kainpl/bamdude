@@ -13201,13 +13201,17 @@ export const api = {
     request<void>(`/label-cassettes/${encodeURIComponent(barcode)}`, { method: 'DELETE' }),
   // Binary, so raw fetch — request<T> is for JSON. Same picture the device
   // would get, at the device's own resolution.
-  previewDeviceLabel: async (body: { device_id: number; spool: SpoolLabelEntry; template_id?: number }): Promise<Blob> => {
+  previewDeviceLabel: async (
+    body: { device_id: number; spool: SpoolLabelEntry; template_id?: number },
+    signal?: AbortSignal,
+  ): Promise<Blob> => {
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
     const response = await fetch(`${API_BASE}/label-jobs/preview`, {
       method: 'POST',
       headers,
       body: JSON.stringify(body),
+      signal,
     });
     if (!response.ok) {
       const error = await response.json().catch(() => ({}));
