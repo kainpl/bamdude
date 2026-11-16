@@ -178,6 +178,68 @@ class TestSpoolman:
         assert context["material"] == ""
 
 
+class TestASpoolmanLabelEqualsALocalOne:
+    """The same spool, held in Spoolman and held locally, prints the same label.
+
+    The Spoolman builder used to read the raw payload on its own: the subtype
+    was always empty and the colour was the filament's name — while the
+    Filaments page, which maps the same payload through
+    ``_map_spoolman_spool``, showed both. So the seeded line
+    ``{material} · {subtype}`` lost its second half on every Spoolman label.
+    """
+
+    #: What Spoolman has no field for; everything else must agree.
+    NOT_IN_SPOOLMAN = {"purchase_date", "lot"}
+
+    @staticmethod
+    def _spoolman():
+        return {
+            "id": 42,
+            "used_weight": 250.0,
+            "remaining_weight": 750.0,
+            "comment": "Kitchen shelf",
+            "extra": {"bambu_color_name": '"Jade White"', "bambu_slicer_filament_name": '"PolyTerra PLA"'},
+            "filament": {
+                "name": "PLA Matte",
+                "material": "PLA",
+                "color_hex": "FF3300",
+                "weight": 1000,
+                "price": 22.5,
+                "diameter": 1.75,
+                "article_number": "15",
+                "vendor": {"name": "Polymaker"},
+            },
+        }
+
+    @staticmethod
+    def _local():
+        return _spool(purchase_date=None, lot=None, material_number="15")
+
+    def test_field_for_field(self):
+        theirs = spoolman_context(self._spoolman(), deeplink_base=BASE)
+        ours = spool_context(self._local(), deeplink_base=BASE)
+
+        differing = {key for key in ours if ours[key] != theirs[key]} - self.NOT_IN_SPOOLMAN
+        assert not differing, {key: (ours[key], theirs[key]) for key in sorted(differing)}
+
+    def test_the_subtype_is_what_the_filaments_page_shows(self):
+        context = spoolman_context(self._spoolman(), deeplink_base=BASE)
+
+        assert context["subtype"] == "Matte"
+        assert resolve("{material} · {subtype}", context) == "PLA · Matte"
+
+    def test_a_stored_colour_name_is_the_colour(self):
+        assert spoolman_context(self._spoolman(), deeplink_base=BASE)["color_name"] == "Jade White"
+
+    def test_without_one_the_colour_stays_the_filaments_name(self):
+        """Not the synthesized subtype: "Matte" is not a colour, and labels
+        printed before this read the filament's name here."""
+        payload = self._spoolman()
+        payload["extra"] = {}
+
+        assert spoolman_context(payload, deeplink_base=BASE)["color_name"] == "PLA Matte"
+
+
 def test_the_editor_previews_with_the_pickers_own_examples():
     """An editor that previewed with invented values would teach a layout
     against text nothing ever produces.
