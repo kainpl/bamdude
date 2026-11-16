@@ -87,14 +87,28 @@ async function loadPdfJs() {
   }
 }
 
-export async function openPdf(data: ArrayBuffer): Promise<PdfHandle> {
+const givenUp = () => new DOMException('The open was given up', 'AbortError');
+
+/**
+ * Open a document. `signal` gives the open up: the caller is gone (the viewer
+ * closed, or shows another file) and the promise rejects with an `AbortError`.
+ *
+ * ⚠️ Giving up ends the worker's THREAD at once, without waiting for PDF.js's
+ * own teardown: that teardown asks the worker to finish, and a worker hung in
+ * the parser — the very case a caller gives up on — never answers.
+ */
+export async function openPdf(data: ArrayBuffer, signal?: AbortSignal): Promise<PdfHandle> {
   const [pdfjs, workerModule] = await loadPdfJs();
+  if (signal?.aborted) throw givenUp();
   // A worker of this document's own: closing the viewer ends it, and a
   // document that hangs the parser takes nothing else with it.
   const port = new workerModule.default();
   const worker = pdfjs.PDFWorker.create({ port });
   const task = pdfjs.getDocument({ ...PDF_DOCUMENT_OPTIONS, data, worker });
+  let released = false;
   const release = async () => {
+    if (released) return;
+    released = true;
     try {
       await task.destroy();
     } catch {
@@ -103,14 +117,36 @@ export async function openPdf(data: ArrayBuffer): Promise<PdfHandle> {
     worker.destroy();
     port.terminate();
   };
+  /** The thread first, PDF.js's teardown unwaited. */
+  const abandon = () => {
+    if (released) return;
+    released = true;
+    void Promise.resolve(task.destroy()).catch(() => {});
+    worker.destroy();
+    port.terminate();
+  };
+  let onAbort: () => void = () => {};
+  const aborted = new Promise<never>((_, reject) => {
+    onAbort = () => {
+      abandon();
+      reject(givenUp());
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
 
   try {
-    const doc = await task.promise;
+    const opening = (async () => {
+      const opened = await task.promise;
+      const viewport = (await opened.getPage(1)).getViewport({ scale: 1 });
+      return { opened, firstPageSize: { width: viewport.width, height: viewport.height } };
+    })();
+    // After a give-up nobody waits for it any more.
+    opening.catch(() => {});
+    const { opened: doc, firstPageSize } = await Promise.race([opening, aborted]);
     const sizeOf = async (page: number): Promise<PdfPageSize> => {
       const viewport = (await doc.getPage(page)).getViewport({ scale: 1 });
       return { width: viewport.width, height: viewport.height };
     };
-    const firstPageSize = await sizeOf(1);
     return {
       pageCount: doc.numPages,
       firstPageSize,
@@ -142,7 +178,10 @@ export async function openPdf(data: ArrayBuffer): Promise<PdfHandle> {
       destroy: release,
     };
   } catch (error) {
+    if (signal?.aborted) throw givenUp();
     await release();
     throw new PdfOpenError(classifyOpenError(error));
+  } finally {
+    signal?.removeEventListener('abort', onAbort);
   }
 }

@@ -183,7 +183,9 @@ export function PdfPreviewModal({ fileId, title, fileSize, onClose, onDownload }
         return;
       }
       try {
-        const doc = await openPdf(bytes);
+        // The signal gives a pending open up too: a document the parser hangs
+        // on would otherwise keep its worker after the viewer is gone.
+        const doc = await openPdf(bytes, abort.signal);
         if (gone) {
           void doc.destroy();
           return;

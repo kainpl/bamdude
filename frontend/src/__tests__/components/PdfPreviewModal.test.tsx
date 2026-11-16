@@ -247,13 +247,37 @@ describe('PdfPreviewModal', () => {
   });
 
   it('cancels what it was drawing and frees the document when it closes', async () => {
-    const { handle, rendered } = fakeHandle(3);
+    const { handle, rendered, cancelled } = fakeHandle(3);
     openPdf.mockResolvedValue(handle);
-    const { onClose } = show();
-    await waitFor(() => expect(rendered.length).toBeGreaterThan(0));
+    const view = render(<PdfPreviewModal fileId={7} title="manual.pdf" fileSize={10} onClose={vi.fn()} onDownload={vi.fn()} />);
+    await waitFor(() => expect(renderedPages(rendered)).toEqual([1, 2, 3]));
+    expect(handle.destroy).not.toHaveBeenCalled();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Close' }));
-    expect(onClose).toHaveBeenCalled();
+    // The page closes the viewer by unmounting it.
+    view.unmount();
+
+    expect([...new Set(cancelled)].sort()).toEqual([1, 2, 3]);
+    expect(handle.destroy).toHaveBeenCalledTimes(1);
+  });
+
+  it('gives up an open that has not settled when it closes, and when the file changes', async () => {
+    // A document the parser hangs on: `openPdf` never answers.
+    const signals: AbortSignal[] = [];
+    openPdf.mockImplementation((_bytes: ArrayBuffer, signal: AbortSignal) => {
+      signals.push(signal);
+      return new Promise(() => {});
+    });
+    const view = render(<PdfPreviewModal fileId={7} title="a.pdf" fileSize={10} onClose={vi.fn()} onDownload={vi.fn()} />);
+    await waitFor(() => expect(signals.length).toBe(1));
+    expect(signals[0].aborted).toBe(false);
+
+    view.rerender(<PdfPreviewModal fileId={8} title="b.pdf" fileSize={10} onClose={vi.fn()} onDownload={vi.fn()} />);
+    await waitFor(() => expect(signals.length).toBe(2));
+    expect(signals[0].aborted).toBe(true);
+    expect(signals[1].aborted).toBe(false);
+
+    view.unmount();
+    expect(signals[1].aborted).toBe(true);
   });
 
   it('frees the document on unmount', async () => {
