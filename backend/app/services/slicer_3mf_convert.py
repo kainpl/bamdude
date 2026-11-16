@@ -199,9 +199,36 @@ def merge_plate_3mfs(
     return out_buf.getvalue()
 
 
+def _with_own_colour(anchor_json: str, own_json: str) -> str:
+    """*anchor_json* carrying *own_json*'s ``filament_colour`` (upstream #3355).
+
+    The substitution exists for the slicer's material and printer checks,
+    which never read the colour. Copying the anchor's colour too recoloured
+    the slot in the sliced file, and the print's AMS matching then followed
+    it — so a slot wrongly taken for unused (painted filaments were, for as
+    long as ``paint_color`` was misread) printed in another slot's colour.
+
+    The anchor's own text is returned untouched when there is nothing to
+    carry: a profile that is not a JSON object, a slot with no colour of its
+    own, or one whose colour is already the anchor's.
+    """
+    try:
+        anchor = json.loads(anchor_json)
+        own = json.loads(own_json)
+    except (json.JSONDecodeError, TypeError):
+        return anchor_json
+    if not isinstance(anchor, dict) or not isinstance(own, dict) or "filament_colour" not in own:
+        return anchor_json
+    if anchor.get("filament_colour") == own["filament_colour"]:
+        return anchor_json
+    return json.dumps({**anchor, "filament_colour": own["filament_colour"]})
+
+
 def substitute_unused_plate_filaments(source_3mf_bytes: bytes, plate_id: int | None, items: list[str]) -> list[str]:
     """Replace any filament-list entry whose 1-indexed slot isn't used by
-    ``plate_id`` with the entry from the plate's lowest *used* slot.
+    ``plate_id`` with the entry from the plate's lowest *used* slot — its
+    profile, that is; the slot keeps its own ``filament_colour``
+    (:func:`_with_own_colour`).
 
     The anchor is the lowest used slot, NOT slot 1 (upstream #2628). Slot 1 is
     itself unused on plenty of plates, and anchoring there did the two things
@@ -262,7 +289,7 @@ def substitute_unused_plate_filaments(source_3mf_bytes: bytes, plate_id: int | N
         slot = idx + 1
         if slot not in used:
             substituted.append(slot)
-            out[idx] = out[anchor_slot - 1]
+            out[idx] = _with_own_colour(items[anchor_slot - 1], items[idx])
     if substituted:
         logger.info(
             "Substituted slot-%s filament for unused slot(s) %s on plate %s "

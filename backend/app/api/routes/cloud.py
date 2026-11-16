@@ -54,6 +54,7 @@ from backend.app.services.bambu_cloud_credentials import (  # noqa: F401
     get_stored_token,
     is_cloud_token_invalid,
     mark_cloud_token_invalid,
+    renew_or_invalidate,
 )
 from backend.app.utils.filament_ids import filament_id_to_setting_id
 
@@ -62,35 +63,40 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/cloud", tags=["cloud"])
 
 
-async def _persist_refreshed_tokens(captured, access_token: str, refresh_token: str | None) -> None:
-    from backend.app.core.database import async_session
-    from backend.app.services.cloud_credentials import write
+async def _refresh_or_invalidate(cloud, captured) -> str | None:
+    """The service's answer to Bambu's expiry 401 (its ``on_auth_failure``).
 
-    try:
-        async with async_session() as db:
-            await write(
-                db,
-                captured,
-                {
-                    "cloud_token": access_token,
-                    "cloud_refresh_token": refresh_token,
-                    "cloud_token_invalid_at": None,
-                },
-            )
-    except HTTPException as exc:
-        if exc.status_code not in (401, 403, 409, 503):
-            raise
-        # A rotated/logout/restored credential cannot be resurrected by an older refresh.
+    Delegates to the credential seam — refresh and persist, else mark dead;
+    a renewal that could not reach Bambu writes nothing — and hands the
+    outcome back so the service can repeat the request once after a renewal.
+    The service's snapshot follows the stored pair, so what the request guards
+    afterwards is the credential it actually finished with.
+    """
+    from backend.app.services.cloud_credentials import CredentialSnapshot
+
+    held = getattr(cloud, "credential_snapshot", None)
+    outcome, _token, stored = await renew_or_invalidate(
+        held if isinstance(held, CredentialSnapshot) else captured, cloud
+    )
+    if stored is not None:
+        cloud.credential_snapshot = stored
+    return outcome
 
 
-async def _refresh_or_invalidate(cloud, captured) -> None:
-    try:
-        if await cloud.refresh_access_token():
-            await _persist_refreshed_tokens(captured, cloud.access_token, cloud.refresh_token)
-            return
-    except Exception:
-        logger.warning("Bambu Cloud credential refresh did not complete")
-    await mark_cloud_token_invalid(captured)
+def _cloud_failure(exc: BambuCloudError) -> HTTPException:
+    """What a route answers when a Bambu Cloud call failed.
+
+    401 only when Bambu refused the credential (the session expired and could
+    not be renewed). Everything else — Bambu unreachable, a 5xx, a page where
+    JSON belongs, a refusal of this one request — is a 502: the upstream's
+    failure, not the caller's and not ours. The stored token is never cleared
+    here: an expiry is already recorded by the service's handler (the status
+    then says "expired", and the email and region stay for the next sign-in),
+    and a network failure proves nothing about it.
+    """
+    if isinstance(exc, BambuCloudAuthError):
+        return HTTPException(status_code=401, detail="Authentication expired")
+    return HTTPException(status_code=502, detail=str(exc))
 
 
 async def store_token(
@@ -255,10 +261,14 @@ async def get_auth_status(
         return CloudAuthStatus(is_authenticated=False, email=None, region=None, sign_in_expired=False)
 
     known_invalid = await is_cloud_token_invalid(db, current_user)
+    refresh = await get_stored_refresh_token(db, current_user)
 
     await db.commit()
-    cloud = BambuCloudService(region=region, on_auth_failure=lambda: mark_cloud_token_invalid(captured))
+    # An expired access token is renewed here as on every other path, so a
+    # status poll is not the one request that declares a renewable sign-in dead.
+    cloud = BambuCloudService(region=region, on_auth_failure=lambda: _refresh_or_invalidate(cloud, captured))
     cloud.set_token(token)
+    cloud.set_refresh_token(refresh)
     try:
         if known_invalid:
             # Already recorded as dead. Don't re-ask Bambu on every poll - only a
@@ -335,10 +345,10 @@ async def login(
             tfa_key=result.get("tfa_key"),
             reason=result.get("reason"),
         )
-    except BambuCloudAuthError as e:
-        raise HTTPException(status_code=401, detail=str(e))
     except BambuCloudError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        # Bambu could not be reached. A wrong password is Bambu's own answer
+        # and comes back above as ``success=False`` with its message.
+        raise HTTPException(status_code=502, detail=str(e))
     finally:
         await cloud.close()
 
@@ -398,10 +408,9 @@ async def verify_code(
             message=result.get("message", "Unknown error"),
             reason=result.get("reason"),
         )
-    except BambuCloudAuthError as e:
-        raise HTTPException(status_code=401, detail=str(e))
     except BambuCloudError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        # Bambu could not be reached — not a wrong code (see ``login``).
+        raise HTTPException(status_code=502, detail=str(e))
     finally:
         await cloud.close()
 
@@ -423,21 +432,33 @@ async def set_token(
     current_user = current_user or api_key_cloud_owner
     from backend.app.services.cloud_credentials import snapshot
 
+    # A pasted token comes with the whitespace around it. One that cannot be
+    # a bearer at all (empty, a space or a line break inside, not ASCII) is
+    # refused here: sent on, it fails inside the HTTP client and would read as
+    # "Bambu Cloud could not be reached".
+    access_token = request.access_token.strip()
+    if not access_token or not access_token.isascii() or not all(33 <= ord(ch) <= 126 for ch in access_token):
+        raise HTTPException(status_code=401, detail="Invalid token")
+
     captured = await snapshot(db, current_user, "bambu")
     await db.commit()
     cloud = BambuCloudService(region=request.region)
-    cloud.set_token(request.access_token)
+    cloud.set_token(access_token)
 
     try:
         # Verify token works by trying to get profile
         await cloud.get_user_profile()
-        await store_token(db, request.access_token, "token-auth", request.region, current_user, captured=captured)
+        await store_token(db, access_token, "token-auth", request.region, current_user, captured=captured)
         from backend.app.services.filament_preset_sync import request_sync_soon
 
         request_sync_soon()  # freshly connected cloud mirrors within seconds (spec A trigger)
         return CloudAuthStatus(is_authenticated=True, email="token-auth", region=request.region)
-    except BambuCloudError:
-        raise HTTPException(status_code=401, detail="Invalid token")
+    except BambuCloudError as e:
+        # "Invalid token" only when Bambu itself refused it; an unreachable
+        # Bambu says nothing about the token the user pasted.
+        if isinstance(e, BambuCloudAuthError) or e.status_code in (401, 403):
+            raise HTTPException(status_code=401, detail="Invalid token")
+        raise HTTPException(status_code=502, detail=str(e))
     finally:
         await cloud.close()
 
@@ -520,11 +541,8 @@ async def get_slicer_settings(
             setattr(result, our_type, parsed)
 
         return result
-    except BambuCloudAuthError:
-        await clear_token(db, current_user, captured=cloud.credential_snapshot)
-        raise HTTPException(status_code=401, detail="Authentication expired")
     except BambuCloudError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _cloud_failure(e)
     finally:
         await cloud.close()
 
@@ -551,11 +569,8 @@ async def get_setting_detail(
     try:
         data = await cloud.get_setting_detail(setting_id)
         return data
-    except BambuCloudAuthError:
-        await clear_token(db, current_user, captured=cloud.credential_snapshot)
-        raise HTTPException(status_code=401, detail="Authentication expired")
     except BambuCloudError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _cloud_failure(e)
     finally:
         await cloud.close()
 
@@ -868,7 +883,9 @@ async def get_filament_info(
                             info["hot_plate_temp"] = bed_temp
                         if max_vol_speed is not None:
                             info["filament_max_volumetric_speed"] = max_vol_speed
-                        if not await current(db, captured):
+                        # The service's snapshot: it follows a token renewed
+                        # by this very request.
+                        if not await current(db, cloud.credential_snapshot):
                             raise HTTPException(409, {"code": "cloud_credentials_changed"})
                         await db.commit()
                         _filament_cache[namespace, setting_id] = info
@@ -899,6 +916,7 @@ async def get_filament_info(
 
                 unresolved_ids = still_unresolved
             finally:
+                captured = cloud.credential_snapshot
                 await cloud.close()
         elif cloud is not None:
             await cloud.close()
@@ -944,11 +962,8 @@ async def get_devices(
             )
             for d in devices
         ]
-    except BambuCloudAuthError:
-        await clear_token(db, current_user, captured=cloud.credential_snapshot)
-        raise HTTPException(status_code=401, detail="Authentication expired")
     except BambuCloudError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _cloud_failure(e)
     finally:
         await cloud.close()
 
@@ -1007,6 +1022,9 @@ async def get_firmware_updates(
                         release_notes=firmware_info.get("release_notes"),
                     )
                 )
+            except BambuCloudAuthError:
+                # The sign-in expired: that is the answer, not "unknown firmware".
+                raise
             except BambuCloudError as e:
                 logger.warning("Failed to get firmware info for %s: %s", device_name, e)
                 # Still include device but with unknown firmware status
@@ -1023,11 +1041,8 @@ async def get_firmware_updates(
 
         return FirmwareUpdatesResponse(updates=updates, updates_available=updates_available)
 
-    except BambuCloudAuthError:
-        await clear_token(db, current_user, captured=cloud.credential_snapshot)
-        raise HTTPException(status_code=401, detail="Authentication expired")
     except BambuCloudError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _cloud_failure(e)
     finally:
         await cloud.close()
 
@@ -1063,11 +1078,8 @@ async def create_setting(
             version=request.version,
         )
         return data
-    except BambuCloudAuthError:
-        await clear_token(db, current_user, captured=cloud.credential_snapshot)
-        raise HTTPException(status_code=401, detail="Authentication expired")
     except BambuCloudError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _cloud_failure(e)
     finally:
         await cloud.close()
 
@@ -1099,11 +1111,8 @@ async def update_setting(
             setting=request.setting,
         )
         return data
-    except BambuCloudAuthError:
-        await clear_token(db, current_user, captured=cloud.credential_snapshot)
-        raise HTTPException(status_code=401, detail="Authentication expired")
     except BambuCloudError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _cloud_failure(e)
     finally:
         await cloud.close()
 
@@ -1133,11 +1142,8 @@ async def delete_setting(
             success=result.get("success", True),
             message=result.get("message", "Setting deleted"),
         )
-    except BambuCloudAuthError:
-        await clear_token(db, current_user, captured=cloud.credential_snapshot)
-        raise HTTPException(status_code=401, detail="Authentication expired")
     except BambuCloudError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _cloud_failure(e)
     finally:
         await cloud.close()
 
@@ -1258,7 +1264,7 @@ async def get_filament_id_map(
             except Exception:
                 pass
 
-        if not await current(db, captured):
+        if not await current(db, cloud.credential_snapshot):
             raise HTTPException(409, {"code": "cloud_credentials_changed"})
         # Bound account/generation namespaces; expiration is not authorization.
         if len(_filament_id_name_cache) >= 256:

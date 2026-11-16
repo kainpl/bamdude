@@ -9,8 +9,10 @@ Two identity shapes, both real: a signed-in ``User`` carries its own columns;
 ``None`` — an API key without an owner — reads and writes the global
 ``Settings`` rows.
 
-Renewing a token (refresh + persist) and storing a fresh sign-in stay in
-``api/routes/cloud.py``: that is the cloud session's logic, not storage.
+Renewing an expired token (refresh + persist, else mark dead) lives here too
+(:func:`renew_or_invalidate`): MakerWorld runs on the same bearer and must be
+able to renew it without importing a router. Storing a fresh sign-in stays in
+``api/routes/cloud.py``.
 """
 
 from __future__ import annotations
@@ -88,6 +90,96 @@ async def mark_cloud_token_invalid(captured) -> None:
         if isinstance(exc, HTTPException) and exc.status_code in (401, 403, 409, 503):
             return  # Logout/rotation/restore won; this old failure says nothing about the replacement.
         logger.exception("Could not record the Bambu Cloud token as invalid")
+
+
+async def _persist_renewed(captured, access_token: str, refresh_token: str | None):
+    """Store a renewed pair under the snapshot that began the request.
+
+    Returns the snapshot of the stored pair, or None when a logout, a new
+    sign-in or a restore won the race — an older refresh never resurrects a
+    credential somebody replaced.
+    """
+    from fastapi import HTTPException
+
+    from backend.app.core.database import async_session
+    from backend.app.services.cloud_credentials import write
+
+    try:
+        async with async_session() as db:
+            return await write(
+                db,
+                captured,
+                {
+                    "cloud_token": access_token,
+                    "cloud_refresh_token": refresh_token,
+                    "cloud_token_invalid_at": None,
+                },
+            )
+    except HTTPException as exc:
+        if exc.status_code not in (401, 403, 409, 503):
+            raise
+        return None
+
+
+async def renew_or_invalidate(captured, cloud=None, *, mark_invalid=None):
+    """Bambu answered its expiry 401: renew the access token, else record it dead.
+
+    The one answer to "the stored token expired", shared by the cloud routes
+    and by every provider on the same bearer (MakerWorld). ``cloud`` is the
+    caller's own :class:`BambuCloudService` when it has one (it then carries
+    the renewed pair); without it a service is built from the stored refresh
+    token and region, and closed again.
+
+    Returns ``(outcome, access_token, snapshot)``:
+
+    * ``RENEWED`` — a new pair is stored; ``access_token`` is the new bearer
+      and ``snapshot`` the stored pair's snapshot (None when the store lost a
+      race with a logout or a new sign-in);
+    * ``RENEW_UNREACHABLE`` — the renewal could not reach Bambu. Nothing is
+      written: a network failure never invalidates a stored token;
+    * ``None`` — not renewable (no refresh token, or Bambu refused it): the
+      token is marked invalid through :func:`mark_cloud_token_invalid`.
+
+    ``mark_invalid`` lets a caller supply the marker it was built with.
+    """
+    from backend.app.services.bambu_cloud import RENEW_UNREACHABLE, RENEWED, BambuCloudService
+    from backend.app.services.cloud_credentials import CredentialSnapshot, current
+
+    mark_invalid = mark_invalid or mark_cloud_token_invalid
+    owned = None
+    try:
+        if cloud is None and isinstance(captured, CredentialSnapshot):
+            from backend.app.core.database import async_session
+
+            async with async_session() as db:
+                # The stored refresh token is spent only for the credential the
+                # failed request was made with: after a logout or a new sign-in
+                # it belongs to somebody else's session, and this old expiry
+                # says nothing about it.
+                if not await current(db, captured):
+                    return None, None, None
+                owner = await db.get(User, captured.user_id) if captured.user_id is not None else None
+                refresh = await get_stored_refresh_token(db, owner)
+                _token, _email, region = await get_stored_token(db, owner)
+            if refresh:
+                cloud = owned = BambuCloudService(region=region)
+                owned.set_refresh_token(refresh)
+        if cloud is not None:
+            try:
+                renewed = await cloud.refresh_access_token()
+            except Exception:
+                logger.warning("Bambu Cloud credential refresh did not complete")
+                renewed = False
+            if renewed:
+                stored = await _persist_renewed(captured, cloud.access_token, cloud.refresh_token)
+                return RENEWED, cloud.access_token, stored
+            if getattr(cloud, "last_refresh_failure", None) == RENEW_UNREACHABLE:
+                return RENEW_UNREACHABLE, None, None
+    finally:
+        if owned is not None:
+            await owned.close()
+    await mark_invalid(captured)
+    return None, None, None
 
 
 def _normalise_region(region: str | None) -> str:
