@@ -27,7 +27,7 @@ from sqlalchemy.orm import selectinload
 
 from backend.app.core.permissions import Permission
 from backend.app.models.archive import PrintArchive
-from backend.app.models.library import LibraryFile
+from backend.app.models.library import LibraryFile, owner_scope_sees
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.printer_queue import PrinterQueue
 from backend.app.models.queue_source import QueueSource
@@ -759,7 +759,7 @@ def ensure_source_visible(
     if (
         library_file is not None
         and not current_user.has_permission(Permission.LIBRARY_READ_ALL.value)
-        and library_file.created_by_id != current_user.id
+        and not owner_scope_sees(library_file, current_user.id)
     ):
         raise HTTPException(404, "Library file not found")
 
@@ -833,7 +833,7 @@ async def add_next_block_to_printer_queue(
         if (
             current_user is not None
             and not current_user.has_permission(Permission.LIBRARY_READ_ALL.value)
-            and library_file.created_by_id != current_user.id
+            and not owner_scope_sees(library_file, current_user.id)
         ):
             raise HTTPException(404, "Library file not found")
         try:

@@ -63,6 +63,11 @@ const file = (id: number, name: string, productIds: number[]) => ({
 const FILES = [file(1, 'Linked', [P1.id]), file(2, 'Loose', [])];
 const LIBRARY = ['library:read_all', 'library:upload', 'library:update_all', 'library:delete_all'];
 
+async function linkExternalButton() {
+  const label = await screen.findByText('Link External');
+  return label.closest('button') as HTMLButtonElement;
+}
+
 async function openFolderMenu(name: string) {
   const row = screen.getByText(name).closest('.group') as HTMLElement;
   const buttons = within(row).getAllByRole('button');
@@ -169,5 +174,40 @@ describe('FileManagerPage — links to products ask the right to change orders (
     const dialog = await openMoveFor('Loose');
     expect(target(dialog, 'Loose folder')).not.toBeDisabled();
     expect(target(dialog, 'Lamp folder')).toBeDisabled();
+  });
+});
+
+// G11: mounting a directory of the host is an administrator's act — the server asks
+// `settings:update`, so the button follows that right and says why it is off.
+describe('FileManagerPage — linking an external folder asks the right to change settings', () => {
+  beforeEach(() => {
+    localStorage.clear();
+    window.history.replaceState({}, '', '/files');
+    server.use(
+      http.get('/api/v1/library/folders', () => HttpResponse.json(FOLDERS)),
+      http.get('/api/v1/library/files', () =>
+        HttpResponse.json({ items: FILES, meta: { total: 2, current_page: 1, per_page: 50, last_page: 1 } }),
+      ),
+      http.get('/api/v1/library/stats', () =>
+        HttpResponse.json({ total_files: 2, total_folders: 3, total_size_bytes: 1, disk_free_bytes: 1, disk_total_bytes: 2 }),
+      ),
+      http.get('/api/v1/settings/', () => HttpResponse.json({ check_updates: false, check_printer_firmware: false })),
+    );
+  });
+
+  it('is off, with the reason, for someone who may only upload', async () => {
+    auth.granted = new Set(LIBRARY);
+    render(<FileManagerPage />);
+    const button = await linkExternalButton();
+    expect(button).toBeDisabled();
+    expect(button).toHaveAttribute('title', 'Linking a folder of the host needs the permission to change settings');
+  });
+
+  it('is offered with the right to change settings', async () => {
+    auth.granted = new Set([...LIBRARY, 'settings:update']);
+    render(<FileManagerPage />);
+    const button = await linkExternalButton();
+    expect(button).not.toBeDisabled();
+    expect(button).toHaveAttribute('title', 'Link External Folder');
   });
 });

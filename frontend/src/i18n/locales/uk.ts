@@ -6508,6 +6508,7 @@ export default {
     noPermissionGenerateThumbnail: 'У вас немає дозволу генерувати мініатюри',
     noPermissionDeleteFile: 'У вас немає дозволу видаляти цей файл',
     noPermissionCreateFolder: 'У вас немає дозволу створювати папки',
+    noPermissionLinkExternal: "Щоб прив'язати папку хоста, потрібен дозвіл змінювати налаштування",
     noPermissionUpload: 'У вас немає дозволу завантажувати файли',
     noPermissionMoveFiles: 'У вас немає дозволу переміщувати файли',
     noPermissionDeleteFiles: 'У вас немає дозволу видаляти файли',

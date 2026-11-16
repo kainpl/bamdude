@@ -36,7 +36,13 @@ from backend.app.core.config import settings as app_settings
 from backend.app.core.database import get_db, take_write_lock
 from backend.app.core.permissions import Permission
 from backend.app.models.archive import PrintArchive
-from backend.app.models.library import LibraryFile, LibraryFileTag, LibraryFolder
+from backend.app.models.library import (
+    LibraryFile,
+    LibraryFileTag,
+    LibraryFolder,
+    owner_scope_clause,
+    owner_scope_sees,
+)
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.product import Product, product_files, product_folders
 from backend.app.models.user import User
@@ -191,8 +197,9 @@ def _library_file_visible(
         return True
     if user is None:
         return False
-    # Ownerless files (``created_by_id is None``) require ALL — fail-closed.
-    return library_file.created_by_id is not None and library_file.created_by_id == user.id
+    # The caller's own, or an ownerless file of an external folder; an ownerless
+    # file in managed storage requires ALL — fail-closed.
+    return owner_scope_sees(library_file, user.id)
 
 
 def _files_visible_to(user: User | None, can_read_all: bool):
@@ -206,7 +213,7 @@ def _files_visible_to(user: User | None, can_read_all: bool):
     """
     if can_read_all or user is None:
         return true()
-    return LibraryFile.created_by_id == user.id
+    return owner_scope_clause(user.id)
 
 
 def file_name_visible(library_file: LibraryFile | None, user: User | None, scope: str) -> bool:
@@ -218,13 +225,14 @@ def file_name_visible(library_file: LibraryFile | None, user: User | None, scope
 
 def library_file_name_visible(scope: str, user_id: int | None):
     """The SQL twin of :func:`file_name_visible` (WS-13 E1 LV3) over ``LibraryFile``:
-    outside the trash, and ``all`` → every file, ``own`` → the caller's own (an
-    ownerless file stays hidden), ``none`` → no file. One predicate for every search
+    outside the trash, and ``all`` → every file, ``own`` → the caller's own and the
+    ownerless files of external folders (an ownerless managed file stays hidden),
+    ``none`` → no file. One predicate for every search
     that matches a file name and for everything counted under the same ``q``."""
     if scope == "all":
         return LibraryFile.deleted_at.is_(None)
     if scope == "own" and user_id is not None:
-        return and_(LibraryFile.deleted_at.is_(None), LibraryFile.created_by_id == user_id)
+        return and_(LibraryFile.deleted_at.is_(None), owner_scope_clause(user_id))
     return false()
 
 
@@ -243,7 +251,8 @@ def _ensure_library_file_visible(
       - Missing / soft-deleted → 404 (not 403, to avoid id-enumeration leaks).
       - ``can_read_all`` true (LIBRARY_READ_ALL or auth disabled) → file returned.
       - ``can_read_all`` false and ``created_by_id != user.id`` → 404.
-      - Ownerless files (``created_by_id is None``) require ALL — fail-closed.
+      - Ownerless files (``created_by_id is None``) require ALL — fail-closed —
+        unless they live in an external folder: those are shared.
     """
     # ``library_file is None`` is restated only to narrow the return type — the
     # predicate already answers False for it.
@@ -1519,7 +1528,7 @@ async def get_folder_readme(
         func.lower(LibraryFile.filename).like("%.md"),
     )
     if user is not None and not can_read_all:
-        query = query.where(LibraryFile.created_by_id == user.id)
+        query = query.where(owner_scope_clause(user.id))
     result = await db.execute(query)
     candidates = result.scalars().all()
     if not candidates:
@@ -1996,7 +2005,9 @@ def _validate_external_path(path_str: str) -> Path:
 async def create_external_folder(
     data: ExternalFolderCreate,
     db: AsyncSession = Depends(get_db),
-    _: User | None = Depends(require_permission(Permission.LIBRARY_UPLOAD)),
+    # ⚠️ Mounting names a directory of the HOST: an administrator's act, never
+    # ``library:upload`` (Operators hold it) — upstream b7d7c8250.
+    _: User | None = Depends(require_permission(Permission.SETTINGS_UPDATE)),
 ):
     """Create an external folder that points to a host directory."""
     resolved = _validate_external_path(data.external_path)
@@ -2093,17 +2104,28 @@ async def scan_external_folder(
 async def get_scan_job(
     job_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User | None = Depends(require_permission(Permission.LIBRARY_READ)),
+    _: tuple[User | None, bool] = Depends(
+        require_ownership_permission(
+            Permission.LIBRARY_READ_ALL,
+            Permission.LIBRARY_READ_OWN,
+        )
+    ),
 ):
     """One scan's state.
 
     For a client that missed the socket or reloaded mid-scan — the events are
     the fast path, not the only one.
+
+    Asked with the folder routes' own gate: the job describes a folder (its
+    error text may name the share's path, which a folder answer shows too), so
+    whoever reads folders reads it — the legacy ``library:read`` alone opens no
+    folder and no job. A job whose folder is gone is a 404 like a missing one
+    (SQLite runs no FK action, the row outlives its folder).
     """
     from backend.app.models.library_scan import LibraryScanJob
 
     job = await db.get(LibraryScanJob, job_id)
-    if job is None:
+    if job is None or await db.scalar(select(LibraryFolder.id).where(LibraryFolder.id == job.folder_id)) is None:
         raise HTTPException(status_code=404, detail="Scan job not found")
     return {
         "id": job.id,
@@ -2216,7 +2238,7 @@ async def list_files(
     filters: list = [LibraryFile.deleted_at.is_(None)]
 
     if user is not None and not can_read_all:
-        filters.append(LibraryFile.created_by_id == user.id)
+        filters.append(owner_scope_clause(user.id))
 
     if tag_ids:
         # #1268 — cross-cutting AND filter: the file must carry EVERY requested
@@ -6575,7 +6597,7 @@ async def get_library_stats(
     user, can_read_all = auth_result
     file_filters = []
     if user is not None and not can_read_all:
-        file_filters.append(LibraryFile.created_by_id == user.id)
+        file_filters.append(owner_scope_clause(user.id))
 
     # ⚠️ Counts exclude the trash; the SIZE below does not, deliberately.
     # "How many files do I have" and "how much disk is this using" are different

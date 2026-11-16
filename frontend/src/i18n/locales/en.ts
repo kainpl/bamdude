@@ -6433,6 +6433,7 @@ export default {
     noPermissionGenerateThumbnail: 'You do not have permission to generate thumbnails',
     noPermissionDeleteFile: 'You do not have permission to delete this file',
     noPermissionCreateFolder: 'You do not have permission to create folders',
+    noPermissionLinkExternal: 'Linking a folder of the host needs the permission to change settings',
     noPermissionUpload: 'You do not have permission to upload files',
     noPermissionMoveFiles: 'You do not have permission to move files',
     noPermissionDeleteFiles: 'You do not have permission to delete files',
