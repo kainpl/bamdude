@@ -411,8 +411,14 @@ class ImplicitFTP_TLS(FTP_TLS):
         had stalled kept its lane until the socket timeout. Closing the descriptor
         would wake it, but a worker that was not waiting yet would then read from
         whatever socket takes that handle next. So one wait lasts at most
-        ``_ABORT_POLL_SECONDS`` and ``abort_requested`` is asked between waits; a
-        stall is still no byte for the whole socket timeout, as before.
+        ``_ABORT_POLL_SECONDS``; a stall is still no byte for the whole socket
+        timeout, as before.
+
+        ⚠️ ``abort_requested`` is asked before every read and again after it, before
+        the bytes are handed on — not only when a wait times out (review IA1). A
+        cancel can land after the data channel opened but before ``data_conn`` was
+        published: the abort then shuts only the control socket, the stream stays
+        healthy, no wait ever times out, and the whole file used to arrive anyway.
         """
         self.voidcmd("TYPE I")
         with self.transfercmd(cmd, rest) as conn:
@@ -420,16 +426,19 @@ class ImplicitFTP_TLS(FTP_TLS):
             conn.settimeout(_ABORT_POLL_SECONDS if idle is None else min(idle, _ABORT_POLL_SECONDS))
             quiet_since = time.monotonic()
             while True:
+                if self.abort_requested:
+                    raise ConnectionAbortedError("transfer aborted")
                 try:
                     data = conn.recv(blocksize)
                 except TimeoutError:
-                    if self.abort_requested:
-                        raise ConnectionAbortedError("transfer aborted") from None
-                    if idle is not None and time.monotonic() - quiet_since >= idle:
+                    # A cancel outranks a stall: the loop asks the flag first.
+                    if not self.abort_requested and idle is not None and time.monotonic() - quiet_since >= idle:
                         raise
                     continue
                 if not data:
                     break
+                if self.abort_requested:
+                    raise ConnectionAbortedError("transfer aborted")
                 quiet_since = time.monotonic()
                 callback(data)
             if self.abort_requested:
