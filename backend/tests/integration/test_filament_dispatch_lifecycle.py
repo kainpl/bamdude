@@ -123,6 +123,15 @@ async def test_late_refusal_restores_source_and_does_not_count_a_print(
     monkeypatch.setattr(bd, "list_files_async", AsyncMock(return_value=[]))
     monkeypatch.setattr(bd, "get_ftp_retry_settings", AsyncMock(return_value=(False, 0, 0, 30)))
     monkeypatch.setattr(bd.printer_manager, "ensure_fresh_connection_for_printer", AsyncMock(return_value=True))
+    # The printer this harness stands in for has just reported and is idle: that
+    # is what the file guard needs before the runner may clear or upload anything
+    # (G10 B).
+    monkeypatch.setattr(
+        "backend.app.services.printer_file_guard.observe",
+        lambda _printer_id: __import__("types").SimpleNamespace(
+            connected=True, state="FINISH", gcode_file=None, subtask_name=None
+        ),
+    )
     monkeypatch.setattr(bd, "_warn_on_filament_deficit", AsyncMock())
     monkeypatch.setattr(bd.ws_manager, "broadcast", AsyncMock())
     register, withdraw, rollback = MagicMock(), MagicMock(), MagicMock()

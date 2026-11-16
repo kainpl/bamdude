@@ -18,6 +18,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from backend.app.services.bambu_ftp import DeleteResult
 from backend.app.services.printer_cleanup import (
     archive_hashes,
     derived_copy_names,
@@ -95,7 +96,7 @@ class TestRemovingThePrintersCopies:
             wanted={"Cube.gcode.3mf"},
             expected_hashes={digest},
             read_bytes=lambda p: _async(payload),
-            delete=lambda p: _async(deleted.append(p)),
+            delete=lambda p: _async(deleted.append(p) or DeleteResult.DELETED),
             label="test",
         )
 
@@ -116,7 +117,7 @@ class TestRemovingThePrintersCopies:
             wanted={"Cube.gcode.3mf"},
             expected_hashes={hashlib.sha256(b"ours").hexdigest()},
             read_bytes=lambda p: _async(b"somebody else's"),
-            delete=lambda p: _async(deleted.append(p)),
+            delete=lambda p: _async(deleted.append(p) or DeleteResult.DELETED),
             label="test",
         )
 
@@ -149,7 +150,7 @@ class TestRemovingThePrintersCopies:
             wanted={"Cube.gcode.3mf"},
             expected_hashes={"whatever"},
             read_bytes=lambda p: _async(b""),
-            delete=lambda p: _async(deleted.append(p)),
+            delete=lambda p: _async(deleted.append(p) or DeleteResult.DELETED),
             label="test",
         )
 
@@ -168,7 +169,7 @@ class TestRemovingThePrintersCopies:
             wanted={"Cube.gcode.3mf"},
             expected_hashes={"whatever"},
             read_bytes=_boom,
-            delete=lambda p: _async(deleted.append(p)),
+            delete=lambda p: _async(deleted.append(p) or DeleteResult.DELETED),
             label="test",
         )
 
@@ -185,7 +186,7 @@ class TestRemovingThePrintersCopies:
             wanted={"Cube.gcode.3mf"},
             expected_hashes=set(),
             read_bytes=lambda p: _async(b"anything"),
-            delete=lambda p: _async(deleted.append(p)),
+            delete=lambda p: _async(deleted.append(p) or DeleteResult.DELETED),
             label="test",
         )
 
@@ -206,7 +207,7 @@ class TestRemovingThePrintersCopies:
             wanted={"Cube.gcode.3mf"},
             expected_hashes=set(),
             read_bytes=lambda p: _async(b"never read"),
-            delete=lambda p: _async(deleted.append(p)),
+            delete=lambda p: _async(deleted.append(p) or DeleteResult.DELETED),
             label="test",
             allow_unverified=True,
         )

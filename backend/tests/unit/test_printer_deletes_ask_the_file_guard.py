@@ -88,13 +88,49 @@ def test_the_post_print_cleanup_has_a_cooperative_deadline():
             assert gate.startswith("_cleanup_gate("), f"main.py:{call.lineno} {name} is gated by {gate}"
 
 
-def test_the_dispatcher_deletes_only_through_its_file_gate():
+def test_the_dispatcher_deletes_and_uploads_only_through_its_file_gate():
+    """Both runners: one gate object for the run, on every delete AND on the upload (review B1)."""
     tree = ast.parse((APP / "services/background_dispatch.py").read_text(encoding="utf-8"))
-    for runner in ("_run_reprint_archive", "_run_print_library_file", "_resolve_rack"):
-        for name, call in _calls(_function(tree, runner)):
+    for runner in ("_run_reprint_archive", "_run_print_library_file"):
+        body = _function(tree, runner)
+        text = ast.unparse(body)
+        assert "file_gate = self._file_gate(job)" in text, runner
+        assert "await file_gate.wait_until_observed()" in text, runner
+        assert "file_gate.raise_if_refused()" in text, runner
+        uploads = 0
+        for name, call in _calls(body):
             if name in {"delete_file_async", "_cleanup_sd_card_file"}:
                 gate = next(ast.unparse(k.value) for k in call.keywords if k.arg == "may_run")
-                assert "_file_gate(job)" in gate, f"{runner}:{call.lineno} {name} is gated by {gate}"
+                assert gate.startswith("file_gate("), f"{runner}:{call.lineno} {name} is gated by {gate}"
             if name == "_clear_remote_name":
                 gate = next(ast.unparse(k.value) for k in call.keywords if k.arg == "gate")
-                assert gate == "self._file_gate(job)", f"{runner}:{call.lineno}"
+                assert gate == "file_gate", f"{runner}:{call.lineno}"
+            # transport.upload(...), upload_file_async(...) and the retry loop around it
+            is_upload = name in {"upload", "upload_file_async"} or (
+                name == "with_ftp_retry" and "upload_file_async" in ast.unparse(call.args[0])
+            )
+            if is_upload:
+                uploads += 1
+                gate = next((ast.unparse(k.value) for k in call.keywords if k.arg == "may_run"), None)
+                assert gate == "file_gate(remote_path)", f"{runner}:{call.lineno} {name} uploads without the gate"
+                if name == "with_ftp_retry":
+                    assert ast.unparse(call.args[0]) == "file_gate.unless_refused(upload_file_async)"
+        assert uploads == 3, f"{runner}: expected the three upload forms, found {uploads}"
+
+    for name, call in _calls(_function(tree, "_resolve_rack")):
+        if name == "_cleanup_sd_card_file":
+            gate = next(ast.unparse(k.value) for k in call.keywords if k.arg == "may_run")
+            assert "_file_gate(job)" in gate
+
+
+def test_the_file_guard_has_no_way_around_the_fresh_observation():
+    """Review B2: no parameter, anywhere, that lets a caller skip it."""
+    source = (APP / "services/printer_file_guard.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    for function in ("file_refusal", "wide_refusal", "may_delete", "may_delete_wide"):
+        node = _function(tree, function)
+        names = {a.arg for a in node.args.args + node.args.kwonlyargs}
+        assert names <= {"printer_id", "path", "own_archive_id", "also"}, (function, names)
+    assert "needs_fresh_state" not in source
+    for path in sorted(APP.rglob("*.py")):
+        assert "needs_fresh_state" not in path.read_text(encoding="utf-8"), path

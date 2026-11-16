@@ -82,6 +82,17 @@ class TestOneFile:
         _printing(printer, gcode_file="Metadata/plate_2.gcode", subtask_name=None)
         assert guard.file_refusal(1, "/Benchy.3mf") == guard.ACTIVE_PRINT  # nothing to tell it from
 
+    def test_a_file_that_only_looks_like_a_plate_member_keeps_its_protection(self, printer):
+        """Only the exact member form is set aside; a real ``plate_1.gcode`` on the card is a file."""
+        _printing(printer, gcode_file="/plate_1.gcode", subtask_name="Cube")
+        assert guard.file_refusal(1, "/plate_1.gcode") == guard.ACTIVE_PRINT
+        assert guard.file_refusal(1, "/Cube.3mf") == guard.ACTIVE_PRINT
+        _printing(printer, gcode_file="/sdcard/metadata/My Part.gcode", subtask_name=None)
+        assert guard.file_refusal(1, "/My Part.3mf") == guard.ACTIVE_PRINT
+        assert guard.file_refusal(1, "/Benchy.3mf") is None
+        _printing(printer, gcode_file="/metadata/plate_x.gcode", subtask_name=None)
+        assert guard.file_refusal(1, "/plate_x.gcode") == guard.ACTIVE_PRINT
+
     def test_a_disconnected_printer_is_not_an_idle_one(self, printer):
         printer.state.connected = False
         assert guard.file_refusal(1, "/Cube.3mf") == guard.STATE_UNKNOWN

@@ -1814,11 +1814,17 @@ async def upload_file_async(
     socket_timeout: float | None = None,
     printer_model: str | None = None,
     report: UploadReport | None = None,
+    *,
+    may_run: Callable[[], bool] | None = None,
 ) -> bool:
     """Async wrapper for uploading a file with timeout and progress callback.
 
     ``report`` — the caller's :class:`UploadReport`, filled with why the upload
     failed (cleared on success); see :func:`describe_upload_failure`.
+
+    ``may_run`` is asked after the wait for the printer's file channel and again
+    after the connection, immediately before the first byte (G10 B): a STOR over
+    a name destroys the file under it exactly as a DELE would.
 
     For A1/A1 Mini printers, automatically tries prot_p first, then falls back
     to prot_c if the upload fails. The working mode is cached for future uploads.
@@ -1839,6 +1845,8 @@ async def upload_file_async(
         mode_str = "prot_c" if force_prot_c else "prot_p"
 
         def target(worker: LaneWorker) -> bool:
+            if may_run is not None and not may_run():
+                return False
             logger.info(
                 f"FTP connecting to {ip_address} for upload (model={printer_model}, "
                 f"mode={mode_str}, socket_timeout={socket_timeout}s)..."
@@ -1853,6 +1861,8 @@ async def upload_file_async(
                 return False
             logger.info("FTP connected to %s", ip_address)
             try:
+                if may_run is not None and not may_run():
+                    return False
                 result = client.upload_file(local_path, remote_path, progress_callback)
                 if result:
                     BambuFTPClient.cache_mode(ip_address, mode_str)

@@ -172,4 +172,6 @@ class PrinterFileTransport(Protocol):
         local_path: Path,
         remote_name: str,
         progress_cb: Callable[[int, int], None] | None = None,
+        *,
+        may_run: Callable[[], bool] | None = None,
     ) -> bool: ...

@@ -167,10 +167,10 @@ async def remove_verified_copies(
             logger.debug("[CLEANUP] %s: could not delete %s: %s", label, path, exc)
             continue
         # ⚠️ A transport answers a refused or failed delete with a result, not an
-        # exception (G10 B): only ``deleted`` counts. A caller's own ``delete``
-        # that returns nothing keeps the old meaning — no exception, removed.
+        # exception (G10 B): only ``deleted`` counts. An answer of nothing is
+        # not a removal either — every transport returns a ``DeleteResult``.
         outcome = getattr(result, "value", result)
-        if outcome not in (None, "deleted"):
+        if outcome != "deleted":
             logger.debug("[CLEANUP] %s: %s was not deleted (%s)", label, path, outcome)
             continue
         removed += 1

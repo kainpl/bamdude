@@ -29,6 +29,7 @@ wait for the printer's file channel, immediately before the command.
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Callable
 
 from backend.app.services.printer_manager import printer_manager
@@ -91,11 +92,17 @@ def _printer_expects_a_print(printer_id: int) -> bool:
     return printer_has_expected_print(printer_id)
 
 
-def _is_internal_gcode_path(gcode_file: str | None) -> bool:
-    """Whether the reported G-code name is the plate member inside the 3MF rather than the 3MF itself."""
-    lowered = (gcode_file or "").replace("\\", "/").lower()
-    last = lowered.rsplit("/", 1)[-1]
-    return "metadata/" in lowered or (last.startswith("plate_") and last.endswith(".gcode"))
+_ARCHIVE_MEMBER = re.compile(r"(^|/)metadata/plate_\d+\.gcode$")
+
+
+def _is_archive_member(gcode_file: str | None) -> bool:
+    """Whether the reported G-code name is the plate member inside the 3MF rather than a file on the storage.
+
+    Only the exact member form, ``…Metadata/plate_<n>.gcode``. A bare
+    ``plate_1.gcode`` may be a real file somebody put on the card, so it keeps
+    its protection beside the job's own name (review, decision 4).
+    """
+    return bool(_ARCHIVE_MEMBER.search((gcode_file or "").replace("\\", "/").lower()))
 
 
 def _is_active_file(state, path: str) -> bool:
@@ -109,7 +116,7 @@ def _is_active_file(state, path: str) -> bool:
     lowered = path.replace("\\", "/").lower()
     name = lowered.rsplit("/", 1)[-1]
     gcode_file = getattr(state, "gcode_file", None)
-    if _is_internal_gcode_path(gcode_file):
+    if _is_archive_member(gcode_file):
         # ``Metadata/plate_1.gcode`` is a member of the job's archive, not a file
         # on the storage: it names nothing that could be compared.
         gcode_file = None
@@ -126,30 +133,27 @@ def _is_active_file(state, path: str) -> bool:
     return False
 
 
-def file_refusal(
-    printer_id: int, path: str, *, own_archive_id: int | None = None, needs_fresh_state: bool = True
-) -> str | None:
-    """Why this one file must not be deleted now, or ``None`` when it may be.
+def file_refusal(printer_id: int, path: str, *, own_archive_id: int | None = None) -> str | None:
+    """Why this one file must not be deleted or written over now, or ``None`` when it may be.
 
     ``own_archive_id`` is the dispatcher's own execution archive: a file it
     registered as its next print is its own to clear, another dispatch's is not.
 
-    ``needs_fresh_state=False`` is the dispatcher's question. It proves the
-    connection itself before it starts a print, so a printer that is silent for
-    a moment does not end its upload; but it still never clears a file the last
-    state it heard named as the loaded job's — a stale "printing Cube" is not
-    proof that Cube is free.
+    ⚠️ There is no caller that may skip the fresh observation, the dispatcher
+    included (review B2). A cached IDLE from before the connection dropped says
+    nothing about a print started on the printer's screen since, and an earlier
+    reconnect is not an observation made after the wait for the file channel.
+    A caller that expects the printer to be reconnecting waits for it to report
+    (``wait_until_observed``) and then asks here like everybody else.
     """
     state = observe(printer_id)
     if state is None:
-        if needs_fresh_state:
-            return STATE_UNKNOWN
-        state = printer_manager.peek_status(printer_id)[0]
+        return STATE_UNKNOWN
     status = getattr(state, "state", None)
     if status in ACTIVE_STATES:
         if _is_active_file(state, path):
             return ACTIVE_PRINT
-    elif status not in SAFE_STATES and needs_fresh_state:
+    elif status not in SAFE_STATES:
         return STATE_UNKNOWN
     expected = _expected_archive(printer_id, path)
     if expected is not None and expected != own_archive_id:
@@ -178,14 +182,13 @@ def may_delete(
     *,
     own_archive_id: int | None = None,
     also: Callable[[], bool] | None = None,
-    needs_fresh_state: bool = True,
 ) -> Callable[[], bool]:
     """A ``may_run`` for one file: asked again after the lane wait and before the command."""
 
     def check() -> bool:
         if also is not None and not also():
             return False
-        refusal = file_refusal(printer_id, path, own_archive_id=own_archive_id, needs_fresh_state=needs_fresh_state)
+        refusal = file_refusal(printer_id, path, own_archive_id=own_archive_id)
         if refusal is not None:
             logger.info("[FILES] printer %s: %s is not deleted (%s)", printer_id, path, refusal)
             return False

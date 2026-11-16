@@ -218,22 +218,53 @@ async def delete_internal_by_name(
     not "removed".
 
     Best-effort and never raises: a missing file is the normal case, and every
-    caller has its own failure path for a printer that cannot be reached.
+    caller has its own failure path for a printer that cannot be reached. A
+    caller that must tell "not there" from "there and not deleted" asks
+    :func:`clear_internal_by_name`.
+    """
+    return await clear_internal_by_name(transport, *names, may_run=may_run, gate=gate) == INTERNAL_DELETED
+
+
+# What became of the file ``clear_internal_by_name`` was asked to remove.
+INTERNAL_MISSING = "missing"  # listed, and no file of that name is there
+INTERNAL_DELETED = "deleted"
+INTERNAL_KEPT = "kept"  # found, and the delete was refused or failed — the file is still there
+INTERNAL_UNLISTED = "unlisted"  # the listing itself failed: nothing is known about the name
+
+
+async def clear_internal_by_name(
+    transport,
+    *names: str,
+    may_run: Callable[[], bool] | None = None,
+    gate: Callable[[str], Callable[[], bool]] | None = None,
+) -> str:
+    """:func:`delete_internal_by_name` with the exact outcome (review B1).
+
+    A bare bool folded "no such file" and "found, but the printer or the file
+    guard kept it" into one False, and the pre-upload clear read that False as
+    permission to write over the name.
     """
     wanted = {n for n in names if n}
     if not wanted:
-        return False
+        return INTERNAL_MISSING
     try:
-        for entry in await transport.list_files("/"):
-            if may_run is not None and not may_run():
-                return False
-            if entry.name in wanted:
-                check = gate(entry.path) if gate is not None else may_run
-                result = await transport.delete(entry.path, **({"may_run": check} if check is not None else {}))
-                return result is None or result == DeleteResult.DELETED
+        entries = await transport.list_files("/")
     except Exception as exc:  # noqa: BLE001 — cleanup must never fail its caller
         logger.debug("Internal-storage delete of %s skipped: %s", ", ".join(sorted(wanted)), exc)
-    return False
+        return INTERNAL_UNLISTED
+    for entry in entries:
+        if entry.name not in wanted:
+            continue
+        if may_run is not None and not may_run():
+            return INTERNAL_KEPT
+        check = gate(entry.path) if gate is not None else may_run
+        try:
+            result = await transport.delete(entry.path, **({"may_run": check} if check is not None else {}))
+        except Exception as exc:  # noqa: BLE001 — same as above
+            logger.debug("Internal-storage delete of %s failed: %s", entry.path, exc)
+            return INTERNAL_KEPT
+        return INTERNAL_DELETED if result == DeleteResult.DELETED else INTERNAL_KEPT
+    return INTERNAL_MISSING
 
 
 class PrintCommandRejectedError(RuntimeError):
@@ -365,6 +396,92 @@ class DispatchNotStarted(RuntimeError):
 
 class UploadFailed(RuntimeError):
     """The file did not reach the printer: a refused FTP pre-delete, upload or tunnel transfer."""
+
+
+class _FileGate:
+    """One dispatch job's right to delete, or write over, a file on its printer (G10 B).
+
+    A place in the file channel is no such right. The upload name comes from the
+    source's name, so while this job waited another print — sent from the slicer
+    or started on the printer's screen — may have begun under the very same
+    name; its file, and its working copies in ``/cache``, are not this job's.
+
+    ``gate(path)`` is that file's ``may_run``: asked after the wait and before
+    the command. It passes only when the printer record is still this job's and
+    ``printer_file_guard`` allows the file on a FRESH observation — there is no
+    exception for a printer that is silent (review B2). This job's own
+    expected-print registration is its own.
+
+    ⚠️ **A refusal is remembered.** The command that was refused returns the
+    same "failed" as a network error, and by the time anybody re-reads the guard
+    the state may look safe again; ``refused`` keeps the first reason so the job
+    stops instead of going on to write over the file it has just been told to
+    leave alone (review B1).
+    """
+
+    #: How long a job waits for a reconnecting printer to report before its first destructive step.
+    OBSERVE_TIMEOUT = 15.0
+    _OBSERVE_POLL = 0.25
+
+    def __init__(self, job: PrintDispatchJob) -> None:
+        self._job = job
+        self.refused: str | None = None
+
+    def _refusal(self, path: str) -> str | None:
+        job = self._job
+        if not printer_manager.printer_life_is_current(job.printer_id, job.printer_life):
+            return "printer_changed"
+        return printer_file_guard.file_refusal(job.printer_id, path, own_archive_id=job.execution_archive_id)
+
+    def __call__(self, path: str) -> Callable[[], bool]:
+        def check() -> bool:
+            refusal = self._refusal(path)
+            if refusal is None:
+                return True
+            if self.refused is None:
+                self.refused = refusal
+            logger.info(
+                "Dispatch job %s: %s on printer %s is left alone (%s)",
+                getattr(self._job, "id", None),
+                path,
+                self._job.printer_id,
+                refusal,
+            )
+            return False
+
+        return check
+
+    async def wait_until_observed(self) -> bool:
+        """Wait, bounded, for the printer to report after a reconnect; never grants anything itself."""
+        deadline = time.monotonic() + self.OBSERVE_TIMEOUT
+        while printer_file_guard.observe(self._job.printer_id) is None:
+            if time.monotonic() >= deadline:
+                return False
+            await asyncio.sleep(self._OBSERVE_POLL)
+        return True
+
+    def raise_if_refused(self) -> None:
+        if self.refused is None:
+            return
+        if self.refused == printer_file_guard.STATE_UNKNOWN:
+            raise UploadFailed(
+                "The printer's current state is not known, so nothing on it was deleted or replaced — "
+                "the upload was not started"
+            )
+        raise UploadFailed(
+            "The printer already holds a file with this name that belongs to another print — the upload was not started"
+        )
+
+    def unless_refused(self, upload):
+        """``upload`` for a retry loop: a refusal ends the loop instead of being retried as a failure."""
+
+        async def attempt(*args, **kwargs):
+            result = await upload(*args, **kwargs)
+            if not result:
+                self.raise_if_refused()
+            return result
+
+        return attempt
 
 
 class PrinterUnavailable(RuntimeError):
@@ -2837,6 +2954,12 @@ class BackgroundDispatchService:
             self._raise_if_cancel_requested(job)
 
             await self._set_active_message(job, f"Preparing upload to {printer_name}...")
+            # One gate for this run's every delete and for the upload itself (G10 B).
+            # The printer may still be reconnecting after the session check above:
+            # wait for it to report, so a healthy printer is not refused for a
+            # silence that ends in a second. Nothing is assumed if it does not.
+            file_gate = self._file_gate(job)
+            await file_gate.wait_until_observed()
             await self._clear_remote_name(
                 transport,
                 storage,
@@ -2846,7 +2969,7 @@ class BackgroundDispatchService:
                 remote_filename=remote_filename,
                 ftp_timeout=ftp_timeout,
                 printer_model=printer_model,
-                gate=self._file_gate(job),
+                gate=file_gate,
             )
 
             # Clean up /cache/ - delete stale .3mf and .bbl files from previous
@@ -2885,7 +3008,7 @@ class BackgroundDispatchService:
                                 f"/cache/{fname}",
                                 socket_timeout=ftp_timeout,
                                 printer_model=printer_model,
-                                may_run=self._file_gate(job)(f"/cache/{fname}"),
+                                may_run=file_gate(f"/cache/{fname}"),
                             )
                             if cache_result == DeleteResult.DELETED:
                                 logger.info("Dispatch job %s: Deleted /cache/%s", job.id, fname)
@@ -2934,11 +3057,14 @@ class BackgroundDispatchService:
                     with printer_manager.transfer_in_progress(job.printer_id):
                         if storage != "external":
                             uploaded = await transport.upload(
-                                Path(upload_file_path), remote_filename, upload_progress_callback
+                                Path(upload_file_path),
+                                remote_filename,
+                                upload_progress_callback,
+                                may_run=file_gate(remote_path),
                             )
                         elif ftp_retry_enabled:
                             uploaded = await with_ftp_retry(
-                                upload_file_async,
+                                file_gate.unless_refused(upload_file_async),
                                 printer_ip,
                                 printer_access_code,
                                 upload_file_path,
@@ -2949,8 +3075,9 @@ class BackgroundDispatchService:
                                 max_retries=ftp_retry_count,
                                 retry_delay=ftp_retry_delay,
                                 operation_name=f"Upload for reprint to {printer_name}",
-                                non_retry_exceptions=(DispatchJobCancelled,),
+                                non_retry_exceptions=(DispatchJobCancelled, UploadFailed),
                                 report=upload_report,
+                                may_run=file_gate(remote_path),
                             )
                         else:
                             uploaded = await upload_file_async(
@@ -2962,11 +3089,15 @@ class BackgroundDispatchService:
                                 socket_timeout=ftp_timeout,
                                 printer_model=printer_model,
                                 report=upload_report,
+                                may_run=file_gate(remote_path),
                             )
-                except DispatchJobCancelled:
+                except (DispatchJobCancelled, UploadFailed):
                     raise
                 except Exception as exc:
                     raise UploadFailed(str(exc) or _upload_failure_message(storage, upload_report)) from exc
+                # The gate kept the name — a print began on the printer while this
+                # upload waited for the file channel: say that, not "upload failed".
+                file_gate.raise_if_refused()
 
                 if uploaded:
                     await self._set_active_upload_progress(job, 1, 1)
@@ -3177,7 +3308,7 @@ class BackgroundDispatchService:
                         printer_access_code,
                         remote_path,
                         printer_model,
-                        may_run=self._file_gate(job)(remote_path),
+                        may_run=file_gate(remote_path),
                     )
                     # Nothing was published: a typed refusal, which the deferral path handles.
                     raise StartRefused(printer_manager.start_refusal_reason(job.printer_id))
@@ -3817,6 +3948,12 @@ class BackgroundDispatchService:
             self._raise_if_cancel_requested(job)
 
             await self._set_active_message(job, f"Preparing upload to {printer_name}...")
+            # One gate for this run's every delete and for the upload itself (G10 B).
+            # The printer may still be reconnecting after the session check above:
+            # wait for it to report, so a healthy printer is not refused for a
+            # silence that ends in a second. Nothing is assumed if it does not.
+            file_gate = self._file_gate(job)
+            await file_gate.wait_until_observed()
             await self._clear_remote_name(
                 transport,
                 storage,
@@ -3826,7 +3963,7 @@ class BackgroundDispatchService:
                 remote_filename=remote_filename,
                 ftp_timeout=ftp_timeout,
                 printer_model=printer_model,
-                gate=self._file_gate(job),
+                gate=file_gate,
             )
 
             # Clean up /cache/ - delete stale .3mf and .bbl files from previous
@@ -3865,7 +4002,7 @@ class BackgroundDispatchService:
                                 f"/cache/{fname}",
                                 socket_timeout=ftp_timeout,
                                 printer_model=printer_model,
-                                may_run=self._file_gate(job)(f"/cache/{fname}"),
+                                may_run=file_gate(f"/cache/{fname}"),
                             )
                             if cache_result == DeleteResult.DELETED:
                                 logger.info("Dispatch job %s: Deleted /cache/%s", job.id, fname)
@@ -3914,11 +4051,14 @@ class BackgroundDispatchService:
                     with printer_manager.transfer_in_progress(job.printer_id):
                         if storage != "external":
                             uploaded = await transport.upload(
-                                Path(upload_file_path), remote_filename, upload_progress_callback
+                                Path(upload_file_path),
+                                remote_filename,
+                                upload_progress_callback,
+                                may_run=file_gate(remote_path),
                             )
                         elif ftp_retry_enabled:
                             uploaded = await with_ftp_retry(
-                                upload_file_async,
+                                file_gate.unless_refused(upload_file_async),
                                 printer_ip,
                                 printer_access_code,
                                 upload_file_path,
@@ -3929,8 +4069,9 @@ class BackgroundDispatchService:
                                 max_retries=ftp_retry_count,
                                 retry_delay=ftp_retry_delay,
                                 operation_name=f"Upload for print to {printer_name}",
-                                non_retry_exceptions=(DispatchJobCancelled,),
+                                non_retry_exceptions=(DispatchJobCancelled, UploadFailed),
                                 report=upload_report,
+                                may_run=file_gate(remote_path),
                             )
                         else:
                             uploaded = await upload_file_async(
@@ -3942,11 +4083,15 @@ class BackgroundDispatchService:
                                 socket_timeout=ftp_timeout,
                                 printer_model=printer_model,
                                 report=upload_report,
+                                may_run=file_gate(remote_path),
                             )
-                except DispatchJobCancelled:
+                except (DispatchJobCancelled, UploadFailed):
                     raise
                 except Exception as exc:
                     raise UploadFailed(str(exc) or _upload_failure_message(storage, upload_report)) from exc
+                # The gate kept the name — a print began on the printer while this
+                # upload waited for the file channel: say that, not "upload failed".
+                file_gate.raise_if_refused()
 
                 if uploaded:
                     await self._set_active_upload_progress(job, 1, 1)
@@ -4154,7 +4299,7 @@ class BackgroundDispatchService:
                         printer_access_code,
                         remote_path,
                         printer_model,
-                        may_run=self._file_gate(job)(remote_path),
+                        may_run=file_gate(remote_path),
                     )
                     # Nothing was published: a typed refusal, which the deferral path handles.
                     raise StartRefused(printer_manager.start_refusal_reason(job.printer_id))
@@ -4639,33 +4784,9 @@ class BackgroundDispatchService:
         return rack
 
     @staticmethod
-    def _file_gate(job: PrintDispatchJob) -> Callable[[str], Callable[[], bool]]:
-        """``may_run`` for one file this job is about to delete on the printer (G10 B).
-
-        A place in the file channel is no right to delete. The upload name comes
-        from the source's name, so while this job waited another print — sent
-        from the slicer or started on the printer's screen — may have begun
-        under the very same name; its file, and its working copies in ``/cache``,
-        are not this job's to clear. Asked per file, after the wait and before
-        the command: the printer record is still this job's, the file is not the
-        one a loaded job reads, and it is not another dispatch's expected print
-        (this job's own registration is its own).
-        """
-
-        def still_this_printer() -> bool:
-            return printer_manager.printer_life_is_current(job.printer_id, job.printer_life)
-
-        def gate(path: str) -> Callable[[], bool]:
-            return printer_file_guard.may_delete(
-                job.printer_id,
-                path,
-                own_archive_id=job.execution_archive_id,
-                also=still_this_printer,
-                # The dispatcher proves the connection itself before the start.
-                needs_fresh_state=False,
-            )
-
-        return gate
+    def _file_gate(job: PrintDispatchJob) -> _FileGate:
+        """This job's gate for every file it deletes or writes over on the printer (G10 B)."""
+        return _FileGate(job)
 
     @staticmethod
     async def _clear_remote_name(
@@ -4678,24 +4799,33 @@ class BackgroundDispatchService:
         remote_filename: str,
         ftp_timeout,
         printer_model: str | None,
-        gate: Callable[[str], Callable[[], bool]] | None = None,
+        gate: _FileGate | None = None,
     ) -> None:
-        """Remove a same-named file before the upload; a refused card delete is a typed upload failure.
+        """Remove a same-named file before the upload; a refused clear is a typed upload failure.
 
-        Internal storage deletes by lookup and never raises (``delete_internal_by_name``).
+        ⚠️ **Nothing here returns normally with the name still protected**
+        (review B1). A file the guard keeps — the one a loaded job reads,
+        another dispatch's expected print, anything on a printer nobody hears —
+        ends this upload: writing over the name would destroy it just as a
+        delete would. The gate *remembers* a refusal, so one that happened
+        during the wait for the file channel is not lost when the state has
+        moved on by the time it is read again. And a file the listing FOUND but
+        the printer did not delete is not "cleared" either.
 
-        ⚠️ With a ``gate`` (G10 B), a file the guard keeps — the one a loaded
-        job reads, or another dispatch's expected print — ends this upload
-        before it starts: writing over that name would destroy it just as a
-        delete would.
+        A card delete that merely failed stays as it was: over FTP nothing says
+        whether the name exists, a missing file is the normal case, and the
+        upload asks the same gate again before its first byte.
         """
         if gate is not None and not gate(remote_path)():
-            raise UploadFailed(
-                "The printer already holds a file with this name that belongs to another print — "
-                "the upload was not started"
-            )
+            gate.raise_if_refused()
         if storage != "external":
-            await delete_internal_by_name(transport, remote_filename, gate=gate)
+            outcome = await clear_internal_by_name(transport, remote_filename, gate=gate)
+            if gate is not None:
+                gate.raise_if_refused()
+            if outcome == INTERNAL_KEPT:
+                raise UploadFailed(
+                    "Could not clear the previous copy on the printer before the upload: the printer did not delete it"
+                )
             return
         try:
             await delete_file_async(
@@ -4710,12 +4840,8 @@ class BackgroundDispatchService:
             raise
         except Exception as exc:
             raise UploadFailed(f"Could not clear the previous copy on the printer before the upload: {exc}") from exc
-        if gate is not None and not gate(remote_path)():
-            # The refusal appeared while the delete waited for the file channel.
-            raise UploadFailed(
-                "The printer already holds a file with this name that belongs to another print — "
-                "the upload was not started"
-            )
+        if gate is not None:
+            gate.raise_if_refused()
 
     @staticmethod
     async def _cleanup_sd_card_file(
@@ -4728,9 +4854,14 @@ class BackgroundDispatchService:
     ):
         """Best-effort delete of uploaded file from printer SD card."""
         try:
-            await delete_file_async(printer_ip, access_code, remote_path, printer_model=printer_model, may_run=may_run)
+            result = await delete_file_async(
+                printer_ip, access_code, remote_path, printer_model=printer_model, may_run=may_run
+            )
         except Exception:
-            pass  # Best-effort - don't fail the error handler
+            return  # Best-effort - don't fail the error handler
+        if result == DeleteResult.FAILED:
+            # Read, not assumed (G10 B): the file may still be on the card.
+            logger.info("Dispatch cleanup: %s was not deleted from the printer and may still be there", remote_path)
 
     async def _close_execution_archive(self, job: PrintDispatchJob, exc: BaseException) -> None:
         """Flip the execution archive of a job that failed outside the runner's ``try``.

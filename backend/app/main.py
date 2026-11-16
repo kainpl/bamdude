@@ -8538,14 +8538,23 @@ async def _on_print_complete_impl(
                                     and is_matching_gcode
                                 ):
                                     try:
-                                        await delete_file_async(
+                                        cache_result = await delete_file_async(
                                             printer.ip_address,
                                             printer.access_code,
                                             f"/cache/{fname}",
                                             printer_model=printer.model,
                                             may_run=_cleanup_gate(f"/cache/{fname}"),
                                         )
-                                        logger.info("Deleted /cache/%s from printer %s", fname, printer.name)
+                                        # The answer is read (G10 B): a kept or failed delete is not "Deleted".
+                                        if cache_result == DeleteResult.DELETED:
+                                            logger.info("Deleted /cache/%s from printer %s", fname, printer.name)
+                                        else:
+                                            logger.debug(
+                                                "/cache/%s stays on printer %s (%s)",
+                                                fname,
+                                                printer.name,
+                                                cache_result.value,
+                                            )
                                     except Exception:
                                         pass
 
@@ -8584,7 +8593,7 @@ async def _on_print_complete_impl(
                                             if modified:
                                                 # Preserve original formatting (4-space indent)
                                                 patched = _json.dumps(bbl_json, indent=4).encode("utf-8")
-                                                await upload_bytes_async(
+                                                bbl_written = await upload_bytes_async(
                                                     printer.ip_address,
                                                     printer.access_code,
                                                     patched,
@@ -8592,6 +8601,12 @@ async def _on_print_complete_impl(
                                                     printer_model=printer.model,
                                                     may_run=_cleanup_gate(bbl_path),
                                                 )
+                                                if not bbl_written:
+                                                    # Kept by the gate or refused by the printer: not "Patched".
+                                                    logger.debug(
+                                                        "/cache/%s on printer %s was not patched", fname, printer.name
+                                                    )
+                                                    continue
                                                 logger.info(
                                                     "Patched .bbl /cache/%s on printer %s (auto_recovery=false%s)",
                                                     fname,
