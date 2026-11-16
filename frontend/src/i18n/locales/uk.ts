@@ -6182,6 +6182,18 @@ export default {
     linkedToNProductsReadOnly_other: 'Прив\'язано до {{count}} виробу',
     moveChangesProducts: 'змінює вироби',
     moveChangesProductsHint: 'Тека з позначкою «змінює вироби» змінила б, до яких виробів належать ці файли, — для цього потрібне право змінювати замовлення.',
+    columns: {
+      label: 'Колонки папок',
+      root: 'Бібліотека',
+      showMore: 'Показати ще ({{shown}} із {{total}})',
+      noMatches: 'Тут немає відповідних файлів',
+      loadFailed: 'Не вдалося завантажити цю папку',
+      filterNote: 'Увімкнено пошук або фільтр: кожна колонка показує лише відповідні файли своєї папки. Папки видно завжди, щоб шлях лишався відкритим.',
+      noSubfolderSearch: 'Колонка показує одну папку — пошук тут не заходить у підпапки.',
+      preview: 'Перегляд: {{name}}',
+      closePreview: 'Закрити перегляд',
+      backTo: 'Назад до «{{name}}»',
+    },
     moveFolder: {
       action: 'Перемістити…',
       title: 'Перемістити «{{name}}»',
@@ -6623,7 +6635,7 @@ export default {
 
   // Projects section, orders face — the whole vocabulary of the redesign.
   list: {
-    view: { label: 'Вигляд', cards: 'Картки', table: 'Таблиця', list: 'Список', calendar: 'Календар' },
+    view: { label: 'Вигляд', cards: 'Картки', table: 'Таблиця', list: 'Список', calendar: 'Календар', columns: 'Колонки' },
     search: { clear: 'Очистити пошук' },
     tabs: { countLoading: 'кількість завантажується' },
     empty: { noMatch: 'Нічого не збігається з пошуком або фільтрами.', reset: 'Скинути' },

@@ -41,6 +41,7 @@ import {
   Square,
   LayoutGrid,
   List,
+  Columns3,
   Search,
   SlidersHorizontal,
   ArrowUpNarrowWide,
@@ -136,6 +137,7 @@ import { invalidateProductCatalog, invalidateProductFiles, invalidateQueueViews 
 import { canLinkFile, canLinkFolder, moveChangesProducts } from '../utils/workshopRights';
 import { writableFolders } from '../utils/folderTree';
 import { MoveFolderModal } from '../components/library/MoveFolderModal';
+import { LibraryColumnsView, type ColumnFilters } from '../components/library/LibraryColumnsView';
 import { canMoveFolders, folderMoveRefusalText, isMovableFolder } from '../utils/folderMove';
 import { isOsFileDrag, useLibraryDragDrop, type LibraryDragDrop } from '../hooks/useLibraryDragDrop';
 
@@ -1973,6 +1975,47 @@ export function FileManagerPage() {
   const [selectedTagIds, setSelectedTagIds] = useState<number[]>([]);
 
   const [viewMode, setViewMode] = usePersistedState<LibraryView>('library-view-mode', 'grid', parseLibraryView);
+  const columnsView = viewMode === 'columns';
+  // The columns ARE the path to the open folder, so in that view the address
+  // names the folder at every step: a reload or a shared link shows the same
+  // columns and the browser's Back walks the path. The other views keep their
+  // habit of reading the address without rewriting it on every click.
+  const columnsViewRef = useRef(columnsView);
+  useEffect(() => {
+    columnsViewRef.current = columnsView;
+  }, [columnsView]);
+  const writeFolderToUrl = useCallback(
+    (folderId: number | null, replace: boolean) => {
+      setSearchParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          if (folderId == null) next.delete('folder');
+          else next.set('folder', String(folderId));
+          // Another folder is another list: its page and its ticks are not this one's.
+          next.delete('page');
+          next.delete('selected');
+          return next;
+        },
+        { replace },
+      );
+    },
+    [setSearchParams],
+  );
+  /** Open a folder (`null` = the top level) from any door of the page. */
+  const selectFolder = useCallback(
+    (folderId: number | null) => {
+      setSelectedFolderId(folderId);
+      if (columnsViewRef.current) writeFolderToUrl(folderId, false);
+    },
+    [writeFolderToUrl],
+  );
+  const changeViewMode = (mode: LibraryView) => {
+    setViewMode(mode);
+    // Entering the columns: the folder that is open becomes the address's.
+    if (mode === 'columns') writeFolderToUrl(selectedFolderId, true);
+  };
+  // What the columns have loaded — the files the bulk bar acts on in that view.
+  const [columnFiles, setColumnFiles] = useState<LibraryFileListItem[]>([]);
   const [wrapFolderNames, setWrapFolderNames] = useState(() => {
     return localStorage.getItem('library-wrap-folders') === 'true';
   });
@@ -2093,6 +2136,10 @@ export function FileManagerPage() {
     if (folderParam) {
       const newFolderId = parseInt(folderParam, 10);
       setSelectedFolderId(newFolderId);
+    } else if (columnsViewRef.current) {
+      // In the columns view the address is the path: no folder there is the root
+      // (the browser's Back out of the first folder).
+      setSelectedFolderId(null);
     }
   }, [searchParams]);
 
@@ -2165,6 +2212,11 @@ export function FileManagerPage() {
   // external living deeper in the tree belongs to its parent and stays put.
   const ownRootFolders = useMemo(() => sortedFolders?.filter((f) => !f.is_external), [sortedFolders]);
   const externalRootFolders = useMemo(() => sortedFolders?.filter((f) => f.is_external), [sortedFolders]);
+  // The columns view's tree: own folders first, external mounts after — the sidebar's order.
+  const columnFolders = useMemo(
+    () => (ownRootFolders && externalRootFolders ? [...ownRootFolders, ...externalRootFolders] : undefined),
+    [ownRootFolders, externalRootFolders],
+  );
 
   // Trash count for the header badge (#1008). Empty/error treated as zero so a
   // broken trash endpoint doesn't break the File Manager.
@@ -2329,9 +2381,24 @@ export function FileManagerPage() {
     queryKey: ['library-files', libraryFileParams],
     queryFn: () => api.getLibraryFilesPaged(libraryFileParams),
     placeholderData: (prev) => prev,
+    // The columns ask for their own levels; one flat page behind them would be a wasted request.
+    enabled: !columnsView,
   });
-  const files = filesPage?.items;
-  const meta = filesPage?.meta;
+  const files = columnsView ? columnFiles : filesPage?.items;
+  const meta = columnsView ? undefined : filesPage?.meta;
+  // The page's sort and filters as every column sends them — the same values
+  // the list sends, minus the folder scope, which is the column's own.
+  const columnFilters: ColumnFilters = useMemo(
+    () => ({
+      tag_ids: tagFilterKey,
+      q: debouncedSearchQuery.trim() || undefined,
+      file_type: filterType !== 'all' ? filterType : undefined,
+      unprinted_only: unprintedOnly,
+      username: filterUsername || undefined,
+      sort_by: `${sortField}_${sortDirection}`,
+    }),
+    [tagFilterKey, debouncedSearchQuery, filterType, unprintedOnly, filterUsername, sortField, sortDirection],
+  );
 
   // Out-of-range page clamp: the server, not a local guess, is what says
   // `page` no longer exists (the last item on it was deleted, or the
@@ -2440,7 +2507,7 @@ export function FileManagerPage() {
       queryClient.invalidateQueries({ queryKey: ['library-files'] });
       queryClient.invalidateQueries({ queryKey: ['library-stats'] });
       setShowExternalFolderModal(false);
-      setSelectedFolderId(folder.id);
+      selectFolder(folder.id);
       markScanStarted(folder.id, job.job_id);
       showToast(t('fileManager.toast.externalFolderLinked'), 'success');
     },
@@ -2477,7 +2544,7 @@ export function FileManagerPage() {
       queryClient.invalidateQueries({ queryKey: ['library-trash-count'] });
       invalidateProductFiles(queryClient);
       if (selectedFolderId === deleteConfirm?.id) {
-        setSelectedFolderId(null);
+        selectFolder(null);
       }
       setDeleteConfirm(null);
       showToast(t('fileManager.toast.folderDeleted'), 'success');
@@ -2972,7 +3039,7 @@ export function FileManagerPage() {
       folder={folder}
       depth={1}
       selectedFolderId={selectedFolderId}
-      onSelect={setSelectedFolderId}
+      onSelect={selectFolder}
       onDelete={(id) => setDeleteConfirm({ type: 'folder', id })}
       onLink={setLinkFolder}
       onRename={(f) => setRenameItem({ type: 'folder', id: f.id, name: f.name })}
@@ -3066,9 +3133,10 @@ export function FileManagerPage() {
           </div>
         </div>
         <div className="flex items-center gap-2 sm:gap-3 flex-wrap sm:flex-1 sm:justify-end min-w-0">
-          <ListViewToggle value={viewMode} onChange={setViewMode} options={[
+          <ListViewToggle value={viewMode} onChange={changeViewMode} options={[
             { value: 'grid', icon: LayoutGrid, label: t('list.view.cards') },
             { value: 'list', icon: List, label: t('list.view.list') },
+            { value: 'columns', icon: Columns3, label: t('list.view.columns') },
           ]} />
 
           <div className="hidden sm:contents">
@@ -3237,10 +3305,10 @@ export function FileManagerPage() {
             onChange={(e) => {
               const v = e.target.value;
               if (v.startsWith('__top:')) {
-                setSelectedFolderId(null);
+                selectFolder(null);
                 setTopLevelView(v.slice('__top:'.length) as 'internal' | 'external');
               } else {
-                setSelectedFolderId(parseInt(v, 10));
+                selectFolder(parseInt(v, 10));
               }
             }}
           >
@@ -3402,7 +3470,7 @@ export function FileManagerPage() {
                   : 'hover:bg-bambu-dark text-white'
               } ${DROP_STATE_CLASS[dnd.dropState(null) ?? 'none']}`}
               onClick={() => {
-                setSelectedFolderId(null);
+                selectFolder(null);
                 setTopLevelView('internal');
               }}
             >
@@ -3428,7 +3496,7 @@ export function FileManagerPage() {
                     : 'hover:bg-bambu-dark text-white'
                 }`}
                 onClick={() => {
-                  setSelectedFolderId(null);
+                  selectFolder(null);
                   setTopLevelView('external');
                 }}
               >
@@ -3564,7 +3632,7 @@ export function FileManagerPage() {
               folder/tag-scoped fetch — a filter that matches zero rows would
               otherwise hide this toolbar exactly when it's needed to clear or
               adjust the filter, so `anyFilterActive` keeps it up regardless. */}
-          {files && (files.length > 0 || anyFilterActive) && (
+          {files && (files.length > 0 || anyFilterActive || columnsView) && (
             <div className="flex flex-col gap-2 mb-4 p-3 bg-bambu-dark-secondary rounded-lg border border-bambu-dark-tertiary sm:sticky sm:top-(--app-top) z-10 lg:static">
             <div className="flex sm:hidden items-center gap-2 flex-wrap">
               <Button variant="secondary" size="sm" aria-expanded={mobileSearchOpen}
@@ -3619,7 +3687,10 @@ export function FileManagerPage() {
                   type="button"
                   onClick={() => setSearchCurrentFolder((scoped) => !scoped)}
                   aria-pressed={searchCurrentFolder}
-                  className={`h-9 px-3 text-sm rounded-lg border transition-colors ${
+                  // A column is one folder: its search never reaches below it.
+                  disabled={columnsView}
+                  title={columnsView ? t('fileManager.columns.noSubfolderSearch') : undefined}
+                  className={`h-9 px-3 text-sm rounded-lg border transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
                     searchCurrentFolder
                       ? 'bg-bambu-green/20 border-bambu-green text-bambu-green'
                       : 'bg-bambu-dark border-bambu-dark-tertiary text-bambu-gray hover:text-white'
@@ -3683,7 +3754,7 @@ export function FileManagerPage() {
               {/* Results count — `total` is now the server's grand total across
                   every page (`meta.total`), not the size of one client-side
                   fetch; `showing` is this page's own item count. */}
-              {anyFilterActive && (
+              {anyFilterActive && !columnsView && (
                 <span className="h-9 flex items-center text-sm text-bambu-gray hidden sm:inline-flex">
                   {t('fileManager.resultsCount', { showing: filteredAndSortedFiles.length, total: meta?.total ?? 0 })}
                 </span>
@@ -3727,7 +3798,7 @@ export function FileManagerPage() {
             {/* #1268: recursive-search hint — placed below the toolbar row
                 (not floating under the input) so it never overlaps wrapped
                 filters on narrow breakpoints. */}
-            {searchExpandsSubfolders && (
+            {searchExpandsSubfolders && !columnsView && (
               <span className="text-[10px] text-bambu-gray whitespace-nowrap">
                 {t('fileManager.searchSubfoldersHint')}
               </span>
@@ -3936,7 +4007,23 @@ export function FileManagerPage() {
           )}
 
           {/* File grid/list */}
-          {isLoading ? (
+          {columnsView ? (
+            <LibraryColumnsView
+              folders={columnFolders}
+              selectedFolderId={selectedFolderId}
+              onSelectFolder={selectFolder}
+              filters={columnFilters}
+              filtersActive={anyFilterActive}
+              selectedFiles={selectedFiles}
+              onToggleFile={handleFileSelect}
+              onOpenFile={openPreview}
+              onDetails={setDetailsFile}
+              onVisibleFilesChange={setColumnFiles}
+              renderPreview={renderFileCard}
+              thumbnailVersions={thumbnailVersions}
+              dnd={dnd}
+            />
+          ) : isLoading ? (
             <div className="flex-1 flex items-center justify-center">
               <div className="flex flex-col items-center gap-3">
                 <Loader2 className="w-8 h-8 animate-spin text-bambu-green" />

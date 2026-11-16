@@ -6128,6 +6128,18 @@ export default {
     linkedToNProductsReadOnly_other: 'Linked to {{count}} products',
     moveChangesProducts: 'changes products',
     moveChangesProductsHint: 'A folder marked «changes products» would change which products these files belong to — that needs the right to change orders.',
+    columns: {
+      label: 'Folder columns',
+      root: 'Library',
+      showMore: 'Show more ({{shown}} of {{total}})',
+      noMatches: 'No matching files here',
+      loadFailed: 'Could not load this folder',
+      filterNote: 'A search or filter is on: each column shows only the matching files of its own folder. Folders are always shown, so the path stays open.',
+      noSubfolderSearch: 'Columns show one folder each — a search here does not reach into subfolders.',
+      preview: 'Preview: {{name}}',
+      closePreview: 'Close preview',
+      backTo: 'Back to {{name}}',
+    },
     moveFolder: {
       action: 'Move…',
       title: 'Move “{{name}}”',
@@ -6548,7 +6560,7 @@ export default {
 
   // Projects section, orders face — the whole vocabulary of the redesign.
   list: {
-    view: { label: 'View', cards: 'Cards', table: 'Table', list: 'List', calendar: 'Calendar' },
+    view: { label: 'View', cards: 'Cards', table: 'Table', list: 'List', calendar: 'Calendar', columns: 'Columns' },
     search: { clear: 'Clear search' },
     tabs: { countLoading: 'count is loading' },
     empty: { noMatch: 'Nothing matches your search or filters.', reset: 'Reset' },
