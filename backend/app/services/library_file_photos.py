@@ -19,12 +19,22 @@ What the rules are:
   the folder that no row names is nothing — never served — so a folder left
   behind cannot hand its pictures to the next file that gets the id. Even so
   every place a library file is purged calls :func:`forget_files` (SQLite runs
-  no FK actions), which removes the rows and the folder.
-* **All or nothing.** :func:`add_photo` writes the files, inserts the row and
-  commits; whatever stops it before the commit lands — a refusal, a disk error,
-  a cancellation, a failed commit — removes the files it wrote. Every file
-  operation runs through ``preview_artifacts.disk``, which a cancelled caller
-  still waits for.
+  no FK actions), which removes the rows and the files they name.
+* **Files follow the commit.** A removal waits for the transaction that removed
+  the row: :func:`forget_files` runs inside somebody else's purge and only
+  notes the files on the session — they go after the ROOT commit, a rolled-back
+  savepoint takes its notes with it, and a rollback or a commit that raised
+  removes nothing. ⚠️ Only the files the removed rows named are removed, never
+  the folder wholesale: SQLite hands a purged file's id — the folder's name — to
+  the next file, and the removal runs after the commit.
+* **All or nothing, and never a row without its picture.** :func:`add_photo`
+  writes the files, inserts the row and commits; whatever stops it before the
+  commit is SENT — a refusal, a disk error, a cancellation, a failed flush —
+  removes the files it wrote. When the commit itself raises, its outcome is
+  read back: no row, the files go; a row, the photo stands; no answer, the
+  files stay (a file no row names is found by the pruner — a row without its
+  picture is a broken photo). Every file operation runs through
+  ``preview_artifacts.disk``, which a cancelled caller still waits for.
 * **They belong to the library row.** Trashing the file keeps them (restore
   brings them back); they are not copied to an archive, and another row with
   the same bytes has none.
@@ -32,10 +42,10 @@ What the rules are:
 
 from __future__ import annotations
 
+import asyncio
 import io
 import logging
 import re
-import shutil
 from collections.abc import Iterable
 from datetime import datetime, timezone
 from pathlib import Path
@@ -43,7 +53,8 @@ from uuid import uuid4
 
 from fastapi import HTTPException
 from PIL import Image, ImageOps
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, event, func, select, update
+from sqlalchemy.orm import Session
 
 from backend.app.core.config import settings
 from backend.app.models.library import LibraryFile
@@ -116,23 +127,98 @@ def _unlink_all(paths: Iterable[Path]) -> None:
             logger.warning("Library photo file %s was not removed: %s", path.name, type(exc).__name__)
 
 
-def _remove_folders(library_file_ids: list[int]) -> None:
-    root = photos_root().resolve()
-    for library_file_id in library_file_ids:
-        folder = photos_dir(library_file_id)
-        try:
-            if folder.parent != root or not folder.is_dir() or folder.is_symlink():
-                continue
-            shutil.rmtree(folder)
-        except OSError as exc:
-            logger.warning("Photo folder of library file %s was not removed: %s", library_file_id, type(exc).__name__)
-
-
 def _remove_folder_if_empty(folder: Path) -> None:
     try:
         folder.rmdir()
     except OSError:
         pass  # not empty, or already gone
+
+
+def _remove_forgotten(paths: list[Path]) -> None:
+    _unlink_all(paths)
+    for folder in sorted({path.parent for path in paths}):
+        _remove_folder_if_empty(folder)
+
+
+# -- after the commit ---------------------------------------------------------------
+#
+# The shape of ``part_images``' own seam (its event-order notes apply): removals
+# are noted on the session, a savepoint remembers how many there were when it
+# opened, and only the ROOT commit carries them out.
+
+_STATE = "library_file_photos_after_commit"
+_tasks: set[asyncio.Task] = set()
+_SHUTDOWN_GRACE_SECONDS = 5.0
+
+
+class _Pending:
+    def __init__(self) -> None:
+        self.paths: list[Path] = []
+        self.marks: dict = {}  # savepoint -> how many paths were noted when it opened
+
+
+def _remove_after_commit(db, paths: list[Path]) -> None:
+    info = getattr(db, "sync_session", db).info
+    state = info.get(_STATE)
+    if state is None:
+        state = info[_STATE] = _Pending()
+    state.paths.extend(paths)
+
+
+@event.listens_for(Session, "after_transaction_create")
+def _savepoint_opened(session, transaction) -> None:
+    state = session.info.get(_STATE)
+    if transaction.nested and state is not None:
+        state.marks[transaction] = len(state.paths)
+
+
+@event.listens_for(Session, "after_soft_rollback")
+def _savepoint_rolled_back(session, previous_transaction) -> None:
+    state = session.info.get(_STATE)
+    if not previous_transaction.nested or state is None:
+        return
+    # A savepoint opened before the first note has no mark: everything noted since is its own.
+    del state.paths[state.marks.pop(previous_transaction, 0) :]
+
+
+@event.listens_for(Session, "after_commit")
+def _committed(session) -> None:
+    if session.in_nested_transaction():
+        return  # a savepoint released: its notes stay with the transaction around it
+    state = session.info.pop(_STATE, None)
+    if state is None or not state.paths:
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        logger.warning("Library photo files were not removed after their purge: no running event loop")
+        return
+    task = loop.create_task(disk(_remove_forgotten, list(state.paths)))
+    _tasks.add(task)
+    task.add_done_callback(_tasks.discard)
+
+
+@event.listens_for(Session, "after_transaction_end")
+def _root_ended(session, transaction) -> None:
+    if transaction.parent is None:
+        # Ended without a root commit — a rollback, a close, a commit that raised: nothing is removed.
+        session.info.pop(_STATE, None)
+
+
+async def drain() -> None:
+    """Wait for every removal already started (tests, shutdown)."""
+    while _tasks:
+        await asyncio.gather(*list(_tasks), return_exceptions=True)
+
+
+async def shutdown() -> None:
+    """Lifespan end: let removals that started finish briefly, then cancel the rest."""
+    try:
+        await asyncio.wait_for(drain(), _SHUTDOWN_GRACE_SECONDS)
+    except TimeoutError:
+        for task in list(_tasks):
+            task.cancel()
+        await asyncio.gather(*list(_tasks), return_exceptions=True)
 
 
 class _Refused(Exception):
@@ -252,6 +338,15 @@ async def _commit(db) -> None:
     await db.commit()
 
 
+async def _read_back(db, library_file_id: int, stored_name: str) -> LibraryFilePhoto | None:
+    """The row a commit of unknown outcome was writing, if it is there."""
+    return await db.scalar(
+        select(LibraryFilePhoto).where(
+            LibraryFilePhoto.library_file_id == library_file_id, LibraryFilePhoto.stored_name == stored_name
+        )
+    )
+
+
 async def add_photo(
     db, file: LibraryFile, content: bytes, original_name: str | None, user_id: int | None, user_name: str | None
 ) -> LibraryFilePhoto:
@@ -270,6 +365,7 @@ async def add_photo(
     directory = photos_dir(library_file_id)
     stem = uuid4().hex
     files = _files_of(directory, stem)
+    sent = False
     try:
         try:
             ext, stored_bytes, width, height = await disk(_encode_and_write, content, directory, stem)
@@ -295,15 +391,40 @@ async def add_photo(
             created_at=datetime.now(timezone.utc).replace(tzinfo=None),
         )
         db.add(photo)
+        await db.flush()  # a row the database refuses is refused here, before the commit
+        stored_name = photo.stored_name
+        sent = True
         await _commit(db)
-    except BaseException:
-        # Whatever ended it without a committed row: nothing of this photo stays.
+    except BaseException as error:
+        landed: LibraryFilePhoto | None = None
+        known = not sent  # nothing was committed before the commit was asked for
         try:
             await db.rollback()
-        finally:
-            await disk(_unlink_all, files)
-            await disk(_remove_folder_if_empty, directory)
-        raise
+            if sent:
+                # ⚠️ The commit raised: it may have landed all the same (a connection
+                # lost after the server committed). Ask, instead of deleting the
+                # files of a row that may be durable.
+                landed = await _read_back(db, library_file_id, stored_name)
+                known = True
+        except BaseException:
+            logger.warning(
+                "Photo of library file %s: the outcome of its commit is not known (%s); its files are kept",
+                library_file_id,
+                type(error).__name__,
+            )
+        if landed is None:
+            if known:
+                await disk(_unlink_all, files)
+                await disk(_remove_folder_if_empty, directory)
+            raise
+        if not isinstance(error, Exception):
+            raise  # a cancellation is still a cancellation; the photo stands
+        logger.warning(
+            "Photo of library file %s was committed although its commit raised %s",
+            library_file_id,
+            type(error).__name__,
+        )
+        photo = landed
     await db.refresh(photo)
     await _announce(library_file_id)
     return photo
@@ -329,23 +450,35 @@ async def delete_photo(db, photo: LibraryFilePhoto) -> None:
 
 
 async def forget_files(db, library_file_ids: Iterable[int]) -> None:
-    """These library files are being purged: their photo rows and folders go.
+    """These library files are being purged: their photo rows go, and their files after the commit.
 
-    Called in the purging transaction, beside the removal of the file's own
-    bytes, and like it does not commit. Asks the table first, so a purge of
-    files that never had a photo touches no disk.
+    Called in the purging transaction and does not commit. ⚠️ Nothing leaves the
+    disk here: the caller's transaction may still roll back, and the rows would
+    come back without their pictures. The files the rows named are noted on the
+    session and removed once its root commit has landed (see the module's
+    "Files follow the commit").
     """
     ids = sorted({int(i) for i in library_file_ids if i is not None})
     if not ids:
         return
-    rows = await db.execute(
-        select(LibraryFilePhoto.library_file_id).where(LibraryFilePhoto.library_file_id.in_(ids)).distinct()
-    )
-    with_photos = sorted(set(rows.scalars()))
-    if not with_photos:
+    rows = (
+        await db.execute(
+            select(LibraryFilePhoto.library_file_id, LibraryFilePhoto.stored_name).where(
+                LibraryFilePhoto.library_file_id.in_(ids)
+            )
+        )
+    ).all()
+    if not rows:
         return
-    await db.execute(delete(LibraryFilePhoto).where(LibraryFilePhoto.library_file_id.in_(with_photos)))
-    await disk(_remove_folders, with_photos)
+    paths: list[Path] = []
+    for library_file_id, stored_name in rows:
+        if STORED_NAME.fullmatch(stored_name or ""):
+            folder = photos_dir(library_file_id)
+            paths += [folder / stored_name, folder / thumbnail_name(stored_name)]
+    await db.execute(
+        delete(LibraryFilePhoto).where(LibraryFilePhoto.library_file_id.in_(sorted({row[0] for row in rows})))
+    )
+    _remove_after_commit(db, paths)
 
 
 async def detach_user(db, user_id: int) -> None:

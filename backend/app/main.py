@@ -12535,6 +12535,9 @@ async def _application_lifespan(app: FastAPI):
     from backend.app.services import part_images
 
     await part_images.shutdown()  # events and photo removals already started finish, or are cancelled
+    from backend.app.services import library_file_photos
+
+    await library_file_photos.shutdown()  # photo files of purges that committed: started removals finish
     from backend.app.services import label_gate
 
     await label_gate.shutdown()  # the label workers: queued draws dropped, a running one ends by itself

@@ -379,6 +379,7 @@ async def test_purging_a_file_from_the_trash_removes_its_photos(async_client, db
     await async_client.delete(f"/api/v1/library/files/{doomed}")
     purged = await async_client.delete(f"/api/v1/library/trash/{doomed}")
     assert purged.status_code in (200, 204), purged.text
+    await photos.drain()  # the files go after the purge's commit
 
     assert await _count(db_session, doomed) == 0
     assert not _folder(doomed).exists(), "the purged file's photo folder is still on disk"
@@ -400,6 +401,7 @@ async def test_the_retention_sweep_removes_the_photos_of_what_it_purges(async_cl
     await db_session.commit()
 
     assert await library_trash_service._sweep(db_session) == 1
+    await photos.drain()
 
     assert await _count(db_session, old) == 0
     assert not _folder(old).exists()
@@ -412,6 +414,7 @@ async def test_an_external_file_deleted_outright_takes_its_photos_with_it(async_
 
     deleted = await async_client.delete(f"/api/v1/library/files/{external}")
     assert deleted.status_code == 200 and deleted.json()["trashed"] is False
+    await photos.drain()
 
     assert await _count(db_session, external) == 0
     assert not _folder(external).exists()
@@ -425,6 +428,7 @@ async def test_a_new_file_never_inherits_the_photos_of_the_id_it_reuses(async_cl
     await _upload(async_client, first, _jpeg())
     await async_client.delete(f"/api/v1/library/files/{first}")
     await async_client.delete(f"/api/v1/library/trash/{first}")
+    await photos.drain()
 
     second = (await _row(db_session, name="second.3mf")).id
 
