@@ -4821,9 +4821,12 @@ export default {
     toast: {
       filesDeleted: 'Видалено {{count}} файл(ів)',
       deleteFailed: 'Помилка видалення: {{error}}',
+      deletePartial: 'Видалено {{deleted}} з {{total}}. На принтері лишилось {{kept}}: {{reason}}',
+      deleteStopped: 'Видалено {{deleted}} з {{total}}, далі зупинено: {{reason}} Не оброблено файлів: {{notAttempted}}.',
       clearing: 'Очищення SD-карти...',
       sdCardCleared: 'SD-карту очищено - видалено {{count}} файлів',
       sdCardClearedPartial: 'SD-карту очищено: видалено {{deleted}}, не вдалося - {{failed}}',
+      sdCardClearStopped: 'Очищення зупинено, бо на цьому принтері починається друк. Видалено файлів: {{deleted}}; решта лишилась.',
       clearFailed: 'Не вдалося очистити SD-карту: {{error}}',
       importStarted: 'Імпорт {{count}} файлів...',
       importDone: 'Імпортовано {{imported}} з {{total}} ({{existing}} уже в бібліотеці)',

@@ -96,8 +96,8 @@ class FtpTransport:
             progress=progress,
         )
 
-    async def delete(self, path: str) -> DeleteResult:
-        return await delete_file_async(self._ip, self._access_code, path, printer_model=self._model)
+    async def delete(self, path: str, *, may_run: Callable[[], bool] | None = None) -> DeleteResult:
+        return await delete_file_async(self._ip, self._access_code, path, printer_model=self._model, may_run=may_run)
 
     async def upload(
         self,

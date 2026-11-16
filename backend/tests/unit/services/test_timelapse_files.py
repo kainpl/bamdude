@@ -256,8 +256,11 @@ class TestRemovingTheRecordingFromThePrinter:
 
     @pytest.mark.asyncio
     async def test_an_internal_path_is_deleted_over_the_tunnel(self):
+        from backend.app.services.bambu_ftp import DeleteResult
+
         printer = SimpleNamespace(id=1, name="X2D", model="X2D")
-        transport = SimpleNamespace(delete=AsyncMock())
+        # The transport's answer is read (G10 B): only "deleted" is a removal.
+        transport = SimpleNamespace(delete=AsyncMock(return_value=DeleteResult.DELETED))
         with (
             patch("backend.app.api.routes.settings.get_setting", new=AsyncMock(return_value="true")),
             patch("backend.app.services.printer_files.factory.transport_for", return_value=transport) as factory,

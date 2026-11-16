@@ -1456,7 +1456,7 @@ class BambuFTPClient:
             logger.warning("Failed to remove dir %s: %s", remote_path, e)
             return False
 
-    def clear_all(self, root: str = "/") -> dict:
+    def clear_all(self, root: str = "/", may_run: Callable[[], bool] | None = None) -> dict:
         """Clear the SD card: delete every file, and remove nested folders.
 
         The top-level folders that live directly in ``root`` (e.g. ``/cache``,
@@ -1467,16 +1467,31 @@ class BambuFTPClient:
 
         Reuses this single connection for the whole walk — opening a fresh FTP
         session per entry would be punishingly slow on an SD card with hundreds
-        of cached models. Returns ``{"deleted", "failed", "folders_removed"}``.
+        of cached models. Returns ``{"deleted", "failed", "folders_removed",
+        "stopped"}``.
+
+        ``may_run`` is asked before every deletion (G10 B): once it says no —
+        a print started or became expected — nothing further is removed and
+        ``stopped`` is True. What was already deleted stays deleted.
         """
         if not self._ftp:
-            return {"deleted": 0, "failed": 0, "folders_removed": 0}
+            return {"deleted": 0, "failed": 0, "folders_removed": 0, "stopped": False}
 
-        stats = {"deleted": 0, "failed": 0, "folders_removed": 0}
+        stats = {"deleted": 0, "failed": 0, "folders_removed": 0, "stopped": False}
+
+        def _allowed() -> bool:
+            if stats["stopped"]:
+                return False
+            if may_run is not None and not may_run():
+                stats["stopped"] = True
+                return False
+            return True
 
         def _clean(dir_path: str, depth: int) -> None:
             # depth: 0 == root, 1 == top-level folder, 2+ == nested folder.
             for entry in self.list_files(dir_path):
+                if not _allowed():
+                    return
                 if entry["is_directory"]:
                     # Defensive: some servers surface "." / ".." in LIST.
                     if entry["name"] in (".", ".."):
@@ -1486,7 +1501,7 @@ class BambuFTPClient:
                     _clean(child, child_depth)
                     # Remove the folder itself only when nested (depth >= 2).
                     # Top-level folders (depth 1) and the root are preserved.
-                    if child_depth >= 2:
+                    if child_depth >= 2 and _allowed():
                         if self.remove_dir(child):
                             stats["folders_removed"] += 1
                         else:
@@ -2119,6 +2134,8 @@ async def clear_sdcard_async(
     root: str = "/",
     socket_timeout: float | None = None,
     printer_model: str | None = None,
+    *,
+    may_run: Callable[[], bool] | None = None,
 ) -> dict:
     """Async wrapper for a full recursive SD-card wipe.
 
@@ -2126,16 +2143,22 @@ async def clear_sdcard_async(
     asyncio ``wait_for`` cap — a card with many files legitimately takes a
     while and the caller is an explicit, confirmed admin action.
 
-    Returns ``{"deleted", "failed", "connected"}`` so the caller can tell a
-    failed connection (nothing wiped) apart from "nothing to delete".
+    Returns ``{"deleted", "failed", "connected", "stopped"}`` so the caller can
+    tell a failed connection (nothing wiped) apart from "nothing to delete", and
+    a walk ``may_run`` stopped part-way from a finished one.
     """
+    nothing = {"deleted": 0, "failed": 0, "folders_removed": 0, "stopped": False}
 
     def target(worker: LaneWorker) -> dict:
+        # Asked after the lane wait and before the connection: a print that
+        # started while this waited must not find its card being emptied.
+        if may_run is not None and not may_run():
+            return {**nothing, "connected": True, "stopped": True}
         client = BambuFTPClient(ip_address, access_code, timeout=socket_timeout, printer_model=printer_model)
         if not _session(worker, client):
-            return {"deleted": 0, "failed": 0, "folders_removed": 0, "connected": False}
+            return {**nothing, "connected": False}
         try:
-            result = client.clear_all(root)
+            result = client.clear_all(root, may_run)
             result["connected"] = True
             return result
         finally:
@@ -2144,7 +2167,7 @@ async def clear_sdcard_async(
     try:
         return await _on_lane(ip_address, "clear-sdcard", target)
     except (LaneRefused, WorkerCancelled):
-        return {"deleted": 0, "failed": 0, "folders_removed": 0, "connected": False}
+        return {**nothing, "connected": False}
 
 
 async def rename_file_async(
