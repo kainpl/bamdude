@@ -1,5 +1,11 @@
 ## [Unreleased]
 
+- Fixed older SQLite backup recovery and offline retry when migrations need
+  model-created tables; PostgreSQL imports still preserve their AS-IS inputs.
+  Deferred data guards survive unrelated model changes, optional retry errors
+  retain their records without blocking startup, and repair logs identify the
+  failing stage without exposing data.
+
 - Portable restore now retains durable schema-repair ownership across process
   restarts and restores the complete application index set. Known data
   violations remain visible warnings with their rows preserved; existing

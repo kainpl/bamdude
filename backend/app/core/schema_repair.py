@@ -83,7 +83,11 @@ async def run_claimed(engine, metadata, debt, *, phase_hook=None):
     observes the final transaction before its owner can be cleared.
     """
 
+    current_phase = "acceptance"
+
     async def phase(label, operation):
+        nonlocal current_phase
+        current_phase = label
         async with engine.begin() as conn:
             await operation(conn)
         if phase_hook is not None:
@@ -104,6 +108,7 @@ async def run_claimed(engine, metadata, debt, *, phase_hook=None):
                 "model-indexes", lambda conn: conform.model_indexes(conn, metadata, accepted_calibration=accepted)
             )
             await phase("CHECK", lambda conn: conform.checks(conn, metadata))
+            current_phase = "verification"
             async with engine.begin() as conn:
                 results = await conform.verify(conn, metadata, accepted_calibration=accepted)
                 _check_accepted_count(accepted, results)
@@ -114,10 +119,12 @@ async def run_claimed(engine, metadata, debt, *, phase_hook=None):
         else:
             # SQLite already carries its source-level schema. This debt owns
             # D4's additive repairs, not an unsupported SQLite ALTER conform.
+            current_phase = "D4-indexes"
             async with engine.begin() as conn:
                 results = await repair_indexes(conn, accepted_calibration=accepted)
             if phase_hook is not None:
                 await phase_hook("D4-indexes")
+            current_phase = "verification"
             async with engine.begin() as conn:
                 # Reinspect in the final transaction; never clear on an old
                 # repair return value while the current shape has changed.
@@ -129,6 +136,7 @@ async def run_claimed(engine, metadata, debt, *, phase_hook=None):
                 await finish_attempt(conn, debt, results)
         logger.info("Database import repair verified and completed")
     except Exception as exc:
+        logger.error("Import schema repair failed during %s (%s)", current_phase, type(exc).__name__)
         reason = exc.reason if isinstance(exc, SchemaRepairPending) else "technical_repair_failure"
         try:
             async with engine.begin() as conn:
@@ -139,12 +147,19 @@ async def run_claimed(engine, metadata, debt, *, phase_hook=None):
 
 
 async def retry_residuals(engine, metadata=None):
-    async with engine.begin() as conn:
-        await retry_index_residuals(conn)
-        if metadata is not None and conn.dialect.name == "postgresql":
-            from backend.app.core.schema_residual_retry import retry_data_residuals
+    try:
+        async with engine.begin() as conn:
+            await retry_index_residuals(conn)
+            if metadata is not None and conn.dialect.name == "postgresql":
+                from backend.app.core.schema_residual_retry import retry_data_residuals
 
-            await retry_data_residuals(conn, metadata)
+                await retry_data_residuals(conn, metadata)
+        return True
+    except Exception as exc:
+        # Nonblocking records remain in the rolled-back transaction. This
+        # optional retry must not invent a hard debt or close a native farm.
+        logger.warning("Residual guard retry failed (%s); records retained", type(exc).__name__)
+        return False
 
 
 def _check_accepted_count(accepted, results):

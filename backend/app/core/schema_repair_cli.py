@@ -8,6 +8,7 @@ files. Neither command starts a farm, cluster, migration bootstrap or server.
 import argparse
 import asyncio
 import json
+import logging
 import os
 import re
 import sys
@@ -160,12 +161,20 @@ async def retry(url):
             await case_folding.probe_postgres_case_folding(engine)
         debt = await claim(engine, Base.metadata, automatic=False)
         if debt is not None:
+            if engine.dialect.name == "sqlite":
+                # SQLite's historical chain relies on create_all-only tables
+                # (m024); the AS-IS exclusion belongs only to a PG import.
+                async with engine.begin() as conn:
+                    await conn.run_sync(Base.metadata.create_all)
             await _run_pending(engine, async_sessionmaker(engine, expire_on_commit=False))
             await run_claimed(engine, Base.metadata, debt)
-        await retry_residuals(engine, Base.metadata)
+        if not await retry_residuals(engine, Base.metadata):
+            print("Residual guard retry failed; records retained for the next attempt.", file=sys.stderr)
+            return 2
         print("Schema repair verified. Restart BamDude normally.")
         return 0
-    except Exception:
+    except Exception as exc:
+        logging.getLogger(__name__).error("Offline schema repair failed (%s)", type(exc).__name__)
         if debt is not None:
             try:
                 async with engine.begin() as conn:

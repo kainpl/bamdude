@@ -48,7 +48,10 @@ async def conn():
     await engine.dispose()
 
 
-async def test_r5_proves_missing_guards_preserves_rows_and_targeted_retry_enforces(conn):
+@pytest.mark.parametrize(
+    "model_change", ["none", "unrelated", "same-table-unrelated", "legacy-record", "changed-check"]
+)
+async def test_r5_proves_missing_guards_preserves_rows_and_targeted_retry_enforces(conn, model_change):
     models = MetaData()
     probe = Table(
         "d4_probe",
@@ -84,12 +87,38 @@ async def test_r5_proves_missing_guards_preserves_rows_and_targeted_retry_enforc
     assert (await conn.execute(text("SELECT * FROM d4_probe ORDER BY id"))).all() == before
     debt = await write_pending(conn, models)
     await finish_attempt(conn, debt, proofs)
+    if model_change == "unrelated":
+        Table("later_release", models, Column("id", Integer, primary_key=True))
+    elif model_change == "same-table-unrelated":
+        probe.append_column(Column("later_column", String(8)))
+    elif model_change == "legacy-record":
+        # Existing candidate records predate the object-contract tag and
+        # omitted False for NOT NULL. A harmless model addition must not
+        # strand these records either.
+        from backend.app.core.schema_repair_state import put_record
+
+        for proof in proofs:
+            proof.pop("contract", None)
+            if proof["object"].endswith(".nullable"):
+                proof.pop("definition", None)
+        await put_record(conn, RESIDUALS, {"version": 1, "entries": {p["object"]: p for p in proofs}})
+        Table("later_release", models, Column("id", Integer, primary_key=True))
+    elif model_change == "changed-check":
+        con = next(c for c in probe.constraints if isinstance(c, CheckConstraint))
+        probe.constraints.remove(con)
+        probe.append_constraint(CheckConstraint("value > 10", name="ck_d4_value"))
     # Corrections belong to the domain/operator. Retry only restores guards.
     await conn.execute(text("UPDATE d4_probe SET required='known',code=id::text,value=1,indexed=id::text"))
     corrected = (await conn.execute(text("SELECT * FROM d4_probe ORDER BY id"))).all()
     await retry_data_residuals(conn, models)
-    assert (await read_record(conn, RESIDUALS))["entries"] == {}
-    assert await repair.verify(conn, models, fresh=True) == []
+    entries = (await read_record(conn, RESIDUALS))["entries"]
+    if model_change == "changed-check":
+        assert set(entries) == {"d4_probe.check.ck_d4_value"}
+        assert entries["d4_probe.check.ck_d4_value"]["definition"]["sqltext"] == "value >= 0"
+    else:
+        assert entries == {}
+    if model_change == "none":
+        assert await repair.verify(conn, models, fresh=True) == []
     assert (await conn.execute(text("SELECT * FROM d4_probe ORDER BY id"))).all() == corrected
     for statement in (
         "INSERT INTO d4_probe(required) VALUES(NULL)",
@@ -97,9 +126,34 @@ async def test_r5_proves_missing_guards_preserves_rows_and_targeted_retry_enforc
         "INSERT INTO d4_probe(required,value) VALUES('x',-1)",
         "INSERT INTO d4_probe(required,indexed) VALUES('x','1')",
     ):
+        if model_change == "changed-check" and "value)" in statement:
+            continue
         with pytest.raises(IntegrityError):
             async with conn.begin_nested():
                 await conn.execute(text(statement))
+
+
+async def test_residual_cannot_excuse_present_unique_on_another_column(conn):
+    models = MetaData()
+    Table(
+        "d4_edge",
+        models,
+        Column("id", Integer, primary_key=True),
+        Column("wanted", Integer),
+        Column("other", Integer),
+        UniqueConstraint("wanted", name="uq_d4_edge"),
+    )
+    await conn.execute(
+        text(
+            "CREATE TABLE d4_edge(id SERIAL PRIMARY KEY,wanted INTEGER,other INTEGER,"
+            "CONSTRAINT uq_d4_edge UNIQUE(other))"
+        )
+    )
+    await conn.execute(text("INSERT INTO d4_edge(wanted,other) VALUES(1,1),(1,2)"))
+    before = (await conn.execute(text("SELECT * FROM d4_edge ORDER BY id"))).all()
+    with pytest.raises(SchemaRepairPending, match="unverified_schema_objects"):
+        await repair.verify(conn, models)
+    assert (await conn.execute(text("SELECT * FROM d4_edge ORDER BY id"))).all() == before
 
 
 @pytest.mark.parametrize("set_null", [False, True])

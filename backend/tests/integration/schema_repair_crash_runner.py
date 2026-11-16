@@ -181,6 +181,7 @@ def maintenance_client():
     from starlette.testclient import TestClient
 
     from backend.app import main as web
+    from backend.app.core.auth_runtime import auth_runtime
 
     writes = []
 
@@ -206,6 +207,7 @@ def maintenance_client():
                 assert response.status_code == 503
                 assert response.json() == {"status": "maintenance", "reason": "schema_repair_pending"}
             assert not web.farm_startup_guard.ready
+            assert not auth_runtime.admitting
         assert writes == [], writes
         return {"maintenance": True, "automatic_ddl": False, "farm_started": False}
     finally:

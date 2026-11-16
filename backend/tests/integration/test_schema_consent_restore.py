@@ -48,3 +48,35 @@ def test_signed_admin_confirms_exact_calibration_residual_and_restores_same_rows
         "targeted_repair": True,
         "dialect": dialect,
     }
+
+
+@pytest.mark.timeout(300)
+@pytest.mark.parametrize("mode", ["target-shift", "count-shift"])
+@pytest.mark.parametrize("dialect", ["sqlite", pytest.param("postgresql", marks=pytest.mark.postgres)])
+def test_actual_restore_rechecks_target_and_accepted_count(tmp_path, mode, dialect):
+    url = _pg_url() if dialect == "postgresql" else None
+    if url:
+        _wipe(url, all_objects=True)
+    env = {
+        **os.environ,
+        "BAMDUDE_IGNORE_DOTENV": "1",
+        "DATA_DIR": str(tmp_path),
+        "LOG_DIR": str(tmp_path / "logs"),
+        "DATABASE_URL": _async_url(url) if url else "",
+        "DEBUG": "false",
+    }
+    result = subprocess.run(
+        [sys.executable, "-m", "backend.tests.integration.schema_consent_runner", mode],
+        cwd=REPO_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=270,
+    )
+    assert result.returncode == 0, result.stdout[-1000:] + result.stderr[-6000:]
+    assert json.loads(result.stdout.strip().splitlines()[-1]) == (
+        {"target_rechecked_after_drain": True, "replacement_started": False}
+        if mode == "target-shift"
+        else {"changed_count_refused": True, "debt_retained": True}
+    )

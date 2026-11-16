@@ -6,13 +6,14 @@ import logging
 from sqlalchemy import CheckConstraint, UniqueConstraint, inspect, text
 from sqlalchemy.schema import AddConstraint
 
+from backend.app.core.pg_schema_contract import canonical
 from backend.app.core.schema_conform_repair import _check_sql, _duplicates, _sql, add_check
 from backend.app.core.schema_index_repair import manifest, quote
+from backend.app.core.schema_model_plan import expected_model_plan
 from backend.app.core.schema_repair_state import (
     RESIDUALS,
     VERSION,
     SchemaRepairPending,
-    manifest_hash,
     put_record,
     read_record,
 )
@@ -71,15 +72,35 @@ async def retry_data_residuals(conn, metadata):
         raise SchemaRepairPending("invalid_residuals")
     frozen_indexes = {r["table"] + ".indexes." + r["name"] for r in manifest()}
     updated = dict(entries)
+    expected = None
     for key, entry in entries.items():
         if key in frozen_indexes:
             continue  # Frozen native helper owns these separately.
         if (
             not isinstance(entry, dict)
             or entry.get("object") != key
-            or entry.get("manifest") != manifest_hash(metadata)
+            or entry.get("contract") not in (None, "d4-data-v1")
+            or type(entry.get("count")) is not int
+            or entry["count"] <= 0
         ):
             logger.warning("Schema residual has an unknown contract; retained without mutation")
+            continue
+        if expected is None:
+            expected = canonical(await expected_model_plan(conn, metadata))
+        # The global manifest records the original import, not this object's
+        # lifetime. Re-derive its own server-normalised contract so unrelated
+        # model changes cannot orphan a corrected guard. Legacy v1 nullable
+        # proofs represented exactly SET NOT NULL and did not store False.
+        definition = entry.get("definition")
+        if (
+            "definition" not in entry
+            and entry.get("reason") == "null_rows"
+            and key.endswith(".nullable")
+            and entry.get("contract") is None
+        ):
+            definition = False
+        if key not in expected or json.dumps(definition, sort_keys=True) != json.dumps(expected[key], sort_keys=True):
+            logger.warning("Schema residual object contract changed; retained without mutation")
             continue
         name, kind, target = key.split(".", 2)
         table = metadata.tables.get(name)

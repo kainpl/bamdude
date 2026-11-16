@@ -140,15 +140,19 @@ async def _run_pending(engine, session_factory) -> None:
     if app_settings.debug and migrations and applied:
         latest = max(m["version"] for m in migrations)
         if latest in applied:
-            head = next(m["module"] for m in migrations if m["version"] == latest)
-            if hasattr(head, "replay"):
-                async with engine.begin() as conn:
-                    await head.replay(conn)
-            else:
-                async with engine.begin() as conn:
-                    await conn.execute(text("DELETE FROM _migrations WHERE version = :v"), {"v": latest})
-                applied.discard(latest)
-            logger.info("Dev mode: re-running migration %d", latest)
+            try:
+                head = next(m["module"] for m in migrations if m["version"] == latest)
+                if hasattr(head, "replay"):
+                    async with engine.begin() as conn:
+                        await head.replay(conn)
+                else:
+                    async with engine.begin() as conn:
+                        await conn.execute(text("DELETE FROM _migrations WHERE version = :v"), {"v": latest})
+                    applied.discard(latest)
+                logger.info("Dev mode: re-running migration %d", latest)
+            except Exception as exc:
+                logger.error("Migration %d failed during DEBUG replay (%s)", latest, type(exc).__name__)
+                raise
 
     pending = [m for m in migrations if m["version"] not in applied]
 
@@ -164,23 +168,30 @@ async def _run_pending(engine, session_factory) -> None:
 
         logger.info("Applying migration %d: %s ...", version, name)
 
-        # DDL phase (schema changes) - FK off for safety (SQLite only)
-        if hasattr(mod, "upgrade"):
-            async with engine.begin() as conn:
-                from backend.app.core.db_dialect import is_sqlite
+        try:
+            phase = "DDL"
+            # DDL phase (schema changes) - FK off for safety (SQLite only)
+            if hasattr(mod, "upgrade"):
+                async with engine.begin() as conn:
+                    from backend.app.core.db_dialect import is_sqlite
 
-                if is_sqlite():
-                    await conn.execute(text("PRAGMA foreign_keys = OFF"))
-                await mod.upgrade(conn)
-                if is_sqlite():
-                    await conn.execute(text("PRAGMA foreign_keys = ON"))
+                    if is_sqlite():
+                        await conn.execute(text("PRAGMA foreign_keys = OFF"))
+                    await mod.upgrade(conn)
+                    if is_sqlite():
+                        await conn.execute(text("PRAGMA foreign_keys = ON"))
 
-        # Seed phase (data, uses ORM session)
-        if hasattr(mod, "seed"):
-            await mod.seed(session_factory)
+            phase = "seed"
+            # Seed phase (data, uses ORM session)
+            if hasattr(mod, "seed"):
+                await mod.seed(session_factory)
 
-        # Record as applied
-        await _record_migration(engine, version, name)
+            phase = "record"
+            # Record as applied
+            await _record_migration(engine, version, name)
+        except Exception as exc:
+            logger.error("Migration %d failed during %s (%s)", version, phase, type(exc).__name__)
+            raise
         logger.info("Migration %d applied successfully", version)
 
 
@@ -223,7 +234,8 @@ async def run_all_migrations(engine, session_factory) -> bool:
 
     # Existing replacement ownership wins before any local-source preparation.
     # In particular, never overwrite an AS-IS legacy import with current-model
-    # create_all before its pending converters have resumed.
+    # create_all before its pending converters have resumed on PG. SQLite
+    # keeps its pre-D4 create_all: some legacy migrations depend on its tables.
     debt = await claim(engine, Base.metadata)
     prepared = None
     if not is_sqlite() and debt is None:
@@ -235,7 +247,7 @@ async def run_all_migrations(engine, session_factory) -> bool:
     # exhausted installation must not perform another automatic DDL pass.
     try:
         created_schema = False
-        if debt is None:
+        if debt is None or is_sqlite():
             async with engine.begin() as conn:
                 created_schema = not await conn.run_sync(lambda sync: inspect(sync).get_table_names())
                 await conn.run_sync(Base.metadata.create_all)
@@ -250,9 +262,10 @@ async def run_all_migrations(engine, session_factory) -> bool:
             ):
                 created_schema = False
             await auto_migrate_sqlite_to_pg(engine, Base.metadata, prepared=prepared or False)
-    except Exception:
+    except Exception as exc:
         if debt is None:
             raise
+        logger.error("Import schema bootstrap failed (%s)", type(exc).__name__)
         try:
             async with engine.begin() as conn:
                 await fail_attempt(conn, debt, "bootstrap_failure")

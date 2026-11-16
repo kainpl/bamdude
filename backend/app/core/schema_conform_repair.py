@@ -74,6 +74,7 @@ def _proof(object_id, reason, count, metadata):
         "token": str(uuid4()),
         "manifest": manifest_hash(metadata),
         "provenance": "restore",
+        "contract": "d4-data-v1",
     }
 
 
@@ -385,7 +386,7 @@ async def verify(conn, metadata, *, accepted_calibration=False, fresh=False):
                 )
     failures = await _unproved_unique_guards(conn, left, right, retained, residual_keys, actual["catalogue"])
     for proof in residuals:
-        if proof["object"] in left and not proof["object"].endswith(".nullable"):
+        if proof["object"] in left:
             proof["definition"] = left[proof["object"]]
     for key in sorted(keys):
         if key in left and key in right and left[key] == right[key]:

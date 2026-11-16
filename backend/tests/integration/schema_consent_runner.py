@@ -2,6 +2,8 @@
 
 import asyncio
 import json
+import sys
+from contextlib import ExitStack
 from pathlib import Path
 
 import httpx
@@ -9,7 +11,7 @@ from fastapi import FastAPI
 from sqlalchemy import text
 
 
-async def main():
+async def main(mode="normal"):
     from backend.app.api.routes.settings import create_backup_zip, router
     from backend.app.core import database
     from backend.app.core.auth_runtime import auth_runtime
@@ -77,12 +79,82 @@ async def main():
             assert detail["error"] == "calibration_restore_confirmation_required" and detail["duplicate_groups"] == 1
             assert isinstance(detail["receipt"], str)
             assert auth_runtime.admitting and not farm_startup_guard.restart_required
-            second = await client.post(
-                "/api/v1/settings/restore",
-                headers={"Authorization": "Bearer " + token},
-                files={"file": ("same.zip", data, "application/zip")},
-                data={"accept_calibration_residual": "true", "calibration_receipt": detail["receipt"]},
-            )
+            from unittest.mock import patch
+
+            from backend.app.core import schema_repair
+            from backend.app.services.backup_files import FileRestore
+            from backend.app.services.virtual_printer import virtual_printer_manager
+
+            prepared = []
+            real_prepare = FileRestore.prepare
+            real_drain = virtual_printer_manager.drain_for_restore
+            real_repair = schema_repair.run_claimed
+
+            def observe_prepare(owner):
+                prepared.append(True)
+                return real_prepare(owner)
+
+            async def change_target():
+                from backend.app.services.connector_submissions import rotate_storage_epoch
+
+                result = await real_drain()
+                async with database.async_session() as db:
+                    await rotate_storage_epoch(db)
+                return result
+
+            async def change_count(engine, metadata, debt, **kwargs):
+                async def after_indexes(label):
+                    if label == "D4-indexes":
+                        async with database.async_session() as db:
+                            for name in ("extra-first", "extra-second"):
+                                db.add(
+                                    FilamentCalibration(
+                                        printer_id=printer_id,
+                                        filament_id="post-conversion-group",
+                                        nozzle_diameter=0.4,
+                                        nozzle_volume_type="standard",
+                                        extruder_id=0,
+                                        cali_mode="pa",
+                                        source="manual",
+                                        is_active=True,
+                                        name=name,
+                                    )
+                                )
+                            await db.commit()
+
+                return await real_repair(engine, metadata, debt, phase_hook=after_indexes)
+
+            with ExitStack() as patches:
+                patches.enter_context(patch.object(FileRestore, "prepare", observe_prepare))
+                if mode == "target-shift":
+                    patches.enter_context(patch.object(virtual_printer_manager, "drain_for_restore", change_target))
+                elif mode == "count-shift":
+                    patches.enter_context(patch.object(schema_repair, "run_claimed", change_count))
+                second = await client.post(
+                    "/api/v1/settings/restore",
+                    headers={"Authorization": "Bearer " + token},
+                    files={"file": ("same.zip", data, "application/zip")},
+                    data={"accept_calibration_residual": "true", "calibration_receipt": detail["receipt"]},
+                )
+            if mode == "target-shift":
+                assert second.status_code == 400, second.text
+                assert "no longer matches" in second.text
+                assert prepared == []
+                async with database.engine.begin() as conn:
+                    assert await read_record(conn, DEBT) is None
+                    assert before == [
+                        tuple(r)
+                        for r in (await conn.execute(text("SELECT * FROM filament_calibration ORDER BY id"))).all()
+                    ]
+                return {"target_rechecked_after_drain": True, "replacement_started": False}
+            if mode == "count-shift":
+                assert second.status_code == 503, second.text
+                async with database.engine.begin() as conn:
+                    debt = await read_record(conn, DEBT)
+                    assert debt["last_failure"] == "acceptance_residual_changed"
+                    assert debt["automatic_attempts_remaining"] == 0
+                    assert await conn.scalar(text("SELECT count(*) FROM filament_calibration")) == 4
+                return {"changed_count_refused": True, "debt_retained": True}
             assert second.status_code == 200 and second.json().get("success") is True, second.text
         async with database.engine.begin() as conn:
             after = [
@@ -114,4 +186,4 @@ async def main():
 
 
 if __name__ == "__main__":
-    print(json.dumps(asyncio.run(main())))
+    print(json.dumps(asyncio.run(main(sys.argv[1] if len(sys.argv) > 1 else "normal"))))

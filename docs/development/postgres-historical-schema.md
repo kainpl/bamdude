@@ -142,6 +142,23 @@ migrations or farm. `retry` makes one explicit attempt, including when the
 automatic budget is exhausted, and never supplies consent or clears debt by
 force. A successful repair still requires normal application restart.
 
+Complete a pending hard debt before a schema/model-changing application upgrade.
+Its whole-import manifest intentionally belongs to that code generation: an image
+with a different manifest refuses it as `unknown_manifest`, and retry cannot
+adopt or clear it by force. Maintenance fixes that retain the same manifest can
+still repair it. If the application was already upgraded before any new repair work,
+return to the previously pinned application version with the same data and
+connection, complete repair there, then upgrade normally. Never edit the debt
+marker or blindly roll back the database schema to bypass this check.
+
+Nonblocking R5 records have a different lifetime. Retry re-derives each object's
+server-normalised definition, so unrelated model changes do not strand its guard.
+A changed object definition remains recorded with a warning. An optional retry
+error rolls back its work and retains the records without stopping native startup
+or creating hard debt; the explicit CLI returns a failure for that incomplete
+attempt. Migration/repair failures log only their stage/version and exception
+class, never row values, paths or raw driver error details.
+
 For Docker, stop the application service (it is PID 1 in its container), then
 run the command in a one-shot container of the same image with the same data
 mount, environment and UID. Keep an external PostgreSQL service running.

@@ -74,7 +74,7 @@ bash docker-publish.sh 0.X.Y --parallel          # EMERGENCY ONLY — a v* tag a
 
 ## Migrations
 
-Startup: `init_db()` → legacy `bambuddy.db` rename → claim existing durable import debt before DDL; when absent, eligible SQLite→PG source-level preflight → `Base.metadata.create_all()` → SQLite→PG auto-migrate (unused PG target only). Existing debt skips create_all/local re-import so pending AS-IS converters retain their legacy input → `_ensure_migrations_table` → `_bootstrap_existing` (marks m000+m001 applied for legacy) → `_run_pending` → `conform_imported_schema` (while durable import-repair debt is pending).
+Startup: `init_db()` → legacy `bambuddy.db` rename → claim existing durable import debt before DDL; when absent, eligible SQLite→PG source-level preflight → `Base.metadata.create_all()` → SQLite→PG auto-migrate (unused PG target only). Existing PG debt skips create_all/local re-import so pending AS-IS converters retain their legacy input; SQLite keeps its historical create_all even under debt (legacy migrations need create_all-only tables), after spending its attempt → `_ensure_migrations_table` → `_bootstrap_existing` (marks m000+m001 applied for legacy) → `_run_pending` → `conform_imported_schema` (while durable import-repair debt is pending).
 
 ⚠️ **The SQLite→PG move imports the file AS IS at ITS migration level, `_migrations` included, and the chain resumes at N+1** (`db_portable._reflect_sqlite_schema`; 2026-09-09). Never build the target schema from `Base.metadata` before the load — the models lack exactly the legacy columns/tables the later converters read (m157 `printer_id`, m158 project pivots), and re-running the whole chain on PG is how a dialect bug in an old migration reached a tester while the maintainer's own SQLite→PG path never executed it. What no migration ever did on SQLite (FK rules, NOT NULL, UNIQUE, CHECK, m001's tsvector half) is added after the chain under durable import-repair ownership by `conform_imported_schema` — never by a generic pass on an ordinary native boot. A process flag or an imported migration marker is not proof of completion. Model columns marked `info={"migration_shim": True}` (notification.py) are not canon and are skipped there. Vault: `40-invariants/inv-sqlite-move-imports-file-as-is.md`.
 
@@ -104,7 +104,10 @@ owner clear. Known data failures require both a canonical violation proof and
 an actually missing guard; technical/unknown structure failures keep the web
 process in closed maintenance. Only `/health`'s safe 503 shell remains; ASGI
 startup.complete must not open farm/auth admission there. Ordinary native boots
-retry only persisted exact residuals. Public settings reset, read, Git export
+retry only persisted exact residuals, bound to their own server-normalised
+object definition rather than the whole model hash. Optional retry errors
+retain the record and diagnostic without inventing a hard startup debt.
+Public settings reset, read, Git export
 and partial restore do not own this namespace. Offline status never initializes
 configuration, migrations or farm, and retry has no clear/force bypass.
 Vault: `40-invariants/inv-import-repair-is-durable.md`.
