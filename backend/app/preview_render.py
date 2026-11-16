@@ -89,6 +89,13 @@ def main():
 
             _picture(generate_stl_thumbnail(root / "mesh.stl", root), root, deadline, swallowed)
             result["outcome"] = "ok"
+        elif operation == "pdf_png":
+            # A library PDF's first page. PDFium is loaded here and nowhere else: this process is the renderer.
+            from backend.app.services.pdf_thumbnail import render_first_page
+
+            render_first_page(root / "document.pdf", root / "preview.png", deadline)
+            _checked(lambda: validate(root / "preview.png", "png", deadline), "png_invalid")
+            result["outcome"] = "ok"
         elif operation == "source":
             from backend.app.services.preview_transform import inject_source
 

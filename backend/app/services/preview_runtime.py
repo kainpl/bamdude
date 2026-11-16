@@ -66,7 +66,8 @@ RECOVERY_GUIDE = "https://docs.bamdude.top/reference/troubleshooting/#local-prev
 # A sliced (high) waiter may have to wait for an active STEP's revoke, cancel proof and cleanup: its own finite
 # budget is C_cancel plus the normal admission wait, counted once (never extended per poll). Spec §4.2.
 HIGH_WAIT_SECONDS = C_CANCEL_SECONDS + QUEUE_SECONDS
-PRIORITY_BY_KIND = {"sliced": "high", "mesh": "normal", "step": "low"}
+# A PDF's first page is a quick render: an ordinary attempt, never queued behind a STEP conversion.
+PRIORITY_BY_KIND = {"sliced": "high", "mesh": "normal", "pdf": "normal", "step": "low"}
 # A first start that fails with a PROVEN cleanup is tried again in the background (spec
 # preview-runtime-first-start-recovery r2): attempts in all, the pauses between them, and how long the service
 # may take to answer ready inside one attempt.
@@ -81,7 +82,7 @@ class PreviewResult:
     files: dict[str, Path] = field(default_factory=dict)
     input_digests: dict[str, str] = field(default_factory=dict)
     attempt_id: str | None = None
-    kind: str | None = None  # "sliced" | "step" | "mesh", from the input ROLES
+    kind: str | None = None  # "sliced" | "pdf" | "step" | "mesh", from the input ROLES
     stage: str | None = None  # the last protocol stage a STEP attempt reached (bounded enum, for the parent log)
     # The service's closed diagnostics of a failure, for the parent log only — nothing decides on them: a reason
     # token or an exception's class (never text), who decided (a child by its operation, or the service), and
@@ -103,6 +104,8 @@ class PublicationDeferred(Revoked):
 def _inputs_kind(inputs: dict) -> str:
     if "sliced" in inputs:
         return "sliced"
+    if "document" in inputs:
+        return "pdf"
     mesh = inputs.get("mesh")
     return "step" if mesh and mesh[1] in CAD_KINDS else "mesh"
 
@@ -784,8 +787,11 @@ class PreviewRuntime:
         result = PreviewResult(kind=kind)
         priority = priority or PRIORITY_BY_KIND[kind]
         mesh = inputs.get("mesh")
-        if mesh and mesh[1] in CAD_KINDS and set(inputs) != {"mesh"}:
-            result.outcome = "protocol_error"  # STEP never rides another attempt (refused before any command)
+        if (mesh and mesh[1] in CAD_KINDS and set(inputs) != {"mesh"}) or (
+            "document" in inputs and set(inputs) != {"document"}
+        ):
+            # STEP never rides another attempt, and neither does a document (refused before any command)
+            result.outcome = "protocol_error"
             yield result
             return
         if publication is not None and not publication_optional and publication.paused():
@@ -847,7 +853,7 @@ class PreviewRuntime:
 
         async def cleanup():
             if self.store and self.nc.is_connected:
-                for role in ("mesh", "sliced", "source_png", "preview", "checkpoint", "output"):
+                for role in ("mesh", "sliced", "source_png", "document", "preview", "checkpoint", "output"):
                     try:
                         await self.store.delete(f"{attempt_id}_{role}")
                     except Exception:
@@ -904,7 +910,7 @@ class PreviewRuntime:
                     if (await transfer_store.status()).size + ATTEMPT_BYTES + 1024**2 > BUCKET_BYTES:
                         raise PreviewError("resource_limit")
                     for role, (source, input_kind) in inputs.items():
-                        if role not in {"mesh", "sliced", "source_png"} or input_kind not in KINDS:
+                        if role not in {"mesh", "sliced", "source_png", "document"} or input_kind not in KINDS:
                             raise PreviewError("protocol_error")
                         path = root / f"{role}.{input_kind}"
                         await disk(snapshot, source, path, deadline, revoke=ticket.revoke)

@@ -107,6 +107,13 @@ fast-simplification>=0.1.0
 # server-side (BS/Orca sidecar CLIs skip them in headless --export-3mf).
 lxml>=5.0
 
+# First-page thumbnails of library PDFs. Python bindings with a bundled PDFium,
+# no further dependency, wheels for every platform BamDude runs on (glibc and
+# musl Linux on x86_64 / aarch64 / armv7l, Windows, macOS). Imported ONLY by
+# the disposable preview child (services/pdf_thumbnail.py) - never by the
+# main process.
+pypdfium2>=5.14.0,<6
+
 # System monitoring
 psutil>=6.0.0
 
