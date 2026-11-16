@@ -136,7 +136,8 @@ import { invalidateProductCatalog, invalidateProductFiles, invalidateQueueViews 
 import { canLinkFile, canLinkFolder, moveChangesProducts } from '../utils/workshopRights';
 import { writableFolders } from '../utils/folderTree';
 import { MoveFolderModal } from '../components/library/MoveFolderModal';
-import { canMoveFolders, isMovableFolder } from '../utils/folderMove';
+import { canMoveFolders, folderMoveRefusalText, isMovableFolder } from '../utils/folderMove';
+import { isOsFileDrag, useLibraryDragDrop, type LibraryDragDrop } from '../hooks/useLibraryDragDrop';
 
 type SortField = 'name' | 'date' | 'size' | 'type';
 type SortDirection = 'asc' | 'desc';
@@ -524,6 +525,8 @@ interface FolderTreeItemProps {
    *  page so a folder that moves elsewhere in the tree keeps its branch as it was. */
   expandedOverrides: Record<number, boolean>;
   onExpandedChange: (folderId: number, expanded: boolean) => void;
+  /** Drag a folder, or drop a folder or files onto one. */
+  dnd: LibraryDragDrop;
   depth?: number;
   wrapNames?: boolean;
   defaultExpanded?: boolean;
@@ -567,11 +570,18 @@ function openHandlers(file: LibraryFileListItem, onOpen: ((file: LibraryFileList
   };
 }
 
+/** How a folder looks while a drag is over it: a legal target, or one that is not allowed. */
+const DROP_STATE_CLASS = {
+  legal: 'ring-2 ring-inset ring-bambu-green bg-bambu-green/10',
+  illegal: 'opacity-50 cursor-not-allowed',
+  none: '',
+} as const;
+
 function containsFolder(folder: LibraryFolderTree, folderId: number): boolean {
   return folder.id === folderId || folder.children.some((child) => containsFolder(child, folderId));
 }
 
-function FolderTreeItem({ folder, selectedFolderId, onSelect, onDelete, onLink, onRename, onMove, expandedOverrides, onExpandedChange, depth = 0, wrapNames = false, defaultExpanded = true, hasPermission, t, timeFormat, dateFormat }: FolderTreeItemProps) {
+function FolderTreeItem({ folder, selectedFolderId, onSelect, onDelete, onLink, onRename, onMove, expandedOverrides, onExpandedChange, dnd, depth = 0, wrapNames = false, defaultExpanded = true, hasPermission, t, timeFormat, dateFormat }: FolderTreeItemProps) {
   const hasChildren = folder.children.length > 0;
   // Start compact, but never hide a folder selected through a deep-link (or
   // after returning from another page): every ancestor is expanded until
@@ -606,11 +616,13 @@ function FolderTreeItem({ folder, selectedFolderId, onSelect, onDelete, onLink, 
     <div>
       <div
         data-folder-row={folder.id}
+        {...dnd.folderDragProps(folder)}
+        {...dnd.dropProps(folder.id, hasChildren && !expanded)}
         className={`group flex items-center gap-1 px-2 py-1.5 rounded cursor-pointer transition-colors ${
           selectedFolderId === folder.id
             ? 'bg-bambu-green/20 text-bambu-green'
             : 'hover:bg-bambu-dark text-white'
-        }`}
+        } ${DROP_STATE_CLASS[dnd.dropState(folder.id) ?? 'none']}`}
         style={{ paddingLeft: `${8 + depth * 12}px` }}
         onClick={() => onSelect(folder.id)}
       >
@@ -782,6 +794,7 @@ function FolderTreeItem({ folder, selectedFolderId, onSelect, onDelete, onLink, 
               onMove={onMove}
               expandedOverrides={expandedOverrides}
               onExpandedChange={onExpandedChange}
+              dnd={dnd}
               depth={depth + 1}
               wrapNames={wrapNames}
               defaultExpanded={defaultExpanded}
@@ -845,6 +858,8 @@ interface FileCardProps {
   onModelCard?: (file: LibraryFileListItem) => void;
   /** Move this one file — the toolbar's Move, without the checkbox dance. */
   onMove?: (file: LibraryFileListItem) => void;
+  /** Makes the card draggable onto a folder (absent where it may not be moved). */
+  dragProps?: ReturnType<LibraryDragDrop['fileDragProps']>;
   /** Per-file tag popover; the anchor is where the entry was clicked. */
   onTags?: (file: LibraryFileListItem, anchor: TagsPopoverAnchor) => void;
   /** #1268 — click a user-tag chip to toggle it in the filter rail. */
@@ -1248,7 +1263,7 @@ function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedul
   );
 }
 
-function FileCard({ file, isSelected, onSelect, onOpenArchives, onDelete, onDownload, onAddToQueue, onPrint, onSlice, onRelayout, onOpenInSlicer, useSlicerApi, desktopSlicer, onPreview3d, onOpen, onViewImage, onViewPdf, onDetails, onModelCard, onRename, onSwapDeclaration, onLink, onGenerateThumbnail, onCancelThumbnail, thumbnailJobActive, onPlateGallery, onAddToOrder, onMove, onTags, onTagClick, thumbnailVersion, isRegeneratingThumbnail, hasPermission, canModify, authEnabled, timeFormat, dateFormat, t }: FileCardProps) {
+function FileCard({ file, isSelected, onSelect, onOpenArchives, onDelete, onDownload, onAddToQueue, onPrint, onSlice, onRelayout, onOpenInSlicer, useSlicerApi, desktopSlicer, onPreview3d, onOpen, onViewImage, onViewPdf, onDetails, onModelCard, onRename, onSwapDeclaration, onLink, onGenerateThumbnail, onCancelThumbnail, thumbnailJobActive, onPlateGallery, onAddToOrder, onMove, dragProps, onTags, onTagClick, thumbnailVersion, isRegeneratingThumbnail, hasPermission, canModify, authEnabled, timeFormat, dateFormat, t }: FileCardProps) {
   // ⚠️ The two modes need different permissions: slicing through the sidecar
   // writes a new library file, while opening in a desktop slicer is a download.
   const sliceDisabled = useSlicerApi ? !hasPermission('library:upload') : !hasPermission('library:read');
@@ -1289,6 +1304,7 @@ function FileCard({ file, isSelected, onSelect, onOpenArchives, onDelete, onDown
     <div
       data-file-card
       {...openHandlers(file, onOpen)}
+      {...dragProps}
       className={`group relative bg-bambu-dark-secondary rounded-lg border transition-all overflow-hidden focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-bambu-green ${
         isSelected
           ? 'border-bambu-green ring-1 ring-bambu-green'
@@ -2831,16 +2847,19 @@ export function FileManagerPage() {
   // FileUploadModal with the files preloaded. dragenter/dragleave fire for
   // every child element, so the counter avoids the overlay flickering as the
   // pointer moves between nested nodes.
+  // ⚠️ Only a drag of files from the operating system: a folder or a file of
+  // the library dragged onto a folder carries types of its own (and, when the
+  // pointer grabbed a thumbnail, the browser's `Files` beside them).
   const handlePageDragEnter = (e: DragEvent<HTMLDivElement>) => {
     if (!hasPermission('library:upload')) return;
-    if (!e.dataTransfer.types.includes('Files')) return;
+    if (!isOsFileDrag(e.dataTransfer.types)) return;
     e.preventDefault();
     dragCounterRef.current += 1;
     setIsPageDragging(true);
   };
   const handlePageDragOver = (e: DragEvent<HTMLDivElement>) => {
     if (!hasPermission('library:upload')) return;
-    if (!e.dataTransfer.types.includes('Files')) return;
+    if (!isOsFileDrag(e.dataTransfer.types)) return;
     e.preventDefault();
     e.dataTransfer.dropEffect = 'copy';
   };
@@ -2852,6 +2871,7 @@ export function FileManagerPage() {
   };
   const handlePageDrop = (e: DragEvent<HTMLDivElement>) => {
     if (!hasPermission('library:upload')) return;
+    if (e.dataTransfer.types.includes('Files') && !isOsFileDrag(e.dataTransfer.types)) return;
     e.preventDefault();
     dragCounterRef.current = 0;
     setIsPageDragging(false);
@@ -2925,6 +2945,24 @@ export function FileManagerPage() {
   // create at the library root), so the button disables and points at Link.
   const atExternalRoot = selectedFolderId === null && topLevelView === 'external';
 
+  // Drag-and-drop onto a folder: the same two moves the dialogs make, through
+  // the same mutations — the server's checks are untouched.
+  const dnd = useLibraryDragDrop({
+    folders,
+    canMoveFolders: canMoveFolders(hasPermission),
+    canDragFile: (file) => canModify('library', 'update', file.created_by_id),
+    canChangeProducts: hasPermission('products:update'),
+    filesDraggedWith: (file) =>
+      selectedFiles.includes(file.id) ? (files ?? []).filter((f) => selectedFiles.includes(f.id)) : [file],
+    onMoveFolder: (folder, parentId) => {
+      moveFolderMutation
+        .mutateAsync({ id: folder.id, parentId })
+        .catch((error: unknown) => showToast(folderMoveRefusalText(t, error), 'error'));
+    },
+    onMoveFiles: (moved, folderId) => moveFilesMutation.mutate({ fileIds: moved.map((f) => f.id), folderId }),
+    onHoverExpand: (folderId) => setFolderExpanded(folderId, true),
+  });
+
   // One renderer for both root groups of the sidebar tree (own folders under
   // "All files", external roots under the "External" header) so the split
   // can't let their props drift apart.
@@ -2941,6 +2979,7 @@ export function FileManagerPage() {
       onMove={setMoveFolderTarget}
       expandedOverrides={expandedOverrides}
       onExpandedChange={setFolderExpanded}
+      dnd={dnd}
       wrapNames={wrapFolderNames}
       defaultExpanded={expandFoldersByDefault}
       hasPermission={hasPermission}
@@ -3001,6 +3040,7 @@ export function FileManagerPage() {
       onPlateGallery={(f, plateIndex) => setGalleryTarget({ file: f, plateIndex })}
       onAddToOrder={openAddToOrder}
       onMove={setMoveFile}
+      dragProps={dnd.fileDragProps(file)}
       onTags={(f, anchor) => setTagsPopover({ file: f, anchor })}
       onTagClick={toggleTagFilter}
       thumbnailVersion={thumbnailVersions[file.id]}
@@ -3353,11 +3393,14 @@ export function FileManagerPage() {
                 roots live under the "External" header below, so a linked NAS
                 can't drown the user's own uploads (#1621). */}
             <div
+              data-folder-root
+              // "All Files" is the library root: a folder or files dropped here go there.
+              {...dnd.dropProps(null)}
               className={`flex items-center gap-2 px-2 py-1.5 rounded cursor-pointer transition-colors ${
                 selectedFolderId === null && topLevelView === 'internal'
                   ? 'bg-bambu-green/20 text-bambu-green'
                   : 'hover:bg-bambu-dark text-white'
-              }`}
+              } ${DROP_STATE_CLASS[dnd.dropState(null) ?? 'none']}`}
               onClick={() => {
                 setSelectedFolderId(null);
                 setTopLevelView('internal');
@@ -3998,6 +4041,7 @@ export function FileManagerPage() {
                     key={file.id}
                     data-file-row
                     {...openHandlers(file, openPreview)}
+                    {...dnd.fileDragProps(file)}
                     className={`grid grid-cols-subgrid col-span-full gap-4 px-4 py-3 items-center border-b border-bambu-dark-tertiary last:border-b-0 hover:bg-bambu-dark/50 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-bambu-green ${
                       selectedFiles.includes(file.id) ? 'bg-bambu-green/10' : ''
                     }`}
