@@ -536,3 +536,124 @@ class TestPrinterPresetParent:
             "Bambu Lab A1 0.6 nozzle": None,
         }
         cloud.get_setting_detail.assert_not_called()
+
+
+class TestCloudFilamentMaterialByIdentity:
+    """A cloud filament preset states its material through what it IS -- its
+    setting id, its family -- not through a same-named preset the bundled tier
+    may or may not ship (upstream 9ac3f0f20, done differently).
+
+    The bundle of the slicer in use can lack a whole printer (OrcaSlicer has no
+    H3C profile at all): every "@BBL H3C" cloud preset then had no namesake,
+    read as "material unknown", and a PETG-CF slot could be handed Generic
+    PETG. Never a rule over the NAME, and never a colour."""
+
+    async def _cloud(self, filament: dict) -> list[UnifiedPreset]:
+        sp._cloud_cache.clear()
+        cloud = MagicMock()
+        cloud.get_slicer_settings = AsyncMock(return_value={"filament": filament})
+        cloud.close = AsyncMock()
+        user = MagicMock(id=7)
+        user.has_permission = MagicMock(return_value=True)
+        with (
+            patch.object(sp, "get_stored_token", AsyncMock(return_value=("tok", "e@x", "global"))),
+            patch.object(sp, "BambuCloudService", MagicMock(return_value=cloud)),
+        ):
+            slots, status = await sp._fetch_cloud_presets(MagicMock(), user)
+        sp._cloud_cache.clear()
+        assert status == "ok"
+        return slots["filament"]
+
+    @pytest.mark.asyncio
+    async def test_a_stock_preset_of_a_printer_the_catalogue_lacks_takes_its_familys_material(self):
+        # GFSG50_91 is in no catalogue; its base id GFSG50 is a PETG-CF family.
+        (preset,) = await self._cloud(
+            {"public": [{"setting_id": "GFSG50_91", "name": "Bambu PETG-CF @BBL H3C"}]},
+        )
+        assert preset.filament_type == "PETG-CF"
+        assert preset.filament_colour is None
+
+    @pytest.mark.asyncio
+    async def test_a_users_own_preset_takes_the_material_of_the_family_it_names(self):
+        (preset,) = await self._cloud(
+            {"private": [{"setting_id": "PFUSaaaa", "name": "My Sunlu - Copy", "filament_id": "GFG99"}]},
+        )
+        assert preset.filament_type == "PETG"
+
+    @pytest.mark.asyncio
+    async def test_a_family_of_the_users_own_is_read_from_the_entry_itself(self):
+        (preset,) = await self._cloud(
+            {
+                "private": [
+                    {"setting_id": "PFUSbbbb", "name": "Mine", "filament_id": "P122e532", "filament_type": "PETG"}
+                ]
+            },
+        )
+        assert preset.filament_type == "PETG"
+
+    @pytest.mark.asyncio
+    async def test_nothing_known_stays_unknown(self):
+        (preset,) = await self._cloud(
+            {"private": [{"setting_id": "PFUScccc", "name": "Bambu PLA Basic @BBL X1C - Copy"}]},
+        )
+        # The name looks like a stock PLA; a name is not an identity.
+        assert preset.filament_type is None
+
+    def test_identity_outranks_a_same_named_preset_of_another_tier(self):
+        cloud = _slots(
+            filament=[
+                UnifiedPreset(id="GFSG50_91", name="Bambu PETG-CF @BBL H3C", source="cloud", filament_type="PETG-CF")
+            ]
+        )
+        standard = _slots(
+            filament=[UnifiedPreset(id="x", name="Bambu PETG-CF @BBL H3C", source="standard", filament_type="PETG")]
+        )
+        _, out_cloud, _, _ = _enrich_cloud_metadata(_empty_slots(), cloud, _empty_slots(), standard)
+        assert out_cloud["filament"][0].filament_type == "PETG-CF"
+
+    @pytest.mark.asyncio
+    async def test_an_orca_cloud_delta_takes_the_material_of_the_preset_it_was_saved_from(self):
+        sp._orca_cloud_cache.clear()
+        svc_mock = MagicMock()
+        svc_mock.list_profiles = AsyncMock(
+            return_value=[
+                {
+                    "id": "f1",
+                    "name": "My HF tweak",
+                    "content": {"type": "filament", "inherits": "Bambu PETG HF @BBL X1C"},
+                },
+                {
+                    "id": "f2",
+                    "name": "Says its own",
+                    "content": {
+                        "type": "filament",
+                        "inherits": "Bambu PETG HF @BBL X1C",
+                        "filament_type": ["PLA"],
+                    },
+                },
+                {
+                    "id": "f3",
+                    "name": "Copy of a copy",
+                    "content": {"type": "filament", "inherits": "My HF tweak"},
+                },
+                {
+                    "id": "f4",
+                    "name": "Bambu PLA Basic @BBL X1C - Copy",
+                    "content": {"type": "filament", "inherits": "Nobody knows this one"},
+                },
+            ]
+        )
+        svc_mock.close = AsyncMock()
+        creds = MagicMock()
+        creds.token = "tok"
+        user = MagicMock(id=1)
+        user.has_permission = MagicMock(return_value=True)
+        with (
+            patch.object(sp, "_load_orca_credentials", AsyncMock(return_value=creds)),
+            patch.object(sp, "_build_orca_service", AsyncMock(return_value=svc_mock)),
+        ):
+            slots, _status = await sp._fetch_orca_cloud_presets(MagicMock(), user)
+        sp._orca_cloud_cache.clear()
+
+        assert [p.filament_type for p in slots["filament"]] == ["PETG", "PLA", "PETG", None]
+        assert all(p.filament_colour is None for p in slots["filament"])

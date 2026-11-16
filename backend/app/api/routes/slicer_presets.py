@@ -56,6 +56,7 @@ from backend.app.services.slicer_api import (
     SlicerApiService,
     SlicerApiUnavailableError,
 )
+from backend.app.utils import filament_catalog
 from backend.app.utils.printer_models import PRINTER_MODEL_MAP
 from backend.app.utils.slicer_strings import first_slicer_string, slicer_strings
 
@@ -185,19 +186,23 @@ async def _fetch_cloud_presets(
                         entry.get("inherits") or names_by_id.get(str(entry.get("base_id") or "")),
                         "User",
                     )
+                elif slot == "filament":
+                    preset.filament_type = _cloud_filament_material(entry, str(setting_id))
                 slots[slot].append(preset)
 
-        # Cloud filament presets carry no metadata in this response on
-        # purpose: the per-preset detail endpoint
+        # The per-preset detail endpoint
         # (/v1/iot-service/api/slicer/setting/{id}) is rate-limited at roughly
         # 10/sec per token, so fetching N filament presets to enrich them
         # one-by-one trips Bambu's limiter and returns 429 on every request
-        # for users with large preset libraries.
+        # for users with large preset libraries. So a filament's MATERIAL is
+        # read from what the list entry already is (see
+        # _cloud_filament_material), and never its colour.
         #
-        # The metadata-enrich pass (see _enrich_cloud_metadata) compensates:
-        # a Bambu Cloud entry without its own filament_type/colour inherits
-        # those values from a same-named local / orca_cloud / standard entry
-        # so it can still score for type/colour matches in pickFilamentForSlot.
+        # The metadata-enrich pass (see _enrich_cloud_metadata) covers what is
+        # still missing: a Bambu Cloud entry without its own
+        # filament_type/colour inherits those values from a same-named local /
+        # orca_cloud / standard entry so it can still score for type/colour
+        # matches in pickFilamentForSlot.
         _cloud_cache[cache_key] = (now, slots)
         return slots, "ok"
     finally:
@@ -257,6 +262,15 @@ async def _fetch_orca_cloud_presets(
             return _empty_slots(), "unreachable"
 
         slots = _empty_slots()
+        # The user's own filament profiles by name: a profile that stores only
+        # what its author changed is read through the profile it was saved from.
+        filament_siblings: dict[str, dict] = {}
+        for entry in raw_profiles:
+            content = entry.get("content") if isinstance(entry, dict) else None
+            if isinstance(content, dict) and _ORCA_TYPE_TO_BAMBU.get(str(content.get("type", ""))) == "filament":
+                sibling_name = str(entry.get("name") or content.get("name") or "").strip()
+                if sibling_name:
+                    filament_siblings.setdefault(sibling_name, content)
         for entry in raw_profiles:
             content = entry.get("content") if isinstance(entry, dict) else None
             if not isinstance(content, dict):
@@ -276,6 +290,8 @@ async def _fetch_orca_cloud_presets(
                 # or the slicer's INI string. Take the first non-empty element.
                 filament_type = first_slicer_string(content.get("filament_type"))
                 filament_colour = first_slicer_string(content.get("default_filament_colour"))
+                if filament_type is None:
+                    filament_type = _orca_filament_material(content, filament_siblings)
             preset = UnifiedPreset(
                 id=str(preset_id),
                 name=str(name),
@@ -326,6 +342,50 @@ async def _fetch_local_presets(db: AsyncSession) -> dict[str, list[UnifiedPreset
             UnifiedPreset(id=str(p.id), name=p.name, source="local", **extra),
         )
     return slots
+
+
+def _cloud_filament_material(entry: dict, setting_id: str) -> str | None:
+    """The material of a Bambu Cloud filament preset, by what the preset IS.
+
+    In this order, the first that answers:
+
+    1. the family catalogue by the preset's ``setting_id``
+       (``family_for_setting_id``; a variant the catalogue does not carry
+       answers through its base id, so a printer newer than the catalogue --
+       an H3C preset of a known family -- still has a material);
+    2. the family the list entry itself names (``filament_id``) -- how a user's
+       own preset, whose setting id no catalogue knows, states its family;
+    3. the entry's own ``filament_type`` -- a family of the user's own.
+
+    Never the preset's NAME ("... @BBL H2C"): upstream 9ac3f0f20 reads the
+    material of same-named bundle profiles, and a name is not an identity.
+    Nothing known is ``None`` -- "material unknown", which stays eligible in
+    the dialog's pre-pick rather than being guessed.
+    """
+    family = filament_catalog.family_for_setting_id(setting_id)
+    if family is None:
+        family_id = filament_catalog.bambu_filament_id(first_slicer_string(entry.get("filament_id")))
+        family = filament_catalog.get_family(family_id) if family_id else None
+    if family is not None and family.filament_type:
+        return family.filament_type
+    return first_slicer_string(entry.get("filament_type"))
+
+
+def _orca_filament_material(content: dict, siblings: dict[str, dict]) -> str | None:
+    """The material of an Orca Cloud filament profile that states none.
+
+    A profile saved with only the keys its author changed carries no
+    ``filament_type``; its family does. The family is resolved the way the
+    cloud mirror resolves it (``filament_preset_sync._orca_family_id``: the
+    profile's own ``filament_id``, else the profile it was saved from, through
+    the user's other profiles and the catalogue by exact name), and a family
+    no catalogue knows leaves the material unknown.
+    """
+    from backend.app.services.filament_preset_sync import _orca_family_id
+
+    family_id = _orca_family_id(content, siblings)
+    family = filament_catalog.get_family(family_id) if family_id else None
+    return family.filament_type if family is not None and family.filament_type else None
 
 
 def _saved_from(name: str, inherits: object, origin: object) -> str | None:
