@@ -158,6 +158,41 @@ async def test_the_ready_analysis_asks_for_a_status_publication(tmp_path):
     assert published == [7]
 
 
+@pytest.mark.asyncio
+async def test_a_replaced_source_gets_an_early_reader_of_its_own(tmp_path):
+    """The early reader belongs to its context. When a reader finds the file
+    replaced, the context is replaced too — and the new one had no early
+    reader: nobody told the status that the pauses changed, and a failed
+    parse was retried only when a printer card asked again."""
+    path = _three_mf(tmp_path / "job.3mf", {1: 6})
+    manager = _Manager()
+    published = []
+    manager._layer_projection_callback = published.append
+    bind_print_file_analysis(manager, 7, 42, path, 1, expected_identity="run-a")
+    start_print_file_analysis(manager, 7, 42)
+    first = await _settle(manager)
+    for _ in range(50):
+        if published:
+            break
+        await asyncio.sleep(0.01)
+    assert published == [7]
+
+    # The file is replaced (a late, complete download over a partial one).
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("Metadata/plate_1.gcode", _plate_gcode(3) + "; a different file")
+    await print_file_analysis.get_print_file_analysis(manager, 7, 42, path, 1, expected_identity="run-a")
+
+    replaced = manager._print_file_analysis_contexts[7]
+    assert replaced is not first
+    assert replaced.early_reader is not None
+    for _ in range(50):
+        if len(published) > 1:
+            break
+        await asyncio.sleep(0.01)
+    assert published == [7, 7]
+    assert current_pause_points(manager, 7, 42, "run-a") == ((3, 16),)
+
+
 def test_main_starts_the_analysis_where_it_binds_the_archive(tmp_path, monkeypatch):
     from backend.app import main
 

@@ -658,11 +658,17 @@ async def get_print_file_analysis(
         return context.analysis
     if context.source != source:
         lifecycle = context.lifecycle
+        had_early_reader = context.early_reader is not None
         _release_context(printer_manager, printer_id, context, reason="source_descriptor_changed")
         context = _new_context(
             printer_manager, archive_id, source, lifecycle=lifecycle, expected_identity=context.archive_identity
         )
         registry[registry_key] = context
+        if had_early_reader and registry is contexts:
+            # The early reader went with the context it belonged to (it may be
+            # this very caller). The live features over the analysis must not
+            # wait for a printer card to ask about the new file.
+            start_print_file_analysis(printer_manager, printer_id, archive_id)
 
     if context.analysis is not None:
         diagnostics.cache_hits += 1
