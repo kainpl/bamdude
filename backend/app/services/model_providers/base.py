@@ -31,6 +31,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import StrEnum  # BamDude: Python 3.12 has it; there is no core.compat shim
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
@@ -79,10 +80,8 @@ class ProviderResourceRef:
     integer design id as a string); ``sub_id`` is an optional secondary key
     such as MakerWorld's ``profileId`` for a specific plate.
 
-    Both ids must be **numeric strings** today: the shared route layer casts
-    them with ``int()`` when shaping API responses. Providers whose native
-    ids are not numeric need route-layer changes first — keep this contract
-    in mind when implementing one.
+    Ids are strings and need not be numeric (Manyfold's are not). MakerWorld's
+    own routes and schemas cast THEIR ids with ``int()``; nothing shared does.
     """
 
     source_type: str
@@ -108,6 +107,9 @@ class ProviderStatus:
     can_download: bool
     auth_error: str | None = None
     credential_rejected: bool = False
+    #: False when an installation-level connection has not been set up at all
+    #: (a provider without one is always "configured").
+    configured: bool = True
 
 
 @dataclass
@@ -326,3 +328,32 @@ class ProviderService(ABC):
         Must restrict the upstream host to :meth:`ModelProvider.thumbnail_hosts`
         (SSRF guard).
         """
+
+    #: True when :meth:`download_to` is implemented: the import core then streams
+    #: the file to disk instead of asking :meth:`download` for its bytes.
+    streams_downloads = False
+
+    async def download_to(self, info: ProviderDownloadInfo, destination: Path) -> int:
+        """Stream the file of ``info`` to ``destination``; returns its size in bytes."""
+        raise NotImplementedError
+
+
+class BrowsableService(ABC):
+    """The catalogue capability: a provider whose models can be listed and searched.
+
+    A paste-a-link provider (MakerWorld) does not have it. Paging is the
+    source's: ``list_models`` answers one page of whatever size the source
+    gives, with its own totals when it states them.
+    """
+
+    @abstractmethod
+    async def list_models(self, *, query: str = "", page: int = 1) -> dict[str, Any]:
+        """``{total, page, pages, has_next, has_previous, models: [{id, name}]}``."""
+
+    @abstractmethod
+    async def get_model(self, model_id: str) -> dict[str, Any]:
+        """One model with its files."""
+
+    @abstractmethod
+    async def fetch_preview(self, model_id: str) -> tuple[bytes, str]:
+        """The model's preview image as ``(bytes, content_type)`` — addressed by id, never by URL."""

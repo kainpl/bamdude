@@ -25,9 +25,11 @@ from backend.app.services.model_providers.base import (
     ProviderUrlError,
 )
 from backend.app.services.model_providers.makerworld import makerworld_provider
+from backend.app.services.model_providers.manyfold import manyfold_provider
 from backend.app.services.model_providers.registry import ModelProviderRegistry, registry
 
 registry.register(makerworld_provider)
+registry.register(manyfold_provider)
 
 __all__ = [
     "ModelProvider",
@@ -47,5 +49,6 @@ __all__ = [
     "ProviderUnavailableError",
     "ProviderUrlError",
     "makerworld_provider",
+    "manyfold_provider",
     "registry",
 ]
