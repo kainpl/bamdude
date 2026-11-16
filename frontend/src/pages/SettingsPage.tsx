@@ -57,6 +57,7 @@ import { OIDCProviderSettings } from '../components/OIDCProviderSettings';
 import { SecurityStatusCard } from '../components/SecurityStatusCard';
 import { SlicerPipelinesPanel } from '../components/SlicerPipelinesPanel';
 import { FailureDetectionSettings } from '../components/FailureDetectionSettings';
+import { ManyfoldConnectionCard } from '../components/ManyfoldConnectionCard';
 import { APIBrowser } from '../components/APIBrowser';
 import { Toggle } from '../components/Toggle';
 import { getGroupName, getGroupDescription } from '../utils/groupI18n';
@@ -4149,6 +4150,8 @@ export function SettingsPage() {
       <div className="flex flex-col lg:flex-row gap-4">
         {/* Left Column - External URL & FTP Retry */}
         <div className="flex-1 lg:max-w-xl space-y-4">
+          {/* The installation's Manyfold connection (a model source) */}
+          <ManyfoldConnectionCard />
           {/* External URL */}
           <Card>
             <CardHeader>
