@@ -33,10 +33,11 @@ class Placeholder(BaseModel):
 
 #: The vocabulary a template's text can use.
 #:
-#: The first seventeen mirror ``frontend/src/utils/spoolName.ts`` field for
+#: The first nineteen mirror ``frontend/src/utils/spoolName.ts`` field for
 #: field — that is where this idea started, and the spool display-name setting
-#: still interpolates them client-side for the inventory table. The last three
-#: exist only on a label and have no meaning in a name.
+#: still interpolates them client-side for the inventory table. The rest exist
+#: only on a label (``LABEL_ONLY_PLACEHOLDERS``): three with no meaning in a
+#: name, and three a name was never taught.
 PLACEHOLDERS: tuple[Placeholder, ...] = (
     Placeholder(
         key="id",
@@ -135,6 +136,24 @@ PLACEHOLDERS: tuple[Placeholder, ...] = (
         description="Twelve digits for a barcode element, in the range reserved for internal use",
         example="200000000042",
     ),
+    Placeholder(
+        key="storage_location",
+        label="Storage location",
+        description="Where the spool is kept — the shelf, box or dry cabinet entered for it",
+        example="Shelf B",
+    ),
+    Placeholder(
+        key="nozzle_temp",
+        label="Nozzle temperature",
+        description="The spool's nozzle temperature range, already written out with its unit",
+        example="220–240 °C",
+    ),
+    Placeholder(
+        key="added_date",
+        label="Date added",
+        description="The day the spool was added to the inventory (YYYY-MM-DD)",
+        example="2026-04-15",
+    ),
 )
 
 _TOKEN = re.compile(r"\{([a-z_0-9]+)\}")
@@ -146,7 +165,15 @@ _KNOWN = frozenset(p.key for p in PLACEHOLDERS)
 #: ``inventory_service`` composes the naming template in SQL so the inventory
 #: search can match what the list SHOWS, and it needs to know where the naming
 #: vocabulary stops.
-LABEL_ONLY_PLACEHOLDERS = frozenset({"display_name", "deeplink", "ean"})
+#:
+#: ⚠️ ``storage_location``, ``nozzle_temp`` and ``added_date`` are here by
+#: decision, not by nature (owner, 2026-11-16): a name COULD say where a spool
+#: lives, but the naming template is also composed in the browser
+#: (``spoolName.ts``) and in SQL, and a key only this module knows would make
+#: the list, the search and the label disagree.
+LABEL_ONLY_PLACEHOLDERS = frozenset(
+    {"display_name", "deeplink", "ean", "storage_location", "nozzle_temp", "added_date"}
+)
 
 #: The naming half of :data:`PLACEHOLDERS` — what a spool-name template may use.
 NAMING_PLACEHOLDERS: tuple[Placeholder, ...] = tuple(p for p in PLACEHOLDERS if p.key not in LABEL_ONLY_PLACEHOLDERS)

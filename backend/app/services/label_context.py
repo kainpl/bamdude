@@ -11,6 +11,7 @@ would make the number depend on which backend drew it.
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 from backend.app.models.spool import Spool
@@ -39,6 +40,32 @@ def _hex(rgba: str | None) -> str:
         return ""
     token = rgba.strip().lstrip("#")
     return f"#{token[:6].upper()}" if token else ""
+
+
+def _temperature_range(low: Any, high: Any) -> str:
+    """``220–240 °C``, one bound alone, or nothing.
+
+    Written out here because a range cannot be assembled in a template: with one
+    bound missing ``{min}–{max} °C`` would print a dangling dash.
+    """
+    bounds = sorted({int(value) for value in (low, high) if value})
+    if not bounds:
+        return ""
+    return f"{'–'.join(str(bound) for bound in bounds)} °C"
+
+
+def _day(value: Any) -> str:
+    """A date or an ISO timestamp as ``YYYY-MM-DD``; anything else as nothing."""
+    if value is None:
+        return ""
+    if hasattr(value, "strftime"):
+        return value.strftime("%Y-%m-%d")
+    text = str(value)[:10]
+    try:
+        datetime.strptime(text, "%Y-%m-%d")
+    except ValueError:
+        return ""
+    return text
 
 
 def _hex_all(rgba: str | None, extra_colors: str | None) -> str:
@@ -106,6 +133,13 @@ def spool_context(
         "display_name": name or (spool.material or ""),
         "deeplink": f"{deeplink_base}/inventory?spool={spool.id}",
         "ean": ean,
+        "storage_location": getattr(spool, "storage_location", None) or "",
+        # The spool's OWN range — what its form holds. A family's or a preset's
+        # is resolved per printer and is not a fact about the spool.
+        "nozzle_temp": _temperature_range(
+            getattr(spool, "nozzle_temp_min", None), getattr(spool, "nozzle_temp_max", None)
+        ),
+        "added_date": _day(getattr(spool, "created_at", None)),
     }
 
 
@@ -189,6 +223,10 @@ def spoolman_context(
         "display_name": name,
         "deeplink": f"{deeplink_base}/inventory?spool={spool_id}",
         "ean": ean,
+        "storage_location": mapped.get("storage_location") or "",
+        # Spoolman holds one extruder temperature, so this is one bound.
+        "nozzle_temp": _temperature_range(mapped.get("nozzle_temp_min"), mapped.get("nozzle_temp_max")),
+        "added_date": _day(mapped.get("created_at")),
     }
 
 

@@ -12,7 +12,7 @@ from types import SimpleNamespace
 import pytest
 
 from backend.app.services.label_context import example_context, spool_context, spoolman_context
-from backend.app.services.label_template import PLACEHOLDERS, resolve
+from backend.app.services.label_template import NAMING_PLACEHOLDERS, PLACEHOLDERS, resolve
 
 BASE = "https://bamdude.local"
 
@@ -178,6 +178,62 @@ class TestSpoolman:
         assert context["material"] == ""
 
 
+class TestWhereItLivesHowHotAndSinceWhen:
+    """Three things a shelf label is asked for and no design could print."""
+
+    def test_they_are_in_the_vocabulary(self):
+        assert {"storage_location", "nozzle_temp", "added_date"} <= {p.key for p in PLACEHOLDERS}
+
+    def test_they_are_for_labels_only(self):
+        """⚠️ A spool's NAME does not take them: the naming template is also
+        composed in SQL and in the browser, and neither was taught these."""
+        assert not {"storage_location", "nozzle_temp", "added_date"} & {p.key for p in NAMING_PLACEHOLDERS}
+
+    def test_the_storage_location(self):
+        context = spool_context(_spool(storage_location="Shelf B"), deeplink_base=BASE)
+        assert context["storage_location"] == "Shelf B"
+
+    @pytest.mark.parametrize(
+        ("low", "high", "printed"),
+        [
+            (220, 240, "220–240 °C"),
+            (220, None, "220 °C"),
+            (None, 240, "240 °C"),
+            (230, 230, "230 °C"),
+            (None, None, ""),
+            (0, 0, ""),
+        ],
+    )
+    def test_the_nozzle_temperature_reads_as_a_range(self, low, high, printed):
+        context = spool_context(_spool(nozzle_temp_min=low, nozzle_temp_max=high), deeplink_base=BASE)
+        assert context["nozzle_temp"] == printed
+
+    def test_the_date_it_was_added(self):
+        context = spool_context(_spool(created_at=datetime(2026, 2, 3, 23, 59)), deeplink_base=BASE)
+        assert context["added_date"] == "2026-02-03"
+
+    def test_a_spool_without_them_prints_gaps_not_tokens(self):
+        context = spool_context(_spool(), deeplink_base=BASE)
+        assert resolve("{storage_location} {nozzle_temp} {added_date}", context) == ""
+
+    def test_spoolman_fills_what_it_knows(self):
+        payload = {
+            "id": 7,
+            "location": "Drybox 2",
+            "registered": "2026-02-03T09:15:00Z",
+            "filament": {"name": "PLA Red", "material": "PLA", "settings_extruder_temp": 215},
+        }
+        context = spoolman_context(payload, deeplink_base=BASE)
+
+        assert context["storage_location"] == "Drybox 2"
+        assert context["nozzle_temp"] == "215 °C"
+        assert context["added_date"] == "2026-02-03"
+
+    def test_spoolman_without_them_prints_gaps(self):
+        context = spoolman_context({"id": 7, "filament": {"name": "PLA Red"}}, deeplink_base=BASE)
+        assert (context["storage_location"], context["nozzle_temp"], context["added_date"]) == ("", "", "")
+
+
 class TestASpoolmanLabelEqualsALocalOne:
     """The same spool, held in Spoolman and held locally, prints the same label.
 
@@ -198,6 +254,8 @@ class TestASpoolmanLabelEqualsALocalOne:
             "used_weight": 250.0,
             "remaining_weight": 750.0,
             "comment": "Kitchen shelf",
+            "location": "Shelf B",
+            "registered": "2026-02-03T09:15:00Z",
             "extra": {"bambu_color_name": '"Jade White"', "bambu_slicer_filament_name": '"PolyTerra PLA"'},
             "filament": {
                 "name": "PLA Matte",
@@ -207,13 +265,22 @@ class TestASpoolmanLabelEqualsALocalOne:
                 "price": 22.5,
                 "diameter": 1.75,
                 "article_number": "15",
+                "settings_extruder_temp": 215,
                 "vendor": {"name": "Polymaker"},
             },
         }
 
     @staticmethod
     def _local():
-        return _spool(purchase_date=None, lot=None, material_number="15")
+        return _spool(
+            purchase_date=None,
+            lot=None,
+            material_number="15",
+            storage_location="Shelf B",
+            nozzle_temp_min=215,
+            nozzle_temp_max=None,
+            created_at=datetime(2026, 2, 3, 9, 15),
+        )
 
     def test_field_for_field(self):
         theirs = spoolman_context(self._spoolman(), deeplink_base=BASE)
