@@ -5516,8 +5516,11 @@ async def get_library_file_filament_requirements(
             # Sort by slot ID
             filaments.sort(key=lambda x: x["slot_id"])
 
-            # Enrich with nozzle mapping for dual-nozzle printers
-            nozzle_mapping = extract_nozzle_mapping_from_3mf(zf)
+            # Enrich with nozzle mapping for dual-nozzle printers — of the plate
+            # asked: a multi-plate file may put the same slot on a different
+            # nozzle on each plate, and unscoped the last plate in the file won
+            # (upstream 19212d066).
+            nozzle_mapping = extract_nozzle_mapping_from_3mf(zf, plate_id)
             if nozzle_mapping:
                 for filament in filaments:
                     filament["nozzle_id"] = nozzle_mapping.get(filament["slot_id"])
