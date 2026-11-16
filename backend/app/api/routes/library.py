@@ -97,11 +97,13 @@ from backend.app.services.design_settings import (
 from backend.app.services.entity_codes import code_for
 from backend.app.services.filament_requirements import annotate_rack_groups
 from backend.app.services.library_helpers import (
+    NOT_SLICED_DETAIL,
+    UNSLICED_PROJECT_DETAIL,
     answered_file_tags,
     detect_file_type,
     folder_activity_at,
     skip_objects_supported_from_metadata,
-    sliced_by_content,
+    sliced_source_refusal,
     sync_system_tags,
 )
 from backend.app.services.library_ingest import IngestResult, find_reusable_row, read_access
@@ -143,7 +145,6 @@ from backend.app.services.track_switch_plan import read_track_switch_plan
 from backend.app.utils.filename import (
     MAX_FILENAME_BYTES,
     InvalidFilenameError,
-    is_sliced_file,
     safe_path_component,
     validate_print_filename,
 )
@@ -5447,12 +5448,12 @@ async def print_library_file(
 
     # Validate file is sliced — by name, or by what the 3MF holds: the file
     # manager offers Print for a sliced ``Foo.3mf`` (its tag follows the content).
-    if not is_sliced_file(lib_file.filename) and not await sliced_by_content(
-        lib_file.filename, file_path, file_metadata=lib_file.file_metadata
-    ):
+    # A project saved as ``Foo.gcode.3mf`` is refused on its content (upstream #3435).
+    refusal = await sliced_source_refusal(lib_file.filename, file_path, file_metadata=lib_file.file_metadata)
+    if refusal is not None:
         raise HTTPException(
             status_code=400,
-            detail="Not a sliced file. Only G-code, or a 3MF with sliced G-code inside, can be printed.",
+            detail=UNSLICED_PROJECT_DETAIL if refusal == UNSLICED_PROJECT_DETAIL else NOT_SLICED_DETAIL,
         )
 
     if not file_path.exists():

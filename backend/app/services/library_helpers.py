@@ -71,30 +71,72 @@ def sliced_gcode_in_3mf(path: str | Path) -> bool | None:
         return None
 
 
-async def sliced_by_content(filename: str, path: str | Path | None, *, file_metadata: dict | None = None) -> bool:
-    """A ``.3mf`` that holds sliced G-code, whatever its name says (upstream #2993).
-
-    The arm every print gate adds BESIDE its own filename rule — never instead
-    of it: ``foo.gcode.3mf`` and ``foo.gcode`` keep passing on the name. A plate
-    exported from the slicer or a print sent through the cloud reaches the
-    library as ``Foo.3mf`` with its G-code intact; the file manager offers Print
-    for it (the ``gcode`` tag follows the content since m137), so the routes
-    behind that button must not refuse it by name.
+async def sliced_content_verdict(
+    filename: str, path: str | Path | None, *, file_metadata: dict | None = None
+) -> bool | None:
+    """What a ``.3mf``'s CONTENT says about being sliced: yes, no, or unknown.
 
     The stored answer (``file_metadata["has_sliced_gcode"]``) is believed when
     there is one — it was written from these bytes. Only when none was ever
     recorded is the container opened, off the event loop, central directory
-    only. An unreadable file is ``False`` here: a gate that could not look
-    refuses rather than hand the printer bytes it has not seen.
+    only. ``None`` — not a ``.3mf`` at all (a raw ``.gcode`` has nothing to look
+    inside), no path, or a file that could not be read — is NOT ``False``.
     """
     if not filename.lower().endswith(".3mf"):
-        return False
+        return None
     known = (file_metadata or {}).get(SLICED_GCODE_META_KEY)
     if known is not None:
         return bool(known)
     if path is None:
-        return False
-    return await asyncio.to_thread(sliced_gcode_in_3mf, path) is True
+        return None
+    return await asyncio.to_thread(sliced_gcode_in_3mf, path)
+
+
+async def sliced_by_content(filename: str, path: str | Path | None, *, file_metadata: dict | None = None) -> bool:
+    """A ``.3mf`` that holds sliced G-code, whatever its name says (upstream #2993).
+
+    A plate exported from the slicer or a print sent through the cloud reaches
+    the library as ``Foo.3mf`` with its G-code intact; the file manager offers
+    Print for it (the ``gcode`` tag follows the content since m137). An
+    unreadable file is ``False`` here. The print gates do not call this — they
+    ask ``sliced_source_refusal``, which also hears a known "no".
+    """
+    return await sliced_content_verdict(filename, path, file_metadata=file_metadata) is True
+
+
+NOT_SLICED_DETAIL = "Not a sliced file. Only G-code, or a 3MF with sliced G-code inside, can be printed."
+UNSLICED_PROJECT_DETAIL = (
+    "This 3MF is named like a sliced file but holds no sliced G-code. Slice it first, then print the result."
+)
+
+
+async def sliced_source_refusal(
+    filename: str,
+    path: str | Path | None,
+    *,
+    file_metadata: dict | None = None,
+    named: bool | None = None,
+) -> str | None:
+    """THE question every print gate asks of a source: why it cannot be printed, or ``None``.
+
+    Content that is KNOWN decides, both ways: a sliced ``Foo.3mf`` passes
+    (upstream #2993), and a project saved as ``Foo.gcode.3mf`` is refused
+    (upstream #3435) — the slicer writes an unsliced project under any name, and
+    the file manager already offers Slice for it, not Print. Content nobody could
+    read (no recorded fact and a missing or unreadable file) is unknown, and the
+    NAME rule decides as it always did; so does it for a raw ``.gcode``.
+
+    ``named`` is the caller's own filename rule when it is narrower than
+    ``utils.filename.is_sliced_file`` (the dispatcher's).
+    """
+    verdict = await sliced_content_verdict(filename, path, file_metadata=file_metadata)
+    if named is None:
+        from backend.app.utils.filename import is_sliced_file
+
+        named = is_sliced_file(filename)
+    if verdict is True or (verdict is None and named):
+        return None
+    return UNSLICED_PROJECT_DETAIL if named else NOT_SLICED_DETAIL
 
 
 def detect_file_type(filename: str) -> str:
