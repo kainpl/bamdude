@@ -6,6 +6,7 @@ import {
   isValidElement,
   useEffect,
   useId,
+  useLayoutEffect,
   useRef,
   useState,
   type ReactElement,
@@ -51,6 +52,21 @@ import {
  * search button beside it and, while searching, a box above — and `className`
  * then sizes that group (the select fills it). Without `search` nothing
  * changes: one `<select>`, as every other call site has it.
+ *
+ * Two limits of `search`, both by construction:
+ *
+ * - It narrows only what it can SEE: literal `<option>` / `<optgroup>`
+ *   children, and fragments of them. Options drawn by a component of the
+ *   caller's (`<MyOptions />`) are opaque to it — they are never narrowed and
+ *   every query reads "no matches". Build the options inline.
+ * - The option holding the current value always stays listed, because a
+ *   `<select>` whose chosen option disappears moves to another one WITHOUT a
+ *   `change` event. For a controlled field that value is the `value` prop; for
+ *   an uncontrolled one (`defaultValue`) it is read off the element when a
+ *   render begins and put back after it. Keep the field controlled where you
+ *   can: the list is narrowed around the value of the last render, so an
+ *   uncontrolled field whose value is changed by a script WHILE a query is
+ *   typed — without a render — may find that value's option not listed.
  */
 
 type SelectSize = 'xs' | 'sm' | 'md' | 'lg';
@@ -233,8 +249,23 @@ function SearchableSelect({
 
   const words = open ? query.toLowerCase().split(/\s+/).filter(Boolean) : [];
   const matched: string[] = [];
-  const shown =
-    words.length > 0 ? filterOptions(children, words, String(selectProps.value ?? ''), matched) : children;
+  // The value whose option must stay listed. An uncontrolled field (no `value`
+  // prop) keeps it in the element, which exists by the time a search is open.
+  const elementValue = selectProps.value === undefined ? selectRef.current?.value : undefined;
+  const current =
+    selectProps.value !== undefined
+      ? String(selectProps.value ?? '')
+      : (elementValue ?? String(selectProps.defaultValue ?? ''));
+  const shown = words.length > 0 ? filterOptions(children, words, current, matched) : children;
+  // ⚠️ Narrowing re-creates the `<option>` elements (the narrowed list is keyed
+  // apart from the full one), and a `<select>` whose options are replaced falls
+  // back to its first one without a `change` event. React puts a controlled
+  // field's value back by itself; for an uncontrolled one it is put back here,
+  // to what the element held when this render began.
+  useLayoutEffect(() => {
+    const select = selectRef.current;
+    if (select && elementValue !== undefined && select.value !== elementValue) select.value = elementValue;
+  });
   const noMatches = words.length > 0 && matched.length === 0;
 
   const close = (returnFocus: boolean) => {

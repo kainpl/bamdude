@@ -235,3 +235,60 @@ describe('Select — search', () => {
     expect(chip).toBeTruthy();
   });
 });
+
+describe('Select — search on a field that keeps its own value', () => {
+  // `defaultValue`, no `value`: the chosen option is the DOM's to know.
+  function Uncontrolled({ onPick }: { onPick: (value: string) => void }) {
+    return (
+      <Select
+        aria-label="Filament profile"
+        defaultValue="std:pla"
+        search={SEARCH}
+        onChange={(e) => onPick(e.target.value)}
+      >
+        <option value="">— Select —</option>
+        <option value="loc:petg">My PETG HF</option>
+        <option value="std:pla">Bambu PLA Basic</option>
+        <option value="std:abs">Bambu ABS</option>
+      </Select>
+    );
+  }
+
+  it('keeps the chosen option listed, so narrowing never changes the choice in silence', async () => {
+    const user = userEvent.setup();
+    const onPick = vi.fn();
+    render(<Uncontrolled onPick={onPick} />);
+    const select = screen.getByRole('combobox', { name: 'Filament profile' }) as HTMLSelectElement;
+
+    await user.click(screen.getByRole('button', { name: SEARCH.label }));
+    await user.type(screen.getByRole('searchbox', { name: SEARCH.label }), 'abs');
+
+    expect(within(select).getAllByRole('option').map((o) => o.textContent)).toEqual([
+      '— Select —',
+      'Bambu PLA Basic',
+      'Bambu ABS',
+    ]);
+    expect(select.value).toBe('std:pla');
+    expect(onPick).not.toHaveBeenCalled();
+  });
+
+  it('follows a choice made in the list while the search is open', async () => {
+    const user = userEvent.setup();
+    render(<Uncontrolled onPick={vi.fn()} />);
+    const select = screen.getByRole('combobox', { name: 'Filament profile' }) as HTMLSelectElement;
+
+    await user.click(screen.getByRole('button', { name: SEARCH.label }));
+    const box = screen.getByRole('searchbox', { name: SEARCH.label });
+    await user.type(box, 'petg');
+    await user.selectOptions(select, 'loc:petg');
+    await user.clear(box);
+    await user.type(box, 'abs');
+
+    expect(within(select).getAllByRole('option').map((o) => o.textContent)).toEqual([
+      '— Select —',
+      'My PETG HF',
+      'Bambu ABS',
+    ]);
+    expect(select.value).toBe('loc:petg');
+  });
+});
