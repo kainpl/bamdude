@@ -1,44 +1,20 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { Link } from 'react-router';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { AlertCircle, ArrowLeft, Box, Check, ChevronLeft, ChevronRight, Download, ExternalLink, Loader2, Search, Settings } from 'lucide-react';
 
-import { api, ApiError, type ModelSourceFile, type ModelSourceModel } from '../api/client';
+import { api, type ModelSourceFile } from '../api/client';
 import { useAuth } from '../contexts/AuthContext';
-import { useToast } from '../contexts/ToastContext';
+import { manyfoldMarkKey, useManyfoldImport, type ManyfoldImportSummary } from '../contexts/ManyfoldImportContext';
 import { formatFileSize } from '../utils/file';
 import { Button } from './Button';
 import { Card, CardContent } from './Card';
 import { FolderTreeSelect } from './FolderTreeSelect';
 import { LoadingBlock } from './LoadingBlock';
-
-/** What a run of imports did — shown once it ends, whatever happened in between. */
-interface ImportSummary {
-  imported: number;
-  existing: number;
-  failed: { name: string; reason: string }[];
-  /** Models that could not be read at all (only when whole models were imported). */
-  unreadable: string[];
-}
-
-interface ImportJob {
-  modelId: string;
-  file: ModelSourceFile;
-}
+import { useManyfoldRefusal } from './manyfoldRefusal';
 
 const fileLabel = (file: ModelSourceFile) => file.filename || file.name;
-
-/** A refusal in the reader's language: the code picks the sentence, the server's text is the fallback. */
-function useRefusalText() {
-  const { t } = useTranslation();
-  return (error: unknown): string => {
-    if (error instanceof ApiError && error.code) {
-      return t(`manyfold.errors.${error.code}`, { defaultValue: error.message });
-    }
-    return error instanceof Error ? error.message : t('manyfold.errors.manyfold_failed');
-  };
-}
 
 /** A model's preview from our own proxy; a model without one shows a neutral tile. */
 function Preview({ modelId, name, className }: { modelId: string; name: string; className: string }) {
@@ -61,15 +37,16 @@ function Preview({ modelId, name, className }: { modelId: string; name: string; 
   );
 }
 
-function SummaryNote({ summary, onClose }: { summary: ImportSummary; onClose: () => void }) {
+/** What a run did — it stays until it is closed, wherever the user was when the run ended. */
+function SummaryNote({ summary, onClose }: { summary: ManyfoldImportSummary; onClose: () => void }) {
   const { t } = useTranslation();
-  const nothing = summary.imported === 0 && summary.existing === 0 && summary.failed.length === 0;
+  const nothing = summary.total === 0 && summary.unreadable.length === 0 && summary.stopped === null;
   return (
     <div role="status" className="rounded-lg border border-bambu-dark-tertiary bg-bambu-dark-secondary p-3 text-sm space-y-1">
       <div className="flex items-start justify-between gap-3">
         <p className="text-white">
-          {nothing && summary.unreadable.length === 0
-            ? t('manyfold.bulkNothing')
+          {nothing
+            ? t(summary.noPrintable ? 'manyfold.bulkNoPrintable' : 'manyfold.bulkNothing')
             : t('manyfold.bulkDone', {
                 imported: summary.imported,
                 existing: summary.existing,
@@ -80,11 +57,24 @@ function SummaryNote({ summary, onClose }: { summary: ImportSummary; onClose: ()
           {t('common.close')}
         </button>
       </div>
-      {summary.failed.map((entry) => (
-        <p key={`${entry.name}:${entry.reason}`} className="text-red-400">
-          {t('manyfold.bulkFailed', { names: entry.name, reason: entry.reason })}
-        </p>
-      ))}
+      {summary.stopped === 'cancelled' && (
+        <p className="text-yellow-400">{t('manyfold.runCancelled', { skipped: summary.skipped })}</p>
+      )}
+      {summary.stopped === 'refused' && (
+        <p className="text-yellow-400">{t('manyfold.runRefused', { reason: summary.stopReason ?? '', skipped: summary.skipped })}</p>
+      )}
+      {summary.stopped === 'reloaded' && (
+        <p className="text-yellow-400">{t('manyfold.runReloaded', { done: summary.done ?? 0, total: summary.total })}</p>
+      )}
+      {summary.failed.length > 0 && (
+        <ul className="max-h-48 overflow-y-auto space-y-1">
+          {summary.failed.map((entry) => (
+            <li key={entry.key} className="text-red-400 break-words">
+              {t('manyfold.bulkFailed', { model: entry.modelName, name: entry.name, reason: entry.reason })}
+            </li>
+          ))}
+        </ul>
+      )}
       {summary.unreadable.length > 0 && (
         <p className="text-yellow-400">{t('manyfold.modelsUnreadable', { names: summary.unreadable.join(', ') })}</p>
       )}
@@ -95,9 +85,9 @@ function SummaryNote({ summary, onClose }: { summary: ImportSummary; onClose: ()
 export function ManyfoldTab() {
   const { t } = useTranslation();
   const { hasPermission } = useAuth();
-  const { showToast } = useToast();
-  const queryClient = useQueryClient();
-  const refusalText = useRefusalText();
+  const refusalText = useManyfoldRefusal();
+  // The run belongs to the app, not to this tab: it goes on, and is found again, across navigation.
+  const { progress, busy, summary, justImported, startFiles, startModels, cancel, dismissSummary } = useManyfoldImport();
   const canImport = hasPermission('manyfold:import');
   const canConnect = hasPermission('settings:update');
 
@@ -109,10 +99,6 @@ export function ManyfoldTab() {
   const [pickedFiles, setPickedFiles] = useState<Set<string>>(new Set());
   // Models ticked in the grid, with their names: the tick outlives the page that showed it.
   const [pickedModels, setPickedModels] = useState<Map<string, string>>(new Map());
-  const [progress, setProgress] = useState<{ kind: 'reading' | 'importing'; current: number; total: number } | null>(null);
-  const [summary, setSummary] = useState<ImportSummary | null>(null);
-  // Files this session imported, by id — until the model is read again.
-  const [justImported, setJustImported] = useState<Map<string, { library_file_id: number; folder_id: number | null }>>(new Map());
 
   const status = useQuery({ queryKey: ['manyfold-status'], queryFn: () => api.getManyfoldStatus() });
   const usable = status.data?.usable === true;
@@ -139,74 +125,40 @@ export function ManyfoldTab() {
     setPickedFiles(new Set());
   }, [openModelId]);
 
+  // What the library holds of the open model: the model's own answer, plus what this session
+  // imported since that answer was read (a later read knows better — the file may be gone again).
+  const modelReadAt = model.dataUpdatedAt;
   const inLibrary = useMemo(() => {
-    const known = new Map<string, { library_file_id: number; folder_id: number | null }>(justImported);
-    for (const [fileId, entry] of Object.entries(model.data?.already_imported ?? {})) known.set(fileId, entry);
+    const known = new Map<string, { library_file_id: number; folder_id: number | null }>();
+    if (!model.data) return known;
+    for (const file of model.data.files) {
+      const mark = justImported.get(manyfoldMarkKey(model.data.id, file.id));
+      if (mark && mark.at > modelReadAt) known.set(file.id, mark);
+    }
+    for (const [fileId, entry] of Object.entries(model.data.already_imported ?? {})) known.set(fileId, entry);
     return known;
-  }, [model.data, justImported]);
+  }, [model.data, modelReadAt, justImported]);
 
-  const busy = progress !== null;
-
-  /** Files one after another; a failure never stops the rest. */
-  const runImports = async (jobs: ImportJob[], unreadable: string[] = []) => {
-    const result: ImportSummary = { imported: 0, existing: 0, failed: [], unreadable };
-    for (const [index, job] of jobs.entries()) {
-      setProgress({ kind: 'importing', current: index + 1, total: jobs.length });
-      try {
-        const done = await api.importManyfoldFile(job.modelId, job.file.id, folderId);
-        if (done.was_existing) result.existing += 1;
-        else result.imported += 1;
-        setJustImported((previous) =>
-          new Map(previous).set(job.file.id, { library_file_id: done.library_file_id, folder_id: done.folder_id }),
-        );
-      } catch (error) {
-        result.failed.push({ name: fileLabel(job.file), reason: refusalText(error) });
-      }
-    }
-    setProgress(null);
-    setSummary(result);
-    setPickedFiles(new Set());
-    queryClient.invalidateQueries({ queryKey: ['library-folders'] });
-    queryClient.invalidateQueries({ queryKey: ['library-files'] });
-    queryClient.invalidateQueries({ queryKey: ['manyfold-model'] });
-  };
-
-  const importOne = async (modelId: string, file: ModelSourceFile) => {
-    setProgress({ kind: 'importing', current: 1, total: 1 });
-    try {
-      const done = await api.importManyfoldFile(modelId, file.id, folderId);
-      setJustImported((previous) =>
-        new Map(previous).set(file.id, { library_file_id: done.library_file_id, folder_id: done.folder_id }),
-      );
-      showToast(t(done.was_existing ? 'manyfold.alreadyInLibrary' : 'manyfold.imported', { filename: done.filename }), 'success');
-      queryClient.invalidateQueries({ queryKey: ['library-folders'] });
-      queryClient.invalidateQueries({ queryKey: ['library-files'] });
-    } catch (error) {
-      showToast(refusalText(error), 'error');
-    } finally {
-      setProgress(null);
-    }
+  /** Files one after another; a failure never stops the rest. One run at a time. */
+  const importFiles = (modelId: string, modelName: string, files: ModelSourceFile[], single = false) => {
+    const started = startFiles(
+      files.map((file) => ({ modelId, modelName, file })),
+      folderId,
+      { single },
+    );
+    if (started) setPickedFiles(new Set());
   };
 
   /** Every printable file of the ticked models that the library does not hold yet. */
-  const importModels = async () => {
-    const chosen = [...pickedModels.entries()];
-    const jobs: ImportJob[] = [];
-    const unreadable: string[] = [];
-    for (const [index, [modelId, name]] of chosen.entries()) {
-      setProgress({ kind: 'reading', current: index + 1, total: chosen.length });
-      try {
-        const read: ModelSourceModel = await api.getManyfoldModel(modelId);
-        for (const file of read.files) {
-          if (file.importable && !read.already_imported[file.id]) jobs.push({ modelId, file });
-        }
-      } catch {
-        unreadable.push(name);
-      }
-    }
-    setPickedModels(new Map());
-    await runImports(jobs, unreadable);
+  const importModels = () => {
+    const started = startModels(
+      [...pickedModels.entries()].map(([id, name]) => ({ id, name })),
+      folderId,
+    );
+    if (started) setPickedModels(new Map());
   };
+  // Why an import control is off while a run is in flight.
+  const busyTitle = busy ? t('manyfold.importRunning') : undefined;
 
   if (status.isLoading) return <LoadingBlock label={t('common.loading')} />;
 
@@ -231,13 +183,23 @@ export function ManyfoldTab() {
   }
 
   const progressNote = progress && (
-    <p role="status" className="text-sm text-bambu-gray flex items-center gap-2">
-      <Loader2 className="w-4 h-4 animate-spin" />
-      {t(progress.kind === 'reading' ? 'manyfold.collectProgress' : 'manyfold.importProgress', {
-        current: progress.current,
-        total: progress.total,
-      })}
-    </p>
+    <div className="text-sm text-bambu-gray space-y-1">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+        <p className="flex items-center gap-2">
+          <Loader2 className="w-4 h-4 animate-spin" />
+          {t(progress.kind === 'reading' ? 'manyfold.collectProgress' : 'manyfold.importProgress', {
+            current: progress.current,
+            total: progress.total,
+          })}
+        </p>
+        {progress.cancelling ? (
+          <span role="status">{t('manyfold.cancelling')}</span>
+        ) : (
+          <Button size="sm" variant="secondary" onClick={cancel}>{t('manyfold.cancelImport')}</Button>
+        )}
+      </div>
+      <p className="text-xs">{t('manyfold.keepPageOpen')}</p>
+    </div>
   );
 
   // ---- one model ------------------------------------------------------
@@ -262,7 +224,7 @@ export function ManyfoldTab() {
           <ArrowLeft className="w-4 h-4" />
           {t('manyfold.back')}
         </button>
-        {summary && <SummaryNote summary={summary} onClose={() => setSummary(null)} />}
+        {summary && <SummaryNote summary={summary} onClose={dismissSummary} />}
         {model.isLoading && <LoadingBlock label={t('common.loading')} />}
         {model.isError && <p className="text-red-400 text-sm">{refusalText(model.error)}</p>}
         {data && (
@@ -331,14 +293,16 @@ export function ManyfoldTab() {
                       size="sm"
                       variant="secondary"
                       disabled={busy || picked.length === 0}
-                      onClick={() => runImports(picked.map((file) => ({ modelId: data.id, file })))}
+                      title={busyTitle}
+                      onClick={() => importFiles(data.id, data.name, picked)}
                     >
                       {t('manyfold.importSelected', { count: picked.length })}
                     </Button>
                     <Button
                       size="sm"
                       disabled={busy}
-                      onClick={() => runImports(importable.map((file) => ({ modelId: data.id, file })))}
+                      title={busyTitle}
+                      onClick={() => importFiles(data.id, data.name, importable)}
                     >
                       {t('manyfold.importAll')}
                     </Button>
@@ -386,7 +350,7 @@ export function ManyfoldTab() {
                         ) : (
                           canImport &&
                           file.importable && (
-                            <Button size="sm" variant="secondary" disabled={busy} onClick={() => importOne(data.id, file)}>
+                            <Button size="sm" variant="secondary" disabled={busy} title={busyTitle} onClick={() => importFiles(data.id, data.name, [file], true)}>
                               <Download className="w-3.5 h-3.5 mr-1" />
                               {t('manyfold.import')}
                             </Button>
@@ -442,7 +406,7 @@ export function ManyfoldTab() {
         )}
       </form>
 
-      {summary && <SummaryNote summary={summary} onClose={() => setSummary(null)} />}
+      {summary && <SummaryNote summary={summary} onClose={dismissSummary} />}
       {progressNote}
 
       {canImport && pageModels.length > 0 && (
@@ -475,7 +439,7 @@ export function ManyfoldTab() {
                 rootLabel={t('manyfold.folderAuto')}
                 disabled={busy}
               />
-              <Button size="sm" disabled={busy} onClick={importModels}>{t('manyfold.importModels')}</Button>
+              <Button size="sm" disabled={busy} title={busyTitle} onClick={importModels}>{t('manyfold.importModels')}</Button>
               <button type="button" disabled={busy} onClick={() => setPickedModels(new Map())} className="text-bambu-gray hover:text-white">
                 {t('manyfold.clearSelection')}
               </button>

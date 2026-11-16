@@ -3,12 +3,16 @@
  * connected — or to someone who can connect it.
  */
 
+import type { ReactNode } from 'react';
 import { describe, it, expect } from 'vitest';
 import { screen, waitFor } from '@testing-library/react';
 import { http, HttpResponse } from 'msw';
 import { server } from '../mocks/server';
-import { render } from '../utils';
+import { render as renderBare } from '../utils';
+import { ManyfoldImportProvider } from '../../contexts/ManyfoldImportContext';
 import { ModelSourcesPage } from '../../pages/ModelSourcesPage';
+
+const render = (ui: ReactNode) => renderBare(<ManyfoldImportProvider>{ui}</ManyfoldImportProvider>);
 
 function manyfold(usable: boolean) {
   server.use(

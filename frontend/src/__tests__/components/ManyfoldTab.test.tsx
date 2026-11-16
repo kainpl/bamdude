@@ -3,12 +3,28 @@
  * and several files import one after another with a summary — a failure never stops the rest.
  */
 
+import { useState, type ReactNode } from 'react';
 import { describe, it, expect, beforeEach } from 'vitest';
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { http, HttpResponse } from 'msw';
 import { server } from '../mocks/server';
-import { render } from '../utils';
+import { render as renderBare } from '../utils';
 import { ManyfoldTab } from '../../components/ManyfoldTab';
+import { ManyfoldImportProvider } from '../../contexts/ManyfoldImportContext';
+
+/** The run's owner sits above the page in the app (App.tsx); here above the tab. */
+const render = (ui: ReactNode) => renderBare(<ManyfoldImportProvider>{ui}</ManyfoldImportProvider>);
+
+/** The tab as a page the user can leave and come back to, under one owner. */
+function LeavablePage() {
+  const [shown, setShown] = useState(true);
+  return (
+    <>
+      <button type="button" onClick={() => setShown(!shown)}>{shown ? 'leave' : 'return'}</button>
+      {shown && <ManyfoldTab />}
+    </>
+  );
+}
 
 const BASE = '/api/v1/model-sources/manyfold';
 
@@ -42,6 +58,12 @@ const model = (over: Record<string, unknown> = {}) => ({
 
 let listRequests: URL[] = [];
 let importRequests: Array<{ model_id: string; file_id: string; folder_id: number | null }> = [];
+/** An import of this file waits until `release()` — a run caught in flight. */
+let held: { fileId: string; gate: Promise<void> } | null = null;
+let release: () => void = () => {};
+function hold(fileId: string) {
+  held = { fileId, gate: new Promise<void>((resolve) => { release = resolve; }) };
+}
 
 function connected(usable = true) {
   server.use(
@@ -69,6 +91,7 @@ function connected(usable = true) {
     http.post(`${BASE}/import`, async ({ request }) => {
       const body = (await request.json()) as { model_id: string; file_id: string; folder_id: number | null };
       importRequests.push(body);
+      if (held && held.fileId === body.file_id) await held.gate;
       if (body.file_id === 'b') {
         return HttpResponse.json(
           { detail: { error: 'manyfold_too_large', message: 'The file is larger than BamDude accepts from Manyfold' } },
@@ -88,6 +111,9 @@ function connected(usable = true) {
 beforeEach(() => {
   listRequests = [];
   importRequests = [];
+  held = null;
+  window.sessionStorage.clear();
+  window.history.replaceState({}, '', '/');
 });
 
 describe('ManyfoldTab', () => {
@@ -150,7 +176,7 @@ describe('ManyfoldTab', () => {
 
     const summary = await screen.findByText('Imported: 1 · already in library: 0 · failed: 1');
     expect(summary).toBeInTheDocument();
-    expect(screen.getByText(/Not imported: b\.stl\. The file is larger than 1 GB\./)).toBeInTheDocument();
+    expect(screen.getByText(/Not imported: Cable Clip — b\.stl\. The file is larger than 1 GB\./)).toBeInTheDocument();
     expect(importRequests.map((request) => request.file_id)).toEqual(['a', 'b']); // the failure did not stop at "a"… nor before "b"
     // The imported file now reads "In library" with a way to it.
     const imported = screen.getByText('a.stl').closest('li') as HTMLElement;
@@ -199,5 +225,112 @@ describe('ManyfoldTab', () => {
     render(<ManyfoldTab />);
 
     expect(await screen.findByText('This Manyfold is too old. BamDude needs Manyfold 0.150 or newer.')).toBeInTheDocument();
+  });
+
+  it('an import goes on when the tab is left, and shows its progress and outcome on return', async () => {
+    connected();
+    hold('b');
+    render(<LeavablePage />);
+    fireEvent.click(await screen.findByText('Cable Clip'));
+    await screen.findByText('a.stl');
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select all' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Import selected (2)' }));
+    await waitFor(() => expect(importRequests).toHaveLength(2));
+
+    fireEvent.click(screen.getByRole('button', { name: 'leave' }));
+    // Elsewhere in the app a compact indicator says an import is running.
+    expect(within(screen.getByTestId('toast-viewport')).getByText(/Manyfold import: 2\/2/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'return' }));
+    expect(await screen.findByText('Importing 2/2')).toBeInTheDocument();
+    // A second run cannot be started on top of it, and the control says why.
+    fireEvent.click(await screen.findByText('Cable Clip'));
+    const again = await screen.findByRole('button', { name: 'Import all' });
+    expect(again).toBeDisabled();
+    expect(again).toHaveAttribute('title', 'An import is running. Wait for it to finish, or cancel it.');
+
+    release();
+    expect(await screen.findByText('Imported: 1 · already in library: 0 · failed: 1')).toBeInTheDocument();
+    expect(screen.getByText(/Not imported: Cable Clip — b\.stl\. The file is larger than 1 GB\./)).toBeInTheDocument();
+    expect(importRequests.map((request) => request.file_id)).toEqual(['a', 'b']);
+    // The summary stays until it is dismissed.
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+    expect(screen.queryByText('Imported: 1 · already in library: 0 · failed: 1')).not.toBeInTheDocument();
+  });
+
+  it('Cancel stops the run after the file in flight', async () => {
+    connected();
+    hold('a');
+    render(<ManyfoldTab />);
+    fireEvent.click(await screen.findByText('Cable Clip'));
+    await screen.findByText('a.stl');
+    fireEvent.click(screen.getByRole('button', { name: 'Import all' }));
+    await waitFor(() => expect(importRequests).toHaveLength(1));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel import' }));
+    expect(await screen.findByText(/Stopping after the file being imported/)).toBeInTheDocument();
+    release();
+
+    expect(await screen.findByText('Imported: 1 · already in library: 0 · failed: 0')).toBeInTheDocument();
+    expect(screen.getByText(/Stopped at your request\. Files not tried: 1\./)).toBeInTheDocument();
+    expect(importRequests.map((request) => request.file_id)).toEqual(['a']); // "b" was never asked for
+  });
+
+  it('a refusal no other file can get past stops the run instead of repeating itself', async () => {
+    connected();
+    server.use(
+      http.post(`${BASE}/import`, async ({ request }) => {
+        importRequests.push((await request.json()) as { model_id: string; file_id: string; folder_id: number | null });
+        return HttpResponse.json({ detail: { error: 'manyfold_disabled', message: 'Manyfold is switched off' } }, { status: 409 });
+      }),
+    );
+    render(<ManyfoldTab />);
+    fireEvent.click(await screen.findByText('Cable Clip'));
+    await screen.findByText('a.stl');
+    fireEvent.click(screen.getByRole('button', { name: 'Import all' }));
+
+    expect(
+      await screen.findByText(/The import stopped: Manyfold is switched off in Settings\. Files not tried: 1\./),
+    ).toBeInTheDocument();
+    expect(importRequests).toHaveLength(1);
+  });
+
+  it('after a reload says what the interrupted import had done', async () => {
+    connected();
+    window.sessionStorage.setItem(
+      'bamdude.manyfoldImport',
+      JSON.stringify({
+        done: 3,
+        total: 40,
+        imported: 2,
+        existing: 0,
+        failed: [{ key: 'm1:b', modelName: 'Cable Clip', name: 'b.stl', reason: 'The file is larger than 1 GB.' }],
+        unreadable: [],
+      }),
+    );
+    render(<ManyfoldTab />);
+
+    expect(
+      await screen.findByText(/The page was reloaded during an import: 3 of 40 files had been handled\./),
+    ).toBeInTheDocument();
+    expect(screen.getByText('Imported: 2 · already in library: 0 · failed: 1')).toBeInTheDocument();
+    expect(screen.getByText(/Not imported: Cable Clip — b\.stl/)).toBeInTheDocument();
+    expect(window.sessionStorage.getItem('bamdude.manyfoldImport')).toBeNull();
+  });
+
+  it('a single file reports with a toast: imported, or the refusal by its code', async () => {
+    connected();
+    render(<ManyfoldTab />);
+    fireEvent.click(await screen.findByText('Cable Clip'));
+    const toasts = within(screen.getByTestId('toast-viewport'));
+
+    fireEvent.click(
+      within((await screen.findByText('a.stl')).closest('li') as HTMLElement).getByRole('button', { name: 'Import' }),
+    );
+    expect(await toasts.findByText('Imported a.stl')).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Import all' })).toBeEnabled());
+
+    fireEvent.click(within(screen.getByText('b.stl').closest('li') as HTMLElement).getByRole('button', { name: 'Import' }));
+    expect(await toasts.findByText('The file is larger than 1 GB.')).toBeInTheDocument();
   });
 });

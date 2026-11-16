@@ -43,6 +43,7 @@ import { useStreamTokenSync } from './hooks/useCameraStreamToken';
 import { ThemeProvider } from './contexts/ThemeContext';
 import { ToastProvider } from './contexts/ToastContext';
 import { SliceJobTrackerProvider } from './contexts/SliceJobTrackerContext';
+import { ManyfoldImportProvider } from './contexts/ManyfoldImportContext';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { ColorCatalogProvider } from './contexts/ColorCatalogContext';
 import { ConnectionProvider } from './contexts/ConnectionContext';
@@ -307,8 +308,10 @@ function App() {
             <ConnectionProvider>
             <ColorCatalogProvider>
             <SliceJobTrackerProvider>
+            <ManyfoldImportProvider>
             <StreamTokenSync />
             <RouterProvider router={router} />
+            </ManyfoldImportProvider>
             </SliceJobTrackerProvider>
             </ColorCatalogProvider>
             </ConnectionProvider>
