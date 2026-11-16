@@ -2832,7 +2832,9 @@ export function FileManagerPage() {
   );
 
   return (
-    <div className="p-4 min-h-[calc(100vh)] lg:h-[calc(100vh)] flex flex-col">
+    // The window minus the compact header (`--app-top`, 56 px below 1144 px): a bare
+    // 100vh made the document taller than the window between 1024 and 1143 px.
+    <div className="p-4 min-h-[calc(100vh-var(--app-top,0px))] lg:h-[calc(100vh-var(--app-top,0px))] flex flex-col">
       {/* Header */}
       <div ref={libraryToolbarRef} className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-4">
         <div className="flex items-center gap-3">

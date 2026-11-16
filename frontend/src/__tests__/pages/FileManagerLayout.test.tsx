@@ -136,6 +136,20 @@ describe('the File Manager header', () => {
     mockLibrary();
   });
 
+  it('is as tall as the window MINUS the compact header — never a bare 100vh', async () => {
+    // Between `lg` (1024 px) and 1144 px the fixed compact header pushes <main>
+    // down by `--app-top`; a root of exactly 100vh then made the document 56 px
+    // taller than the window: the page scrolled, and so did the list inside it.
+    render(<FileManagerPage />);
+    const title = await screen.findByRole('heading', { level: 1 });
+    const root = title.closest('.flex-col.p-4') as HTMLElement;
+    const sizing = Array.from(root.classList).filter((c) => c.includes('100vh'));
+
+    expect(sizing.length).toBeGreaterThan(0);
+    for (const cls of sizing) expect(cls, cls).toContain('100vh-var(--app-top');
+    expect(sizing.some((c) => c.startsWith('lg:h-['))).toBe(true);
+  });
+
   it('lets the action row wrap in the space left of the title instead of squeezing the title', async () => {
     render(<FileManagerPage />);
     const title = await screen.findByRole('heading', { level: 1 });
