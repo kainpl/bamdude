@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 
 from backend.app.services.live_authority import Entitlements, live_authority
 
@@ -247,11 +248,18 @@ def _owns(access, family, row, credential_kind="session", source_identities=None
     domain = "archives" if family == "archive" else "library"
     if family == "archive" and not _target_visible(access, row.get("printer_id"), source_identities, credential_kind):
         return False
-    return access.allows(f"{domain}:read_all") or (
-        credential_kind != "key"
-        and access.allows(f"{domain}:read_own")
-        and row.get("created_by_id") is not None
-        and row.get("created_by_id") == access.user_id
+    if access.allows(f"{domain}:read_all"):
+        return True
+    if credential_kind == "key" or not access.allows(f"{domain}:read_own"):
+        return False
+    if family == "archive":
+        return row.get("created_by_id") is not None and row.get("created_by_id") == access.user_id
+    # The library's own read rule, not a copy of it: a file nobody owns on a
+    # mounted share is shared, and whoever sees it in a list hears about it here.
+    from backend.app.models.library import owner_scope_sees
+
+    return owner_scope_sees(
+        SimpleNamespace(created_by_id=row.get("created_by_id"), is_external=row.get("is_external")), access.user_id
     )
 
 
