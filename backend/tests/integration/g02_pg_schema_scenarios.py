@@ -103,6 +103,53 @@ async def run(case):
     if case.startswith("retry"):
         await load_failed_pg(database, case)
     await database.init_db()
+    if case == "prepare_head_m228_defaults":
+        # A tester's SQLite source already stamped past m228, with the real
+        # migration's DDL rather than create_all's Python-only defaults.
+        from backend.app.migrations import m228_spoolman_usage_history as history_migration
+
+        assert database.engine.dialect.name == "sqlite"
+        async with database.engine.begin() as conn:
+            await conn.exec_driver_sql("DROP TABLE spoolman_usage_history")
+            await history_migration.upgrade(conn)
+            await conn.execute(
+                text(
+                    "INSERT INTO spoolman_usage_history(source_token,spoolman_spool_id,created_at) "
+                    "VALUES('G02-m228-source',424242,'2026-01-01 00:00:00')"
+                )
+            )
+            level = await conn.scalar(text("SELECT max(version) FROM _migrations"))
+            assert level >= 228
+            defaults = {
+                row[1]: row[4] for row in await conn.exec_driver_sql("PRAGMA table_info(spoolman_usage_history)")
+            }
+            assert {k: defaults[k] for k in ("weight_used", "percent_used", "status")} == {
+                "weight_used": "0",
+                "percent_used": "0",
+                "status": "'completed'",
+            }
+        await database.engine.dispose()
+        return {"source_level": level, "m228_defaults": True}
+    if case == "head_m228_defaults":
+        async with database.engine.connect() as conn:
+            # Presence proves the AS-IS SQLite source was actually consumed;
+            # native empty-PG startup cannot invent this row.
+            row = (
+                await conn.execute(
+                    text(
+                        "SELECT spoolman_spool_id,weight_used,percent_used,status "
+                        "FROM spoolman_usage_history WHERE source_token='G02-m228-source'"
+                    )
+                )
+            ).one()
+            assert tuple(row) == (424242, 0, 0, "completed")
+            actual = await capture(conn)
+            columns = {c["name"]: c["default"] for c in actual["schema"]["spoolman_usage_history"]["columns"]}
+            assert {c: columns[c] for c in ("weight_used", "percent_used", "status")} == {
+                "weight_used": ["numeric", "0"],
+                "percent_used": ["numeric", "0"],
+                "status": ["sql", "'completed'::character varying"],
+            }
     if d4:
         if case == "repair":
             await exercise_repair(database, repair)
@@ -138,6 +185,36 @@ async def run(case):
             "expected_tables": len(expected["schema"]),
             "residuals": actual["null_residuals"],
         }
+    if case == "spoolman_default_policy":
+        from backend.app.core.schema_conform_repair import verify
+        from backend.app.core.schema_repair_state import SchemaRepairPending
+
+        async with database.engine.connect() as conn:
+            outer = await conn.begin()
+            try:
+                for name, value in (("weight_used", "0"), ("percent_used", "0"), ("status", "'completed'")):
+                    await conn.execute(
+                        text(f'ALTER TABLE spoolman_usage_history ALTER COLUMN "{name}" SET DEFAULT {value}')
+                    )
+                assert await verify(conn, database.Base.metadata) == []
+                rejected = []
+                for name, value in (("weight_used", "1"), ("percent_used", "1"), ("status", "'pending'")):
+                    point = await conn.begin_nested()
+                    await conn.execute(
+                        text(f'ALTER TABLE spoolman_usage_history ALTER COLUMN "{name}" SET DEFAULT {value}')
+                    )
+                    try:
+                        await verify(conn, database.Base.metadata)
+                    except SchemaRepairPending as exc:
+                        assert exc.reason == "unverified_schema_objects"
+                        rejected.append(name)
+                    else:
+                        raise AssertionError(f"changed default accepted: {name}")
+                    await point.rollback()
+                return {"accepted": 3, "rejected": rejected}
+            finally:
+                await outer.rollback()
+                await database.engine.dispose()
     if case in ("prepare_head_v061", "prepare_head_fresh", "prepare_head_fresh_affected"):
         assert database.engine.dialect.name == "sqlite"
         if case == "prepare_head_fresh_affected":

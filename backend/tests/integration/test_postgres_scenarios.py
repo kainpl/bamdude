@@ -395,20 +395,33 @@ def test_d4_fresh_model_plan_has_no_accepted_drift_or_residual(d4_fresh_verified
 @pytest.mark.timeout(300)
 @pytest.mark.parametrize(
     "case",
-    ["v042", "v051", "v061", "pre075", "pre144", "repair", "retry043", "retry071", "retry221", "deletes", "head_v061"],
+    [
+        "v042",
+        "v051",
+        "v061",
+        "pre075",
+        "pre144",
+        "repair",
+        "retry043",
+        "retry071",
+        "retry221",
+        "deletes",
+        "head_v061",
+        "head_m228_defaults",
+    ],
 )
 def test_d4_historical_population_clears_full_durable_debt(tmp_path, case, d4_fresh_verified):
     url = _pg_url()
     _wipe(url, all_objects=True)
-    if case == "head_v061":
-        _run("g02_schema:prepare_head_v061", tmp_path / case, None)
-    mode = case if case in ("repair", "deletes", "head_v061") or case.startswith("retry") else "import:" + case
+    if case.startswith("head_"):
+        _run("g02_schema:prepare_" + case, tmp_path / case, None)
+    mode = case if case in ("repair", "deletes") or case.startswith(("retry", "head_")) else "import:" + case
     result = _run("g02_schema:d4:" + mode, tmp_path / case, url)
     (tmp_path / ("d4-" + case + ".json")).write_text(json.dumps(result, indent=2))
     assert result["debt"] is None and len(result["phases"]) == 7
 
 
-@pytest.mark.timeout(120)
+@pytest.mark.timeout(300)
 @pytest.mark.parametrize(
     "case",
     [
@@ -425,6 +438,7 @@ def test_d4_historical_population_clears_full_durable_debt(tmp_path, case, d4_fr
         "head_v061",
         "head_fresh",
         "head_fresh_affected",
+        "head_m228_defaults",
     ],
 )
 def test_g02_historical_schema_and_repair(tmp_path, case, g02_schema_reference):
@@ -436,7 +450,8 @@ def test_g02_historical_schema_and_repair(tmp_path, case, g02_schema_reference):
     _wipe(url, all_objects=True)
     if case.startswith("head_"):
         prepared = _run("g02_schema:prepare_" + case, tmp_path / case, None)
-        assert prepared["source_level"] >= 228 and prepared["has_b_marker"]
+        assert prepared["source_level"] >= 228
+        assert prepared.get("has_b_marker") or prepared.get("m228_defaults")
         (tmp_path / (case + "-source.json")).write_text(json.dumps(prepared, indent=2))
     mode = case if case in ("repair", "deletes") or case.startswith(("retry", "head_")) else "import:" + case
     actual = _run("g02_schema:" + mode, tmp_path / case, url)
@@ -444,6 +459,14 @@ def test_g02_historical_schema_and_repair(tmp_path, case, g02_schema_reference):
     (tmp_path / (case + ".json")).write_text(json.dumps(actual, indent=2))
     (tmp_path / (case + "-differences.json")).write_text(json.dumps(differences, indent=2))
     assert not differences, (case, differences)
+
+
+@pytest.mark.timeout(300)
+def test_g02_spoolman_default_drift_accepts_only_the_three_known_values(tmp_path):
+    url = _pg_url()
+    _wipe(url, all_objects=True)
+    result = _run("g02_schema:spoolman_default_policy", tmp_path, url)
+    assert result == {"accepted": 3, "rejected": ["weight_used", "percent_used", "status"]}
 
 
 class TestPrintStateRecovery:

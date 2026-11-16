@@ -175,3 +175,32 @@ edit or rename the original to bypass preflight.
 
 D4's implementation acceptance and G02 C remain separate release gates. A
 historical schema test alone does not close either gate.
+
+### Composed Spoolman history defaults
+
+The frozen B retained-drift data stays unchanged. Runtime and the scenario
+oracle additionally share `pg_schema_spoolman_defaults_v1.json`: exactly three
+old/new pairs for `spoolman_usage_history`, from no server default in the
+model to zero `weight_used`, zero `percent_used`, and literal `completed`
+`status` in m228's DDL. These constants agree with the sole history writer's
+Python defaults. They do not justify a different value, a different column,
+a changed expected model default, or a missing guard. The comparison uses
+the same literal-only canonicalisation and never executes backup default SQL.
+
+This compatibility decision preserves both migrated SQLite sources that
+already carry these defaults and sources where `create_all` created the
+table without them. It does not rewrite rows, DDL or the frozen B whitelist.
+Fresh PG still has to match the model plan without retained drift. Every
+composition carrying external migrations must run both historical population
+gates, including the migration-created m228 source and the live PG tests that
+reject three altered default values; a head-only case is insufficient.
+
+An installation already stopped by this composed m228 mismatch carries the
+previous verifier's manifest. The exclusively owned offline `schema_repair
+retry` may upgrade only that exact recorded full-plan hash to the exact new
+full-plan hash in `pg_schema_spoolman_manifest_transition_v1.json`. It preserves
+the debt ID, audit owner, failure and attempt budget by compare-and-swap; then
+the ordinary manual claim and complete verification still run. It neither
+clears debt nor adds attempts. `status` and automatic startup never adopt an
+old manifest. A different installed model/repair plan or any other old hash
+still needs its own reviewed recovery; this is not a generic force/rebase.

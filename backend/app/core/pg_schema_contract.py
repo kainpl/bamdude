@@ -190,8 +190,11 @@ async def capture(conn, *, namespace="public"):
 
 
 def retained_pairs():
-    return json.loads(
-        (Path(__file__).parents[1] / "data/pg_schema_b_retained_drift_v1.json").read_text(encoding="utf-8")
+    directory = Path(__file__).parents[1] / "data"
+    # The B whitelist stays frozen. Composing with fixes' m228 adds exactly
+    # three constant defaults equivalent to the history writer's defaults.
+    return json.loads((directory / "pg_schema_b_retained_drift_v1.json").read_text(encoding="utf-8")) + json.loads(
+        (directory / "pg_schema_spoolman_defaults_v1.json").read_text(encoding="utf-8")
     )
 
 
