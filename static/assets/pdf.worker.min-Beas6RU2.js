@@ -1,0 +1,1 @@
+function e(e){return new Worker(`/assets/pdf.worker.min-C77-Sbu5.js`,{name:e?.name})}export{e as default};
