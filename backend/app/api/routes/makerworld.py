@@ -872,10 +872,30 @@ async def list_imports(
 )
 async def get_makerworld_meta(
     library_file_id: int,
+    request: Request,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(makerworld_provider.view_permission),
+    current_user: User | None = RequirePermission(makerworld_provider.view_permission),
 ):
-    """Get the MakerWorld metadata row for a library file."""
+    """Get the MakerWorld metadata row for a library file.
+
+    The file is resolved through the library's own visibility rule first, as
+    both import lists do: another user's import under ``library:read_own`` and
+    an import in the trash are the same 404 as a row that has no metadata.
+    """
+    from backend.app.api.routes.library import library_file_name_visible
+    from backend.app.api.routes.library_thumbnail_jobs import request_authority
+
+    access = await read_access(db, authority=await request_authority(request, current_user))
+    visible = (
+        await db.execute(
+            LibraryFile.active()
+            .with_only_columns(LibraryFile.id)
+            .where(LibraryFile.id == library_file_id)
+            .where(library_file_name_visible(access.scope, access.user_id))
+        )
+    ).scalar_one_or_none()
+    if visible is None:
+        raise HTTPException(status_code=404, detail="No MakerWorld metadata for this library file")
     meta = (
         await db.execute(
             select(LibraryFileMakerworldMeta).where(LibraryFileMakerworldMeta.library_file_id == library_file_id)
