@@ -1795,6 +1795,7 @@ export default {
     estimatedCompletion: 'Орієнтовний час завершення',
     nextPause: {
       inMinutes: 'Пауза через ~{{minutes}} хв (шар {{layer}})',
+      underMinute: 'Пауза менш ніж за хвилину (шар {{layer}})',
       atLayer: 'Пауза на шарі {{layer}}',
       title: 'Наступна пауза, додана у слайсері, — на шарі {{layer}}. Час орієнтовний.',
     },

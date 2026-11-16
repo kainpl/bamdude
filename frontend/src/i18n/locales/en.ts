@@ -1776,6 +1776,7 @@ export default {
     estimatedCompletion: 'Estimated completion time',
     nextPause: {
       inMinutes: 'Pause in ~{{minutes}} min (layer {{layer}})',
+      underMinute: 'Pause in less than a minute (layer {{layer}})',
       atLayer: 'Pause at layer {{layer}}',
       title: 'The next pause added in the slicer is at layer {{layer}}. The time is an estimate.',
     },
