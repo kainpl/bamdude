@@ -172,6 +172,19 @@ export function statesDifferentMaterial(
  *
  * The filament counterpart of honouring the embedded printer and process names
  * (#1325); a file written by "Assemble project" names the preset chosen there.
+ *
+ * ⚠️ The file names a preset by NAME, and a name is not an identity: Bambu
+ * Cloud lists the stock presets under the names the bundle uses, and the two
+ * are different content (never merged, never one standing for the other). So
+ * the name is resolved to one preset, in this order:
+ *   1. `origin.built` — the preset the project was built from (the assembly
+ *      record's own `{source, id}`), while it is listed and still carries the
+ *      name the file states;
+ *   2. the only listed preset of that name, when one source holds it;
+ *   3. among namesakes, the one in the source of the chosen printer preset
+ *      (`origin.printerSource`).
+ * A name several sources hold with none of these to tell them apart answers
+ * `null`: tier order alone never picks between namesakes.
  */
 export function pickEmbeddedFilament(
   by: UnifiedPresetsResponse,
@@ -179,10 +192,19 @@ export function pickEmbeddedFilament(
   required: { type: string },
   printerName: string | null,
   compatIndex: PrinterCompatibilityIndex,
+  origin?: { built?: PresetRef | null; printerSource?: PresetSource | null },
 ): PresetRef | null {
-  const ref = findPresetByName(by, 'filament', embeddedName);
-  const preset = findPreset(by, ref, 'filament');
-  if (!ref || !preset) return null;
+  if (!embeddedName) return null;
+  const built = findPreset(by, origin?.built ?? null, 'filament');
+  const namesakes = SLICE_MODAL_TIER_ORDER.flatMap((tier) => by[tier].filament.filter((p) => p.name === embeddedName));
+  const preset =
+    built && built.name === embeddedName
+      ? built
+      : namesakes.length === 1
+        ? namesakes[0]
+        : (namesakes.find((p) => p.source === origin?.printerSource) ?? null);
+  if (!preset) return null;
+  const ref: PresetRef = { source: preset.source, id: preset.id };
   if (statesDifferentMaterial(preset, required.type)) return null;
   if (presetCompatibility(preset, 'filament', printerName, compatIndex) === 'mismatch') return null;
   return ref;

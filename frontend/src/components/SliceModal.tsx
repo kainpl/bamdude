@@ -76,7 +76,10 @@ const PRESET_GROUP_LABELS: Record<PresetGroup, { key: string; fallback: string }
 };
 
 export type SliceSource =
-  | { kind: 'libraryFile'; id: number; filename: string }
+  // `assembled`: the file was written by "Assemble project" (the list row's
+  // `can_relayout`), so its assembly record can say which presets — source and
+  // id, not just a name — it was built from.
+  | { kind: 'libraryFile'; id: number; filename: string; assembled?: boolean }
   | { kind: 'archive'; id: number; filename: string };
 
 interface SliceModalProps {
@@ -1005,13 +1008,29 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
   }, [sliceAllPlates, filamentReqsQuery.data]);
 
   const queryClient = useQueryClient();
+  // The presets an assembled project was built from, by source and id. The
+  // file itself names them by name only, and a name can exist in two sources
+  // (Bambu Cloud lists the stock presets under the bundle's names) — the
+  // record is what tells a Standard preset from its Bambu Cloud namesake. Read
+  // only for a file known to be assembled; a failed read falls back to names.
+  const isAssembled = source.kind === 'libraryFile' && source.assembled === true;
+  const assemblyQuery = useQuery({
+    queryKey: ['assemblyRecord', source.id],
+    queryFn: () => api.getAssemblyRecord(source.id),
+    enabled: isAssembled,
+    retry: false,
+    staleTime: 60_000,
+  });
+  const builtFrom = isAssembled ? assemblyQuery.data?.printer : undefined;
   const presetsQuery = useQuery({
     queryKey: ['slicerPresets'],
     queryFn: () => api.getSlicerPresets(),
     staleTime: 60_000,
     // Don't fetch presets while the plate picker is on screen — saves a
-    // round-trip if the user cancels out of the plate step.
-    enabled: !platesQuery.isLoading && !needsPlatePicker,
+    // round-trip if the user cancels out of the plate step. And not before the
+    // assembly record has answered: the pre-picks below run when the listing
+    // arrives, and must already know what the project was built from.
+    enabled: !platesQuery.isLoading && !needsPlatePicker && !(isAssembled && assemblyQuery.isLoading),
   });
 
   // Manual refresh — bypasses the backend's cloud + bundled preset caches for
@@ -1069,6 +1088,7 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
   const embeddedPrinter = platesQuery.data?.embedded_printer ?? null;
   const embeddedProcess = platesQuery.data?.embedded_process ?? null;
   const embeddedFilaments = platesQuery.data?.embedded_filaments;
+  const printerSource = printerPreset?.source ?? null;
 
   // "Slice as designed" (upstream #2611). When on, the backend honours the
   // source 3MF's embedded project_settings.config (the designer's own wall
@@ -1128,12 +1148,15 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
     const data = presetsQuery.data;
     if (!data) return;
     if (printerPreset == null) {
+      // The preset an assembled project was built from, by identity, before
+      // any lookup by name.
+      const built = builtFrom && findPreset(data, builtFrom.printer, 'printer') ? builtFrom.printer : null;
       setPrinterPreset(
-        findPresetByName(data, 'printer', embeddedPrinter) ?? pickDefault(data, 'printer'),
+        built ?? findPresetByName(data, 'printer', embeddedPrinter) ?? pickDefault(data, 'printer'),
       );
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [presetsQuery.data, embeddedPrinter]);
+  }, [presetsQuery.data, embeddedPrinter, builtFrom]);
 
   // Process pre-pick / re-pick (#1325): defaults to a process compatible with
   // the selected printer (honouring the 3MF's embedded process first), and
@@ -1158,9 +1181,15 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
           return current;
         }
       }
+      // An assembled project's own process, by identity, while it is listed
+      // and the selected printer can take it.
+      const built = findPreset(data, builtFrom?.process ?? null, 'process');
+      if (built && presetCompatibility(built, 'process', selectedPrinterName, compatIndex) !== 'mismatch') {
+        return { source: built.source, id: built.id };
+      }
       return pickProcessDefault(data, selectedPrinterName, compatIndex, embeddedProcess);
     });
-  }, [presetsQuery.data, selectedPrinterName, compatIndex, embeddedProcess]);
+  }, [presetsQuery.data, selectedPrinterName, compatIndex, embeddedProcess, builtFrom]);
 
   // A plate switch renumbers the slots, so the colour picks are dropped when
   // the slot count changes (see `resizeColourOverrides`).
@@ -1213,7 +1242,9 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
         }
         // The preset the project itself names for this slot comes first (a
         // file from "Assemble project" names the one chosen there), when it is
-        // listed and fits the printer and the plate's material.
+        // listed and fits the printer and the plate's material. A name that
+        // several sources hold is told apart by what the project was built
+        // from, else by the printer preset's source — never by tier order.
         return (
           pickEmbeddedFilament(
             data,
@@ -1221,6 +1252,7 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
             { type: slot.type },
             selectedPrinterName,
             compatIndex,
+            { built: builtFrom?.filament, printerSource },
           )
           ?? pickFilamentForSlot(
             data,
@@ -1231,7 +1263,7 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
         );
       });
     });
-  }, [presetsQuery.data, filamentSlots, selectedPrinterName, compatIndex, embeddedFilaments]);
+  }, [presetsQuery.data, filamentSlots, selectedPrinterName, compatIndex, embeddedFilaments, builtFrom, printerSource]);
 
 
   const enqueueMutation = useMutation({

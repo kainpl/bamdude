@@ -287,3 +287,100 @@ describe('SliceModal — a project that names its filament presets', () => {
     await waitFor(() => expect(filament.value).toBe('standard:Generic PLA @BBL H2D'));
   });
 });
+
+describe('SliceModal — a project from "Assemble project" whose preset names exist in two sources', () => {
+  // Bambu Cloud lists the stock presets under the bundle's names. The project
+  // names its presets by name only; the assembly's own record says which
+  // source each was taken from.
+  const PROCESS = '0.20mm Standard @BBL H2D';
+  const FILAMENT = 'Bambu PLA Basic @BBL H2D';
+  const listing: Listing = {
+    cloud: {
+      printer: [{ name: H2D, id: 'GM001' }],
+      process: [{ name: PROCESS, id: 'GP001' }],
+      filament: [{ name: FILAMENT, id: 'GFSA00', filament_type: 'PLA' }],
+    },
+    standard: {
+      printer: [{ name: H2D }],
+      process: [{ name: PROCESS }],
+      filament: [{ name: FILAMENT, filament_type: 'PLA' }],
+    },
+  };
+  const project = http.get('*/api/v1/library/files/:id/plates', () =>
+    HttpResponse.json({
+      plates: [{ index: 1, name: 'Plate 1' }],
+      embedded_printer: H2D,
+      embedded_process: PROCESS,
+      embedded_filaments: [FILAMENT],
+    }),
+  );
+  const openAssembled = () =>
+    render(
+      <SliceJobTrackerProvider>
+        <SliceModal
+          source={{ kind: 'libraryFile', id: 1, filename: 'Cube.3mf', assembled: true }}
+          onClose={() => undefined}
+        />
+      </SliceJobTrackerProvider>,
+    );
+  const value = async (label: string) => ((await picker(label)) as HTMLSelectElement).value;
+
+  it('opens on the Standard presets it was assembled with, not their Bambu Cloud namesakes', async () => {
+    serve(listing);
+    server.use(
+      project,
+      http.get('*/api/v1/library/files/:id/assembly', () =>
+        HttpResponse.json({
+          set_id: 's',
+          base_name: 'Cube',
+          parts: [],
+          printer: {
+            printer: { source: 'standard', id: H2D },
+            process: { source: 'standard', id: PROCESS },
+            filament: { source: 'standard', id: FILAMENT },
+            nozzle: 0.4,
+            model: 'H2D',
+          },
+          layout: {},
+          plates: [],
+          set_files: [],
+        }),
+      ),
+    );
+    openAssembled();
+
+    await waitFor(async () => expect(await value('Filament profile')).toBe(`standard:${FILAMENT}`));
+    expect(await value('Printer profile')).toBe(`standard:${H2D}`);
+    expect(await value('Process profile')).toBe(`standard:${PROCESS}`);
+  });
+
+  it('falls back to the names when the assembly record cannot be read', async () => {
+    serve(listing);
+    server.use(
+      project,
+      http.get('*/api/v1/library/files/:id/assembly', () => HttpResponse.json({ detail: 'gone' }, { status: 404 })),
+    );
+    openAssembled();
+
+    // By name the printer is the first source's; the filament follows the
+    // printer's source and never crosses to the other namesake.
+    await waitFor(async () => expect(await value('Printer profile')).toBe('cloud:GM001'));
+    await waitFor(async () => expect(await value('Filament profile')).toBe('cloud:GFSA00'));
+  });
+
+  it('does not ask for a record for a file that was not assembled', async () => {
+    let asked = 0;
+    serve(listing);
+    server.use(
+      project,
+      http.get('*/api/v1/library/files/:id/assembly', () => {
+        asked += 1;
+        return HttpResponse.json({ detail: 'gone' }, { status: 404 });
+      }),
+    );
+    open();
+
+    await waitFor(async () => expect(await value('Filament profile')).not.toBe(''));
+    expect(asked).toBe(0);
+  });
+});

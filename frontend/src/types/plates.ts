@@ -84,8 +84,10 @@ export interface LibraryFilePlatesResponse {
   embedded_process?: string | null;
   // The filament preset the project names for each slot (index 0 is slot 1;
   // null where a slot names none). The SliceModal starts a slot on it when the
-  // preset is in the listing and fits the printer and the plate's material —
-  // which is how a file from "Assemble project" opens on what was chosen there.
+  // preset is in the listing and fits the printer and the plate's material.
+  // A NAME only: which source's preset of that name is meant is told by the
+  // assembly record for an assembled file, else by the printer preset's source
+  // (`pickEmbeddedFilament`) — never by tier order.
   embedded_filaments?: (string | null)[];
   // Process settings the designer changed away from the stock preset, read from
   // the 3MF's own `different_settings_to_system` (#2622). Offered in the

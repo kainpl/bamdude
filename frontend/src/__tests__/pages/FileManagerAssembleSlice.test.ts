@@ -20,7 +20,7 @@ describe('FileManagerPage — slicing a file "Assemble project" wrote', () => {
       has(`(settings?.use_slicer_api ?? false) && hasPermission('library:upload')
         ? (id, filename) => {
             setAssembleMode(null);
-            setSliceFile({ id, filename });
+            setSliceFile({ id, filename, can_relayout: true });
           }
         : undefined`),
     ).toBe(true);
@@ -28,6 +28,13 @@ describe('FileManagerPage — slicing a file "Assemble project" wrote', () => {
 
   it('opens the one Slice dialog the page has, for that file', () => {
     expect(pageSource.match(/<SliceModal\b/g)).toHaveLength(1);
-    expect(has("source={{ kind: 'libraryFile', id: sliceFile.id, filename: sliceFile.filename }}")).toBe(true);
+    expect(
+      has(`source={{
+        kind: 'libraryFile',
+        id: sliceFile.id,
+        filename: sliceFile.filename,
+        assembled: sliceFile.can_relayout === true,
+      }}`),
+    ).toBe(true);
   });
 });
