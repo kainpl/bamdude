@@ -13144,6 +13144,9 @@ export const api = {
     template: LabelTemplateInput;
     spool_id?: number | null;
     dots_per_mm?: number;
+    /** The picture a driver makes (the PDF, in colour) instead of a thermal
+     *  head's one-bit raster. */
+    colour?: boolean;
   }): Promise<LabelPreview> => {
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     if (authToken) headers['Authorization'] = `Bearer ${authToken}`;

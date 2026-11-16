@@ -161,6 +161,10 @@ export function LabelTemplateEditor() {
         const { blob, warnings: found } = await api.previewLabelTemplate({
           template: draft,
           dots_per_mm: PREVIEW_DOTS_PER_MM,
+          // ⚠️ The picture of the printer the design is FOR: a driver prints a
+          // PDF in colour, a thermal head one bit. Shown as one bit, a driver
+          // design had a hole where its colour block goes.
+          colour: draft.target === 'driver',
         });
         if (cancelled) return;
         const url = URL.createObjectURL(blob);

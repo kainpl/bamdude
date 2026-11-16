@@ -146,6 +146,10 @@ class LabelPreviewRequest(BaseModel):
     spool_id: int | None = None
     #: The device's resolution. 203 dpi is 8 dots per millimetre.
     dots_per_mm: float = Field(default=8.0, gt=0, le=40)
+    #: The picture a DRIVER makes — the PDF page rasterised, colour block
+    #: included — instead of the one-bit raster a thermal head prints. The
+    #: editor asks for it when the design's target is a driver.
+    colour: bool = False
 
 
 class LabelTestPrintRequest(BaseModel):

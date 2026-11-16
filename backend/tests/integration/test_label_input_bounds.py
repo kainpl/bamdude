@@ -11,11 +11,13 @@ print) asks the same two functions, and the drawing itself runs in a thread.
 from __future__ import annotations
 
 import asyncio
+import io
 import threading
 import time
 
 import pytest
 from httpx import AsyncClient
+from PIL import Image
 
 from backend.app.models.label_device import LabelDevice
 from backend.app.models.label_template import LabelSheet, LabelTemplate
@@ -388,6 +390,56 @@ class TestDrawingLeavesTheEventLoop:
         assert shown.status_code == 200, shown.text
 
         assert len(seen) == 2 and all(ident != threading.get_ident() for ident in seen)
+
+
+class TestTheEditorsPictureOfADriverDesign:
+    """The audit's Д5: a design printed through a driver is a PDF in colour, and
+    the one-bit picture showed it with a hole where its colour block is. Asked
+    for in colour, the editor's picture is that PDF page rasterised."""
+
+    SWATCH = {"type": "swatch", "x_mm": 2.0, "y_mm": 2.0, "w_mm": 10.0, "h_mm": 10.0, "content": "FF0000"}
+
+    async def test_the_colour_block_is_in_the_picture(self, async_client: AsyncClient):
+        body = {"template": _design(self.SWATCH), "dots_per_mm": 8.0, "colour": True}
+
+        shown = await async_client.post(f"{TEMPLATES}/preview", json=body)
+
+        assert shown.status_code == 200, shown.text
+        picture = Image.open(io.BytesIO(shown.content)).convert("RGB")
+        assert picture.size == (320, 160)
+        assert picture.getpixel((56, 56)) == (255, 0, 0)
+
+    async def test_unasked_it_stays_the_one_bit_picture_a_thermal_head_prints(self, async_client: AsyncClient):
+        shown = await async_client.post(f"{TEMPLATES}/preview", json={"template": _design(), "dots_per_mm": 8.0})
+
+        assert Image.open(io.BytesIO(shown.content)).mode == "1"
+
+    async def test_it_is_drawn_in_a_thread_and_never_by_the_one_bit_renderer(
+        self, async_client: AsyncClient, monkeypatch, no_drawing
+    ):
+        from backend.app.services import label_picture
+
+        seen = _spy(monkeypatch, label_picture, "render_pictures")
+
+        shown = await async_client.post(f"{TEMPLATES}/preview", json={"template": _design(), "colour": True})
+
+        assert shown.status_code == 200, shown.text
+        assert seen and all(ident != threading.get_ident() for ident in seen)
+
+    async def test_one_too_large_for_the_resolution_is_refused_before_it_is_drawn(
+        self, async_client: AsyncClient, monkeypatch
+    ):
+        from backend.app.services import label_picture
+
+        def reached(*_args, **_kwargs):
+            raise AssertionError("the renderer was reached")
+
+        monkeypatch.setattr(label_picture, "render_pictures", reached)
+        body = {"template": _design(width_mm=500.0, height_mm=500.0), "dots_per_mm": 40, "colour": True}
+
+        refused = await async_client.post(f"{TEMPLATES}/preview", json=body)
+
+        assert refused.status_code == 422, refused.text
 
 
 def _spy(monkeypatch, module, name: str) -> list[int]:

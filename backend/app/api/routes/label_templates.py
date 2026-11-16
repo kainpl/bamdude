@@ -50,6 +50,7 @@ from backend.app.schemas.label_template import (
     LabelTemplateOut,
     LabelTestPrintRequest,
 )
+from backend.app.services import label_picture
 from backend.app.services.label_context import example_context, spool_context
 from backend.app.services.label_gate import checked_design, checked_picture, checked_sheet, design_of, draw
 from backend.app.services.label_raster import render_template_png
@@ -468,12 +469,21 @@ async def preview_template(
     the editor shows includes the things that only go wrong at 8 dots per
     millimetre: a QR whose modules fall under two dots, text that stops fitting.
 
+    ⚠️ That is the truth for a thermal design only. A design for a driver prints
+    as a PDF, in colour, and the one-bit picture showed it with a hole where its
+    colour block goes — so ``colour`` asks for that PDF page rasterised instead
+    (``services/label_picture``), at the same dots per millimetre.
+
     Any trouble comes back in ``X-Label-Warnings`` rather than as an error — a
     template with one bad element still has a picture worth looking at, and the
     header is what the editor turns into the warning strip.
     """
     spec = _as_spec(body.template)
-    checked_picture(spec, body.dots_per_mm)
+    dpi = body.dots_per_mm * 25.4
+    if body.colour:
+        label_picture.checked(spec, dpi, labels=1)
+    else:
+        checked_picture(spec, body.dots_per_mm)
 
     deeplink_base = f"{request.url.scheme}://{request.url.netloc}"
     if body.spool_id is not None:
@@ -484,7 +494,11 @@ async def preview_template(
     else:
         context = example_context(deeplink_base=deeplink_base)
 
-    png, warnings = await draw(render_template_png, spec, context, dots_per_mm=body.dots_per_mm)
+    if body.colour:
+        pictures, warnings = await label_picture.label_pictures(spec, [context], dpi=dpi)
+        png = pictures[0]
+    else:
+        png, warnings = await draw(render_template_png, spec, context, dots_per_mm=body.dots_per_mm)
 
     headers = {"Content-Length": str(len(png)), "Cache-Control": "no-store"}
     if warnings:
