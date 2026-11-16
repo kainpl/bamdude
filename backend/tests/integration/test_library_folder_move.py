@@ -229,3 +229,51 @@ async def test_moving_a_folder_asks_no_products_right_and_keeps_file_folders(asy
 
     await db_session.refresh(row)
     assert row.folder_id == a.id
+
+
+async def test_on_postgresql_a_move_locks_every_folder_row_before_it_reads_the_tree(
+    async_client, db_session, folder, test_engine
+):
+    """SQLite compiles the row lock to nothing, so no test here executes PostgreSQL's arm.
+
+    The statements the move really sends are caught on the engine and the lock
+    is compiled for PostgreSQL and read as text: every folder row, in id order
+    (two moves never lock in opposite orders), ``FOR NO KEY UPDATE`` (an upload
+    into a folder is not held up) — and sent before the tree is read for the
+    cycle check. ⚠️ That the lock EXCLUDES a second connection is PostgreSQL's
+    own behaviour and needs a two-connection scenario to observe.
+    """
+    from sqlalchemy import event
+    from sqlalchemy.dialects import postgresql
+
+    a = await folder("a")
+    b = await folder("b")
+    sent = []
+
+    def caught(conn, clauseelement, multiparams, params, execution_options):
+        sent.append(clauseelement)
+
+    event.listen(test_engine.sync_engine, "before_execute", caught)
+    try:
+        response = await _put(async_client, a.id, parent_id=b.id)
+    finally:
+        event.remove(test_engine.sync_engine, "before_execute", caught)
+    assert response.status_code == 200, response.text
+
+    def on_postgresql(statement) -> str:
+        try:
+            return " ".join(str(statement.compile(dialect=postgresql.dialect())).split())
+        except Exception:
+            return ""
+
+    compiled = [on_postgresql(statement) for statement in sent]
+    locks = [index for index, text in enumerate(compiled) if text.endswith("FOR NO KEY UPDATE")]
+    assert locks, "the move sent no row lock"
+    lock = compiled[locks[0]]
+    assert lock == "SELECT library_folders.id FROM library_folders ORDER BY library_folders.id FOR NO KEY UPDATE"
+    tree_reads = [
+        index
+        for index, text in enumerate(compiled)
+        if text.startswith("SELECT") and "library_folders.parent_id" in text and "FOR" not in text.split()
+    ]
+    assert tree_reads and locks[0] < max(tree_reads), "the tree is read for the cycle check only after the lock"
