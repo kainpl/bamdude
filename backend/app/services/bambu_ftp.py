@@ -234,6 +234,8 @@ def _cancel_caused(worker: LaneWorker, error: BaseException) -> bool:
 
 #: Bytes per recv for a streamed download (ftplib's default is 8 KiB).
 _FETCH_BLOCK = 64 * 1024
+#: Longest single wait on a download's data channel before it asks whether it was aborted.
+_ABORT_POLL_SECONDS = 0.5
 
 # The outcome of listing one directory (G10 CR2). ``complete`` is the only answer
 # that says what the directory holds; ``missing`` is absence PROVEN by a complete
@@ -397,6 +399,45 @@ class ImplicitFTP_TLS(FTP_TLS):
         if cap_tls_v1_2:
             # With the floor above this pins the connection to exactly TLS 1.2.
             self.ssl_context.maximum_version = ssl.TLSVersion.TLSv1_2
+        # Set by BambuFTPClient.abort from another thread; asked between the waits of retrbinary.
+        self.abort_requested = False
+
+    def retrbinary(self, cmd, callback, blocksize=8192, rest=None):
+        """``FTP.retrbinary`` whose waits on the data channel are short enough to see an abort.
+
+        ⚠️ On Windows a ``shutdown`` from another thread does not wake a ``recv`` that
+        is already waiting on the socket (measured on loopback: 0 of 20, with and
+        without a socket timeout; Linux wakes at once), so a cancelled download that
+        had stalled kept its lane until the socket timeout. Closing the descriptor
+        would wake it, but a worker that was not waiting yet would then read from
+        whatever socket takes that handle next. So one wait lasts at most
+        ``_ABORT_POLL_SECONDS`` and ``abort_requested`` is asked between waits; a
+        stall is still no byte for the whole socket timeout, as before.
+        """
+        self.voidcmd("TYPE I")
+        with self.transfercmd(cmd, rest) as conn:
+            idle = conn.gettimeout()
+            conn.settimeout(_ABORT_POLL_SECONDS if idle is None else min(idle, _ABORT_POLL_SECONDS))
+            quiet_since = time.monotonic()
+            while True:
+                try:
+                    data = conn.recv(blocksize)
+                except TimeoutError:
+                    if self.abort_requested:
+                        raise ConnectionAbortedError("transfer aborted") from None
+                    if idle is not None and time.monotonic() - quiet_since >= idle:
+                        raise
+                    continue
+                if not data:
+                    break
+                quiet_since = time.monotonic()
+                callback(data)
+            if self.abort_requested:
+                # An end of stream our own shutdown caused is not the end of the file.
+                raise ConnectionAbortedError("transfer aborted")
+            if isinstance(conn, ssl.SSLSocket):
+                conn.unwrap()
+        return self.voidresp()
 
     def connect(self, host="", port=990, timeout=-999, source_address=None):
         """Connect to host, wrapping socket in TLS immediately (implicit FTPS)."""
@@ -713,10 +754,15 @@ class BambuFTPClient:
         wrapper around …")`` — an error no transfer handler expected (review A2,
         captured on loopback FTPS). Shutting the descriptor alone ends the read
         the same way and leaves the worker an ordinary socket error.
+
+        ⚠️ The flag comes first: on Windows the shutdown wakes no ``recv`` that is
+        already waiting, and the download's own short waits
+        (:meth:`ImplicitFTP_TLS.retrbinary`) are what end it there.
         """
         ftp = self._ftp
         if ftp is None:
             return
+        ftp.abort_requested = True
         for sock in (getattr(ftp, "data_conn", None), getattr(ftp, "sock", None)):
             if sock is None:
                 continue

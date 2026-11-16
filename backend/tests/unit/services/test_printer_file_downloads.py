@@ -160,6 +160,41 @@ class TestFtpDownloadToFile:
         streaming_retr.gate.set()
         assert not target.exists()
 
+    async def test_a_cancel_ends_a_stalled_transfer_even_where_shutdown_wakes_nothing(
+        self, patch_ftp_port, streaming_retr, tmp_path, monkeypatch
+    ):
+        """On Windows a shutdown from another thread does not wake a recv already waiting.
+
+        Measured on loopback, 0 of 20 with and without a socket timeout; Linux wakes at
+        once. The cancel used to wait for the socket timeout there, and this test's
+        stalled server for its own ten seconds. Here the shutdown of the data socket the
+        worker waits on wakes nothing, as on Windows; the control socket's is real (later
+        sends fail there too). The data channel's own short waits must notice the abort.
+        """
+        import socket as socket_module
+
+        server = patch_ftp_port
+        server.add_file("timelapse/w.mp4", _blob(4 * MIB))
+        streaming_retr.gate.clear()
+        target = tmp_path / "w.mp4"
+        real_shutdown = socket_module.socket.shutdown
+
+        def windows_shutdown(sock, how):
+            if sock.getpeername()[1] == server.port:
+                real_shutdown(sock, how)
+
+        monkeypatch.setattr(socket_module.socket, "shutdown", windows_shutdown)
+        task = asyncio.create_task(download_to_path_async(IP, CODE, "/timelapse/w.mp4", target))
+        assert await asyncio.to_thread(streaming_retr.halfway.wait, 10)
+        await asyncio.sleep(0.3)  # what was sent is drained: the worker is waiting on the socket
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        try:
+            await _until(lambda: not printer_file_runtime.lane_busy(ftp_key(IP)), seconds=3.0)
+        finally:
+            streaming_retr.gate.set()
+        assert not target.exists()
+
 
 # ------------------------------------------------------------------- tunnel ---------------------
 
