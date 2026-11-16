@@ -752,6 +752,9 @@ class TestLibraryFilesAPI:
             "notes_count",
             "print_count",
             "tags",
+            # G11: additive — the operator's link on a file, and the card's photo mark.
+            "external_url",
+            "photos_count",
         }
         assert set(row.keys()) == expected_fields
         assert row["id"] == lib_file.id
