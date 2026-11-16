@@ -19,7 +19,8 @@ import { useCallback, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 
-import { api, type UnifiedPreset, type UnifiedPresetsBySlot, type UnifiedPresetsResponse } from '../api/client';
+import { ApiError, api, type UnifiedPreset, type UnifiedPresetsBySlot, type UnifiedPresetsResponse } from '../api/client';
+import { useAuth } from '../contexts/AuthContext';
 import type { PrinterParents } from '../utils/printerPresetParents';
 import { filamentPresetIsLoaded, printerPresetIsOnline, printersCountedFor } from '../utils/sliceFarmFilter';
 
@@ -64,6 +65,15 @@ function useStoredFlag(key: string): [boolean, (next: boolean) => void] {
 export type PresetKeep = (preset: UnifiedPreset) => boolean;
 
 export interface SliceFarmFilters {
+  /**
+   * Whether the switches are offered at all: the answer names printers, their
+   * models and what is loaded on them, so it needs the right to read printers.
+   * Without it nothing is asked, nothing is narrowed, and the remembered
+   * switches are left as they are.
+   */
+  offered: boolean;
+  /** The server refused the read (403): the filters are unavailable, nothing is narrowed. */
+  forbidden: boolean;
   onlyOnline: boolean;
   setOnlyOnline: (next: boolean) => void;
   onlyLoaded: boolean;
@@ -92,15 +102,21 @@ export function useSliceFarmFilters(
   const { t } = useTranslation();
   const [onlyOnline, setOnlyOnline] = useStoredFlag(STORAGE_KEYS.online);
   const [onlyLoaded, setOnlyLoaded] = useStoredFlag(STORAGE_KEYS.loaded);
+  const { hasPermission } = useAuth();
+  const offered = hasPermission('printers:read');
 
   // One read for both switches, and none while both are off.
   const farmQuery = useQuery({
     queryKey: ['slicerLoadedFilaments'],
     queryFn: api.getSlicerLoadedFilaments,
-    enabled: onlyOnline || onlyLoaded,
+    enabled: offered && (onlyOnline || onlyLoaded),
     staleTime: 15_000,
   });
-  const farm = farmQuery.data;
+  // A refusal is an answer, not a failure to try again: whatever was read
+  // before it is no longer this user's to narrow by.
+  const forbidden = offered && farmQuery.error instanceof ApiError && farmQuery.error.status === 403;
+  const farm = offered && !forbidden ? farmQuery.data : undefined;
+  const failed = farmQuery.isError && !forbidden;
   const { refetch } = farmQuery;
   const retry = useCallback(() => {
     void refetch();
@@ -147,13 +163,17 @@ export function useSliceFarmFilters(
       keepFilament,
       printerNote,
       filamentNote,
-      unavailable: (onlyOnline || onlyLoaded) && farmQuery.isError && !farm,
-      stale: (onlyOnline || onlyLoaded) && farmQuery.isError && Boolean(farm),
+      offered,
+      forbidden: forbidden && (onlyOnline || onlyLoaded),
+      unavailable: (onlyOnline || onlyLoaded) && failed && !farm,
+      stale: (onlyOnline || onlyLoaded) && failed && Boolean(farm),
       retry,
     };
   }, [
     farm,
-    farmQuery.isError,
+    failed,
+    forbidden,
+    offered,
     onlyOnline,
     onlyLoaded,
     presets,

@@ -5697,6 +5697,7 @@ export default {
       nothingLoadedOnModel: 'Nothing is loaded on the online printers of the chosen model.',
       noLoadedPresets: 'No filament profile matches a loaded filament.',
       unavailable: 'The printers could not be read, so every profile is shown.',
+      forbidden: 'These filters need the right to view printers, so every profile is shown.',
       stale: 'The printers could not be read again. The lists are still narrowed by the last answer, which may be out of date.',
       showAll: 'Show all',
       showAllPrinters: 'Show all printer profiles',

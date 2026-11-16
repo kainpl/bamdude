@@ -14,6 +14,9 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { BrowserRouter } from 'react-router';
 import { http, HttpResponse } from 'msw';
 
+// For its side effect: it signs the test user in, without which `AuthProvider`
+// loads nobody and every permission reads as missing.
+import '../utils';
 import { server } from '../mocks/server';
 import { SliceModal } from '../../components/SliceModal';
 import { AuthProvider } from '../../contexts/AuthContext';
@@ -205,5 +208,82 @@ describe('SliceModal — why "only loaded filaments" leaves nothing', () => {
     await emptied(H2D);
 
     expect(screen.getByText(/Nothing is loaded on the online printers of the chosen model/)).toBeInTheDocument();
+  });
+});
+
+describe('SliceModal — the farm filters and the right to see printers', () => {
+  const ONLINE_KEY = 'bamdude:slice-modal:only-online-printers';
+  const LOADED_KEY = 'bamdude:slice-modal:only-loaded-filaments';
+  const signedInWith = (permissions: string[]) =>
+    http.get('/api/v1/auth/me', () =>
+      HttpResponse.json({
+        id: 2,
+        username: 'slicer',
+        role: 'user',
+        is_active: true,
+        is_admin: false,
+        groups: [],
+        permissions,
+        created_at: '2024-01-01T00:00:00Z',
+      }),
+    );
+
+  it('offers neither switch to someone who may not read printers, and changes nothing stored', async () => {
+    localStorage.setItem(ONLINE_KEY, '1');
+    localStorage.setItem(LOADED_KEY, '1');
+    serve();
+    server.use(signedInWith(['library:read', 'library:upload']));
+    open();
+
+    const printer = await picker('Printer profile');
+    await waitFor(() => expect(offered(printer)).toHaveLength(3));
+    const filament = await picker('Filament profile');
+    await waitFor(() => expect(offered(filament)).toHaveLength(2));
+    expect(screen.queryByRole('checkbox', { name: 'Only printers that are online' })).toBeNull();
+    expect(screen.queryByRole('checkbox', { name: 'Only filaments that are loaded' })).toBeNull();
+    // Not asked, not narrowed, and the switches come back as they were left.
+    expect(farmRequests).toBe(0);
+    expect(localStorage.getItem(ONLINE_KEY)).toBe('1');
+    expect(localStorage.getItem(LOADED_KEY)).toBe('1');
+  });
+
+  it('offers both to someone who may', async () => {
+    serve();
+    server.use(signedInWith(['library:read', 'library:upload', 'printers:read']));
+    open();
+
+    expect(await onlineToggle()).toBeInTheDocument();
+    expect(await loadedToggle()).toBeInTheDocument();
+  });
+
+  it('says the filters are unavailable when the server refuses the read, and narrows nothing', async () => {
+    localStorage.setItem(ONLINE_KEY, '1');
+    serve();
+    farm = 403;
+    open();
+
+    const printer = await picker('Printer profile');
+    await screen.findByText(/need the right to view printers/);
+    expect(offered(printer)).toHaveLength(3);
+    // Not a failure to try again, and not "could not be read".
+    expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull();
+    expect(screen.queryByText(/could not be read/)).toBeNull();
+  });
+
+  it('stops narrowing when a read that once succeeded is refused', async () => {
+    const user = userEvent.setup();
+    serve();
+    const { readFarmAgain } = open();
+    const printer = await picker('Printer profile');
+    await waitFor(() => expect(offered(printer)).toHaveLength(3));
+    await user.selectOptions(printer, `standard:${H2D}`);
+    await user.click(await onlineToggle());
+    await waitFor(() => expect(offered(printer)).toEqual([H2D]));
+
+    farm = 403;
+    await readFarmAgain();
+
+    await screen.findByText(/need the right to view printers/);
+    expect(offered(printer)).toHaveLength(3);
   });
 });
