@@ -1045,10 +1045,11 @@ function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedul
               </button>
             )}
             {(file.file_type === '3mf' || file.file_type === 'gcode' || file.file_type === 'stl' || file.file_type === 'obj') && (
+              // No `library:read` branch, here or on Download below: nothing on
+              // these paths asks for that legacy key (see the model card entry).
               <button
-                className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${hasPermission('library:read') ? 'text-white hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'}`}
-                onClick={() => { if (hasPermission('library:read')) { onPreview3d(file); closeMenu(); } }}
-                disabled={!hasPermission('library:read')}
+                className="w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 text-white hover:bg-bambu-dark"
+                onClick={() => { onPreview3d(file); closeMenu(); }}
               >
                 <Box className="w-3.5 h-3.5" />
                 {t('fileManagerModal.threeView')}
@@ -1101,9 +1102,8 @@ function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedul
               </a>
             )}
             <button
-              className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${hasPermission('library:read') ? 'text-white hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'}`}
-              onClick={() => { if (hasPermission('library:read')) { onDownload(file.id); closeMenu(); } }}
-              disabled={!hasPermission('library:read')}
+              className="w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 text-white hover:bg-bambu-dark"
+              onClick={() => { onDownload(file.id); closeMenu(); }}
             >
               <Download className="w-3.5 h-3.5" />
               {t('common.download')}
@@ -1558,13 +1558,11 @@ function FileCard({ file, isSelected, onSelect, onOpenArchives, onDelete, onDown
                 </button>
               )}
               {onPreview3d && (file.file_type === '3mf' || file.file_type === 'gcode' || file.file_type === 'stl' || file.file_type === 'obj') && (
+                // No `library:read` branch, here or on Download below: nothing
+                // on these paths asks for that legacy key (see the model card entry).
                 <button
-                  className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${
-                    hasPermission('library:read') ? 'text-white hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'
-                  }`}
-                  onClick={() => { if (hasPermission('library:read')) { onPreview3d(file); closeActions(); } }}
-                  disabled={!hasPermission('library:read')}
-                  title={!hasPermission('library:read') ? t('fileManager.noPermissionPreview', { defaultValue: 'You do not have permission to preview files' }) : undefined}
+                  className="w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 text-white hover:bg-bambu-dark"
+                  onClick={() => { onPreview3d(file); closeActions(); }}
                 >
                   <Box className="w-3.5 h-3.5" />
                   {t('fileManagerModal.threeView')}
@@ -1614,12 +1612,8 @@ function FileCard({ file, isSelected, onSelect, onOpenArchives, onDelete, onDown
                 </a>
               )}
               <button
-                className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${
-                  hasPermission('library:read') ? 'text-white hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'
-                }`}
-                onClick={() => { if (hasPermission('library:read')) { onDownload(file.id); closeActions(); } }}
-                disabled={!hasPermission('library:read')}
-                title={!hasPermission('library:read') ? t('fileManager.noPermissionDownload') : undefined}
+                className="w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 text-white hover:bg-bambu-dark"
+                onClick={() => { onDownload(file.id); closeActions(); }}
               >
                 <Download className="w-3.5 h-3.5" />
                 {t('common.download')}
@@ -2693,16 +2687,13 @@ export function FileManagerPage() {
   // Open the archive page filtered to this file's print history. The file
   // name rides along so the archive page can show a "prints of <name>" chip
   // without a second lookup.
-  // "Open" — what a double click (or Enter) does: the viewer the file's own menu
-  // offers for its type, behind the same gate as that menu entry.
-  const openPreview = useCallback(
-    (file: LibraryFileListItem) => {
-      const kind = previewKindOf(file);
-      if (kind === 'image') setImageFile(file);
-      else if (kind === 'model' && hasPermission('library:read')) setViewerFile(file);
-    },
-    [hasPermission],
-  );
+  // "Open" — what a double click (or Enter) does: the viewer the file's own
+  // menu offers for its type.
+  const openPreview = useCallback((file: LibraryFileListItem) => {
+    const kind = previewKindOf(file);
+    if (kind === 'image') setImageFile(file);
+    else if (kind === 'model') setViewerFile(file);
+  }, []);
 
   const handleOpenArchives = useCallback((file: LibraryFileListItem) => {
     const params = new URLSearchParams({
@@ -4164,14 +4155,9 @@ export function FileManagerPage() {
                       )}
                       {(file.file_type === '3mf' || file.file_type === 'gcode' || file.file_type === 'stl' || file.file_type === 'obj') && (
                         <button
-                          onClick={() => hasPermission('library:read') && setViewerFile(file)}
-                          className={`p-1.5 rounded transition-colors ${
-                            hasPermission('library:read')
-                              ? 'hover:bg-bambu-dark text-bambu-gray hover:text-bambu-green'
-                              : 'text-bambu-gray/50 cursor-not-allowed'
-                          }`}
-                          title={hasPermission('library:read') ? t('fileManagerModal.threeView') : undefined}
-                          disabled={!hasPermission('library:read')}
+                          onClick={() => setViewerFile(file)}
+                          className="p-1.5 rounded transition-colors hover:bg-bambu-dark text-bambu-gray hover:text-bambu-green"
+                          title={t('fileManagerModal.threeView')}
                         >
                           <Box className="w-4 h-4" />
                         </button>
