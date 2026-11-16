@@ -3048,6 +3048,10 @@ export default {
     doesNotFit: 'Does not fit the paper',
     preview: 'Preview the page',
     saved: 'Sheet saved',
+    deleteTitle: 'Delete this sheet?',
+    deleteMessage: 'Delete the sheet "{{name}}"? This cannot be undone.',
+    deleteBuiltinMessage:
+      'Delete the sheet "{{name}}"? It came with BamDude: it leaves this list, and a print that asks for it by its old name goes back to the geometry BamDude ships.',
   },
   labelEditor: {
     title: 'Label designs',
@@ -3058,6 +3062,10 @@ export default {
     description: 'Description',
     descriptionPlaceholder: 'What this label is for - shown beside its name in the print dialog',
     seeded: 'Came with BamDude. You can redraw it; the print API follows your version.',
+    deleteTitle: 'Delete this design?',
+    deleteMessage: 'Delete the design "{{name}}"? This cannot be undone.',
+    deleteBuiltinMessage:
+      'Delete the design "{{name}}"? It came with BamDude: it leaves this list and the print dialog, and a print that asks for it by its old name goes back to the design BamDude ships.',
     pickOne: 'Pick a design on the left, or make a new one.',
     element: 'Selected box',
     pickElement: 'Click a box on the label to change what it says.',
@@ -9897,6 +9905,8 @@ export default {
     labels: {
       printLabels: 'Print labels…',
       printOne: 'Print label for this spool',
+      printSelected_one: 'Print label for the selected spool',
+      printSelected_other: 'Print labels for the selected spools',
       title: 'Print spool labels',
       bulkTitle: 'Pick spools to print labels for from the {{count}} currently shown',
       noSpoolsTitle: 'No spools to label',

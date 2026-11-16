@@ -19,6 +19,7 @@ import { Copy, Plus, Trash2 } from 'lucide-react';
 
 import { api, type LabelPageSize, type LabelSheet, type LabelSheetInput } from '../../api/client';
 import { Button } from '../Button';
+import { ConfirmModal } from '../ConfirmModal';
 import { LoadingBlock } from '../LoadingBlock';
 import { useToast } from '../../contexts/ToastContext';
 import { useAuth } from '../../contexts/AuthContext';
@@ -76,6 +77,9 @@ export function LabelSheetEditor() {
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [previewWarnings, setPreviewWarnings] = useState<string[]>([]);
   const [designId, setDesignId] = useState<number | null>(null);
+  // Deleting asks first: a sheet is somebody's measured stock, and the button
+  // sits beside Duplicate.
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
 
   const { data: sheets, isLoading } = useQuery({ queryKey: ['label-sheets'], queryFn: api.getLabelSheets });
   const { data: designs } = useQuery({ queryKey: ['label-templates'], queryFn: api.getLabelTemplates });
@@ -143,6 +147,7 @@ export function LabelSheetEditor() {
       invalidate();
     },
     onError: (error: Error) => showToast(error.message, 'error'),
+    onSettled: () => setConfirmingDelete(false),
   });
 
   /**
@@ -193,7 +198,7 @@ export function LabelSheetEditor() {
             size="sm"
             variant="secondary"
             disabled={readOnly || !selectedId}
-            onClick={() => remove.mutate()}
+            onClick={() => setConfirmingDelete(true)}
           >
             <Trash2 className="w-4 h-4" />
             {t('common.delete')}
@@ -315,6 +320,20 @@ export function LabelSheetEditor() {
           </div>
         )}
       </div>
+
+      {confirmingDelete && selected && (
+        <ConfirmModal
+          title={t('labelSheets.deleteTitle')}
+          message={t(selected.is_builtin ? 'labelSheets.deleteBuiltinMessage' : 'labelSheets.deleteMessage', {
+            name: selected.name,
+          })}
+          confirmText={t('common.delete')}
+          variant="danger"
+          isLoading={remove.isPending}
+          onConfirm={() => remove.mutate()}
+          onCancel={() => setConfirmingDelete(false)}
+        />
+      )}
     </div>
   );
 }

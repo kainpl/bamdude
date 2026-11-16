@@ -41,6 +41,7 @@ import {
 } from '../../api/client';
 import { useToast } from '../../contexts/ToastContext';
 import { Button } from '../Button';
+import { ConfirmModal } from '../ConfirmModal';
 import { Card, CardContent, CardHeader } from '../Card';
 import { LabelCanvas } from './LabelCanvas';
 import { ElementInspector } from './ElementInspector';
@@ -90,6 +91,8 @@ export function LabelTemplateEditor() {
   const [testDeviceId, setTestDeviceId] = useState<number | null>(null);
   const [draft, setDraft] = useState<LabelTemplateInput | null>(null);
   const [selected, setSelected] = useState<number | null>(null);
+  // Deleting asks first — the bin sits beside Save and Duplicate.
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
 
   // ⚠️ Whole states, not diffs. A template is a few kilobytes and the history
   // is bounded; a diff engine here would be machinery in service of nothing.
@@ -320,6 +323,7 @@ export function LabelTemplateEditor() {
       setDraft(null);
     },
     onError: (error: Error) => showToast(error.message, 'error'),
+    onSettled: () => setConfirmingDelete(false),
   });
 
   // Only adopted devices, and only when the subsystem is on — offering a test
@@ -500,8 +504,10 @@ export function LabelTemplateEditor() {
                   </Button>
                   <Button
                     variant="secondary"
-                    onClick={() => openId && remove.mutate(openId)}
+                    onClick={() => setConfirmingDelete(true)}
                     disabled={remove.isPending}
+                    title={t('common.delete')}
+                    aria-label={t('common.delete')}
                   >
                     <Trash2 className="w-4 h-4 text-red-600 dark:text-red-400" />
                   </Button>
@@ -564,6 +570,20 @@ export function LabelTemplateEditor() {
           </CardContent>
         </Card>
       </div>
+
+      {confirmingDelete && open && (
+        <ConfirmModal
+          title={t('labelEditor.deleteTitle')}
+          message={t(open.is_builtin ? 'labelEditor.deleteBuiltinMessage' : 'labelEditor.deleteMessage', {
+            name: open.name,
+          })}
+          confirmText={t('common.delete')}
+          variant="danger"
+          isLoading={remove.isPending}
+          onConfirm={() => remove.mutate(open.id)}
+          onCancel={() => setConfirmingDelete(false)}
+        />
+      )}
     </div>
   );
 }
