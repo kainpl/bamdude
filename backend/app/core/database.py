@@ -378,6 +378,7 @@ def import_all_models() -> None:
         library,
         library_file_makerworld_meta,
         library_file_note,
+        library_file_photo,
         library_scan,
         line_config,
         local_preset,

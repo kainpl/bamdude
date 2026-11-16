@@ -66,6 +66,7 @@ interface PrinterFileViewerModalProps {
 }
 
 function PrinterFileViewerModal({ printerId, filePath, filename, onClose }: PrinterFileViewerModalProps) {
+  const { t } = useTranslation();
   const headingId = useId();
   const [activeTab, setActiveTab] = useState<PrinterViewerTab | null>(null);
   const [plates, setPlates] = useState<PlateMetadata[]>([]);
@@ -122,8 +123,8 @@ function PrinterFileViewerModal({ printerId, filePath, filename, onClose }: Prin
           }`}
         >
           <Box className="w-4 h-4" />
-          3D Model
-          {!hasModel && <span className="text-xs">(not available)</span>}
+          {t('modelViewer.tabs.model')}
+          {!hasModel && <span className="text-xs">{t('modelViewer.tabs.modelUnavailable')}</span>}
         </button>
         <button
           onClick={() => hasGcode && setActiveTab('gcode')}
@@ -137,8 +138,8 @@ function PrinterFileViewerModal({ printerId, filePath, filename, onClose }: Prin
           }`}
         >
           <FileText className="w-4 h-4" />
-          G-code Preview
-          {!hasGcode && <span className="text-xs">(not sliced)</span>}
+          {t('modelViewer.tabs.gcode')}
+          {!hasGcode && <span className="text-xs">{t('modelViewer.tabs.gcodeUnavailable')}</span>}
         </button>
       </div>
 
@@ -149,7 +150,7 @@ function PrinterFileViewerModal({ printerId, filePath, filename, onClose }: Prin
               <div className="rounded-lg border border-bambu-dark-tertiary bg-bambu-dark p-3">
                 <div className="flex items-center gap-2 text-sm text-bambu-gray mb-2">
                   <Box className="w-4 h-4" />
-                  Plates
+                  {t('modelViewer.plates')}
                   {platesLoading && <Loader2 className="w-3 h-3 animate-spin" />}
                 </div>
                 <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
@@ -166,9 +167,9 @@ function PrinterFileViewerModal({ printerId, filePath, filename, onClose }: Prin
                       <Box className="w-5 h-5 text-bambu-gray" />
                     </div>
                     <div className="min-w-0 flex-1">
-                      <p className="text-sm text-white font-medium truncate">All Plates</p>
+                      <p className="text-sm text-white font-medium truncate">{t('modelViewer.allPlates')}</p>
                       <p className="text-xs text-bambu-gray truncate">
-                        {plates.length} plate{plates.length !== 1 ? 's' : ''}
+                        {t('modelViewer.plateCount', { count: plates.length })}
                       </p>
                     </div>
                     {selectedPlateId == null && (
@@ -194,7 +195,7 @@ function PrinterFileViewerModal({ printerId, filePath, filename, onClose }: Prin
                       {plate.thumbnail_url ? (
                         <img
                           src={withMediaToken(plate.thumbnail_url)}
-                          alt={`Plate ${plate.index}`}
+                          alt={t('modelViewer.plateNumber', { number: plate.index })}
                           className="w-10 h-10 rounded object-cover bg-bambu-dark-tertiary"
                         />
                       ) : (
@@ -204,12 +205,12 @@ function PrinterFileViewerModal({ printerId, filePath, filename, onClose }: Prin
                       )}
                       <div className="min-w-0 flex-1">
                         <p className="text-sm text-white font-medium truncate">
-                          {plate.name || `Plate ${plate.index}`}
+                          {plate.name || t('modelViewer.plateNumber', { number: plate.index })}
                         </p>
                         <p className="text-xs text-bambu-gray truncate">
                           {plate.objects.length > 0
                             ? plate.objects.slice(0, 2).join(', ') + (plate.objects.length > 2 ? '…' : '')
-                            : `${plate.filaments.length} filament${plate.filaments.length !== 1 ? 's' : ''}`}
+                            : t('modelViewer.filamentCount', { count: plate.filaments.length })}
                         </p>
                       </div>
                       {selectedPlateId === plate.index && (
@@ -220,15 +221,15 @@ function PrinterFileViewerModal({ printerId, filePath, filename, onClose }: Prin
                 </div>
                 {selectedPlate && (
                   <div className="mt-3 text-xs text-bambu-gray flex flex-wrap gap-x-4 gap-y-1">
-                    <span>Plate {selectedPlate.index}</span>
+                    <span>{t('modelViewer.plateNumber', { number: selectedPlate.index })}</span>
                     {selectedPlate.print_time_seconds != null && (
-                      <span>ETA {Math.round(selectedPlate.print_time_seconds / 60)} min</span>
+                      <span>{t('modelViewer.eta', { minutes: Math.round(selectedPlate.print_time_seconds / 60) })}</span>
                     )}
                     {selectedPlate.filament_used_grams != null && (
                       <span>{selectedPlate.filament_used_grams.toFixed(1)} g</span>
                     )}
                     {selectedPlate.filaments.length > 0 && (
-                      <span>{selectedPlate.filaments.length} filament{selectedPlate.filaments.length !== 1 ? 's' : ''}</span>
+                      <span>{t('modelViewer.filamentCount', { count: selectedPlate.filaments.length })}</span>
                     )}
                   </div>
                 )}
@@ -250,7 +251,7 @@ function PrinterFileViewerModal({ printerId, filePath, filename, onClose }: Prin
           />
         ) : (
           <div className="w-full h-full flex items-center justify-center text-bambu-gray">
-            No preview available for this file
+            {t('modelViewer.noPreview')}
           </div>
         )}
       </div>
@@ -848,7 +849,7 @@ export function FileManagerModal({ printerId, printerName, onClose }: FileManage
                                   setViewerFile({ path: file.path, name: file.name });
                                 }}
                                 className="p-1 rounded hover:bg-bambu-dark text-bambu-gray hover:text-bambu-green"
-                                title="3D View"
+                                title={t('fileManagerModal.threeView')}
                               >
                                 <Box className="w-4 h-4" />
                               </button>

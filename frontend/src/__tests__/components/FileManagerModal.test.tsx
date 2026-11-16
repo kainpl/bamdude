@@ -4,11 +4,12 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { screen, fireEvent, waitFor } from '@testing-library/react';
+import { act, screen, fireEvent, waitFor } from '@testing-library/react';
 import { render } from '../utils';
 import { FileManagerModal } from '../../components/FileManagerModal';
 import { http, HttpResponse } from 'msw';
 import { server } from '../mocks/server';
+import i18n from '../../i18n';
 // Type-only: the plates fixture below is annotated with this client method's
 // return type, so the fixture and the wire shape cannot drift apart silently.
 import type { api } from '../../api/client';
@@ -616,6 +617,33 @@ describe('FileManagerModal', () => {
         'data:image/png;base64,AAAA',
       ]);
       expect(askedForPerPlateImage).toEqual([]);
+    });
+
+    it('speaks the interface language — nothing in the viewer is hard-coded English', async () => {
+      // Opened in English (the helper finds the button by its English title),
+      // then the language changes under the open viewer.
+      await openViewer(['data:image/png;base64,AAAA', null]);
+      try {
+        await act(async () => {
+          await i18n.changeLanguage('uk');
+        });
+        expect(screen.getByTitle('3D перегляд')).toBeInTheDocument();
+
+        // The tabs, the plate panel and the picture's name.
+        expect(await screen.findByText('3D модель')).toBeInTheDocument();
+        expect(screen.getByText(/Попередній перегляд G-code/)).toBeInTheDocument();
+        expect(await screen.findByText('Усі плити')).toBeInTheDocument();
+        expect(screen.getByText('2 плити')).toBeInTheDocument();
+        expect(screen.getByRole('img', { name: 'Плита 1' })).toBeInTheDocument();
+
+        // The selected plate's line: its number, time and filament count.
+        fireEvent.click(screen.getByText('Plate 2'));
+        expect(await screen.findByText('Плита 2')).toBeInTheDocument();
+        expect(screen.getByText('Час 30 хв')).toBeInTheDocument();
+        expect(screen.queryByText(/ETA|filament/)).not.toBeInTheDocument();
+      } finally {
+        await i18n.changeLanguage('en');
+      }
     });
 
     it('draws the placeholder for a plate the answer carries no URL for', async () => {

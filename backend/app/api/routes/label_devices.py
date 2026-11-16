@@ -27,6 +27,7 @@ from backend.app.core.auth import RequirePermission
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.models.label_device import LabelCassette, LabelDevice, LabelJob
+from backend.app.models.label_template import LabelTemplate
 from backend.app.models.user import User
 from backend.app.schemas.label_device import (
     LabelCassetteIn,
@@ -51,6 +52,8 @@ from backend.app.services.label_dispatch import (
     resolve_template,
     upsert_device,
 )
+from backend.app.services.label_gate import draw, warning_headers
+from backend.app.services.label_template import fitting_ids
 
 logger = logging.getLogger(__name__)
 
@@ -89,7 +92,12 @@ async def _resolve_deeplink_base(request: Request, db: AsyncSession) -> str:
     return f"{request.url.scheme}://{request.url.netloc}"
 
 
-def _device_out(device: LabelDevice, queued: int = 0) -> LabelDeviceOut:
+async def _design_sizes(db: AsyncSession) -> list[tuple[int, float, float]]:
+    rows = await db.execute(select(LabelTemplate.id, LabelTemplate.width_mm, LabelTemplate.height_mm))
+    return [(row.id, row.width_mm, row.height_mm) for row in rows]
+
+
+def _device_out(device: LabelDevice, designs: list[tuple[int, float, float]], queued: int = 0) -> LabelDeviceOut:
     return LabelDeviceOut(
         id=device.id,
         installation_id=device.installation_id,
@@ -110,6 +118,11 @@ def _device_out(device: LabelDevice, queued: int = 0) -> LabelDeviceOut:
         power_level=device.power_level,
         printer_reachable=device.printer_reachable,
         queued=queued,
+        fitting_design_ids=(
+            fitting_ids(designs, device.cassette_width_mm, device.cassette_height_mm)
+            if device.cassette_width_mm and device.cassette_height_mm
+            else None
+        ),
     )
 
 
@@ -153,7 +166,8 @@ async def list_devices(
             )
         ).all()
     )
-    return [_device_out(device, counts.get(device.id, 0)) for device in devices]
+    designs = await _design_sizes(db)
+    return [_device_out(device, designs, counts.get(device.id, 0)) for device in devices]
 
 
 @router.patch("/label-devices/{device_id}", response_model=LabelDeviceOut)
@@ -179,7 +193,7 @@ async def update_device(
         device.density = body.density
     await db.commit()
     await db.refresh(device)
-    return _device_out(device)
+    return _device_out(device, await _design_sizes(db))
 
 
 @router.delete("/label-devices/{device_id}", status_code=204, response_model=None)
@@ -237,8 +251,7 @@ async def create_jobs(
         user_id=user.id if user else None,
     )
     if warnings:
-        response.headers["X-Label-Warnings"] = " | ".join(warnings)
-        response.headers["Access-Control-Expose-Headers"] = "X-Label-Warnings"
+        response.headers.update(warning_headers(warnings))
     return [_job_out(job) for job in jobs]
 
 
@@ -263,11 +276,10 @@ async def preview_job(
     naming = await spool_display_template(db)
     contexts = await build_contexts(db, [body.spool], deeplink_base=deeplink_base, naming_template=naming)
 
-    png, warnings = render_job_png(spec, contexts[0])
+    png, warnings = await draw(render_job_png, spec, contexts[0])
     headers = {"Content-Length": str(len(png)), "Cache-Control": "no-store"}
     if warnings:
-        headers["X-Label-Warnings"] = " | ".join(warnings)
-        headers["Access-Control-Expose-Headers"] = "X-Label-Warnings"
+        headers.update(warning_headers(warnings))
     return StreamingResponse(io.BytesIO(png), media_type="image/png", headers=headers)
 
 

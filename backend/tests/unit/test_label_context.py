@@ -12,7 +12,7 @@ from types import SimpleNamespace
 import pytest
 
 from backend.app.services.label_context import example_context, spool_context, spoolman_context
-from backend.app.services.label_template import PLACEHOLDERS, resolve
+from backend.app.services.label_template import NAMING_PLACEHOLDERS, PLACEHOLDERS, resolve
 
 BASE = "https://bamdude.local"
 
@@ -176,6 +176,135 @@ class TestSpoolman:
         context = spoolman_context({"id": 3}, deeplink_base=BASE)
         assert context["display_name"] == "Spool"
         assert context["material"] == ""
+
+
+class TestWhereItLivesHowHotAndSinceWhen:
+    """Three things a shelf label is asked for and no design could print."""
+
+    def test_they_are_in_the_vocabulary(self):
+        assert {"storage_location", "nozzle_temp", "added_date"} <= {p.key for p in PLACEHOLDERS}
+
+    def test_they_are_for_labels_only(self):
+        """⚠️ A spool's NAME does not take them: the naming template is also
+        composed in SQL and in the browser, and neither was taught these."""
+        assert not {"storage_location", "nozzle_temp", "added_date"} & {p.key for p in NAMING_PLACEHOLDERS}
+
+    def test_the_storage_location(self):
+        context = spool_context(_spool(storage_location="Shelf B"), deeplink_base=BASE)
+        assert context["storage_location"] == "Shelf B"
+
+    @pytest.mark.parametrize(
+        ("low", "high", "printed"),
+        [
+            (220, 240, "220–240 °C"),
+            (220, None, "220 °C"),
+            (None, 240, "240 °C"),
+            (230, 230, "230 °C"),
+            (None, None, ""),
+            (0, 0, ""),
+        ],
+    )
+    def test_the_nozzle_temperature_reads_as_a_range(self, low, high, printed):
+        context = spool_context(_spool(nozzle_temp_min=low, nozzle_temp_max=high), deeplink_base=BASE)
+        assert context["nozzle_temp"] == printed
+
+    def test_the_date_it_was_added(self):
+        context = spool_context(_spool(created_at=datetime(2026, 2, 3, 23, 59)), deeplink_base=BASE)
+        assert context["added_date"] == "2026-02-03"
+
+    def test_a_spool_without_them_prints_gaps_not_tokens(self):
+        context = spool_context(_spool(), deeplink_base=BASE)
+        assert resolve("{storage_location} {nozzle_temp} {added_date}", context) == ""
+
+    def test_spoolman_fills_what_it_knows(self):
+        payload = {
+            "id": 7,
+            "location": "Drybox 2",
+            "registered": "2026-02-03T09:15:00Z",
+            "filament": {"name": "PLA Red", "material": "PLA", "settings_extruder_temp": 215},
+        }
+        context = spoolman_context(payload, deeplink_base=BASE)
+
+        assert context["storage_location"] == "Drybox 2"
+        assert context["nozzle_temp"] == "215 °C"
+        assert context["added_date"] == "2026-02-03"
+
+    def test_spoolman_without_them_prints_gaps(self):
+        context = spoolman_context({"id": 7, "filament": {"name": "PLA Red"}}, deeplink_base=BASE)
+        assert (context["storage_location"], context["nozzle_temp"], context["added_date"]) == ("", "", "")
+
+
+class TestASpoolmanLabelEqualsALocalOne:
+    """The same spool, held in Spoolman and held locally, prints the same label.
+
+    The Spoolman builder used to read the raw payload on its own: the subtype
+    was always empty and the colour was the filament's name — while the
+    Filaments page, which maps the same payload through
+    ``_map_spoolman_spool``, showed both. So the seeded line
+    ``{material} · {subtype}`` lost its second half on every Spoolman label.
+    """
+
+    #: What Spoolman has no field for; everything else must agree.
+    NOT_IN_SPOOLMAN = {"purchase_date", "lot"}
+
+    @staticmethod
+    def _spoolman():
+        return {
+            "id": 42,
+            "used_weight": 250.0,
+            "remaining_weight": 750.0,
+            "comment": "Kitchen shelf",
+            "location": "Shelf B",
+            "registered": "2026-02-03T09:15:00Z",
+            "extra": {"bambu_color_name": '"Jade White"', "bambu_slicer_filament_name": '"PolyTerra PLA"'},
+            "filament": {
+                "name": "PLA Matte",
+                "material": "PLA",
+                "color_hex": "FF3300",
+                "weight": 1000,
+                "price": 22.5,
+                "diameter": 1.75,
+                "article_number": "15",
+                "settings_extruder_temp": 215,
+                "vendor": {"name": "Polymaker"},
+            },
+        }
+
+    @staticmethod
+    def _local():
+        return _spool(
+            purchase_date=None,
+            lot=None,
+            material_number="15",
+            storage_location="Shelf B",
+            nozzle_temp_min=215,
+            nozzle_temp_max=None,
+            created_at=datetime(2026, 2, 3, 9, 15),
+        )
+
+    def test_field_for_field(self):
+        theirs = spoolman_context(self._spoolman(), deeplink_base=BASE)
+        ours = spool_context(self._local(), deeplink_base=BASE)
+
+        differing = {key for key in ours if ours[key] != theirs[key]} - self.NOT_IN_SPOOLMAN
+        assert not differing, {key: (ours[key], theirs[key]) for key in sorted(differing)}
+
+    def test_the_subtype_is_what_the_filaments_page_shows(self):
+        context = spoolman_context(self._spoolman(), deeplink_base=BASE)
+
+        assert context["subtype"] == "Matte"
+        assert resolve("{material} · {subtype}", context) == "PLA · Matte"
+
+    def test_a_stored_colour_name_is_the_colour(self):
+        assert spoolman_context(self._spoolman(), deeplink_base=BASE)["color_name"] == "Jade White"
+
+    def test_without_one_the_colour_stays_the_filaments_name(self):
+        """Not the synthesized subtype: "Matte" is not a colour, and labels
+        printed before this read the filament's name here."""
+        payload = self._spoolman()
+        payload["extra"] = {}
+
+        assert spoolman_context(payload, deeplink_base=BASE)["color_name"] == "PLA Matte"
 
 
 def test_the_editor_previews_with_the_pickers_own_examples():

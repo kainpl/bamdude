@@ -24,7 +24,10 @@ This script reconciles on-disk state against the DB. A regular file under
   column is covered by its name), or
 * it lies in a folder an archive row owns whole — its 3MF's folder, its
   ``no_source/<id>/`` fallback, or the older ``<id>/photos/`` — because photos
-  are stored as bare names and an edited timelapse is named by nothing.
+  are stored as bare names and an edited timelapse is named by nothing, or
+* it is a photo attached to a library file: ``library/photos/<file id>/<name>``
+  (and its small copy) for a row of ``library_file_photos`` — stored as a bare
+  name too, so no ``*_path`` column can name it.
 
 …across **both live and trashed** rows (``deleted_at`` IS NULL or NOT NULL):
 trash-retained files still live on disk until the retention sweeper hard-
@@ -43,6 +46,9 @@ Skipped from the file sweep:
   instead. ⚠️ They are NOT archive files: no row of ``print_archives`` or
   ``library_files`` names them, so the file sweep would call every live
   attachment an orphan and ``--apply`` would delete the lot.
+* ``<DATA_DIR>/library/photos/`` when the database has no
+  ``library_file_photos`` table (an older database): it cannot say which photos
+  are wanted, and "cannot tell" is never "nothing is referenced".
 * anything outside ``<DATA_DIR>/archive/`` (the database's ``file_path`` is
   always relative to ``DATA_DIR``, but only ``archive/`` is BamDude's
   responsibility — leave certs, virtual_printer alone).
@@ -190,6 +196,34 @@ def _collect_referenced_paths(db_path: Path) -> set[str]:
             ) from e
     conn.close()
     return referenced
+
+
+# Mirrors ``backend/app/services/library_file_photos.py``: the folder under the
+# library root, and the small copy stored beside every photo.
+_LIBRARY_PHOTOS = "photos"
+
+
+def _library_photo_paths(db_path: Path) -> set[str] | None:
+    """Relative paths of every photo a ``library_file_photos`` row names, small copies included.
+
+    ``None`` when the database has no such table (or it cannot be read): the
+    caller must then leave ``library/photos/`` alone — ⚠️ never read that as an
+    empty set, which would make every live photo an orphan.
+    """
+    with closing(sqlite3.connect(str(db_path))) as conn:
+        try:
+            rows = conn.execute("SELECT library_file_id, stored_name FROM library_file_photos").fetchall()
+        except sqlite3.OperationalError:
+            return None
+    wanted: set[str] = set()
+    for library_file_id, stored_name in rows:
+        if not isinstance(library_file_id, int) or not stored_name:
+            continue
+        folder = f"library/{_LIBRARY_PHOTOS}/{library_file_id}"
+        name = str(stored_name)
+        wanted.add(f"{folder}/{name}")
+        wanted.add(f"{folder}/{name.split('.', 1)[0]}.sm.jpg")
+    return wanted
 
 
 def _owned_archive_dirs(db_path: Path, data_dir: Path) -> list[Path]:
@@ -365,6 +399,17 @@ def main(argv: list[str] | None = None) -> int:
     print()
 
     referenced = _collect_referenced_paths(db_path)
+    # Photos attached to library files are named by rows, not by a ``*_path``
+    # column: without this every live photo would read as an orphan.
+    photo_paths = _library_photo_paths(db_path)
+    if photo_paths is None:
+        skip_dirs.append(library_root / _LIBRARY_PHOTOS)
+        print(
+            f"warning: skipping {library_root / _LIBRARY_PHOTOS}: cannot read library_file_photos",
+            file=sys.stderr,
+        )
+    else:
+        referenced |= photo_paths
     print(f"Referenced paths in DB: {len(referenced)}")
     owned_dirs = _owned_archive_dirs(db_path, data_dir)
     print(f"Folders owned by archive rows: {len(owned_dirs)}")

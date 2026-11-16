@@ -568,6 +568,18 @@ describe('InventoryPage — server-driven params (task 4)', () => {
     await waitFor(() => expect(screen.getByText('2 selected')).toBeInTheDocument());
   });
 
+  it('the selection bar\'s print button counts what it will print', async () => {
+    // It said "Print label for this spool" over any number of ticked rows.
+    render(<InventoryPageRouter />);
+    await waitFor(() => expect(screen.getAllByLabelText('Select this spool').length).toBe(2));
+
+    fireEvent.click(screen.getAllByLabelText('Select this spool')[0]);
+    expect(await screen.findByRole('button', { name: 'Print label for the selected spool' })).toBeInTheDocument();
+
+    fireEvent.click(screen.getAllByLabelText('Select this spool')[1]);
+    expect(await screen.findByRole('button', { name: 'Print labels for the selected spools' })).toBeInTheDocument();
+  });
+
   it('the cards view opts into include_k_profiles (per-profile chips need the array — T1 projection gap)', async () => {
     localStorage.setItem(
       'bamdude-inventory-filters',

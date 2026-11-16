@@ -501,6 +501,10 @@ async def remove_vanished(
             # ``product_files`` pivot but not ``product_plates``, whose cascade
             # only fires on PostgreSQL.
             await purge_file_product_links(db, [row.id for row in rows])
+            # A vanished file's photos go with its row (m233).
+            from backend.app.services import library_file_photos
+
+            await library_file_photos.forget_files(db, [row.id for row in rows])
             for row in rows:
                 if row.thumbnail_path:
                     with contextlib.suppress(OSError):

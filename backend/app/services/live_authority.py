@@ -365,6 +365,7 @@ class LiveAuthority:
             "printer_id",
             "project_id",
             "deleted_at",
+            "is_external",
             "filename",
             "print_name",
             "created_at",

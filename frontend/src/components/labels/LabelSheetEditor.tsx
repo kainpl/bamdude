@@ -19,12 +19,16 @@ import { Copy, Plus, Trash2 } from 'lucide-react';
 
 import { api, type LabelPageSize, type LabelSheet, type LabelSheetInput } from '../../api/client';
 import { Button } from '../Button';
+import { ConfirmModal } from '../ConfirmModal';
 import { LoadingBlock } from '../LoadingBlock';
 import { useToast } from '../../contexts/ToastContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { Select } from '../Select';
 
 const PAGE_SIZES: LabelPageSize[] = ['A4', 'A5', 'letter'];
+
+/** How long typing has to pause before the server is asked about the draft. */
+const CHECK_DEBOUNCE_MS = 350;
 
 /** Avery 5160 without the Avery — a starting point that fits A4. */
 const NEW_SHEET: Omit<LabelSheetInput, 'name'> = {
@@ -76,6 +80,14 @@ export function LabelSheetEditor() {
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [previewWarnings, setPreviewWarnings] = useState<string[]>([]);
   const [designId, setDesignId] = useState<number | null>(null);
+  // Deleting asks first: a sheet is somebody's measured stock, and the button
+  // sits beside Duplicate.
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+  // What the server said is wrong with one DRAFT — kept with the draft it was
+  // said about. ⚠️ An answer speaks only for that draft: the moment the draft
+  // is another object (another sheet, another keystroke) the answer is nobody's,
+  // and neither its lines nor a Save it disabled may stay on screen.
+  const [checked, setChecked] = useState<{ draft: LabelSheetInput; problems: string[] } | null>(null);
 
   const { data: sheets, isLoading } = useQuery({ queryKey: ['label-sheets'], queryFn: api.getLabelSheets });
   const { data: designs } = useQuery({ queryKey: ['label-templates'], queryFn: api.getLabelTemplates });
@@ -99,13 +111,39 @@ export function LabelSheetEditor() {
     if (selectedId === null) setSelectedId(sheets[0].id);
   }, [sheets, selectedId]);
 
+  // The saved row as a draft — the draft is this very object until it is edited.
+  const pristine = useMemo(() => (selected ? asInput(selected) : null), [selected]);
   useEffect(() => {
-    setDraft(selected ? asInput(selected) : null);
-  }, [selected]);
+    setDraft(pristine);
+  }, [pristine]);
 
   useEffect(() => {
     if (designId === null && designs?.length) setDesignId(designs[0].id);
   }, [designs, designId]);
+
+  // ⚠️ Asked of the server, never worked out here. Whether a grid fits its paper
+  // is arithmetic over the paper table, a cutting tolerance and the bounds, and
+  // all three live in one backend function — the one Save is refused by. This
+  // only waits for a pause in the typing and shows what comes back.
+  useEffect(() => {
+    if (!draft) return;
+    let stale = false;
+    const timer = setTimeout(() => {
+      api
+        .checkLabelSheet(draft)
+        .then((answer) => {
+          if (!stale) setChecked({ draft, problems: answer.problems });
+        })
+        // No answer is no opinion: Save still asks, and still refuses in words.
+        .catch(() => {
+          if (!stale) setChecked({ draft, problems: [] });
+        });
+    }, CHECK_DEBOUNCE_MS);
+    return () => {
+      stale = true;
+      clearTimeout(timer);
+    };
+  }, [draft]);
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ['label-sheets'] });
 
@@ -143,6 +181,7 @@ export function LabelSheetEditor() {
       invalidate();
     },
     onError: (error: Error) => showToast(error.message, 'error'),
+    onSettled: () => setConfirmingDelete(false),
   });
 
   /**
@@ -166,6 +205,13 @@ export function LabelSheetEditor() {
   useEffect(() => () => { if (previewUrl) URL.revokeObjectURL(previewUrl); }, [previewUrl]);
 
   if (isLoading) return <LoadingBlock label={t('common.loading')} className="py-12 text-bambu-gray" />;
+
+  // The answer for the draft on screen, if there is one yet.
+  const problems = checked !== null && checked.draft === draft ? checked.problems : null;
+  // An edited draft with no answer yet says "checking"; the untouched saved row
+  // shows its own complaints, which the list beside it shows too.
+  const checking = problems === null && draft !== null && draft !== pristine;
+  const shownProblems = problems ?? (draft === pristine ? selected?.overflow : null) ?? [];
 
   const set = (key: keyof LabelSheetInput, value: string) => {
     if (!draft) return;
@@ -193,7 +239,7 @@ export function LabelSheetEditor() {
             size="sm"
             variant="secondary"
             disabled={readOnly || !selectedId}
-            onClick={() => remove.mutate()}
+            onClick={() => setConfirmingDelete(true)}
           >
             <Trash2 className="w-4 h-4" />
             {t('common.delete')}
@@ -271,14 +317,21 @@ export function LabelSheetEditor() {
               ))}
             </div>
 
-            {selected && selected.overflow.length > 0 && (
-              <ul className="text-xs text-amber-600 dark:text-amber-400 space-y-1">
-                {selected.overflow.map((line) => <li key={line}>{line}</li>)}
+            {checking && (
+              <p role="status" className="text-xs text-bambu-gray">{t('labelSheets.checking')}</p>
+            )}
+            {shownProblems.length > 0 && (
+              <ul role="status" className="text-xs text-amber-600 dark:text-amber-400 space-y-1">
+                {shownProblems.map((line) => <li key={line}>{line}</li>)}
               </ul>
             )}
 
             <div className="flex flex-wrap items-center gap-2">
-              <Button size="sm" disabled={readOnly || save.isPending} onClick={() => save.mutate()}>
+              <Button
+                size="sm"
+                disabled={readOnly || save.isPending || (problems?.length ?? 0) > 0}
+                onClick={() => save.mutate()}
+              >
                 {t('common.save')}
               </Button>
               <Select
@@ -300,6 +353,8 @@ export function LabelSheetEditor() {
               </Button>
             </div>
 
+            <p className="text-xs text-bambu-gray">{t('labelSheets.scaleHint')}</p>
+
             {previewWarnings.length > 0 && (
               <ul className="text-xs text-amber-600 dark:text-amber-400 space-y-1">
                 {previewWarnings.map((line) => <li key={line}>{line}</li>)}
@@ -315,6 +370,20 @@ export function LabelSheetEditor() {
           </div>
         )}
       </div>
+
+      {confirmingDelete && selected && (
+        <ConfirmModal
+          title={t('labelSheets.deleteTitle')}
+          message={t(selected.is_builtin ? 'labelSheets.deleteBuiltinMessage' : 'labelSheets.deleteMessage', {
+            name: selected.name,
+          })}
+          confirmText={t('common.delete')}
+          variant="danger"
+          isLoading={remove.isPending}
+          onConfirm={() => remove.mutate()}
+          onCancel={() => setConfirmingDelete(false)}
+        />
+      )}
     </div>
   );
 }

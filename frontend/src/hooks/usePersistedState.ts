@@ -75,8 +75,8 @@ export type ArchivesView = 'grid' | 'list' | 'calendar';
 export const ARCHIVES_VIEW_MODES: readonly ArchivesView[] = ['grid', 'list', 'calendar'];
 export const parseArchivesView = listViewParser<ArchivesView>(ARCHIVES_VIEW_MODES);
 
-export type LibraryView = 'grid' | 'list';
-export const LIBRARY_VIEW_MODES: readonly LibraryView[] = ['grid', 'list'];
+export type LibraryView = 'grid' | 'list' | 'columns';
+export const LIBRARY_VIEW_MODES: readonly LibraryView[] = ['grid', 'list', 'columns'];
 export const parseLibraryView = listViewParser<LibraryView>(LIBRARY_VIEW_MODES);
 
 export type QueueView = 'expanded' | 'all' | 'timeline';

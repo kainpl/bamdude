@@ -1,12 +1,14 @@
-import { useEffect, useId, useMemo, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Loader2, Printer, Search, FileText } from 'lucide-react';
+import { Download, Loader2, Printer, Search, FileText } from 'lucide-react';
 import { SelectionBox } from './SelectionBox';
-import { api, type InventorySpool, type LabelTemplate } from '../api/client';
+import { api, type InventorySpool, type LabelPictureDpi, type LabelTemplate } from '../api/client';
 import { getSwatchStyle } from '../utils/colors';
 import { Button } from './Button';
 import { Modal } from './Modal';
+import { Select } from './Select';
 import { CardSelect, type CardOption } from './labels/CardSelect';
+import { LabelPicturePreview } from './labels/LabelPicturePreview';
 import { useToast } from '../contexts/ToastContext';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import type { LabelDevice } from '../api/client';
@@ -35,16 +37,52 @@ interface LabelTemplatePickerModalProps {
   spoolDisplayTemplate?: string;
 }
 
-/** ⚠️ The same slack ``label_template.py`` allows, and it has to be: a design
- *  drawn to exactly the cell size is a design the backend accepts and this
- *  dialog must not grey out. */
-const FIT_TOLERANCE_MM = 0.5;
-
 /** How a batch is going out. ``driver`` is the OS print driver — a PDF, which
  *  may be one label per page or a whole sheet of them, and may be in colour.
  *  ``device`` is a thermal printer on somebody's desk, reached through the
  *  bridge running there. */
 type PrintRoute = 'driver' | 'device';
+
+/** How the last driver print went out, kept per browser.
+ *
+ *  Somebody with one box of sheets picks the same paper and the same design
+ *  every time. ⚠️ Ids, so everything read back is checked against the catalogue
+ *  before it is used — a remembered row that is gone, or a design that stopped
+ *  fitting its paper, is dropped without a word. Only the driver route is
+ *  remembered: a desk printer prints on the click, and a design chosen for it
+ *  on somebody's behalf is a label nobody looked at. */
+const MEMORY_KEY = 'bamdude-label-print-dialog';
+
+interface RememberedPrint {
+  sheetId: number | null;
+  templateId: number | null;
+  start: string;
+}
+
+function readRemembered(): RememberedPrint | null {
+  try {
+    const raw = window.localStorage.getItem(MEMORY_KEY);
+    if (!raw) return null;
+    const stored = JSON.parse(raw) as Partial<RememberedPrint> | null;
+    if (!stored || typeof stored !== 'object') return null;
+    return {
+      sheetId: typeof stored.sheetId === 'number' ? stored.sheetId : null,
+      templateId: typeof stored.templateId === 'number' ? stored.templateId : null,
+      start: typeof stored.start === 'string' ? stored.start : '1',
+    };
+  } catch {
+    // Storage blocked, cleared mid-read, or holding something else: no memory.
+    return null;
+  }
+}
+
+function remember(print: RememberedPrint): void {
+  try {
+    window.localStorage.setItem(MEMORY_KEY, JSON.stringify(print));
+  } catch {
+    // A private window or a full quota — the print already happened.
+  }
+}
 
 /**
  * Show the finished PDF in a tab. What happens to it is the person's call —
@@ -86,6 +124,27 @@ function showPdfInTab(tab: Window | null, blob: Blob): void {
     a.click();
     document.body.removeChild(a);
   }
+  setTimeout(() => window.URL.revokeObjectURL(url), 60_000);
+}
+
+/** The resolutions a label is saved as a picture at: the two thermal heads in
+ *  common use and an office printer. The server takes exactly these. */
+const PICTURE_DPIS: LabelPictureDpi[] = [203, 300, 600];
+
+/** What the dialog's preview is drawn at: 8 dots per millimetre, a thermal
+ *  head's own resolution and plenty for a screen. */
+const PREVIEW_DPI: LabelPictureDpi = 203;
+
+/** Hand a finished file to the browser's downloads. Nothing to look at first —
+ *  a picture is for another program — so no tab is involved. */
+function saveFile(blob: Blob, filename: string): void {
+  const url = window.URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
   setTimeout(() => window.URL.revokeObjectURL(url), 60_000);
 }
 
@@ -187,6 +246,9 @@ export function LabelTemplatePickerModal({
   // #1870: session-only monochrome toggle for black & white thermal printers.
   // Resets to off each time the modal opens.
   const [monochrome, setMonochrome] = useState(false);
+  // Saving as pictures: the resolution, and whether a save is under way.
+  const [pictureDpi, setPictureDpi] = useState<LabelPictureDpi>(300);
+  const [saving, setSaving] = useState(false);
 
   // Devices are only asked for while the modal is open, and only listed when
   // adopted — an unadopted one would be an option that silently refuses.
@@ -226,17 +288,16 @@ export function LabelTemplatePickerModal({
    * different stock loaded, so "does not fit" is a fact about a pair — showing
    * it on the design alone would be wrong as soon as there are two machines.
    *
-   * ⚠️ Only LARGER is refused, exactly as ``assert_fits`` does on the server. A
-   * design smaller than the stock prints fine with a margin, and greying it out
-   * would forbid something that works. A printer that has not reported its
-   * cassette is not judged at all — it cannot rule on what it was never told.
+   * ⚠️ The SERVER says which designs fit (``fitting_design_ids``); nothing is
+   * compared here. This dialog once carried its own half millimetre, the print
+   * a different one, and it offered what the print then refused. A printer
+   * that has not reported its cassette answers ``null`` and is not judged at
+   * all — it cannot rule on what it was never told.
    */
   const cassetteComplaint = (device: LabelDevice): string | null => {
     const design = designs.find((row) => row.id === deviceTemplateId);
-    if (!design || !device.cassette_width_mm || !device.cassette_height_mm) return null;
-    const fits =
-      design.width_mm <= device.cassette_width_mm + FIT_TOLERANCE_MM &&
-      design.height_mm <= device.cassette_height_mm + FIT_TOLERANCE_MM;
+    if (!design || device.fitting_design_ids === null) return null;
+    const fits = device.fitting_design_ids.includes(design.id);
     return fits
       ? null
       : t('inventory.labels.doesNotFitCassette', {
@@ -252,12 +313,11 @@ export function LabelTemplatePickerModal({
    * ⚠️ Said here as well as refused there. A design prints at its own size or
    * not at all — fractional scaling of a label destroys bar ratios silently —
    * so the honest answer is a sentence, and it is cheaper to read it before
-   * clicking than after. */
-  const cellComplaint = (design: { width_mm: number; height_mm: number }): string | null => {
+   * clicking than after. Whether it fits is the server's answer, read off the
+   * sheet — the same function a print is refused by. */
+  const cellComplaint = (design: { id: number; width_mm: number; height_mm: number }): string | null => {
     if (!sheet) return null;
-    const fits =
-      design.width_mm <= sheet.cell_width_mm + FIT_TOLERANCE_MM &&
-      design.height_mm <= sheet.cell_height_mm + FIT_TOLERANCE_MM;
+    const fits = sheet.fitting_design_ids.includes(design.id);
     return fits
       ? null
       : t('inventory.labels.doesNotFitCell', {
@@ -287,14 +347,37 @@ export function LabelTemplatePickerModal({
       setMonochrome(false);
       setPending(null);
       setSending(null);
+      setSaving(false);
+      setPictureDpi(300);
       setRoute(null);
       setSheetId(null);
       setStartInput('1');
       setDeviceTemplateId(null);
       setDriverTemplateId(null);
+      restored.current = false;
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen]);
+
+  // Once per opening, and only when the catalogue has arrived: what is
+  // remembered is two ids and a cell, and each is worth only what the lists
+  // say about it now.
+  const restored = useRef(false);
+  useEffect(() => {
+    if (!isOpen || restored.current || !templates || !sheets) return;
+    restored.current = true;
+    const last = readRemembered();
+    if (!last) return;
+
+    const paper = sheets.find((row) => row.id === last.sheetId) ?? null;
+    if (paper) {
+      setSheetId(paper.id);
+      const cell = Number(last.start);
+      if (Number.isInteger(cell) && cell >= 1 && cell <= paper.cols * paper.rows) setStartInput(last.start);
+    }
+    const drawn = templates.find((row) => row.id === last.templateId && row.target === 'driver') ?? null;
+    if (drawn && (!paper || paper.fitting_design_ids.includes(drawn.id))) setDriverTemplateId(drawn.id);
+  }, [isOpen, templates, sheets]);
 
   const sortedSpools = useMemo(() => {
     const copy = [...availableSpools];
@@ -433,6 +516,18 @@ export function LabelTemplatePickerModal({
     cellsPerSheet === null ||
     (Number.isInteger(startPosition) && startPosition >= 1 && startPosition <= cellsPerSheet);
 
+  // ── The picture before the print ─────────────────────────────────────
+  // One label is shown: the first selected spool, in the order they will print.
+  const firstSpool = sortedSpools.find((s) => selectedIds.has(s.id)) ?? null;
+  const firstName = firstSpool ? displayNameById.get(firstSpool.id) || firstSpool.material || `#${firstSpool.id}` : '';
+  const firstEntry = firstSpool ? { id: firstSpool.id, display_name: displayNameById.get(firstSpool.id) ?? null } : null;
+  const previewCaption =
+    selectedCount > 1 ? t('inventory.labels.preview.firstOf', { count: selectedCount, name: firstName }) : firstName;
+  /** ⚠️ A desk printer's picture is ITS picture: the one-bit raster the bridge
+   *  is handed, for the stock that printer reports. With several printers the
+   *  first that can take the design is shown, and named. */
+  const previewDevice = devices.find((device) => cassetteComplaint(device) === null) ?? null;
+
   async function sendToDevice(device: LabelDevice) {
     if (noSelection || sending !== null) return;
     const ids = sortedSpools.filter((s) => selectedIds.has(s.id)).map((s) => s.id);
@@ -483,6 +578,7 @@ export function LabelTemplatePickerModal({
         ? await api.printSpoolmanSpoolLabels(body)
         : await api.printSpoolLabels(body);
       showPdfInTab(tab, blob);
+      remember({ sheetId, templateId, start: sheetId !== null ? startInput : '1' });
       onClose();
     } catch (err) {
       // The blank tab is ours and now pointless — leaving it is litter the
@@ -495,6 +591,33 @@ export function LabelTemplatePickerModal({
       );
     } finally {
       setPending(null);
+    }
+  }
+
+  /**
+   * Save the selected labels as pictures: one PNG, or a ZIP of them.
+   *
+   * ⚠️ No paper is sent. A sheet is how a PDF is laid out; a picture is one
+   * label at the design's own size, whatever it would have been printed on.
+   * The dialog stays open — somebody saving pictures for one printer's
+   * software may still want the PDF for another.
+   */
+  async function savePictures(templateId: number) {
+    if (noSelection || pending !== null || saving) return;
+    const ids = sortedSpools.filter((s) => selectedIds.has(s.id)).map((s) => s.id);
+    const spools = ids.map((id) => ({ id, display_name: displayNameById.get(id) ?? null }));
+    setSaving(true);
+    try {
+      const saved = await api.renderSpoolLabelPictures(
+        { spools, template_id: templateId, monochrome, dpi: pictureDpi },
+        spoolmanMode,
+      );
+      saveFile(saved.blob, saved.filename ?? (spools.length === 1 ? 'bamdude-label.png' : 'bamdude-labels.zip'));
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      showToast(t('inventory.labels.png.error', { msg }), 'error');
+    } finally {
+      setSaving(false);
     }
   }
 
@@ -766,6 +889,12 @@ export function LabelTemplatePickerModal({
             />
           )}
 
+          {/* The usual reason a sheet drifts off its stickers, and it looks just
+              like a wrong geometry — so it is said where the sheet is chosen. */}
+          {effectiveRoute === 'driver' && sheet !== null && (
+            <p className="text-xs text-bambu-gray">{t('inventory.labels.sheet.scaleHint')}</p>
+          )}
+
           {/* A half-used sheet: where the first label goes. Only a sheet has cells. */}
           {effectiveRoute === 'driver' && cellsPerSheet !== null && (
             <div className="flex items-center gap-3">
@@ -810,6 +939,20 @@ export function LabelTemplatePickerModal({
                   onChange={setDriverTemplateId}
                   disabled={pending !== null}
                 />
+                {driverTemplateId !== null && driverReady && firstEntry !== null && (
+                  <LabelPicturePreview
+                    requestKey={[spoolmanMode, driverTemplateId, firstEntry.id, firstEntry.display_name, monochrome].join('|')}
+                    load={(signal) =>
+                      api.renderSpoolLabelPictures(
+                        { spools: [firstEntry], template_id: driverTemplateId, monochrome, dpi: PREVIEW_DPI },
+                        spoolmanMode,
+                        signal,
+                      )
+                    }
+                    name={firstName}
+                    caption={previewCaption}
+                  />
+                )}
                 <Button
                   className="w-full"
                   disabled={noSelection || pending !== null || !driverReady || !startValid}
@@ -818,6 +961,32 @@ export function LabelTemplatePickerModal({
                   {pending !== null && <Loader2 className="w-4 h-4 animate-spin" />}
                   {t('common.print')}
                 </Button>
+
+                {/* The same labels for a program that takes pictures. Beside
+                    Print, not instead of it: most people want the PDF. */}
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button
+                    variant="secondary"
+                    disabled={noSelection || pending !== null || saving || !driverReady}
+                    onClick={() => driverTemplateId !== null && savePictures(driverTemplateId)}
+                  >
+                    {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
+                    {t('inventory.labels.png.save')}
+                  </Button>
+                  <Select
+                    aria-label={t('inventory.labels.png.resolution')}
+                    value={pictureDpi}
+                    onChange={(event) => setPictureDpi(Number(event.target.value) as LabelPictureDpi)}
+                    disabled={saving}
+                  >
+                    {PICTURE_DPIS.map((dpi) => (
+                      <option key={dpi} value={dpi}>
+                        {t('inventory.labels.png.dpi', { dpi })}
+                      </option>
+                    ))}
+                  </Select>
+                  <span className="text-xs text-bambu-gray flex-1 min-w-48">{t('inventory.labels.png.hint')}</span>
+                </div>
               </>
             )
           )}
@@ -837,6 +1006,32 @@ export function LabelTemplatePickerModal({
                 onChange={setDeviceTemplateId}
                 disabled={sending !== null}
               />
+
+              {previewDevice !== null && firstEntry !== null && (
+                <LabelPicturePreview
+                  requestKey={['device', previewDevice.id, deviceTemplateId, firstEntry.id, firstEntry.display_name].join('|')}
+                  load={async (signal) => ({
+                    blob: await api.previewDeviceLabel(
+                      {
+                        device_id: previewDevice.id,
+                        spool: firstEntry,
+                        ...(deviceTemplateId !== null ? { template_id: deviceTemplateId } : {}),
+                      },
+                      signal,
+                    ),
+                    warnings: [],
+                  })}
+                  name={firstName}
+                  caption={
+                    devices.length > 1
+                      ? t('inventory.labels.preview.onDevice', {
+                          device: previewDevice.name || previewDevice.model || previewDevice.installation_id,
+                          name: firstName,
+                        })
+                      : previewCaption
+                  }
+                />
+              )}
 
               {devices.map((device) => {
                 const complaint = cassetteComplaint(device);

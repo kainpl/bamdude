@@ -3045,7 +3045,7 @@ function InventoryPage({ spoolmanMode = false, spoolmanModeReady = true, spoolma
                 onClick={() => setLabelPickerSpoolIds([...selectedIds])}
                 className="px-3 py-1.5 text-xs font-medium rounded bg-bambu-dark text-bambu-gray hover:text-white transition-colors disabled:opacity-50"
               >
-                {t('inventory.labels.printOne')}
+                {t('inventory.labels.printSelected', { count: selectedIds.size })}
               </button>
               <button
                 type="button"

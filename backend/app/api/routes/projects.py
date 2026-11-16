@@ -3759,12 +3759,16 @@ async def _plan_file_names(db: AsyncSession, file_ids: set[int], user: User | No
     if not file_ids or scope == "none":
         return {}
     rows = await db.execute(
-        select(LibraryFile.id, LibraryFile.filename, LibraryFile.deleted_at, LibraryFile.created_by_id).where(
-            LibraryFile.id.in_(file_ids)
-        )
+        select(
+            LibraryFile.id,
+            LibraryFile.filename,
+            LibraryFile.deleted_at,
+            LibraryFile.created_by_id,
+            LibraryFile.is_external,
+        ).where(LibraryFile.id.in_(file_ids))
     )
-    # ``file_name_visible`` reads ``deleted_at`` and ``created_by_id`` off whatever
-    # it is handed — the four columns, not the whole row with its metadata.
+    # ``file_name_visible`` reads ``deleted_at``, ``created_by_id`` and ``is_external``
+    # off whatever it is handed — the columns, not the whole row with its metadata.
     return {row.id: row.filename for row in rows if file_name_visible(row, user, scope)}
 
 

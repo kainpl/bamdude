@@ -29,7 +29,12 @@ vi.mock('../../api/client', () => ({
   api: {
     printSpoolLabels: vi.fn(),
     printSpoolmanSpoolLabels: vi.fn(),
+    renderSpoolLabelPictures: vi.fn(),
+    previewDeviceLabel: vi.fn(),
     getSettings: vi.fn().mockResolvedValue({}),
+    // The dialog reads the preferences door; these tests set what it answers
+    // through ``getSettings``, so one stands in for the other.
+    getUiPreferences: vi.fn(),
     getAuthStatus: vi.fn().mockResolvedValue({ auth_enabled: false }),
     getLabelTemplates: vi.fn(),
     getLabelSheets: vi.fn(),
@@ -76,6 +81,9 @@ const AVERY = {
   gap_y_mm: 0,
   is_builtin: true,
   overflow: [],
+  // ⚠️ The server's answer, not this dialog's arithmetic: a 25.4mm cell holds
+  // none of the designs these tests draw.
+  fitting_design_ids: [] as number[],
 };
 
 /** A4 stock with roomier cells — 63.5 × 38.1mm holds the 40 × 30 design. */
@@ -88,6 +96,7 @@ const L7160 = {
   cell_width_mm: 63.5,
   cell_height_mm: 38.1,
   rows: 7,
+  fitting_design_ids: [7],
 };
 
 const DEVICE = {
@@ -99,6 +108,9 @@ const DEVICE = {
   printer_reachable: true,
   cassette_width_mm: 50,
   cassette_height_mm: 30,
+  // What the server says fits the loaded 50 × 30: the tests below name their
+  // designs 9, and the one drawn larger than the stock is left out by the test.
+  fitting_design_ids: [9],
 };
 
 const show = (over: Record<string, unknown> = {}) =>
@@ -126,12 +138,17 @@ const press = () => fireEvent.click(screen.getByRole('button', { name: /^Print$/
 
 beforeEach(() => {
   vi.clearAllMocks();
+  localStorage.clear();
   vi.mocked(api.printSpoolLabels).mockResolvedValue(PDF_BLOB);
   vi.mocked(api.printSpoolmanSpoolLabels).mockResolvedValue(PDF_BLOB);
+  // The dialog draws a preview as soon as a design is chosen.
+  vi.mocked(api.renderSpoolLabelPictures).mockResolvedValue({ blob: PDF_BLOB, filename: null, warnings: [] });
+  vi.mocked(api.previewDeviceLabel).mockResolvedValue(PDF_BLOB);
   vi.mocked(api.getLabelTemplates).mockResolvedValue([design()] as never);
   vi.mocked(api.getLabelSheets).mockResolvedValue([] as never);
   vi.mocked(api.getLabelDevices).mockResolvedValue([] as never);
   vi.mocked(api.getSettings).mockResolvedValue({} as never);
+  vi.mocked(api.getUiPreferences).mockImplementation((() => api.getSettings()) as never);
   Object.defineProperty(window.URL, 'createObjectURL', {
     value: vi.fn(() => 'blob:mock'),
     configurable: true,
@@ -273,6 +290,189 @@ describe('LabelTemplatePickerModal', () => {
   });
 });
 
+describe('whether a design fits is the server\'s answer', () => {
+  // The dialog used to compare sizes itself, with its own half millimetre —
+  // against a print that allowed a millionth. It offered what the print
+  // refused. These pin that it no longer has an opinion.
+  it('offers a design the server says fits, whatever the sizes look like', async () => {
+    vi.mocked(api.getLabelTemplates).mockResolvedValue([design({ width_mm: 70 })] as never);
+    vi.mocked(api.getLabelSheets).mockResolvedValue([L7160] as never);
+    show();
+
+    await choose(PAPER, /Avery L7160/);
+    fireEvent.click(screen.getByRole('combobox', { name: DESIGN }));
+
+    expect(screen.getByRole('option', { name: /Box label 40 × 30/ })).not.toBeDisabled();
+  });
+
+  it('refuses one the server says does not, whatever the sizes look like', async () => {
+    vi.mocked(api.getLabelSheets).mockResolvedValue([{ ...L7160, fitting_design_ids: [] }] as never);
+    show();
+
+    await choose(PAPER, /Avery L7160/);
+    fireEvent.click(screen.getByRole('combobox', { name: DESIGN }));
+
+    expect(screen.getByRole('option', { name: /Box label 40 × 30/ })).toBeDisabled();
+  });
+
+  it('does not judge a printer that has not said what is loaded', async () => {
+    vi.mocked(api.getSettings).mockResolvedValue({ device_labels_enabled: true } as never);
+    vi.mocked(api.getLabelDevices).mockResolvedValue([
+      { ...DEVICE, cassette_width_mm: null, cassette_height_mm: null, fitting_design_ids: null },
+    ] as never);
+    vi.mocked(api.createLabelJobs).mockResolvedValue([{ id: 1 }] as never);
+    vi.mocked(api.getLabelTemplates).mockResolvedValue([
+      design({ id: 9, name: 'Roll 50 × 30', target: 'thermal' }),
+    ] as never);
+    show();
+
+    fireEvent.click(await screen.findByText(/On a label printer/i));
+    await choose(DESIGN, /Roll 50 × 30/);
+    fireEvent.click(screen.getByText('Niimbot B1'));
+
+    await waitFor(() => expect(api.createLabelJobs).toHaveBeenCalled());
+  });
+});
+
+describe('a sheet PDF comes with a reminder about scale', () => {
+  // "Fit to page" is the usual reason a sheet drifts off its stickers by the
+  // third row, and it looks exactly like a wrong geometry.
+  it('says to print at 100 % once a sheet is chosen', async () => {
+    vi.mocked(api.getLabelSheets).mockResolvedValue([L7160] as never);
+    show();
+
+    await choose(PAPER, /Avery L7160/);
+
+    expect(screen.getByText(/100\s?%/)).toBeInTheDocument();
+  });
+
+  it('says nothing about scale for one label per page', async () => {
+    vi.mocked(api.getLabelSheets).mockResolvedValue([L7160] as never);
+    show();
+    await screen.findByRole('combobox', { name: PAPER });
+
+    expect(screen.queryByText(/100\s?%/)).not.toBeInTheDocument();
+  });
+});
+
+describe('the dialog remembers how you last printed', () => {
+  // Somebody with one roll or one box of sheets picks the same paper and the
+  // same design every time. Per browser, and silently forgotten when what it
+  // remembers is gone.
+  const MEMORY = 'bamdude-label-print-dialog';
+
+  const printOnASheet = async () => {
+    vi.mocked(api.getLabelSheets).mockResolvedValue([L7160] as never);
+    const first = show();
+    await choose(PAPER, /Avery L7160/);
+    await choose(DESIGN, /Box label 40 × 30/);
+    fireEvent.change(screen.getByLabelText(/Starting position/i), { target: { value: '5' } });
+    press();
+    await waitFor(() => expect(api.printSpoolLabels).toHaveBeenCalledTimes(1));
+    first.unmount();
+    vi.mocked(api.printSpoolLabels).mockClear();
+  };
+
+  it('opens on the paper, the design and the starting cell of the last print', async () => {
+    await printOnASheet();
+
+    show();
+    await waitFor(() => expect(screen.getByRole('button', { name: /^Print$/ })).not.toBeDisabled());
+    expect((screen.getByLabelText(/Starting position/i) as HTMLInputElement).value).toBe('5');
+    press();
+
+    await waitFor(() => {
+      expect(api.printSpoolLabels).toHaveBeenCalledWith(
+        expect.objectContaining({ template_id: 7, sheet_id: 4, starting_position: 5 }),
+      );
+    });
+  });
+
+  it('remembers nothing until something was printed', async () => {
+    vi.mocked(api.getLabelSheets).mockResolvedValue([L7160] as never);
+    const first = show();
+    await choose(PAPER, /Avery L7160/);
+    await choose(DESIGN, /Box label 40 × 30/);
+    first.unmount();
+
+    show();
+    await screen.findByRole('combobox', { name: DESIGN });
+
+    expect(screen.getByRole('button', { name: /^Print$/ })).toBeDisabled();
+    expect(screen.queryByLabelText(/Starting position/i)).toBeNull();
+  });
+
+  it('forgets a design and a paper that no longer exist', async () => {
+    localStorage.setItem(MEMORY, JSON.stringify({ sheetId: 99, templateId: 98, start: '4' }));
+    vi.mocked(api.getLabelSheets).mockResolvedValue([L7160] as never);
+    show();
+    await screen.findByRole('combobox', { name: DESIGN });
+
+    // Nothing pre-aimed at a row that is gone: no paper, no design, no cell.
+    expect(screen.getByRole('button', { name: /^Print$/ })).toBeDisabled();
+    expect(screen.queryByLabelText(/Starting position/i)).toBeNull();
+
+    await choose(DESIGN, /Box label 40 × 30/);
+    press();
+    await waitFor(() => expect(api.printSpoolLabels).toHaveBeenCalled());
+    const sent = vi.mocked(api.printSpoolLabels).mock.calls[0][0];
+    expect(sent).toEqual(expect.objectContaining({ template_id: 7 }));
+    expect(sent).not.toHaveProperty('sheet_id');
+  });
+
+  it('keeps the paper but not a design that stopped fitting it', async () => {
+    localStorage.setItem(MEMORY, JSON.stringify({ sheetId: 4, templateId: 7, start: '2' }));
+    vi.mocked(api.getLabelSheets).mockResolvedValue([{ ...L7160, fitting_design_ids: [] }] as never);
+    show();
+
+    expect(await screen.findByLabelText(/Starting position/i)).toHaveValue(2);
+    expect(screen.getByRole('button', { name: /^Print$/ })).toBeDisabled();
+  });
+
+  it('drops a starting cell the paper does not have', async () => {
+    localStorage.setItem(MEMORY, JSON.stringify({ sheetId: 4, templateId: 7, start: '99' }));
+    vi.mocked(api.getLabelSheets).mockResolvedValue([L7160] as never);
+    show();
+
+    expect(await screen.findByLabelText(/Starting position/i)).toHaveValue(1);
+  });
+
+  it('opens as usual when the browser will not hand over its storage', async () => {
+    // Only this dialog's key: the rest of the app has its own readers.
+    const read = Storage.prototype.getItem;
+    const write = Storage.prototype.setItem;
+    const refuse = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(function (this: Storage, key: string) {
+      if (key === MEMORY) throw new Error('denied');
+      return read.call(this, key);
+    });
+    const refuseWrite = vi
+      .spyOn(Storage.prototype, 'setItem')
+      .mockImplementation(function (this: Storage, key: string, value: string) {
+        if (key === MEMORY) throw new Error('denied');
+        write.call(this, key, value);
+      });
+    try {
+      show();
+      await choose(DESIGN, /Box label 40 × 30/);
+      press();
+      await waitFor(() => expect(api.printSpoolLabels).toHaveBeenCalled());
+      expect(refuse).toHaveBeenCalledWith(MEMORY);
+      expect(refuseWrite).toHaveBeenCalledWith(MEMORY, expect.any(String));
+    } finally {
+      refuse.mockRestore();
+      refuseWrite.mockRestore();
+    }
+  });
+
+  it('ignores a memory that is not what it wrote', async () => {
+    localStorage.setItem(MEMORY, '{"sheetId":"4","templateId":{},"start":5');
+    show();
+
+    expect(await screen.findByRole('combobox', { name: DESIGN })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^Print$/ })).toBeDisabled();
+  });
+});
+
 describe('what happens to the finished PDF', () => {
   const printOne = async () => {
     await choose(DESIGN, /Box label 40 × 30/);
@@ -328,6 +528,257 @@ describe('what happens to the finished PDF', () => {
 
     await waitFor(() => expect(click).toHaveBeenCalled());
     expect(anchor.download).toBe('bamdude-labels.pdf');
+  });
+});
+
+describe('saving the labels as pictures', () => {
+  const PNG_BLOB = new Blob([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], { type: 'image/png' });
+  const SAVE = /Save as PNG/;
+
+  const downloads = () => {
+    const click = vi.fn();
+    const anchor = document.createElement('a');
+    anchor.click = click;
+    vi.spyOn(document, 'createElement').mockImplementation(((tag: string) =>
+      tag === 'a' ? anchor : document.createElementNS('http://www.w3.org/1999/xhtml', tag)) as never);
+    return { anchor, click };
+  };
+
+  const savedBodies = () =>
+    vi
+      .mocked(api.renderSpoolLabelPictures)
+      .mock.calls.filter(([, , signal]) => signal === undefined)
+      .map(([body]) => body);
+
+  beforeEach(() => {
+    vi.mocked(api.renderSpoolLabelPictures).mockResolvedValue({
+      blob: PNG_BLOB,
+      filename: '0001-polymaker-pla-red.png',
+      warnings: [],
+    });
+  });
+
+  it('will not save until a design is chosen', async () => {
+    show();
+    expect(await screen.findByRole('button', { name: SAVE })).toBeDisabled();
+  });
+
+  it('saves the chosen design at 300 dpi unless another resolution is picked', async () => {
+    const { anchor, click } = downloads();
+    show();
+    await choose(DESIGN, /Box label 40 × 30/);
+
+    fireEvent.click(screen.getByRole('button', { name: SAVE }));
+
+    await waitFor(() => expect(click).toHaveBeenCalled());
+    expect(savedBodies()).toEqual([
+      { spools: [{ id: 1, display_name: expect.any(String) }], template_id: 7, monochrome: false, dpi: 300 },
+    ]);
+    expect(vi.mocked(api.renderSpoolLabelPictures).mock.calls.at(-1)?.[1]).toBe(false);
+    // The file is named by the server: the spool for one label, the batch for a ZIP.
+    expect(anchor.download).toBe('0001-polymaker-pla-red.png');
+    expect(window.open).not.toHaveBeenCalled();
+  });
+
+  it('saves at the resolution picked', async () => {
+    downloads();
+    show();
+    await choose(DESIGN, /Box label 40 × 30/);
+
+    fireEvent.change(screen.getByRole('combobox', { name: /Resolution/ }), { target: { value: '600' } });
+    fireEvent.click(screen.getByRole('button', { name: SAVE }));
+
+    await waitFor(() => expect(savedBodies()).toHaveLength(1));
+    expect(savedBodies()[0]).toMatchObject({ dpi: 600 });
+  });
+
+  it('saves the label, not the paper it would be printed on', async () => {
+    downloads();
+    vi.mocked(api.getLabelSheets).mockResolvedValue([L7160] as never);
+    show();
+    await choose(PAPER, /Avery L7160/);
+    await choose(DESIGN, /Box label 40 × 30/);
+
+    fireEvent.click(screen.getByRole('button', { name: SAVE }));
+
+    await waitFor(() => expect(savedBodies()).toHaveLength(1));
+    expect(savedBodies()[0]).not.toHaveProperty('sheet_id');
+    expect(savedBodies()[0]).not.toHaveProperty('starting_position');
+  });
+
+  it('asks Spoolman for a Spoolman spool, and carries monochrome', async () => {
+    downloads();
+    show({ spoolmanMode: true });
+    await choose(DESIGN, /Box label 40 × 30/);
+    fireEvent.click(screen.getByRole('checkbox', { name: /Monochrome/ }));
+
+    fireEvent.click(screen.getByRole('button', { name: SAVE }));
+
+    await waitFor(() => expect(savedBodies()).toHaveLength(1));
+    expect(savedBodies()[0]).toMatchObject({ monochrome: true });
+    expect(vi.mocked(api.renderSpoolLabelPictures).mock.calls.at(-1)?.[1]).toBe(true);
+  });
+
+  it('says why when the server refuses, and stays open', async () => {
+    const onClose = vi.fn();
+    vi.mocked(api.renderSpoolLabelPictures).mockRejectedValue(
+      new Error('At 600 dpi this design is more than 4000 dots on a side'),
+    );
+    show({ onClose });
+    await choose(DESIGN, /Box label 40 × 30/);
+
+    fireEvent.click(screen.getByRole('button', { name: SAVE }));
+
+    expect(await screen.findByText(/more than 4000 dots on a side/)).toBeInTheDocument();
+    expect(onClose).not.toHaveBeenCalled();
+  });
+});
+
+describe('the picture of the label before it is printed', () => {
+  const PNG_BLOB = new Blob([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], { type: 'image/png' });
+  const PICTURE = /Preview of the label/;
+
+  const previewCalls = () =>
+    vi.mocked(api.renderSpoolLabelPictures).mock.calls.filter(([, , signal]) => signal !== undefined);
+
+  it('asks for nothing until a design is chosen', async () => {
+    show();
+    await screen.findByRole('combobox', { name: DESIGN });
+    await new Promise((done) => setTimeout(done, 400));
+
+    expect(previewCalls()).toHaveLength(0);
+    expect(screen.queryByRole('img', { name: PICTURE })).not.toBeInTheDocument();
+  });
+
+  it('shows the label of the first selected spool for the chosen design', async () => {
+    show({ initialSelectedIds: [2, 1] });
+    await choose(DESIGN, /Box label 40 × 30/);
+
+    const picture = await screen.findByRole('img', { name: PICTURE });
+
+    expect(picture).toHaveAttribute('src', 'blob:mock');
+    // Drawn by the server, from the renderer that prints: the first spool only, at a screen's resolution.
+    expect(previewCalls()).toHaveLength(1);
+    expect(previewCalls()[0][0]).toEqual({
+      spools: [{ id: 1, display_name: expect.any(String) }],
+      template_id: 7,
+      monochrome: false,
+      dpi: 203,
+    });
+    expect(previewCalls()[0][1]).toBe(false);
+  });
+
+  it('says it is drawing until the picture arrives', async () => {
+    vi.mocked(api.renderSpoolLabelPictures).mockReturnValue(new Promise(() => {}));
+    show();
+    await choose(DESIGN, /Box label 40 × 30/);
+
+    expect(await screen.findByText(/Drawing the preview/)).toBeInTheDocument();
+  });
+
+  it('is drawn again when the choice changes, and the picture no longer wanted is cancelled', async () => {
+    vi.mocked(api.getLabelTemplates).mockResolvedValue([design(), design({ id: 8, name: 'Wide tag' })] as never);
+    vi.mocked(api.renderSpoolLabelPictures).mockImplementation(((body: { template_id: number }) =>
+      body.template_id === 7
+        ? new Promise(() => {})
+        : Promise.resolve({ blob: PNG_BLOB, filename: null, warnings: [] })) as never);
+    show();
+    await choose(DESIGN, /Box label 40 × 30/);
+    await waitFor(() => expect(previewCalls()).toHaveLength(1));
+    const first = previewCalls()[0][2] as AbortSignal;
+    expect(first.aborted).toBe(false);
+
+    await choose(DESIGN, /Wide tag/);
+
+    await screen.findByRole('img', { name: PICTURE });
+    expect(first.aborted).toBe(true);
+    expect(previewCalls().at(-1)?.[0]).toMatchObject({ template_id: 8 });
+  });
+
+  it('follows the monochrome box', async () => {
+    show();
+    await choose(DESIGN, /Box label 40 × 30/);
+    await screen.findByRole('img', { name: PICTURE });
+
+    fireEvent.click(screen.getByRole('checkbox', { name: /Monochrome/ }));
+
+    await waitFor(() => expect(previewCalls().at(-1)?.[0]).toMatchObject({ monochrome: true }));
+  });
+
+  it('waits a moment before asking, so a hurried choice costs one picture', async () => {
+    show();
+    await choose(DESIGN, /Box label 40 × 30/);
+
+    // The click has landed and nothing has been asked yet.
+    expect(previewCalls()).toHaveLength(0);
+    await screen.findByRole('img', { name: PICTURE });
+    expect(previewCalls()).toHaveLength(1);
+  });
+
+  it('says why when the server refuses to draw it', async () => {
+    vi.mocked(api.renderSpoolLabelPictures).mockRejectedValue(new Error('Spool(s) not found: [1]'));
+    show();
+    await choose(DESIGN, /Box label 40 × 30/);
+
+    expect(await screen.findByText(/No preview: Spool\(s\) not found/)).toBeInTheDocument();
+    expect(screen.queryByRole('img', { name: PICTURE })).not.toBeInTheDocument();
+  });
+
+  it('passes on what the renderer warned about', async () => {
+    vi.mocked(api.renderSpoolLabelPictures).mockResolvedValue({
+      blob: PNG_BLOB,
+      filename: null,
+      warnings: ['element 2 (text) extends past the label edge and will be clipped'],
+    });
+    show();
+    await choose(DESIGN, /Box label 40 × 30/);
+
+    expect(await screen.findByText(/extends past the label edge/)).toBeInTheDocument();
+  });
+
+  it('shows nothing for a design that does not fit the paper', async () => {
+    vi.mocked(api.getLabelSheets).mockResolvedValue([AVERY] as never);
+    show();
+    await choose(DESIGN, /Box label 40 × 30/);
+    await screen.findByRole('img', { name: PICTURE });
+
+    // The paper is changed under the chosen design, which its cells do not hold.
+    await choose(PAPER, /Avery 5160/);
+
+    await waitFor(() => expect(screen.queryByRole('img', { name: PICTURE })).not.toBeInTheDocument());
+    expect(previewCalls()).toHaveLength(1);
+  });
+
+  it('lets go of the picture when the dialog goes', async () => {
+    const { unmount } = show();
+    await choose(DESIGN, /Box label 40 × 30/);
+    await screen.findByRole('img', { name: PICTURE });
+
+    unmount();
+
+    expect(window.URL.revokeObjectURL).toHaveBeenCalledWith('blob:mock');
+  });
+
+  it('shows what a desk printer will print — its own one-bit picture', async () => {
+    vi.mocked(api.getSettings).mockResolvedValue({ device_labels_enabled: true } as never);
+    vi.mocked(api.getLabelDevices).mockResolvedValue([DEVICE] as never);
+    vi.mocked(api.getLabelTemplates).mockResolvedValue([
+      design({ id: 9, name: 'Thermal tag', target: 'thermal' }),
+    ] as never);
+    show();
+    fireEvent.click(await screen.findByRole('button', { name: /On a label printer/ }));
+    await choose(DESIGN, /Thermal tag/);
+
+    await screen.findByRole('img', { name: PICTURE });
+
+    expect(api.previewDeviceLabel).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(api.previewDeviceLabel).mock.calls[0][0]).toEqual({
+      device_id: 5,
+      spool: { id: 1, display_name: expect.any(String) },
+      template_id: 9,
+    });
+    // Never the colour picture: a thermal head prints the one-bit raster.
+    expect(previewCalls()).toHaveLength(0);
   });
 });
 
@@ -430,6 +881,7 @@ describe('when a label printer is set up', () => {
     vi.mocked(api.getLabelTemplates).mockResolvedValue([
       design({ id: 9, name: 'Big roll', target: 'thermal', width_mm: 60, height_mm: 40 }),
     ] as never);
+    vi.mocked(api.getLabelDevices).mockResolvedValue([{ ...DEVICE, fitting_design_ids: [] }] as never);
     show();
 
     fireEvent.click(await screen.findByText(/On a label printer/i));

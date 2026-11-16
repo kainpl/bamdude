@@ -10,6 +10,7 @@ import {
   // native listener below, and importing React's under the same name would
   // silently retype it.
   type MouseEvent as ReactMouseEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
 } from 'react';
 import { createPortal } from 'react-dom';
@@ -29,6 +30,7 @@ import {
   FolderPlus,
   FileBox,
   FileText,
+  Info,
   Clock,
   HardDrive,
   Package,
@@ -39,6 +41,7 @@ import {
   Square,
   LayoutGrid,
   List,
+  Columns3,
   Search,
   SlidersHorizontal,
   ArrowUpNarrowWide,
@@ -79,7 +82,7 @@ import type {
 } from '../api/client';
 import { useLibraryScanProgress, type LibraryScanState } from '../hooks/useLibraryScanProgress';
 import { useStepThumbnailJobs, type StepJobSummary } from '../hooks/useStepThumbnailJobs';
-import { isCadThumbnailType, isLegacyThumbnailType } from '../utils/meshPreviewTypes';
+import { isCadThumbnailType, offersThumbnail } from '../utils/meshPreviewTypes';
 import { countByReason, stepRefusalCode, thumbnailReasonKey } from '../utils/stepThumbnailReasons';
 import { Button } from '../components/Button';
 import { CardActionMenu, CardActionMenuItem } from '../components/CardActionMenu';
@@ -117,6 +120,12 @@ import { PlanFromFilesModal } from '../components/library/PlanFromFilesModal';
 import { AssembleProjectModal, type AssembleMode } from '../components/library/AssembleProjectModal';
 import { desktopSlicerAccepts, isApiSliceableFileType, openInSlicer, type SlicerType } from '../utils/slicer';
 import { LibraryTagsModal } from '../components/LibraryTagsModal';
+import { LibraryUserTagPills } from '../components/LibraryUserTagPills';
+import { ImagePreviewModal } from '../components/ImagePreviewModal';
+import { PdfPreviewModal } from '../components/PdfPreviewModal';
+import { LibraryFileDetailsModal } from '../components/LibraryFileDetailsModal';
+import { LibraryFileMarks } from '../components/LibraryFileMarks';
+import { isPdf, isViewableImage, previewKindOf } from '../utils/filePreview';
 import { BulkTagsPickerModal } from '../components/BulkTagsPickerModal';
 import { FileTagsPopover, type TagsPopoverAnchor } from '../components/FileTagsPopover';
 import { QueueSequencer } from '../components/QueueSequencer';
@@ -127,6 +136,10 @@ import { plateFileOf } from '../components/projects/add-to-order/addToOrderState
 import { invalidateProductCatalog, invalidateProductFiles, invalidateQueueViews } from '../utils/queryInvalidation';
 import { canLinkFile, canLinkFolder, moveChangesProducts } from '../utils/workshopRights';
 import { writableFolders } from '../utils/folderTree';
+import { MoveFolderModal } from '../components/library/MoveFolderModal';
+import { LibraryColumnsView, type ColumnFilters } from '../components/library/LibraryColumnsView';
+import { canMoveFolders, folderMoveRefusalText, isMovableFolder } from '../utils/folderMove';
+import { isOsFileDrag, useLibraryDragDrop, type LibraryDragDrop } from '../hooks/useLibraryDragDrop';
 
 type SortField = 'name' | 'date' | 'size' | 'type';
 type SortDirection = 'asc' | 'desc';
@@ -509,6 +522,13 @@ interface FolderTreeItemProps {
   onDelete: (id: number) => void;
   onLink: (folder: LibraryFolderTree) => void;
   onRename: (folder: LibraryFolderTree) => void;
+  onMove: (folder: LibraryFolderTree) => void;
+  /** Branches opened or closed by hand (or by a selection), by folder id — kept by the
+   *  page so a folder that moves elsewhere in the tree keeps its branch as it was. */
+  expandedOverrides: Record<number, boolean>;
+  onExpandedChange: (folderId: number, expanded: boolean) => void;
+  /** Drag a folder, or drop a folder or files onto one. */
+  dnd: LibraryDragDrop;
   depth?: number;
   wrapNames?: boolean;
   defaultExpanded?: boolean;
@@ -518,24 +538,67 @@ interface FolderTreeItemProps {
   dateFormat: DateFormat;
 }
 
+/** The controls of a file's card or row — a double click on one of them is its own. */
+const OWN_CONTROL = 'button, a, input, select, textarea, label, [role="menu"], [role="menuitem"], [role="dialog"]';
+
+/**
+ * "Open" for a file's card or row: a double click, or Enter while the item
+ * ITSELF has the focus — spread onto its root element.
+ *
+ * ⚠️ React events bubble through the React tree, so a double click inside a
+ * dialog or a menu this item rendered (the notes thread, the ⋮ menu — both
+ * portalled into `body`) arrives here too: only a target the root really
+ * contains counts, and none of its own controls.
+ * A file nothing opens gets no handlers and no tab stop.
+ */
+function openHandlers(file: LibraryFileListItem, onOpen: ((file: LibraryFileListItem) => void) | undefined) {
+  if (!onOpen || previewKindOf(file) === null) return {};
+  return {
+    tabIndex: 0,
+    onDoubleClick: (e: ReactMouseEvent<HTMLElement>) => {
+      const target = e.target as Element;
+      if (!e.currentTarget.contains(target)) return;
+      const control = target.closest(OWN_CONTROL);
+      if (control && control !== e.currentTarget) return;
+      // The second click of the pair selected the word under it.
+      window.getSelection?.()?.removeAllRanges();
+      onOpen(file);
+    },
+    onKeyDown: (e: ReactKeyboardEvent<HTMLElement>) => {
+      if (e.key !== 'Enter' || e.target !== e.currentTarget) return;
+      e.preventDefault();
+      onOpen(file);
+    },
+  };
+}
+
+/** How a folder looks while a drag is over it: a legal target, or one that is not allowed. */
+const DROP_STATE_CLASS = {
+  legal: 'ring-2 ring-inset ring-bambu-green bg-bambu-green/10',
+  illegal: 'opacity-50 cursor-not-allowed',
+  none: '',
+} as const;
+
 function containsFolder(folder: LibraryFolderTree, folderId: number): boolean {
   return folder.id === folderId || folder.children.some((child) => containsFolder(child, folderId));
 }
 
-function FolderTreeItem({ folder, selectedFolderId, onSelect, onDelete, onLink, onRename, depth = 0, wrapNames = false, defaultExpanded = true, hasPermission, t, timeFormat, dateFormat }: FolderTreeItemProps) {
+function FolderTreeItem({ folder, selectedFolderId, onSelect, onDelete, onLink, onRename, onMove, expandedOverrides, onExpandedChange, dnd, depth = 0, wrapNames = false, defaultExpanded = true, hasPermission, t, timeFormat, dateFormat }: FolderTreeItemProps) {
   const hasChildren = folder.children.length > 0;
   // Start compact, but never hide a folder selected through a deep-link (or
-  // after returning from another page): every ancestor mounts expanded until
+  // after returning from another page): every ancestor is expanded until
   // the selected row is visible.
   const containsSelectedFolder = selectedFolderId !== null && containsFolder(folder, selectedFolderId);
-  const [expanded, setExpanded] = useState(() => defaultExpanded || containsSelectedFolder);
+  const expanded = expandedOverrides[folder.id] ?? (defaultExpanded || containsSelectedFolder);
+  const setExpanded = (next: boolean) => onExpandedChange(folder.id, next);
   const [showActions, setShowActions] = useState(false);
+  const folderId = folder.id;
 
   useEffect(() => {
     if (hasChildren && containsSelectedFolder) {
-      setExpanded(true);
+      onExpandedChange(folderId, true);
     }
-  }, [containsSelectedFolder, hasChildren]);
+  }, [containsSelectedFolder, hasChildren, folderId, onExpandedChange]);
   // m158: folders link to PRODUCTS. A product that has left the catalog keeps
   // its chip — the link is a fact about the folder, not an offer to make one.
   const linkedTo = folder.products;
@@ -554,11 +617,14 @@ function FolderTreeItem({ folder, selectedFolderId, onSelect, onDelete, onLink, 
   return (
     <div>
       <div
+        data-folder-row={folder.id}
+        {...dnd.folderDragProps(folder)}
+        {...dnd.dropProps(folder.id, hasChildren && !expanded)}
         className={`group flex items-center gap-1 px-2 py-1.5 rounded cursor-pointer transition-colors ${
           selectedFolderId === folder.id
             ? 'bg-bambu-green/20 text-bambu-green'
             : 'hover:bg-bambu-dark text-white'
-        }`}
+        } ${DROP_STATE_CLASS[dnd.dropState(folder.id) ?? 'none']}`}
         style={{ paddingLeft: `${8 + depth * 12}px` }}
         onClick={() => onSelect(folder.id)}
       >
@@ -641,6 +707,29 @@ function FolderTreeItem({ folder, selectedFolderId, onSelect, onDelete, onLink, 
                   <Pencil className="w-3.5 h-3.5" />
                   {t('common.rename')}
                 </button>
+                {/* Moving asks what renaming asks. An external folder is a
+                    directory of its share and stays where the share has it;
+                    the entry says so rather than vanishing. */}
+                {(() => {
+                  const why = !canMoveFolders(hasPermission)
+                    ? t('fileManager.moveFolder.noPermission')
+                    : !isMovableFolder(folder)
+                      ? t('fileManager.moveFolder.externalFixed')
+                      : undefined;
+                  return (
+                <button
+                  className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${
+                    why ? 'text-bambu-gray cursor-not-allowed' : 'text-white hover:bg-bambu-dark'
+                  }`}
+                  onClick={() => { if (!why) { onMove(folder); setShowActions(false); } }}
+                  disabled={!!why}
+                  title={why}
+                >
+                  <MoveRight className="w-3.5 h-3.5" />
+                  {t('fileManager.moveFolder.action')}
+                </button>
+                  );
+                })()}
                 <button
                   className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${
                     canLink ? 'text-white hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'
@@ -704,6 +793,10 @@ function FolderTreeItem({ folder, selectedFolderId, onSelect, onDelete, onLink, 
               onDelete={onDelete}
               onLink={onLink}
               onRename={onRename}
+              onMove={onMove}
+              expandedOverrides={expandedOverrides}
+              onExpandedChange={onExpandedChange}
+              dnd={dnd}
               depth={depth + 1}
               wrapNames={wrapNames}
               defaultExpanded={defaultExpanded}
@@ -741,6 +834,14 @@ interface FileCardProps {
   useSlicerApi?: boolean;
   desktopSlicer?: SlicerType;
   onPreview3d?: (file: LibraryFileListItem) => void;
+  /** "Open": a double click on the card, or Enter while it has the focus. */
+  onOpen?: (file: LibraryFileListItem) => void;
+  /** Open an image file in the viewer — offered for the picture types only. */
+  onViewImage?: (file: LibraryFileListItem) => void;
+  /** Open a PDF in the viewer. */
+  onViewPdf?: (file: LibraryFileListItem) => void;
+  /** Open the file's details: its facts and the operator's own link. */
+  onDetails?: (file: LibraryFileListItem) => void;
   onRename?: (file: LibraryFileListItem) => void;
   onSwapDeclaration?: (file: LibraryFileListItem) => void;
   onRelayout?: (file: LibraryFileListItem) => void;
@@ -759,6 +860,8 @@ interface FileCardProps {
   onModelCard?: (file: LibraryFileListItem) => void;
   /** Move this one file — the toolbar's Move, without the checkbox dance. */
   onMove?: (file: LibraryFileListItem) => void;
+  /** Makes the card draggable onto a folder (absent where it may not be moved). */
+  dragProps?: ReturnType<LibraryDragDrop['fileDragProps']>;
   /** Per-file tag popover; the anchor is where the entry was clicked. */
   onTags?: (file: LibraryFileListItem, anchor: TagsPopoverAnchor) => void;
   /** #1268 — click a user-tag chip to toggle it in the filter rail. */
@@ -820,7 +923,7 @@ function offersSliceEntry(
 }
 
 /**
- * The thumbnail entry of both per-file menus. STL/OBJ follow the file's own update right; a STEP picture is made in
+ * The thumbnail entry of both per-file menus. STL/OBJ and PDF follow the file's own update right; a STEP picture is made in
  * the background and its button is library:update_all's alone (spec §5). While a STEP job runs the entry cancels it.
  */
 function ThumbnailMenuEntry({ file, t, hasPermission, canModify, onGenerate, onCancel, jobActive, close }: {
@@ -833,8 +936,8 @@ function ThumbnailMenuEntry({ file, t, hasPermission, canModify, onGenerate, onC
   jobActive?: boolean;
   close: () => void;
 }) {
+  if (!offersThumbnail(file.file_type)) return null;
   const cad = isCadThumbnailType(file.file_type);
-  if (!cad && !isLegacyThumbnailType(file.file_type)) return null;
   if (cad && jobActive && onCancel && hasPermission('library:update_all')) {
     return (
       <button
@@ -861,7 +964,7 @@ function ThumbnailMenuEntry({ file, t, hasPermission, canModify, onGenerate, onC
   );
 }
 
-function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedule, onAddToOrder, onSlice, onRelayout, onOpenInSlicer, useSlicerApi, desktopSlicer, onPreview3d, onModelCard, onDownload, onRename, onSwapDeclaration, onGenerateThumbnail, onCancelThumbnail, thumbnailJobActive, onMove, onTags, onDelete }: {
+function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedule, onAddToOrder, onSlice, onRelayout, onOpenInSlicer, useSlicerApi, desktopSlicer, onPreview3d, onViewImage, onViewPdf, onDetails, onModelCard, onDownload, onRename, onSwapDeclaration, onGenerateThumbnail, onCancelThumbnail, thumbnailJobActive, onMove, onTags, onDelete }: {
   file: LibraryFileListItem;
   t: TFunction;
   hasPermission: (permission: Permission) => boolean;
@@ -874,6 +977,9 @@ function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedul
   useSlicerApi?: boolean;
   desktopSlicer?: SlicerType;
   onPreview3d: (f: LibraryFileListItem) => void;
+  onViewImage?: (f: LibraryFileListItem) => void;
+  onViewPdf?: (f: LibraryFileListItem) => void;
+  onDetails?: (f: LibraryFileListItem) => void;
   onModelCard?: (f: LibraryFileListItem) => void;
   onDownload: (id: number) => void;
   onRename: (f: LibraryFileListItem) => void;
@@ -1002,13 +1108,35 @@ function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedul
               </button>
             )}
             {(file.file_type === '3mf' || file.file_type === 'gcode' || file.file_type === 'stl' || file.file_type === 'obj') && (
+              // No `library:read` branch, here or on Download below: nothing on
+              // these paths asks for that legacy key (see the model card entry).
               <button
-                className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${hasPermission('library:read') ? 'text-white hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'}`}
-                onClick={() => { if (hasPermission('library:read')) { onPreview3d(file); closeMenu(); } }}
-                disabled={!hasPermission('library:read')}
+                className="w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 text-white hover:bg-bambu-dark"
+                onClick={() => { onPreview3d(file); closeMenu(); }}
               >
                 <Box className="w-3.5 h-3.5" />
                 {t('fileManagerModal.threeView')}
+              </button>
+            )}
+            {/* No permission branch, for the reason spelled out below for the
+                model card: seeing the file listed is being allowed to read it,
+                and the route checks the file itself. */}
+            {onViewImage && isViewableImage(file) && (
+              <button
+                className="w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 text-white hover:bg-bambu-dark"
+                onClick={() => { onViewImage(file); closeMenu(); }}
+              >
+                <Image className="w-3.5 h-3.5" />
+                {t('fileManager.viewImage')}
+              </button>
+            )}
+            {onViewPdf && isPdf(file) && (
+              <button
+                className="w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 text-white hover:bg-bambu-dark"
+                onClick={() => { onViewPdf(file); closeMenu(); }}
+              >
+                <FileText className="w-3.5 h-3.5" />
+                {t('fileManager.viewPdf')}
               </button>
             )}
             {/* ⚠️ `.3mf` only — the card lives in the 3MF's `Metadata/` and
@@ -1045,10 +1173,19 @@ function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedul
                 {t('fileManager.source.openOriginal', { defaultValue: 'Open on MakerWorld' })}
               </a>
             )}
+            {/* Seeing the file listed is being allowed to read its details. */}
+            {onDetails && (
+              <button
+                className="w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 text-white hover:bg-bambu-dark"
+                onClick={() => { onDetails(file); closeMenu(); }}
+              >
+                <Info className="w-3.5 h-3.5" />
+                {t('fileDetails.menu')}
+              </button>
+            )}
             <button
-              className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${hasPermission('library:read') ? 'text-white hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'}`}
-              onClick={() => { if (hasPermission('library:read')) { onDownload(file.id); closeMenu(); } }}
-              disabled={!hasPermission('library:read')}
+              className="w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 text-white hover:bg-bambu-dark"
+              onClick={() => { onDownload(file.id); closeMenu(); }}
             >
               <Download className="w-3.5 h-3.5" />
               {t('common.download')}
@@ -1128,7 +1265,7 @@ function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedul
   );
 }
 
-function FileCard({ file, isSelected, onSelect, onOpenArchives, onDelete, onDownload, onAddToQueue, onPrint, onSlice, onRelayout, onOpenInSlicer, useSlicerApi, desktopSlicer, onPreview3d, onModelCard, onRename, onSwapDeclaration, onLink, onGenerateThumbnail, onCancelThumbnail, thumbnailJobActive, onPlateGallery, onAddToOrder, onMove, onTags, onTagClick, thumbnailVersion, isRegeneratingThumbnail, hasPermission, canModify, authEnabled, timeFormat, dateFormat, t }: FileCardProps) {
+function FileCard({ file, isSelected, onSelect, onOpenArchives, onDelete, onDownload, onAddToQueue, onPrint, onSlice, onRelayout, onOpenInSlicer, useSlicerApi, desktopSlicer, onPreview3d, onOpen, onViewImage, onViewPdf, onDetails, onModelCard, onRename, onSwapDeclaration, onLink, onGenerateThumbnail, onCancelThumbnail, thumbnailJobActive, onPlateGallery, onAddToOrder, onMove, dragProps, onTags, onTagClick, thumbnailVersion, isRegeneratingThumbnail, hasPermission, canModify, authEnabled, timeFormat, dateFormat, t }: FileCardProps) {
   // ⚠️ The two modes need different permissions: slicing through the sidecar
   // writes a new library file, while opening in a desktop slicer is a download.
   const sliceDisabled = useSlicerApi ? !hasPermission('library:upload') : !hasPermission('library:read');
@@ -1168,7 +1305,9 @@ function FileCard({ file, isSelected, onSelect, onOpenArchives, onDelete, onDown
   return (
     <div
       data-file-card
-      className={`group relative bg-bambu-dark-secondary rounded-lg border transition-all overflow-hidden ${
+      {...openHandlers(file, onOpen)}
+      {...dragProps}
+      className={`group relative bg-bambu-dark-secondary rounded-lg border transition-all overflow-hidden focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-bambu-green ${
         isSelected
           ? 'border-bambu-green ring-1 ring-bambu-green'
           : 'border-bambu-dark-tertiary hover:border-bambu-green/50'
@@ -1258,8 +1397,9 @@ function FileCard({ file, isSelected, onSelect, onOpenArchives, onDelete, onDown
           </div>
         )}
         {/* Notes overlay - bottom-left corner */}
-        <div className="absolute bottom-1 left-2" onClick={(e) => e.stopPropagation()}>
+        <div className="absolute bottom-1 left-2 flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
           <LibraryFileNotesButton fileId={file.id} initialCount={file.notes_count} variant="overlay" />
+          <LibraryFileMarks file={file} variant="overlay" onPhotos={onDetails ? () => onDetails(file) : undefined} />
         </div>
         {/* Product link overlay - bottom-right, same height as notes */}
         {onLink && (
@@ -1502,16 +1642,32 @@ function FileCard({ file, isSelected, onSelect, onOpenArchives, onDelete, onDown
                 </button>
               )}
               {onPreview3d && (file.file_type === '3mf' || file.file_type === 'gcode' || file.file_type === 'stl' || file.file_type === 'obj') && (
+                // No `library:read` branch, here or on Download below: nothing
+                // on these paths asks for that legacy key (see the model card entry).
                 <button
-                  className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${
-                    hasPermission('library:read') ? 'text-white hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'
-                  }`}
-                  onClick={() => { if (hasPermission('library:read')) { onPreview3d(file); closeActions(); } }}
-                  disabled={!hasPermission('library:read')}
-                  title={!hasPermission('library:read') ? t('fileManager.noPermissionPreview', { defaultValue: 'You do not have permission to preview files' }) : undefined}
+                  className="w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 text-white hover:bg-bambu-dark"
+                  onClick={() => { onPreview3d(file); closeActions(); }}
                 >
                   <Box className="w-3.5 h-3.5" />
                   {t('fileManagerModal.threeView')}
+                </button>
+              )}
+              {onViewImage && isViewableImage(file) && (
+                <button
+                  className="w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 text-white hover:bg-bambu-dark"
+                  onClick={() => { onViewImage(file); closeActions(); }}
+                >
+                  <Image className="w-3.5 h-3.5" />
+                  {t('fileManager.viewImage')}
+                </button>
+              )}
+              {onViewPdf && isPdf(file) && (
+                <button
+                  className="w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 text-white hover:bg-bambu-dark"
+                  onClick={() => { onViewPdf(file); closeActions(); }}
+                >
+                  <FileText className="w-3.5 h-3.5" />
+                  {t('fileManager.viewPdf')}
                 </button>
               )}
               {/* ⚠️ `.3mf` only — the card lives in the 3MF's `Metadata/` and
@@ -1548,13 +1704,18 @@ function FileCard({ file, isSelected, onSelect, onOpenArchives, onDelete, onDown
                   {t('fileManager.source.openOriginal', { defaultValue: 'Open on MakerWorld' })}
                 </a>
               )}
+              {onDetails && (
+                <button
+                  className="w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 text-white hover:bg-bambu-dark"
+                  onClick={() => { onDetails(file); closeActions(); }}
+                >
+                  <Info className="w-3.5 h-3.5" />
+                  {t('fileDetails.menu')}
+                </button>
+              )}
               <button
-                className={`w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 ${
-                  hasPermission('library:read') ? 'text-white hover:bg-bambu-dark' : 'text-bambu-gray cursor-not-allowed'
-                }`}
-                onClick={() => { if (hasPermission('library:read')) { onDownload(file.id); closeActions(); } }}
-                disabled={!hasPermission('library:read')}
-                title={!hasPermission('library:read') ? t('fileManager.noPermissionDownload') : undefined}
+                className="w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 text-white hover:bg-bambu-dark"
+                onClick={() => { onDownload(file.id); closeActions(); }}
               >
                 <Download className="w-3.5 h-3.5" />
                 {t('common.download')}
@@ -1735,6 +1896,13 @@ export function FileManagerPage() {
   const dragCounterRef = useRef(0);
   const [showPurgeModal, setShowPurgeModal] = useState(false);
   const [linkFolder, setLinkFolder] = useState<LibraryFolderTree | null>(null);
+  const [moveFolderTarget, setMoveFolderTarget] = useState<LibraryFolderTree | null>(null);
+  // Which branches of the folder tree are open, by folder id — here rather than in
+  // each row, so a folder moved elsewhere in the tree keeps its branch as it was.
+  const [expandedOverrides, setExpandedOverrides] = useState<Record<number, boolean>>({});
+  const setFolderExpanded = useCallback((folderId: number, expanded: boolean) => {
+    setExpandedOverrides((prev) => (prev[folderId] === expanded ? prev : { ...prev, [folderId]: expanded }));
+  }, []);
   const [linkFile, setLinkFile] = useState<LibraryFileListItem | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<{ type: 'file' | 'folder' | 'bulk'; id: number; count?: number } | null>(null);
   const [printFile, setPrintFile] = useState<LibraryFileListItem | null>(null);
@@ -1759,6 +1927,9 @@ export function FileManagerPage() {
   const [swapDeclarationFile, setSwapDeclarationFile] = useState<LibraryFileListItem | null>(null);
   const [thumbnailVersions, setThumbnailVersions] = useState<Record<number, number>>({});
   const [viewerFile, setViewerFile] = useState<LibraryFileListItem | null>(null);
+  const [imageFile, setImageFile] = useState<LibraryFileListItem | null>(null);
+  const [pdfFile, setPdfFile] = useState<LibraryFileListItem | null>(null);
+  const [detailsFile, setDetailsFile] = useState<LibraryFileListItem | null>(null);
   // Per-plate gallery modal — opened from list-mode "plates" button. Null when closed.
   // «Add to order…» (WS-13 E13 C): the file — and the gallery's plate — the dialog opens on.
   const [addToOrderTarget, setAddToOrderTarget] = useState<{ file: LibraryFileListItem; plateIndex: number | null } | null>(
@@ -1804,6 +1975,47 @@ export function FileManagerPage() {
   const [selectedTagIds, setSelectedTagIds] = useState<number[]>([]);
 
   const [viewMode, setViewMode] = usePersistedState<LibraryView>('library-view-mode', 'grid', parseLibraryView);
+  const columnsView = viewMode === 'columns';
+  // The address names the open folder in EVERY view — one source of truth, so
+  // a reload or a copied link opens the folder on screen and never one an
+  // earlier view left there. The columns ARE the path to that folder, so there
+  // each step is a step of the browser's history (Back walks the path); in the
+  // other views a folder click replaces the address and Back leaves the page,
+  // as it always did.
+  const columnsViewRef = useRef(columnsView);
+  useEffect(() => {
+    columnsViewRef.current = columnsView;
+  }, [columnsView]);
+  const writeFolderToUrl = useCallback(
+    (folderId: number | null, replace: boolean) => {
+      setSearchParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          if (folderId == null) next.delete('folder');
+          else next.set('folder', String(folderId));
+          // Another folder is another list: its page and its ticks are not this one's.
+          next.delete('page');
+          next.delete('selected');
+          return next;
+        },
+        { replace },
+      );
+    },
+    [setSearchParams],
+  );
+  /** Open a folder (`null` = the top level) from any door of the page. */
+  const selectFolder = useCallback(
+    (folderId: number | null) => {
+      setSelectedFolderId(folderId);
+      writeFolderToUrl(folderId, !columnsViewRef.current);
+    },
+    [writeFolderToUrl],
+  );
+  const changeViewMode = (mode: LibraryView) => {
+    setViewMode(mode);
+  };
+  // What the columns have loaded — the files the bulk bar acts on in that view.
+  const [columnFiles, setColumnFiles] = useState<LibraryFileListItem[]>([]);
   const [wrapFolderNames, setWrapFolderNames] = useState(() => {
     return localStorage.getItem('library-wrap-folders') === 'true';
   });
@@ -1924,6 +2136,10 @@ export function FileManagerPage() {
     if (folderParam) {
       const newFolderId = parseInt(folderParam, 10);
       setSelectedFolderId(newFolderId);
+    } else {
+      // The address is the open folder: none there is the top level (the
+      // browser's Back out of the first folder).
+      setSelectedFolderId(null);
     }
   }, [searchParams]);
 
@@ -1996,6 +2212,11 @@ export function FileManagerPage() {
   // external living deeper in the tree belongs to its parent and stays put.
   const ownRootFolders = useMemo(() => sortedFolders?.filter((f) => !f.is_external), [sortedFolders]);
   const externalRootFolders = useMemo(() => sortedFolders?.filter((f) => f.is_external), [sortedFolders]);
+  // The columns view's tree: own folders first, external mounts after — the sidebar's order.
+  const columnFolders = useMemo(
+    () => (ownRootFolders && externalRootFolders ? [...ownRootFolders, ...externalRootFolders] : undefined),
+    [ownRootFolders, externalRootFolders],
+  );
 
   // Trash count for the header badge (#1008). Empty/error treated as zero so a
   // broken trash endpoint doesn't break the File Manager.
@@ -2160,9 +2381,24 @@ export function FileManagerPage() {
     queryKey: ['library-files', libraryFileParams],
     queryFn: () => api.getLibraryFilesPaged(libraryFileParams),
     placeholderData: (prev) => prev,
+    // The columns ask for their own levels; one flat page behind them would be a wasted request.
+    enabled: !columnsView,
   });
-  const files = filesPage?.items;
-  const meta = filesPage?.meta;
+  const files = columnsView ? columnFiles : filesPage?.items;
+  const meta = columnsView ? undefined : filesPage?.meta;
+  // The page's sort and filters as every column sends them — the same values
+  // the list sends, minus the folder scope, which is the column's own.
+  const columnFilters: ColumnFilters = useMemo(
+    () => ({
+      tag_ids: tagFilterKey,
+      q: debouncedSearchQuery.trim() || undefined,
+      file_type: filterType !== 'all' ? filterType : undefined,
+      unprinted_only: unprintedOnly,
+      username: filterUsername || undefined,
+      sort_by: `${sortField}_${sortDirection}`,
+    }),
+    [tagFilterKey, debouncedSearchQuery, filterType, unprintedOnly, filterUsername, sortField, sortDirection],
+  );
 
   // Out-of-range page clamp: the server, not a local guess, is what says
   // `page` no longer exists (the last item on it was deleted, or the
@@ -2271,7 +2507,7 @@ export function FileManagerPage() {
       queryClient.invalidateQueries({ queryKey: ['library-files'] });
       queryClient.invalidateQueries({ queryKey: ['library-stats'] });
       setShowExternalFolderModal(false);
-      setSelectedFolderId(folder.id);
+      selectFolder(folder.id);
       markScanStarted(folder.id, job.job_id);
       showToast(t('fileManager.toast.externalFolderLinked'), 'success');
     },
@@ -2308,7 +2544,7 @@ export function FileManagerPage() {
       queryClient.invalidateQueries({ queryKey: ['library-trash-count'] });
       invalidateProductFiles(queryClient);
       if (selectedFolderId === deleteConfirm?.id) {
-        setSelectedFolderId(null);
+        selectFolder(null);
       }
       setDeleteConfirm(null);
       showToast(t('fileManager.toast.folderDeleted'), 'success');
@@ -2418,6 +2654,20 @@ export function FileManagerPage() {
     onError: (error: Error) => {
       setRenameItem(null);
       showToast(error.message, 'error');
+    },
+  });
+
+  // A folder under another parent (`null` = the library root; the API's word for
+  // the root is 0, since a missing `parent_id` means "leave it where it is").
+  // Selection is by id, so an open folder stays open wherever it lands; the
+  // dialog and a drop both show a refusal themselves, by its code.
+  const moveFolderMutation = useMutation({
+    mutationFn: ({ id, parentId }: { id: number; parentId: number | null }) =>
+      api.updateLibraryFolder(id, { parent_id: parentId ?? 0 }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['library-folders'] });
+      queryClient.invalidateQueries({ queryKey: ['library-files'] });
+      showToast(t('fileManager.moveFolder.moved'), 'success');
     },
   });
 
@@ -2627,6 +2877,15 @@ export function FileManagerPage() {
   // Open the archive page filtered to this file's print history. The file
   // name rides along so the archive page can show a "prints of <name>" chip
   // without a second lookup.
+  // "Open" — what a double click (or Enter) does: the viewer the file's own
+  // menu offers for its type.
+  const openPreview = useCallback((file: LibraryFileListItem) => {
+    const kind = previewKindOf(file);
+    if (kind === 'image') setImageFile(file);
+    else if (kind === 'model') setViewerFile(file);
+    else if (kind === 'pdf') setPdfFile(file);
+  }, []);
+
   const handleOpenArchives = useCallback((file: LibraryFileListItem) => {
     const params = new URLSearchParams({
       file: String(file.id),
@@ -2655,16 +2914,19 @@ export function FileManagerPage() {
   // FileUploadModal with the files preloaded. dragenter/dragleave fire for
   // every child element, so the counter avoids the overlay flickering as the
   // pointer moves between nested nodes.
+  // ⚠️ Only a drag of files from the operating system: a folder or a file of
+  // the library dragged onto a folder carries types of its own (and, when the
+  // pointer grabbed a thumbnail, the browser's `Files` beside them).
   const handlePageDragEnter = (e: DragEvent<HTMLDivElement>) => {
     if (!hasPermission('library:upload')) return;
-    if (!e.dataTransfer.types.includes('Files')) return;
+    if (!isOsFileDrag(e.dataTransfer.types)) return;
     e.preventDefault();
     dragCounterRef.current += 1;
     setIsPageDragging(true);
   };
   const handlePageDragOver = (e: DragEvent<HTMLDivElement>) => {
     if (!hasPermission('library:upload')) return;
-    if (!e.dataTransfer.types.includes('Files')) return;
+    if (!isOsFileDrag(e.dataTransfer.types)) return;
     e.preventDefault();
     e.dataTransfer.dropEffect = 'copy';
   };
@@ -2676,6 +2938,7 @@ export function FileManagerPage() {
   };
   const handlePageDrop = (e: DragEvent<HTMLDivElement>) => {
     if (!hasPermission('library:upload')) return;
+    if (e.dataTransfer.types.includes('Files') && !isOsFileDrag(e.dataTransfer.types)) return;
     e.preventDefault();
     dragCounterRef.current = 0;
     setIsPageDragging(false);
@@ -2749,6 +3012,24 @@ export function FileManagerPage() {
   // create at the library root), so the button disables and points at Link.
   const atExternalRoot = selectedFolderId === null && topLevelView === 'external';
 
+  // Drag-and-drop onto a folder: the same two moves the dialogs make, through
+  // the same mutations — the server's checks are untouched.
+  const dnd = useLibraryDragDrop({
+    folders,
+    canMoveFolders: canMoveFolders(hasPermission),
+    canDragFile: (file) => canModify('library', 'update', file.created_by_id),
+    canChangeProducts: hasPermission('products:update'),
+    filesDraggedWith: (file) =>
+      selectedFiles.includes(file.id) ? (files ?? []).filter((f) => selectedFiles.includes(f.id)) : [file],
+    onMoveFolder: (folder, parentId) => {
+      moveFolderMutation
+        .mutateAsync({ id: folder.id, parentId })
+        .catch((error: unknown) => showToast(folderMoveRefusalText(t, error), 'error'));
+    },
+    onMoveFiles: (moved, folderId) => moveFilesMutation.mutate({ fileIds: moved.map((f) => f.id), folderId }),
+    onHoverExpand: (folderId) => setFolderExpanded(folderId, true),
+  });
+
   // One renderer for both root groups of the sidebar tree (own folders under
   // "All files", external roots under the "External" header) so the split
   // can't let their props drift apart.
@@ -2758,10 +3039,14 @@ export function FileManagerPage() {
       folder={folder}
       depth={1}
       selectedFolderId={selectedFolderId}
-      onSelect={setSelectedFolderId}
+      onSelect={selectFolder}
       onDelete={(id) => setDeleteConfirm({ type: 'folder', id })}
       onLink={setLinkFolder}
       onRename={(f) => setRenameItem({ type: 'folder', id: f.id, name: f.name })}
+      onMove={setMoveFolderTarget}
+      expandedOverrides={expandedOverrides}
+      onExpandedChange={setFolderExpanded}
+      dnd={dnd}
       wrapNames={wrapFolderNames}
       defaultExpanded={expandFoldersByDefault}
       hasPermission={hasPermission}
@@ -2808,6 +3093,10 @@ export function FileManagerPage() {
       useSlicerApi={settings?.use_slicer_api ?? false}
       desktopSlicer={preferredSlicer}
       onPreview3d={setViewerFile}
+      onOpen={openPreview}
+      onViewImage={setImageFile}
+      onViewPdf={setPdfFile}
+      onDetails={setDetailsFile}
       onModelCard={setModelCardFile}
       onRename={(f) => setRenameItem({ type: 'file', id: f.id, name: f.filename })}
       onSwapDeclaration={setSwapDeclarationFile}
@@ -2818,6 +3107,7 @@ export function FileManagerPage() {
       onPlateGallery={(f, plateIndex) => setGalleryTarget({ file: f, plateIndex })}
       onAddToOrder={openAddToOrder}
       onMove={setMoveFile}
+      dragProps={dnd.fileDragProps(file)}
       onTags={(f, anchor) => setTagsPopover({ file: f, anchor })}
       onTagClick={toggleTagFilter}
       thumbnailVersion={thumbnailVersions[file.id]}
@@ -2831,7 +3121,9 @@ export function FileManagerPage() {
   );
 
   return (
-    <div className="p-4 min-h-[calc(100vh)] lg:h-[calc(100vh)] flex flex-col">
+    // The window minus the compact header (`--app-top`, 56 px below 1144 px): a bare
+    // 100vh made the document taller than the window between 1024 and 1143 px.
+    <div className="p-4 min-h-[calc(100vh-var(--app-top,0px))] lg:h-[calc(100vh-var(--app-top,0px))] flex flex-col">
       {/* Header */}
       <div ref={libraryToolbarRef} className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-4">
         <div className="flex items-center gap-3">
@@ -2840,10 +3132,11 @@ export function FileManagerPage() {
             <p className="hidden sm:block text-sm text-bambu-gray">{t('fileManager.subtitle')}</p>
           </div>
         </div>
-        <div className="flex items-center gap-2 sm:gap-3 flex-wrap">
-          <ListViewToggle value={viewMode} onChange={setViewMode} options={[
+        <div className="flex items-center gap-2 sm:gap-3 flex-wrap sm:flex-1 sm:justify-end min-w-0">
+          <ListViewToggle value={viewMode} onChange={changeViewMode} options={[
             { value: 'grid', icon: LayoutGrid, label: t('list.view.cards') },
             { value: 'list', icon: List, label: t('list.view.list') },
+            { value: 'columns', icon: Columns3, label: t('list.view.columns') },
           ]} />
 
           <div className="hidden sm:contents">
@@ -2868,8 +3161,8 @@ export function FileManagerPage() {
             size="sm"
             data-library-action="external"
             onClick={() => setShowExternalFolderModal(true)}
-            disabled={!hasPermission('library:upload')}
-            title={!hasPermission('library:upload') ? t('fileManager.noPermissionCreateFolder') : t('fileManager.linkExternalFolder')}
+            disabled={!hasPermission('settings:update')}
+            title={!hasPermission('settings:update') ? t('fileManager.noPermissionLinkExternal') : t('fileManager.linkExternalFolder')}
           >
             <FolderSymlink className="w-4 h-4 mr-2" />
             {t('fileManager.linkExternal')}
@@ -2924,7 +3217,7 @@ export function FileManagerPage() {
               {(close) => <>
                 {[
                   { label: t('fileManager.generateThumbnails'), icon: Image, disabled: batchThumbnailMutation.isPending || !hasAnyPermission('library:update_own', 'library:update_all'), title: !hasAnyPermission('library:update_own', 'library:update_all') ? t('fileManager.noPermissionGenerateThumbnail') : t('fileManager.generateThumbnailsForMissing'), action: () => batchThumbnailMutation.mutate() },
-                  { label: t('fileManager.linkExternal'), icon: FolderSymlink, disabled: !hasPermission('library:upload'), title: !hasPermission('library:upload') ? t('fileManager.noPermissionCreateFolder') : t('fileManager.linkExternalFolder'), dialog: 'external', action: () => setShowExternalFolderModal(true) },
+                  { label: t('fileManager.linkExternal'), icon: FolderSymlink, disabled: !hasPermission('settings:update'), title: !hasPermission('settings:update') ? t('fileManager.noPermissionLinkExternal') : t('fileManager.linkExternalFolder'), dialog: 'external', action: () => setShowExternalFolderModal(true) },
                   { label: t('fileManager.newFolder'), icon: FolderPlus, disabled: !hasPermission('library:upload') || atExternalRoot, title: !hasPermission('library:upload') ? t('fileManager.noPermissionCreateFolder') : atExternalRoot ? t('fileManager.newFolderExternalRootHint') : undefined, dialog: 'new-folder', action: () => setShowNewFolderModal(true) },
                   { label: t('fileManager.tags.manage'), icon: TagIcon, title: t('fileManager.tags.manageTitle'), dialog: 'tags', action: () => setShowTagsModal(true) },
                   ...(filteredAndSortedFiles.length > 0 ? [{ label: t('fileManager.selectAll'), icon: CheckSquare, action: handleSelectAll }] : []),
@@ -3012,10 +3305,10 @@ export function FileManagerPage() {
             onChange={(e) => {
               const v = e.target.value;
               if (v.startsWith('__top:')) {
-                setSelectedFolderId(null);
+                selectFolder(null);
                 setTopLevelView(v.slice('__top:'.length) as 'internal' | 'external');
               } else {
-                setSelectedFolderId(parseInt(v, 10));
+                selectFolder(parseInt(v, 10));
               }
             }}
           >
@@ -3129,6 +3422,8 @@ export function FileManagerPage() {
                   onClick={() => {
                     const newValue = !expandFoldersByDefault;
                     setExpandFoldersByDefault(newValue);
+                    // The switch is "all open" / "all closed": hand-made changes go with it.
+                    setExpandedOverrides({});
                     localStorage.setItem('library-collapse-folders', String(!newValue));
                   }}
                   className={`p-1 rounded transition-colors ${
@@ -3166,13 +3461,16 @@ export function FileManagerPage() {
                 roots live under the "External" header below, so a linked NAS
                 can't drown the user's own uploads (#1621). */}
             <div
+              data-folder-root
+              // "All Files" is the library root: a folder or files dropped here go there.
+              {...dnd.dropProps(null)}
               className={`flex items-center gap-2 px-2 py-1.5 rounded cursor-pointer transition-colors ${
                 selectedFolderId === null && topLevelView === 'internal'
                   ? 'bg-bambu-green/20 text-bambu-green'
                   : 'hover:bg-bambu-dark text-white'
-              }`}
+              } ${DROP_STATE_CLASS[dnd.dropState(null) ?? 'none']}`}
               onClick={() => {
-                setSelectedFolderId(null);
+                selectFolder(null);
                 setTopLevelView('internal');
               }}
             >
@@ -3198,7 +3496,7 @@ export function FileManagerPage() {
                     : 'hover:bg-bambu-dark text-white'
                 }`}
                 onClick={() => {
-                  setSelectedFolderId(null);
+                  selectFolder(null);
                   setTopLevelView('external');
                 }}
               >
@@ -3334,7 +3632,7 @@ export function FileManagerPage() {
               folder/tag-scoped fetch — a filter that matches zero rows would
               otherwise hide this toolbar exactly when it's needed to clear or
               adjust the filter, so `anyFilterActive` keeps it up regardless. */}
-          {files && (files.length > 0 || anyFilterActive) && (
+          {files && (files.length > 0 || anyFilterActive || columnsView) && (
             <div className="flex flex-col gap-2 mb-4 p-3 bg-bambu-dark-secondary rounded-lg border border-bambu-dark-tertiary sm:sticky sm:top-(--app-top) z-10 lg:static">
             <div className="flex sm:hidden items-center gap-2 flex-wrap">
               <Button variant="secondary" size="sm" aria-expanded={mobileSearchOpen}
@@ -3389,7 +3687,10 @@ export function FileManagerPage() {
                   type="button"
                   onClick={() => setSearchCurrentFolder((scoped) => !scoped)}
                   aria-pressed={searchCurrentFolder}
-                  className={`h-9 px-3 text-sm rounded-lg border transition-colors ${
+                  // A column is one folder: its search never reaches below it.
+                  disabled={columnsView}
+                  title={columnsView ? t('fileManager.columns.noSubfolderSearch') : undefined}
+                  className={`h-9 px-3 text-sm rounded-lg border transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
                     searchCurrentFolder
                       ? 'bg-bambu-green/20 border-bambu-green text-bambu-green'
                       : 'bg-bambu-dark border-bambu-dark-tertiary text-bambu-gray hover:text-white'
@@ -3453,7 +3754,7 @@ export function FileManagerPage() {
               {/* Results count — `total` is now the server's grand total across
                   every page (`meta.total`), not the size of one client-side
                   fetch; `showing` is this page's own item count. */}
-              {anyFilterActive && (
+              {anyFilterActive && !columnsView && (
                 <span className="h-9 flex items-center text-sm text-bambu-gray hidden sm:inline-flex">
                   {t('fileManager.resultsCount', { showing: filteredAndSortedFiles.length, total: meta?.total ?? 0 })}
                 </span>
@@ -3497,7 +3798,7 @@ export function FileManagerPage() {
             {/* #1268: recursive-search hint — placed below the toolbar row
                 (not floating under the input) so it never overlaps wrapped
                 filters on narrow breakpoints. */}
-            {searchExpandsSubfolders && (
+            {searchExpandsSubfolders && !columnsView && (
               <span className="text-[10px] text-bambu-gray whitespace-nowrap">
                 {t('fileManager.searchSubfoldersHint')}
               </span>
@@ -3548,24 +3849,12 @@ export function FileManagerPage() {
                     |
                   </span>
                 )}
-                {userTagPills.map((tag) => {
-                  const active = selectedTagIds.includes(tag.id);
-                  return (
-                    <button
-                      key={tag.id}
-                      type="button"
-                      onClick={() => toggleTagFilter(tag.id)}
-                      className={`text-xs px-2 py-0.5 rounded-full font-medium transition-colors inline-flex items-center gap-1 ${
-                        active
-                          ? 'bg-bambu-green text-white'
-                          : 'bg-bambu-dark border border-bambu-dark-tertiary text-bambu-gray hover:text-white hover:border-bambu-green/60'
-                      }`}
-                    >
-                      {tag.name}
-                      {active && <X className="w-3 h-3" />}
-                    </button>
-                  );
-                })}
+                {/* The user's own tags: clamped to two rows, searchable from a
+                    dozen up — the catalogue grows without limit, the closed
+                    system vocabulary before it does not. */}
+                {userTagPills.length > 0 && (
+                  <LibraryUserTagPills tags={userTagPills} selectedIds={selectedTagIds} onToggle={toggleTagFilter} />
+                )}
                 {selectedTagIds.length > 0 && (
                   <button
                     type="button"
@@ -3718,7 +4007,25 @@ export function FileManagerPage() {
           )}
 
           {/* File grid/list */}
-          {isLoading ? (
+          {columnsView ? (
+            <LibraryColumnsView
+              folders={columnFolders}
+              selectedFolderId={selectedFolderId}
+              onSelectFolder={selectFolder}
+              filters={columnFilters}
+              filtersActive={anyFilterActive}
+              selectedFiles={selectedFiles}
+              onToggleFile={handleFileSelect}
+              onOpenFile={openPreview}
+              onDetails={setDetailsFile}
+              onMoveFolder={setMoveFolderTarget}
+              canMoveFolders={canMoveFolders(hasPermission)}
+              onVisibleFilesChange={setColumnFiles}
+              renderPreview={renderFileCard}
+              thumbnailVersions={thumbnailVersions}
+              dnd={dnd}
+            />
+          ) : isLoading ? (
             <div className="flex-1 flex items-center justify-center">
               <div className="flex flex-col items-center gap-3">
                 <Loader2 className="w-8 h-8 animate-spin text-bambu-green" />
@@ -3781,18 +4088,23 @@ export function FileManagerPage() {
               </div>
             </div>
           ) : (
-            <div className="flex-1 lg:overflow-y-auto">
+            <div className="flex-1 min-w-0 overflow-x-auto lg:overflow-y-auto">
               {/* Outer grid carries the column-template; header + every row
                   use ``grid-cols-subgrid`` so they share track widths. The
                   Actions column is therefore sized to the WIDEST row's
                   buttons (e.g. a sliced .gcode.3mf with all of: project,
                   notes, print, schedule, plate gallery, 3D, menu) — all
-                  other rows then use that same width and align cleanly. */}
+                  other rows then use that same width and align cleanly.
+                  ⚠️ The name has a FLOOR and the tags a CEILING: a subgrid
+                  track is as wide as its widest row, so one file with six
+                  tags in an unbounded track squeezed every row's name to
+                  nothing. Past the floors the list scrolls sideways in its
+                  own box (`min-w-min` keeps the rows' ground under them). */}
               <div
-                className={`grid ${
+                className={`grid min-w-min ${
                   authEnabled
-                    ? 'grid-cols-[auto_minmax(0,1fr)_max-content_max-content_max-content_max-content_max-content]'
-                    : 'grid-cols-[auto_minmax(0,1fr)_max-content_max-content_max-content_max-content]'
+                    ? 'grid-cols-[auto_minmax(16rem,1fr)_max-content_fit-content(14rem)_max-content_max-content_max-content]'
+                    : 'grid-cols-[auto_minmax(16rem,1fr)_fit-content(14rem)_max-content_max-content_max-content]'
                 } bg-bambu-dark-secondary rounded-lg border border-bambu-dark-tertiary`}
               >
                 {/* List header - hidden on mobile, show simplified on small screens */}
@@ -3817,7 +4129,9 @@ export function FileManagerPage() {
                   <div
                     key={file.id}
                     data-file-row
-                    className={`grid grid-cols-subgrid col-span-full gap-4 px-4 py-3 items-center border-b border-bambu-dark-tertiary last:border-b-0 hover:bg-bambu-dark/50 transition-colors ${
+                    {...openHandlers(file, openPreview)}
+                    {...dnd.fileDragProps(file)}
+                    className={`grid grid-cols-subgrid col-span-full gap-4 px-4 py-3 items-center border-b border-bambu-dark-tertiary last:border-b-0 hover:bg-bambu-dark/50 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-bambu-green ${
                       selectedFiles.includes(file.id) ? 'bg-bambu-green/10' : ''
                     }`}
                   >
@@ -3989,7 +4303,7 @@ export function FileManagerPage() {
                           key={tag.id}
                           type="button"
                           onClick={(e) => { e.stopPropagation(); toggleTagFilter(tag.id); }}
-                          className="text-[11px] px-1.5 py-0.5 rounded-full bg-bambu-green/15 text-bambu-green border border-bambu-green/30 hover:bg-bambu-green/25 transition-colors max-w-full truncate"
+                          className="text-[11px] px-1.5 py-0.5 rounded-full bg-bambu-green/15 text-bambu-green border border-bambu-green/30 hover:bg-bambu-green/25 transition-colors max-w-[12rem] truncate"
                           title={tag.name}
                         >
                           {tag.name}
@@ -4056,6 +4370,7 @@ export function FileManagerPage() {
                           overlay button (line 1029). MakerWorld imports and
                           unsliced project 3MFs deserve notes too. */}
                       <LibraryFileNotesButton fileId={file.id} initialCount={file.notes_count} variant="inline" />
+                      <LibraryFileMarks file={file} variant="inline" onPhotos={() => setDetailsFile(file)} />
                       {/* Print + Schedule — gated on isPrintable because they
                           send G-code to a printer. Unsliced 3MFs go through
                           the slice modal first (separate button further down). */}
@@ -4089,14 +4404,9 @@ export function FileManagerPage() {
                       )}
                       {(file.file_type === '3mf' || file.file_type === 'gcode' || file.file_type === 'stl' || file.file_type === 'obj') && (
                         <button
-                          onClick={() => hasPermission('library:read') && setViewerFile(file)}
-                          className={`p-1.5 rounded transition-colors ${
-                            hasPermission('library:read')
-                              ? 'hover:bg-bambu-dark text-bambu-gray hover:text-bambu-green'
-                              : 'text-bambu-gray/50 cursor-not-allowed'
-                          }`}
-                          title={hasPermission('library:read') ? t('fileManagerModal.threeView') : undefined}
-                          disabled={!hasPermission('library:read')}
+                          onClick={() => setViewerFile(file)}
+                          className="p-1.5 rounded transition-colors hover:bg-bambu-dark text-bambu-gray hover:text-bambu-green"
+                          title={t('fileManagerModal.threeView')}
                         >
                           <Box className="w-4 h-4" />
                         </button>
@@ -4115,6 +4425,9 @@ export function FileManagerPage() {
                         useSlicerApi={settings?.use_slicer_api ?? false}
                         desktopSlicer={preferredSlicer}
                         onPreview3d={setViewerFile}
+                        onViewImage={setImageFile}
+                        onViewPdf={setPdfFile}
+                        onDetails={setDetailsFile}
                         onModelCard={setModelCardFile}
                             onDownload={handleDownload}
                         onRename={(f) => setRenameItem({ type: 'file', id: f.id, name: f.filename })}
@@ -4279,6 +4592,15 @@ export function FileManagerPage() {
           }}
           isLoading={moveFilesMutation.isPending}
           t={t}
+        />
+      )}
+
+      {moveFolderTarget && folders && (
+        <MoveFolderModal
+          folder={moveFolderTarget}
+          folders={folders}
+          onMove={(parentId) => moveFolderMutation.mutateAsync({ id: moveFolderTarget.id, parentId })}
+          onClose={() => setMoveFolderTarget(null)}
         />
       )}
 
@@ -4466,6 +4788,35 @@ export function FileManagerPage() {
                 }
               : undefined
           }
+        />
+      )}
+
+      {imageFile && (
+        <ImagePreviewModal
+          src={api.getLibraryFileImageUrl(imageFile.id)}
+          title={imageFile.print_name || imageFile.filename}
+          fileSize={imageFile.file_size}
+          onClose={() => setImageFile(null)}
+        />
+      )}
+
+      {pdfFile && (
+        <PdfPreviewModal
+          fileId={pdfFile.id}
+          title={pdfFile.print_name || pdfFile.filename}
+          fileSize={pdfFile.file_size}
+          onClose={() => setPdfFile(null)}
+          onDownload={() => handleDownload(pdfFile.id)}
+        />
+      )}
+
+      {detailsFile && (
+        <LibraryFileDetailsModal
+          file={detailsFile}
+          canEdit={canModify('library', 'update', detailsFile.created_by_id)}
+          onClose={() => setDetailsFile(null)}
+          timeFormat={timeFormat}
+          dateFormat={dateFormat}
         />
       )}
 

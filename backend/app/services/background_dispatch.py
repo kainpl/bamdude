@@ -2632,6 +2632,10 @@ class BackgroundDispatchService:
 
             file_path = job.source.path if job.source is not None else settings.base_dir / source_archive.file_path
             await require_source_file(file_path)
+            # A run from before the content gate may have archived a project under
+            # a sliced name; Reprint, a queued archive job and the plate's Repeat
+            # all end here, so this is where it stops going to the printer again.
+            await self._require_sliced_archive_source(archive_filename, file_path)
 
             # Unified 3MF post-processing: M970 commenting (mesh-mode-fast-check
             # off) and per-plate G-code injection (#422) share a single
@@ -4265,6 +4269,10 @@ class BackgroundDispatchService:
                         # clears ``product_plates`` — it has no cascade from the
                         # library file on SQLite, where FK actions never fire.
                         await purge_file_product_links(db, [library_id])
+                        # The transient file's photos, if anyone attached one (m233).
+                        from backend.app.services import library_file_photos
+
+                        await library_file_photos.forget_files(db, [library_id])
                         transient = await db.get(LibraryFile, library_id)
                         if transient is not None:
                             await db.delete(transient)
@@ -4746,15 +4754,31 @@ class BackgroundDispatchService:
 
         The name rule stays this runner's own, narrower than the queue's; the
         content arm is the one every print gate shares (upstream #2993) — a
-        sliced ``Foo.3mf`` the queue accepted must not be refused here. It reads
-        the bytes about to be sent (the job's snapshot when there is one), and
-        the container is opened only when the name has not already settled it.
+        sliced ``Foo.3mf`` the queue accepted must not be refused here, and a
+        project saved as ``Foo.gcode.3mf`` must not reach the printer (upstream
+        #3435). It reads the bytes about to be sent (the job's snapshot when
+        there is one); a file that cannot be read is judged by its name.
         """
-        from backend.app.services.library_helpers import sliced_by_content
+        from backend.app.services.library_helpers import sliced_source_refusal
 
-        if BackgroundDispatchService._is_sliced_file(filename) or await sliced_by_content(filename, file_path):
-            return
-        raise SourceRejected("Not a sliced file. Only G-code, or a 3MF with sliced G-code inside, can be printed.")
+        refusal = await sliced_source_refusal(
+            filename, file_path, named=BackgroundDispatchService._is_sliced_file(filename)
+        )
+        if refusal is not None:
+            raise SourceRejected(refusal)
+
+    @staticmethod
+    async def _require_sliced_archive_source(filename: str, file_path: Path) -> None:
+        """The archive runner's last gate: bytes KNOWN to hold no sliced G-code are not sent.
+
+        An archive has no name rule (see ``library_helpers.archive_source_refusal``):
+        a sliced ``Foo.3mf`` and a file that cannot be read go on as before.
+        """
+        from backend.app.services.library_helpers import archive_source_refusal
+
+        refusal = await archive_source_refusal(filename, file_path)
+        if refusal is not None:
+            raise SourceRejected(refusal)
 
 
 background_dispatch = BackgroundDispatchService()

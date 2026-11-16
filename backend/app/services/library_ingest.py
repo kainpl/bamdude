@@ -27,7 +27,7 @@ from typing import Literal
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.models.library import LibraryFile
+from backend.app.models.library import LibraryFile, owner_scope_sees
 
 IngestOutcome = Literal["created", "deduped", "restored"]
 
@@ -40,9 +40,7 @@ class LibraryReadAccess:
     user_id: int | None = None
 
     def allows(self, row: LibraryFile) -> bool:
-        return self.scope == "all" or (
-            self.scope == "own" and self.user_id is not None and row.created_by_id == self.user_id
-        )
+        return self.scope == "all" or (self.scope == "own" and owner_scope_sees(row, self.user_id))
 
     def ensure(self, row: LibraryFile) -> None:
         if not self.allows(row):

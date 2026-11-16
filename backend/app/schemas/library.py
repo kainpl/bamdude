@@ -128,7 +128,16 @@ class FileUpdate(BaseModel):
     filename: str | None = Field(None, min_length=1, max_length=255)
     folder_id: int | None = None
     product_ids: list[int] | None = None
-    notes: str | None = None
+
+
+class FileExternalUrlUpdate(BaseModel):
+    """The operator's own link on a file; ``null`` or an empty string clears it.
+
+    Deliberately unvalidated here: the route refuses a bad link with one sentence
+    the error boundary can translate, where a pydantic refusal is a list.
+    """
+
+    external_url: str | None = None
 
 
 class FileDuplicate(BaseModel):
@@ -169,13 +178,15 @@ class FileResponse(BaseModel):
     last_printed_at: datetime | None
     print_count: int = 0
 
-    notes: str | None
-
     # Provenance (m033) — populated for MakerWorld imports + slicer outputs.
     # ``source_type`` ∈ {"makerworld", "sliced", ...}; ``source_url`` is the
     # canonical link (e.g. MakerWorld profile URL). NULL for plain uploads.
     source_type: str | None = None
     source_url: str | None = None
+    # The operator's own link (m232): http/https, set by hand, never fetched.
+    external_url: str | None = None
+    # Photos attached to the file (m233).
+    photos_count: int = 0
 
     # Duplicate detection
     duplicates: list[FileDuplicate] | None = None
@@ -344,6 +355,10 @@ class FileListResponse(BaseModel):
     # badge without a follow-up detail fetch.
     source_type: str | None = None
     source_url: str | None = None
+    # The operator's own link (m232) — the card's link marker.
+    external_url: str | None = None
+    # Photos attached to the file (m233) — the card's photo marker.
+    photos_count: int = 0
     # Number of notes attached (gh#3) - drives the card icon variant
     # (MessageSquarePlus when 0, MessageSquare when >0).
     notes_count: int = 0

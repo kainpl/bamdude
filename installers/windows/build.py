@@ -317,6 +317,7 @@ def verify_requirements(python_dir: Path) -> None:
         "embedded-nats",
         "nats-py",
         "platenest",
+        "pypdfium2",
     ]
     script = (
         "import sys\n"

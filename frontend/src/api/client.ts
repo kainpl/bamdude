@@ -138,6 +138,25 @@ export interface UsageRepriceResult {
   cost_after: number;
 }
 
+/**
+ * The sentences of an `X-Label-Warnings` response header.
+ *
+ * A header holds Latin-1 only, so the server percent-encodes the sentences as
+ * UTF-8 and joins them with ` | `. Both forms are read — the encoded one, and a
+ * value sent as it is — and a value that does not decode (a bare `%` in a plain
+ * sentence) is taken as it came: a warning is never worth failing a preview for.
+ */
+export function parseLabelWarnings(raw: string | null | undefined): string[] {
+  if (!raw) return [];
+  let text = raw;
+  try {
+    text = decodeURIComponent(raw);
+  } catch {
+    /* not percent-encoded: the value as it came */
+  }
+  return text.split(' | ').filter(Boolean);
+}
+
 export class ApiError extends Error {
   printerId?: number;
   archiveId?: number;
@@ -8686,12 +8705,25 @@ export interface LabelSheet {
    *  read — a geometry can stop fitting without anyone editing it, by changing
    *  the paper under it. */
   overflow: string[];
+  /** The designs that fit one cell of this sheet, as the server judges it.
+   *  ⚠️ Read this; never compare sizes here. The rule and its slack live in one
+   *  backend function, which is also what a print is refused by. */
+  fitting_design_ids: number[];
 }
 
 /** A rendered preview plus whatever went wrong drawing it. */
 export interface LabelPreview {
   blob: Blob;
   warnings: string[];
+}
+
+/** The resolutions a label is saved as a picture at. */
+export type LabelPictureDpi = 203 | 300 | 600;
+
+/** Labels as pictures: one PNG for one label, a ZIP of them for several. */
+export interface LabelPictures extends LabelPreview {
+  /** What the server calls the file — the spool for one label, the batch for a ZIP. */
+  filename: string | null;
 }
 
 /** A label printer attached to somebody's desktop, reached through a bridge. */
@@ -8714,6 +8746,9 @@ export interface LabelDevice {
   /** Null when nobody has taught this barcode a size yet. */
   cassette_width_mm: number | null;
   cassette_height_mm: number | null;
+  /** The designs that fit the loaded stock, as the server judges it. Null when
+   *  the printer has not said what is loaded — it is then not judged at all. */
+  fitting_design_ids: number[] | null;
   /** 0 = the printer says it has none; null = it did not say. */
   paper_state: number | null;
   power_level: number | null;
@@ -13024,6 +13059,37 @@ export const api = {
     }
     return response.blob();
   },
+  /**
+   * The same selection as pictures instead of a PDF.
+   *
+   * ⚠️ The picture is the DESIGN at its own size: paper is a fact about a PDF,
+   * so no sheet travels here. Drawn by the server from the renderer that
+   * prints — the dialog's preview is this call with one spool.
+   */
+  renderSpoolLabelPictures: async (
+    body: SpoolLabelRequest & { dpi: LabelPictureDpi },
+    spoolman: boolean,
+    signal?: AbortSignal,
+  ): Promise<LabelPictures> => {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
+    const response = await fetch(`${API_BASE}/${spoolman ? 'spoolman' : 'inventory'}/labels/png`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+      signal,
+    });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(error.detail || `HTTP ${response.status}`);
+    }
+    const raw = response.headers.get('X-Label-Warnings');
+    return {
+      blob: await response.blob(),
+      filename: parseContentDispositionFilename(response.headers.get('Content-Disposition')),
+      warnings: parseLabelWarnings(raw),
+    };
+  },
 
   // ── Label templates ──────────────────────────────────────────────────
   // ⚠️ getLabelTemplates stays PARAMETER-FREE — an optional argument breaks
@@ -13048,6 +13114,16 @@ export const api = {
     request<LabelSheet>(`/label-templates/sheets/${id}/duplicate`, { method: 'POST' }),
   deleteLabelSheet: (id: number) =>
     request<void>(`/label-templates/sheets/${id}`, { method: 'DELETE' }),
+  /**
+   * What is wrong with a sheet that is still being typed — every problem at
+   * once, in the system's language, with nothing saved or drawn.
+   *
+   * ⚠️ The editor asks instead of computing: the paper table, the slack and the
+   * bounds live on the server, and a second copy here is how the editor and the
+   * save would stop agreeing.
+   */
+  checkLabelSheet: (body: LabelSheetInput) =>
+    request<{ problems: string[] }>('/label-templates/sheets/check', { method: 'POST', body: JSON.stringify(body) }),
 
   /**
    * The whole page, with a design laid into every cell.
@@ -13071,7 +13147,7 @@ export const api = {
     const raw = response.headers.get('X-Label-Warnings');
     return {
       blob: await response.blob(),
-      warnings: raw ? raw.split(' | ').filter(Boolean) : [],
+      warnings: parseLabelWarnings(raw),
     };
   },
 
@@ -13087,6 +13163,9 @@ export const api = {
     template: LabelTemplateInput;
     spool_id?: number | null;
     dots_per_mm?: number;
+    /** The picture a driver makes (the PDF, in colour) instead of a thermal
+     *  head's one-bit raster. */
+    colour?: boolean;
   }): Promise<LabelPreview> => {
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
@@ -13102,7 +13181,7 @@ export const api = {
     const raw = response.headers.get('X-Label-Warnings');
     return {
       blob: await response.blob(),
-      warnings: raw ? raw.split(' | ').filter(Boolean) : [],
+      warnings: parseLabelWarnings(raw),
     };
   },
 
@@ -13144,13 +13223,17 @@ export const api = {
     request<void>(`/label-cassettes/${encodeURIComponent(barcode)}`, { method: 'DELETE' }),
   // Binary, so raw fetch — request<T> is for JSON. Same picture the device
   // would get, at the device's own resolution.
-  previewDeviceLabel: async (body: { device_id: number; spool: SpoolLabelEntry; template_id?: number }): Promise<Blob> => {
+  previewDeviceLabel: async (
+    body: { device_id: number; spool: SpoolLabelEntry; template_id?: number },
+    signal?: AbortSignal,
+  ): Promise<Blob> => {
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
     const response = await fetch(`${API_BASE}/label-jobs/preview`, {
       method: 'POST',
       headers,
       body: JSON.stringify(body),
+      signal,
     });
     if (!response.ok) {
       const error = await response.json().catch(() => ({}));
@@ -14832,6 +14915,32 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify(data),
     }),
+  // -- photos attached to a library file (m233) --
+  getLibraryFilePhotos: (fileId: number) => request<LibraryFilePhoto[]>(`/library/files/${fileId}/photos`),
+  /** One photo per request: the server answers for exactly this file. */
+  uploadLibraryFilePhoto: (fileId: number, file: File) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    return sendForm<LibraryFilePhoto>(`/library/files/${fileId}/photos`, formData);
+  },
+  updateLibraryFilePhoto: (fileId: number, photoId: number, caption: string | null) =>
+    request<LibraryFilePhoto>(`/library/files/${fileId}/photos/${photoId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ caption }),
+    }),
+  deleteLibraryFilePhoto: (fileId: number, photoId: number) =>
+    request<{ success: boolean }>(`/library/files/${fileId}/photos/${photoId}`, { method: 'DELETE' }),
+  /** A photo full size, and its small copy — `<img>` URLs, so they carry the media token. */
+  getLibraryFilePhotoUrl: (fileId: number, photoId: number) =>
+    withMediaToken(`${API_BASE}/library/files/${fileId}/photos/${photoId}/image`),
+  getLibraryFilePhotoThumbnailUrl: (fileId: number, photoId: number) =>
+    withMediaToken(`${API_BASE}/library/files/${fileId}/photos/${photoId}/thumbnail`),
+  /** Set (`https://…`) or clear (`null`) the operator's own link on a file. */
+  setLibraryFileExternalUrl: (id: number, externalUrl: string | null) =>
+    request<LibraryFile>(`/library/files/${id}/external-url`, {
+      method: 'PUT',
+      body: JSON.stringify({ external_url: externalUrl }),
+    }),
   deleteLibraryFile: (id: number) =>
     request<{ status: string; message: string; trashed: boolean }>(`/library/files/${id}`, { method: 'DELETE' }),
 
@@ -14932,10 +15041,29 @@ export const api = {
     document.body.removeChild(a);
     window.URL.revokeObjectURL(url);
   },
+  /**
+   * A library file's bytes, for a viewer that parses them itself (the PDF
+   * viewer). The download route with the session's headers — never a token in
+   * a URL — so the file's own visibility rule decides.
+   */
+  getLibraryFileBytes: async (id: number, signal?: AbortSignal): Promise<ArrayBuffer> => {
+    const headers: Record<string, string> = {};
+    if (authToken) {
+      headers['Authorization'] = `Bearer ${authToken}`;
+    }
+    const response = await fetch(`${API_BASE}/library/files/${id}/download`, { headers, signal });
+    if (!response.ok) {
+      // The status travels with the refusal: the viewer tells "not available" from a request that failed.
+      throw new ApiError(`HTTP ${response.status}`, response.status);
+    }
+    return response.arrayBuffer();
+  },
   // ``version`` is a cache-buster, applied BEFORE the token: appended after it,
   // a second ``?`` would land inside the token's value.
   getLibraryFileThumbnailUrl: (id: number, version?: string | number | null) =>
     withMediaToken(`${API_BASE}/library/files/${id}/thumbnail${version ? `?v=${encodeURIComponent(String(version))}` : ''}`),
+  /** The full picture of an image file — the viewer's `<img>`; picture types only. */
+  getLibraryFileImageUrl: (id: number) => withMediaToken(`${API_BASE}/library/files/${id}/image`),
   getLibraryFilePlateThumbnail: (id: number, plateIndex: number) =>
     withMediaToken(`${API_BASE}/library/files/${id}/plate-thumbnail/${plateIndex}`),
   getLibraryFileGcodeUrl: (id: number, plateId?: number | null) =>
@@ -15929,7 +16057,6 @@ export interface LibraryFile {
   thumbnail_path: string | null;
   metadata: Record<string, unknown> | null;
   last_printed_at: string | null;
-  notes: string | null;
   duplicates: LibraryFileDuplicate[] | null;
   duplicate_count: number;
   // User tracking (Issue #206)
@@ -15958,6 +16085,10 @@ export interface LibraryFile {
   // canonical link (e.g. MakerWorld profile URL). NULL for plain uploads.
   source_type?: string | null;
   source_url?: string | null;
+  /** The operator's own link (m232) — http(s), set by hand in the details dialog. */
+  external_url?: string | null;
+  /** Photos attached to the file (m233). */
+  photos_count?: number;
 }
 
 /** One plate as the library card pages through it (vault 60-specs/library-multiplate-card-spec 4).
@@ -16027,6 +16158,10 @@ export interface LibraryFileListItem {
   // Provenance (m033) — same semantics as ``LibraryFile``.
   source_type?: string | null;
   source_url?: string | null;
+  /** The operator's own link (m232) — http(s), set by hand in the details dialog. */
+  external_url?: string | null;
+  /** Photos attached to the file (m233) — the card's photo mark. */
+  photos_count?: number;
   notes_count: number;
   // Successful completions only — the backend increments it on completion, so
   // 0 means "never finished a print", not "never attempted one".
@@ -16126,6 +16261,21 @@ export interface LibraryTagBulkAssignResult {
 }
 
 // gh#3 - User-authored notes attached to library files
+/** A photo attached to a library file (m233). Addressed by its id, through its file. */
+export interface LibraryFilePhoto {
+  id: number;
+  library_file_id: number;
+  /** The name the file came with — for display only. */
+  original_name: string | null;
+  content_type: string;
+  file_size: number;
+  width: number;
+  height: number;
+  caption: string | null;
+  uploaded_by_name: string | null;
+  created_at: string;
+}
+
 export interface LibraryFileNote {
   id: number;
   library_file_id: number;
@@ -16146,7 +16296,6 @@ export interface LibraryFileUpdate {
   // replace the whole list. ⚠️ A move without this field inherits the target
   // folder's products — send it explicitly when the move must NOT re-link.
   product_ids?: number[];
-  notes?: string | null;
 }
 
 export interface LibraryFileUploadResponse {

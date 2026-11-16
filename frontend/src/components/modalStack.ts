@@ -90,6 +90,24 @@ function applyInert(): void {
   stack.forEach((r, i) => r.overlay.current?.toggleAttribute('inert', i !== stack.length - 1));
 }
 
+/**
+ * Real fullscreen shows the fullscreen element's own subtree and nothing else.
+ * A modal that opens outside that subtree is invisible there — and it makes
+ * the layer holding the fullscreen element inert, so the box on screen would
+ * be dead with Escape as the only way out. So fullscreen ends first.
+ * A fullscreen that contains the new modal (the whole document, as the
+ * Monitor's) shows it, and stays.
+ */
+function leaveFullscreenFor(overlay: HTMLElement | null): void {
+  const shown = document.fullscreenElement;
+  if (!shown || (overlay && shown.contains(overlay))) return;
+  try {
+    void document.exitFullscreen().catch(() => undefined);
+  } catch {
+    /* a browser without the call has no fullscreen to leave */
+  }
+}
+
 function onKeyDown(e: KeyboardEvent): void {
   if (e.key !== 'Escape') return;
   const top = stack[stack.length - 1];
@@ -114,6 +132,7 @@ export function register(
   const wasEmpty = stack.length === 0;
   stack = [...stack.slice(0, index), { key, ancestors, entry, overlay }, ...stack.slice(index)];
   if (wasEmpty) window.addEventListener('keydown', onKeyDown);
+  leaveFullscreenFor(overlay.current);
   applyInert();
   notify();
 }

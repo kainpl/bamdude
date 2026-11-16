@@ -104,9 +104,9 @@ def is_sliced_file(filename: str) -> bool:
     the same answer, and a service importing a route module would be a circular
     import as well as backwards.
 
-    ⚠️ The NAME half only. A gate that has the bytes also asks
-    ``library_helpers.sliced_by_content``, because a sliced 3MF can arrive named
-    ``Foo.3mf`` (upstream #2993) — never this function alone.
+    ⚠️ The NAME half only. A gate asks ``library_helpers.sliced_source_refusal``
+    — never this function alone: a sliced 3MF can arrive named ``Foo.3mf``
+    (upstream #2993) and a project can be saved as ``Foo.gcode.3mf`` (#3435).
 
     ``BackgroundDispatchService._is_sliced_file`` looks like a duplicate and is
     not: it accepts only ``.gcode.3mf`` exactly. Deliberately left alone — the

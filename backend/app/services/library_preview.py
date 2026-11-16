@@ -19,7 +19,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from backend.app.core.database import take_write_lock
 from backend.app.models.library import LibraryFile
-from backend.app.services.mesh_preview_types import CAD_TYPES
+from backend.app.services import preview_protocol
+from backend.app.services.mesh_preview_types import CAD_TYPES, is_pdf
 from backend.app.services.preview_artifacts import disk, owned
 from backend.app.services.preview_protocol import ACTIVE_SECONDS, PREVIEW_OWNER
 from backend.app.services.preview_runtime import preview_attempt
@@ -128,13 +129,18 @@ class Source:
     fs_modified_at: datetime | None
     authority: object | None = None
     permission: str = "library:update_all"
+    # Set for an actor who may touch only their OWN files (``library:update_own``):
+    # the picture attaches only while the row is still theirs.
+    owner_id: int | None = None
 
     @classmethod
-    def capture(cls, row: LibraryFile, *, authority=None, permission="library:update_all"):
+    def capture(cls, row: LibraryFile, *, authority=None, permission="library:update_all", owner_id=None):
         fields = {
-            name: getattr(row, name) for name in cls.__dataclass_fields__ if name not in ("authority", "permission")
+            name: getattr(row, name)
+            for name in cls.__dataclass_fields__
+            if name not in ("authority", "permission", "owner_id")
         }
-        return cls(**fields, authority=authority, permission=permission)
+        return cls(**fields, authority=authority, permission=permission, owner_id=owner_id)
 
 
 def _publish(source: Path, target: Path):
@@ -194,6 +200,11 @@ async def attach_result(db: AsyncSession, source: Source, png: Path, *, authoriz
                                 LibraryFile.file_hash == source.file_hash,
                                 LibraryFile.fs_modified_at == source.fs_modified_at,
                                 LibraryFile.thumbnail_path == source.thumbnail_path,
+                                *(
+                                    [LibraryFile.created_by_id == source.owner_id]
+                                    if source.owner_id is not None
+                                    else []
+                                ),
                             )
                             .values(thumbnail_path=relative)
                             .execution_options(synchronize_session=False)
@@ -241,13 +252,15 @@ class PauseBudget:
 
 
 async def generate(db: AsyncSession, source: Source, *, pause_budget: PauseBudget | None = None) -> bool:
-    """Make and attach an STL/OBJ picture. A backup pausing the pictures defers the attempt, which then holds
-    nothing; this caller's own task waits for the pause, within the request's ``pause_budget``, and a fresh attempt
-    reads the file again and attaches only through the row's CAS (Codex A-r3)."""
+    """Make and attach an STL/OBJ picture, or a PDF's first page. A backup pausing the pictures defers the attempt,
+    which then holds nothing; this caller's own task waits for the pause, within the request's ``pause_budget``, and
+    a fresh attempt reads the file again and attaches only through the row's CAS (Codex A-r3)."""
     from backend.app.api.routes.library import to_absolute_path
 
     path = to_absolute_path(source.file_path)
     if path is None:
+        return False
+    if is_pdf(source.file_type) and not await _pdf_admitted(source, path):
         return False
     budget = pause_budget or PauseBudget()
     # The kind is the row's file_type (a rename never changes it), never the display name's suffix.
@@ -274,15 +287,56 @@ async def _until_unpaused_within(seconds: float) -> bool:
     return publication.open
 
 
+#: this process's child could not load the PDF renderer (a broken install): said once, then not asked again
+_pdf_renderer_missing = False
+
+
+async def _pdf_admitted(source: Source, path: Path) -> bool:
+    """Main's own refusals of a PDF, before any slot, copy or child: a renderer already known to be missing, and
+    an input over its budget. Each is said in the parent log."""
+    if _pdf_renderer_missing:
+        return False
+    try:
+        size = await disk(lambda: path.stat().st_size)
+    except OSError:
+        return True  # the attempt's own read names a missing or unreadable source
+    if size > preview_protocol.PDF_INPUT_BYTES:
+        logger.info(
+            "Preview for library file %s not made: outcome=resource_limit why=pdf_input_bytes size=%d limit=%d",
+            source.id,
+            size,
+            preview_protocol.PDF_INPUT_BYTES,
+        )
+        return False
+    return True
+
+
+def _pdf_deadline() -> int:
+    """The PDF attempt's own time budget, counted from the moment its slot is granted."""
+    return time.monotonic_ns() + int(preview_protocol.PDF_SECONDS * 1e9)
+
+
 async def _generate(db: AsyncSession, source: Source, path: Path) -> str:
-    async with preview_attempt({"mesh": (path, source.file_type)}, publication=publication) as result:
+    global _pdf_renderer_missing
+    pdf = is_pdf(source.file_type)
+    role = "document" if pdf else "mesh"
+    budget = {"on_admit": _pdf_deadline} if pdf else {}
+    async with preview_attempt(
+        {role: (path, "pdf" if pdf else source.file_type)}, publication=publication, **budget
+    ) as result:
         if result.outcome == "publication_deferred":
             return result.outcome
+        if pdf and result.why == "pdf_renderer_missing" and not _pdf_renderer_missing:
+            _pdf_renderer_missing = True
+            logger.warning(
+                "PDF thumbnails are unavailable: the preview child could not load its PDF renderer (pypdfium2). "
+                "Uploads and every other preview continue; reinstall the Python requirements and restart BamDude."
+            )
         png = result.files.get("preview")
         if not png or result.outcome != "ok" or not result.publishable:
             return result.outcome
         # Snapshot digest binds this result to the DB source, not merely its name; a STEP needs that binding.
-        digest = result.input_digests.get("mesh")
+        digest = result.input_digests.get(role)
         if (source.file_hash or source.file_type in CAD_TYPES) and digest != source.file_hash:
             return "superseded"
         return await attach_result(db, source, png)

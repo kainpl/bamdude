@@ -30,8 +30,9 @@ from backend.app.core.config import settings as app_settings
 from backend.app.core.database import async_session
 from backend.app.models.archive import PrintArchive
 from backend.app.models.library import LibraryFile
+from backend.app.models.library_file_note import LibraryFileNote
 from backend.app.models.settings import Settings
-from backend.app.services import part_images, queue_source_release
+from backend.app.services import library_file_photos, part_images, queue_source_release
 from backend.app.services.product_sync import purge_file_product_links
 
 logger = logging.getLogger(__name__)
@@ -130,6 +131,19 @@ class LibraryPurgeRunResult:
             "finished_at": self.finished_at.isoformat() if self.finished_at else None,
             "moved": self.moved,
         }
+
+
+async def forget_file_notes(db: AsyncSession, library_file_ids) -> None:
+    """These library files are being purged with a bulk DELETE: their notes go first.
+
+    ``library_file_notes.library_file_id`` is ``ON DELETE CASCADE``, which SQLite
+    never runs, and a Core ``delete(LibraryFile)`` goes past the ORM cascade that
+    covers ``db.delete(file)``. A note left behind names an id the next file may
+    be given. Called in the purging transaction; does not commit.
+    """
+    ids = sorted({int(i) for i in library_file_ids if i is not None})
+    if ids:
+        await db.execute(delete(LibraryFileNote).where(LibraryFileNote.library_file_id.in_(ids)))
 
 
 async def _cancel_pending_queue_items(db: AsyncSession, library_file_id: int) -> None:
@@ -562,6 +576,11 @@ class LibraryTrashService:
         # file would leave a plate row a product still renders and nothing can
         # open.
         await purge_file_product_links(db, row_ids)
+        # And the photos (m233): their rows have no cascade on SQLite either, and
+        # their folder is named by the id the next file may be given.
+        await library_file_photos.forget_files(db, row_ids)
+        # And the notes: a bulk DELETE goes past the ORM cascade that removes them.
+        await forget_file_notes(db, row_ids)
         await db.execute(delete(LibraryFile).where(LibraryFile.id.in_(row_ids)))
         await db.commit()
         logger.info("Library trash sweeper: hard-deleted %d row(s) past %d-day retention", deleted, retention)
@@ -633,6 +652,7 @@ class LibraryTrashService:
                 db, library_file_ids=[file.id], reason=queue_source_release.REASON_FILE_DELETED
             )
             await purge_file_product_links(db, [file.id])
+            await library_file_photos.forget_files(db, [file.id])
             await db.delete(file)
             return False
 
@@ -676,6 +696,7 @@ class LibraryTrashService:
             db, library_file_ids=[file.id], reason=queue_source_release.REASON_FILE_DELETED
         )
         await purge_file_product_links(db, [file.id])
+        await library_file_photos.forget_files(db, [file.id])
         await db.delete(file)
         await db.commit()
 

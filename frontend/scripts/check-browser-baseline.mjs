@@ -31,7 +31,10 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const ASSETS = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', 'static', 'assets');
+// The build checks the tracked bundle; a test hands in a fixture directory instead.
+const ASSETS = process.argv[2]
+  ? resolve(process.argv[2])
+  : resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', 'static', 'assets');
 
 /**
  * Each pattern must match only real occurrences of the feature. Anything that
@@ -60,16 +63,31 @@ const FORBIDDEN = [
   },
 ];
 
+/**
+ * Every script the bundle can emit, wherever Vite put it: a worker a dependency
+ * ships as `.mjs`, a chunk in a sub-directory. The browser compiles each of them,
+ * so each is read - a top-level `.js` listing let those through unchecked.
+ */
+const SCRIPT = /\.(js|mjs|cjs)$/;
+
+function collectScripts(dir, prefix = '') {
+  return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    const name = prefix + entry.name;
+    if (entry.isDirectory()) return collectScripts(join(dir, entry.name), `${name}/`);
+    return entry.isFile() && SCRIPT.test(entry.name) ? [name] : [];
+  });
+}
+
 let bundles;
 try {
-  bundles = readdirSync(ASSETS).filter((f) => f.endsWith('.js'));
+  bundles = collectScripts(ASSETS).sort();
 } catch {
   console.error(`check-browser-baseline: no build output at ${ASSETS} - run \`vite build\` first.`);
   process.exit(1);
 }
 
 if (bundles.length === 0) {
-  console.error(`check-browser-baseline: no .js files in ${ASSETS} - did the build succeed?`);
+  console.error(`check-browser-baseline: no .js / .mjs / .cjs files in ${ASSETS} - did the build succeed?`);
   process.exit(1);
 }
 
