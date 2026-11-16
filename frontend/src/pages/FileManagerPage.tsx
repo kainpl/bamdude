@@ -10,6 +10,7 @@ import {
   // native listener below, and importing React's under the same name would
   // silently retype it.
   type MouseEvent as ReactMouseEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
 } from 'react';
 import { createPortal } from 'react-dom';
@@ -119,7 +120,7 @@ import { desktopSlicerAccepts, isApiSliceableFileType, openInSlicer, type Slicer
 import { LibraryTagsModal } from '../components/LibraryTagsModal';
 import { LibraryUserTagPills } from '../components/LibraryUserTagPills';
 import { ImagePreviewModal } from '../components/ImagePreviewModal';
-import { isViewableImage } from '../utils/filePreview';
+import { isViewableImage, previewKindOf } from '../utils/filePreview';
 import { BulkTagsPickerModal } from '../components/BulkTagsPickerModal';
 import { FileTagsPopover, type TagsPopoverAnchor } from '../components/FileTagsPopover';
 import { QueueSequencer } from '../components/QueueSequencer';
@@ -521,6 +522,40 @@ interface FolderTreeItemProps {
   dateFormat: DateFormat;
 }
 
+/** The controls of a file's card or row — a double click on one of them is its own. */
+const OWN_CONTROL = 'button, a, input, select, textarea, label, [role="menu"], [role="menuitem"], [role="dialog"]';
+
+/**
+ * "Open" for a file's card or row: a double click, or Enter while the item
+ * ITSELF has the focus — spread onto its root element.
+ *
+ * ⚠️ React events bubble through the React tree, so a double click inside a
+ * dialog or a menu this item rendered (the notes thread, the ⋮ menu — both
+ * portalled into `body`) arrives here too: only a target the root really
+ * contains counts, and none of its own controls.
+ * A file nothing opens gets no handlers and no tab stop.
+ */
+function openHandlers(file: LibraryFileListItem, onOpen: ((file: LibraryFileListItem) => void) | undefined) {
+  if (!onOpen || previewKindOf(file) === null) return {};
+  return {
+    tabIndex: 0,
+    onDoubleClick: (e: ReactMouseEvent<HTMLElement>) => {
+      const target = e.target as Element;
+      if (!e.currentTarget.contains(target)) return;
+      const control = target.closest(OWN_CONTROL);
+      if (control && control !== e.currentTarget) return;
+      // The second click of the pair selected the word under it.
+      window.getSelection?.()?.removeAllRanges();
+      onOpen(file);
+    },
+    onKeyDown: (e: ReactKeyboardEvent<HTMLElement>) => {
+      if (e.key !== 'Enter' || e.target !== e.currentTarget) return;
+      e.preventDefault();
+      onOpen(file);
+    },
+  };
+}
+
 function containsFolder(folder: LibraryFolderTree, folderId: number): boolean {
   return folder.id === folderId || folder.children.some((child) => containsFolder(child, folderId));
 }
@@ -744,6 +779,8 @@ interface FileCardProps {
   useSlicerApi?: boolean;
   desktopSlicer?: SlicerType;
   onPreview3d?: (file: LibraryFileListItem) => void;
+  /** "Open": a double click on the card, or Enter while it has the focus. */
+  onOpen?: (file: LibraryFileListItem) => void;
   /** Open an image file in the viewer — offered for the picture types only. */
   onViewImage?: (file: LibraryFileListItem) => void;
   onRename?: (file: LibraryFileListItem) => void;
@@ -1146,7 +1183,7 @@ function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedul
   );
 }
 
-function FileCard({ file, isSelected, onSelect, onOpenArchives, onDelete, onDownload, onAddToQueue, onPrint, onSlice, onRelayout, onOpenInSlicer, useSlicerApi, desktopSlicer, onPreview3d, onViewImage, onModelCard, onRename, onSwapDeclaration, onLink, onGenerateThumbnail, onCancelThumbnail, thumbnailJobActive, onPlateGallery, onAddToOrder, onMove, onTags, onTagClick, thumbnailVersion, isRegeneratingThumbnail, hasPermission, canModify, authEnabled, timeFormat, dateFormat, t }: FileCardProps) {
+function FileCard({ file, isSelected, onSelect, onOpenArchives, onDelete, onDownload, onAddToQueue, onPrint, onSlice, onRelayout, onOpenInSlicer, useSlicerApi, desktopSlicer, onPreview3d, onOpen, onViewImage, onModelCard, onRename, onSwapDeclaration, onLink, onGenerateThumbnail, onCancelThumbnail, thumbnailJobActive, onPlateGallery, onAddToOrder, onMove, onTags, onTagClick, thumbnailVersion, isRegeneratingThumbnail, hasPermission, canModify, authEnabled, timeFormat, dateFormat, t }: FileCardProps) {
   // ⚠️ The two modes need different permissions: slicing through the sidecar
   // writes a new library file, while opening in a desktop slicer is a download.
   const sliceDisabled = useSlicerApi ? !hasPermission('library:upload') : !hasPermission('library:read');
@@ -1186,7 +1223,8 @@ function FileCard({ file, isSelected, onSelect, onOpenArchives, onDelete, onDown
   return (
     <div
       data-file-card
-      className={`group relative bg-bambu-dark-secondary rounded-lg border transition-all overflow-hidden ${
+      {...openHandlers(file, onOpen)}
+      className={`group relative bg-bambu-dark-secondary rounded-lg border transition-all overflow-hidden focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-bambu-green ${
         isSelected
           ? 'border-bambu-green ring-1 ring-bambu-green'
           : 'border-bambu-dark-tertiary hover:border-bambu-green/50'
@@ -2655,6 +2693,17 @@ export function FileManagerPage() {
   // Open the archive page filtered to this file's print history. The file
   // name rides along so the archive page can show a "prints of <name>" chip
   // without a second lookup.
+  // "Open" — what a double click (or Enter) does: the viewer the file's own menu
+  // offers for its type, behind the same gate as that menu entry.
+  const openPreview = useCallback(
+    (file: LibraryFileListItem) => {
+      const kind = previewKindOf(file);
+      if (kind === 'image') setImageFile(file);
+      else if (kind === 'model' && hasPermission('library:read')) setViewerFile(file);
+    },
+    [hasPermission],
+  );
+
   const handleOpenArchives = useCallback((file: LibraryFileListItem) => {
     const params = new URLSearchParams({
       file: String(file.id),
@@ -2836,6 +2885,7 @@ export function FileManagerPage() {
       useSlicerApi={settings?.use_slicer_api ?? false}
       desktopSlicer={preferredSlicer}
       onPreview3d={setViewerFile}
+      onOpen={openPreview}
       onViewImage={setImageFile}
       onModelCard={setModelCardFile}
       onRename={(f) => setRenameItem({ type: 'file', id: f.id, name: f.filename })}
@@ -3841,7 +3891,8 @@ export function FileManagerPage() {
                   <div
                     key={file.id}
                     data-file-row
-                    className={`grid grid-cols-subgrid col-span-full gap-4 px-4 py-3 items-center border-b border-bambu-dark-tertiary last:border-b-0 hover:bg-bambu-dark/50 transition-colors ${
+                    {...openHandlers(file, openPreview)}
+                    className={`grid grid-cols-subgrid col-span-full gap-4 px-4 py-3 items-center border-b border-bambu-dark-tertiary last:border-b-0 hover:bg-bambu-dark/50 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-bambu-green ${
                       selectedFiles.includes(file.id) ? 'bg-bambu-green/10' : ''
                     }`}
                   >
