@@ -181,6 +181,12 @@ DEFAULT_TEMPLATES = [
         "body_template": "{printer}: {filename}\nLayer 1/{total_layers} done",
     },
     {
+        "event_type": "pause_coming_up",
+        "name": "Pause Coming Up",
+        "title_template": "Pause Coming Up",
+        "body_template": "{printer}: {filename}\nPause at layer {layer}/{total_layers}, {time_to_pause}",
+    },
+    {
         "event_type": "test",
         "name": "Test Notification",
         "title_template": "BamDude Test",

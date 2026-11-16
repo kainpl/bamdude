@@ -2457,6 +2457,16 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
     if not printer_manager.session_still_lives(printer_id):
         return
 
+    # The "pause coming up" heads-up: a look at memory on every status, before the
+    # dedup below (the time to a pause moves when nothing on the card does). It
+    # reads the proven run's forecast and sends nothing to the printer.
+    from backend.app.services import pause_warning
+
+    try:
+        pause_warning.observe(printer_manager, printer_id)
+    except Exception as exc:  # noqa: BLE001 -- never fail the status callback over a heads-up
+        logging.getLogger(__name__).warning("Pause warning check failed for printer %s: %s", printer_id, exc)
+
     # MQTT relay - publish status (before dedup check - always publish to MQTT)
     try:
         printer_info = printer_manager.get_printer(printer_id)

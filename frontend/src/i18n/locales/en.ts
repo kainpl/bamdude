@@ -3562,6 +3562,9 @@ export default {
     currentVersion: 'Current Version',
     // Notifications
     bedCooledThreshold: 'Bed Cooled Threshold',
+    pauseWarningMinutes: 'Pause heads-up lead time',
+    pauseWarningMinutesHelp: 'How long before a pause added in the slicer the “Pause coming up” event is sent. The time is known only at Standard speed for a file with time markers; otherwise the event is sent when the print reaches the layer before the pause. 0 switches the event off.',
+    pauseWarningMinutesUnit: 'min',
     userNotificationsEnabled: 'User Notifications',
     userNotificationsEnabledDescription: 'Enable the user notifications menu and email notifications for print job events. Requires Advanced Authentication.',
     addProvider: 'Add Provider',
@@ -11895,6 +11898,8 @@ export default {
     bedCooledDescription: 'Bed cooled below threshold after print',
     firstLayerCompleteLabel: 'First Layer Complete',
     firstLayerCompleteDescription: 'Notify with snapshot when first layer finishes',
+    pauseComingUpLabel: 'Pause Coming Up',
+    pauseComingUpDescription: 'A heads-up shortly before a pause added in the slicer',
     missingSpoolAssignmentLabel: 'Missing Spool Assignment',
     missingSpoolAssignmentDescription: 'Notify when a print starts with trays that have no assigned spool, and when a finished print could not charge its filament to one',
     // Inventory stock alert events (upstream #1184)
@@ -12127,6 +12132,7 @@ export default {
         print_progress: 'Print progress milestones',
         print_missing_spool_assignment: 'Missing spool assignment (at print start, or filament not charged)',
         first_layer_complete: 'First layer complete',
+        pause_coming_up: 'Pause coming up',
         bed_cooled: 'Bed cooled down',
         printer_error: 'Printer error',
         printer_offline: 'Printer offline',

@@ -45,6 +45,9 @@ EVENT_CATALOG: dict[str, EventMeta] = {
     "print_progress": _e("info", "print"),
     "print_missing_spool_assignment": _e("warning", "print"),
     "first_layer_complete": _e("info", "print"),
+    # ``info`` on purpose: the inbox's default subscription is every warning and
+    # error, so this heads-up reaches nobody who did not ask for it.
+    "pause_coming_up": _e("info", "print"),
     "bed_cooled": _e("info", "print"),
     # printer
     "printer_error": _e("error", "printer"),

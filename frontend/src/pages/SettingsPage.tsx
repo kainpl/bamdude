@@ -1325,6 +1325,7 @@ export function SettingsPage() {
       (baseline.local_login_enabled ?? true) !== (localSettings.local_login_enabled ?? true) ||
       (baseline.telemetry_enabled ?? true) !== (localSettings.telemetry_enabled ?? true) ||
       (baseline.bed_cooled_threshold ?? 35) !== (localSettings.bed_cooled_threshold ?? 35) ||
+      (baseline.pause_warning_minutes ?? 5) !== (localSettings.pause_warning_minutes ?? 5) ||
       baseline.ams_humidity_good !== localSettings.ams_humidity_good ||
       baseline.ams_humidity_fair !== localSettings.ams_humidity_fair ||
       baseline.ams_temp_good !== localSettings.ams_temp_good ||
@@ -1451,6 +1452,7 @@ export function SettingsPage() {
         local_login_enabled: localSettings.local_login_enabled,
         telemetry_enabled: localSettings.telemetry_enabled,
         bed_cooled_threshold: localSettings.bed_cooled_threshold,
+        pause_warning_minutes: localSettings.pause_warning_minutes,
         ams_humidity_good: localSettings.ams_humidity_good,
         ams_humidity_fair: localSettings.ams_humidity_fair,
         ams_temp_good: localSettings.ams_temp_good,
@@ -4003,6 +4005,36 @@ export function SettingsPage() {
                   </div>
                 </div>
               </div>
+
+              {/* Lead time of the “Pause coming up” event */}
+              <div className="space-y-3 pt-4 border-t border-bambu-dark-tertiary">
+                <div className="flex items-center justify-between gap-4">
+                  <div>
+                    <label htmlFor="pause-warning-minutes" className="block text-sm text-white">
+                      {t('settings.pauseWarningMinutes')}
+                    </label>
+                    <p className="text-xs text-bambu-gray mt-1">{t('settings.pauseWarningMinutesHelp')}</p>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-1">
+                    <input
+                      id="pause-warning-minutes"
+                      type="number"
+                      min={0}
+                      max={120}
+                      step={1}
+                      value={localSettings.pause_warning_minutes ?? 5}
+                      onChange={(e) =>
+                        updateSetting(
+                          'pause_warning_minutes',
+                          Math.min(120, Math.max(0, Math.round(Number(e.target.value) || 0))),
+                        )
+                      }
+                      className="w-20 px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none text-center"
+                    />
+                    <span className="text-bambu-gray">{t('settings.pauseWarningMinutesUnit')}</span>
+                  </div>
+                </div>
+              </div>
             </CardContent>
           </Card>
 
@@ -5032,6 +5064,7 @@ export function SettingsPage() {
                   plate_not_empty: { group: 'print', channel: 'all' },
                   bed_cooled: { group: 'print', channel: 'all' },
                   first_layer_complete: { group: 'print', channel: 'all' },
+                  pause_coming_up: { group: 'print', channel: 'all' },
                   // Printer status
                   printer_offline: { group: 'printer', channel: 'all' },
                   printer_error: { group: 'printer', channel: 'all' },

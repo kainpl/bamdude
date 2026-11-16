@@ -3586,6 +3586,9 @@ export default {
     currentVersion: 'Поточна версія',
     // Notifications
     bedCooledThreshold: 'Поріг охолодження столу',
+    pauseWarningMinutes: 'Випередження попередження про паузу',
+    pauseWarningMinutesHelp: 'За скільки хвилин до паузи, доданої у слайсері, надсилати подію «Наближається пауза». Час відомий лише на стандартній швидкості й коли у файлі є позначки часу; інакше подія надсилається, коли друк доходить до шару перед паузою. 0 вимикає подію.',
+    pauseWarningMinutesUnit: 'хв',
     userNotificationsEnabled: 'Сповіщення користувачів',
     userNotificationsEnabledDescription: 'Увімкнути меню сповіщень користувачів та email сповіщення про події друку. Потребує розширеної автентифікації.',
     addProvider: 'Додати провайдер',
@@ -12110,6 +12113,8 @@ export default {
     bedCooledDescription: 'Стіл охолодився нижче порогу після друку',
     firstLayerCompleteLabel: 'Перший шар завершено',
     firstLayerCompleteDescription: 'Сповістити зі знімком після завершення першого шару',
+    pauseComingUpLabel: 'Наближається пауза',
+    pauseComingUpDescription: 'Попередити незадовго до паузи, доданої у слайсері',
     missingSpoolAssignmentLabel: 'Відсутнє призначення котушки',
     missingSpoolAssignmentDescription: 'Сповістити, коли друк починається без призначеної котушки у лотках, а також коли завершений друк не зміг списати свій філамент із котушки',
     // Сповіщення прогнозу запасів (upstream #1184)
@@ -12344,6 +12349,7 @@ export default {
         print_progress: 'Віхи прогресу друку',
         print_missing_spool_assignment: 'Відсутнє призначення котушки (на старті друку чи філамент не списано)',
         first_layer_complete: 'Перший шар готовий',
+        pause_coming_up: 'Наближається пауза',
         bed_cooled: 'Стіл охолов',
         printer_error: 'Помилка принтера',
         printer_offline: 'Принтер офлайн',
