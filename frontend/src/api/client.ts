@@ -138,6 +138,25 @@ export interface UsageRepriceResult {
   cost_after: number;
 }
 
+/**
+ * The sentences of an `X-Label-Warnings` response header.
+ *
+ * A header holds Latin-1 only, so the server percent-encodes the sentences as
+ * UTF-8 and joins them with ` | `. Both forms are read — the encoded one, and a
+ * value sent as it is — and a value that does not decode (a bare `%` in a plain
+ * sentence) is taken as it came: a warning is never worth failing a preview for.
+ */
+export function parseLabelWarnings(raw: string | null | undefined): string[] {
+  if (!raw) return [];
+  let text = raw;
+  try {
+    text = decodeURIComponent(raw);
+  } catch {
+    /* not percent-encoded: the value as it came */
+  }
+  return text.split(' | ').filter(Boolean);
+}
+
 export class ApiError extends Error {
   printerId?: number;
   archiveId?: number;
@@ -13068,7 +13087,7 @@ export const api = {
     return {
       blob: await response.blob(),
       filename: parseContentDispositionFilename(response.headers.get('Content-Disposition')),
-      warnings: raw ? raw.split(' | ').filter(Boolean) : [],
+      warnings: parseLabelWarnings(raw),
     };
   },
 
@@ -13128,7 +13147,7 @@ export const api = {
     const raw = response.headers.get('X-Label-Warnings');
     return {
       blob: await response.blob(),
-      warnings: raw ? raw.split(' | ').filter(Boolean) : [],
+      warnings: parseLabelWarnings(raw),
     };
   },
 
@@ -13162,7 +13181,7 @@ export const api = {
     const raw = response.headers.get('X-Label-Warnings');
     return {
       blob: await response.blob(),
-      warnings: raw ? raw.split(' | ').filter(Boolean) : [],
+      warnings: parseLabelWarnings(raw),
     };
   },
 
