@@ -141,6 +141,9 @@ async def _fetch_cloud_presets(
     # cloud routes do, and the listing repeated once; "expired" is answered
     # only when it cannot be renewed.
     captured, refresh_token = await renewal_credentials(db, user)
+    # Everything the call needs is read: finish the short transaction, so no
+    # database connection is held while Bambu takes its time to answer.
+    await db.commit()
     cloud = BambuCloudService(
         region=region,
         on_auth_failure=(lambda: renew_for_service(cloud, captured)) if captured is not None else None,

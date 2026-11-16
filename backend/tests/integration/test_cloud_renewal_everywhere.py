@@ -94,6 +94,23 @@ class TestTheSliceDialogsPresetList:
         assert status == "unreachable"
         assert await _stored(db_session, user.id) == ("acc", "ref", False)
 
+    async def test_no_database_transaction_is_held_while_bambu_is_asked(self, async_client, db_session, bambu):
+        """Bambu may take 30 s to answer; the request's connection is not kept
+        in a transaction meanwhile (freeze what is needed, finish, then call)."""
+        user = await _sign_in(db_session)
+        during: list[bool] = []
+
+        def listing(_request):
+            during.append(db_session.in_transaction())
+            return httpx.Response(200, json=LISTING)
+
+        bambu({("GET", SETTINGS): listing})
+
+        _slots, status = await slicer_presets._fetch_cloud_presets(db_session, user)
+
+        assert status == "ok"
+        assert during == [False]
+
 
 class TestTheGitBackup:
     async def test_an_expired_token_is_renewed_and_the_presets_are_collected(self, async_client, db_session, bambu):
