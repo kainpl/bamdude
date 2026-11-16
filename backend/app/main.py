@@ -107,7 +107,7 @@ from backend.app.api.routes import (
 )
 from backend.app.api.routes.maintenance import _get_printer_maintenance_internal, ensure_default_types
 from backend.app.api.routes.support import init_debug_logging
-from backend.app.core import process_gc, query_timing
+from backend.app.core import process_gc, process_resources, query_timing
 from backend.app.core.config import APP_VERSION, settings as app_settings
 from backend.app.core.database import async_session, engine, init_db
 from backend.app.core.tasks import spawn_background_task
@@ -12740,6 +12740,7 @@ async def _application_lifespan(app: FastAPI):
         await _embedded_pg.stop()
 
 
+from backend.app.core.schema_repair_state import SchemaRepairPending
 from backend.app.services.farm_startup_guard import FarmReadyMiddleware, FarmStartupRefused, farm_startup_guard
 
 
@@ -12748,6 +12749,7 @@ async def lifespan(app: FastAPI):
     # ⚠️ First, before the farm guard, the database or any manager: the start-up heap is frozen
     # once per process, and a server that has started must never be (core/process_gc.py).
     process_gc.prepare_startup_heap()
+    process_resources.raise_nofile_limit()
     _protect_uvicorn_log_handlers()
     farm_startup_guard.start(Path(app_settings.data_dir))
     from backend.app.core.auth_runtime import auth_runtime
@@ -12790,6 +12792,26 @@ async def lifespan(app: FastAPI):
                 await connector_runtime.shutdown()
                 await mcp_runtime.shutdown()
                 farm_startup_guard.close_admission()
+    except SchemaRepairPending as exc:
+        from backend.app.core import schema_repair_maintenance
+
+        auth_runtime.close_admission()
+        close_cloud_admission()
+        farm_startup_guard.close_admission()
+        schema_repair_maintenance.active = True
+        logging.getLogger(__name__).warning("Schema repair maintenance: %s", exc.reason)
+        try:
+            yield
+        finally:
+            schema_repair_maintenance.active = False
+            from backend.app.core.database import engine
+
+            await engine.dispose()
+            if app_settings.embedded_postgres:
+                from backend.app.services import embedded_postgres as _embedded_pg
+
+                await _embedded_pg.stop()
+            farm_startup_guard.finish(clean=False)
     except BaseException:
         auth_runtime.close_admission()
         close_cloud_admission()
@@ -13728,6 +13750,10 @@ from backend.app.services.live_media import LiveMediaDeliveryMiddleware, install
 
 install_live_media_routes(app)
 app.add_middleware(LiveMediaDeliveryMiddleware)
+
+from backend.app.core.schema_repair_maintenance import SchemaRepairMaintenanceMiddleware
+
+app.add_middleware(SchemaRepairMaintenanceMiddleware)
 
 
 @app.get("/{full_path:path}")

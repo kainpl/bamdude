@@ -85,6 +85,9 @@ def support_env(monkeypatch, test_engine):
     monkeypatch.setattr("backend.app.core.database.async_session", factory)
     monkeypatch.setattr(support, "_check_port", AsyncMock(return_value=False))
     monkeypatch.setattr(support, "_get_log_content", lambda **_k: b"")
+    # Roster coherence is independent of the host process census, which has
+    # dedicated tests. Keep this consumer off pytest's growing heap.
+    monkeypatch.setattr(support, "_collect_process_info", lambda: {})
     probes = {}
 
     async def probe(ip_address, *, printer=None, **_k):

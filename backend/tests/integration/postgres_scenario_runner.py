@@ -1192,6 +1192,10 @@ async def _main(mode: str) -> dict:
     # holding connections bound to whichever loop created them, so a second
     # ``asyncio.run`` finds them attached to a closed loop and dies inside the
     # proactor with a bare ``AttributeError: 'NoneType' has no attribute 'send'``.
+    if mode.startswith("g02_schema:"):
+        from backend.tests.integration.g02_pg_schema_scenarios import run
+
+        return await run(mode.split(":", 1)[1])
     await _init()
     if mode == "print_state_recovery":
         from backend.tests.integration.print_state_recovery_scenarios import run

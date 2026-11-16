@@ -15,9 +15,9 @@ even on a timer here: it is called from ``PrinterManager.get_status()``, i.e.
 reactively, when something asks. So a printer nobody is looking at has nothing
 watching it at all.
 
-**Four conditions, and the fourth is what makes this safe to run.** A rebuild
-happens only when the client is disconnected, *had* a working session before, has
-been silent past the grace period, **and its MQTT port still answers**. Without
+**Four conditions, and the port probe is what makes this safe to run.** A rebuild
+happens only when the client is disconnected, has had a message or a recorded
+connect attempt, is silent past the grace period, **and its MQTT port still answers**. Without
 that last one a farm powered down overnight would churn clients and spam the log
 every minute for every machine; with it, a switched-off printer is simply left to
 paho, which is the right owner for that case.
@@ -66,15 +66,17 @@ _task: asyncio.Task | None = None
 
 
 def _silence_seconds(client) -> float | None:
-    """Seconds since this client last heard anything, or ``None`` if it never did.
+    """Age of the last message, or of a never-message client's connect attempt.
 
-    ``_last_message_time`` is 0 until the first message arrives, which is exactly
-    the "never had a working session" case — a printer that has never been
-    reachable is not something to rebuild, it is something to configure.
+    A high-FD paho wake-up socketpair is not replaced by paho reconnects. Such
+    a client never reports anything and still needs an owner-controlled rebuild.
+    None means neither timestamp is known; a zero attempt timestamp is valid.
     """
     last = getattr(client, "_last_message_time", 0) or 0
     if not last:
-        return None
+        last = getattr(client, "_connect_started_at", None)
+        if last is None:
+            return None
     return time.time() - last
 
 

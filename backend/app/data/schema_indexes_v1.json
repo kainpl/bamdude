@@ -1,0 +1,252 @@
+[
+  {
+    "table": "auth_ephemeral_tokens",
+    "name": "ix_auth_eph_type_exp",
+    "columns": [
+      "token_type",
+      "expires_at"
+    ],
+    "unique": false,
+    "predicate": null,
+    "sqlite_sql": "CREATE INDEX ix_auth_eph_type_exp ON auth_ephemeral_tokens (token_type, expires_at)",
+    "postgres_sql": "CREATE INDEX ix_auth_eph_type_exp ON auth_ephemeral_tokens (token_type, expires_at)",
+    "postgres_definition": {
+      "name": "ix_auth_eph_type_exp",
+      "unique": false,
+      "column_names": [
+        "token_type",
+        "expires_at"
+      ],
+      "dialect_options": {
+        "postgresql_include": []
+      }
+    }
+  },
+  {
+    "table": "auth_rate_limit_events",
+    "name": "ix_auth_rl_type_time",
+    "columns": [
+      "event_type",
+      "occurred_at"
+    ],
+    "unique": false,
+    "predicate": null,
+    "sqlite_sql": "CREATE INDEX ix_auth_rl_type_time ON auth_rate_limit_events (event_type, occurred_at)",
+    "postgres_sql": "CREATE INDEX ix_auth_rl_type_time ON auth_rate_limit_events (event_type, occurred_at)",
+    "postgres_definition": {
+      "name": "ix_auth_rl_type_time",
+      "unique": false,
+      "column_names": [
+        "event_type",
+        "occurred_at"
+      ],
+      "dialect_options": {
+        "postgresql_include": []
+      }
+    }
+  },
+  {
+    "table": "auto_queue_items",
+    "name": "ix_auto_queue_batch_id",
+    "columns": [
+      "batch_id"
+    ],
+    "unique": false,
+    "predicate": null,
+    "sqlite_sql": "CREATE INDEX ix_auto_queue_batch_id ON auto_queue_items (batch_id)",
+    "postgres_sql": "CREATE INDEX ix_auto_queue_batch_id ON auto_queue_items (batch_id)",
+    "postgres_definition": {
+      "name": "ix_auto_queue_batch_id",
+      "unique": false,
+      "column_names": [
+        "batch_id"
+      ],
+      "dialect_options": {
+        "postgresql_include": []
+      }
+    }
+  },
+  {
+    "table": "auto_queue_items",
+    "name": "ix_auto_queue_status_position",
+    "columns": [
+      "status",
+      "position"
+    ],
+    "unique": false,
+    "predicate": null,
+    "sqlite_sql": "CREATE INDEX ix_auto_queue_status_position ON auto_queue_items (status, position)",
+    "postgres_sql": "CREATE INDEX ix_auto_queue_status_position ON auto_queue_items (status, position)",
+    "postgres_definition": {
+      "name": "ix_auto_queue_status_position",
+      "unique": false,
+      "column_names": [
+        "status",
+        "position"
+      ],
+      "dialect_options": {
+        "postgresql_include": []
+      }
+    }
+  },
+  {
+    "table": "library_file_tags",
+    "name": "ix_library_file_tags_tag_id",
+    "columns": [
+      "tag_id"
+    ],
+    "unique": false,
+    "predicate": null,
+    "sqlite_sql": "CREATE INDEX ix_library_file_tags_tag_id ON library_file_tags (tag_id)",
+    "postgres_sql": "CREATE INDEX ix_library_file_tags_tag_id ON library_file_tags (tag_id)",
+    "postgres_definition": {
+      "name": "ix_library_file_tags_tag_id",
+      "unique": false,
+      "column_names": [
+        "tag_id"
+      ],
+      "dialect_options": {
+        "postgresql_include": []
+      }
+    }
+  },
+  {
+    "table": "library_files",
+    "name": "ix_library_files_file_hash_active",
+    "columns": [
+      "file_hash"
+    ],
+    "unique": false,
+    "predicate": "deleted_at IS NULL",
+    "sqlite_sql": "CREATE INDEX ix_library_files_file_hash_active ON library_files (file_hash) WHERE deleted_at IS NULL",
+    "postgres_sql": "CREATE INDEX ix_library_files_file_hash_active ON library_files (file_hash) WHERE deleted_at IS NULL",
+    "postgres_definition": {
+      "name": "ix_library_files_file_hash_active",
+      "unique": false,
+      "column_names": [
+        "file_hash"
+      ],
+      "dialect_options": {
+        "postgresql_where": "(deleted_at IS NULL)",
+        "postgresql_include": []
+      }
+    }
+  },
+  {
+    "table": "long_lived_tokens",
+    "name": "ix_long_lived_tokens_token_identity",
+    "columns": [
+      "token_identity"
+    ],
+    "unique": true,
+    "predicate": null,
+    "sqlite_sql": "CREATE UNIQUE INDEX ix_long_lived_tokens_token_identity ON long_lived_tokens (token_identity)",
+    "postgres_sql": "CREATE UNIQUE INDEX ix_long_lived_tokens_token_identity ON long_lived_tokens (token_identity)",
+    "postgres_definition": {
+      "name": "ix_long_lived_tokens_token_identity",
+      "unique": true,
+      "column_names": [
+        "token_identity"
+      ],
+      "dialect_options": {
+        "postgresql_include": []
+      }
+    }
+  },
+  {
+    "table": "oidc_providers",
+    "name": "ix_oidc_providers_default_group_id",
+    "columns": [
+      "default_group_id"
+    ],
+    "unique": false,
+    "predicate": null,
+    "sqlite_sql": "CREATE INDEX ix_oidc_providers_default_group_id ON oidc_providers (default_group_id)",
+    "postgres_sql": "CREATE INDEX ix_oidc_providers_default_group_id ON oidc_providers (default_group_id)",
+    "postgres_definition": {
+      "name": "ix_oidc_providers_default_group_id",
+      "unique": false,
+      "column_names": [
+        "default_group_id"
+      ],
+      "dialect_options": {
+        "postgresql_include": []
+      }
+    }
+  },
+  {
+    "table": "print_archives",
+    "name": "ix_print_archives_effective_hash",
+    "columns": [
+      "source_content_hash"
+    ],
+    "unique": false,
+    "predicate": null,
+    "sqlite_sql": "CREATE INDEX ix_print_archives_effective_hash ON print_archives (coalesce(source_content_hash, content_hash))",
+    "postgres_sql": "CREATE INDEX ix_print_archives_effective_hash ON print_archives (coalesce(source_content_hash, content_hash))",
+    "postgres_definition": {
+      "name": "ix_print_archives_effective_hash",
+      "unique": false,
+      "column_names": [
+        null
+      ],
+      "expressions": [
+        "COALESCE(source_content_hash, content_hash)"
+      ],
+      "dialect_options": {
+        "postgresql_include": []
+      }
+    }
+  },
+  {
+    "table": "slicer_pipelines",
+    "name": "ix_slicer_pipelines_is_deleted",
+    "columns": [
+      "is_deleted"
+    ],
+    "unique": false,
+    "predicate": null,
+    "sqlite_sql": "CREATE INDEX ix_slicer_pipelines_is_deleted ON slicer_pipelines (is_deleted)",
+    "postgres_sql": "CREATE INDEX ix_slicer_pipelines_is_deleted ON slicer_pipelines (is_deleted)",
+    "postgres_definition": {
+      "name": "ix_slicer_pipelines_is_deleted",
+      "unique": false,
+      "column_names": [
+        "is_deleted"
+      ],
+      "dialect_options": {
+        "postgresql_include": []
+      }
+    }
+  },
+  {
+    "table": "filament_calibration",
+    "name": "ux_filament_cali_active",
+    "columns": [
+      "printer_id",
+      "filament_id",
+      "nozzle_diameter",
+      "nozzle_volume_type",
+      "extruder_id"
+    ],
+    "unique": true,
+    "predicate": "is_active = TRUE",
+    "sqlite_sql": "CREATE UNIQUE INDEX ux_filament_cali_active ON filament_calibration (printer_id, filament_id, nozzle_diameter, nozzle_volume_type, extruder_id) WHERE is_active = TRUE",
+    "postgres_sql": "CREATE UNIQUE INDEX ux_filament_cali_active ON filament_calibration (printer_id, filament_id, nozzle_diameter, nozzle_volume_type, extruder_id) WHERE is_active = TRUE",
+    "postgres_definition": {
+      "name": "ux_filament_cali_active",
+      "unique": true,
+      "column_names": [
+        "printer_id",
+        "filament_id",
+        "nozzle_diameter",
+        "nozzle_volume_type",
+        "extruder_id"
+      ],
+      "dialect_options": {
+        "postgresql_where": "(is_active = true)",
+        "postgresql_include": []
+      }
+    }
+  }
+]

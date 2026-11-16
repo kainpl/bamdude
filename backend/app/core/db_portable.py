@@ -12,7 +12,7 @@ import re
 import sqlite3
 import tempfile
 from contextlib import asynccontextmanager, closing, contextmanager
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 from sqlalchemy import MetaData, text
@@ -62,6 +62,10 @@ def validate_sqlite_backup(path: Path, *, require_app_schema: bool = False) -> N
                 raise ValueError("Backup database has no tables")
             if require_app_schema and not {"printers", "settings"} <= tables:
                 raise ValueError("Backup is missing application tables")
+            if require_app_schema and not {"key", "value"} <= {
+                r[1] for r in src.execute("PRAGMA table_info(settings)")
+            }:
+                raise ValueError("Backup is missing application settings columns")
             if "_migrations" in tables:
                 versions = {r[0] for r in src.execute("SELECT version FROM _migrations")}
                 known = {m["version"] for m in _discover_migrations()}
@@ -96,6 +100,24 @@ async def _file_work(function, *args, **kwargs):
     return task.result()
 
 
+async def _annotate_sqlite_snapshot(path, metadata):
+    """Diagnostic proof on the private snapshot, never a live DB edit."""
+    if "settings" not in metadata.tables:
+        return
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    from backend.app.core.schema_conform_repair import data_residuals
+    from backend.app.core.schema_repair_state import PORTABLE, VERSION, put_record
+
+    image = create_async_engine(f"sqlite+aiosqlite:///{path}")
+    try:
+        async with image.begin() as conn:
+            reports = await data_residuals(conn, metadata, accepted_calibration=True)
+            await put_record(conn, PORTABLE, {"version": VERSION, "entries": reports})
+    finally:
+        await image.dispose()
+
+
 async def dump_to_sqlite(engine, metadata, output_path: Path) -> None:
     """Export a consistent database snapshot to the existing portable SQLite format."""
     from backend.app.core.db_dialect import is_sqlite
@@ -105,6 +127,7 @@ async def dump_to_sqlite(engine, metadata, output_path: Path) -> None:
         # can race writers and does not capture a consistent live database.
         with _staged_output(output_path) as staging:
             await _file_work(_snapshot_sqlite, Path(engine.url.database), staging)
+            await _annotate_sqlite_snapshot(staging, metadata)
     else:
         await _export_pg_to_sqlite(engine, metadata, output_path)
 
@@ -189,6 +212,9 @@ async def _export_pg_to_sqlite(engine, metadata, output_path: Path) -> None:
                 # new snapshot for each table and can mix parent/child revisions.
                 await conn.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY"))
             await _check_export_schema(conn, portable, metadata)
+            from backend.app.core.schema_portable_residuals import adapt_portable
+
+            residuals = await adapt_portable(conn, portable, metadata) if conn.dialect.name == "postgresql" else []
             # Staging engine: no case-folding listener (core/case_folding.py) — nothing
             # case-insensitive runs here; add configure_sqlite_connection if that ever changes.
             schema_engine = create_sync_engine(f"sqlite:///{staging}")
@@ -200,7 +226,7 @@ async def _export_pg_to_sqlite(engine, metadata, output_path: Path) -> None:
                 # Cyclic FKs require loading without enforcement. Constraints
                 # remain in the portable DDL, and are checked after all rows land.
                 dst.execute("PRAGMA foreign_keys = OFF")
-                now = datetime.now()  # noqa: DTZ005
+                now = datetime.now(timezone.utc).replace(tzinfo=None)
                 for table in portable.tables.values():
                     columns = list(table.c)
                     defaults = {}
@@ -237,6 +263,18 @@ async def _export_pg_to_sqlite(engine, metadata, output_path: Path) -> None:
                     async with conn.stream(statement) as result:
                         async for rows in result.partitions(500):
                             dst.executemany(insert, [serialize(row) for row in rows])
+                if "settings" in portable.tables:
+                    from backend.app.core.schema_repair_state import PORTABLE, VERSION, encode
+
+                    # This is diagnostic data only. New restores re-prove every
+                    # object and require their own calibration confirmation.
+                    dst.execute('DELETE FROM settings WHERE "key"=?', (PORTABLE,))
+                    dst.execute(
+                        'INSERT INTO settings("key",value) VALUES (?,?)',
+                        (PORTABLE, encode({"version": VERSION, "entries": residuals})),
+                    )
+                    if residuals:
+                        logger.warning("Portable backup preserves %d schema data residuals", len(residuals))
                 violations = dst.execute("PRAGMA foreign_key_check").fetchmany(5)
                 if violations:
                     raise ValueError(f"Portable backup has foreign key violations: {violations}")
@@ -343,6 +381,12 @@ def _reflect_sqlite_schema(sqlite_path: Path, models_metadata) -> MetaData:
     sync_engine = create_engine(f"sqlite:///{sqlite_path}")
     try:
         reflected.reflect(bind=sync_engine)
+        from backend.app.core.sqlite_import_preflight import omit_redundant_notification_index
+
+        notifications = reflected.tables.get("user_notifications")
+        if notifications is not None:
+            with closing(_sqlite_connection(sqlite_path)) as source:
+                omit_redundant_notification_index(notifications, source)
     finally:
         sync_engine.dispose()
 
@@ -351,7 +395,7 @@ def _reflect_sqlite_schema(sqlite_path: Path, models_metadata) -> MetaData:
             reflected.remove(reflected.tables[name])
             continue
         table = reflected.tables[name]
-        model_table = models_metadata.tables.get(name)
+        model_table = models_metadata.tables.get(name) if models_metadata is not None else None
         for column in table.columns:
             model_col = model_table.columns.get(column.name) if model_table is not None else None
             if model_col is not None:
@@ -446,7 +490,19 @@ async def _restore_model_indexes(conn, models_metadata) -> None:
             # sets normally agree; the guard stays because it is cheap and the
             # failure it prevents is a boot that stops.
             present = {c["name"] for c in inspector.get_columns(table.name)}
+            existing_indexes = {i["name"] for i in inspector.get_indexes(table.name)}
+            if sync_conn.dialect.name == "sqlite":
+                # SQLite reflection omits expression indexes; checkfirst alone
+                # therefore tries to create our now-bound expression twice.
+                existing_indexes.update(
+                    sync_conn.scalars(
+                        text("SELECT name FROM sqlite_schema WHERE type='index' AND tbl_name=:table"),
+                        {"table": table.name},
+                    )
+                )
             for index in table.indexes:
+                if index.name in existing_indexes:
+                    continue
                 # Every column the index touches, plain or inside an expression
                 # (``COALESCE(a, b)`` names two), must already exist here.
                 # ``visitors.iterate`` walks the expression tree and yields the
@@ -568,6 +624,11 @@ async def _reconcile_columns(engine, models_metadata) -> None:
     """
     from sqlalchemy import inspect as sqla_inspect
 
+    from backend.app.migrations._pg_schema_228_contract import REPAIRS
+
+    retained_nulls = {
+        row["object"] for row in REPAIRS if row["action"] == "repair_or_named_null_residual" and not row["fill_allowed"]
+    }
     ddl = engine.dialect.ddl_compiler(engine.dialect, None)
 
     def _plan(sync_conn):
@@ -591,6 +652,17 @@ async def _reconcile_columns(engine, models_metadata) -> None:
                         )
                     )
                 elif not col.primary_key and bool(present[col.name]["nullable"]) != bool(col.nullable):
+                    if not col.nullable and f"{table.name}.{col.name}" in retained_nulls:
+                        quote = sync_conn.dialect.identifier_preparer.quote
+                        count = sync_conn.scalar(
+                            text(f"SELECT count(*) FROM {quote(table.name)} WHERE {quote(col.name)} IS NULL")
+                        )
+                        if count:
+                            # B already reported this exact residual. Repeating
+                            # a known failing ALTER only adds a server ERROR;
+                            # it cannot supply the missing historical value.
+                            logger.debug("Import retained B NULL residual %s.%s: %d", table.name, col.name, count)
+                            continue
                     verb = "DROP" if col.nullable else "SET"
                     nulls.append(
                         (
@@ -744,7 +816,7 @@ async def _reconcile_check_constraints(engine, models_metadata) -> None:
 _conform_pending = False
 
 
-async def conform_imported_schema(engine, models_metadata) -> None:
+async def conform_imported_schema(engine, models_metadata, *, debt=None) -> None:
     """After an import and the chain that followed it: what a fresh install has, the moved one gets.
 
     A file that upgraded through the migrations is the models MINUS
@@ -762,26 +834,33 @@ async def conform_imported_schema(engine, models_metadata) -> None:
 
     Measured against a fresh ``create_all`` + chain on the same PostgreSQL
     (2026-09-09): after this pass the two schemas differ in nothing that
-    changes behaviour. Runs exactly once, after the chain that followed an
-    ``import_sqlite_to_postgres`` in this process — never on an ordinary
-    boot: migrations are frozen, and a working install is not repaired
-    behind its back.
+    changes behaviour. Every replacement now owns durable repair debt; a
+    later process resumes the entire import-only plan before readiness, even
+    when all migration markers arrived with the source. The legacy flag arm
+    below remains for direct compatibility callers, not as completion proof.
+    Ordinary native boots only retry their recorded residual objects.
     """
     global _conform_pending
+    from backend.app.core.schema_repair import claim, run_claimed
+
+    if debt is None:
+        debt = await claim(engine, models_metadata)
+    if debt is not None:
+        await run_claimed(engine, models_metadata, debt)
+        _conform_pending = False
+        return
     if not _conform_pending:
         return
     _conform_pending = False
 
-    # m001's PostgreSQL half: the tsvector column, its index, the trigger
-    # function and the trigger, plus the backfill — every statement of it is
-    # idempotent, which is why the migration's own function is called rather
-    # than copied. On the file m001 is "applied", but it was applied on
-    # SQLite, where it built an FTS5 table that stayed behind.
-    from backend.app.migrations.m001_bamdude_baseline import _setup_postgres_fts
+    # The source can already carry m228 from SQLite (where it is a no-op),
+    # or from a portable PG backup whose DDL lacks migration-only objects.
+    # Always replay the frozen PG repair on import, not just its FTS half.
+    from backend.app.migrations.m231_postgres_historical_schema import replay
 
     async with engine.begin() as conn:
-        await _setup_postgres_fts(conn)
-    logger.info("Conformed to the models — PostgreSQL archive search (tsvector, index, trigger)")
+        await replay(conn)
+    logger.info("Conformed import — frozen PostgreSQL historical repair")
 
     await _reconcile_columns(engine, models_metadata)
     await _reconcile_unique_constraints(engine, models_metadata)
@@ -796,7 +875,40 @@ def _request_conform() -> None:
     _conform_pending = True
 
 
-async def import_sqlite_to_postgres(engine, metadata, sqlite_path: Path) -> int:
+@asynccontextmanager
+async def prepared_import_source(path, metadata, *, postgres=True):
+    """All validators and the importer share one owned snapshot, never a cache."""
+    from backend.app.core.sqlite_import_source import (
+        PreparedSqliteSource,
+        SqliteSourceReadError,
+        prepare_postgres_source,
+    )
+
+    own = not isinstance(path, PreparedSqliteSource)
+    try:
+        source = PreparedSqliteSource(path) if own else path
+    except OSError as exc:
+        raise SqliteSourceReadError() from exc
+    try:
+        if own:
+            # Reserve ownership before yielding to the worker: cancellation
+            # during copy still has a reachable object to clean up.
+            if postgres:
+                await _file_work(prepare_postgres_source, source, metadata)
+            else:
+                await _file_work(source.copy)
+        yield source
+    finally:
+        if own:
+            await _file_work(source.close)
+
+
+async def import_sqlite_to_postgres(engine, metadata, sqlite_path: Path, *, acceptance=None) -> int:
+    async with prepared_import_source(sqlite_path, metadata) as prepared:
+        return await _import_prepared_to_postgres(engine, metadata, prepared, acceptance=acceptance)
+
+
+async def _import_prepared_to_postgres(engine, metadata, prepared, *, acceptance=None) -> int:
     """Import a SQLite file into PostgreSQL at the FILE's migration level.
 
     Used for the first-start move and for restoring a SQLite backup. The
@@ -811,14 +923,12 @@ async def import_sqlite_to_postgres(engine, metadata, sqlite_path: Path) -> int:
 
     Returns number of tables imported.
     """
-    validate_sqlite_backup(sqlite_path)
-
-    with closing(_sqlite_connection(sqlite_path)) as src:
+    with closing(_sqlite_connection(prepared.path)) as src:
         src.row_factory = sqlite3.Row
         # The schema to build is the file's own. ``_migrations`` is deliberately
         # IN: it is what lets the chain resume at the right place instead of
         # replaying from m001 against data that has already been through it.
-        reflected = _reflect_sqlite_schema(sqlite_path, metadata)
+        reflected = prepared.metadata
         # Any order will do — every foreign key is stripped before the load and
         # put back after (Phase 1 / Phase 3). ``sorted_tables`` is deliberately
         # not asked: the schema holds a FK cycle it cannot sort, it warns that
@@ -956,7 +1066,7 @@ async def import_sqlite_to_postgres(engine, metadata, sqlite_path: Path) -> int:
                         if col.name in datetime_columns:
                             not_null_defaults[col.name] = "__now__"
 
-                now = datetime.now()  # noqa: DTZ005
+                now = datetime.now(timezone.utc).replace(tzinfo=None)
 
                 def _convert_row(
                     row,
@@ -1046,6 +1156,16 @@ async def import_sqlite_to_postgres(engine, metadata, sqlite_path: Path) -> int:
                         "Import repaired orphaned rows the source database was carrying: %s", "; ".join(repaired)
                     )
 
+            # Recheck the original DB/WAL immediately before committing the
+            # replacement. A late external writer must not be consumed silently.
+            await _file_work(prepared.assert_unchanged)
+
+            # Owned by the SAME transaction as imported rows. A source marker
+            # or current migration level cannot certify the target's repair.
+            from backend.app.core.schema_repair_state import write_pending
+
+            await write_pending(conn, metadata, acceptance=acceptance)
+
         # What the models declare beyond the file — indexes reflection could not
         # carry, foreign keys no migration ever created — is added AFTER the
         # pending migrations, when the tables they belong to exist. See
@@ -1060,8 +1180,9 @@ async def _local_sqlite_candidate(data_dir) -> Path | None:
     """The local SQLite file this install may copy into an empty PostgreSQL.
 
     ``bamdude.db`` when it is there. A *legacy-named* file counts only when it is
-    BamDude's own 3.0.1-era database, which ``_is_bamdude_301`` recognises by its
-    ``telegram_chats`` table.
+    BamDude's own database, recognised by its ``telegram_chats`` table on a
+    private copy. An eligible candidate must still pass the import-level floor;
+    this identity probe alone does not authorize consuming an old file.
 
     The probe is the whole point. This path consumes what it accepts — the file
     is renamed to ``.db.migrated`` and its WAL unlinked — so without the gate a
@@ -1073,7 +1194,8 @@ async def _local_sqlite_candidate(data_dir) -> Path | None:
     Imported inside the function: ``migrations`` reaches into this module during
     startup, so importing it at module scope would close the cycle.
     """
-    from backend.app.migrations import FOREIGN_BAMBUDDY_NOTICE, _find_legacy_database, _is_bamdude_301
+    from backend.app.core.sqlite_import_source import is_legacy_bamdude_source
+    from backend.app.migrations import FOREIGN_BAMBUDDY_NOTICE, _find_legacy_database
 
     primary = Path(data_dir) / "bamdude.db"
     if primary.exists():
@@ -1082,7 +1204,7 @@ async def _local_sqlite_candidate(data_dir) -> Path | None:
     alt = _find_legacy_database(data_dir)
     if alt is None:
         return None
-    if await _is_bamdude_301(alt):
+    if await _file_work(is_legacy_bamdude_source, alt):
         return alt
 
     logger.warning(FOREIGN_BAMBUDDY_NOTICE, alt)
@@ -1093,7 +1215,86 @@ class SqliteImportError(RuntimeError):
     """The one-time SQLite → PostgreSQL import failed; startup must not continue."""
 
 
-async def auto_migrate_sqlite_to_pg(engine, metadata) -> bool:
+async def _target_has_repair_history(conn):
+    """Eligibility only, NEVER proof that its pending schema is repaired.
+
+    A committed import with zero printers is still used storage. A crash before
+    consuming its local SQLite file must not re-import/reset its repair budget.
+    """
+    from backend.app.core.schema_repair_state import DEBT, RESIDUALS, has_settings
+
+    if not await has_settings(conn):
+        return False
+    return bool(
+        await conn.scalar(
+            text('SELECT count(*) FROM settings WHERE "key" IN (:debt,:residuals)'),
+            {"debt": DEBT, "residuals": RESIDUALS},
+        )
+    )
+
+
+async def preflight_sqlite_to_pg(engine):
+    """Before create_all: refuse an unsupported *eligible* local import source.
+
+    A stray old SQLite file must not prevent a populated PG farm from booting.
+    Inspect table presence instead of deliberately aborting a PG transaction.
+    """
+    from sqlalchemy import inspect
+
+    from backend.app.core.config import settings
+    from backend.app.core.database import Base
+    from backend.app.core.db_dialect import is_postgres
+
+    if not is_postgres():
+        return
+    async with engine.connect() as conn:
+        if await _target_has_repair_history(conn):
+            return
+        if await conn.run_sync(lambda sync: inspect(sync).has_table("printers")):
+            if await conn.scalar(text("SELECT EXISTS (SELECT 1 FROM printers)")):
+                return
+    return await _prepare_local_import(settings.data_dir, Base.metadata)
+
+
+async def _prepare_local_import(data_dir, metadata):
+    from backend.app.core.sqlite_import_source import PreparedSqliteSource, is_legacy_bamdude_source
+    from backend.app.migrations import FOREIGN_BAMBUDDY_NOTICE, _find_legacy_database
+
+    source = None
+    try:
+        primary = Path(data_dir) / "bamdude.db"
+        path = primary if primary.exists() else _find_legacy_database(data_dir)
+        if path is None:
+            return None
+        source = PreparedSqliteSource(path)
+        await _file_work(source.copy)
+        if path != primary and not await _file_work(is_legacy_bamdude_source, source):
+            logger.warning(FOREIGN_BAMBUDDY_NOTICE, path)
+            await _file_work(source.close)
+            return None
+        await _file_work(source.validate, metadata)
+        from backend.app.core.schema_restore_consent import calibration_groups
+
+        if await _file_work(calibration_groups, source.path):
+            raise ValueError(
+                "Active calibration duplicates require explicit restore confirmation. "
+                "Create a consistent ZIP from a COPY of the SQLite database, start a clean installation, "
+                "then restore the ZIP and review its warning. The original database was not changed."
+            )
+        return source
+    except BaseException as exc:
+        if source is not None:
+            await _file_work(source.close)
+        if isinstance(exc, OSError):
+            from backend.app.core.sqlite_import_source import SOURCE_READ_MESSAGE
+
+            raise SqliteImportError(SOURCE_READ_MESSAGE) from exc
+        if isinstance(exc, ValueError):
+            raise SqliteImportError(str(exc)) from exc
+        raise
+
+
+async def auto_migrate_sqlite_to_pg(engine, metadata, *, prepared=None) -> bool:
     """Auto-migrate local SQLite database to PostgreSQL on first PG start.
 
     Called during startup when:
@@ -1112,21 +1313,39 @@ async def auto_migrate_sqlite_to_pg(engine, metadata) -> bool:
     # Check if PG already has data
     try:
         async with engine.begin() as conn:
+            if await _target_has_repair_history(conn):
+                return False
             result = await conn.execute(text("SELECT COUNT(*) FROM printers"))
             if (result.scalar() or 0) > 0:
                 return False  # PG already populated
     except Exception:
         return False  # Table doesn't exist yet or other error
 
-    # Look for local SQLite database
-    sqlite_path = await _local_sqlite_candidate(settings.data_dir)
-    if sqlite_path is None:
+    if prepared is False:
+        return False
+    if prepared is not None:
+        return await _consume_prepared_sqlite(engine, metadata, prepared)
+
+    # Standalone callers own a new single snapshot; normal startup supplies
+    # the already validated pre-create_all snapshot explicitly.
+    source = await _prepare_local_import(settings.data_dir, metadata)
+    if source is None:
         return False  # No local SQLite to migrate
+    try:
+        return await _consume_prepared_sqlite(engine, metadata, source)
+    finally:
+        await _file_work(source.close)
+
+
+async def _consume_prepared_sqlite(engine, metadata, source):
+    sqlite_path = source.original
 
     logger.info("Found local SQLite database: %s - migrating to PostgreSQL...", sqlite_path)
 
+    imported = None
     try:
-        imported = await import_sqlite_to_postgres(engine, metadata, sqlite_path)
+        imported = await import_sqlite_to_postgres(engine, metadata, source)
+        await _file_work(source.assert_unchanged)
 
         # Rename SQLite to .migrated to prevent re-import
         migrated_path = sqlite_path.with_suffix(".db.migrated")
@@ -1152,6 +1371,11 @@ async def auto_migrate_sqlite_to_pg(engine, metadata) -> bool:
         # required"), and the next start would try the import again on top of
         # those seeds. Seen 2026-09-07 with a real database.
         logger.error("SQLite → PostgreSQL migration failed: %s", e)
+        if imported is not None:
+            raise SqliteImportError(
+                "The PostgreSQL import committed, but consuming the original SQLite source could not be "
+                "confirmed. Startup is stopped; preserve the source and inspect the import before retrying."
+            ) from e
         raise SqliteImportError(
             f"Importing {sqlite_path.name} into PostgreSQL failed: {e}. PostgreSQL was left empty and "
             f"{sqlite_path.name} is untouched. Fix the cause and start BamDude again."

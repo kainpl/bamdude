@@ -112,7 +112,7 @@ async def test_every_committed_category_rechecks_actor(actor_restore):
     service._resolve_ref = AsyncMock(return_value=("a" * 40, "", None))
     service._read_categories = AsyncMock(return_value=({}, ""))
 
-    async def archives(db, *args):
+    async def archives(db, *args, **kwargs):
         # Simulate the permission generation changing between committed
         # categories, without inventing a username/current-session fallback.
         (await db.get(User, capture.user_id)).session_generation += 1

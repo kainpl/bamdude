@@ -44,6 +44,9 @@ def _isolate_collector(monkeypatch, test_engine):
         "backend.app.services.diagnostic_snapshot.collect_diagnostic_snapshot",
         AsyncMock(return_value={}),
     )
+    # This consumer checks ZIP attachments; process diagnostics have their own
+    # tests and must not walk the full-suite worker's heap here.
+    monkeypatch.setattr(support, "_collect_process_info", lambda: {})
 
 
 def _names(content: bytes) -> list[str]:
