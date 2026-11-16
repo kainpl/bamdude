@@ -427,6 +427,9 @@ MAX_TYPE_TOTAL_MM = 500.0
 #: The longest side of a rendered picture, in dots: a 500 mm label at the
 #: 8 dots/mm every supported head prints at.
 MAX_PICTURE_SIDE_DOTS = 4000
+#: Labels in one export of pictures. Measured 2026-11-16: a 100 × 50 mm label at
+#: 600 dpi is ~70 ms of a worker thread and ~65 kB, so this many is ~15 s and 13 MB.
+MAX_LABEL_PICTURES = 200
 
 #: The sentences those refusals are made of. A named map so the refusal catalog
 #: (``scripts/api_error_catalog.py``, ``FORWARDED_MESSAGE_MAPS``) can see them:
@@ -455,6 +458,8 @@ LABEL_GEOMETRY_MESSAGES = {
     "element_font": "Element {} has type larger than {} mm.",
     "type_total": "The type sizes of one design may add up to at most {} mm.",
     "picture": "At {} dots per millimetre this design is more than {} dots on a side — lower the resolution.",
+    "picture_dpi": "At {} dpi this design is more than {} dots on a side — choose a lower resolution.",
+    "picture_count": "One export takes at most {} labels as pictures — select fewer.",
 }
 
 
@@ -504,6 +509,21 @@ def picture_problems(spec: LabelTemplateSpec, dots_per_mm: float) -> list[str]:
     )
     if longest * dots_per_mm > MAX_PICTURE_SIDE_DOTS + 1e-6:
         return [LABEL_GEOMETRY_MESSAGES["picture"].format(f"{dots_per_mm:g}", MAX_PICTURE_SIDE_DOTS)]
+    return []
+
+
+def colour_picture_problems(spec: LabelTemplateSpec, dpi: float, *, labels: int = 1) -> list[str]:
+    """Whether this design as colour pictures at this resolution is an export or a denial of service.
+
+    ⚠️ Not :func:`picture_problems`: that one bounds the 1-bit raster, whose
+    shrink-to-fit loop works dot by dot and so counts the type as well. A colour
+    picture is the PDF page rasterised, and only the page's own sides cost.
+    """
+    say = LABEL_GEOMETRY_MESSAGES
+    if labels > MAX_LABEL_PICTURES:
+        return [say["picture_count"].format(MAX_LABEL_PICTURES)]
+    if max(spec.width_mm, spec.height_mm) * dpi / 25.4 > MAX_PICTURE_SIDE_DOTS + 0.5:
+        return [say["picture_dpi"].format(f"{dpi:g}", MAX_PICTURE_SIDE_DOTS)]
     return []
 
 
@@ -639,6 +659,7 @@ __all__ = [
     "fits_within",
     "fitting_ids",
     "orientation",
+    "colour_picture_problems",
     "picture_problems",
     "resolve",
     "sheet_problems",

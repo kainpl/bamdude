@@ -113,12 +113,15 @@ def _imports(path: Path) -> set[str]:
 
 
 def test_only_the_childs_module_imports_pdfium():
+    """Two users, and the second opens no upload: ``label_picture`` rasterises the label PDF that
+    ``render_template_pdf`` produced a moment earlier from a design ``label_gate`` already bounded — a document
+    main wrote itself, not an untrusted file. Every PDF a person uploaded stays with the child's module."""
     users = sorted(
         path.relative_to(APP).as_posix()
         for path in APP.rglob("*.py")
         if any(name.split(".")[0].startswith("pypdfium2") for name in _imports(path))
     )
-    assert users == ["services/pdf_thumbnail.py"]
+    assert users == ["services/label_picture.py", "services/pdf_thumbnail.py"]
 
 
 def test_only_the_render_child_imports_the_pdf_module():

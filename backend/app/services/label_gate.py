@@ -49,6 +49,11 @@ def _refuse(problems: list[str]) -> None:
         raise HTTPException(422, problems[0])
 
 
+def refuse(problems: list[str]) -> None:
+    """Answer the first of ``problems`` as a 422 — for a gate that lives beside its renderer."""
+    _refuse(problems)
+
+
 def checked_design(raw: dict[str, Any]) -> LabelTemplateSpec:
     """A design a renderer may be handed, or a 422 saying why not."""
     try:
@@ -102,4 +107,4 @@ async def draw(render: Callable[..., T], *args: Any, **kwargs: Any) -> T:
     return await asyncio.to_thread(render, *args, **kwargs)
 
 
-__all__ = ["checked_design", "checked_picture", "checked_sheet", "design_of", "draw", "sheet_of"]
+__all__ = ["checked_design", "checked_picture", "checked_sheet", "design_of", "draw", "refuse", "sheet_of"]
