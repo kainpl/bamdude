@@ -5695,6 +5695,10 @@ export default {
     selectPreset: '- Select a preset -',
     noPresetsForSlot: 'No presets available',
     otherPrinters: 'Other printers',
+    // {{list}} is the label of the list being searched ("Process profile").
+    searchPresets: 'Search: {{list}}',
+    searchPresetsPlaceholder: 'Search presets…',
+    noMatchingPresets: 'No matching presets.',
     allPresetsRequired: 'All presets must be selected',
     presetSource: 'Preset source',
     analyzingPlateFilaments: 'Analyzing plate filaments…',
@@ -5717,6 +5721,7 @@ export default {
     tier: {
       local: 'Imported',
       cloud: 'Bambu Cloud',
+      cloudOwn: 'Bambu Cloud — my presets',
       orcaCloud: 'Orca Cloud',
       standard: 'Standard',
     },

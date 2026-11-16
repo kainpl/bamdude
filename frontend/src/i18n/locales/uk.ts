@@ -5731,6 +5731,10 @@ export default {
     selectPreset: '- Виберіть пресет -',
     noPresetsForSlot: 'Немає доступних пресетів',
     otherPrinters: 'Інші принтери',
+    // {{list}} — підпис списку, у якому шукаємо («Профіль процесу»).
+    searchPresets: 'Пошук: {{list}}',
+    searchPresetsPlaceholder: 'Пошук пресетів…',
+    noMatchingPresets: 'Нічого не знайдено.',
     allPresetsRequired: 'Потрібно вибрати всі пресети',
     presetSource: 'Джерело пресетів',
     analyzingPlateFilaments: 'Аналіз філаментів плати…',
@@ -5753,6 +5757,7 @@ export default {
     tier: {
       local: 'Імпортовані',
       cloud: 'Bambu Cloud',
+      cloudOwn: 'Bambu Cloud — мої пресети',
       orcaCloud: 'Orca Cloud',
       standard: 'Стандартні',
     },

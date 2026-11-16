@@ -6,6 +6,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 
 import { render } from '../utils';
@@ -93,5 +94,112 @@ describe('SliceModal — a printer preset saved under a name of its own', () => 
     await waitFor(() => expect(process.value).toBe('standard:0.20mm Standard @BBL H2D'));
     const filament = (await picker('Filament profile')) as HTMLSelectElement;
     await waitFor(() => expect(filament.value).toBe('standard:Bambu PLA Basic @BBL H2D'));
+  });
+});
+
+const groupsOf = (select: HTMLElement) =>
+  Array.from(select.querySelectorAll('optgroup')).map((g) => [
+    g.label,
+    Array.from(g.querySelectorAll('option')).map((o) => o.textContent),
+  ]);
+
+describe('SliceModal — how a preset list is ordered', () => {
+  const X1C = 'Bambu Lab X1 Carbon 0.4 nozzle';
+  const listing: Listing = {
+    local: {
+      printer: [{ name: X1C }],
+      process: [{ name: 'Zebra draft' }, { name: '0.20mm Mine' }, { name: '0.08mm Mine' }],
+    },
+    orca_cloud: { process: [{ name: 'Orca tuned', id: 'a-uuid' }] },
+    cloud: {
+      process: [
+        { name: 'My cloud process', id: 'PPUS1234' },
+        { name: '0.20mm Standard @BBL X1C', id: 'GP004' },
+        { name: '0.20mm Standard @BBL A1', id: 'GP100' },
+      ],
+    },
+    standard: {
+      process: [
+        { name: '0.20mm Standard @BBL X1C' },
+        { name: '0.08mm Extra Fine @BBL X1C' },
+        { name: '0.20mm Standard @BBL A1' },
+      ],
+      filament: [
+        { name: 'Generic PLA', filament_type: 'PLA' },
+        { name: 'Bambu PLA Basic', filament_type: 'PLA' },
+      ],
+    },
+  };
+
+  it("lists the user's own sources first, then the stock ones, each sorted", async () => {
+    serve(listing);
+    open();
+
+    const process = await picker('Process profile');
+    await waitFor(() => expect(process.querySelectorAll('optgroup').length).toBeGreaterThan(0));
+    expect(groupsOf(process)).toEqual([
+      ['Imported', ['0.08mm Mine', '0.20mm Mine', 'Zebra draft']],
+      ['Orca Cloud', ['Orca tuned']],
+      ['Bambu Cloud — my presets', ['My cloud process']],
+      // The same stock preset, once per source: a name is not an identity,
+      // and the two copies are different content.
+      ['Bambu Cloud', ['0.20mm Standard @BBL X1C']],
+      ['Standard', ['0.08mm Extra Fine @BBL X1C', '0.20mm Standard @BBL X1C']],
+      // Presets of another printer say where each comes from.
+      ['Other printers', ['0.20mm Standard @BBL A1 · Bambu Cloud', '0.20mm Standard @BBL A1 · Standard']],
+    ]);
+  });
+
+  it('never lets the display order change what is pre-picked', async () => {
+    serve(listing);
+    open();
+
+    // Listed Bambu-first; picked in the order the listing arrived, where the
+    // two tie.
+    const filament = (await picker('Filament profile')) as HTMLSelectElement;
+    await waitFor(() => expect(filament.value).toBe('standard:Generic PLA'));
+    expect(groupsOf(filament)).toEqual([['Standard', ['Bambu PLA Basic', 'Generic PLA']]]);
+  });
+});
+
+describe('SliceModal — searching a preset list', () => {
+  const X1C = 'Bambu Lab X1 Carbon 0.4 nozzle';
+  const listing: Listing = {
+    local: { printer: [{ name: X1C }] },
+    standard: {
+      process: [
+        { name: '0.20mm Standard @BBL X1C' },
+        { name: '0.08mm Extra Fine @BBL X1C' },
+        { name: '0.12mm Fine @BBL A1' },
+      ],
+      filament: [{ name: 'Generic PLA', filament_type: 'PLA' }],
+    },
+  };
+
+  it('narrows one list by the words typed, other printers included', async () => {
+    const user = userEvent.setup();
+    serve(listing);
+    open();
+
+    const process = (await picker('Process profile')) as HTMLSelectElement;
+    await waitFor(() => expect(process.value).toBe('standard:0.20mm Standard @BBL X1C'));
+    await user.click(screen.getByRole('button', { name: 'Search: Process profile' }));
+    await user.type(screen.getByRole('searchbox', { name: 'Search: Process profile' }), 'fine');
+
+    expect(groupsOf(process)).toEqual([
+      // The chosen preset stays listed whatever is typed.
+      ['Standard', ['0.08mm Extra Fine @BBL X1C', '0.20mm Standard @BBL X1C']],
+      ['Other printers', ['0.12mm Fine @BBL A1 · Standard']],
+    ]);
+  });
+
+  it('gives every preset list its own search', async () => {
+    serve(listing);
+    open();
+
+    await picker('Filament profile');
+    for (const list of ['Printer profile', 'Process profile', 'Filament profile']) {
+      expect(screen.getByRole('button', { name: `Search: ${list}` })).toBeInTheDocument();
+    }
   });
 });

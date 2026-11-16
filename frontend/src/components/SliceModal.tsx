@@ -46,6 +46,7 @@ import {
   type PrinterCompatibilityIndex,
 } from '../utils/slicerPrinterMatch';
 import {
+  SLICE_MODAL_TIER_ORDER,
   findPreset,
   findPresetByName,
   pickDefault,
@@ -53,6 +54,22 @@ import {
   pickProcessDefault,
   statesDifferentMaterial,
 } from '../utils/slicePresetPicker';
+import {
+  groupPresetsForDisplay,
+  presetGroupOf,
+  sortPresetsForDisplay,
+  type PresetGroup,
+} from '../utils/presetDisplayOrder';
+
+// What each group of a preset dropdown is called. The group IS the source, so
+// two presets of one name in two sources can be told apart by it.
+const PRESET_GROUP_LABELS: Record<PresetGroup, { key: string; fallback: string }> = {
+  local: { key: 'slice.tier.local', fallback: 'Imported' },
+  orca_cloud: { key: 'slice.tier.orcaCloud', fallback: 'Orca Cloud' },
+  cloud_own: { key: 'slice.tier.cloudOwn', fallback: 'Bambu Cloud — my presets' },
+  cloud: { key: 'slice.tier.cloud', fallback: 'Bambu Cloud' },
+  standard: { key: 'slice.tier.standard', fallback: 'Standard' },
+};
 
 export type SliceSource =
   | { kind: 'libraryFile'; id: number; filename: string }
@@ -290,46 +307,28 @@ function PresetDropdown({
   // — for a process / filament slot with a selected printer — a trailing
   // group of presets that resolve to a different printer (#1325). Empty
   // sections collapse out.
+  //
+  // A group is a SOURCE, the user's own first, and each is sorted for reading
+  // (`presetDisplayOrder`, upstream a9ffe5b7c). ⚠️ Display only: the auto-picks
+  // read `data` in the order it arrived, so sorting never changes what is
+  // preselected. ⚠️ A stock preset that Bambu Cloud and the bundle both carry
+  // stays two entries — a name is not an identity — told apart by their group.
   const { sections, otherEntries } = useMemo(() => {
-    const tiers: { key: keyof UnifiedPresetsResponse; label: string; fallback: string }[] = [
-      { key: 'local', label: 'slice.tier.local', fallback: 'Imported' },
-      { key: 'orca_cloud', label: 'slice.tier.orcaCloud', fallback: 'Orca Cloud' },
-      { key: 'cloud', label: 'slice.tier.cloud', fallback: 'Bambu Cloud' },
-      { key: 'standard', label: 'slice.tier.standard', fallback: 'Standard' },
-    ];
-    const filterByPrinter = slot !== 'printer';
-    const compatSections: { tierLabel: string; entries: UnifiedPreset[] }[] = [];
-    const other: UnifiedPreset[] = [];
+    const groupLabel = (group: PresetGroup) => t(PRESET_GROUP_LABELS[group].key, PRESET_GROUP_LABELS[group].fallback);
+    const toSections = (entries: UnifiedPreset[]) =>
+      groupPresetsForDisplay(entries, slot).map((g) => ({ tierLabel: groupLabel(g.group), entries: g.entries }));
+    const all = SLICE_MODAL_TIER_ORDER.flatMap((tier) => (data[tier] as UnifiedPresetsBySlot)[slot]);
     // The same sections with the printer filter never applied, for the
     // all-filtered-out case below.
-    const unfiltered: { tierLabel: string; entries: UnifiedPreset[] }[] = [];
-    for (const { key, label: lk, fallback } of tiers) {
-      const entries = (data[key] as UnifiedPresetsBySlot)[slot];
-      if (entries.length > 0) unfiltered.push({ tierLabel: t(lk, fallback), entries });
-      if (!filterByPrinter) {
-        if (entries.length > 0) compatSections.push({ tierLabel: t(lk, fallback), entries });
-        continue;
-      }
-      const compatible: UnifiedPreset[] = [];
-      for (const p of entries) {
-        if (
-          presetCompatibility(
-            p,
-            // filterByPrinter is true here, so slot is never 'printer'.
-            slot as 'process' | 'filament',
-            selectedPrinterName ?? null,
-            compatIndex ?? EMPTY_COMPATIBILITY_INDEX,
-          ) === 'mismatch'
-        ) {
-          other.push(p);
-        } else {
-          compatible.push(p);
-        }
-      }
-      if (compatible.length > 0) {
-        compatSections.push({ tierLabel: t(lk, fallback), entries: compatible });
-      }
+    const unfiltered = toSections(all);
+    if (slot === 'printer') return { sections: unfiltered, otherEntries: [] };
+    const compatible: UnifiedPreset[] = [];
+    const other: UnifiedPreset[] = [];
+    for (const p of all) {
+      const verdict = presetCompatibility(p, slot, selectedPrinterName ?? null, compatIndex ?? EMPTY_COMPATIBILITY_INDEX);
+      (verdict === 'mismatch' ? other : compatible).push(p);
     }
+    const compatSections = toSections(compatible);
     // A filter that leaves nothing at all is a statement about our matching,
     // not about the presets (upstream e9daa212, #2982): a P1S has ten usable
     // process presets and read as having none, because each is named for an
@@ -339,7 +338,14 @@ function PresetDropdown({
     if (compatSections.length === 0 && other.length > 0) {
       return { sections: unfiltered, otherEntries: [] };
     }
-    return { sections: compatSections, otherEntries: other };
+    // The tail mixes sources under one heading, so each entry names its own.
+    return {
+      sections: compatSections,
+      otherEntries: sortPresetsForDisplay(other, slot).map((preset) => ({
+        preset,
+        sourceLabel: groupLabel(presetGroupOf(preset)),
+      })),
+    };
   }, [data, slot, t, selectedPrinterName, compatIndex]);
 
   const totalEntries =
@@ -366,6 +372,14 @@ function PresetDropdown({
         value={toRefValue(value)}
         onChange={(e) => onChange(fromRefValue(e.target.value))}
         disabled={disabled || totalEntries === 0}
+        // Thousands of stock filaments are no list to scroll: the words typed
+        // narrow these same options, other printers included; the chosen
+        // preset always stays listed.
+        search={{
+          label: t('slice.searchPresets', { list: label, defaultValue: 'Search: {{list}}' }),
+          placeholder: t('slice.searchPresetsPlaceholder', 'Search presets…'),
+          noMatches: t('slice.noMatchingPresets', 'No matching presets.'),
+        }}
       >
         <option value="">
           {totalEntries === 0
@@ -383,9 +397,9 @@ function PresetDropdown({
         ))}
         {otherEntries.length > 0 && (
           <optgroup label={t('slice.otherPrinters', 'Other printers')}>
-            {otherEntries.map((p) => (
+            {otherEntries.map(({ preset: p, sourceLabel }) => (
               <option key={`${p.source}:${p.id}`} value={`${p.source}:${p.id}`}>
-                {p.name}
+                {`${p.name} · ${sourceLabel}`}
               </option>
             ))}
           </optgroup>
@@ -400,7 +414,9 @@ function PresetDropdown({
         <label
           htmlFor={colourId}
           title={swatchColorLabel}
-          className={`flex items-center gap-2 px-2.5 rounded-md bg-bambu-dark border border-bambu-dark-tertiary text-sm ${
+          // Pinned to the select's own row and height: with the search box
+          // open the group beside it is two rows tall.
+          className={`self-end h-9 min-h-[44px] md:min-h-0 flex items-center gap-2 px-2.5 rounded-md bg-bambu-dark border border-bambu-dark-tertiary text-sm ${
             disabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer hover:border-bambu-gray transition-colors'
           }`}
         >
