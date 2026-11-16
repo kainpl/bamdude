@@ -147,3 +147,76 @@ async def test_a_hidden_file_and_a_missing_one_answer_alike(async_client: AsyncC
     missing = await async_client.get("/api/v1/library/files/987654/notes", headers=alice)
 
     assert (hidden.status_code, hidden.json()) == (missing.status_code, missing.json())
+
+
+# --------------------------------------------------------------------------- #
+# A note nobody wrote (m231 moved it, or its author was deleted) — review B-M5
+# --------------------------------------------------------------------------- #
+
+EDIT_OWN = [*OWN, "library:update_own"]
+EDIT_ALL = [*OWN, "library:read_all", "library:update_all"]
+
+
+async def test_whoever_may_edit_every_file_can_edit_and_delete_an_authorless_note(
+    async_client: AsyncClient, db_session
+):
+    editor, _id = await _make_user(async_client, username="ln_editor", permissions=EDIT_ALL)
+    file = await _file(db_session, owner=None)
+    note = await _note(db_session, file.id, None, "moved by the upgrade")
+
+    listed = await async_client.get(f"/api/v1/library/files/{file.id}/notes", headers=editor)
+    assert listed.status_code == 200 and listed.json()[0]["can_edit"] is True
+    edited = await async_client.patch(f"/api/v1/library/notes/{note.id}", headers=editor, json={"body": "tidied"})
+    assert edited.status_code == 200, edited.text
+    assert edited.json()["body"] == "tidied" and edited.json()["can_edit"] is True
+    assert (await async_client.delete(f"/api/v1/library/notes/{note.id}", headers=editor)).status_code == 200
+    assert (await async_client.get(f"/api/v1/library/files/{file.id}/notes", headers=editor)).json() == []
+
+
+async def test_a_file_s_owner_can_edit_and_delete_an_authorless_note_on_it(async_client: AsyncClient, db_session):
+    alice, alice_id = await _make_user(async_client, username="ln_alice5", permissions=EDIT_OWN)
+    mine = await _file(db_session, owner=alice_id)
+    note = await _note(db_session, mine.id, None, "moved by the upgrade")
+
+    listed = await async_client.get(f"/api/v1/library/files/{mine.id}/notes", headers=alice)
+    assert listed.json()[0]["can_edit"] is True
+    edited = await async_client.patch(f"/api/v1/library/notes/{note.id}", headers=alice, json={"body": "mine now"})
+    assert edited.status_code == 200, edited.text
+    assert (await async_client.delete(f"/api/v1/library/notes/{note.id}", headers=alice)).status_code == 200
+
+
+async def test_an_authorless_note_on_a_file_the_caller_only_reads_stays_closed(async_client: AsyncClient, db_session):
+    """A shared external file is read-only without ``update_all``; so is the note nobody wrote on it."""
+    alice, _alice_id = await _make_user(async_client, username="ln_alice6", permissions=EDIT_OWN)
+    shared = await _file(db_session, owner=None)
+    shared.is_external = True
+    await db_session.commit()
+    note = await _note(db_session, shared.id, None)
+
+    listed = await async_client.get(f"/api/v1/library/files/{shared.id}/notes", headers=alice)
+    assert listed.status_code == 200 and listed.json()[0]["can_edit"] is False
+    edited = await async_client.patch(f"/api/v1/library/notes/{note.id}", headers=alice, json={"body": "y"})
+    deleted = await async_client.delete(f"/api/v1/library/notes/{note.id}", headers=alice)
+    assert edited.status_code == 403 and deleted.status_code == 403
+
+
+async def test_an_owner_who_may_not_edit_the_file_cannot_change_an_authorless_note(
+    async_client: AsyncClient, db_session
+):
+    alice, alice_id = await _make_user(async_client, username="ln_alice7", permissions=OWN)
+    mine = await _file(db_session, owner=alice_id)
+    note = await _note(db_session, mine.id, None)
+
+    edited = await async_client.patch(f"/api/v1/library/notes/{note.id}", headers=alice, json={"body": "y"})
+    assert edited.status_code == 403
+
+
+async def test_another_user_s_note_is_still_only_its_author_s(async_client: AsyncClient, db_session):
+    editor, _id = await _make_user(async_client, username="ln_editor2", permissions=EDIT_ALL)
+    _bob, bob_id = await _make_user(async_client, username="ln_bob8", permissions=OWN)
+    file = await _file(db_session, owner=bob_id)
+    note = await _note(db_session, file.id, bob_id)
+
+    edited = await async_client.patch(f"/api/v1/library/notes/{note.id}", headers=editor, json={"body": "y"})
+    deleted = await async_client.delete(f"/api/v1/library/notes/{note.id}", headers=editor)
+    assert edited.status_code == 403 and deleted.status_code == 403
