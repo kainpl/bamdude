@@ -15034,7 +15034,8 @@ export const api = {
     }
     const response = await fetch(`${API_BASE}/library/files/${id}/download`, { headers, signal });
     if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
+      // The status travels with the refusal: the viewer tells "not available" from a request that failed.
+      throw new ApiError(`HTTP ${response.status}`, response.status);
     }
     return response.arrayBuffer();
   },

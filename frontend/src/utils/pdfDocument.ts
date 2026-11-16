@@ -44,7 +44,8 @@ export interface PdfHandle {
   destroy: () => Promise<void>;
 }
 
-export type PdfOpenFailure = 'encrypted' | 'broken';
+/** `viewer` — PDF.js itself could not be loaded; the document was never looked at. */
+export type PdfOpenFailure = 'encrypted' | 'broken' | 'viewer';
 
 export class PdfOpenError extends Error {
   readonly reason: PdfOpenFailure;
@@ -70,15 +71,24 @@ export const PDF_DOCUMENT_OPTIONS = {
 } as const;
 
 /** Which of the viewer's two messages an error from PDF.js means. */
-export function classifyOpenError(error: unknown): PdfOpenFailure {
+export function classifyOpenError(error: unknown): 'encrypted' | 'broken' {
   return (error as { name?: unknown } | null)?.name === 'PasswordException' ? 'encrypted' : 'broken';
 }
 
+/** PDF.js and its worker chunk. A chunk that does not load (a deploy replaced it, the network dropped) is the viewer's failure, not the document's. */
+async function loadPdfJs() {
+  try {
+    return await Promise.all([
+      import('pdfjs-dist/legacy/build/pdf.mjs'),
+      import('pdfjs-dist/legacy/build/pdf.worker.min.mjs?worker'),
+    ]);
+  } catch {
+    throw new PdfOpenError('viewer');
+  }
+}
+
 export async function openPdf(data: ArrayBuffer): Promise<PdfHandle> {
-  const [pdfjs, workerModule] = await Promise.all([
-    import('pdfjs-dist/legacy/build/pdf.mjs'),
-    import('pdfjs-dist/legacy/build/pdf.worker.min.mjs?worker'),
-  ]);
+  const [pdfjs, workerModule] = await loadPdfJs();
   // A worker of this document's own: closing the viewer ends it, and a
   // document that hangs the parser takes nothing else with it.
   const port = new workerModule.default();

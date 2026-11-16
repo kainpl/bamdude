@@ -8,11 +8,12 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { fireEvent, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor } from '@testing-library/react';
 import { render } from '../utils';
 import { MAX_PDF_BYTES, PdfPreviewModal } from '../../components/PdfPreviewModal';
 import { PdfOpenError, type PdfHandle } from '../../utils/pdfDocument';
-import { api } from '../../api/client';
+import i18n from '../../i18n';
+import { ApiError, api } from '../../api/client';
 
 const openPdf = vi.hoisted(() => vi.fn());
 vi.mock('../../utils/pdfDocument', async () => {
@@ -281,12 +282,72 @@ describe('PdfPreviewModal', () => {
     expect(await screen.findByText('This PDF could not be opened. The file may be damaged.')).toBeInTheDocument();
   });
 
-  it('says so when the file cannot be fetched', async () => {
-    getBytes.mockRejectedValue(new Error('HTTP 404'));
+  // Four failures, four sentences: only a document PDF.js refused is "damaged".
+  it.each([401, 403, 404])('says the file is not available when the server answers %i, and offers no download', async (status) => {
+    getBytes.mockRejectedValue(new ApiError(`HTTP ${status}`, status));
     show();
 
-    expect(await screen.findByText('This PDF could not be opened. The file may be damaged.')).toBeInTheDocument();
+    expect(
+      await screen.findByText('This file is not available: it was moved or deleted, or you no longer have access to it.'),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/may be damaged/)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Download' })).not.toBeInTheDocument();
     expect(openPdf).not.toHaveBeenCalled();
+  });
+
+  it('says the server could not be reached when the request itself fails', async () => {
+    getBytes.mockRejectedValue(new TypeError('Failed to fetch'));
+    show();
+
+    expect(
+      await screen.findByText('The file could not be loaded from the server. Check the connection and try again.'),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/may be damaged/)).not.toBeInTheDocument();
+    expect(openPdf).not.toHaveBeenCalled();
+  });
+
+  it('says the viewer itself could not be loaded, and offers the download', async () => {
+    openPdf.mockRejectedValue(new PdfOpenError('viewer'));
+    const { onDownload } = show();
+
+    expect(
+      await screen.findByText('The PDF viewer could not be loaded. Reload the page and try again, or download the file.'),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/may be damaged/)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Download' }));
+    expect(onDownload).toHaveBeenCalled();
+  });
+
+  it('says each of them in the interface language', async () => {
+    await act(async () => {
+      await i18n.changeLanguage('uk');
+    });
+    try {
+      getBytes.mockRejectedValue(new ApiError('HTTP 404', 404));
+      const first = render(<PdfPreviewModal fileId={7} title="a.pdf" fileSize={10} onClose={vi.fn()} onDownload={vi.fn()} />);
+      expect(
+        await screen.findByText('Цей файл недоступний: його перемістили чи видалили або ви більше не маєте до нього доступу.'),
+      ).toBeInTheDocument();
+      first.unmount();
+
+      getBytes.mockRejectedValue(new TypeError('Failed to fetch'));
+      const second = render(<PdfPreviewModal fileId={7} title="a.pdf" fileSize={10} onClose={vi.fn()} onDownload={vi.fn()} />);
+      expect(
+        await screen.findByText('Не вдалося завантажити файл із сервера. Перевірте з’єднання і спробуйте ще раз.'),
+      ).toBeInTheDocument();
+      second.unmount();
+
+      getBytes.mockResolvedValue(new ArrayBuffer(16));
+      openPdf.mockRejectedValue(new PdfOpenError('viewer'));
+      render(<PdfPreviewModal fileId={7} title="a.pdf" fileSize={10} onClose={vi.fn()} onDownload={vi.fn()} />);
+      expect(
+        await screen.findByText('Не вдалося завантажити переглядач PDF. Оновіть сторінку і спробуйте ще раз або завантажте файл.'),
+      ).toBeInTheDocument();
+    } finally {
+      await act(async () => {
+        await i18n.changeLanguage('en');
+      });
+    }
   });
 
   it('never requests a file over the size cap: it offers the download instead', async () => {

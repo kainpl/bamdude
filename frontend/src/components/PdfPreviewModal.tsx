@@ -18,7 +18,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ChevronLeft, ChevronRight, Download, FileWarning, Loader2, MoveHorizontal, RectangleVertical, ZoomIn, ZoomOut } from 'lucide-react';
-import { api } from '../api/client';
+import { ApiError, api } from '../api/client';
 import { FilePreviewShell, PREVIEW_CONTROL_CLASS } from './FilePreviewShell';
 import { PdfOpenError, openPdf, type PdfHandle } from '../utils/pdfDocument';
 import {
@@ -52,7 +52,24 @@ const OVERSCAN = 1;
 /** What one press of an arrow key scrolls. */
 const LINE = 60;
 
-type Status = 'loading' | 'ready' | 'encrypted' | 'broken' | 'too_large';
+/**
+ * `unavailable` — the server refused the file (signed out, no access, moved or
+ * deleted); `network` — the request did not get an answer; `viewer` — PDF.js
+ * did not load; `broken` — PDF.js read the bytes and refused them. Four
+ * failures, four sentences: only the last one is about the document.
+ */
+type Status = 'loading' | 'ready' | 'encrypted' | 'broken' | 'too_large' | 'unavailable' | 'network' | 'viewer';
+
+const FAILURE_TEXT: Record<Exclude<Status, 'loading' | 'ready'>, string> = {
+  too_large: 'filePreview.pdf.tooLarge',
+  encrypted: 'filePreview.pdf.encrypted',
+  broken: 'filePreview.pdf.broken',
+  unavailable: 'filePreview.pdf.unavailable',
+  network: 'filePreview.pdf.network',
+  viewer: 'filePreview.pdf.viewerFailed',
+};
+/** Where the download can work: the server answered, or was never asked. */
+const OFFERS_DOWNLOAD: ReadonlySet<Status> = new Set<Status>(['too_large', 'encrypted', 'broken', 'viewer']);
 
 interface Props {
   fileId: number;
@@ -151,13 +168,21 @@ export function PdfPreviewModal({ fileId, title, fileSize, onClose, onDownload }
     let opened: PdfHandle | null = null;
     let gone = false;
     (async () => {
+      let bytes: ArrayBuffer;
       try {
-        const bytes = await api.getLibraryFileBytes(fileId, abort.signal);
+        bytes = await api.getLibraryFileBytes(fileId, abort.signal);
+      } catch (error) {
         if (gone) return;
-        if (bytes.byteLength > MAX_PDF_BYTES) {
-          setStatus('too_large');
-          return;
-        }
+        const refused = error instanceof ApiError && [401, 403, 404].includes(error.status);
+        setStatus(refused ? 'unavailable' : 'network');
+        return;
+      }
+      if (gone) return;
+      if (bytes.byteLength > MAX_PDF_BYTES) {
+        setStatus('too_large');
+        return;
+      }
+      try {
         const doc = await openPdf(bytes);
         if (gone) {
           void doc.destroy();
@@ -378,21 +403,17 @@ export function PdfPreviewModal({ fileId, title, fileSize, onClose, onDownload }
           ) : (
             <>
               <FileWarning className="h-10 w-10" />
-              <p>
-                {status === 'too_large'
-                  ? t('filePreview.pdf.tooLarge')
-                  : status === 'encrypted'
-                    ? t('filePreview.pdf.encrypted')
-                    : t('filePreview.pdf.broken')}
-              </p>
-              <button
-                type="button"
-                onClick={onDownload}
-                className="inline-flex items-center gap-2 rounded-lg bg-white/10 px-4 py-2 text-sm text-white transition-colors hover:bg-white/20"
-              >
-                <Download className="h-4 w-4" />
-                {t('common.download')}
-              </button>
+              <p>{t(FAILURE_TEXT[status === 'ready' ? 'broken' : status])}</p>
+              {OFFERS_DOWNLOAD.has(status) && (
+                <button
+                  type="button"
+                  onClick={onDownload}
+                  className="inline-flex items-center gap-2 rounded-lg bg-white/10 px-4 py-2 text-sm text-white transition-colors hover:bg-white/20"
+                >
+                  <Download className="h-4 w-4" />
+                  {t('common.download')}
+                </button>
+              )}
             </>
           )}
         </div>
