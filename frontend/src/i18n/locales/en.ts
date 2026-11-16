@@ -9988,6 +9988,13 @@ export default {
       noSpoolsToShow: 'No spools to show. Adjust your filter and try again.',
       noMatches: 'No spools match the current search or filter.',
       error: 'Could not generate labels: {{msg}}',
+      png: {
+        save: 'Save as PNG',
+        resolution: 'Resolution of the pictures',
+        dpi: '{{dpi}} dpi',
+        hint: 'One picture per label at its true size — a ZIP when there are several. The paper is not part of a picture.',
+        error: 'Could not save the pictures: {{msg}}',
+      },
     }
   },
 

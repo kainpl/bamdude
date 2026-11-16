@@ -258,7 +258,7 @@ async def duplicate_sheet(
     source = await _load_sheet(db, sheet_id)
     copy = LabelSheet(
         name=f"{source.name} (copy)",
-        builtin_key=None,  # the copy is yours; the key is what makes one read-only
+        builtin_key=None,  # the key resolves a shipped name; a copy answers to none
         page_size=source.page_size,
         cell_width_mm=source.cell_width_mm,
         cell_height_mm=source.cell_height_mm,

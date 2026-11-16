@@ -1016,6 +1016,7 @@
   "The variants changed since they were opened — reload and try again": "Варіанти змінилися відтоді, як їх відкрили, — оновіть і спробуйте ще раз",
   "The whole-plate quantity proposal is unavailable or has changed": "Пропозиція кількості для цілих пластин недоступна або змінилася",
   "The working plan changed. Read it again.": "Робочий план змінився. Прочитайте його знову.",
+  "These labels come to more than {} MB as pictures — save fewer at a time or choose a lower resolution": "Ці етикетки як зображення займають понад {} МБ — зберігайте менше за раз або виберіть меншу роздільність",
   "These printers cannot be published because they do not exist, are archived, or are in maintenance mode: {}.": "Ці принтери неможливо опублікувати, бо вони не існують, заархівовані або в режимі обслуговування: {}.",
   "These prints went onto the shelf for the order — they cannot leave it": "Ці друки вже оприбутковані на склад під замовлення — прибрати їх із замовлення не можна",
   "This .3mf file isn't a valid ZIP container. 3MF files are ZIP archives — either the file is corrupted or it's raw gcode renamed to .3mf. Re-export from your slicer using its 'Export Plate Sliced File' action.": "Цей файл .3mf не є коректним ZIP-контейнером. Файли 3MF — це ZIP-архіви, тож або файл пошкоджено, або це звичайний G-code, перейменований на .3mf. Експортуйте його зі свого слайсера заново дією «Export Plate Sliced File».",

@@ -29,6 +29,7 @@ vi.mock('../../api/client', () => ({
   api: {
     printSpoolLabels: vi.fn(),
     printSpoolmanSpoolLabels: vi.fn(),
+    renderSpoolLabelPictures: vi.fn(),
     getSettings: vi.fn().mockResolvedValue({}),
     // The dialog reads the preferences door; these tests set what it answers
     // through ``getSettings``, so one stands in for the other.
@@ -523,6 +524,109 @@ describe('what happens to the finished PDF', () => {
 
     await waitFor(() => expect(click).toHaveBeenCalled());
     expect(anchor.download).toBe('bamdude-labels.pdf');
+  });
+});
+
+describe('saving the labels as pictures', () => {
+  const PNG_BLOB = new Blob([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], { type: 'image/png' });
+  const SAVE = /Save as PNG/;
+
+  const downloads = () => {
+    const click = vi.fn();
+    const anchor = document.createElement('a');
+    anchor.click = click;
+    vi.spyOn(document, 'createElement').mockImplementation(((tag: string) =>
+      tag === 'a' ? anchor : document.createElementNS('http://www.w3.org/1999/xhtml', tag)) as never);
+    return { anchor, click };
+  };
+
+  const savedBodies = () =>
+    vi
+      .mocked(api.renderSpoolLabelPictures)
+      .mock.calls.filter(([, , signal]) => signal === undefined)
+      .map(([body]) => body);
+
+  beforeEach(() => {
+    vi.mocked(api.renderSpoolLabelPictures).mockResolvedValue({
+      blob: PNG_BLOB,
+      filename: '0001-polymaker-pla-red.png',
+      warnings: [],
+    });
+  });
+
+  it('will not save until a design is chosen', async () => {
+    show();
+    expect(await screen.findByRole('button', { name: SAVE })).toBeDisabled();
+  });
+
+  it('saves the chosen design at 300 dpi unless another resolution is picked', async () => {
+    const { anchor, click } = downloads();
+    show();
+    await choose(DESIGN, /Box label 40 × 30/);
+
+    fireEvent.click(screen.getByRole('button', { name: SAVE }));
+
+    await waitFor(() => expect(click).toHaveBeenCalled());
+    expect(savedBodies()).toEqual([
+      { spools: [{ id: 1, display_name: expect.any(String) }], template_id: 7, monochrome: false, dpi: 300 },
+    ]);
+    expect(vi.mocked(api.renderSpoolLabelPictures).mock.calls.at(-1)?.[1]).toBe(false);
+    // The file is named by the server: the spool for one label, the batch for a ZIP.
+    expect(anchor.download).toBe('0001-polymaker-pla-red.png');
+    expect(window.open).not.toHaveBeenCalled();
+  });
+
+  it('saves at the resolution picked', async () => {
+    downloads();
+    show();
+    await choose(DESIGN, /Box label 40 × 30/);
+
+    fireEvent.change(screen.getByRole('combobox', { name: /Resolution/ }), { target: { value: '600' } });
+    fireEvent.click(screen.getByRole('button', { name: SAVE }));
+
+    await waitFor(() => expect(savedBodies()).toHaveLength(1));
+    expect(savedBodies()[0]).toMatchObject({ dpi: 600 });
+  });
+
+  it('saves the label, not the paper it would be printed on', async () => {
+    downloads();
+    vi.mocked(api.getLabelSheets).mockResolvedValue([L7160] as never);
+    show();
+    await choose(PAPER, /Avery L7160/);
+    await choose(DESIGN, /Box label 40 × 30/);
+
+    fireEvent.click(screen.getByRole('button', { name: SAVE }));
+
+    await waitFor(() => expect(savedBodies()).toHaveLength(1));
+    expect(savedBodies()[0]).not.toHaveProperty('sheet_id');
+    expect(savedBodies()[0]).not.toHaveProperty('starting_position');
+  });
+
+  it('asks Spoolman for a Spoolman spool, and carries monochrome', async () => {
+    downloads();
+    show({ spoolmanMode: true });
+    await choose(DESIGN, /Box label 40 × 30/);
+    fireEvent.click(screen.getByRole('checkbox', { name: /Monochrome/ }));
+
+    fireEvent.click(screen.getByRole('button', { name: SAVE }));
+
+    await waitFor(() => expect(savedBodies()).toHaveLength(1));
+    expect(savedBodies()[0]).toMatchObject({ monochrome: true });
+    expect(vi.mocked(api.renderSpoolLabelPictures).mock.calls.at(-1)?.[1]).toBe(true);
+  });
+
+  it('says why when the server refuses, and stays open', async () => {
+    const onClose = vi.fn();
+    vi.mocked(api.renderSpoolLabelPictures).mockRejectedValue(
+      new Error('At 600 dpi this design is more than 4000 dots on a side'),
+    );
+    show({ onClose });
+    await choose(DESIGN, /Box label 40 × 30/);
+
+    fireEvent.click(screen.getByRole('button', { name: SAVE }));
+
+    expect(await screen.findByText(/more than 4000 dots on a side/)).toBeInTheDocument();
+    expect(onClose).not.toHaveBeenCalled();
   });
 });
 

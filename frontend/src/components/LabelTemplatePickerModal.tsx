@@ -1,11 +1,12 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Loader2, Printer, Search, FileText } from 'lucide-react';
+import { Download, Loader2, Printer, Search, FileText } from 'lucide-react';
 import { SelectionBox } from './SelectionBox';
-import { api, type InventorySpool, type LabelTemplate } from '../api/client';
+import { api, type InventorySpool, type LabelPictureDpi, type LabelTemplate } from '../api/client';
 import { getSwatchStyle } from '../utils/colors';
 import { Button } from './Button';
 import { Modal } from './Modal';
+import { Select } from './Select';
 import { CardSelect, type CardOption } from './labels/CardSelect';
 import { useToast } from '../contexts/ToastContext';
 import { useMutation, useQuery } from '@tanstack/react-query';
@@ -125,6 +126,23 @@ function showPdfInTab(tab: Window | null, blob: Blob): void {
   setTimeout(() => window.URL.revokeObjectURL(url), 60_000);
 }
 
+/** The resolutions a label is saved as a picture at: the two thermal heads in
+ *  common use and an office printer. The server takes exactly these. */
+const PICTURE_DPIS: LabelPictureDpi[] = [203, 300, 600];
+
+/** Hand a finished file to the browser's downloads. Nothing to look at first —
+ *  a picture is for another program — so no tab is involved. */
+function saveFile(blob: Blob, filename: string): void {
+  const url = window.URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => window.URL.revokeObjectURL(url), 60_000);
+}
+
 // Thin wrapper over ``getSwatchStyle`` from utils/colors so the modal's render
 // sites keep their existing call shape. Transparent (alpha=00) spools now
 // render as a checkerboard pattern instead of collapsing to solid black
@@ -223,6 +241,9 @@ export function LabelTemplatePickerModal({
   // #1870: session-only monochrome toggle for black & white thermal printers.
   // Resets to off each time the modal opens.
   const [monochrome, setMonochrome] = useState(false);
+  // Saving as pictures: the resolution, and whether a save is under way.
+  const [pictureDpi, setPictureDpi] = useState<LabelPictureDpi>(300);
+  const [saving, setSaving] = useState(false);
 
   // Devices are only asked for while the modal is open, and only listed when
   // adopted — an unadopted one would be an option that silently refuses.
@@ -321,6 +342,8 @@ export function LabelTemplatePickerModal({
       setMonochrome(false);
       setPending(null);
       setSending(null);
+      setSaving(false);
+      setPictureDpi(300);
       setRoute(null);
       setSheetId(null);
       setStartInput('1');
@@ -551,6 +574,33 @@ export function LabelTemplatePickerModal({
       );
     } finally {
       setPending(null);
+    }
+  }
+
+  /**
+   * Save the selected labels as pictures: one PNG, or a ZIP of them.
+   *
+   * ⚠️ No paper is sent. A sheet is how a PDF is laid out; a picture is one
+   * label at the design's own size, whatever it would have been printed on.
+   * The dialog stays open — somebody saving pictures for one printer's
+   * software may still want the PDF for another.
+   */
+  async function savePictures(templateId: number) {
+    if (noSelection || pending !== null || saving) return;
+    const ids = sortedSpools.filter((s) => selectedIds.has(s.id)).map((s) => s.id);
+    const spools = ids.map((id) => ({ id, display_name: displayNameById.get(id) ?? null }));
+    setSaving(true);
+    try {
+      const saved = await api.renderSpoolLabelPictures(
+        { spools, template_id: templateId, monochrome, dpi: pictureDpi },
+        spoolmanMode,
+      );
+      saveFile(saved.blob, saved.filename ?? (spools.length === 1 ? 'bamdude-label.png' : 'bamdude-labels.zip'));
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      showToast(t('inventory.labels.png.error', { msg }), 'error');
+    } finally {
+      setSaving(false);
     }
   }
 
@@ -880,6 +930,32 @@ export function LabelTemplatePickerModal({
                   {pending !== null && <Loader2 className="w-4 h-4 animate-spin" />}
                   {t('common.print')}
                 </Button>
+
+                {/* The same labels for a program that takes pictures. Beside
+                    Print, not instead of it: most people want the PDF. */}
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button
+                    variant="secondary"
+                    disabled={noSelection || pending !== null || saving || !driverReady}
+                    onClick={() => driverTemplateId !== null && savePictures(driverTemplateId)}
+                  >
+                    {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
+                    {t('inventory.labels.png.save')}
+                  </Button>
+                  <Select
+                    aria-label={t('inventory.labels.png.resolution')}
+                    value={pictureDpi}
+                    onChange={(event) => setPictureDpi(Number(event.target.value) as LabelPictureDpi)}
+                    disabled={saving}
+                  >
+                    {PICTURE_DPIS.map((dpi) => (
+                      <option key={dpi} value={dpi}>
+                        {t('inventory.labels.png.dpi', { dpi })}
+                      </option>
+                    ))}
+                  </Select>
+                  <span className="text-xs text-bambu-gray flex-1 min-w-48">{t('inventory.labels.png.hint')}</span>
+                </div>
               </>
             )
           )}

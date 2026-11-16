@@ -5,6 +5,9 @@ Two endpoints, one per inventory backend:
 - ``POST /inventory/labels``  — local-DB spools
 - ``POST /spoolman/labels``   — Spoolman-backed spools
 
+Each has a ``/png`` twin that takes the same body plus ``dpi`` and answers the
+labels as pictures (one PNG, or a ZIP of them) — see ``services/label_picture``.
+
 Both accept ``{spools: [{id, display_name?}], template}`` and return a PDF
 stream. The QR code on each label deep-links to ``/inventory?spool=<id>`` so
 a phone scan jumps straight back into BamDude at that spool's row.
@@ -50,6 +53,7 @@ from backend.app.core.permissions import Permission
 from backend.app.models.label_template import LabelSheet, LabelTemplate
 from backend.app.models.spool import Spool
 from backend.app.models.user import User
+from backend.app.services import label_picture
 from backend.app.services.inventory_service import spool_display_template
 from backend.app.services.label_context import spool_context, spoolman_context
 from backend.app.services.label_gate import checked_design, checked_sheet, design_of, draw, sheet_of
@@ -126,6 +130,14 @@ class LabelRequest(BaseModel):
         if not self.template and self.template_id is None and self.sheet_id is None:
             raise ValueError("one of 'template', 'template_id' or 'sheet_id' is required")
         return self
+
+
+class LabelPictureRequest(LabelRequest):
+    """The same selection, saved as pictures instead of printed."""
+
+    #: Dots per inch of the picture: the two thermal heads in common use and an
+    #: office printer. The PNG records it, so it prints at the design's own size.
+    dpi: Literal[203, 300, 600] = 300
 
 
 async def _resolve_design(db: AsyncSession, body: LabelRequest) -> tuple[LabelTemplateSpec, LabelSheetSpec | None]:
@@ -334,17 +346,12 @@ def _filename(spec: LabelTemplateSpec, sheet: LabelSheetSpec | None, prefix: str
     return f"bamdude-labels-{prefix}{stem.strip('-').lower()}.pdf"
 
 
-@router.post("/inventory/labels")
-async def render_local_inventory_labels(
-    body: LabelRequest,
-    request: Request,
-    db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.INVENTORY_READ),
-) -> StreamingResponse:
-    """Render labels for spools in the local inventory."""
-    spec, sheet = await _resolve_design(db, body)
-    _check_starting_position(body, sheet)
+async def _local_labels(db: AsyncSession, request: Request, body: LabelRequest) -> list[tuple[int, dict[str, str]]]:
+    """Each local spool of the request as ``(id, what its label says)``, in the order asked.
 
+    ⚠️ One builder for the PDF and the pictures: a preview that filled its label
+    in some other way would show a label the print does not make.
+    """
     requested_ids = [entry.id for entry in body.spools]
     name_overrides = {entry.id: entry.display_name for entry in body.spools}
 
@@ -362,37 +369,24 @@ async def render_local_inventory_labels(
     deeplink_base = await _resolve_deeplink_base(request, db)
     naming = await spool_display_template(db)
 
-    contexts = []
+    labels = []
     for spool in ordered:
         override = name_overrides.get(spool.id)
         context = spool_context(spool, deeplink_base=deeplink_base, display_name=override)
         if not (override or "").strip():
             context = _apply_naming_template(context, naming)
-        contexts.append(context)
-
-    pdf, warnings = await draw(
-        _render, spec, sheet, contexts, monochrome=body.monochrome, starting_position=body.starting_position
-    )
-    return _stream_pdf(pdf, _filename(spec, sheet), warnings)
+        labels.append((spool.id, context))
+    return labels
 
 
-@router.post("/spoolman/labels")
-async def render_spoolman_labels(
-    body: LabelRequest,
-    request: Request,
-    db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.INVENTORY_READ),
-) -> StreamingResponse:
-    """Render labels for spools tracked in Spoolman.
+async def _spoolman_labels(db: AsyncSession, request: Request, body: LabelRequest) -> list[tuple[int, dict[str, str]]]:
+    """The same for spools tracked in Spoolman.
 
     The Spoolman client doesn't expose a per-id endpoint, so this fetches the
     full spool list and filters in-memory. For typical libraries (~50 spools)
     that's negligible; for very large libraries this is the trade-off until
     Spoolman gains a bulk filter.
     """
-    spec, sheet = await _resolve_design(db, body)
-    _check_starting_position(body, sheet)
-
     spoolman_on = (await get_setting(db, "spoolman_enabled") or "").lower() == "true"
     if not spoolman_on:
         raise HTTPException(400, "Spoolman integration is not enabled")
@@ -420,13 +414,109 @@ async def render_spoolman_labels(
     deeplink_base = await _resolve_deeplink_base(request, db)
     naming = await spool_display_template(db)
 
-    contexts = []
+    labels = []
     for sid in requested_ids:
         override = name_overrides.get(sid)
         context = spoolman_context(by_id[sid], deeplink_base=deeplink_base, display_name=override)
         if not (override or "").strip():
             context = _apply_naming_template(context, naming)
-        contexts.append(context)
+        labels.append((sid, context))
+    return labels
+
+
+async def _save_as_pictures(
+    db: AsyncSession, request: Request, body: LabelPictureRequest, labels_of: Any
+) -> StreamingResponse:
+    """One PNG for one label, a ZIP for several.
+
+    ⚠️ **The label, never the page.** A sheet is paper for a driver; software
+    that takes a picture takes one label at a time. So a design chosen with a
+    sheet is saved label by label at its own size, and the starting cell — a
+    fact about the paper — says nothing here.
+    """
+    spec, _sheet = await _resolve_design(db, body)
+    if body.monochrome:
+        spec = _without_swatches(spec)
+    # Before the spools are read: the answer depends on nothing they hold.
+    label_picture.checked(spec, body.dpi, labels=len(body.spools))
+
+    labels = await labels_of(db, request, body)
+    names = label_picture.picture_names([(number, context.get("display_name", "")) for number, context in labels])
+    try:
+        pictures, warnings = await label_picture.label_pictures(spec, [context for _, context in labels], dpi=body.dpi)
+        if len(pictures) == 1:
+            content, media_type = pictures[0], "image/png"
+            disposition = build_content_disposition(names[0], ascii_fallback=f"label-{labels[0][0]:04d}.png")
+        else:
+            content, media_type = await draw(label_picture.bundle, names, pictures), "application/zip"
+            disposition = build_content_disposition(f"{_filename(spec, None)[:-4]}-{body.dpi}dpi.zip")
+    except label_picture.BundleTooLarge:
+        raise HTTPException(
+            413,
+            f"These labels come to more than {label_picture.MAX_BUNDLE_BYTES // (1024 * 1024)} MB as pictures — "
+            "save fewer at a time or choose a lower resolution",
+        ) from None
+
+    headers = {"Content-Disposition": disposition, "Content-Length": str(len(content)), "Cache-Control": "no-store"}
+    if warnings:
+        headers["X-Label-Warnings"] = " | ".join(warnings)
+        headers["Access-Control-Expose-Headers"] = "X-Label-Warnings"
+    return StreamingResponse(io.BytesIO(content), media_type=media_type, headers=headers)
+
+
+@router.post("/inventory/labels/png")
+async def save_local_inventory_labels_as_pictures(
+    body: LabelPictureRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.INVENTORY_READ),
+) -> StreamingResponse:
+    """Labels of local spools as pictures — whoever may print them may save them."""
+    return await _save_as_pictures(db, request, body, _local_labels)
+
+
+@router.post("/spoolman/labels/png")
+async def save_spoolman_labels_as_pictures(
+    body: LabelPictureRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.INVENTORY_READ),
+) -> StreamingResponse:
+    """Labels of Spoolman spools as pictures."""
+    return await _save_as_pictures(db, request, body, _spoolman_labels)
+
+
+@router.post("/inventory/labels")
+async def render_local_inventory_labels(
+    body: LabelRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.INVENTORY_READ),
+) -> StreamingResponse:
+    """Render labels for spools in the local inventory."""
+    spec, sheet = await _resolve_design(db, body)
+    _check_starting_position(body, sheet)
+
+    contexts = [context for _, context in await _local_labels(db, request, body)]
+
+    pdf, warnings = await draw(
+        _render, spec, sheet, contexts, monochrome=body.monochrome, starting_position=body.starting_position
+    )
+    return _stream_pdf(pdf, _filename(spec, sheet), warnings)
+
+
+@router.post("/spoolman/labels")
+async def render_spoolman_labels(
+    body: LabelRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.INVENTORY_READ),
+) -> StreamingResponse:
+    """Render labels for spools tracked in Spoolman."""
+    spec, sheet = await _resolve_design(db, body)
+    _check_starting_position(body, sheet)
+
+    contexts = [context for _, context in await _spoolman_labels(db, request, body)]
 
     pdf, warnings = await draw(
         _render, spec, sheet, contexts, monochrome=body.monochrome, starting_position=body.starting_position

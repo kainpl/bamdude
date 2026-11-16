@@ -8698,6 +8698,15 @@ export interface LabelPreview {
   warnings: string[];
 }
 
+/** The resolutions a label is saved as a picture at. */
+export type LabelPictureDpi = 203 | 300 | 600;
+
+/** Labels as pictures: one PNG for one label, a ZIP of them for several. */
+export interface LabelPictures extends LabelPreview {
+  /** What the server calls the file — the spool for one label, the batch for a ZIP. */
+  filename: string | null;
+}
+
 /** A label printer attached to somebody's desktop, reached through a bridge. */
 export interface LabelDevice {
   id: number;
@@ -13030,6 +13039,37 @@ export const api = {
       throw new Error(error.detail || `HTTP ${response.status}`);
     }
     return response.blob();
+  },
+  /**
+   * The same selection as pictures instead of a PDF.
+   *
+   * ⚠️ The picture is the DESIGN at its own size: paper is a fact about a PDF,
+   * so no sheet travels here. Drawn by the server from the renderer that
+   * prints — the dialog's preview is this call with one spool.
+   */
+  renderSpoolLabelPictures: async (
+    body: SpoolLabelRequest & { dpi: LabelPictureDpi },
+    spoolman: boolean,
+    signal?: AbortSignal,
+  ): Promise<LabelPictures> => {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
+    const response = await fetch(`${API_BASE}/${spoolman ? 'spoolman' : 'inventory'}/labels/png`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+      signal,
+    });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(error.detail || `HTTP ${response.status}`);
+    }
+    const raw = response.headers.get('X-Label-Warnings');
+    return {
+      blob: await response.blob(),
+      filename: parseContentDispositionFilename(response.headers.get('Content-Disposition')),
+      warnings: raw ? raw.split(' | ').filter(Boolean) : [],
+    };
   },
 
   // ── Label templates ──────────────────────────────────────────────────

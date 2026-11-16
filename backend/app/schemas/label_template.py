@@ -120,9 +120,8 @@ class LabelSheetOut(BaseModel):
     margin_left_mm: float
     gap_x_mm: float
     gap_y_mm: float
-    #: A seeded geometry. Read-only for the same reason a built-in design is:
-    #: an automation printing onto Avery 5160 for a year must not find the grid
-    #: moved under it. Duplicate to get an editable copy.
+    #: A geometry that shipped with BamDude. An ordinary row: it can be edited
+    #: and deleted like any other.
     is_builtin: bool = False
     #: What about this grid does not fit its paper, in words. Empty is fine.
     overflow: list[str] = Field(default_factory=list)
