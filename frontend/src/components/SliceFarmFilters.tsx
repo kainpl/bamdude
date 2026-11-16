@@ -26,6 +26,8 @@ export function SliceFarmFilterToggles({ filters, disabled }: TogglesProps) {
       </button>
     </p>
   );
+  // Not for someone who may not read printers: no dead switches, no request.
+  if (!filters.offered) return null;
   return (
     <div className="space-y-1.5">
       <div className="flex flex-wrap gap-x-5 gap-y-1.5">
@@ -50,9 +52,21 @@ export function SliceFarmFilterToggles({ filters, disabled }: TogglesProps) {
           {t('slice.farmFilter.onlyLoaded')}
         </label>
       </div>
-      {filters.unavailable && (
+      {filters.forbidden && (
         <p role="status" className="text-xs text-amber-700 dark:text-amber-400">
-          {t('slice.farmFilter.unavailable')}
+          {t('slice.farmFilter.forbidden')}
+        </p>
+      )}
+      {(filters.unavailable || filters.stale) && (
+        <p role="status" className="text-xs text-amber-700 dark:text-amber-400">
+          {filters.stale ? t('slice.farmFilter.stale') : t('slice.farmFilter.unavailable')}{' '}
+          <button
+            type="button"
+            onClick={filters.retry}
+            className="underline underline-offset-2 hover:text-white transition-colors"
+          >
+            {t('common.retry')}
+          </button>
         </p>
       )}
       {filters.printerNote

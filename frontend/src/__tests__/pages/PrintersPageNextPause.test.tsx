@@ -47,6 +47,24 @@ describe.each([['expanded', '3'], ['compact', '1']] as const)('PrintersPage — 
     expect(line).toHaveTextContent('Pause in ~12 min (layer 37)');
   }, 15000);
 
+  it('never says "in ~0 min": the last minute before the pause has words of its own', async () => {
+    renderWith(size, { layer: 37, minutes: 0 });
+    const line = await screen.findByTestId('next-pause', {}, { timeout: 10000 });
+    expect(line).toHaveTextContent('Pause in less than a minute (layer 37)');
+    expect(line).not.toHaveTextContent('~0');
+  }, 15000);
+
+  it('gives the text a line box tall enough for its descenders', async () => {
+    // The text sits in a clipping (`truncate`) span; in a line box of 1 em
+    // (`leading-none`) that clips the tails of "у", "р", "(" and ")".
+    renderWith(size, { layer: 37, minutes: 12 });
+    const line = await screen.findByTestId('next-pause', {}, { timeout: 10000 });
+    const text = line.querySelector('.truncate') as HTMLElement;
+    expect(text).not.toBeNull();
+    const classes = [...line.className.split(' '), ...text.className.split(' ')];
+    expect(classes).not.toContain('leading-none');
+  }, 15000);
+
   it('says only the layer when there is no time', async () => {
     renderWith(size, { layer: 37, minutes: null });
     const line = await screen.findByTestId('next-pause', {}, { timeout: 10000 });

@@ -57,18 +57,29 @@ export function printerPresetIsOnline(
 }
 
 /**
- * The filaments the filter counts: those on every online printer, or — when a
- * printer preset is chosen and its model can be read — on the online printers
- * of that model only.
+ * The online printers the loaded-filament filter counts: every one, or — when a
+ * printer preset is chosen and its model can be read — those of that model
+ * only (`byModel`). An empty list `byModel` means "no printer of the chosen
+ * model is online", which is another thing than "nothing is loaded".
  */
+export function printersCountedFor(
+  farm: LoadedFilamentsResponse,
+  selectedPrinterName: string | null | undefined,
+  printerParents: PrinterParents | null | undefined,
+): { printers: OnlinePrinter[]; byModel: boolean } {
+  const identity = selectedPrinterName ? printerPresetModel(selectedPrinterName, printerParents) : null;
+  return identity
+    ? { printers: farm.printers.filter((p) => printerIsOfModel(p, identity.model)), byModel: true }
+    : { printers: farm.printers, byModel: false };
+}
+
+/** The filaments the filter counts: those on the printers `printersCountedFor` names. */
 export function loadedFilamentsFor(
   farm: LoadedFilamentsResponse,
   selectedPrinterName: string | null | undefined,
   printerParents: PrinterParents | null | undefined,
 ): LoadedFilament[] {
-  const identity = selectedPrinterName ? printerPresetModel(selectedPrinterName, printerParents) : null;
-  const printers = identity ? farm.printers.filter((p) => printerIsOfModel(p, identity.model)) : farm.printers;
-  return printers.flatMap((p) => p.filaments);
+  return printersCountedFor(farm, selectedPrinterName, printerParents).printers.flatMap((p) => p.filaments);
 }
 
 // A stock preset's id may carry a version suffix ("GFSA00_07") where the

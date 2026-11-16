@@ -231,7 +231,7 @@ describe('SliceModal — only filaments that are loaded', () => {
     await waitFor(() => expect(localStorage.getItem(LOADED_KEY)).toBe('1'));
   });
 
-  it('counts only the online printers of the chosen printer’s model, and says when nothing is loaded there', async () => {
+  it('counts only the online printers of the chosen printer’s model, and says when none of that model is online', async () => {
     serve();
     open();
     const printer = await picker('Printer profile');
@@ -243,7 +243,8 @@ describe('SliceModal — only filaments that are loaded', () => {
 
     await userEvent.click(await loadedToggle());
 
-    await screen.findByText('Nothing is loaded on the printers that are online.');
+    // Something IS loaded on the farm (the H2D): the reason is the model.
+    await screen.findByText('No printer of the chosen model is online, so no filament counts as loaded.');
     await waitFor(() => expect(offered(filament)).toHaveLength(0));
     await userEvent.click(screen.getByRole('button', { name: 'Show all filament profiles' }));
     await waitFor(() => expect(offered(filament)).toHaveLength(3));

@@ -1776,6 +1776,7 @@ export default {
     estimatedCompletion: 'Estimated completion time',
     nextPause: {
       inMinutes: 'Pause in ~{{minutes}} min (layer {{layer}})',
+      underMinute: 'Pause in less than a minute (layer {{layer}})',
       atLayer: 'Pause at layer {{layer}}',
       title: 'The next pause added in the slicer is at layer {{layer}}. The time is an estimate.',
     },
@@ -5665,6 +5666,9 @@ export default {
       namePlaceholder: 'Name',
       nameAria: 'Name for these slice settings',
       staleWarning: 'Some presets in the saved settings no longer exist. These stayed on their current selection: {{slots}}',
+      // {{fields}} is a list of field labels ("Printer profile, Process profile").
+      appliedChanged: 'Applied "{{name}}". Changed: {{fields}}',
+      appliedUnchanged: 'Applied "{{name}}". Nothing changed — these were already the selection.',
       toast: {
         applied: 'Applied "{{name}}"',
         saved: 'Settings saved',
@@ -5690,8 +5694,12 @@ export default {
       noOnlinePrinters: 'No printer is online, so no printer profile matches.',
       noOnlinePresets: 'No printer profile matches a printer that is online.',
       nothingLoaded: 'Nothing is loaded on the printers that are online.',
+      noOnlineOfModel: 'No printer of the chosen model is online, so no filament counts as loaded.',
+      nothingLoadedOnModel: 'Nothing is loaded on the online printers of the chosen model.',
       noLoadedPresets: 'No filament profile matches a loaded filament.',
       unavailable: 'The printers could not be read, so every profile is shown.',
+      forbidden: 'These filters need the right to view printers, so every profile is shown.',
+      stale: 'The printers could not be read again. The lists are still narrowed by the last answer, which may be out of date.',
       showAll: 'Show all',
       showAllPrinters: 'Show all printer profiles',
       showAllFilaments: 'Show all filament profiles',
@@ -5715,6 +5723,8 @@ export default {
     selectPreset: '- Select a preset -',
     noPresetsForSlot: 'No presets available',
     otherPrinters: 'Other printers',
+    presetForOtherPrinter: 'This profile is listed for another printer than the selected one.',
+    chosenPresetGone: 'A profile you chose is no longer in the list, so another one was selected. Check: {{fields}}',
     // {{list}} is the label of the list being searched ("Process profile").
     searchPresets: 'Search: {{list}}',
     searchPresetsPlaceholder: 'Search presets…',

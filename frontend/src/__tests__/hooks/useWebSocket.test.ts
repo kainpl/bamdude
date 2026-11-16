@@ -943,6 +943,65 @@ describe('useWebSocket hook', () => {
   // The old rAF stubs in this file ran frames SYNCHRONOUSLY, which is exactly
   // why none of them caught it. These stub it to never fire, as a hidden tab
   // does.
+  // The Slice dialog's farm filters read which printers are online and what is
+  // loaded on them, once. The dialog can sit open for minutes; these two events
+  // are what makes that answer old.
+  describe("the Slice dialog's farm answer", () => {
+    const setUp = async () => {
+      vi.useFakeTimers();
+      const { useWebSocket, INVALIDATION_DEBOUNCE_MS, INVALIDATION_STAGGER_MS } = await import(
+        '../../hooks/useWebSocket'
+      );
+      const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries');
+      renderHook(() => useWebSocket(), { wrapper: createWrapper(queryClient) });
+      const ws = await waitForWs();
+      act(() => ws.open());
+      const settle = () =>
+        act(async () => {
+          vi.advanceTimersByTime(INVALIDATION_DEBOUNCE_MS + 4 * INVALIDATION_STAGGER_MS);
+        });
+      const marked = () =>
+        invalidateSpy.mock.calls.filter(([filters]) => filters?.queryKey?.[0] === 'slicerLoadedFilaments').length;
+      return { ws, settle, marked, invalidateSpy };
+    };
+
+    afterEach(() => {
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    });
+
+    it('is marked stale when a spool is assigned or unassigned', async () => {
+      const { ws, settle, marked } = await setUp();
+
+      act(() => ws.simulateMessage({ type: 'spool_assignment_changed', printer_id: 1, ams_id: 0, tray_id: 1 }));
+      // Debounced with the rest: nothing yet.
+      expect(marked()).toBe(0);
+      await settle();
+
+      expect(marked()).toBe(1);
+    });
+
+    it('is marked stale when a printer connects or disconnects, not on every status frame', async () => {
+      const { ws, settle, marked, invalidateSpy } = await setUp();
+      const status = (data: Record<string, unknown>) =>
+        act(() => ws.simulateMessage({ type: 'printer_status', printer_id: 1, data }));
+
+      status({ connected: true, nozzle_temp: 20 });
+      await settle();
+      expect(marked()).toBe(1);
+
+      invalidateSpy.mockClear();
+      status({ connected: true, nozzle_temp: 215 });
+      status({ nozzle_temp: 216 });
+      await settle();
+      expect(marked()).toBe(0);
+
+      status({ connected: false });
+      await settle();
+      expect(marked()).toBe(1);
+    });
+  });
+
   describe('while the tab is in the background', () => {
     let rafSpy: ReturnType<typeof vi.fn>;
 

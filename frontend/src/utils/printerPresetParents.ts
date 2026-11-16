@@ -10,7 +10,7 @@
 //
 // The parent is always taken from data, never guessed out of a name.
 
-import type { UnifiedPresetsResponse } from '../api/client';
+import type { PresetSource, UnifiedPresetsResponse } from '../api/client';
 import { TIER_ORDER } from './presetPickerUtils';
 
 /** Printer preset name → the name of the preset it was saved from. */
@@ -21,13 +21,23 @@ export type PrinterParents = Record<string, string>;
 const MAX_HOPS = 8;
 
 /**
- * Build the lookup from a preset listing. Sources are walked in the dialog's
- * tier order, and the first one that names a parent for a preset name keeps it.
+ * Build the lookup from a preset listing, FOR a preset of `ownSource`.
+ *
+ * ⚠️ The lookup is keyed by name, and a name is not an identity: an imported
+ * "My H2D" saved from an H2D and a Bambu Cloud "My H2D" saved from an H2D Pro
+ * are two presets with two parents. So the preset's own source answers first
+ * — for the preset itself and for every name up its chain — and the other
+ * sources, in the dialog's tier order, only for a name its own source gives no
+ * parent. Without `ownSource` (nobody chosen yet) it is the tier order alone.
  */
-export function buildPrinterParents(data: UnifiedPresetsResponse | null | undefined): PrinterParents {
+export function buildPrinterParents(
+  data: UnifiedPresetsResponse | null | undefined,
+  ownSource?: PresetSource | null,
+): PrinterParents {
   const out: PrinterParents = {};
   if (!data) return out;
-  for (const tier of TIER_ORDER) {
+  const sources = ownSource ? [ownSource, ...TIER_ORDER.filter((tier) => tier !== ownSource)] : TIER_ORDER;
+  for (const tier of sources) {
     for (const preset of data[tier].printer) {
       const parent = typeof preset.inherits === 'string' ? preset.inherits.trim() : '';
       if (!parent || parent === preset.name || Object.hasOwn(out, preset.name)) continue;

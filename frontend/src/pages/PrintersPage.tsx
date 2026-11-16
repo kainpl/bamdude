@@ -4425,7 +4425,7 @@ const PrinterCard = memo(function PrinterCard({
                         line above is one clipped row and has no room for it. */}
                     <NextPauseLine
                       nextPause={status.next_pause}
-                      className="mt-1 text-[length:var(--pc-t11,11px)] leading-none"
+                      className="mt-1 text-[length:var(--pc-t11,11px)]"
                     />
                     {/* Filament so far — the same line the expanded card shows
                         under the file name; it polls only while printing. */}

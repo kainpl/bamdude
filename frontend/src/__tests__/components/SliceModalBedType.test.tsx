@@ -193,3 +193,89 @@ describe('SliceModal — the bed plate of saved settings', () => {
     expect(screen.queryByRole('status', { name: 'Bed plate' })).toBeNull();
   });
 });
+
+describe('SliceModal — the remembered bed plate', () => {
+  it('is not overwritten by the switch the dialog makes for Bambu Studio', async () => {
+    localStorage.setItem(BED_KEY, 'Textured Cool Plate');
+    serve({ healthy: ['bambu_studio'] });
+    open();
+
+    const bed = await bedPicker();
+    await waitFor(() => expect(bed.value).toBe('Textured PEI Plate'));
+    await screen.findByRole('status', { name: 'Bed plate' });
+    // The next OrcaSlicer dialog starts on the plate the user chose.
+    expect(localStorage.getItem(BED_KEY)).toBe('Textured Cool Plate');
+  });
+
+  it('is what the user picks by hand', async () => {
+    const user = userEvent.setup();
+    serve({ healthy: ['orcaslicer'] });
+    open();
+
+    const bed = await bedPicker();
+    await user.selectOptions(bed, 'Cool Plate');
+
+    expect(localStorage.getItem(BED_KEY)).toBe('Cool Plate');
+  });
+});
+
+describe('SliceModal — the bed plate note after the state it describes is gone', () => {
+  const both: ('orcaslicer' | 'bambu_studio')[] = ['orcaslicer', 'bambu_studio'];
+  const slicerCard = (name: RegExp) => screen.findByRole('button', { name });
+  const apply = async (user: ReturnType<typeof userEvent.setup>, name: string) => {
+    const pipelines = (await waitFor(() => screen.getByLabelText('Saved settings'))) as HTMLSelectElement;
+    await waitFor(() => expect(within(pipelines).getByRole('option', { name })).toBeInTheDocument());
+    await user.selectOptions(pipelines, name);
+  };
+
+  it('puts the plate back and drops the note when OrcaSlicer becomes the slicer', async () => {
+    const user = userEvent.setup();
+    localStorage.setItem(BED_KEY, 'Textured Cool Plate');
+    serve({ healthy: both });
+    open();
+
+    const bed = await bedPicker();
+    await user.click(await slicerCard(/BambuStudio/));
+    await waitFor(() => expect(bed.value).toBe('Textured PEI Plate'));
+    await screen.findByRole('status', { name: 'Bed plate' });
+
+    await user.click(await slicerCard(/OrcaSlicer/));
+
+    await waitFor(() => expect(screen.queryByRole('status', { name: 'Bed plate' })).toBeNull());
+    expect(bed.value).toBe('Textured Cool Plate');
+  });
+
+  it('drops "available only with OrcaSlicer" when OrcaSlicer becomes the slicer', async () => {
+    const user = userEvent.setup();
+    serve({ healthy: both, pipelines: [{ id: 2, name: 'Orca set', bed_type: 'Textured Cool Plate' }] });
+    open();
+
+    await bedPicker();
+    await user.click(await slicerCard(/BambuStudio/));
+    await apply(user, 'Orca set');
+    await screen.findByRole('status', { name: 'Bed plate' });
+
+    await user.click(await slicerCard(/OrcaSlicer/));
+
+    await waitFor(() => expect(screen.queryByRole('status', { name: 'Bed plate' })).toBeNull());
+  });
+
+  it('drops the note of earlier saved settings when later ones name no plate', async () => {
+    const user = userEvent.setup();
+    serve({
+      healthy: ['orcaslicer'],
+      pipelines: [
+        { id: 1, name: 'Old set', bed_type: 'Smooth PEI Plate' },
+        { id: 2, name: 'Plain set', bed_type: null },
+      ],
+    });
+    open();
+
+    await bedPicker();
+    await apply(user, 'Old set');
+    await screen.findByRole('status', { name: 'Bed plate' });
+    await apply(user, 'Plain set');
+
+    await waitFor(() => expect(screen.queryByRole('status', { name: 'Bed plate' })).toBeNull());
+  });
+});
