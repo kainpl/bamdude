@@ -5002,7 +5002,9 @@ class BambuMQTTClient:
                     # First, check if we have a pending target that matches this slot
                     pending_target = self.state.pending_tray_target
                     if pending_target is not None:
-                        pending_slot = pending_target % 4
+                        # The same slot rule as the snow branch below: an AMS-HT
+                        # (128-135) holds its one tray in slot 0.
+                        pending_slot = 0 if 128 <= pending_target <= 135 else pending_target % 4
                         if pending_slot == parsed_tray_now:
                             # Slot matches our pending target - use the full global ID
                             logger.debug(
@@ -12212,12 +12214,10 @@ class BambuMQTTClient:
 
         # Track this load request for H2D dual-nozzle disambiguation
         # H2D reports only slot number (0-3) in tray_now, so we use our tracked value.
-        # Not for an AMS-HT: the tracked value is matched by ``target % 4``, which
-        # reads 129-135 as slots 1-3 of some AMS, while the hotend's own ``snow``
-        # already names an AMS-HT tray by its unit id.
-        if not 128 <= tray_id <= 135:
-            self.state.pending_tray_target = tray_id
-            logger.info("[%s] Set pending_tray_target=%s for H2D disambiguation", self.serial_number, tray_id)
+        # An AMS-HT too: its tray is matched as slot 0 (see the tray_now block),
+        # and remembering it replaces a target an earlier, unconfirmed load left.
+        self.state.pending_tray_target = tray_id
+        logger.info("[%s] Set pending_tray_target=%s for H2D disambiguation", self.serial_number, tray_id)
 
         return True
 

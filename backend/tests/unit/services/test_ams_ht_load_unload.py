@@ -73,15 +73,47 @@ def test_loading_an_a2l_lite_slot_targets_the_unit(client):
     assert (sent["ams_id"], sent["slot_id"], sent["target"]) == (16, 1, 16)
 
 
-def test_an_ams_ht_load_leaves_no_pending_target(client):
-    """The pending target is matched by ``target % 4``: 129 would read as slot 1 and
-    the reported slot 0 would be written as AMS 0 slot 1. The hotend's own
-    ``snow`` names an AMS-HT tray, so nothing has to be remembered for it."""
-    client.state.pending_tray_target = None
+def _dual(client: BambuMQTTClient) -> BambuMQTTClient:
+    """A dual-nozzle printer reports the loaded tray as a bare slot 0-3."""
+    client._is_dual_nozzle = True
+    return client
 
+
+def test_an_ams_ht_load_is_remembered_like_any_other(client):
     client.ams_load_filament(129)
 
+    assert client.state.pending_tray_target == 129
+
+
+def test_the_loaded_ams_ht_tray_is_read_as_its_unit(client):
+    """An AMS-HT holds one tray, slot 0 -- as the snow rule below it already reads (upstream
+    5a9415e2e leg 5). Matched by ``target % 4``, 129 was slot 1 and the reported slot 0 was written
+    down as a tray of AMS 0."""
+    _dual(client).ams_load_filament(129)
+
+    client._handle_ams_data({"tray_now": "0"})
+
+    assert client.state.tray_now == 129
     assert client.state.pending_tray_target is None
+
+
+def test_an_earlier_unconfirmed_load_does_not_misplace_the_ams_ht(client):
+    """Tray 5 was asked for and never confirmed; then HT-B. Not remembering the AMS-HT left the old
+    target standing: slot 0 did not fit tray 5 and was written down as tray 0 of AMS 0."""
+    _dual(client).ams_load_filament(5)
+    client.ams_load_filament(129)
+
+    client._handle_ams_data({"tray_now": "0"})
+
+    assert client.state.tray_now == 129
+
+
+def test_a_regular_slot_is_still_matched_by_its_own_slot(client):
+    _dual(client).ams_load_filament(6)
+
+    client._handle_ams_data({"tray_now": "2"})
+
+    assert client.state.tray_now == 6
 
 
 def test_unloading_an_ams_ht_tray_names_its_unit(client):
