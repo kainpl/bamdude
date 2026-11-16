@@ -12313,6 +12313,7 @@ export default {
       captionPlaceholder: 'Add a caption',
       delete: 'Delete photo',
       confirmDelete: 'Delete this photo?',
+      deleteFailed: 'The photo could not be deleted.',
       count: 'Photos: {{count}}'
     }
   },

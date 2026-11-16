@@ -12530,6 +12530,7 @@ export default {
       captionPlaceholder: 'Додайте підпис',
       delete: 'Видалити фото',
       confirmDelete: 'Видалити це фото?',
+      deleteFailed: 'Не вдалося видалити фото.',
       count: 'Фото: {{count}}'
     }
   },

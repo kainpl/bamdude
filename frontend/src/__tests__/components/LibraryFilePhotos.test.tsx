@@ -5,13 +5,14 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { http, HttpResponse } from 'msw';
+import { delay, http, HttpResponse } from 'msw';
 import { render } from '../utils';
 import { server } from '../mocks/server';
 import { LibraryFilePhotos } from '../../components/LibraryFilePhotos';
 import { api, type LibraryFilePhoto } from '../../api/client';
+import i18n from '../../i18n';
 
 interface Photo {
   id: number;
@@ -192,6 +193,94 @@ describe('LibraryFilePhotos', () => {
     await userEvent.type(box, 'After sanding{Enter}');
 
     await waitFor(() => expect(patched).toEqual([{ id: 1, caption: 'After sanding' }]));
+  });
+
+  it('sends a caption once when Enter is followed by leaving the box', async () => {
+    stored = [photo(1)];
+    serve();
+    // A server that takes its time: the saved caption is not back when the box is left.
+    server.use(
+      http.patch('/api/v1/library/files/7/photos/:id', async ({ request, params }) => {
+        const body = (await request.json()) as { caption: string | null };
+        patched.push({ id: Number(params.id), ...body });
+        await delay(60);
+        stored = stored.map((p) => (p.id === Number(params.id) ? { ...p, caption: body.caption } : p));
+        return HttpResponse.json(stored.find((p) => p.id === Number(params.id)));
+      }),
+    );
+    render(<LibraryFilePhotos fileId={7} canEdit />);
+
+    const box = await screen.findByRole('textbox', { name: 'Caption' });
+    await userEvent.type(box, 'After sanding{Enter}');
+    fireEvent.blur(box);
+
+    await waitFor(() => expect(patched.length).toBeGreaterThan(0));
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(patched).toEqual([{ id: 1, caption: 'After sanding' }]);
+  });
+
+  it('sends the same caption again after a save that failed', async () => {
+    stored = [photo(1)];
+    serve();
+    let attempts = 0;
+    server.use(
+      http.patch('/api/v1/library/files/7/photos/:id', () => {
+        attempts += 1;
+        return HttpResponse.json({ detail: 'Try again' }, { status: 500 });
+      }),
+    );
+    render(<LibraryFilePhotos fileId={7} canEdit />);
+
+    const box = await screen.findByRole('textbox', { name: 'Caption' });
+    await userEvent.type(box, 'After sanding{Enter}');
+    await screen.findByRole('alert');
+    expect(attempts).toBe(1);
+
+    await userEvent.type(box, '{Enter}');
+    await waitFor(() => expect(attempts).toBe(2));
+  });
+
+  it('says so when a photo could not be deleted, and keeps it', async () => {
+    stored = [photo(1, { caption: 'First print' })];
+    serve();
+    server.use(
+      http.delete('/api/v1/library/files/7/photos/:id', () =>
+        HttpResponse.json({ detail: 'Permission denied' }, { status: 403 }),
+      ),
+    );
+    render(<LibraryFilePhotos fileId={7} canEdit />);
+
+    await screen.findByRole('img', { name: 'First print' });
+    await userEvent.click(screen.getByRole('button', { name: 'Delete photo' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Delete' }));
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('First print');
+    expect(alert).toHaveTextContent('The photo could not be deleted.');
+    expect(alert).toHaveTextContent('Permission denied');
+    expect(screen.getByRole('img', { name: 'First print' })).toBeInTheDocument();
+  });
+
+  it('says a failed delete in the interface language', async () => {
+    await act(async () => {
+      await i18n.changeLanguage('uk');
+    });
+    try {
+      stored = [photo(1, { caption: 'Перший друк' })];
+      serve();
+      server.use(http.delete('/api/v1/library/files/7/photos/:id', () => HttpResponse.json({}, { status: 500 })));
+      render(<LibraryFilePhotos fileId={7} canEdit />);
+
+      await screen.findByRole('img', { name: 'Перший друк' });
+      await userEvent.click(screen.getByRole('button', { name: 'Видалити фото' }));
+      await userEvent.click(screen.getByRole('button', { name: 'Видалити' }));
+
+      expect(await screen.findByRole('alert')).toHaveTextContent('Не вдалося видалити фото.');
+    } finally {
+      await act(async () => {
+        await i18n.changeLanguage('en');
+      });
+    }
   });
 
   it('deletes a photo only after it is confirmed', async () => {

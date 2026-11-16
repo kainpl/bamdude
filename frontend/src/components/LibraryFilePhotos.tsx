@@ -39,7 +39,7 @@ interface Refusal {
   message: string;
 }
 
-function PhotoCaption({ photo, onSave }: { photo: LibraryFilePhoto; onSave: (caption: string | null) => void }) {
+function PhotoCaption({ photo, onSave }: { photo: LibraryFilePhoto; onSave: (caption: string | null) => Promise<unknown> }) {
   const { t } = useTranslation();
   const [draft, setDraft] = useState(photo.caption ?? '');
   const [seen, setSeen] = useState(photo.caption);
@@ -48,9 +48,20 @@ function PhotoCaption({ photo, onSave }: { photo: LibraryFilePhoto; onSave: (cap
     setSeen(photo.caption);
     setDraft(photo.caption ?? '');
   }
+  // What was last sent and has not failed. Enter commits and so does leaving
+  // the box, and the saved caption comes back only after a round trip: without
+  // this the same text went out twice.
+  const sent = useRef<{ value: string | null } | null>(null);
   const commit = () => {
     const next = draft.trim() || null;
-    if (next !== (photo.caption ?? null)) onSave(next);
+    if (next === (photo.caption ?? null)) return;
+    if (sent.current && sent.current.value === next) return;
+    const mine = { value: next };
+    sent.current = mine;
+    onSave(next).catch(() => {
+      // A save that failed may be asked for again, as it is.
+      if (sent.current === mine) sent.current = null;
+    });
   };
   const onKey = (e: ReactKeyboardEvent<HTMLInputElement>) => {
     if (e.key !== 'Enter') return;
@@ -62,7 +73,10 @@ function PhotoCaption({ photo, onSave }: { photo: LibraryFilePhoto; onSave: (cap
       type="text"
       value={draft}
       maxLength={CAPTION_MAX_LENGTH}
-      onChange={(e) => setDraft(e.target.value)}
+      onChange={(e) => {
+        sent.current = null;
+        setDraft(e.target.value);
+      }}
       onBlur={commit}
       onKeyDown={onKey}
       aria-label={t('fileDetails.photos.caption')}
@@ -131,6 +145,16 @@ export function LibraryFilePhotos({ fileId, canEdit, dropZoneRef }: Props) {
     onSuccess: () => {
       setConfirming(null);
       refresh();
+    },
+    onError: (error: unknown, id) => {
+      const index = photos?.findIndex((p) => p.id === id) ?? -1;
+      const reason = error instanceof Error ? error.message : '';
+      setRefusals([
+        {
+          name: labelOf(photos?.[index], Math.max(0, index)),
+          message: [t('fileDetails.photos.deleteFailed'), reason].filter(Boolean).join(' '),
+        },
+      ]);
     },
   });
 
@@ -269,7 +293,7 @@ export function LibraryFilePhotos({ fileId, canEdit, dropZoneRef }: Props) {
                     </Button>
                   </div>
                 ) : canEdit ? (
-                  <PhotoCaption photo={photo} onSave={(value) => caption.mutate({ id: photo.id, value })} />
+                  <PhotoCaption photo={photo} onSave={(value) => caption.mutateAsync({ id: photo.id, value })} />
                 ) : (
                   photo.caption && <p className="break-words px-1 text-xs text-bambu-gray">{photo.caption}</p>
                 )}
