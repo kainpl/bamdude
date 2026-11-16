@@ -522,7 +522,7 @@ class TestPrinterPresetParent:
             patch.object(sp, "get_stored_token", AsyncMock(return_value=("tok", "e@x", "global"))),
             patch.object(sp, "BambuCloudService", MagicMock(return_value=cloud)),
         ):
-            slots, status = await sp._fetch_cloud_presets(MagicMock(), user)
+            slots, status = await sp._fetch_cloud_presets(MagicMock(commit=AsyncMock()), user)
         sp._cloud_cache.clear()
 
         assert status == "ok"
@@ -559,7 +559,7 @@ class TestCloudFilamentMaterialByIdentity:
             patch.object(sp, "get_stored_token", AsyncMock(return_value=("tok", "e@x", "global"))),
             patch.object(sp, "BambuCloudService", MagicMock(return_value=cloud)),
         ):
-            slots, status = await sp._fetch_cloud_presets(MagicMock(), user)
+            slots, status = await sp._fetch_cloud_presets(MagicMock(commit=AsyncMock()), user)
         sp._cloud_cache.clear()
         assert status == "ok"
         return slots["filament"]
