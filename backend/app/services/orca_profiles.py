@@ -40,18 +40,24 @@ MAX_INHERITANCE_DEPTH = 10
 # asks for a folder that does not exist.
 ORCA_MANIFEST_URL = f"{ORCA_BASE_URL}.json"
 MANIFEST_TTL = timedelta(hours=24)
+# After a fetch that failed, how long the manifest is not asked for again: a
+# farm without internet must not pay the request's timeout on every lookup.
+MANIFEST_RETRY_AFTER = timedelta(minutes=10)
 
 _MANIFEST_LISTS = {"filament": "filament_list", "machine": "machine_list", "process": "process_list"}
 
 # (fetched at, {category: {preset name: [sub_path, …]}}) — process memory only:
 # it is an index of somebody else's repository, cheap to fetch again.
 _manifest_cache: tuple[datetime, dict[str, dict[str, list[str]]]] | None = None
+# When the last fetch failed (None: it did not, or nothing was asked yet).
+_manifest_failed_at: datetime | None = None
 
 
 def forget_vendor_manifest() -> None:
     """Drop the in-memory manifest (tests; nothing in the app needs to)."""
-    global _manifest_cache
+    global _manifest_cache, _manifest_failed_at
     _manifest_cache = None
+    _manifest_failed_at = None
 
 
 def _index_manifest(raw: object) -> dict[str, dict[str, list[str]]] | None:
@@ -80,12 +86,16 @@ async def _vendor_manifest(client: httpx.AsyncClient) -> dict[str, dict[str, lis
 
     None when it cannot be read and none was read before: the caller then falls
     back to the plain address, which is what this module always did. A copy
-    past its TTL is still used when GitHub does not answer.
+    past its TTL is still used when GitHub does not answer. A fetch that
+    failed is remembered for ``MANIFEST_RETRY_AFTER`` — the answer meanwhile
+    is the same one, without the request.
     """
-    global _manifest_cache
+    global _manifest_cache, _manifest_failed_at
     now = datetime.now(timezone.utc)
     if _manifest_cache is not None and now - _manifest_cache[0] < MANIFEST_TTL:
         return _manifest_cache[1]
+    if _manifest_failed_at is not None and now - _manifest_failed_at < MANIFEST_RETRY_AFTER:
+        return _manifest_cache[1] if _manifest_cache is not None else None
     try:
         resp = await client.get(ORCA_MANIFEST_URL)
         index = _index_manifest(resp.json()) if resp.status_code == 200 else None
@@ -93,7 +103,9 @@ async def _vendor_manifest(client: httpx.AsyncClient) -> dict[str, dict[str, lis
         logger.debug("Failed to fetch the vendor manifest %s: %s", ORCA_MANIFEST_URL, e)
         index = None
     if index is None:
+        _manifest_failed_at = now
         return _manifest_cache[1] if _manifest_cache is not None else None
+    _manifest_failed_at = None
     _manifest_cache = (now, index)
     return index
 

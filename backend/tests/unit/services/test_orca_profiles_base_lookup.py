@@ -197,3 +197,28 @@ async def test_the_manifest_is_fetched_once_for_a_whole_chain(db_session, github
     fake = github()
     await orca_profiles.resolve_preset({"name": "My ABS", "inherits": P1P}, "filament", db_session, strict=True)
     assert fake.asked.count(MANIFEST_URL) == 1
+
+
+async def test_a_manifest_that_could_not_be_fetched_is_not_asked_for_again_at_once(db_session, github):
+    """Without internet every lookup used to pay the manifest's timeout again
+    before the plain-address attempts."""
+    fake = github(manifest=None)
+
+    await orca_profiles.fetch_and_cache_base_profile(TOP, "filament", db_session)
+    await orca_profiles.fetch_and_cache_base_profile("fdm_filament_abs", "filament", db_session)
+
+    assert fake.asked.count(MANIFEST_URL) == 1
+    # The plain address is still tried each time.
+    assert f"{BASE}/filament/fdm_filament_abs.json" in fake.asked
+
+
+async def test_a_failed_manifest_is_asked_for_again_after_a_while(db_session, github, monkeypatch):
+    fake = github(manifest=None)
+    await orca_profiles.fetch_and_cache_base_profile(TOP, "filament", db_session)
+
+    monkeypatch.setattr(orca_profiles, "MANIFEST_RETRY_AFTER", orca_profiles.timedelta(0))
+    fake.files[MANIFEST_URL] = MANIFEST
+    base = await orca_profiles.fetch_and_cache_base_profile(P1P, "filament", db_session)
+
+    assert fake.asked.count(MANIFEST_URL) == 2
+    assert base is not None and base["nozzle_temperature"] == ["270"]
