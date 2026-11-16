@@ -128,13 +128,18 @@ class Source:
     fs_modified_at: datetime | None
     authority: object | None = None
     permission: str = "library:update_all"
+    # Set for an actor who may touch only their OWN files (``library:update_own``):
+    # the picture attaches only while the row is still theirs.
+    owner_id: int | None = None
 
     @classmethod
-    def capture(cls, row: LibraryFile, *, authority=None, permission="library:update_all"):
+    def capture(cls, row: LibraryFile, *, authority=None, permission="library:update_all", owner_id=None):
         fields = {
-            name: getattr(row, name) for name in cls.__dataclass_fields__ if name not in ("authority", "permission")
+            name: getattr(row, name)
+            for name in cls.__dataclass_fields__
+            if name not in ("authority", "permission", "owner_id")
         }
-        return cls(**fields, authority=authority, permission=permission)
+        return cls(**fields, authority=authority, permission=permission, owner_id=owner_id)
 
 
 def _publish(source: Path, target: Path):
@@ -194,6 +199,11 @@ async def attach_result(db: AsyncSession, source: Source, png: Path, *, authoriz
                                 LibraryFile.file_hash == source.file_hash,
                                 LibraryFile.fs_modified_at == source.fs_modified_at,
                                 LibraryFile.thumbnail_path == source.thumbnail_path,
+                                *(
+                                    [LibraryFile.created_by_id == source.owner_id]
+                                    if source.owner_id is not None
+                                    else []
+                                ),
                             )
                             .values(thumbnail_path=relative)
                             .execution_options(synchronize_session=False)

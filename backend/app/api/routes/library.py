@@ -4462,12 +4462,19 @@ async def batch_generate_stl_thumbnails(
     request: BatchThumbnailRequest,
     db: AsyncSession = Depends(get_db),
     creds: RequestCredentials = Depends(request_credentials),
-    _: User | None = Depends(require_permission(Permission.LIBRARY_UPDATE_ALL)),
+    auth_result: tuple[User | None, bool] = Depends(
+        require_ownership_permission(
+            Permission.LIBRARY_UPDATE_ALL,
+            Permission.LIBRARY_UPDATE_OWN,
+        )
+    ),
 ):
     """Generate thumbnails for STL files in batch.
 
-    Note: Requires library:update_all permission since this is a batch operation
-    that may affect files owned by different users.
+    ``library:update_all`` works on any file. ``library:update_own`` works on the
+    caller's own files only — whatever the selection names (upstream #2990: the
+    button was offered to such a user and the route answered 403); the picture is
+    then published under that right, onto a row that is still theirs.
 
     Can generate thumbnails for:
     - Specific file IDs (file_ids)
@@ -4491,9 +4498,19 @@ async def batch_generate_stl_thumbnails(
     else:
         return BatchThumbnailResponse(processed=0, succeeded=0, failed=0, results=[])
 
+    user, can_modify_all = auth_result
+    owner_id = None if can_modify_all or user is None else user.id
+    permission = Permission.LIBRARY_UPDATE_ALL if owner_id is None else Permission.LIBRARY_UPDATE_OWN
+    if owner_id is not None:
+        query = query.where(LibraryFile.created_by_id == owner_id)
+
     rows = (await db.execute(query)).scalars().all()
     cad_files = [(row.id, row.filename) for row in rows if is_cad_preview(row.file_type)]
-    sources = [PreviewSource.capture(row, authority=authority) for row in rows if not is_cad_preview(row.file_type)]
+    sources = [
+        PreviewSource.capture(row, authority=authority, permission=permission.value, owner_id=owner_id)
+        for row in rows
+        if not is_cad_preview(row.file_type)
+    ]
     # This route owns only an auth/selection read transaction.
     await db.commit()
     picture_pause = PreviewPauseBudget()  # one bound for the whole batch on a backup's pause
