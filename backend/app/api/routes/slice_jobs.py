@@ -9,6 +9,8 @@ from fastapi import APIRouter, Depends, HTTPException, Response
 
 from backend.app.core.auth import require_ownership_permission, require_permission
 from backend.app.core.permissions import Permission
+from backend.app.i18n import current_language
+from backend.app.i18n.api_errors import translate_detail
 from backend.app.models.user import User
 from backend.app.services.slice_dispatch import slice_dispatch
 
@@ -63,7 +65,11 @@ async def get_slice_job(
         body["result"] = job.result
     elif job.status == "failed":
         body["error_status"] = job.error_status
-        body["error_detail"] = job.error_detail
+        # A job outlives the request that failed, so its refusal never passes
+        # the exception handler that translates every other one: it is stored
+        # as raised (English) and put into the system language here, where it
+        # leaves for the Slice dialog.
+        body["error_detail"] = translate_detail(job.error_detail, current_language())
     return body
 
 

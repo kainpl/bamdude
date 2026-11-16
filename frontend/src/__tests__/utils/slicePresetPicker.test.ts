@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { pickFilamentForSlot, pickDefault } from '../../utils/slicePresetPicker';
+import { pickEmbeddedFilament, pickFilamentForSlot, pickDefault } from '../../utils/slicePresetPicker';
 import { buildCompatibilityIndex } from '../../utils/slicerPrinterMatch';
 import type { UnifiedPresetsResponse, UnifiedPresetsBySlot } from '../../api/client';
 
@@ -134,5 +134,123 @@ describe('pickFilamentForSlot — printer-compat contract (#1851)', () => {
     expect(pickFilamentForSlot(makeUnified(), { type: 'PLA', color: '#FF0000' }, 'Bambu Lab A1 0.4 nozzle', index)).toBe(
       pickDefault(makeUnified(), 'filament'),
     );
+  });
+});
+
+// The filament preset a project names for a slot ("Assemble project" writes the
+// one the operator chose) is that slot's default — when it is in the listing,
+// fits the selected printer and is of the plate's material. Otherwise the
+// ordinary pick answers.
+describe('pickEmbeddedFilament', () => {
+  const index = buildCompatibilityIndex({ 'Bambu Lab A1': 'A1', 'Bambu Lab H2C': 'H2C' });
+  const A1 = 'Bambu Lab A1 0.4 nozzle';
+  const filament = (name: string, filament_type: string) => ({ id: name, name, source: 'standard' as const, filament_type });
+  const presets = makeUnified({
+    standard: {
+      printer: [],
+      process: [],
+      filament: [
+        filament('Generic PLA @BBL A1', 'PLA'),
+        filament('Bambu PLA Matte @BBL A1', 'PLA'),
+        filament('Bambu PLA Matte @BBL H2C', 'PLA'),
+        filament('Bambu PETG HF @BBL A1', 'PETG'),
+      ],
+    },
+  });
+
+  it('takes the named preset over the one the scoring would pick', () => {
+    expect(pickFilamentForSlot(presets, { type: 'PLA', color: '' }, A1, index)).toEqual({
+      source: 'standard',
+      id: 'Generic PLA @BBL A1',
+    });
+    expect(pickEmbeddedFilament(presets, 'Bambu PLA Matte @BBL A1', { type: 'PLA' }, A1, index)).toEqual({
+      source: 'standard',
+      id: 'Bambu PLA Matte @BBL A1',
+    });
+  });
+
+  it('answers nothing for a name that is not in the listing, or no name', () => {
+    expect(pickEmbeddedFilament(presets, 'Some PLA nobody has', { type: 'PLA' }, A1, index)).toBeNull();
+    expect(pickEmbeddedFilament(presets, null, { type: 'PLA' }, A1, index)).toBeNull();
+    expect(pickEmbeddedFilament(presets, undefined, { type: 'PLA' }, A1, index)).toBeNull();
+  });
+
+  it('answers nothing for a preset made for another printer', () => {
+    expect(pickEmbeddedFilament(presets, 'Bambu PLA Matte @BBL H2C', { type: 'PLA' }, A1, index)).toBeNull();
+  });
+
+  it('answers nothing for a preset of another material than the plate asks for', () => {
+    expect(pickEmbeddedFilament(presets, 'Bambu PETG HF @BBL A1', { type: 'PLA' }, A1, index)).toBeNull();
+    // a plate that states no material has nothing to contradict the name with
+    expect(pickEmbeddedFilament(presets, 'Bambu PETG HF @BBL A1', { type: '' }, A1, index)).toEqual({
+      source: 'standard',
+      id: 'Bambu PETG HF @BBL A1',
+    });
+  });
+});
+
+// A name is not an identity: Bambu Cloud lists the stock presets under the
+// names the bundle uses, and the two are different content (decision 5). The
+// project names its filament by NAME only, so a name that several sources hold
+// is resolved by something else — the preset the project was built from, when
+// that is known; else the source of the chosen printer preset; else not at all.
+describe('pickEmbeddedFilament — a name that several sources hold', () => {
+  const index = buildCompatibilityIndex({ 'Bambu Lab A1': 'A1' });
+  const A1 = 'Bambu Lab A1 0.4 nozzle';
+  const NAME = 'Bambu PLA Basic @BBL A1';
+  const presets = makeUnified({
+    cloud: {
+      printer: [],
+      process: [],
+      filament: [{ id: 'GFSA00', name: NAME, source: 'cloud', filament_type: 'PLA' }],
+    },
+    standard: {
+      printer: [],
+      process: [],
+      filament: [
+        { id: NAME, name: NAME, source: 'standard', filament_type: 'PLA' },
+        { id: 'Only standard', name: 'Only standard', source: 'standard', filament_type: 'PLA' },
+      ],
+    },
+  });
+  const pla = { type: 'PLA' };
+
+  it('takes the preset the project was built from, whatever tier comes first', () => {
+    expect(
+      pickEmbeddedFilament(presets, NAME, pla, A1, index, { built: { source: 'standard', id: NAME } }),
+    ).toEqual({ source: 'standard', id: NAME });
+    expect(
+      pickEmbeddedFilament(presets, NAME, pla, A1, index, { built: { source: 'cloud', id: 'GFSA00' } }),
+    ).toEqual({ source: 'cloud', id: 'GFSA00' });
+  });
+
+  it('ignores a built-from preset that is not the one the file names any more', () => {
+    // The file was edited since: its slot names another preset now.
+    expect(
+      pickEmbeddedFilament(presets, 'Only standard', pla, A1, index, { built: { source: 'cloud', id: 'GFSA00' } }),
+    ).toEqual({ source: 'standard', id: 'Only standard' });
+  });
+
+  it('takes the namesake in the source of the chosen printer preset', () => {
+    expect(pickEmbeddedFilament(presets, NAME, pla, A1, index, { printerSource: 'standard' })).toEqual({
+      source: 'standard',
+      id: NAME,
+    });
+    expect(pickEmbeddedFilament(presets, NAME, pla, A1, index, { printerSource: 'cloud' })).toEqual({
+      source: 'cloud',
+      id: 'GFSA00',
+    });
+  });
+
+  it('answers nothing when neither says which namesake is meant', () => {
+    expect(pickEmbeddedFilament(presets, NAME, pla, A1, index)).toBeNull();
+    expect(pickEmbeddedFilament(presets, NAME, pla, A1, index, { printerSource: 'local' })).toBeNull();
+  });
+
+  it('still takes a name only one source holds', () => {
+    expect(pickEmbeddedFilament(presets, 'Only standard', pla, A1, index, { printerSource: 'cloud' })).toEqual({
+      source: 'standard',
+      id: 'Only standard',
+    });
   });
 });

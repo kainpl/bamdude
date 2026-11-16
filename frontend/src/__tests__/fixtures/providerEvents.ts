@@ -17,6 +17,7 @@ export const PROVIDER_EVENTS: ProviderEventInfo[] = [
   { flag: 'on_print_stopped', event_types: ['print_stopped'], group: 'print', severity: 'warning', default: true },
   { flag: 'on_bed_cooled', event_types: ['bed_cooled'], group: 'print', severity: 'info', default: false },
   { flag: 'on_first_layer_complete', event_types: ['first_layer_complete'], group: 'print', severity: 'info', default: false },
+  { flag: 'on_pause_coming_up', event_types: ['pause_coming_up'], group: 'print', severity: 'info', default: false },
   { flag: 'on_print_complete', event_types: ['print_complete'], group: 'print', severity: 'info', default: true },
   { flag: 'on_print_progress', event_types: ['print_progress'], group: 'print', severity: 'info', default: false },
   { flag: 'on_print_resumed', event_types: ['print_resumed'], group: 'print', severity: 'info', default: true },

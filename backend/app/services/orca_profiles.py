@@ -10,6 +10,7 @@ Handles:
 import io
 import json
 import logging
+import urllib.parse
 import zipfile
 from datetime import datetime, timedelta, timezone
 
@@ -19,12 +20,114 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.models.local_preset import LocalPreset
 from backend.app.models.orca_base_cache import OrcaBaseProfile
+from backend.app.utils.slicer_strings import first_slicer_string, slicer_strings
 
 logger = logging.getLogger(__name__)
 
 ORCA_BASE_URL = "https://raw.githubusercontent.com/SoftFever/OrcaSlicer/main/resources/profiles/BBL"
 CACHE_TTL_DAYS = 7
 MAX_INHERITANCE_DEPTH = 10
+
+# The vendor manifest: for every preset of the vendor, its NAME and the file it
+# lives in (``{"filament_list": [{"name": ..., "sub_path": "filament/P1P/….json"}], …}``).
+# It is how the slicer itself finds a preset, and the only truthful way to:
+#
+# - a brand's presets sit in a subfolder (``filament/P1P/``, ``filament/SUNLU/``);
+# - a name that holds a "/" is stored under a file name that has "-" instead
+#   (``Bambu Support For PLA/PETG @BBL A1`` -> ``Bambu Support For PLA-PETG @BBL A1.json``).
+#
+# Composing ``<category>/<name>.json`` finds neither, and for the second kind
+# asks for a folder that does not exist.
+ORCA_MANIFEST_URL = f"{ORCA_BASE_URL}.json"
+MANIFEST_TTL = timedelta(hours=24)
+# After a fetch that failed, how long the manifest is not asked for again: a
+# farm without internet must not pay the request's timeout on every lookup.
+MANIFEST_RETRY_AFTER = timedelta(minutes=10)
+
+_MANIFEST_LISTS = {"filament": "filament_list", "machine": "machine_list", "process": "process_list"}
+
+# (fetched at, {category: {preset name: [sub_path, …]}}) — process memory only:
+# it is an index of somebody else's repository, cheap to fetch again.
+_manifest_cache: tuple[datetime, dict[str, dict[str, list[str]]]] | None = None
+# When the last fetch failed (None: it did not, or nothing was asked yet).
+_manifest_failed_at: datetime | None = None
+
+
+def forget_vendor_manifest() -> None:
+    """Drop the in-memory manifest (tests; nothing in the app needs to)."""
+    global _manifest_cache, _manifest_failed_at
+    _manifest_cache = None
+    _manifest_failed_at = None
+
+
+def _index_manifest(raw: object) -> dict[str, dict[str, list[str]]] | None:
+    """Name -> files for each category, or None when this is not a vendor manifest."""
+    if not isinstance(raw, dict) or not any(isinstance(raw.get(key), list) for key in _MANIFEST_LISTS.values()):
+        return None
+    index: dict[str, dict[str, list[str]]] = {}
+    for category, key in _MANIFEST_LISTS.items():
+        names: dict[str, list[str]] = {}
+        entries = raw.get(key)
+        for entry in entries if isinstance(entries, list) else []:
+            if not isinstance(entry, dict):
+                continue
+            name, sub_path = entry.get("name"), entry.get("sub_path")
+            if not isinstance(name, str) or not isinstance(sub_path, str) or not name or not sub_path:
+                continue
+            files = names.setdefault(name, [])
+            if sub_path not in files:
+                files.append(sub_path)
+        index[category] = names
+    return index
+
+
+async def _vendor_manifest(client: httpx.AsyncClient) -> dict[str, dict[str, list[str]]] | None:
+    """The vendor manifest's index, fetched at most once per ``MANIFEST_TTL``.
+
+    None when it cannot be read and none was read before: the caller then falls
+    back to the plain address, which is what this module always did. A copy
+    past its TTL is still used when GitHub does not answer. A fetch that
+    failed is remembered for ``MANIFEST_RETRY_AFTER`` — the answer meanwhile
+    is the same one, without the request.
+    """
+    global _manifest_cache, _manifest_failed_at
+    now = datetime.now(timezone.utc)
+    if _manifest_cache is not None and now - _manifest_cache[0] < MANIFEST_TTL:
+        return _manifest_cache[1]
+    if _manifest_failed_at is not None and now - _manifest_failed_at < MANIFEST_RETRY_AFTER:
+        return _manifest_cache[1] if _manifest_cache is not None else None
+    try:
+        resp = await client.get(ORCA_MANIFEST_URL)
+        index = _index_manifest(resp.json()) if resp.status_code == 200 else None
+    except Exception as e:
+        logger.debug("Failed to fetch the vendor manifest %s: %s", ORCA_MANIFEST_URL, e)
+        index = None
+    if index is None:
+        _manifest_failed_at = now
+        return _manifest_cache[1] if _manifest_cache is not None else None
+    _manifest_failed_at = None
+    _manifest_cache = (now, index)
+    return index
+
+
+def _manifest_file(index: dict[str, dict[str, list[str]]], categories: list[str], name: str) -> str | None:
+    """The one file the manifest gives ``name``, in the first category that knows it.
+
+    ⚠️ A name with TWO files is not resolved — there is no "the first one";
+    picking either would silently build a preset on settings nobody chose. The
+    shipped manifests have no such name; this is for one that grows it.
+    """
+    for category in categories:
+        files = index.get(category, {}).get(name)
+        if not files:
+            continue
+        if len(files) > 1:
+            logger.warning(
+                "Base profile '%s' is ambiguous: the vendor manifest lists it as %s", name, " and ".join(files)
+            )
+            return None
+        return files[0]
+    return None
 
 
 async def get_cached_base_profile(name: str, db: AsyncSession, *, allow_stale: bool = False) -> dict | None:
@@ -64,24 +167,36 @@ async def fetch_and_cache_base_profile(name: str, profile_type: str, db: AsyncSe
     }
     subdir = type_dirs.get(profile_type, "filament")
 
-    # Try fetching from GitHub
-    urls_to_try = [
-        f"{ORCA_BASE_URL}/{subdir}/{name}.json",
-    ]
-    # Also try filament dir as fallback for any type
-    if subdir != "filament":
-        urls_to_try.append(f"{ORCA_BASE_URL}/filament/{name}.json")
+    # The category the preset belongs to, then filament as a fallback for any type.
+    categories = [subdir] if subdir == "filament" else [subdir, "filament"]
 
     data = None
     async with httpx.AsyncClient(timeout=15.0) as client:
+        manifest = await _vendor_manifest(client)
+        if manifest is not None:
+            # By NAME, through the manifest — wherever the file is and whatever it is called.
+            sub_path = _manifest_file(manifest, categories, name)
+            urls_to_try = [f"{ORCA_BASE_URL}/{urllib.parse.quote(sub_path, safe='/')}"] if sub_path else []
+            verify_name = False
+        else:
+            # No manifest to ask: the plain address, as before. It is a guess,
+            # so the file must say it is the preset we asked for.
+            urls_to_try = [f"{ORCA_BASE_URL}/{category}/{name}.json" for category in categories]
+            verify_name = True
         for url in urls_to_try:
             try:
                 resp = await client.get(url)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    break
+                if resp.status_code != 200:
+                    continue
+                candidate = resp.json()
             except Exception as e:
                 logger.debug("Failed to fetch %s: %s", url, e)
+                continue
+            if verify_name and isinstance(candidate, dict) and candidate.get("name") not in (None, name):
+                logger.debug("%s is the preset %r, not %r", url, candidate.get("name"), name)
+                continue
+            data = candidate
+            break
 
     if data is None:
         # An expired copy is still the profile: a farm without internet must not lose its presets a week
@@ -166,15 +281,15 @@ def extract_core_fields(data: dict) -> dict:
     ft = data.get("filament_type")
     if isinstance(ft, list) and ft:
         fields["filament_type"] = str(ft[0])
-    elif isinstance(ft, str):
-        fields["filament_type"] = ft
+    elif isinstance(ft, str) and first_slicer_string(ft):
+        fields["filament_type"] = first_slicer_string(ft)
 
     # filament_vendor
     fv = data.get("filament_vendor")
     if isinstance(fv, list) and fv:
         fields["filament_vendor"] = str(fv[0])
-    elif isinstance(fv, str):
-        fields["filament_vendor"] = fv
+    elif isinstance(fv, str) and first_slicer_string(fv):
+        fields["filament_vendor"] = first_slicer_string(fv)
 
     # nozzle_temp_min / max - from nozzle_temperature array or range fields
     nozzle_temp = data.get("nozzle_temperature")
@@ -208,7 +323,15 @@ def extract_core_fields(data: dict) -> dict:
 
     # default_filament_colour
     colour = data.get("default_filament_colour")
-    if colour is not None:
+    if isinstance(colour, str):
+        # A bare colour is stored as it is; the slicer's INI form (ONE string
+        # of quoted items joined by ``;``) is stored as the list it encodes.
+        decoded = slicer_strings(colour)
+        if decoded == [colour]:
+            fields["default_filament_colour"] = colour
+        elif decoded:
+            fields["default_filament_colour"] = json.dumps(decoded)
+    elif colour is not None:
         fields["default_filament_colour"] = json.dumps(colour) if isinstance(colour, list) else str(colour)
 
     # filament_cost
@@ -229,6 +352,9 @@ def extract_core_fields(data: dict) -> dict:
     compat = data.get("compatible_printers")
     if isinstance(compat, list):
         fields["compatible_printers"] = json.dumps(compat)
+    elif isinstance(compat, str) and slicer_strings(compat):
+        # Orca Cloud's INI form of the list, or a bare single name.
+        fields["compatible_printers"] = json.dumps(slicer_strings(compat))
 
     return fields
 

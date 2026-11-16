@@ -126,6 +126,8 @@ export function useWebSocket() {
 
   // Throttle printer status updates to prevent freeze during rapid messages
   const pendingPrinterStatus = useRef<Map<number, StatusPatch>>(new Map());
+  // The last `connected` each printer's status frames stated, to tell the edge.
+  const printerConnectedRef = useRef<Map<number, boolean>>(new Map());
   const printerStatusTimeoutRef = useRef<number | null>(null);
   const statusApplyInProgressRef = useRef(false);
   const statusEpochRef = useRef(0);
@@ -651,6 +653,15 @@ export function useWebSocket() {
       case 'printer_status':
         if (message.printer_id !== undefined && message.data) {
           throttledPrinterStatusUpdate(message.printer_id, message.data);
+          // A printer that came online or went offline changes what the Slice
+          // dialog's farm filters offer. Only the edge counts — status frames
+          // arrive with every temperature change — and the first sight of a
+          // printer is an edge too: what it was before is not known.
+          const connected = (message.data as { connected?: unknown }).connected;
+          if (typeof connected === 'boolean' && printerConnectedRef.current.get(message.printer_id) !== connected) {
+            printerConnectedRef.current.set(message.printer_id, connected);
+            debouncedInvalidate('slicerLoadedFilaments');
+          }
         }
         break;
 
@@ -925,6 +936,10 @@ export function useWebSocket() {
         // once; the Spoolman spool list is not on the card's path and waits.
         invalidateSlotQueries();
         debouncedInvalidate('spoolman-inventory-spools');
+        // What is loaded on the farm changed: the Slice dialog's "only loaded
+        // filaments" answer. Refetched only while that query is mounted and
+        // enabled — the dialog open with a filter switched on.
+        debouncedInvalidate('slicerLoadedFilaments');
         break;
 
       case 'spool_assignment_verified': {

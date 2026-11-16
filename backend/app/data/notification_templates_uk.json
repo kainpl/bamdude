@@ -124,6 +124,11 @@
     "title_template": "Перший шар завершено",
     "body_template": "{printer}: {filename}\nШар 1/{total_layers} готовий"
   },
+  "pause_coming_up": {
+    "name": "Наближається пауза",
+    "title_template": "Наближається пауза",
+    "body_template": "{printer}: {filename}\nПауза на шарі {layer}/{total_layers} — {time_to_pause}"
+  },
   "test": {
     "name": "Тестове сповіщення",
     "title_template": "Тест BamDude",

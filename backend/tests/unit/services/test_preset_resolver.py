@@ -270,3 +270,80 @@ class TestUnknownSource:
         with pytest.raises(HTTPException) as exc_info:
             await resolve_preset_ref(db_session, None, ref, "process")
         assert exc_info.value.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_orca_cloud_string_lists_become_arrays():
+    """Upstream c4c5c7042 (#3381): Orca Cloud can return list options
+    INI-encoded. They go to the sidecar as arrays, parsed the way the slicer
+    would: empty items keep their per-extruder positions. Other options are
+    left alone."""
+    db = MagicMock()
+    user = MagicMock()
+    user.has_permission = MagicMock(return_value=True)
+    svc_mock = MagicMock()
+    svc_mock.get_profile = AsyncMock(
+        return_value={
+            "content": {
+                "compatible_printers": '"Bambu Lab H2D 0.4 nozzle - Skew";"Bambu Lab X1 Carbon 0.4 nozzle"',
+                "compatible_prints": "",
+                "filament_type": "PLA",
+                "default_filament_colour": '"";"#FF0000"',
+                "compatible_printers_condition": '"bad" quote',
+            }
+        }
+    )
+    svc_mock.close = AsyncMock()
+    with patch.object(preset_resolver, "_build_orca_service", AsyncMock(return_value=svc_mock)):
+        out = await preset_resolver._resolve_orca_cloud(
+            db, user, PresetRef(source="orca_cloud", id="abc"), slot="filament"
+        )
+    payload = json.loads(out)
+    assert payload["compatible_printers"] == ["Bambu Lab H2D 0.4 nozzle - Skew", "Bambu Lab X1 Carbon 0.4 nozzle"]
+    assert payload["compatible_prints"] == ""
+    assert payload["filament_type"] == ["PLA"]
+    assert payload["default_filament_colour"] == ["", "#FF0000"]
+    assert payload["compatible_printers_condition"] == '"bad" quote'
+
+
+@pytest.mark.asyncio
+async def test_orca_cloud_unparseable_string_list_is_forwarded_as_is():
+    db = MagicMock()
+    user = MagicMock()
+    user.has_permission = MagicMock(return_value=True)
+    svc_mock = MagicMock()
+    svc_mock.get_profile = AsyncMock(return_value={"content": {"compatible_printers": '"X1C" junk'}})
+    svc_mock.close = AsyncMock()
+    with patch.object(preset_resolver, "_build_orca_service", AsyncMock(return_value=svc_mock)):
+        out = await preset_resolver._resolve_orca_cloud(
+            db, user, PresetRef(source="orca_cloud", id="abc"), slot="process"
+        )
+    assert json.loads(out)["compatible_printers"] == '"X1C" junk'
+
+
+@pytest.mark.asyncio
+async def test_orca_cloud_json_array_lists_are_forwarded_unchanged():
+    """Only a string is INI-parsed: a real array must not be re-read, or a name
+    with a ``;`` in it would fall apart."""
+    db = MagicMock()
+    user = MagicMock()
+    user.has_permission = MagicMock(return_value=True)
+    svc_mock = MagicMock()
+    svc_mock.get_profile = AsyncMock(
+        return_value={
+            "content": {
+                "compatible_printers": ["X1C; tuned", "H2C 0.4"],
+                "filament_type": ["PLA", "PETG"],
+                "default_filament_colour": ["", "#FF0000"],
+            }
+        }
+    )
+    svc_mock.close = AsyncMock()
+    with patch.object(preset_resolver, "_build_orca_service", AsyncMock(return_value=svc_mock)):
+        out = await preset_resolver._resolve_orca_cloud(
+            db, user, PresetRef(source="orca_cloud", id="abc"), slot="filament"
+        )
+    payload = json.loads(out)
+    assert payload["compatible_printers"] == ["X1C; tuned", "H2C 0.4"]
+    assert payload["filament_type"] == ["PLA", "PETG"]
+    assert payload["default_filament_colour"] == ["", "#FF0000"]

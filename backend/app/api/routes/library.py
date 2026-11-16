@@ -159,8 +159,10 @@ from backend.app.utils.filename import (
 )
 from backend.app.utils.http import build_content_disposition
 from backend.app.utils.safe_path import PathTraversalError, safe_join_under
+from backend.app.utils.slicer_strings import first_slicer_string
 from backend.app.utils.threemf_tools import (
     expand_to_project_slots,
+    extract_embedded_filament_presets_from_3mf,
     extract_embedded_presets_from_3mf,
     extract_nozzle_mapping_from_3mf,
     extract_project_filaments_from_3mf,
@@ -2578,10 +2580,7 @@ def _preset_default_colour(profile: dict) -> str:
     ``filament_colour`` because the CLI does not read it itself (measured:
     Bambu Studio consumes it in the GUI when a project is created).
     """
-    raw = profile.get("default_filament_colour")
-    if isinstance(raw, list):
-        raw = raw[0] if raw else None
-    return raw.strip() if isinstance(raw, str) else ""
+    return first_slicer_string(profile.get("default_filament_colour")) or ""
 
 
 def _patch_filament_colours(
@@ -2902,6 +2901,20 @@ def _slicer_rejection_message(error_text: str) -> str | None:
     return reason
 
 
+async def refuse_unsliceable_bed_type(db: AsyncSession, request) -> None:
+    """Answer a slice request whose bed plate its slicer lacks with a 422.
+
+    Asked at the request, before the job is queued: the same refusal inside
+    the job would reach the user as a failed slice minutes later.
+    """
+    from backend.app.services.slicer_routing import refuse_bed_type_for_slicer, resolve_sidecar_url
+
+    if not request.bed_type:
+        return
+    chosen, _url = await resolve_sidecar_url(db, slicer_override=request.slicer)
+    refuse_bed_type_for_slicer(request.bed_type, chosen)
+
+
 async def _run_slicer_with_fallback(
     db: AsyncSession,
     *,
@@ -2937,7 +2950,11 @@ async def _run_slicer_with_fallback(
         SlicerTimeoutError,
         get_stall_timeout_seconds,
     )
-    from backend.app.services.slicer_routing import resolve_sidecar_url, slicer_label
+    from backend.app.services.slicer_routing import (
+        refuse_bed_type_for_slicer,
+        resolve_sidecar_url,
+        slicer_label,
+    )
 
     user: User | None = None
     if ingest_authority is not None:
@@ -2990,6 +3007,7 @@ async def _run_slicer_with_fallback(
     # over the SLICER_API_URL / BAMBU_STUDIO_API_URL env defaults from
     # core/config.py.
     chosen, api_url = await resolve_sidecar_url(db, slicer_override=request.slicer)
+    refuse_bed_type_for_slicer(request.bed_type, chosen)
     if chosen is None:
         raise HTTPException(
             status_code=400,
@@ -3212,6 +3230,7 @@ async def _run_slicer_with_fallback(
                         export_3mf=True,
                         arrange=True,
                         orient=request.auto_orient,
+                        bed_type=request.bed_type,
                         request_id=progress_request_id,
                         on_progress=plate_cb,
                     )
@@ -3844,6 +3863,7 @@ async def slice_library_file(
         request = SliceRequest.model_validate(request_body)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    await refuse_unsliceable_bed_type(db, request)
 
     src_result = await db.execute(LibraryFile.active().where(LibraryFile.id == file_id))
     lib_file = src_result.scalar_one_or_none()
@@ -4697,6 +4717,8 @@ async def get_library_file_plates(
     # back to its own defaults. Done outside the fast/slow plate split so both
     # return paths carry it.
     embedded_presets: dict[str, str | None] = {"printer": None, "process": None}
+    # ... and the filament preset it names for each slot, offered the same way.
+    embedded_filaments: list[str | None] = []
     # Process settings the designer changed away from the stock preset (#2622).
     # Offered in the SliceModal so a cross-printer re-slice can carry them
     # instead of silently losing them to the picked process profile. Read from
@@ -4706,6 +4728,7 @@ async def get_library_file_plates(
     try:
         with zipfile.ZipFile(file_path, "r") as zf:
             embedded_presets = extract_embedded_presets_from_3mf(zf)
+            embedded_filaments = extract_embedded_filament_presets_from_3mf(zf)
             if _PROJECT_SETTINGS_PATH in zf.namelist():
                 try:
                     design_overrides = [
@@ -4739,6 +4762,7 @@ async def get_library_file_plates(
             "is_multi_plate": len(plates) > 1,
             "embedded_printer": embedded_presets["printer"],
             "embedded_process": embedded_presets["process"],
+            "embedded_filaments": embedded_filaments,
             "design_overrides": design_overrides,
         }
 
@@ -4770,6 +4794,7 @@ async def get_library_file_plates(
         "is_multi_plate": len(plates) > 1,
         "embedded_printer": embedded_presets["printer"],
         "embedded_process": embedded_presets["process"],
+        "embedded_filaments": embedded_filaments,
         "design_overrides": design_overrides,
     }
 
@@ -5516,8 +5541,11 @@ async def get_library_file_filament_requirements(
             # Sort by slot ID
             filaments.sort(key=lambda x: x["slot_id"])
 
-            # Enrich with nozzle mapping for dual-nozzle printers
-            nozzle_mapping = extract_nozzle_mapping_from_3mf(zf)
+            # Enrich with nozzle mapping for dual-nozzle printers — of the plate
+            # asked: a multi-plate file may put the same slot on a different
+            # nozzle on each plate, and unscoped the last plate in the file won
+            # (upstream 19212d066).
+            nozzle_mapping = extract_nozzle_mapping_from_3mf(zf, plate_id)
             if nozzle_mapping:
                 for filament in filaments:
                     filament["nozzle_id"] = nozzle_mapping.get(filament["slot_id"])

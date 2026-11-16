@@ -164,6 +164,52 @@ export function statesDifferentMaterial(
   return Boolean(required) && Boolean(stated) && !filamentTypesCompatible(stated, required);
 }
 
+/**
+ * The filament preset the source project NAMES for a slot, when it can stand as
+ * that slot's default: it is in the listing, it is not made for another printer
+ * than the selected one, and it does not state another material than the plate
+ * asks for. `null` otherwise — the caller falls back to `pickFilamentForSlot`.
+ *
+ * The filament counterpart of honouring the embedded printer and process names
+ * (#1325); a file written by "Assemble project" names the preset chosen there.
+ *
+ * ⚠️ The file names a preset by NAME, and a name is not an identity: Bambu
+ * Cloud lists the stock presets under the names the bundle uses, and the two
+ * are different content (never merged, never one standing for the other). So
+ * the name is resolved to one preset, in this order:
+ *   1. `origin.built` — the preset the project was built from (the assembly
+ *      record's own `{source, id}`), while it is listed and still carries the
+ *      name the file states;
+ *   2. the only listed preset of that name, when one source holds it;
+ *   3. among namesakes, the one in the source of the chosen printer preset
+ *      (`origin.printerSource`).
+ * A name several sources hold with none of these to tell them apart answers
+ * `null`: tier order alone never picks between namesakes.
+ */
+export function pickEmbeddedFilament(
+  by: UnifiedPresetsResponse,
+  embeddedName: string | null | undefined,
+  required: { type: string },
+  printerName: string | null,
+  compatIndex: PrinterCompatibilityIndex,
+  origin?: { built?: PresetRef | null; printerSource?: PresetSource | null },
+): PresetRef | null {
+  if (!embeddedName) return null;
+  const built = findPreset(by, origin?.built ?? null, 'filament');
+  const namesakes = SLICE_MODAL_TIER_ORDER.flatMap((tier) => by[tier].filament.filter((p) => p.name === embeddedName));
+  const preset =
+    built && built.name === embeddedName
+      ? built
+      : namesakes.length === 1
+        ? namesakes[0]
+        : (namesakes.find((p) => p.source === origin?.printerSource) ?? null);
+  if (!preset) return null;
+  const ref: PresetRef = { source: preset.source, id: preset.id };
+  if (statesDifferentMaterial(preset, required.type)) return null;
+  if (presetCompatibility(preset, 'filament', printerName, compatIndex) === 'mismatch') return null;
+  return ref;
+}
+
 export function pickFilamentForSlot(
   by: UnifiedPresetsResponse,
   required: { type: string; color: string },
@@ -205,6 +251,7 @@ export function pickFilamentForSlot(
   let bestCompatible: { ref: PresetRef; score: number } | null = null;
   let bestMismatch: { ref: PresetRef; score: number } | null = null;
   let bestWrongType: { ref: PresetRef; score: number } | null = null;
+  let bestWrongTypeMismatch: { ref: PresetRef; score: number } | null = null;
   for (const tier of SLICE_MODAL_TIER_ORDER) {
     for (const p of by[tier].filament) {
       let score = 0;
@@ -218,7 +265,15 @@ export function pickFilamentForSlot(
       score += TIER_BONUS[tier];
       const ref = { source: p.source, id: p.id };
       if (statesDifferentMaterial(p, reqType)) {
-        if (bestWrongType == null || score > bestWrongType.score) {
+        // Still split by printer (upstream 11013d59c, #3234): with no preset of
+        // the plate's material at all, a pick for another printer is refused
+        // by the slicer outright, so it must not beat one the selected printer
+        // can take.
+        if (presetCompatibility(p, 'filament', printerName, compatIndex) === 'mismatch') {
+          if (bestWrongTypeMismatch == null || score > bestWrongTypeMismatch.score) {
+            bestWrongTypeMismatch = { ref, score };
+          }
+        } else if (bestWrongType == null || score > bestWrongType.score) {
           bestWrongType = { ref, score };
         }
       } else if (presetCompatibility(p, 'filament', printerName, compatIndex) === 'mismatch') {
@@ -235,6 +290,7 @@ export function pickFilamentForSlot(
   // Nothing of the right material anywhere. Better a wrong-material preset the
   // user can see and change than a null the dialog renders as an empty slot.
   if (bestWrongType != null) return bestWrongType.ref;
+  if (bestWrongTypeMismatch != null) return bestWrongTypeMismatch.ref;
   // Final fallback when there are no filament presets at all (empty registry) —
   // pickDefault returns null in that case too, but keeping the call mirrors the
   // rest of the picker logic for shape consistency.

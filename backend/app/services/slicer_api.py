@@ -66,6 +66,28 @@ class SlicerInputError(SlicerApiError):
     """Sidecar rejected the input as invalid (4xx)."""
 
 
+class SlicerPresetUnresolvedError(SlicerInputError):
+    """The sidecar refused a preset whose ``inherits`` chain it cannot complete.
+
+    An input error on purpose: the library route retries with the file's
+    embedded settings only on :class:`SlicerApiServerError`, and a slice the
+    sidecar refused for a preset must not come back sliced with settings the
+    operator did not pick.
+
+    ``preset`` is the name of the profile we sent (None when it carried none),
+    ``missing_parent`` the link the sidecar could not find — the preset's own
+    parent or one further up; for the stub of a "Standard" pick both are the
+    same name. ``category`` is the sidecar's (``machine`` / ``process`` /
+    ``filament``).
+    """
+
+    def __init__(self, message: str, *, preset: str | None, missing_parent: str, category: str | None) -> None:
+        super().__init__(message)
+        self.preset = preset
+        self.missing_parent = missing_parent
+        self.category = category
+
+
 class ResolvedProfile(NamedTuple):
     """A preset's effective values, or why they are unavailable.
 
@@ -90,6 +112,47 @@ class SliceResult(NamedTuple):
 
 
 _shared_http_client: httpx.AsyncClient | None = None
+
+# The sidecar CODE version this backend was written against — the fork's
+# ``src/version.ts::SIDECAR_VERSION``, reported as ``sidecarVersion`` on its
+# ``/health``. Not the slicer's version: that is pinned in ``slicer-api/.env``.
+#
+# ⚠️ We build the sidecar from the fork's branch whenever an operator rebuilds
+# the containers, so the sidecar an install runs is as old as its last build,
+# whatever BamDude it serves. Raise this number BY HAND, in the same change
+# that starts to depend on a newer sidecar, to the number the fork gave that
+# behaviour. An older sidecar is not refused — slicing goes on as far as it
+# can — the Slice dialog says the containers want rebuilding.
+#
+#   1  presets in subfolders and with "/" in the name, the 422
+#      ``preset_unresolved`` refusal, a renamed printer preset, OrcaSlicer's
+#      filament library, the ordered filament listing.
+#   2  a printer profile named as a stock preset is that stock preset (a
+#      cloud / imported copy of a 0.2 / 0.6 / 0.8 printer is no longer sliced
+#      as a user preset of its 0.4 sibling).
+REQUIRED_SIDECAR_VERSION = 2
+
+
+def sidecar_version_of(health_body: object) -> int | None:
+    """The sidecar's code version from its ``/health`` body, or None when it states none.
+
+    None is an ANSWER, not a failure: every image built before the version
+    existed says nothing, and is therefore older than any version we can need.
+    Only a whole positive number counts — a string or a float is a body we do
+    not understand, and guessing "new enough" from it would hide the advice.
+    """
+    if not isinstance(health_body, dict):
+        return None
+    value = health_body.get("sidecarVersion")
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        return None
+    return value
+
+
+def sidecar_is_outdated(version: int | None) -> bool:
+    """Whether a sidecar of this code version is older than this backend needs."""
+    return version is None or version < REQUIRED_SIDECAR_VERSION
+
 
 # Fallback for callers with no DB session to read the setting from (and for
 # tests). The user-facing value is ``slicer_stall_timeout_minutes`` under
@@ -181,6 +244,64 @@ def _format_sidecar_error(response: httpx.Response) -> str:
     if isinstance(payload, list) and payload:
         return "; ".join(str(p) for p in payload)[:500]
     return str(payload)[:500] or f"HTTP {response.status_code}"
+
+
+# ``error`` of the sidecar's refusal for a preset it cannot resolve
+# (``presetUnresolved`` in the fork's ``profile-resolver.ts``).
+_PRESET_UNRESOLVED = "preset_unresolved"
+
+
+def _preset_unresolved_payload(response: httpx.Response) -> dict | None:
+    """The sidecar's ``preset_unresolved`` answer, or None for any other response."""
+    if response.status_code != 422:
+        return None
+    try:
+        payload = response.json()
+    except Exception:
+        return None
+    if not isinstance(payload, dict) or payload.get("error") != _PRESET_UNRESOLVED:
+        return None
+    parent = payload.get("missing_parent")
+    if not isinstance(parent, str) or not parent:
+        return None
+    return payload
+
+
+def _raise_if_preset_unresolved(response: httpx.Response) -> None:
+    """Refuse the slice in words the operator can act on.
+
+    ⚠️ The sidecar's own ``message`` is not forwarded: it is English, written
+    for a log, and would reach the Slice dialog untranslated inside "Slicer
+    rejected input (422): …". The two sentences below are catalog entries
+    (``api_errors_uk.json``), built from the answer's FIELDS — never by
+    parsing its text.
+    """
+    payload = _preset_unresolved_payload(response)
+    if payload is None:
+        return
+    parent = payload["missing_parent"]
+    preset = payload.get("preset")
+    preset = preset if isinstance(preset, str) and preset else None
+    category = payload.get("category")
+    category = category if isinstance(category, str) else None
+    if preset is None or preset == parent:
+        # A "Standard" pick is a stub naming the stock preset twice, so the
+        # preset itself is what this slicer does not have.
+        raise SlicerPresetUnresolvedError(
+            f"The preset '{parent}' is not among the slicer's profiles, so nothing was sliced. "
+            "Pick another preset, or rebuild the slicer containers if it belongs to a newer slicer version.",
+            preset=preset,
+            missing_parent=parent,
+            category=category,
+        )
+    raise SlicerPresetUnresolvedError(
+        f"The preset '{preset}' cannot be sliced: its parent preset '{parent}' is not among the slicer's "
+        "profiles, so nothing was sliced. Pick another preset, or rebuild the slicer containers if the "
+        "parent belongs to a newer slicer version.",
+        preset=preset,
+        missing_parent=parent,
+        category=category,
+    )
 
 
 def _strip_html(text: str) -> str:
@@ -324,6 +445,8 @@ def _handle_slice_response(
     took bytes on trust.
 
     Raises:
+        SlicerPresetUnresolvedError: the sidecar could not complete a preset's
+            ``inherits`` chain and refused to slice on its defaults.
         SlicerInputError: 4xx from the sidecar, including a proxy's 413.
         SlicerApiServerError: 5xx, or a 2xx whose body is not a valid 3MF.
     """
@@ -345,6 +468,7 @@ def _handle_slice_response(
     oversized = _upload_size_rejection(response, model_size_bytes)
     if oversized:
         raise SlicerInputError(oversized)
+    _raise_if_preset_unresolved(response)
     if response.status_code == 413:
         # A 413 almost never comes from the slicer itself — it is a reverse
         # proxy capping the multipart upload (model + profiles). Name the layer
@@ -692,6 +816,11 @@ class SlicerApiService:
             # user can act on.
             logger.info("Slicer sidecar has no /profiles/resolve; falling back to schema defaults")
             return ResolvedProfile(None, "sidecar_outdated")
+        if _preset_unresolved_payload(response) is not None:
+            # The sidecar answered, and the answer is about the PRESET: its
+            # parent is not in this image's profiles. Not a sidecar failure.
+            logger.info("Slicer sidecar cannot resolve the %s preset: %s", category, _format_sidecar_error(response))
+            return ResolvedProfile(None, "preset_unresolved")
         if response.status_code >= 400:
             logger.warning(
                 "Slicer sidecar /profiles/resolve returned %s: %s",

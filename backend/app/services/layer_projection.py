@@ -163,7 +163,10 @@ def bind_layer_grant(manager, printer_id, archive, *, expected_generation, origi
 def notify_current_print_source_ready(manager, printer_id: int, archive) -> None:
     """All attach paths use the committed row. Source readiness grants no authority."""
     from backend.app.core.config import settings
-    from backend.app.services.print_file_analysis import notify_print_file_analysis_source_ready
+    from backend.app.services.print_file_analysis import (
+        notify_print_file_analysis_source_ready,
+        start_print_file_analysis,
+    )
 
     run = current_print_run(manager, printer_id)
     identity = getattr(archive, "recovery_identity", None)
@@ -190,6 +193,9 @@ def notify_current_print_source_ready(manager, printer_id: int, archive) -> None
             archive.plate_index,
             expected_identity=identity,
         )
+        # The file of the print in progress has just arrived: read it now, so
+        # what the status shows from it does not wait for somebody to look.
+        start_print_file_analysis(manager, printer_id, archive.id)
 
 
 def _client(manager, printer_id):

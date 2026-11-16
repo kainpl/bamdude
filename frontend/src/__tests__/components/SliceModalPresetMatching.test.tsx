@@ -17,13 +17,14 @@ describe('SliceModal — keeping a filament pick', () => {
   it("never overrules the user's own pick", () => {
     // Printing PETG on a plate labelled PLA is a thing people do on purpose —
     // the rule corrects the auto-pick only. A pipeline is as deliberate.
-    expect(modalSource).toContain('!explicitFilamentSlots.current.has(i)');
-    expect(modalSource).toContain('explicitFilamentSlots.current.add(idx)');
-    expect(modalSource).toContain('explicitFilamentSlots.current.add(i)');
+    // Behaviour: `SliceModalExplicitChoice.test.tsx`.
+    expect(modalSource).toContain('if (p && explicitFilamentSlots.current.has(i)) return cur;');
+    expect(modalSource).toContain('explicitFilamentSlots.current.set(idx, ref)');
+    expect(modalSource).toContain('explicitFilamentSlots.current.set(i, ref)');
   });
 
   it('forgets which slots were chosen when the plate layout changes', () => {
-    expect(modalSource).toContain('explicitFilamentSlots.current = new Set()');
+    expect(modalSource).toContain('explicitFilamentSlots.current = new Map()');
   });
 });
 

@@ -144,6 +144,7 @@ EVENT_CATEGORIES = {
             "plate_not_empty",
             "bed_cooled",
             "first_layer_complete",
+            "pause_coming_up",
         ],
     },
     "inventory": {
@@ -199,6 +200,7 @@ EVENT_LABELS = {
     "plate_not_empty": "Plate not empty",
     "bed_cooled": "Bed cooled",
     "first_layer_complete": "First layer complete",
+    "pause_coming_up": "Pause coming up",
     "stock_break_alert": "Stock break risk",
     "stock_reorder_alert": "Stock reorder point",
     "queue_job_added": "Queue job added",

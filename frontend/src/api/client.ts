@@ -1339,6 +1339,10 @@ export interface PrinterStatus {
   layer_num: number | null;
   total_layers: number | null;
   total_layers_source?: 'mqtt' | 'file' | 'unknown';
+  /** The next pause the slicer put into the running print. `minutes` is an
+   *  estimate the server gives only at Standard speed for a file with time
+   *  markers; absent/null when nothing is known — never computed here. */
+  next_pause?: { layer: number; minutes: number | null } | null;
   temperatures: {
     bed?: number;
     bed_target?: number;
@@ -5099,6 +5103,8 @@ export interface AppSettings {
   prometheus_token: string;
   // Bed cooled threshold
   bed_cooled_threshold: number;
+  // Minutes before a slicer pause at which the pause-coming-up event fires (0 = never)
+  pause_warning_minutes: number;
   // Inventory low stock threshold
   low_stock_threshold: number;
   // Session policy (#1706, adapted): admin ceiling on session lifetime in hours (default 720 = 30d)
@@ -5750,7 +5756,9 @@ export type BedType =
   | 'Engineering Plate'
   | 'High Temp Plate'
   | 'Textured PEI Plate'
-  | 'Supertack Plate';
+  | 'Supertack Plate'
+  // OrcaSlicer's enum only: the backend refuses it (422) for Bambu Studio.
+  | 'Textured Cool Plate';
 
 /**
  * Why a preset's own values could not be read.
@@ -5905,6 +5913,13 @@ export interface SlicerHealth {
   url: string | null;
   version?: string;
   error?: string;
+  // The sidecar's own code version (not the slicer's `version`), the one this
+  // backend needs, and whether the running sidecar is older. Sent for a
+  // healthy sidecar only; `sidecar_version` is null for an image built before
+  // the version existed, which counts as older.
+  sidecar_version?: number | null;
+  sidecar_required?: number;
+  sidecar_outdated?: boolean;
 }
 
 // GET /api/v1/slicer/presets — unified listing across cloud / local / standard.
@@ -5941,6 +5956,11 @@ export interface UnifiedPreset {
   // against the selected printer; null on cloud / standard stubs, where the
   // matcher falls back to the `@BBL <model> <nozzle>` name convention (#1325).
   compatible_printers?: string[] | null;
+  // Printer slot only: the name of the preset this one was saved from, for a
+  // preset that is not a system preset. Read through `utils/printerPresetParents`
+  // — a renamed printer preset takes its model, nozzle and compatible presets
+  // from this parent. Never the identity sent to the slicer.
+  inherits?: string | null;
 }
 
 export interface UnifiedPresetsBySlot {
@@ -5959,6 +5979,41 @@ export interface UnifiedPresetsResponse {
   standard: UnifiedPresetsBySlot;
   cloud_status: SlicerCloudStatus;
   orca_cloud_status: SlicerCloudStatus;
+}
+
+// GET /slicer/loaded-filaments — the Slice dialog's two farm filters. Online
+// means active, not archived and connected; a filament is the SPOOL a slot
+// holds, never the profile the slot was advertised under.
+export interface LoadedFilament {
+  kind: 'ams' | 'external';
+  material: string;
+  // The filament id of the spool's family, when one is known.
+  family_id: string | null;
+  // The source states only a material: presets of the same type match it.
+  by_material: boolean;
+}
+
+export interface OnlinePrinter {
+  printer_id: number;
+  // Normalised short model; `accepts` are the file models it takes besides its own.
+  model: string | null;
+  accepts: string[];
+  nozzle_diameters: number[];
+  filaments: LoadedFilament[];
+}
+
+// The presets that ARE one family, by the id each tier of /slicer/presets lists them under.
+export interface FamilyPresetRefs {
+  name: string;
+  cloud: string[];
+  orca_cloud: string[];
+  local: string[];
+  standard: string[];
+}
+
+export interface LoadedFilamentsResponse {
+  printers: OnlinePrinter[];
+  families: Record<string, FamilyPresetRefs>;
 }
 
 export interface SliceResponse {
@@ -7759,6 +7814,8 @@ export interface NotificationProvider {
   on_bed_cooled: boolean;
   // First layer complete
   on_first_layer_complete: boolean;
+  // A pause the slicer put into the print is coming up
+  on_pause_coming_up: boolean;
   // Print queue events
   on_queue_job_added: boolean;
   on_queue_job_started: boolean;
@@ -7837,6 +7894,7 @@ export interface NotificationProviderCreate {
   on_bed_cooled?: boolean;
   // First layer complete
   on_first_layer_complete?: boolean;
+  on_pause_coming_up?: boolean;
   // Print queue events
   on_queue_job_added?: boolean;
 
@@ -7908,6 +7966,7 @@ export interface NotificationProviderUpdate {
   on_bed_cooled?: boolean;
   // First layer complete
   on_first_layer_complete?: boolean;
+  on_pause_coming_up?: boolean;
   // Print queue events
   on_queue_job_added?: boolean;
 
@@ -15358,6 +15417,10 @@ export const api = {
   // cache aggressively.
   getPrinterModels: () =>
     request<Record<string, string>>('/slicer/printer-models'),
+  // Online printers and the filaments loaded on them — the Slice dialog's
+  // "only online printers" / "only loaded filaments" filters.
+  getSlicerLoadedFilaments: () =>
+    request<LoadedFilamentsResponse>('/slicer/loaded-filaments'),
   // Resolve one filament preset's flow-rate-relevant metadata on demand.
   // The unified listing exposes filament_flow_ratio only for local presets
   // (cloud / standard listings are thin); the Flow Rate verify-download

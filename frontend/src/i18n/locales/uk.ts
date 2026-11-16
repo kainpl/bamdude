@@ -1793,6 +1793,12 @@ export default {
     // HMS errors
     clickToViewHmsErrors: 'Натисніть для перегляду помилок HMS',
     estimatedCompletion: 'Орієнтовний час завершення',
+    nextPause: {
+      inMinutes: 'Пауза через ~{{minutes}} хв (шар {{layer}})',
+      underMinute: 'Пауза менш ніж за хвилину (шар {{layer}})',
+      atLayer: 'Пауза на шарі {{layer}}',
+      title: 'Наступна пауза, додана у слайсері, — на шарі {{layer}}. Час орієнтовний.',
+    },
     usageProjection: {
       soFar: 'Філаменту вже: {{consumed}} з ~{{estimate}} г',
       split: 'розділено між котушками',
@@ -3581,6 +3587,9 @@ export default {
     currentVersion: 'Поточна версія',
     // Notifications
     bedCooledThreshold: 'Поріг охолодження столу',
+    pauseWarningMinutes: 'Випередження попередження про паузу',
+    pauseWarningMinutesHelp: 'За скільки хвилин до паузи, доданої у слайсері, надсилати подію «Наближається пауза». Час відомий лише на стандартній швидкості й коли у файлі є позначки часу; інакше подія надсилається, коли друк доходить до шару перед паузою. 0 вимикає подію.',
+    pauseWarningMinutesUnit: 'хв',
     userNotificationsEnabled: 'Сповіщення користувачів',
     userNotificationsEnabledDescription: 'Увімкнути меню сповіщень користувачів та email сповіщення про події друку. Потребує розширеної автентифікації.',
     addProvider: 'Додати провайдер',
@@ -5702,6 +5711,9 @@ export default {
       namePlaceholder: 'Назва',
       nameAria: 'Назва для цих налаштувань слайсингу',
       staleWarning: 'Деякі пресети зі збережених налаштувань більше не існують. Ці слоти залишилися з поточним вибором: {{slots}}',
+      // {{fields}} — перелік назв полів («Профіль принтера, Профіль процесу»).
+      appliedChanged: 'Застосовано «{{name}}». Змінено: {{fields}}',
+      appliedUnchanged: 'Застосовано «{{name}}». Нічого не змінилося — саме це вже було вибрано.',
       toast: {
         applied: 'Застосовано «{{name}}»',
         saved: 'Налаштування збережено',
@@ -5721,6 +5733,22 @@ export default {
     processSettingsUnchanged: 'Як у пресеті',
     autoArrange: 'Авто-розкладка на столі',
     autoArrangeHint: 'Дозволити слайсеру переставити обʼєкти перед нарізкою. Застосовується автоматично при нарізці під інший клас сопла.',
+    farmFilter: {
+      onlyOnline: 'Лише принтери, що в мережі',
+      onlyLoaded: 'Лише завантажені філаменти',
+      noOnlinePrinters: 'Жоден принтер не в мережі, тож жоден профіль принтера не підходить.',
+      noOnlinePresets: 'Жоден профіль принтера не відповідає принтеру, що в мережі.',
+      nothingLoaded: 'На принтерах у мережі нічого не завантажено.',
+      noOnlineOfModel: 'Жоден принтер вибраної моделі не в мережі, тож завантажених філаментів немає.',
+      nothingLoadedOnModel: 'На принтерах вибраної моделі, що в мережі, нічого не завантажено.',
+      noLoadedPresets: 'Жоден профіль філаменту не відповідає завантаженому філаменту.',
+      unavailable: 'Не вдалося прочитати стан принтерів, тому показано всі профілі.',
+      forbidden: 'Для цих фільтрів потрібне право переглядати принтери, тому показано всі профілі.',
+      stale: 'Не вдалося ще раз прочитати стан принтерів. Списки досі звужено за останньою відповіддю — вона могла застаріти.',
+      showAll: 'Показати всі',
+      showAllPrinters: 'Показати всі профілі принтерів',
+      showAllFilaments: 'Показати всі профілі філаменту',
+    },
     autoOrient: 'Авто-орієнтація обʼєктів',
     autoOrientHint: 'Дозволити слайсеру повернути кожен обʼєкт у найкращу орієнтацію. Перекриває те, як модель була розкладена.',
     useEmbedded: 'Використати вбудовані налаштування файлу',
@@ -5740,6 +5768,12 @@ export default {
     selectPreset: '- Виберіть пресет -',
     noPresetsForSlot: 'Немає доступних пресетів',
     otherPrinters: 'Інші принтери',
+    presetForOtherPrinter: 'Цей профіль призначено для іншого принтера, ніж вибраний.',
+    chosenPresetGone: 'Вибраного вами профілю більше немає у списку, тому підставлено інший. Перевірте: {{fields}}',
+    // {{list}} — підпис списку, у якому шукаємо («Профіль процесу»).
+    searchPresets: 'Пошук: {{list}}',
+    searchPresetsPlaceholder: 'Пошук пресетів…',
+    noMatchingPresets: 'Нічого не знайдено.',
     allPresetsRequired: 'Потрібно вибрати всі пресети',
     presetSource: 'Джерело пресетів',
     analyzingPlateFilaments: 'Аналіз філаментів плати…',
@@ -5762,6 +5796,7 @@ export default {
     tier: {
       local: 'Імпортовані',
       cloud: 'Bambu Cloud',
+      cloudOwn: 'Bambu Cloud — мої пресети',
       orcaCloud: 'Orca Cloud',
       standard: 'Стандартні',
     },
@@ -5775,6 +5810,11 @@ export default {
       highTempPlate: 'Smooth PEI / High Temp Plate',
       texturedPeiPlate: 'Textured PEI Plate',
       supertackPlate: 'Cool Plate SuperTack',
+      // Лише OrcaSlicer; для Bambu Studio не пропонується.
+      texturedCoolPlate: 'Textured Cool Plate',
+      ignoredUnknown: 'У збережених налаштуваннях указано стіл, якого тут немає («{{bed}}»). Тип столу лишився без змін.',
+      ignoredForSlicer: 'У збережених налаштуваннях указано {{bed}} — цей стіл є лише в OrcaSlicer. Тип столу лишився без змін.',
+      resetForSlicer: '{{bed}} є лише в OrcaSlicer. Тип столу змінено на {{fallback}}.',
     },
     cloud: {
       expired: 'Сесія Bambu Cloud закінчилася - увійдіть знову, щоб оновити cloud-пресети.',
@@ -5799,6 +5839,7 @@ export default {
     cardReady: 'Готовий · v{{version}}',
     cardOffline: 'Офлайн',
     active: 'активний',
+    sidecarOutdated: 'Контейнер слайсера старіший, ніж потрібно цій версії BamDude: у списках може бракувати частини профілів, а профіль, який слайсер не може розв\'язати, буде нарізано на його типових значеннях замість відмови. Перезберіть контейнери слайсера: у теці slicer-api/ виконайте «docker compose --profile all build --no-cache», а потім «docker compose --profile all up -d».',
   },
 
   library: {
@@ -6385,6 +6426,7 @@ export default {
       pollFailed: 'Стан збирання більше не вдається прочитати. Перевірте файли в бібліотеці.',
       plate: 'Стіл {{number}}',
       plateAlt: 'Розкладка столу {{number}}',
+      sliceFile: 'Нарізати {{name}}',
       perPlate_one: '{{count}} на стіл',
       perPlate_few: '{{count}} на стіл',
       perPlate_many: '{{count}} на стіл',
@@ -12114,6 +12156,8 @@ export default {
     bedCooledDescription: 'Стіл охолодився нижче порогу після друку',
     firstLayerCompleteLabel: 'Перший шар завершено',
     firstLayerCompleteDescription: 'Сповістити зі знімком після завершення першого шару',
+    pauseComingUpLabel: 'Наближається пауза',
+    pauseComingUpDescription: 'Попередити незадовго до паузи, доданої у слайсері',
     missingSpoolAssignmentLabel: 'Відсутнє призначення котушки',
     missingSpoolAssignmentDescription: 'Сповістити, коли друк починається без призначеної котушки у лотках, а також коли завершений друк не зміг списати свій філамент із котушки',
     // Сповіщення прогнозу запасів (upstream #1184)
@@ -12348,6 +12392,7 @@ export default {
         print_progress: 'Віхи прогресу друку',
         print_missing_spool_assignment: 'Відсутнє призначення котушки (на старті друку чи філамент не списано)',
         first_layer_complete: 'Перший шар готовий',
+        pause_coming_up: 'Наближається пауза',
         bed_cooled: 'Стіл охолов',
         printer_error: 'Помилка принтера',
         printer_offline: 'Принтер офлайн',

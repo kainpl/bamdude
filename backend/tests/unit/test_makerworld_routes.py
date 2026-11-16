@@ -1177,3 +1177,99 @@ class TestApiKeyCloudOwner:
         owner = (await db_session.execute(select(User).where(User.username == "test_admin"))).scalar_one()
         assert row.created_by_id == owner.id
         assert svc.credential_snapshot is None
+
+
+class TestImportOfABrokenDownload:
+    """What MakerWorld hands over is checked before it becomes a library file."""
+
+    @staticmethod
+    async def _import(async_client, svc):
+        with patch("backend.app.api.routes.makerworld._build_service", AsyncMock(return_value=svc)):
+            return await async_client.post(
+                "/api/v1/makerworld/import",
+                json={"model_id": 1400373, "profile_id": 298919107},
+            )
+
+    @staticmethod
+    async def _rows(db_session) -> int:
+        from sqlalchemy import func, select
+
+        return await db_session.scalar(select(func.count()).select_from(LibraryFile))
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("body", [b"<html>Access denied</html>", _sample_3mf()[:-30]], ids=["html", "truncated"])
+    async def test_a_body_that_is_not_a_3mf_is_a_502_naming_makerworld(self, async_client, db_session, body):
+        svc = _fake_service(
+            get_design=_default_design(),
+            get_profile_download=_default_manifest(),
+            download_3mf=(body, "f.3mf"),
+        )
+
+        resp = await self._import(async_client, svc)
+
+        assert resp.status_code == 502, resp.text
+        assert resp.json()["detail"] == "MakerWorld sent a file that is not a valid 3MF"
+        assert await self._rows(db_session) == 0
+
+    @pytest.mark.asyncio
+    async def test_an_answer_without_a_link_is_a_502_naming_makerworld(self, async_client, db_session):
+        svc = _fake_service(get_design=_default_design(), get_profile_download={"name": "a.3mf", "url": ""})
+
+        resp = await self._import(async_client, svc)
+
+        assert resp.status_code == 502, resp.text
+        assert resp.json()["detail"] == "MakerWorld did not return a download URL"
+
+    @pytest.mark.asyncio
+    async def test_the_instance_answer_imports_the_file(self, async_client, db_session):
+        design = _default_design()
+        design["instances"] = [{"id": 4028000, "profileId": 298919107, "title": "9 cells"}]
+        svc = _fake_service(
+            get_design=design,
+            get_instance_download=_default_manifest("Seed starter.3mf"),
+            download_3mf=(_sample_3mf(), "f.3mf"),
+        )
+        svc.get_profile_download = AsyncMock(side_effect=AssertionError("the old endpoint must not be asked"))
+
+        resp = await self._import(async_client, svc)
+
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["filename"] == "Seed starter.3mf"
+        svc.get_instance_download.assert_awaited_once_with(4028000)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("manifest_name", "url_tail", "stored"),
+        [
+            # The model's own name is kept; the signed URL's last segment (a
+            # UUID) names a file only when MakerWorld sent no name at all.
+            ("Seed starter", "9f2c", "Seed starter.3mf"),
+            ("", "9f2c", "makerworld-1400373.3mf"),
+            ("report.pdf", "blob.bin", "report.pdf.3mf"),
+            ("Seed starter", "model.3mf", "Seed starter.3mf"),
+            ("Model.3MF", "9f2c", "Model.3MF"),
+            ("Seed%20starter.3Mf", "9f2c", "Seed starter.3Mf"),
+            ("../../evil", "..%2F..%2Fx.3mf", "evil.3mf"),
+        ],
+    )
+    async def test_a_name_without_the_3mf_ending_is_still_stored_as_a_3mf(
+        self, async_client, db_session, manifest_name, url_tail, stored
+    ):
+        """The bytes are a proven 3MF container, so the row is a 3MF whatever
+        name came with them — never a file of some other type holding them."""
+        from sqlalchemy import select
+
+        svc = _fake_service(
+            get_design=_default_design(),
+            get_profile_download=_default_manifest(manifest_name),
+            download_3mf=(_sample_3mf(), url_tail),
+        )
+
+        resp = await self._import(async_client, svc)
+
+        assert resp.status_code == 200, resp.text
+        row = (
+            await db_session.execute(select(LibraryFile).where(LibraryFile.id == resp.json()["library_file_id"]))
+        ).scalar_one()
+        assert row.filename == stored
+        assert row.file_type == "3mf"

@@ -18,7 +18,9 @@ from pathlib import Path
 from backend.app.services.print_file_analysis import PrintFileAnalysis
 
 _MAGIC = b"BDA3MF01"
-_VERSION = 1
+# 2: the metadata carries ``pause_points`` (the plate's slicer pauses).
+_VERSION = 2
+_MAX_PAUSE_POINTS = 512
 _PREFIX = struct.Struct("<8sHIII")
 _MAX_ARTIFACT = 32 * 1024 * 1024
 _MAX_METADATA = 4 * 1024 * 1024
@@ -58,6 +60,25 @@ def _little_bytes(column: array) -> bytes:
     return copy.tobytes()
 
 
+def _pause_points(rows: object) -> tuple[tuple[int, int | None], ...]:
+    """``(layer, minutes | None)`` rows by strictly ascending positive layer."""
+    if not isinstance(rows, (list, tuple)) or len(rows) > _MAX_PAUSE_POINTS:
+        raise AnalysisCodecError("invalid pause points")
+    points = []
+    previous = 0
+    for row in rows:
+        if not isinstance(row, (list, tuple)) or len(row) != 2:
+            raise AnalysisCodecError("invalid pause point")
+        layer, minutes = row
+        if type(layer) is not int or not previous < layer <= _I32_MAX:
+            raise AnalysisCodecError("invalid pause layer")
+        if minutes is not None and (type(minutes) is not int or not 0 <= minutes <= _I32_MAX):
+            raise AnalysisCodecError("invalid pause time")
+        points.append((layer, minutes))
+        previous = layer
+    return tuple(points)
+
+
 def _metadata(analysis: PrintFileAnalysis, identity: str) -> bytes:
     if not isinstance(identity, str) or not 0 < len(identity) <= 256:
         raise AnalysisCodecError("invalid attempt identity")
@@ -72,6 +93,7 @@ def _metadata(analysis: PrintFileAnalysis, identity: str) -> bytes:
         "timeline_error": analysis.timeline_error,
         "timeline_present": analysis.layer_usage is not None,
         "retained_bytes": analysis.retained_bytes,
+        "pause_points": [list(point) for point in _pause_points(analysis.pause_points)],
     }
     try:
         encoded = json.dumps(data, sort_keys=True, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode()
@@ -153,9 +175,11 @@ def _read_metadata(raw: bytes, identity: str) -> dict:
         "timeline_error",
         "timeline_present",
         "retained_bytes",
+        "pause_points",
     }:
         raise AnalysisCodecError("unknown analysis metadata fields")
     _metadata_depth(data)
+    data["pause_points"] = _pause_points(data["pause_points"])
     if data["identity"] != identity or not isinstance(identity, str):
         raise AnalysisCodecError("analysis attempt identity mismatch")
     if not isinstance(data["filament_usage"], list) or not all(
@@ -244,6 +268,7 @@ def _decode_view(view: memoryview, *, identity: str) -> PrintFileAnalysis:
             slicer_estimates=data["slicer_estimates"],
             timeline_error=data["timeline_error"],
             retained_bytes=data["retained_bytes"],
+            pause_points=data["pause_points"],
         )
     finally:
         layer_ids.release()

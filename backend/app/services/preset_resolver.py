@@ -40,6 +40,7 @@ from backend.app.services.bambu_cloud import (
     BambuCloudError,
 )
 from backend.app.services.orca_cloud import OrcaCloudAuthError, OrcaCloudError
+from backend.app.utils.slicer_strings import unescape_strings_cstyle
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +66,12 @@ _SLOT_TO_PROFILE_TYPE = {
     "process": "process",
     "filament": "filament",
 }
+
+
+# List options Orca Cloud can return in the slicer's INI form -- ONE string of
+# quoted items joined by ``;`` (upstream c4c5c7042, #3381). The CLI and the
+# sidecar read them as arrays, so they are sent as arrays.
+_ORCA_STRING_LIST_FIELDS = ("compatible_printers", "filament_type", "default_filament_colour")
 
 
 async def resolve_preset_ref(
@@ -133,8 +140,6 @@ async def _resolve_cloud(
     cloud = await build_authenticated_cloud(db, user)
     if cloud is None:
         raise HTTPException(400, "No Bambu Cloud credential is connected")
-    if credential_snapshots is not None:
-        credential_snapshots.append(cloud.credential_snapshot)
     try:
         detail = await cloud.get_setting_detail(ref.id)
     except BambuCloudAuthError:
@@ -148,6 +153,10 @@ async def _resolve_cloud(
             detail=f"Bambu Cloud unreachable while fetching {slot} preset: {e}",
         ) from e
     finally:
+        # Read after the call: a token renewed by this very request moves the
+        # service's snapshot on, and the stale one would refuse the slice.
+        if credential_snapshots is not None:
+            credential_snapshots.append(cloud.credential_snapshot)
         await cloud.close()
 
     # ``get_setting_detail`` returns the wrapper envelope; the actual preset
@@ -253,6 +262,14 @@ async def _resolve_orca_cloud(
         # same forced pin to ``"system"`` for the same reason — see the Bambu
         # Cloud branch above.
         content = {**content, "type": _SLOT_TO_PROFILE_TYPE[slot], "from": "system"}
+        for key in _ORCA_STRING_LIST_FIELDS:
+            raw = content.get(key)
+            # Parsed the way the slicer would, empty items included, so the
+            # per-extruder positions survive. A real array is never re-read,
+            # and a string the slicer could not parse is forwarded as it is.
+            items = unescape_strings_cstyle(raw) if isinstance(raw, str) else None
+            if items is not None:
+                content[key] = items
     return json.dumps(content)
 
 

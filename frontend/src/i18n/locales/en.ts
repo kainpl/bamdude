@@ -1774,6 +1774,12 @@ export default {
     // HMS errors
     clickToViewHmsErrors: 'Click to view HMS errors',
     estimatedCompletion: 'Estimated completion time',
+    nextPause: {
+      inMinutes: 'Pause in ~{{minutes}} min (layer {{layer}})',
+      underMinute: 'Pause in less than a minute (layer {{layer}})',
+      atLayer: 'Pause at layer {{layer}}',
+      title: 'The next pause added in the slicer is at layer {{layer}}. The time is an estimate.',
+    },
     usageProjection: {
       soFar: 'Filament so far: {{consumed}} of ~{{estimate}} g',
       split: 'split across spools',
@@ -3557,6 +3563,9 @@ export default {
     currentVersion: 'Current Version',
     // Notifications
     bedCooledThreshold: 'Bed Cooled Threshold',
+    pauseWarningMinutes: 'Pause heads-up lead time',
+    pauseWarningMinutesHelp: 'How long before a pause added in the slicer the “Pause coming up” event is sent. The time is known only at Standard speed for a file with time markers; otherwise the event is sent when the print reaches the layer before the pause. 0 switches the event off.',
+    pauseWarningMinutesUnit: 'min',
     userNotificationsEnabled: 'User Notifications',
     userNotificationsEnabledDescription: 'Enable the user notifications menu and email notifications for print job events. Requires Advanced Authentication.',
     addProvider: 'Add Provider',
@@ -5666,6 +5675,9 @@ export default {
       namePlaceholder: 'Name',
       nameAria: 'Name for these slice settings',
       staleWarning: 'Some presets in the saved settings no longer exist. These stayed on their current selection: {{slots}}',
+      // {{fields}} is a list of field labels ("Printer profile, Process profile").
+      appliedChanged: 'Applied "{{name}}". Changed: {{fields}}',
+      appliedUnchanged: 'Applied "{{name}}". Nothing changed — these were already the selection.',
       toast: {
         applied: 'Applied "{{name}}"',
         saved: 'Settings saved',
@@ -5685,6 +5697,22 @@ export default {
     processSettingsUnchanged: 'Preset defaults',
     autoArrange: 'Auto-arrange on the bed',
     autoArrangeHint: 'Let the slicer reposition objects before slicing. Applied automatically when re-slicing for a different nozzle class.',
+    farmFilter: {
+      onlyOnline: 'Only printers that are online',
+      onlyLoaded: 'Only filaments that are loaded',
+      noOnlinePrinters: 'No printer is online, so no printer profile matches.',
+      noOnlinePresets: 'No printer profile matches a printer that is online.',
+      nothingLoaded: 'Nothing is loaded on the printers that are online.',
+      noOnlineOfModel: 'No printer of the chosen model is online, so no filament counts as loaded.',
+      nothingLoadedOnModel: 'Nothing is loaded on the online printers of the chosen model.',
+      noLoadedPresets: 'No filament profile matches a loaded filament.',
+      unavailable: 'The printers could not be read, so every profile is shown.',
+      forbidden: 'These filters need the right to view printers, so every profile is shown.',
+      stale: 'The printers could not be read again. The lists are still narrowed by the last answer, which may be out of date.',
+      showAll: 'Show all',
+      showAllPrinters: 'Show all printer profiles',
+      showAllFilaments: 'Show all filament profiles',
+    },
     autoOrient: 'Auto-orient objects',
     autoOrientHint: 'Let the slicer rotate each object onto its best-scoring orientation. Overrides how the model was laid out.',
     useEmbedded: "Use the file's built-in settings",
@@ -5704,6 +5732,12 @@ export default {
     selectPreset: '- Select a preset -',
     noPresetsForSlot: 'No presets available',
     otherPrinters: 'Other printers',
+    presetForOtherPrinter: 'This profile is listed for another printer than the selected one.',
+    chosenPresetGone: 'A profile you chose is no longer in the list, so another one was selected. Check: {{fields}}',
+    // {{list}} is the label of the list being searched ("Process profile").
+    searchPresets: 'Search: {{list}}',
+    searchPresetsPlaceholder: 'Search presets…',
+    noMatchingPresets: 'No matching presets.',
     allPresetsRequired: 'All presets must be selected',
     presetSource: 'Preset source',
     analyzingPlateFilaments: 'Analyzing plate filaments…',
@@ -5726,6 +5760,7 @@ export default {
     tier: {
       local: 'Imported',
       cloud: 'Bambu Cloud',
+      cloudOwn: 'Bambu Cloud — my presets',
       orcaCloud: 'Orca Cloud',
       standard: 'Standard',
     },
@@ -5738,6 +5773,11 @@ export default {
       highTempPlate: 'Smooth PEI / High Temp Plate',
       texturedPeiPlate: 'Textured PEI Plate',
       supertackPlate: 'Cool Plate SuperTack',
+      // OrcaSlicer only; never offered for Bambu Studio.
+      texturedCoolPlate: 'Textured Cool Plate',
+      ignoredUnknown: 'The saved settings name a bed plate that is not known here ("{{bed}}"). The bed plate was left as it is.',
+      ignoredForSlicer: 'The saved settings name {{bed}}, which is available only with OrcaSlicer. The bed plate was left as it is.',
+      resetForSlicer: '{{bed}} is available only with OrcaSlicer. The bed plate was changed to {{fallback}}.',
     },
     cloud: {
       expired: 'Bambu Cloud session expired - sign in again to refresh your cloud presets.',
@@ -5762,6 +5802,7 @@ export default {
     cardReady: 'Ready · v{{version}}',
     cardOffline: 'Offline',
     active: 'active',
+    sidecarOutdated: 'This slicer container is older than this BamDude needs: some presets may be missing from the lists, and a preset the slicer cannot resolve is sliced on its built-in defaults instead of being refused. Rebuild the slicer containers: in slicer-api/ run "docker compose --profile all build --no-cache", then "docker compose --profile all up -d".',
   },
 
   library: {
@@ -6325,6 +6366,7 @@ export default {
       pollFailed: 'The state of the assembly can no longer be read. Check the library for its files.',
       plate: 'Plate {{number}}',
       plateAlt: 'Layout of plate {{number}}',
+      sliceFile: 'Slice {{name}}',
       perPlate_one: '{{count}} per plate',
       perPlate_other: '{{count}} per plate',
       trashed_one: '{{count}} previous file was moved to the trash.',
@@ -11899,6 +11941,8 @@ export default {
     bedCooledDescription: 'Bed cooled below threshold after print',
     firstLayerCompleteLabel: 'First Layer Complete',
     firstLayerCompleteDescription: 'Notify with snapshot when first layer finishes',
+    pauseComingUpLabel: 'Pause Coming Up',
+    pauseComingUpDescription: 'A heads-up shortly before a pause added in the slicer',
     missingSpoolAssignmentLabel: 'Missing Spool Assignment',
     missingSpoolAssignmentDescription: 'Notify when a print starts with trays that have no assigned spool, and when a finished print could not charge its filament to one',
     // Inventory stock alert events (upstream #1184)
@@ -12131,6 +12175,7 @@ export default {
         print_progress: 'Print progress milestones',
         print_missing_spool_assignment: 'Missing spool assignment (at print start, or filament not charged)',
         first_layer_complete: 'First layer complete',
+        pause_coming_up: 'Pause coming up',
         bed_cooled: 'Bed cooled down',
         printer_error: 'Printer error',
         printer_offline: 'Printer offline',

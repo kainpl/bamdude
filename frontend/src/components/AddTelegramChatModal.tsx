@@ -181,6 +181,7 @@ export function AddTelegramChatModal({ chat, providerId, onClose }: AddTelegramC
     plate_not_empty: 'notifications.plateNotEmpty',
     bed_cooled: 'notifications.bedCooledLabel',
     first_layer_complete: 'notifications.firstLayerCompleteLabel',
+    pause_coming_up: 'notifications.pauseComingUpLabel',
     queue_job_added: 'notifications.jobAdded',
     queue_job_started: 'notifications.jobStarted',
     queue_job_waiting: 'notifications.jobWaiting',

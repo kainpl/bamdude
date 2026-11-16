@@ -30,6 +30,7 @@ import {
   type Slot,
 } from '../utils/presetPickerUtils';
 import { useSlicerHealth, type SlicerKind } from '../hooks/useSlicerHealth';
+import { SlicerOutdatedNote } from './SlicerOutdatedNote';
 import { useIsWideLayout } from '../hooks/useIsWideLayout';
 import { defaultDesignKeys, designOverridesField } from '../lib/slicerSettings';
 import {
@@ -38,6 +39,9 @@ import {
   resizeColourOverrides,
 } from '../utils/sliceFilamentColours';
 import { Select } from './Select';
+import { SliceFarmFilterToggles } from './SliceFarmFilters';
+import { useSliceFarmFilters, type PresetKeep } from '../hooks/useSliceFarmFilters';
+import { buildPrinterParents } from '../utils/printerPresetParents';
 import {
   EMPTY_COMPATIBILITY_INDEX,
   buildCompatibilityIndex,
@@ -45,16 +49,37 @@ import {
   type PrinterCompatibilityIndex,
 } from '../utils/slicerPrinterMatch';
 import {
+  SLICE_MODAL_TIER_ORDER,
   findPreset,
   findPresetByName,
   pickDefault,
+  pickEmbeddedFilament,
   pickFilamentForSlot,
   pickProcessDefault,
   statesDifferentMaterial,
 } from '../utils/slicePresetPicker';
+import {
+  groupPresetsForDisplay,
+  presetGroupOf,
+  sortPresetsForDisplay,
+  type PresetGroup,
+} from '../utils/presetDisplayOrder';
+
+// What each group of a preset dropdown is called. The group IS the source, so
+// two presets of one name in two sources can be told apart by it.
+const PRESET_GROUP_LABELS: Record<PresetGroup, { key: string; fallback: string }> = {
+  local: { key: 'slice.tier.local', fallback: 'Imported' },
+  orca_cloud: { key: 'slice.tier.orcaCloud', fallback: 'Orca Cloud' },
+  cloud_own: { key: 'slice.tier.cloudOwn', fallback: 'Bambu Cloud — my presets' },
+  cloud: { key: 'slice.tier.cloud', fallback: 'Bambu Cloud' },
+  standard: { key: 'slice.tier.standard', fallback: 'Standard' },
+};
 
 export type SliceSource =
-  | { kind: 'libraryFile'; id: number; filename: string }
+  // `assembled`: the file was written by "Assemble project" (the list row's
+  // `can_relayout`), so its assembly record can say which presets — source and
+  // id, not just a name — it was built from.
+  | { kind: 'libraryFile'; id: number; filename: string; assembled?: boolean }
   | { kind: 'archive'; id: number; filename: string };
 
 interface SliceModalProps {
@@ -62,17 +87,33 @@ interface SliceModalProps {
   onClose: () => void;
 }
 
-// The five values BambuStudio's ``curr_bed_type`` enum accepts — same list
-// ``BedTypePicker`` renders. Kept here as the validation whitelist for the
-// localStorage read and for the bed type carried by a saved bundle, so a
-// stale/foreign string can never reach the slicer CLI.
+// The values the slice request's ``bed_type`` accepts (the backend's
+// ``schemas/slicer.BedType``, itself the slicers' ``curr_bed_type`` enum) —
+// same list ``BedTypePicker`` renders. Kept here as the validation whitelist
+// for the localStorage read and for the bed type carried by a saved bundle, so
+// a stale/foreign string can never reach the slicer CLI.
 const ALLOWED_BED_TYPES: BedType[] = [
   'Cool Plate',
   'Engineering Plate',
   'High Temp Plate',
   'Textured PEI Plate',
   'Supertack Plate',
+  'Textured Cool Plate',
 ];
+
+// In OrcaSlicer's enum and not in Bambu Studio's, whose CLI does not reject a
+// name it does not know but slices as for Cool Plate. Offered only while
+// OrcaSlicer is the slicer; the backend refuses it for Bambu Studio (422).
+const ORCA_ONLY_BED_TYPES: BedType[] = ['Textured Cool Plate'];
+
+// The dialog's default plate, and what an OrcaSlicer-only pick falls back to.
+const DEFAULT_BED_TYPE: BedType = 'Textured PEI Plate';
+
+// A bed plate the dialog did not apply, to be SAID rather than dropped:
+// `unknown` / `slicer` — saved settings named a plate nobody knows, or one the
+// chosen slicer lacks (the pick was left alone); `reset` — the pick itself is
+// one the slicer lacks, and was changed to the default.
+type BedTypeNote = { kind: 'unknown' | 'slicer' | 'reset'; bed: string };
 
 // Per-slot preset selection helpers (pickDefault / findPreset / findPresetByName
 // / pickProcessDefault / pickFilamentForSlot) live in
@@ -263,6 +304,10 @@ interface PresetDropdownProps {
   // compatibility partition.
   selectedPrinterName?: string | null;
   compatIndex?: PrinterCompatibilityIndex;
+  // A farm filter ("only online printers" / "only loaded filaments"): the
+  // presets the list offers. The chosen preset stays listed whatever it says —
+  // a filter never replaces a choice. Omitted ⇒ everything is offered.
+  keep?: PresetKeep;
 }
 
 /** Cloud/local/standard preset dropdown with optgroup tiers. */
@@ -278,57 +323,43 @@ function PresetDropdown({
   swatchColorLabel,
   selectedPrinterName,
   compatIndex,
+  keep,
 }: PresetDropdownProps) {
   const { t } = useTranslation();
   // A `<div>` with explicit `htmlFor` labels, not one wrapping `<label>`: the
   // colour control is a label of its own, and labels do not nest.
   const selectId = useId();
   const colourId = `${selectId}-colour`;
+  const noteId = `${selectId}-note`;
 
   // Tier sections (imported → cloud → standard) after the owner filter, plus
   // — for a process / filament slot with a selected printer — a trailing
   // group of presets that resolve to a different printer (#1325). Empty
   // sections collapse out.
+  //
+  // A group is a SOURCE, the user's own first, and each is sorted for reading
+  // (`presetDisplayOrder`, upstream a9ffe5b7c). ⚠️ Display only: the auto-picks
+  // read `data` in the order it arrived, so sorting never changes what is
+  // preselected. ⚠️ A stock preset that Bambu Cloud and the bundle both carry
+  // stays two entries — a name is not an identity — told apart by their group.
   const { sections, otherEntries } = useMemo(() => {
-    const tiers: { key: keyof UnifiedPresetsResponse; label: string; fallback: string }[] = [
-      { key: 'local', label: 'slice.tier.local', fallback: 'Imported' },
-      { key: 'orca_cloud', label: 'slice.tier.orcaCloud', fallback: 'Orca Cloud' },
-      { key: 'cloud', label: 'slice.tier.cloud', fallback: 'Bambu Cloud' },
-      { key: 'standard', label: 'slice.tier.standard', fallback: 'Standard' },
-    ];
-    const filterByPrinter = slot !== 'printer';
-    const compatSections: { tierLabel: string; entries: UnifiedPreset[] }[] = [];
-    const other: UnifiedPreset[] = [];
+    const groupLabel = (group: PresetGroup) => t(PRESET_GROUP_LABELS[group].key, PRESET_GROUP_LABELS[group].fallback);
+    const toSections = (entries: UnifiedPreset[]) =>
+      groupPresetsForDisplay(entries, slot).map((g) => ({ tierLabel: groupLabel(g.group), entries: g.entries }));
+    const listed = SLICE_MODAL_TIER_ORDER.flatMap((tier) => (data[tier] as UnifiedPresetsBySlot)[slot]);
+    const isChosen = (p: UnifiedPreset) => value !== null && p.source === value.source && p.id === value.id;
+    const all = keep ? listed.filter((p) => keep(p) || isChosen(p)) : listed;
     // The same sections with the printer filter never applied, for the
     // all-filtered-out case below.
-    const unfiltered: { tierLabel: string; entries: UnifiedPreset[] }[] = [];
-    for (const { key, label: lk, fallback } of tiers) {
-      const entries = (data[key] as UnifiedPresetsBySlot)[slot];
-      if (entries.length > 0) unfiltered.push({ tierLabel: t(lk, fallback), entries });
-      if (!filterByPrinter) {
-        if (entries.length > 0) compatSections.push({ tierLabel: t(lk, fallback), entries });
-        continue;
-      }
-      const compatible: UnifiedPreset[] = [];
-      for (const p of entries) {
-        if (
-          presetCompatibility(
-            p,
-            // filterByPrinter is true here, so slot is never 'printer'.
-            slot as 'process' | 'filament',
-            selectedPrinterName ?? null,
-            compatIndex ?? EMPTY_COMPATIBILITY_INDEX,
-          ) === 'mismatch'
-        ) {
-          other.push(p);
-        } else {
-          compatible.push(p);
-        }
-      }
-      if (compatible.length > 0) {
-        compatSections.push({ tierLabel: t(lk, fallback), entries: compatible });
-      }
+    const unfiltered = toSections(all);
+    if (slot === 'printer') return { sections: unfiltered, otherEntries: [] };
+    const compatible: UnifiedPreset[] = [];
+    const other: UnifiedPreset[] = [];
+    for (const p of all) {
+      const verdict = presetCompatibility(p, slot, selectedPrinterName ?? null, compatIndex ?? EMPTY_COMPATIBILITY_INDEX);
+      (verdict === 'mismatch' ? other : compatible).push(p);
     }
+    const compatSections = toSections(compatible);
     // A filter that leaves nothing at all is a statement about our matching,
     // not about the presets (upstream e9daa212, #2982): a P1S has ten usable
     // process presets and read as having none, because each is named for an
@@ -338,11 +369,23 @@ function PresetDropdown({
     if (compatSections.length === 0 && other.length > 0) {
       return { sections: unfiltered, otherEntries: [] };
     }
-    return { sections: compatSections, otherEntries: other };
-  }, [data, slot, t, selectedPrinterName, compatIndex]);
+    // The tail mixes sources under one heading, so each entry names its own.
+    return {
+      sections: compatSections,
+      otherEntries: sortPresetsForDisplay(other, slot).map((preset) => ({
+        preset,
+        sourceLabel: groupLabel(presetGroupOf(preset)),
+      })),
+    };
+  }, [data, slot, t, selectedPrinterName, compatIndex, keep, value]);
 
   const totalEntries =
     sections.reduce((sum, s) => sum + s.entries.length, 0) + otherEntries.length;
+  // The chosen preset sits in "Other printers": it stays the choice — nothing
+  // here replaces one — and the field says so, because the closed select shows
+  // a name only.
+  const chosenForOtherPrinter =
+    value !== null && otherEntries.some(({ preset: p }) => p.source === value.source && p.id === value.id);
 
   return (
     <div className="block">
@@ -365,6 +408,15 @@ function PresetDropdown({
         value={toRefValue(value)}
         onChange={(e) => onChange(fromRefValue(e.target.value))}
         disabled={disabled || totalEntries === 0}
+        aria-describedby={chosenForOtherPrinter ? noteId : undefined}
+        // Thousands of stock filaments are no list to scroll: the words typed
+        // narrow these same options, other printers included; the chosen
+        // preset always stays listed.
+        search={{
+          label: t('slice.searchPresets', { list: label, defaultValue: 'Search: {{list}}' }),
+          placeholder: t('slice.searchPresetsPlaceholder', 'Search presets…'),
+          noMatches: t('slice.noMatchingPresets', 'No matching presets.'),
+        }}
       >
         <option value="">
           {totalEntries === 0
@@ -382,9 +434,9 @@ function PresetDropdown({
         ))}
         {otherEntries.length > 0 && (
           <optgroup label={t('slice.otherPrinters', 'Other printers')}>
-            {otherEntries.map((p) => (
+            {otherEntries.map(({ preset: p, sourceLabel }) => (
               <option key={`${p.source}:${p.id}`} value={`${p.source}:${p.id}`}>
-                {p.name}
+                {`${p.name} · ${sourceLabel}`}
               </option>
             ))}
           </optgroup>
@@ -399,7 +451,9 @@ function PresetDropdown({
         <label
           htmlFor={colourId}
           title={swatchColorLabel}
-          className={`flex items-center gap-2 px-2.5 rounded-md bg-bambu-dark border border-bambu-dark-tertiary text-sm ${
+          // Pinned to the select's own row and height: with the search box
+          // open the group beside it is two rows tall.
+          className={`self-end h-9 min-h-[44px] md:min-h-0 flex items-center gap-2 px-2.5 rounded-md bg-bambu-dark border border-bambu-dark-tertiary text-sm ${
             disabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer hover:border-bambu-gray transition-colors'
           }`}
         >
@@ -419,6 +473,11 @@ function PresetDropdown({
         </label>
       )}
       </div>
+      {chosenForOtherPrinter && (
+        <p id={noteId} role="status" className="mt-1 text-xs text-amber-700 dark:text-amber-400">
+          {t('slice.presetForOtherPrinter', 'This profile is listed for another printer than the selected one.')}
+        </p>
+      )}
     </div>
   );
 }
@@ -427,6 +486,10 @@ interface BedTypePickerProps {
   value: BedType;
   onChange: (next: BedType) => void;
   disabled?: boolean;
+  // The slicer this slice will run on, once known. Decides whether the
+  // OrcaSlicer-only plates are offered.
+  slicer: SlicerKind | null;
+  note: BedTypeNote | null;
 }
 
 /**
@@ -438,33 +501,78 @@ interface BedTypePickerProps {
  * four of the five values are uncommon; a wide tile row would dominate
  * a modal for a setting most users flip once.
  */
-function BedTypePicker({ value, onChange, disabled }: BedTypePickerProps) {
+function BedTypePicker({ value, onChange, disabled, slicer, note }: BedTypePickerProps) {
   const { t } = useTranslation();
-  const options: { value: BedType; labelKey: string; fallback: string }[] = [
+  const all: { value: BedType; labelKey: string; fallback: string }[] = [
     { value: 'Cool Plate', labelKey: 'slice.bedType.coolPlate', fallback: 'Cool Plate' },
     { value: 'Engineering Plate', labelKey: 'slice.bedType.engineeringPlate', fallback: 'Engineering Plate' },
     { value: 'High Temp Plate', labelKey: 'slice.bedType.highTempPlate', fallback: 'Smooth PEI / High Temp Plate' },
     { value: 'Textured PEI Plate', labelKey: 'slice.bedType.texturedPeiPlate', fallback: 'Textured PEI Plate' },
     { value: 'Supertack Plate', labelKey: 'slice.bedType.supertackPlate', fallback: 'Cool Plate SuperTack' },
+    { value: 'Textured Cool Plate', labelKey: 'slice.bedType.texturedCoolPlate', fallback: 'Textured Cool Plate' },
   ];
+  // An OrcaSlicer-only plate is listed while OrcaSlicer is the slicer — and
+  // while it is the current value, so the field never shows a value it has no
+  // option for in the moment before the slicer is known.
+  const options = all.filter(
+    (opt) => !ORCA_ONLY_BED_TYPES.includes(opt.value) || slicer === 'orcaslicer' || opt.value === value,
+  );
+  const labelOf = (bed: string) => {
+    const known = all.find((opt) => opt.value === bed);
+    return known ? t(known.labelKey, known.fallback) : bed;
+  };
+  const noteText =
+    note == null
+      ? null
+      : note.kind === 'unknown'
+        ? t('slice.bedType.ignoredUnknown', {
+            bed: note.bed,
+            defaultValue:
+              'The saved settings name a bed plate that is not known here ("{{bed}}"). The bed plate was left as it is.',
+          })
+        : note.kind === 'slicer'
+          ? t('slice.bedType.ignoredForSlicer', {
+              bed: labelOf(note.bed),
+              defaultValue:
+                'The saved settings name {{bed}}, which is available only with OrcaSlicer. The bed plate was left as it is.',
+            })
+          : t('slice.bedType.resetForSlicer', {
+              bed: labelOf(note.bed),
+              fallback: labelOf(DEFAULT_BED_TYPE),
+              defaultValue: '{{bed}} is available only with OrcaSlicer. The bed plate was changed to {{fallback}}.',
+            });
   return (
-    <label className="block">
-      <span className="text-xs text-bambu-gray mb-1 block">
-        {t('slice.bedType.label', 'Bed plate')}
-      </span>
-      <Select
-        className="w-full"
-        value={value}
-        onChange={(e) => onChange(e.target.value as BedType)}
-        disabled={disabled}
-      >
-        {options.map((opt) => (
-          <option key={opt.value} value={opt.value}>
-            {t(opt.labelKey, opt.fallback)}
-          </option>
-        ))}
-      </Select>
-    </label>
+    <div>
+      <label className="block">
+        <span className="text-xs text-bambu-gray mb-1 block">
+          {t('slice.bedType.label', 'Bed plate')}
+        </span>
+        <Select
+          className="w-full"
+          value={value}
+          onChange={(e) => onChange(e.target.value as BedType)}
+          disabled={disabled}
+        >
+          {options.map((opt) => (
+            <option key={opt.value} value={opt.value}>
+              {t(opt.labelKey, opt.fallback)}
+            </option>
+          ))}
+        </Select>
+      </label>
+      {/* Outside the label, or its text would become part of the field's
+          name. Same amber shape as the "a saved preset is gone" banner. */}
+      {noteText && (
+        <div
+          className="flex items-start gap-2 text-xs rounded-md border p-2 mt-2 border-amber-300 dark:border-amber-700/40 bg-amber-50 dark:bg-amber-900/20 text-amber-800 dark:text-amber-200"
+          role="status"
+          aria-label={t('slice.bedType.label', 'Bed plate')}
+        >
+          <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+          <span>{noteText}</span>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -508,6 +616,7 @@ function SlicerPicker({ value, onChange, disabled }: SlicerPickerProps) {
           />
         ))}
       </div>
+      <SlicerOutdatedNote kind={value} />
     </fieldset>
   );
 }
@@ -619,7 +728,21 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
   // states the wrong material, and without this it would do so to a deliberate
   // choice too — printing PETG on a plate a designer labelled PLA is a thing
   // people do on purpose. A ref, not state: it must not re-trigger the pre-pick.
-  const explicitFilamentSlots = useRef<Set<number>>(new Set());
+  //
+  // ⚠️ An explicit choice is replaced by NO automatic pass, whatever the
+  // matcher thinks of it: not for its material and not for the printer it was
+  // made for. It stays while the listing has it — a choice that does not fit
+  // the printer is marked beside its field, never swapped — and when the
+  // listing drops it the dialog falls back and says so (`goneChoices`). Only
+  // the user, or saved settings the user applies, replace it. Each entry keeps
+  // the chosen ref, so "gone from the listing" can be told without reading
+  // state. The process has the same record.
+  const explicitFilamentSlots = useRef<Map<number, PresetRef>>(new Map());
+  const explicitProcess = useRef<PresetRef | null>(null);
+  // Fields whose hand-made choice left the listing and was replaced by an
+  // automatic pick: 'process', or a filament slot's index.
+  const [goneChoices, setGoneChoices] = useState<('process' | number)[]>([]);
+  const filamentSlotCount = useRef(0);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   // Bed plate override sent to the slicer as ``--curr-bed-type``. Default
@@ -631,24 +754,29 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
   // CLI defaults to "Cool Plate", which produces the wrong first-layer bed
   // temperature for any X1/A1 user with a default plate.
   const [bedType, setBedType] = useState<BedType>(() => {
-    if (typeof localStorage === 'undefined') return 'Textured PEI Plate';
+    if (typeof localStorage === 'undefined') return DEFAULT_BED_TYPE;
     try {
       const stored = localStorage.getItem('bamdude:slice-modal:bed-type');
       return (ALLOWED_BED_TYPES as string[]).includes(stored ?? '')
         ? (stored as BedType)
-        : 'Textured PEI Plate';
+        : DEFAULT_BED_TYPE;
     } catch {
-      return 'Textured PEI Plate';
+      return DEFAULT_BED_TYPE;
     }
   });
-  useEffect(() => {
+  const [bedTypeNote, setBedTypeNote] = useState<BedTypeNote | null>(null);
+  // The remembered plate is the one somebody CHOSE — picked in the field or
+  // applied from saved settings. The switch the dialog itself makes for Bambu
+  // Studio is not written: a Textured Cool Plate remembered for OrcaSlicer is
+  // still the starting plate of the next OrcaSlicer dialog.
+  const rememberBedType = (chosen: BedType) => {
     if (typeof localStorage === 'undefined') return;
     try {
-      localStorage.setItem('bamdude:slice-modal:bed-type', bedType);
+      localStorage.setItem('bamdude:slice-modal:bed-type', chosen);
     } catch {
       /* private mode / quota — silently skip */
     }
-  }, [bedType]);
+  };
   // When the owner filter narrows the visible set, any current selection
   // that no longer matches must drop to null — otherwise the dropdown
   // would render an out-of-section value the user can no longer see in
@@ -772,6 +900,39 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
     pickedSlicer,
     settingsQuery.data?.preferred_slicer,
   ]);
+  // The slicer this slice will run on: the only reachable one when exactly
+  // one is, else the user's pick, else the global preference the backend falls
+  // back to. `null` while the health checks are still out — nothing is decided
+  // about the bed plate until it is known.
+  const preferredSlicer = settingsQuery.data?.preferred_slicer;
+  const sliceSlicer: SlicerKind | null =
+    orcaHealthQuery.isLoading || bambuHealthQuery.isLoading
+      ? null
+      : orcaHealthy && !bambuHealthy
+        ? 'orcaslicer'
+        : bambuHealthy && !orcaHealthy
+          ? 'bambu_studio'
+          : (pickedSlicer ?? (preferredSlicer === 'orcaslicer' || preferredSlicer === 'bambu_studio' ? preferredSlicer : null));
+  // A plate only OrcaSlicer has cannot stay picked for Bambu Studio — its CLI
+  // would slice as for Cool Plate without a word. Changed to the default, and
+  // said so beside the field.
+  useEffect(() => {
+    if (sliceSlicer !== 'bambu_studio' || !ORCA_ONLY_BED_TYPES.includes(bedType)) return;
+    setBedTypeNote({ kind: 'reset', bed: bedType });
+    setBedType(DEFAULT_BED_TYPE);
+  }, [sliceSlicer, bedType]);
+  // Both slicer notes are about Bambu Studio lacking a plate. Once OrcaSlicer
+  // is the slicer neither sentence is true: the note goes, and a plate the
+  // dialog took away is put back (nobody chose its replacement — a pick by
+  // hand clears the note first). A plate saved settings named and Bambu Studio
+  // lacked is not applied after the fact; applying the settings again does it.
+  useEffect(() => {
+    if (sliceSlicer !== 'orcaslicer' || bedTypeNote == null || bedTypeNote.kind === 'unknown') return;
+    if (bedTypeNote.kind === 'reset' && (ALLOWED_BED_TYPES as string[]).includes(bedTypeNote.bed)) {
+      setBedType(bedTypeNote.bed as BedType);
+    }
+    setBedTypeNote(null);
+  }, [sliceSlicer, bedTypeNote]);
   // Persist user's pick across modal opens.
   useEffect(() => {
     if (pickedSlicer == null || typeof localStorage === 'undefined') return;
@@ -863,13 +1024,29 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
   }, [sliceAllPlates, filamentReqsQuery.data]);
 
   const queryClient = useQueryClient();
+  // The presets an assembled project was built from, by source and id. The
+  // file itself names them by name only, and a name can exist in two sources
+  // (Bambu Cloud lists the stock presets under the bundle's names) — the
+  // record is what tells a Standard preset from its Bambu Cloud namesake. Read
+  // only for a file known to be assembled; a failed read falls back to names.
+  const isAssembled = source.kind === 'libraryFile' && source.assembled === true;
+  const assemblyQuery = useQuery({
+    queryKey: ['assemblyRecord', source.id],
+    queryFn: () => api.getAssemblyRecord(source.id),
+    enabled: isAssembled,
+    retry: false,
+    staleTime: 60_000,
+  });
+  const builtFrom = isAssembled ? assemblyQuery.data?.printer : undefined;
   const presetsQuery = useQuery({
     queryKey: ['slicerPresets'],
     queryFn: () => api.getSlicerPresets(),
     staleTime: 60_000,
     // Don't fetch presets while the plate picker is on screen — saves a
-    // round-trip if the user cancels out of the plate step.
-    enabled: !platesQuery.isLoading && !needsPlatePicker,
+    // round-trip if the user cancels out of the plate step. And not before the
+    // assembly record has answered: the pre-picks below run when the listing
+    // arrives, and must already know what the project was built from.
+    enabled: !platesQuery.isLoading && !needsPlatePicker && !(isAssembled && assemblyQuery.isLoading),
   });
 
   // Manual refresh — bypasses the backend's cloud + bundled preset caches for
@@ -901,6 +1078,7 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
     staleTime: Infinity,
   });
 
+  const printerSource = printerPreset?.source ?? null;
   // Selected-printer context for the process / filament filter (#1325).
   const selectedPrinterName = useMemo<string | null>(() => {
     if (!presetsQuery.data || !printerPreset) return null;
@@ -908,17 +1086,30 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
   }, [presetsQuery.data, printerPreset]);
   // Compatibility ground truth: the slicer's own `compatible_printers` list
   // on local-imported presets, plus the @BBL <code> name fallback for cloud /
-  // standard presets via the backend Bambu printer-model registry.
-  const compatIndex = useMemo<PrinterCompatibilityIndex>(
-    () => buildCompatibilityIndex(printerModelsQuery.data ?? {}),
-    [printerModelsQuery.data],
+  // standard presets via the backend Bambu printer-model registry. Plus, for a
+  // printer preset saved under a name of its own, the preset it was saved from
+  // (upstream 3acc52d93): its model, nozzle and compatible presets are the
+  // parent's. The ref sent to the slicer stays the picked preset's own. The
+  // lookup is built for the chosen preset's SOURCE: a namesake in another
+  // source may have been saved from another printer.
+  const printerParents = useMemo(
+    () => buildPrinterParents(presetsQuery.data, printerSource),
+    [presetsQuery.data, printerSource],
   );
+  const compatIndex = useMemo<PrinterCompatibilityIndex>(
+    () => buildCompatibilityIndex(printerModelsQuery.data ?? {}, printerParents),
+    [printerModelsQuery.data, printerParents],
+  );
+  // "Only online printers" / "only loaded filaments": what the lists OFFER.
+  // Never read by the pre-pick effects below — a filter replaces no choice.
+  const farmFilters = useSliceFarmFilters(presetsQuery.data, selectedPrinterName, printerParents);
 
   // Printer / process preset names the source 3MF was prepared with. The
   // plates query resolves before the presets query (the latter is gated on
   // it), so these are known by the time the pre-pick effects run.
   const embeddedPrinter = platesQuery.data?.embedded_printer ?? null;
   const embeddedProcess = platesQuery.data?.embedded_process ?? null;
+  const embeddedFilaments = platesQuery.data?.embedded_filaments;
 
   // "Slice as designed" (upstream #2611). When on, the backend honours the
   // source 3MF's embedded project_settings.config (the designer's own wall
@@ -978,78 +1169,122 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
     const data = presetsQuery.data;
     if (!data) return;
     if (printerPreset == null) {
+      // The preset an assembled project was built from, by identity, before
+      // any lookup by name.
+      const built = builtFrom && findPreset(data, builtFrom.printer, 'printer') ? builtFrom.printer : null;
       setPrinterPreset(
-        findPresetByName(data, 'printer', embeddedPrinter) ?? pickDefault(data, 'printer'),
+        built ?? findPresetByName(data, 'printer', embeddedPrinter) ?? pickDefault(data, 'printer'),
       );
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [presetsQuery.data, embeddedPrinter]);
+  }, [presetsQuery.data, embeddedPrinter, builtFrom]);
 
   // Process pre-pick / re-pick (#1325): defaults to a process compatible with
   // the selected printer (honouring the 3MF's embedded process first), and
   // re-defaults when a printer change leaves the current process incompatible.
-  // A compatible or unknown manual pick is kept.
+  // A choice made by hand is kept whatever the matcher says of it, for as long
+  // as the listing has it; one that is gone falls back and is named on screen.
   useEffect(() => {
     const data = presetsQuery.data;
     if (!data) return;
+    if (explicitProcess.current && !findPreset(data, explicitProcess.current, 'process')) {
+      explicitProcess.current = null;
+      setGoneChoices((gone) => (gone.includes('process') ? gone : [...gone, 'process']));
+    }
     setProcessPreset((current) => {
       if (current) {
         const p = findPreset(data, current, 'process');
-        if (p && presetCompatibility(p, 'process', selectedPrinterName, compatIndex) !== 'mismatch') {
+        if (
+          p
+          && (explicitProcess.current !== null
+            || presetCompatibility(p, 'process', selectedPrinterName, compatIndex) !== 'mismatch')
+        ) {
           return current;
         }
       }
+      // An assembled project's own process, by identity, while it is listed
+      // and the selected printer can take it.
+      const built = findPreset(data, builtFrom?.process ?? null, 'process');
+      if (built && presetCompatibility(built, 'process', selectedPrinterName, compatIndex) !== 'mismatch') {
+        return { source: built.source, id: built.id };
+      }
       return pickProcessDefault(data, selectedPrinterName, compatIndex, embeddedProcess);
     });
-  }, [presetsQuery.data, selectedPrinterName, compatIndex, embeddedProcess]);
+  }, [presetsQuery.data, selectedPrinterName, compatIndex, embeddedProcess, builtFrom]);
 
   // A plate switch renumbers the slots, so the colour picks are dropped when
   // the slot count changes (see `resizeColourOverrides`).
   useEffect(() => {
-    setFilamentColours((current) => {
-      if (current.length !== filamentSlots.length) {
-        // A renumbered slot list invalidates the record of which slots the
-        // user chose for the same reason: slot 2 of the new plate is not slot 2
-        // of the old one.
-        explicitFilamentSlots.current = new Set();
-      }
-      return resizeColourOverrides(current, filamentSlots.length);
-    });
+    if (filamentSlotCount.current !== filamentSlots.length) {
+      // A renumbered slot list invalidates the record of which slots the
+      // user chose for the same reason: slot 2 of the new plate is not slot 2
+      // of the old one. Done here and not inside a state updater: the filament
+      // pre-pick below must already see the record empty.
+      filamentSlotCount.current = filamentSlots.length;
+      explicitFilamentSlots.current = new Map();
+      setGoneChoices((gone) => (gone.some((g) => g !== 'process') ? gone.filter((g) => g === 'process') : gone));
+    }
+    setFilamentColours((current) => resizeColourOverrides(current, filamentSlots.length));
   }, [filamentSlots]);
 
   // Filament pre-pick: re-runs when the active filament-slot count changes
   // (plate selection, single-plate metadata arriving) or the selected printer
   // changes. Each slot scores every available filament preset against the
-  // slot's required (type, colour); an existing pick (incl. a user override)
-  // is kept as long as it's still compatible with the selected printer, while
-  // null slots and printer-incompatible picks are re-picked (#1325).
+  // slot's required (type, colour); an automatic pick is kept as long as it's
+  // still compatible with the selected printer, while null slots and
+  // printer-incompatible automatic picks are re-picked (#1325). A slot chosen
+  // by hand is kept while the listing has its preset.
   useEffect(() => {
     const data = presetsQuery.data;
     if (!data) return;
+    const gone: number[] = [];
+    for (const [i, ref] of explicitFilamentSlots.current) {
+      if (!findPreset(data, ref, 'filament')) gone.push(i);
+    }
+    if (gone.length > 0) {
+      for (const i of gone) explicitFilamentSlots.current.delete(i);
+      setGoneChoices((known) => [...known, ...gone.filter((i) => !known.includes(i))]);
+    }
     setFilamentPresets((current) => {
       return filamentSlots.map((slot, i) => {
         const cur = current[i] ?? null;
         if (cur) {
           const p = findPreset(data, cur, 'filament');
+          if (p && explicitFilamentSlots.current.has(i)) return cur;
           // Compatible with the printer is not on its own a reason to keep a
           // pick: a preset stating another base material than the plate asks
           // for is the wrong preset however well it fits the machine, and
           // holding onto one is how a PETG profile survived on a PLA plate
           // through every re-pick (#2982). An explicit choice is exempt.
-          const wrongMaterial = p && !explicitFilamentSlots.current.has(i) && statesDifferentMaterial(p, slot.type);
+          const wrongMaterial = p && statesDifferentMaterial(p, slot.type);
           if (p && !wrongMaterial && presetCompatibility(p, 'filament', selectedPrinterName, compatIndex) !== 'mismatch') {
             return cur;
           }
         }
-        return pickFilamentForSlot(
-          data,
-          { type: slot.type, color: slot.color },
-          selectedPrinterName,
-          compatIndex,
+        // The preset the project itself names for this slot comes first (a
+        // file from "Assemble project" names the one chosen there), when it is
+        // listed and fits the printer and the plate's material. A name that
+        // several sources hold is told apart by what the project was built
+        // from, else by the printer preset's source — never by tier order.
+        return (
+          pickEmbeddedFilament(
+            data,
+            embeddedFilaments?.[slot.slot_id - 1],
+            { type: slot.type },
+            selectedPrinterName,
+            compatIndex,
+            { built: builtFrom?.filament, printerSource },
+          )
+          ?? pickFilamentForSlot(
+            data,
+            { type: slot.type, color: slot.color },
+            selectedPrinterName,
+            compatIndex,
+          )
         );
       });
     });
-  }, [presetsQuery.data, filamentSlots, selectedPrinterName, compatIndex]);
+  }, [presetsQuery.data, filamentSlots, selectedPrinterName, compatIndex, embeddedFilaments, builtFrom, printerSource]);
 
 
   const enqueueMutation = useMutation({
@@ -1163,6 +1398,13 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
   // ref the dropdown can't render — and the banner below names them, because
   // a silently half-applied bundle would slice with the wrong profile.
   const [unresolvedBundleSlots, setUnresolvedBundleSlots] = useState<string[] | null>(null);
+  // The last applied set and the fields it changed — the note beside the
+  // picker. Retired, like the banner above, by the next pick made by hand.
+  const [appliedSet, setAppliedSet] = useState<{ name: string; changed: string[] } | null>(null);
+  const retireBundleNotes = () => {
+    setUnresolvedBundleSlots(null);
+    setAppliedSet(null);
+  };
   const createPipelineMutation = useMutation({
     mutationFn: (body: {
       name: string;
@@ -1192,20 +1434,46 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
     const data = presetsQuery.data;
     if (!data) return;
     const unresolved: string[] = [];
+    // The fields this set gave another value than they had — said beside the
+    // picker, because applying a set is the one action besides the user's own
+    // pick that replaces a choice made by hand.
+    const changed: string[] = [];
     const resolved = (ref: PresetRef, slot: Slot) => resolvePresetName(data, ref, slot) !== null;
+    const differs = (a: PresetRef | null, b: PresetRef) => a == null || a.source !== b.source || a.id !== b.id;
 
     if (resolved(picked.printer_preset, 'printer')) {
+      if (differs(printerPreset, picked.printer_preset)) changed.push(t('slice.printer', 'Printer profile'));
       setPrinterPreset(picked.printer_preset);
     } else {
       unresolved.push(t('slice.printer', 'Printer profile'));
     }
     if (resolved(picked.process_preset, 'process')) {
+      if (differs(processPreset, picked.process_preset)) changed.push(t('slice.process', 'Process profile'));
       setProcessPreset(picked.process_preset);
+      // As deliberate as a pick from the dropdown: it stays even when the
+      // matcher calls it a mismatch for the set's printer.
+      explicitProcess.current = picked.process_preset;
     } else {
       unresolved.push(t('slice.process', 'Process profile'));
     }
-    if (picked.bed_type && (ALLOWED_BED_TYPES as string[]).includes(picked.bed_type)) {
-      setBedType(picked.bed_type as BedType);
+    // A saved bed plate that is not applied is said, never skipped in
+    // silence: a set saved before the server checked the name can carry
+    // anything, and an OrcaSlicer-only plate means nothing to Bambu Studio.
+    if (picked.bed_type) {
+      if (!(ALLOWED_BED_TYPES as string[]).includes(picked.bed_type)) {
+        setBedTypeNote({ kind: 'unknown', bed: picked.bed_type });
+      } else if (sliceSlicer === 'bambu_studio' && (ORCA_ONLY_BED_TYPES as string[]).includes(picked.bed_type)) {
+        setBedTypeNote({ kind: 'slicer', bed: picked.bed_type });
+      } else {
+        if (picked.bed_type !== bedType) changed.push(t('slice.bedType.label', 'Bed plate'));
+        setBedType(picked.bed_type as BedType);
+        rememberBedType(picked.bed_type as BedType);
+        setBedTypeNote(null);
+      }
+    } else if (bedTypeNote && bedTypeNote.kind !== 'reset') {
+      // These settings name no plate: what earlier ones said about theirs is
+      // not about this selection any more.
+      setBedTypeNote(null);
     }
     // Computed from current state rather than inside a setState updater —
     // the updater can run twice (StrictMode) and runs after this function
@@ -1217,24 +1485,28 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
         : picked.filament_presets.map(() => null as PresetRef | null);
     for (let i = 0; i < nextFilaments.length && i < picked.filament_presets.length; i++) {
       const ref = picked.filament_presets[i];
+      const slotLabel =
+        nextFilaments.length > 1
+          ? t('slice.filamentSlot', {
+              index: i + 1,
+              type: filamentSlots[i]?.type ?? '',
+              defaultValue: `Filament ${i + 1} (${filamentSlots[i]?.type ?? ''})`,
+            })
+          : t('slice.filament', 'Filament profile');
       if (resolved(ref, 'filament')) {
+        if (differs(nextFilaments[i], ref)) changed.push(slotLabel);
         nextFilaments[i] = ref;
         // Applying a pipeline is as deliberate as picking from the dropdown,
-        // so the slots it fills are exempt from the material re-pick too.
-        explicitFilamentSlots.current.add(i);
+        // so the slots it fills are exempt from every automatic re-pick too.
+        explicitFilamentSlots.current.set(i, ref);
       } else {
-        unresolved.push(
-          nextFilaments.length > 1
-            ? t('slice.filamentSlot', {
-                index: i + 1,
-                type: filamentSlots[i]?.type ?? '',
-                defaultValue: `Filament ${i + 1} (${filamentSlots[i]?.type ?? ''})`,
-              })
-            : t('slice.filament', 'Filament profile'),
-        );
+        unresolved.push(slotLabel);
       }
     }
     setFilamentPresets(nextFilaments);
+    // What the set filled is no longer "replaced because it was gone".
+    setGoneChoices([]);
+    setAppliedSet({ name: picked.name, changed });
 
     setUnresolvedBundleSlots(unresolved.length > 0 ? unresolved : null);
     if (unresolved.length === 0) {
@@ -1254,7 +1526,7 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
       closeDisabled={isEnqueuing}
       labelledBy={headingId}
       size="xl"
-      panelClassName="lg:max-w-5xl"
+      panelClassName="lg:max-w-5xl xl:max-w-7xl 2xl:max-w-8xl"
       bodyClassName="flex flex-col"
       header={
         <div className="min-w-0">
@@ -1345,8 +1617,13 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
                 gives the process-settings panel a column of its own, which
                 is the only way 348 options are comfortable to work through.
                 ⚠️ Below lg both collapse back into the single stack this
-                dialog used to be, so nothing on a phone changes. */}
-            <div className="lg:grid lg:grid-cols-[minmax(0,20rem)_minmax(0,1fr)] lg:gap-4 lg:items-start">
+                dialog used to be, so nothing on a phone changes.
+                The left column grows with the frame (upstream bda14f753):
+                fixed at 20rem it cut preset names off and wrapped every
+                filament label while the settings panel sat half empty. 20rem
+                is its floor now, and the frame keeps widening past lg in
+                steps of the modal's own size table. */}
+            <div className="lg:grid lg:grid-cols-[minmax(20rem,2fr)_minmax(0,3fr)] lg:gap-4 lg:items-start">
               <div className="space-y-4 min-w-0">
             {/* Slicer picker — two big card-buttons matching the
                 "Filament Tracking" pattern in Settings. Each card carries
@@ -1490,6 +1767,20 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
                     </span>
                   </div>
                 )}
+                {appliedSet && (
+                  <p role="status" className="mt-2 text-xs text-bambu-gray">
+                    {appliedSet.changed.length > 0
+                      ? t('slice.pipelines.appliedChanged', {
+                          name: appliedSet.name,
+                          fields: appliedSet.changed.join(', '),
+                          defaultValue: 'Applied "{{name}}". Changed: {{fields}}',
+                        })
+                      : t('slice.pipelines.appliedUnchanged', {
+                          name: appliedSet.name,
+                          defaultValue: 'Applied "{{name}}". Nothing changed — these were already the selection.',
+                        })}
+                  </p>
+                )}
               </div>
             )}
             {/* Bed plate picker — five values from BambuStudio's
@@ -1501,7 +1792,17 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
             {/* Bed-type patches curr_bed_type onto the resolved process JSON,
                 which the embedded-settings path never sends — so it has no
                 effect there and is disabled rather than implying it does. */}
-            <BedTypePicker value={bedType} onChange={setBedType} disabled={isEnqueuing || useEmbedded} />
+            <BedTypePicker
+              value={bedType}
+              onChange={(next) => {
+                setBedTypeNote(null);
+                setBedType(next);
+                rememberBedType(next);
+              }}
+              disabled={isEnqueuing || useEmbedded}
+              slicer={sliceSlicer}
+              note={bedTypeNote}
+            />
             {/* "Slice as designed" (upstream #2611): honour the file's embedded
                 settings instead of the picked process/filament. Offered only
                 when the picked printer matches the design's target. */}
@@ -1626,13 +1927,47 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
             {/* Any manual re-pick retires the "bundle had missing presets"
                 banner — it describes the state right after a load, and the
                 user is now driving the slots by hand. */}
+            <SliceFarmFilterToggles filters={farmFilters} disabled={isEnqueuing || useEmbedded} />
+            {/* A choice made by hand that the listing no longer has was
+                replaced by an automatic pick — said, never done in silence. */}
+            {goneChoices.length > 0 && (
+              <div
+                className="flex items-start gap-2 text-xs rounded-md border p-2 border-amber-300 dark:border-amber-700/40 bg-amber-50 dark:bg-amber-900/20 text-amber-800 dark:text-amber-200"
+                role="status"
+              >
+                <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+                <span>
+                  {t('slice.chosenPresetGone', {
+                    fields: goneChoices
+                      .map((field) =>
+                        field === 'process'
+                          ? t('slice.process', 'Process profile')
+                          : filamentSlots.length > 1
+                            ? t('slice.filamentSlot', {
+                                index: field + 1,
+                                type: filamentSlots[field]?.type ?? '',
+                                defaultValue: `Filament ${field + 1} (${filamentSlots[field]?.type ?? ''})`,
+                              })
+                            : t('slice.filament', 'Filament profile'),
+                      )
+                      .join(', '),
+                    defaultValue:
+                      'A profile you chose is no longer in the list, so another one was selected. Check: {{fields}}',
+                  })}
+                </span>
+              </div>
+            )}
+            {/* Changing the printer by hand replaces no choice made by hand:
+                a process or filament chosen for the old printer stays and is
+                marked beside its field; only automatic picks follow. */}
             <PresetDropdown
               label={t('slice.printer', 'Printer profile')}
               slot="printer"
               data={presetsQuery.data}
               value={printerPreset}
+              keep={farmFilters.keepPrinter}
               onChange={(ref) => {
-                setUnresolvedBundleSlots(null);
+                retireBundleNotes();
                 setPrinterPreset(ref);
               }}
               // Locked in embedded mode too: the picked printer is unused on
@@ -1647,7 +1982,9 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
               data={presetsQuery.data}
               value={processPreset}
               onChange={(ref) => {
-                setUnresolvedBundleSlots(null);
+                retireBundleNotes();
+                explicitProcess.current = ref;
+                setGoneChoices((gone) => gone.filter((g) => g !== 'process'));
                 setProcessPreset(ref);
               }}
               disabled={isEnqueuing || useEmbedded}
@@ -1691,9 +2028,12 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
                     slot="filament"
                     data={presetsQuery.data}
                     value={filamentPresets[idx] ?? null}
+                    keep={farmFilters.keepFilament}
                     onChange={(ref) => {
-                      explicitFilamentSlots.current.add(idx);
-                      setUnresolvedBundleSlots(null);
+                      if (ref) explicitFilamentSlots.current.set(idx, ref);
+                      else explicitFilamentSlots.current.delete(idx);
+                      setGoneChoices((gone) => gone.filter((g) => g !== idx));
+                      retireBundleNotes();
                       setFilamentPresets((current) => {
                         const next = current.length === filamentSlots.length
                           ? [...current]

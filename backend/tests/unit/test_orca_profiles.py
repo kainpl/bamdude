@@ -347,3 +347,43 @@ class TestExtractCoreFields:
         assert core["nozzle_temp_max"] == 260
         assert core["filament_cost"] == "19.99"
         assert core["filament_density"] == "1.27"
+
+
+class TestExtractCoreFieldsOnIniLists:
+    """A list option may arrive as ONE quoted, ``;``-separated string (the
+    slicer's INI form; upstream c4c5c7042)."""
+
+    def test_quoted_strings_are_decoded(self):
+        import json
+
+        from backend.app.services.orca_profiles import extract_core_fields
+
+        core = extract_core_fields(
+            {
+                "filament_type": '"PETG"',
+                "filament_vendor": '"Bambu Lab"',
+                "default_filament_colour": '"#00AE42"',
+                "compatible_printers": '"Bambu Lab X1 Carbon 0.4 nozzle";"Bambu Lab H2C 0.4 nozzle"',
+            }
+        )
+        assert core["filament_type"] == "PETG"
+        assert core["filament_vendor"] == "Bambu Lab"
+        assert json.loads(core["default_filament_colour"]) == ["#00AE42"]
+        assert json.loads(core["compatible_printers"]) == [
+            "Bambu Lab X1 Carbon 0.4 nozzle",
+            "Bambu Lab H2C 0.4 nozzle",
+        ]
+
+    def test_a_real_list_is_kept_as_it_is(self):
+        import json
+
+        from backend.app.services.orca_profiles import extract_core_fields
+
+        core = extract_core_fields({"compatible_printers": ["My X1C; tuned"], "default_filament_colour": ["#FFF"]})
+        assert json.loads(core["compatible_printers"]) == ["My X1C; tuned"]
+        assert json.loads(core["default_filament_colour"]) == ["#FFF"]
+
+    def test_a_bare_colour_string_is_stored_as_before(self):
+        from backend.app.services.orca_profiles import extract_core_fields
+
+        assert extract_core_fields({"default_filament_colour": "#00AE42"})["default_filament_colour"] == "#00AE42"

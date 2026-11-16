@@ -85,6 +85,9 @@ STATUS_FIELDS = frozenset(
         "layer_num",
         "total_layers",
         "total_layers_source",
+        # A layer number and minutes of the running print: the class of ``layer_num``
+        # and ``remaining_time`` (printers:read + the printer's visibility), no names.
+        "next_pause",
         "temperatures",
         "hms_errors",
         "hms_muted",

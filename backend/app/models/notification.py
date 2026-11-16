@@ -82,6 +82,8 @@ PROVIDER_EVENT_DEFAULTS: dict[str, bool] = {
     "on_plate_not_empty": True,
     "on_bed_cooled": False,
     "on_first_layer_complete": False,
+    # A heads-up before a pause the slicer put into the print: opt-in.
+    "on_pause_coming_up": False,
     "on_queue_job_added": False,
     "on_queue_job_started": False,
     "on_queue_job_waiting": True,

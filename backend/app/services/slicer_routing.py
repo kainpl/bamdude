@@ -47,6 +47,29 @@ _ANY_SIDECAR_TTL_SECONDS = 30.0
 _any_sidecar_cache: tuple[float, bool] | None = None
 
 
+def refuse_bed_type_for_slicer(bed_type: str | None, slicer: str | None) -> None:
+    """Refuse (422) a bed plate the chosen slicer does not have.
+
+    ``Textured Cool Plate`` is in OrcaSlicer's ``curr_bed_type`` enum only.
+    Bambu Studio's CLI does not reject a name it does not know -- it slices as
+    for Cool Plate and then turns the filament down -- so the refusal has to be
+    ours, and it is made as soon as the slicer is known: at the request, and
+    again where the slice runs.
+    """
+    from fastapi import HTTPException
+
+    from backend.app.schemas.slicer import ORCA_ONLY_BED_TYPES
+
+    if slicer == "bambu_studio" and bed_type in ORCA_ONLY_BED_TYPES:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Textured Cool Plate is available only with OrcaSlicer. "
+                "Pick another bed plate, or slice with OrcaSlicer."
+            ),
+        )
+
+
 async def resolve_sidecar_url(
     db: AsyncSession,
     *,

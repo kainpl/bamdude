@@ -450,9 +450,10 @@ async def import_instance(
             external_id=str(body.model_id),
             sub_id=str(body.profile_id) if body.profile_id else None,
         )
-        # MakerWorld's iot-service needs the alphanumeric modelId and a plate;
-        # ``get_download`` resolves both (the first plate when none was named)
-        # and hands the chosen one back in ``info.ref``.
+        # Finding the download link (the instance behind the plate, or the old
+        # profile endpoint with the alphanumeric modelId as a fallback) and
+        # picking the first plate when none was named live in ``get_download``,
+        # which hands the chosen plate back in ``info.ref``.
         try:
             info = await service.get_download(ref)
         except ProviderError as exc:
@@ -502,9 +503,15 @@ async def import_instance(
             suggested_name = os.path.basename(unquote(raw_name.strip())) or f"makerworld-{body.model_id}.3mf"
         else:
             suggested_name = f"makerworld-{body.model_id}.3mf"
-        # Prefer the server-provided human-readable filename; the signed URL's
-        # path ends in a UUID that's not meaningful to users.
-        filename = suggested_name if suggested_name.endswith(".3mf") else unquote(download.filename)
+        # The server-provided human-readable name is the file's name; the
+        # signed URL's path ends in a UUID that means nothing to a user and is
+        # never used. ``download`` has proven the bytes are a 3MF container,
+        # and the library decides a file's type by its name: a name without
+        # the ending (``Benchy``) gets it, in whatever case it came
+        # (``Model.3MF`` is kept as it is).
+        filename = suggested_name
+        if not filename.lower().endswith(".3mf"):
+            filename = f"{filename}.3mf"
 
         result = await save_3mf_bytes_to_library(
             db,
@@ -866,10 +873,30 @@ async def list_imports(
 )
 async def get_makerworld_meta(
     library_file_id: int,
+    request: Request,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(makerworld_provider.view_permission),
+    current_user: User | None = RequirePermission(makerworld_provider.view_permission),
 ):
-    """Get the MakerWorld metadata row for a library file."""
+    """Get the MakerWorld metadata row for a library file.
+
+    The file is resolved through the library's own visibility rule first, as
+    both import lists do: another user's import under ``library:read_own`` and
+    an import in the trash are the same 404 as a row that has no metadata.
+    """
+    from backend.app.api.routes.library import library_file_name_visible
+    from backend.app.api.routes.library_thumbnail_jobs import request_authority
+
+    access = await read_access(db, authority=await request_authority(request, current_user))
+    visible = (
+        await db.execute(
+            LibraryFile.active()
+            .with_only_columns(LibraryFile.id)
+            .where(LibraryFile.id == library_file_id)
+            .where(library_file_name_visible(access.scope, access.user_id))
+        )
+    ).scalar_one_or_none()
+    if visible is None:
+        raise HTTPException(status_code=404, detail="No MakerWorld metadata for this library file")
     meta = (
         await db.execute(
             select(LibraryFileMakerworldMeta).where(LibraryFileMakerworldMeta.library_file_id == library_file_id)

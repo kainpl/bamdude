@@ -18,7 +18,7 @@ import json
 import logging
 import time
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -36,6 +36,7 @@ from backend.app.models.user import User
 from backend.app.schemas.slicer import PresetRef
 from backend.app.schemas.slicer_presets import (
     FilamentPresetInfo,
+    LoadedFilamentsResponse,
     UnifiedPreset,
     UnifiedPresetsBySlot,
     UnifiedPresetsResponse,
@@ -45,7 +46,7 @@ from backend.app.services.bambu_cloud import (
     BambuCloudError,
     BambuCloudService,
 )
-from backend.app.services.bambu_cloud_credentials import get_stored_token
+from backend.app.services.bambu_cloud_credentials import get_stored_token, renew_for_service, renewal_credentials
 from backend.app.services.orca_cloud import (
     OrcaCloudAuthError,
     OrcaCloudError,
@@ -56,7 +57,9 @@ from backend.app.services.slicer_api import (
     SlicerApiService,
     SlicerApiUnavailableError,
 )
+from backend.app.utils import filament_catalog
 from backend.app.utils.printer_models import PRINTER_MODEL_MAP
+from backend.app.utils.slicer_strings import first_slicer_string, slicer_strings
 
 logger = logging.getLogger(__name__)
 
@@ -134,8 +137,20 @@ async def _fetch_cloud_presets(
         if cached and now - cached[0] < _CLOUD_TTL_S:
             return cached[1], "ok"
 
-    cloud = BambuCloudService(region=region)
+    # An expired access token is renewed with the stored refresh token, as the
+    # cloud routes do, and the listing repeated once; "expired" is answered
+    # only when it cannot be renewed.
+    captured, refresh_token = await renewal_credentials(db, user)
+    # Everything the call needs is read: finish the short transaction, so no
+    # database connection is held while Bambu takes its time to answer.
+    await db.commit()
+    cloud = BambuCloudService(
+        region=region,
+        on_auth_failure=(lambda: renew_for_service(cloud, captured)) if captured is not None else None,
+    )
     cloud.set_token(token)
+    if captured is not None:
+        cloud.set_refresh_token(refresh_token)
     try:
         try:
             raw = await cloud.get_slicer_settings()
@@ -158,25 +173,49 @@ async def _fetch_cloud_presets(
             # names. Stock entries that share names with private ones get
             # deduped out within the cloud tier itself.
             seen_names: set[str] = set()
-            for entry in type_data.get("private", []) + type_data.get("public", []):
+            private = type_data.get("private", [])
+            public = type_data.get("public", [])
+            # A private printer preset's parent, from the list itself: never a
+            # detail request per preset (rate-limited, see below).
+            names_by_id = (
+                {
+                    str(e.get("setting_id") or e.get("id")): e.get("name")
+                    for e in private + public
+                    if isinstance(e.get("name"), str)
+                }
+                if slot == "printer"
+                else {}
+            )
+            for index, entry in enumerate(private + public):
                 name = entry.get("name")
                 setting_id = entry.get("setting_id") or entry.get("id")
                 if not name or not setting_id or name in seen_names:
                     continue
                 seen_names.add(name)
-                slots[slot].append(UnifiedPreset(id=setting_id, name=name, source="cloud"))
+                preset = UnifiedPreset(id=setting_id, name=name, source="cloud")
+                if slot == "printer" and index < len(private):
+                    preset.inherits = _saved_from(
+                        name,
+                        entry.get("inherits") or names_by_id.get(str(entry.get("base_id") or "")),
+                        "User",
+                    )
+                elif slot == "filament":
+                    preset.filament_type = _cloud_filament_material(entry, str(setting_id))
+                slots[slot].append(preset)
 
-        # Cloud filament presets carry no metadata in this response on
-        # purpose: the per-preset detail endpoint
+        # The per-preset detail endpoint
         # (/v1/iot-service/api/slicer/setting/{id}) is rate-limited at roughly
         # 10/sec per token, so fetching N filament presets to enrich them
         # one-by-one trips Bambu's limiter and returns 429 on every request
-        # for users with large preset libraries.
+        # for users with large preset libraries. So a filament's MATERIAL is
+        # read from what the list entry already is (see
+        # _cloud_filament_material), and never its colour.
         #
-        # The metadata-enrich pass (see _enrich_cloud_metadata) compensates:
-        # a Bambu Cloud entry without its own filament_type/colour inherits
-        # those values from a same-named local / orca_cloud / standard entry
-        # so it can still score for type/colour matches in pickFilamentForSlot.
+        # The metadata-enrich pass (see _enrich_cloud_metadata) covers what is
+        # still missing: a Bambu Cloud entry without its own
+        # filament_type/colour inherits those values from a same-named local /
+        # orca_cloud / standard entry so it can still score for type/colour
+        # matches in pickFilamentForSlot.
         _cloud_cache[cache_key] = (now, slots)
         return slots, "ok"
     finally:
@@ -236,6 +275,15 @@ async def _fetch_orca_cloud_presets(
             return _empty_slots(), "unreachable"
 
         slots = _empty_slots()
+        # The user's own filament profiles by name: a profile that stores only
+        # what its author changed is read through the profile it was saved from.
+        filament_siblings: dict[str, dict] = {}
+        for entry in raw_profiles:
+            content = entry.get("content") if isinstance(entry, dict) else None
+            if isinstance(content, dict) and _ORCA_TYPE_TO_BAMBU.get(str(content.get("type", ""))) == "filament":
+                sibling_name = str(entry.get("name") or content.get("name") or "").strip()
+                if sibling_name:
+                    filament_siblings.setdefault(sibling_name, content)
         for entry in raw_profiles:
             content = entry.get("content") if isinstance(entry, dict) else None
             if not isinstance(content, dict):
@@ -251,18 +299,12 @@ async def _fetch_orca_cloud_presets(
             filament_colour: str | None = None
             if slot == "filament":
                 # Bambu/Orca filament profiles store these as single-element
-                # arrays (the historical multi-extruder shape). Extract the
-                # first non-empty element for both.
-                ft = content.get("filament_type")
-                if isinstance(ft, list) and ft and isinstance(ft[0], str):
-                    filament_type = ft[0]
-                elif isinstance(ft, str):
-                    filament_type = ft
-                fc = content.get("default_filament_colour")
-                if isinstance(fc, list) and fc and isinstance(fc[0], str):
-                    filament_colour = fc[0]
-                elif isinstance(fc, str):
-                    filament_colour = fc
+                # lists (the historical multi-extruder shape) -- a JSON array,
+                # or the slicer's INI string. Take the first non-empty element.
+                filament_type = first_slicer_string(content.get("filament_type"))
+                filament_colour = first_slicer_string(content.get("default_filament_colour"))
+                if filament_type is None:
+                    filament_type = _orca_filament_material(content, filament_siblings)
             preset = UnifiedPreset(
                 id=str(preset_id),
                 name=str(name),
@@ -278,6 +320,8 @@ async def _fetch_orca_cloud_presets(
                 # Matte @0.2") then reads as "can't tell", which the picker treats
                 # as usable and auto-picks for a printer it was never built for.
                 preset.compatible_printers = _content_compatible_printers(content)
+            elif slot == "printer":
+                preset.inherits = _saved_from(str(name), content.get("inherits"), content.get("from"))
             slots[slot].append(preset)
         _orca_cloud_cache[cache_key] = (now, slots)
         return slots, "ok"
@@ -305,10 +349,83 @@ async def _fetch_local_presets(db: AsyncSession) -> dict[str, list[UnifiedPreset
             # filter process / filament dropdowns by the selected printer
             # without the name-suffix heuristic (#1325).
             extra["compatible_printers"] = _parse_compatible_printers(p.compatible_printers)
+        if slot == "printer" and (p.inherits or "").strip():
+            extra["inherits"] = _saved_from(p.name, p.inherits, _setting_origin(p.setting))
         slots[slot].append(
             UnifiedPreset(id=str(p.id), name=p.name, source="local", **extra),
         )
     return slots
+
+
+def _cloud_filament_material(entry: dict, setting_id: str) -> str | None:
+    """The material of a Bambu Cloud filament preset, by what the preset IS.
+
+    In this order, the first that answers:
+
+    1. the family catalogue by the preset's ``setting_id``
+       (``family_for_setting_id``; a variant the catalogue does not carry
+       answers through its base id, so a printer newer than the catalogue --
+       an H3C preset of a known family -- still has a material);
+    2. the family the list entry itself names (``filament_id``) -- how a user's
+       own preset, whose setting id no catalogue knows, states its family;
+    3. the entry's own ``filament_type`` -- a family of the user's own.
+
+    Never the preset's NAME ("... @BBL H2C"): upstream 9ac3f0f20 reads the
+    material of same-named bundle profiles, and a name is not an identity.
+    Nothing known is ``None`` -- "material unknown", which stays eligible in
+    the dialog's pre-pick rather than being guessed.
+    """
+    family = filament_catalog.family_for_setting_id(setting_id)
+    if family is None:
+        family_id = filament_catalog.bambu_filament_id(first_slicer_string(entry.get("filament_id")))
+        family = filament_catalog.get_family(family_id) if family_id else None
+    if family is not None and family.filament_type:
+        return family.filament_type
+    return first_slicer_string(entry.get("filament_type"))
+
+
+def _orca_filament_material(content: dict, siblings: dict[str, dict]) -> str | None:
+    """The material of an Orca Cloud filament profile that states none.
+
+    A profile saved with only the keys its author changed carries no
+    ``filament_type``; its family does. The family is resolved the way the
+    cloud mirror resolves it (``filament_preset_sync._orca_family_id``: the
+    profile's own ``filament_id``, else the profile it was saved from, through
+    the user's other profiles and the catalogue by exact name), and a family
+    no catalogue knows leaves the material unknown.
+    """
+    from backend.app.services.filament_preset_sync import _orca_family_id
+
+    family_id = _orca_family_id(content, siblings)
+    family = filament_catalog.get_family(family_id) if family_id else None
+    return family.filament_type if family is not None and family.filament_type else None
+
+
+def _saved_from(name: str, inherits: object, origin: object) -> str | None:
+    """The preset a printer preset was saved from, or ``None``.
+
+    The slicer's own rule (BambuStudio.cpp, the system name of a loaded
+    machine preset): a preset whose ``from`` is ``system`` IS its system name;
+    any other is known by its ``inherits``. So a parent is reported only for a
+    preset that is not a system one -- a system "... 0.6 nozzle" preset
+    inherits the 0.4 preset as file layout, which is no "saved from".
+    """
+    if isinstance(origin, str) and origin.strip().lower() == "system":
+        return None
+    if not isinstance(inherits, str):
+        return None
+    parent = inherits.strip()
+    return parent if parent and parent != name else None
+
+
+def _setting_origin(setting_json: str | None) -> str | None:
+    """The ``from`` of a stored preset JSON; ``None`` when it states none."""
+    try:
+        data = json.loads(setting_json or "")
+    except (ValueError, TypeError):
+        return None
+    origin = data.get("from") if isinstance(data, dict) else None
+    return origin if isinstance(origin, str) else None
 
 
 def _content_compatible_printers(content: dict) -> list[str] | None:
@@ -318,17 +435,15 @@ def _content_compatible_printers(content: dict) -> list[str] | None:
     ``content``, and an entry of the sidecar's bundled listing.
 
     Orca profiles carry it as a list of printer-preset names (the same shape
-    ``orca_profiles.py`` stores on import); a single-printer profile may store a
-    bare string. Returns ``None`` for missing / empty / malformed values so the
-    caller leaves the field unset and the SliceModal falls back to the name-based
-    matcher, rather than treating "no data" as "compatible with nothing".
+    ``orca_profiles.py`` stores on import), a bare string for a single printer,
+    or -- from Orca Cloud -- ONE string of quoted names joined by ``;`` (see
+    :func:`slicer_strings`, the one decoder of all three). Returns ``None`` for
+    missing / empty / malformed values so the caller leaves the field unset and
+    the SliceModal falls back to the name-based matcher, rather than treating
+    "no data" as "compatible with nothing".
     """
     raw = content.get("compatible_printers") if isinstance(content, dict) else None
-    if isinstance(raw, str):
-        raw = [raw]
-    if not isinstance(raw, list):
-        return None
-    names = [x.strip() for x in raw if isinstance(x, str) and x.strip()]
+    names = [x.strip() for x in slicer_strings(raw)]
     return names or None
 
 
@@ -362,7 +477,7 @@ def _parse_filament_metadata(setting_json: str | None) -> tuple[str | None, str 
         return None, None
     if not isinstance(data, dict):
         return None, None
-    return _first_scalar(data.get("filament_type")), _first_scalar(data.get("filament_colour"))
+    return first_slicer_string(data.get("filament_type")), first_slicer_string(data.get("filament_colour"))
 
 
 def _parse_filament_flow_ratio(setting_json: str | None) -> float | None:
@@ -391,14 +506,6 @@ def _parse_filament_flow_ratio(setting_json: str | None) -> float | None:
         except ValueError:
             return None
         return v if v > 0 else None
-    return None
-
-
-def _first_scalar(value: object) -> str | None:
-    if isinstance(value, list) and value:
-        return value[0] if isinstance(value[0], str) else None
-    if isinstance(value, str) and value:
-        return value
     return None
 
 
@@ -613,6 +720,34 @@ async def list_unified_presets(
     )
 
 
+@router.get("/loaded-filaments", response_model=LoadedFilamentsResponse)
+async def list_loaded_filaments(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user: User | None = Depends(require_permission(Permission.LIBRARY_UPLOAD, Permission.PRINTERS_READ)),
+) -> LoadedFilamentsResponse:
+    """Online printers and the filaments loaded on them, for the Slice dialog's
+    "only online printers" / "only loaded filaments" filters.
+
+    Online is active, not archived and connected; an API key sees the printers
+    on its list. A filament is the spool a slot holds and its family — read
+    from the feed snapshot, so a slot advertised under another profile answers
+    with its real spool. Read-only: nothing is asked of a printer or of
+    Spoolman. Needs the right to slice AND the right to read printers: the
+    answer is printer facts (who is online, what is loaded).
+    """
+    from backend.app.core.api_key_scope import key_printer_scope
+    from backend.app.services.printer_manager import printer_manager
+    from backend.app.services.slice_loaded_filaments import loaded_filaments
+
+    return await loaded_filaments(
+        db,
+        printer_manager,
+        allowed=key_printer_scope(request),
+        user_id=current_user.id if current_user is not None else None,
+    )
+
+
 @router.get("/filament-preset/info", response_model=FilamentPresetInfo)
 async def get_filament_preset_info(
     source: str,
@@ -635,7 +770,7 @@ async def get_filament_preset_info(
     from backend.app.schemas.slicer import PresetRef
     from backend.app.services.preset_resolver import resolve_preset_ref
 
-    if source not in ("cloud", "local", "standard"):
+    if source not in ("cloud", "orca_cloud", "local", "standard"):
         raise HTTPException(400, f"Invalid source {source!r}")
     ref = PresetRef(source=source, id=id)  # type: ignore[arg-type]
     try:
@@ -677,7 +812,13 @@ async def get_slicer_health(
 
     Response shape:
 
-    - ``{healthy: true, version: "2.3.2"}`` when the sidecar replied 2xx.
+    - ``{healthy: true, version: "2.3.2", sidecar_version: 1,
+      sidecar_required: 1, sidecar_outdated: false}`` when the sidecar
+      replied 2xx. ``version`` is the SLICER's; ``sidecar_version`` is the
+      sidecar's own code version (None for an image that predates it) and
+      ``sidecar_outdated`` says it is older than this backend needs — the
+      slicer card then tells the operator to rebuild the containers. Such a
+      sidecar stays ``healthy``: it slices, as far as it can.
     - ``{healthy: false, error: "<message>", url: "..."}`` when the URL
       is empty, the sidecar is unreachable, or it replied non-2xx. URL
       is included so the modal can show "BambuStudio at <url> unreachable".
@@ -689,6 +830,7 @@ async def get_slicer_health(
 
     import httpx
 
+    from backend.app.services import slicer_api
     from backend.app.services.slicer_routing import resolve_sidecar_url, slicer_label
 
     chosen, api_url = await resolve_sidecar_url(db, slicer_override=slicer)
@@ -710,7 +852,15 @@ async def get_slicer_health(
         if response.status_code >= 200 and response.status_code < 300:
             body = response.json() if response.headers.get("content-type", "").startswith("application/json") else {}
             version = body.get("version") or body.get("checks", {}).get("orcaslicer", {}).get("version")
-            payload = {"healthy": True, "url": api_url, "version": version}
+            sidecar_version = slicer_api.sidecar_version_of(body)
+            payload = {
+                "healthy": True,
+                "url": api_url,
+                "version": version,
+                "sidecar_version": sidecar_version,
+                "sidecar_required": slicer_api.REQUIRED_SIDECAR_VERSION,
+                "sidecar_outdated": slicer_api.sidecar_is_outdated(sidecar_version),
+            }
         else:
             payload = {"healthy": False, "url": api_url, "error": f"sidecar returned HTTP {response.status_code}"}
     except httpx.RequestError as exc:

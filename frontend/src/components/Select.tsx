@@ -1,4 +1,18 @@
-import type { ReactNode, SelectHTMLAttributes } from 'react';
+import { Search } from 'lucide-react';
+import {
+  Children,
+  Fragment,
+  cloneElement,
+  isValidElement,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ReactElement,
+  type ReactNode,
+  type SelectHTMLAttributes,
+} from 'react';
 
 /**
  * The one dropdown field.
@@ -30,6 +44,29 @@ import type { ReactNode, SelectHTMLAttributes } from 'react';
  * because two utilities of one family are settled by Tailwind's emit order
  * rather than by the class attribute, so a base `min-w-0` might quietly win
  * over the call site's own minimum.
+ *
+ * ⚠️ `search` is the one case that is NOT a single element. A list of a
+ * thousand presets needs narrowing, and the answer that keeps the system
+ * picker is a text box that filters the `<option>`s of the same real
+ * `<select>`. Asked for, the field becomes a small group — the select, a
+ * search button beside it and, while searching, a box above — and `className`
+ * then sizes that group (the select fills it). Without `search` nothing
+ * changes: one `<select>`, as every other call site has it.
+ *
+ * Two limits of `search`, both by construction:
+ *
+ * - It narrows only what it can SEE: literal `<option>` / `<optgroup>`
+ *   children, and fragments of them. Options drawn by a component of the
+ *   caller's (`<MyOptions />`) are opaque to it — they are never narrowed and
+ *   every query reads "no matches". Build the options inline.
+ * - The option holding the current value always stays listed, because a
+ *   `<select>` whose chosen option disappears moves to another one WITHOUT a
+ *   `change` event. For a controlled field that value is the `value` prop; for
+ *   an uncontrolled one (`defaultValue`) it is read off the element when a
+ *   render begins and put back after it. Keep the field controlled where you
+ *   can: the list is narrowed around the value of the last render, so an
+ *   uncontrolled field whose value is changed by a script WHILE a query is
+ *   typed — without a render — may find that value's option not listed.
  */
 
 type SelectSize = 'xs' | 'sm' | 'md' | 'lg';
@@ -78,16 +115,33 @@ const FILTER_STATE = {
   off: 'bg-transparent text-bambu-gray border-bambu-dark-tertiary hover:bg-bambu-dark-tertiary',
 };
 
+/**
+ * The words of the search control. They are the caller's — this primitive has
+ * no translations of its own — and each names the control for a screen reader,
+ * so pass them already saying WHICH list ("Search printer profiles").
+ */
+export interface SelectSearch {
+  /** Accessible name of the search button and of the search box. */
+  label: string;
+  /** Hint inside the empty box. */
+  placeholder?: string;
+  /** Shown, and announced, when the query matches no option. */
+  noMatches: string;
+}
+
 type FieldProps = {
   size?: SelectSize;
   tone?: keyof typeof TONES;
   active?: never;
+  /** Turns the field into a searchable group; see the note above. */
+  search?: SelectSearch;
 };
 
 type FilterProps = {
   size?: never;
   tone: 'filter';
   active: boolean;
+  search?: never;
 };
 
 /**
@@ -97,7 +151,51 @@ type FilterProps = {
 type SelectProps = Omit<SelectHTMLAttributes<HTMLSelectElement>, 'size'> &
   (FieldProps | FilterProps) & { children: ReactNode };
 
-export function Select({ size, tone = 'sunken', active, className = '', children, ...props }: SelectProps) {
+/** Heights of the search button, so it lines up with the select beside it. */
+const SEARCH_BUTTON_SIZES: Record<SelectSize, string> = {
+  xs: 'h-6 w-6 rounded',
+  sm: 'h-8 w-8 rounded-lg min-h-[44px] min-w-[44px] md:min-h-0 md:min-w-0',
+  md: 'h-9 w-9 rounded-lg min-h-[44px] min-w-[44px] md:min-h-0 md:min-w-0',
+  lg: 'h-11 w-11 rounded-lg min-h-[48px] min-w-[48px] md:min-h-0 md:min-w-0',
+};
+
+type OptionProps = { value?: unknown; children?: ReactNode };
+
+function textOf(node: ReactNode): string {
+  if (node == null || typeof node === 'boolean') return '';
+  if (typeof node === 'string' || typeof node === 'number') return String(node);
+  if (Array.isArray(node)) return node.map(textOf).join('');
+  if (isValidElement(node)) return textOf((node.props as OptionProps).children);
+  return '';
+}
+
+/**
+ * The `<option>`s that survive a query, with their `<optgroup>`s; a group left
+ * empty goes. Search narrows what is LISTED, never what is chosen: the option
+ * holding the current value always stays, and so does a valueless placeholder.
+ * `matched` collects the values that matched by their text, in list order.
+ */
+function filterOptions(children: ReactNode, words: string[], current: string, matched: string[]): ReactNode {
+  return Children.map(children, (child) => {
+    if (!isValidElement(child)) return child;
+    const element = child as ReactElement<OptionProps>;
+    if (element.type === 'option') {
+      const value = String(element.props.value ?? textOf(element.props.children));
+      const text = textOf(element.props.children).toLowerCase();
+      const hit = value !== '' && words.every((word) => text.includes(word));
+      if (hit) matched.push(value);
+      return hit || value === '' || value === current ? child : null;
+    }
+    if (element.type === 'optgroup' || element.type === Fragment) {
+      const kept = filterOptions(element.props.children, words, current, matched);
+      if (element.type === Fragment) return kept;
+      return Children.count(kept) > 0 ? cloneElement(element, undefined, kept) : null;
+    }
+    return child;
+  });
+}
+
+export function Select({ size, tone = 'sunken', active, className = '', children, search, ...props }: SelectProps) {
   const baseStyles =
     'select-chevron border transition-colors focus:outline-none focus:border-bambu-green disabled:opacity-50 disabled:cursor-not-allowed';
 
@@ -106,9 +204,158 @@ export function Select({ size, tone = 'sunken', active, className = '', children
       ? `${FILTER_SHAPE} ${active ? FILTER_STATE.on : FILTER_STATE.off}`
       : `border-bambu-dark-tertiary ${TONES[tone]} ${SIZES[size ?? 'md']}`;
 
+  if (!search) {
+    return (
+      <select className={`${baseStyles} ${look} ${className}`} {...props}>
+        {children}
+      </select>
+    );
+  }
+
   return (
-    <select className={`${baseStyles} ${look} ${className}`} {...props}>
+    <SearchableSelect
+      search={search}
+      selectClassName={`${baseStyles} ${look}`}
+      buttonClassName={SEARCH_BUTTON_SIZES[size ?? 'md']}
+      className={className}
+      selectProps={props}
+    >
       {children}
-    </select>
+    </SearchableSelect>
+  );
+}
+
+function SearchableSelect({
+  search,
+  selectClassName,
+  buttonClassName,
+  className,
+  selectProps,
+  children,
+}: {
+  search: SelectSearch;
+  selectClassName: string;
+  buttonClassName: string;
+  className: string;
+  selectProps: Omit<SelectHTMLAttributes<HTMLSelectElement>, 'size' | 'className' | 'children'>;
+  children: ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const boxId = useId();
+  const selectRef = useRef<HTMLSelectElement>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const groupRef = useRef<HTMLDivElement>(null);
+
+  const words = open ? query.toLowerCase().split(/\s+/).filter(Boolean) : [];
+  const matched: string[] = [];
+  // The value whose option must stay listed. An uncontrolled field (no `value`
+  // prop) keeps it in the element, which exists by the time a search is open.
+  const elementValue = selectProps.value === undefined ? selectRef.current?.value : undefined;
+  const current =
+    selectProps.value !== undefined
+      ? String(selectProps.value ?? '')
+      : (elementValue ?? String(selectProps.defaultValue ?? ''));
+  const shown = words.length > 0 ? filterOptions(children, words, current, matched) : children;
+  // ⚠️ Narrowing re-creates the `<option>` elements (the narrowed list is keyed
+  // apart from the full one), and a `<select>` whose options are replaced falls
+  // back to its first one without a `change` event. React puts a controlled
+  // field's value back by itself; for an uncontrolled one it is put back here,
+  // to what the element held when this render began.
+  useLayoutEffect(() => {
+    const select = selectRef.current;
+    if (select && elementValue !== undefined && select.value !== elementValue) select.value = elementValue;
+  });
+  const noMatches = words.length > 0 && matched.length === 0;
+
+  const close = (returnFocus: boolean) => {
+    setOpen(false);
+    setQuery('');
+    // The box unmounts, which would leave focus on <body>.
+    if (returnFocus) buttonRef.current?.focus();
+  };
+
+  // Escape belongs to the search while it is open and the keyboard is anywhere
+  // in this field — the box, or the narrowed list below it. On `document`, and
+  // stopped there: every modal's Escape is ONE listener on `window`
+  // (`modalStack`), so a handler on the box itself would close the search AND
+  // the dialog around it.
+  useEffect(() => {
+    if (!open) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || !groupRef.current?.contains(document.activeElement)) return;
+      event.stopPropagation();
+      setOpen(false);
+      setQuery('');
+      buttonRef.current?.focus();
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [open]);
+
+  // Enter takes the first match. The choice goes through the real <select> —
+  // its value is set and a native `change` is dispatched — so the caller hears
+  // about it exactly as if the option had been picked from the list.
+  const pickFirst = () => {
+    const select = selectRef.current;
+    if (!select || matched.length === 0) return;
+    select.value = matched[0];
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+    close(false);
+    select.focus();
+  };
+
+  return (
+    <div ref={groupRef} className={`flex flex-col gap-1 ${className}`}>
+      {open && (
+        <input
+          id={boxId}
+          type="search"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              pickFirst();
+            } else if (e.key === 'ArrowDown') {
+              e.preventDefault();
+              selectRef.current?.focus();
+            }
+          }}
+          autoFocus
+          disabled={selectProps.disabled}
+          placeholder={search.placeholder}
+          aria-label={search.label}
+          className="w-full min-w-0 h-9 min-h-[44px] md:min-h-0 px-3 rounded-lg bg-bambu-dark border border-bambu-dark-tertiary text-white text-sm placeholder:text-bambu-gray focus:outline-none focus:border-bambu-green disabled:opacity-50"
+        />
+      )}
+      {/* Mounted with the box and only its text changes, so a screen reader
+          announces the moment a query stops matching. */}
+      {open && (
+        <p role="status" className={noMatches ? 'text-xs text-bambu-gray' : 'sr-only'}>
+          {noMatches ? search.noMatches : ''}
+        </p>
+      )}
+      <div className="flex items-stretch gap-1 min-w-0">
+        <select ref={selectRef} className={`flex-1 min-w-0 ${selectClassName}`} {...selectProps}>
+          {shown}
+        </select>
+        <button
+          ref={buttonRef}
+          type="button"
+          onClick={() => (open ? close(false) : setOpen(true))}
+          disabled={selectProps.disabled}
+          aria-label={search.label}
+          aria-expanded={open}
+          aria-controls={open ? boxId : undefined}
+          title={search.label}
+          className={`shrink-0 inline-flex items-center justify-center border border-bambu-dark-tertiary bg-bambu-dark transition-colors hover:text-white focus:outline-none focus:border-bambu-green disabled:opacity-50 disabled:cursor-not-allowed ${
+            open ? 'text-bambu-green' : 'text-bambu-gray'
+          } ${buttonClassName}`}
+        >
+          <Search className="w-4 h-4" aria-hidden />
+        </button>
+      </div>
+    </div>
   );
 }

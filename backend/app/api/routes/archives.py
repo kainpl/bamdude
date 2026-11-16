@@ -3582,8 +3582,13 @@ async def get_filament_requirements(
             # Sort by slot ID
             filaments.sort(key=lambda x: x["slot_id"])
 
-            # Enrich with nozzle mapping for dual-nozzle printers
-            nozzle_mapping = extract_nozzle_mapping_from_3mf(zf)
+            # Enrich with nozzle mapping for dual-nozzle printers — of the plate
+            # asked, else of the plate this archive printed: a multi-plate file
+            # may put the same slot on a different nozzle on each plate, and
+            # unscoped the last plate in the file won (upstream 19212d066).
+            nozzle_mapping = extract_nozzle_mapping_from_3mf(
+                zf, plate_id if plate_id is not None else archive.plate_index
+            )
             if nozzle_mapping:
                 for filament in filaments:
                     filament["nozzle_id"] = nozzle_mapping.get(filament["slot_id"])
@@ -4325,7 +4330,7 @@ async def slice_archive(
     """
     from pathlib import Path
 
-    from backend.app.api.routes.library import slice_and_persist_as_archive
+    from backend.app.api.routes.library import refuse_unsliceable_bed_type, slice_and_persist_as_archive
     from backend.app.core.database import async_session
     from backend.app.schemas.slicer import SliceRequest
     from backend.app.services.slice_dispatch import (
@@ -4337,6 +4342,7 @@ async def slice_archive(
         request = SliceRequest.model_validate(request_body)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    await refuse_unsliceable_bed_type(db, request)
 
     ingest_authority = await creds.capture()
     archive = await db.get(PrintArchive, archive_id)

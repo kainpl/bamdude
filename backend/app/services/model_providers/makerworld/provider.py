@@ -27,6 +27,7 @@ from backend.app.services.model_providers.makerworld import url as mw_url
 from backend.app.services.model_providers.makerworld.auth import (
     get_stored_token,
     mark_cloud_token_invalid,
+    renew_or_invalidate,
 )
 from backend.app.services.model_providers.makerworld.http import MAKERWORLD_CDN_HOSTS
 from backend.app.services.model_providers.makerworld.service import MakerWorldService
@@ -70,9 +71,10 @@ class MakerWorldProvider(ModelProvider):
 
         ``api_key_owner`` is the API key's owning user for API-keyed calls
         (see ``resolve_api_key_cloud_owner``); MakerWorld uses it as the
-        fallback identity when ``user`` is None. Like the cloud integration, a
-        rejected token is recorded so the whole app agrees the sign-in is dead
-        rather than each feature failing on its own. A caller without a selected
+        fallback identity when ``user`` is None. Like the cloud integration, an
+        expired token is renewed with the stored refresh token, and one that
+        cannot be renewed is recorded so the whole app agrees the sign-in is
+        dead rather than each feature failing on its own. A caller without a selected
         cloud owner gets only the provider's anonymous public metadata policy.
         """
         identity = user if user is not None else api_key_owner
@@ -90,7 +92,13 @@ class MakerWorldProvider(ModelProvider):
             client=client,
             auth_token=token,
             user=identity,
-            on_auth_failure=(lambda: mark_cloud_token_invalid(captured)) if captured is not None else None,
+            # Bambu's expiry 401: the seam first tries the stored refresh token
+            # (as the cloud routes do) and marks the sign-in dead only when
+            # that cannot renew it; a renewal that could not reach Bambu leaves
+            # the token alone.
+            on_auth_failure=(lambda: renew_or_invalidate(captured, mark_invalid=mark_cloud_token_invalid))
+            if captured is not None
+            else None,
             # The SSRF allowlists are the provider's declared seams — the
             # service must not hardcode its own copies (symmetric pair,
             # ``fetch_thumbnail`` / ``download``).

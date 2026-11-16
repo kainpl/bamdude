@@ -77,6 +77,8 @@ ALL_NOTIFY_EVENTS = [
     "plate_not_empty",
     "bed_cooled",
     "first_layer_complete",
+    # A heads-up before a slicer pause. Not in DEFAULT_NOTIFY_EVENTS: a chat asks for it.
+    "pause_coming_up",
     # Queue
     "queue_job_added",
     "queue_job_started",

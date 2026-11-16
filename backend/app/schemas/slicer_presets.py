@@ -53,6 +53,15 @@ class UnifiedPreset(BaseModel):
     # cloud / standard stubs, where the matcher falls back to bundle membership
     # then the ``@BBL <model> <nozzle>`` name convention.
     compatible_printers: list[str] | None = None
+    # Printer slot only: the NAME of the preset this one was saved from, for a
+    # preset that is not a system preset (upstream 3acc52d93, #3250). A printer
+    # preset saved under a name of its own ("Bambu Lab H2D 0.4 nozzle - Skew")
+    # is in no ``compatible_printers`` list and its name may not state a model;
+    # the slicer checks a process against this parent, and so does the dialog.
+    # ⚠️ ``None`` on a system preset even though its JSON has an ``inherits``:
+    # "Bambu Lab H2D 0.6 nozzle" inherits the 0.4 preset as file layout, and
+    # reading that as "saved from" would offer 0.4 processes to a 0.6 nozzle.
+    inherits: str | None = None
 
 
 class UnifiedPresetsBySlot(BaseModel):
@@ -100,3 +109,42 @@ class UnifiedPresetsResponse(BaseModel):
     standard: UnifiedPresetsBySlot = UnifiedPresetsBySlot()
     orca_cloud_status: CloudStatus = "ok"
     cloud_status: CloudStatus = "ok"
+
+
+class LoadedFilament(BaseModel):
+    """One filament loaded on an online printer — the SPOOL, never what the slot
+    was advertised as (see ``services/slice_loaded_filaments``)."""
+
+    kind: Literal["ams", "external"]
+    material: str
+    # The filament id of the spool's family, when BamDude knows a family by it.
+    family_id: str | None = None
+    # The source states only a material (no family, a Generic one, or a borrowed
+    # profile): presets of the same material type match it.
+    by_material: bool = False
+
+
+class OnlinePrinter(BaseModel):
+    printer_id: int
+    # Normalised short model ("X1C"); ``accepts`` are the file models this
+    # printer takes besides its own, from the mirrored printer configs.
+    model: str | None = None
+    accepts: list[str] = []
+    nozzle_diameters: list[float] = []
+    filaments: list[LoadedFilament] = []
+
+
+class FamilyPresetRefs(BaseModel):
+    """The presets that ARE one family, by the ``id`` each tier of
+    ``/slicer/presets`` lists them under."""
+
+    name: str
+    cloud: list[str] = []
+    orca_cloud: list[str] = []
+    local: list[str] = []
+    standard: list[str] = []
+
+
+class LoadedFilamentsResponse(BaseModel):
+    printers: list[OnlinePrinter] = []
+    families: dict[str, FamilyPresetRefs] = {}

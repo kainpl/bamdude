@@ -1922,7 +1922,9 @@ export function FileManagerPage() {
   // re-fetches everything it needs about them from `parts-preview`.
   const [planFiles, setPlanFiles] = useState<number[] | null>(null);
   const [assembleMode, setAssembleMode] = useState<AssembleMode | null>(null);
-  const [sliceFile, setSliceFile] = useState<LibraryFileListItem | null>(null);
+  // Only what the Slice dialog needs of a file: a row hands over itself, the
+  // "Assemble project" summary a file it has just written.
+  const [sliceFile, setSliceFile] = useState<Pick<LibraryFileListItem, 'id' | 'filename' | 'can_relayout'> | null>(null);
   const [renameItem, setRenameItem] = useState<{ type: 'file' | 'folder'; id: number; name: string } | null>(null);
   const [swapDeclarationFile, setSwapDeclarationFile] = useState<LibraryFileListItem | null>(null);
   const [thumbnailVersions, setThumbnailVersions] = useState<Record<number, number>>({});
@@ -4706,7 +4708,14 @@ export function FileManagerPage() {
 
       {sliceFile && (
         <SliceModal
-          source={{ kind: 'libraryFile', id: sliceFile.id, filename: sliceFile.filename }}
+          // An assembled file (the one the row offers "Re-layout" for) lets the
+          // dialog read which presets it was built from.
+          source={{
+            kind: 'libraryFile',
+            id: sliceFile.id,
+            filename: sliceFile.filename,
+            assembled: sliceFile.can_relayout === true,
+          }}
           onClose={() => setSliceFile(null)}
         />
       )}
@@ -4755,6 +4764,17 @@ export function FileManagerPage() {
             setSelectedFiles([id]);
             setAssembleMode(null);
           }}
+          onSliceFile={
+            // The file rows' own gate for in-app slicing: the sidecar is on and
+            // the user may write the sliced file. The same SliceModal opens —
+            // OVER the summary, which stays: an assembly can write several
+            // files and the others' "Slice" buttons must outlive the first
+            // slice, and closing the Slice dialog gives the focus back to the
+            // button that opened it instead of leaving it on <body>.
+            (settings?.use_slicer_api ?? false) && hasPermission('library:upload')
+              ? (id, filename) => setSliceFile({ id, filename, can_relayout: true })
+              : undefined
+          }
         />
       )}
 
