@@ -12507,7 +12507,7 @@ export default {
     name: 'Назва',
     type: 'Тип',
     size: 'Розмір',
-    folder: 'Тека',
+    folder: 'Папка',
     rootFolder: 'Корінь бібліотеки',
     addedBy: 'Додав',
     added: 'Додано',

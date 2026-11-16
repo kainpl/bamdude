@@ -11,6 +11,7 @@ import { render } from '../utils';
 import { server } from '../mocks/server';
 import { LibraryFileDetailsModal } from '../../components/LibraryFileDetailsModal';
 import { api, type LibraryFileListItem } from '../../api/client';
+import i18n from '../../i18n';
 
 const HASH = 'a3f5c9d2e1b40718293a4b5c6d7e8f90112233445566778899aabbccddeeff00';
 
@@ -250,6 +251,12 @@ describe('LibraryFileDetailsModal', () => {
     });
     fireEvent.keyDown(window, { key: 'Escape' });
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  // One word for a folder on this page: the File Manager says «папка» everywhere.
+  it('calls a folder what the rest of the File Manager calls it, in Ukrainian', () => {
+    expect(i18n.t('fileDetails.folder', { lng: 'uk' })).toBe('Папка');
+    expect(i18n.t('fileManager.newFolder', { lng: 'uk' })).toContain('папк');
   });
 
   it('is read-only for someone who may not edit the file', async () => {
