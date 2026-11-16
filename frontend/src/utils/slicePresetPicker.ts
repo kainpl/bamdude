@@ -205,6 +205,7 @@ export function pickFilamentForSlot(
   let bestCompatible: { ref: PresetRef; score: number } | null = null;
   let bestMismatch: { ref: PresetRef; score: number } | null = null;
   let bestWrongType: { ref: PresetRef; score: number } | null = null;
+  let bestWrongTypeMismatch: { ref: PresetRef; score: number } | null = null;
   for (const tier of SLICE_MODAL_TIER_ORDER) {
     for (const p of by[tier].filament) {
       let score = 0;
@@ -218,7 +219,15 @@ export function pickFilamentForSlot(
       score += TIER_BONUS[tier];
       const ref = { source: p.source, id: p.id };
       if (statesDifferentMaterial(p, reqType)) {
-        if (bestWrongType == null || score > bestWrongType.score) {
+        // Still split by printer (upstream 11013d59c, #3234): with no preset of
+        // the plate's material at all, a pick for another printer is refused
+        // by the slicer outright, so it must not beat one the selected printer
+        // can take.
+        if (presetCompatibility(p, 'filament', printerName, compatIndex) === 'mismatch') {
+          if (bestWrongTypeMismatch == null || score > bestWrongTypeMismatch.score) {
+            bestWrongTypeMismatch = { ref, score };
+          }
+        } else if (bestWrongType == null || score > bestWrongType.score) {
           bestWrongType = { ref, score };
         }
       } else if (presetCompatibility(p, 'filament', printerName, compatIndex) === 'mismatch') {
@@ -235,6 +244,7 @@ export function pickFilamentForSlot(
   // Nothing of the right material anywhere. Better a wrong-material preset the
   // user can see and change than a null the dialog renders as an empty slot.
   if (bestWrongType != null) return bestWrongType.ref;
+  if (bestWrongTypeMismatch != null) return bestWrongTypeMismatch.ref;
   // Final fallback when there are no filament presets at all (empty registry) —
   // pickDefault returns null in that case too, but keeping the call mirrors the
   // rest of the picker logic for shape consistency.
