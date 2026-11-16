@@ -699,3 +699,291 @@ class TestFetchThumbnail:
 
         with pytest.raises(MakerWorldUnavailableError):
             await service.fetch_thumbnail("https://makerworld.bblmw.com/makerworld/model/X/blob")
+
+
+def _zip_bytes(**members: str) -> bytes:
+    import io
+    import zipfile
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        for name, text in (members or {"3D/3dmodel.model": "<model/>"}).items():
+            archive.writestr(name, text)
+    return buffer.getvalue()
+
+
+def _json_response(status: int, body):
+    resp = MagicMock()
+    resp.status_code = status
+    resp.json.return_value = body
+    resp.text = ""
+    return resp
+
+
+class TestGetDownload:
+    """``get_download`` — "this plate → a signed 3MF link".
+
+    Since 2026-11-03 the iot-service profile endpoint answers 200 with an empty
+    ``url``; the link comes from the design-service instance endpoint (the
+    instance behind the profile), and the profile endpoint is asked only when
+    that gives none. Every answer here is hand-built — no live MakerWorld."""
+
+    _DESIGN = "https://api.bambulab.com/v1/design-service/design/1400373"
+    _INSTANCES = "https://api.bambulab.com/v1/design-service/design/1400373/instances"
+    _PROFILE = "https://api.bambulab.com/v1/iot-service/api/user/profile/{}"
+    _INSTANCE = "https://api.bambulab.com/v1/design-service/instance/{}/f3mf"
+    _LINK = "https://makerworld.bblmw.com/makerworld/model/X/Y/f.3mf?exp=1&key=k"
+
+    def _service(self, answers: dict, *, token: str | None = "tok-abc") -> MakerWorldService:
+        """A service whose HTTP client answers by URL; an unlisted URL fails the test."""
+        svc = MakerWorldService(client=MagicMock(spec=httpx.AsyncClient), auth_token=token)
+        self.calls: list[tuple[str, dict | None, dict]] = []
+
+        async def get(url, **kwargs):
+            self.calls.append((url, kwargs.get("params"), kwargs.get("headers") or {}))
+            if url not in answers:
+                raise AssertionError(f"unexpected request: {url}")
+            return answers[url]
+
+        svc._client.get = AsyncMock(side_effect=get)
+        return svc
+
+    def _design(self, **overrides):
+        design = {
+            "id": 1400373,
+            "modelId": "US2bb73b106683e5",
+            "instances": [
+                {"id": 4027999, "profileId": 298919000, "title": "6 cells"},
+                {"id": 4028000, "profileId": 298919107, "title": "9 cells"},
+            ],
+        }
+        design.update(overrides)
+        return design
+
+    @staticmethod
+    def _ref(profile: int | None = 298919107):
+        from backend.app.services.model_providers.base import ProviderResourceRef
+
+        return ProviderResourceRef(
+            source_type="makerworld", external_id="1400373", sub_id=str(profile) if profile else None
+        )
+
+    def _urls(self) -> list[str]:
+        return [call[0] for call in self.calls]
+
+    @pytest.mark.asyncio
+    async def test_the_link_comes_from_the_instance_behind_the_named_plate(self):
+        """Several files: the plate asked names its own instance, not the first."""
+        svc = self._service(
+            {
+                self._DESIGN: _json_response(200, self._design()),
+                self._INSTANCE.format(4028000): _json_response(
+                    200, {"name": "benchy.3mf", "url": self._LINK, "highCompression": False}
+                ),
+            }
+        )
+
+        info = await svc.get_download(self._ref())
+
+        assert info.url == self._LINK
+        assert info.suggested_filename == "benchy.3mf"
+        assert info.ref.sub_id == "298919107"
+        # The dead profile endpoint and the other plate's instance were never asked.
+        assert self._urls() == [self._DESIGN, self._INSTANCE.format(4028000)]
+        _url, params, headers = self.calls[-1]
+        assert params == {"type": "download"}
+        assert headers["Authorization"] == "Bearer tok-abc"
+        assert headers["User-Agent"].startswith("BamDude/")
+
+    @pytest.mark.asyncio
+    async def test_without_a_named_plate_the_first_one_and_its_instance_are_used(self):
+        svc = self._service(
+            {
+                self._DESIGN: _json_response(200, self._design()),
+                self._INSTANCE.format(4027999): _json_response(200, {"name": "a.3mf", "url": self._LINK}),
+            }
+        )
+
+        info = await svc.get_download(self._ref(None))
+
+        assert info.ref.sub_id == "298919000"
+        assert info.url == self._LINK
+
+    @pytest.mark.asyncio
+    async def test_the_instance_is_found_in_the_instances_list_when_the_design_does_not_name_it(self):
+        svc = self._service(
+            {
+                self._DESIGN: _json_response(200, self._design(instances=[])),
+                self._INSTANCES: _json_response(200, {"total": 1, "hits": [{"id": 77, "profileId": 298919107}]}),
+                self._INSTANCE.format(77): _json_response(200, {"name": "a.3mf", "url": self._LINK}),
+            }
+        )
+
+        info = await svc.get_download(self._ref())
+
+        assert info.url == self._LINK
+
+    @pytest.mark.asyncio
+    async def test_a_design_without_a_model_id_still_downloads_through_its_instance(self):
+        """The alphanumeric modelId is only the old endpoint's need."""
+        design = self._design()
+        del design["modelId"]
+        svc = self._service(
+            {
+                self._DESIGN: _json_response(200, design),
+                self._INSTANCE.format(4028000): _json_response(200, {"name": "a.3mf", "url": self._LINK}),
+            }
+        )
+
+        assert (await svc.get_download(self._ref())).url == self._LINK
+
+    @pytest.mark.asyncio
+    async def test_an_instance_answer_with_an_empty_link_falls_back_to_the_profile_endpoint(self):
+        svc = self._service(
+            {
+                self._DESIGN: _json_response(200, self._design()),
+                self._INSTANCE.format(4028000): _json_response(200, {"name": "a.3mf", "url": ""}),
+                self._PROFILE.format(298919107): _json_response(200, {"name": "old.3mf", "url": self._LINK}),
+            }
+        )
+
+        info = await svc.get_download(self._ref())
+
+        assert info.url == self._LINK
+        assert info.suggested_filename == "old.3mf"
+        assert self.calls[-1][1] == {"model_id": "US2bb73b106683e5"}
+
+    @pytest.mark.asyncio
+    async def test_no_instance_for_the_plate_falls_back_to_the_profile_endpoint(self):
+        svc = self._service(
+            {
+                self._DESIGN: _json_response(200, self._design(instances=[{"profileId": 298919107}])),
+                self._INSTANCES: _json_response(200, {"hits": []}),
+                self._PROFILE.format(298919107): _json_response(200, {"name": "old.3mf", "url": self._LINK}),
+            }
+        )
+
+        assert (await svc.get_download(self._ref())).url == self._LINK
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("link", ["", None, 17])
+    async def test_no_link_from_either_endpoint_is_an_unavailable_makerworld(self, link):
+        """What every import met since 2026-11-03: 200 "success" and no link."""
+        svc = self._service(
+            {
+                self._DESIGN: _json_response(200, self._design()),
+                self._INSTANCE.format(4028000): _json_response(200, {"name": "a.3mf", "url": link}),
+                self._PROFILE.format(298919107): _json_response(200, {"name": "a.3mf", "url": link}),
+            }
+        )
+
+        with pytest.raises(MakerWorldUnavailableError, match="MakerWorld did not return a download URL"):
+            await svc.get_download(self._ref())
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "link",
+        ["http://makerworld.bblmw.com/makerworld/model/X/f.3mf", "ftp://makerworld.bblmw.com/f.3mf", "//x/f.3mf"],
+    )
+    async def test_a_link_that_is_not_https_is_an_unavailable_makerworld(self, link):
+        svc = self._service(
+            {
+                self._DESIGN: _json_response(200, self._design()),
+                self._INSTANCE.format(4028000): _json_response(200, {"name": "a.3mf", "url": link}),
+            }
+        )
+
+        with pytest.raises(MakerWorldUnavailableError, match="not an HTTPS link"):
+            await svc.get_download(self._ref())
+
+    @pytest.mark.asyncio
+    async def test_a_refusal_from_the_instance_is_reported_as_is(self):
+        """403 (a paid or region-locked model): no second try on the old endpoint."""
+        refusal = _json_response(403, {"error": "Please log in to download models."})
+        svc = self._service(
+            {self._DESIGN: _json_response(200, self._design()), self._INSTANCE.format(4028000): refusal}
+        )
+
+        with pytest.raises(MakerWorldForbiddenError):
+            await svc.get_download(self._ref())
+        assert self._PROFILE.format(298919107) not in self._urls()
+
+    @pytest.mark.asyncio
+    async def test_an_expired_sign_in_at_the_instance_is_recorded(self):
+        on_auth_failure = AsyncMock()
+        svc = self._service(
+            {
+                self._DESIGN: _json_response(200, self._design()),
+                self._INSTANCE.format(4028000): _json_response(401, _EXPIRY_BODY),
+            }
+        )
+        svc._on_auth_failure = on_auth_failure
+
+        with pytest.raises(MakerWorldAuthError) as excinfo:
+            await svc.get_download(self._ref())
+
+        assert str(excinfo.value) == _SIGN_IN_EXPIRED_MESSAGE
+        on_auth_failure.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_an_html_answer_from_the_instance_is_an_unavailable_makerworld(self):
+        page = MagicMock()
+        page.status_code = 200
+        page.json.side_effect = ValueError("not json")
+        svc = self._service({self._DESIGN: _json_response(200, self._design()), self._INSTANCE.format(4028000): page})
+
+        with pytest.raises(MakerWorldUnavailableError):
+            await svc.get_download(self._ref())
+
+    @pytest.mark.asyncio
+    async def test_the_download_needs_a_sign_in(self):
+        svc = self._service({self._DESIGN: _json_response(200, self._design())}, token=None)
+
+        with pytest.raises(MakerWorldAuthError):
+            await svc.get_download(self._ref())
+
+
+class TestADownloadIsA3mf:
+    """Only the status code was checked: a truncated body or an error page
+    served with 200 reached the library's file preparation and came back as an
+    anonymous 500."""
+
+    @staticmethod
+    def _info(url: str = "https://makerworld.bblmw.com/f.3mf"):
+        from backend.app.services.model_providers.base import ProviderDownloadInfo, ProviderResourceRef
+
+        return ProviderDownloadInfo(
+            ref=ProviderResourceRef(source_type="makerworld", external_id="1"),
+            url=url,
+            suggested_filename="f.3mf",
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "body",
+        [b"", b"<html>Access denied</html>", b"PK\x03\x04truncated", _zip_bytes()[:-30]],
+        ids=["empty", "html", "zip-magic-only", "truncated-zip"],
+    )
+    async def test_a_body_that_is_not_a_zip_is_refused(self, body):
+        svc = MakerWorldService(client=MagicMock(spec=httpx.AsyncClient))
+        svc.download_3mf = AsyncMock(return_value=(body, "f.3mf"))
+
+        with pytest.raises(MakerWorldUnavailableError, match="MakerWorld sent a file that is not a valid 3MF"):
+            await svc.download(self._info())
+
+    @pytest.mark.asyncio
+    async def test_a_zip_is_returned(self):
+        payload = _zip_bytes()
+        svc = MakerWorldService(client=MagicMock(spec=httpx.AsyncClient))
+        svc.download_3mf = AsyncMock(return_value=(payload, "f.3mf"))
+
+        assert (await svc.download(self._info())).file_bytes == payload
+
+    @pytest.mark.asyncio
+    async def test_a_link_to_another_host_is_never_fetched(self):
+        svc = MakerWorldService(client=MagicMock(spec=httpx.AsyncClient))
+        svc._client.stream = MagicMock()
+
+        with pytest.raises(MakerWorldUrlError):
+            await svc.download(self._info("https://evil.example.com/f.3mf"))
+        svc._client.stream.assert_not_called()

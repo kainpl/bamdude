@@ -450,9 +450,10 @@ async def import_instance(
             external_id=str(body.model_id),
             sub_id=str(body.profile_id) if body.profile_id else None,
         )
-        # MakerWorld's iot-service needs the alphanumeric modelId and a plate;
-        # ``get_download`` resolves both (the first plate when none was named)
-        # and hands the chosen one back in ``info.ref``.
+        # Finding the download link (the instance behind the plate, or the old
+        # profile endpoint with the alphanumeric modelId as a fallback) and
+        # picking the first plate when none was named live in ``get_download``,
+        # which hands the chosen plate back in ``info.ref``.
         try:
             info = await service.get_download(ref)
         except ProviderError as exc:
@@ -505,6 +506,11 @@ async def import_instance(
         # Prefer the server-provided human-readable filename; the signed URL's
         # path ends in a UUID that's not meaningful to users.
         filename = suggested_name if suggested_name.endswith(".3mf") else unquote(download.filename)
+        # ``download`` has proven the bytes are a 3MF container, and the
+        # library decides a file's type by its name: a name without the ending
+        # would store them as a file of some other type, unread.
+        if not filename.lower().endswith(".3mf"):
+            filename = f"{os.path.basename(filename) or f'makerworld-{body.model_id}'}.3mf"
 
         result = await save_3mf_bytes_to_library(
             db,
