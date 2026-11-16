@@ -220,6 +220,38 @@ describe('LibraryFileDetailsModal', () => {
     await waitFor(() => expect(upload).toHaveBeenCalledWith(7, dropped));
   });
 
+  it('cannot be closed while photos are being sent, so their outcome is never lost', async () => {
+    let finish: (error?: Error) => void = () => {};
+    vi.spyOn(api, 'uploadLibraryFilePhoto').mockImplementation(
+      () =>
+        new Promise((resolve, reject) => {
+          finish = (error) => (error ? reject(error) : resolve({} as never));
+        }),
+    );
+    serve(detail());
+    const onClose = vi.fn();
+    render(<LibraryFileDetailsModal file={listed} canEdit onClose={onClose} />);
+    const dialog = await screen.findByRole('dialog', { name: 'File details' });
+    await within(dialog).findByText('No photos yet.');
+
+    await userEvent.upload(within(dialog).getByLabelText('Add photos'), new File(['bytes'], 'a.jpg', { type: 'image/jpeg' }));
+    await within(dialog).findByRole('status');
+
+    // Neither the X, nor the footer's Close, nor Escape.
+    for (const button of within(dialog).getAllByRole('button', { name: 'Close' })) expect(button).toBeDisabled();
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(onClose).not.toHaveBeenCalled();
+
+    // The refusal arrives and is shown where the operator still is.
+    finish(new Error('The photo must be a PNG, JPEG or WebP picture'));
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent('The photo must be a PNG, JPEG or WebP picture');
+    await waitFor(() => {
+      for (const button of within(dialog).getAllByRole('button', { name: 'Close' })) expect(button).toBeEnabled();
+    });
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
   it('is read-only for someone who may not edit the file', async () => {
     serve(detail({ external_url: 'https://example.com/a' }));
     const dialog = await show(false);

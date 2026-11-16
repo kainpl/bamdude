@@ -32,6 +32,12 @@ interface Props {
   canEdit: boolean;
   /** Where dropped files are taken — the gallery itself when absent. */
   dropZoneRef?: RefObject<HTMLElement | null>;
+  /**
+   * Told when photos start and stop being sent. The dialog that holds the
+   * gallery does not close meanwhile: the files go one request each, and a
+   * refusal of the third is shown here — to nobody, if the dialog is gone.
+   */
+  onBusyChange?: (busy: boolean) => void;
 }
 
 interface Refusal {
@@ -86,7 +92,7 @@ function PhotoCaption({ photo, onSave }: { photo: LibraryFilePhoto; onSave: (cap
   );
 }
 
-export function LibraryFilePhotos({ fileId, canEdit, dropZoneRef }: Props) {
+export function LibraryFilePhotos({ fileId, canEdit, dropZoneRef, onBusyChange }: Props) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const inputRef = useRef<HTMLInputElement>(null);
@@ -96,6 +102,11 @@ export function LibraryFilePhotos({ fileId, canEdit, dropZoneRef }: Props) {
   const [confirming, setConfirming] = useState<number | null>(null);
   const [viewing, setViewing] = useState<LibraryFilePhoto | null>(null);
   const [dragging, setDragging] = useState(false);
+
+  const uploading = progress !== null;
+  useEffect(() => {
+    onBusyChange?.(uploading);
+  }, [uploading, onBusyChange]);
 
   const { data: photos, isLoading } = useQuery({
     queryKey: ['library-file-photos', fileId],

@@ -66,6 +66,8 @@ export function LibraryFileDetailsModal({ file, canEdit, onClose, timeFormat, da
   const savedLink = data?.external_url ?? null;
   // The whole body takes dropped photos, not only the gallery at its foot.
   const bodyRef = useRef<HTMLDivElement>(null);
+  // Photos are being sent: the dialog stays until every file has its answer.
+  const [sendingPhotos, setSendingPhotos] = useState(false);
   const [draft, setDraft] = useState('');
   const [touched, setTouched] = useState(false);
   // The box follows the saved link until the operator types in it.
@@ -94,12 +96,13 @@ export function LibraryFileDetailsModal({ file, canEdit, onClose, timeFormat, da
   return (
     <Modal
       onClose={onClose}
+      closeDisabled={sendingPhotos}
       title={t('fileDetails.title')}
       icon={<Info className="h-5 w-5 text-bambu-green" />}
       size="lg"
       footer={
         <div className="flex justify-end">
-          <Button variant="secondary" onClick={onClose}>
+          <Button variant="secondary" onClick={onClose} disabled={sendingPhotos}>
             {t('common.close')}
           </Button>
         </div>
@@ -198,7 +201,7 @@ export function LibraryFileDetailsModal({ file, canEdit, onClose, timeFormat, da
         )}
 
         <div className="border-t border-bambu-dark-tertiary pt-4">
-          <LibraryFilePhotos fileId={file.id} canEdit={canEdit} dropZoneRef={bodyRef} />
+          <LibraryFilePhotos fileId={file.id} canEdit={canEdit} dropZoneRef={bodyRef} onBusyChange={setSendingPhotos} />
         </div>
       </div>
     </Modal>
