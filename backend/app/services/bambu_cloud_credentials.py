@@ -17,6 +17,7 @@ able to renew it without importing a router. Storing a fresh sign-in stays in
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from sqlalchemy import select
@@ -129,6 +130,81 @@ async def _persist_renewed(captured, access_token: str, refresh_token: str | Non
         return None
 
 
+# One renewal at a time per credential. Every consumer of the stored sign-in
+# renews an expired access token, several of them at once (the Slice dialog),
+# and Bambu honours a refresh token once: without this the callers that lost
+# the race were refused and reported — or recorded — "expired" for a sign-in
+# another caller had just renewed. The lock is keyed by the credential's
+# identity; what a renewal settled is remembered per snapshot, so a caller
+# that waited uses the stored pair instead of asking Bambu again.
+_REFUSED = object()
+_RENEWAL_MEMORY = 8
+_renewal_locks: dict[tuple, tuple[object, asyncio.Lock]] = {}
+_renewal_outcomes: dict[tuple, dict[tuple, object]] = {}
+
+
+def _renewal_identity(captured) -> tuple:
+    from backend.app.services.cloud_credentials import CredentialSnapshot
+
+    if isinstance(captured, CredentialSnapshot):
+        return (captured.account_identity, captured.provider)
+    return ("unidentified",)
+
+
+def _renewal_lock(identity: tuple) -> asyncio.Lock:
+    loop = asyncio.get_running_loop()
+    held = _renewal_locks.get(identity)
+    if held is None or held[0] is not loop:
+        held = _renewal_locks[identity] = (loop, asyncio.Lock())
+    return held[1]
+
+
+def _remember_renewal(captured, outcome) -> None:
+    """What became of the credential ``captured`` names: its renewed snapshot, or ``_REFUSED``."""
+    settled = _renewal_outcomes.setdefault(_renewal_identity(captured), {})
+    settled[captured.namespace] = outcome
+    while len(settled) > _RENEWAL_MEMORY:
+        settled.pop(next(iter(settled)))
+
+
+def _settled_renewal(captured):
+    """The newest snapshot an earlier renewal of ``captured`` led to, ``_REFUSED``, or None."""
+    settled = _renewal_outcomes.get(_renewal_identity(captured), {})
+    found = None
+    for _ in range(_RENEWAL_MEMORY):
+        following = settled.get((found or captured).namespace)
+        if following is None:
+            break
+        found = following
+        if found is _REFUSED:
+            break
+    return found
+
+
+async def _adopt_renewed(renewed, cloud):
+    """Use the pair another caller's renewal stored — nothing is asked of Bambu.
+
+    Returns the ``RENEWED`` answer, or None when that pair is no longer the
+    stored one (a logout, a new sign-in or a restore came after it).
+    """
+    from backend.app.core.database import async_session
+    from backend.app.services.bambu_cloud import RENEWED
+    from backend.app.services.cloud_credentials import current
+
+    async with async_session() as db:
+        if not await current(db, renewed):
+            return None
+        owner = await db.get(User, renewed.user_id) if renewed.user_id is not None else None
+        token, _email, _region = await get_stored_token(db, owner)
+        refresh = await get_stored_refresh_token(db, owner)
+    if not token:
+        return None
+    if cloud is not None:
+        cloud.set_token(token)
+        cloud.set_refresh_token(refresh)
+    return RENEWED, token, renewed
+
+
 async def renew_or_invalidate(captured, cloud=None, *, mark_invalid=None):
     """Bambu answered its expiry 401: renew the access token, else record it dead.
 
@@ -148,15 +224,36 @@ async def renew_or_invalidate(captured, cloud=None, *, mark_invalid=None):
     * ``None`` — not renewable (no refresh token, or Bambu refused it): the
       token is marked invalid through :func:`mark_cloud_token_invalid`.
 
+    One renewal runs at a time per credential. A caller that waited for
+    another caller's renewal of the same stored pair gets ``RENEWED`` with the
+    pair that renewal stored — Bambu is not asked again, and nothing is marked.
+
     ``mark_invalid`` lets a caller supply the marker it was built with.
     """
+    async with _renewal_lock(_renewal_identity(captured)):
+        return await _renew_or_invalidate(captured, cloud, mark_invalid or mark_cloud_token_invalid)
+
+
+async def _renew_or_invalidate(captured, cloud, mark_invalid):
     from backend.app.services.bambu_cloud import RENEW_UNREACHABLE, RENEWED, BambuCloudService
     from backend.app.services.cloud_credentials import CredentialSnapshot, current
 
-    mark_invalid = mark_invalid or mark_cloud_token_invalid
+    identified = isinstance(captured, CredentialSnapshot)
+    if identified:
+        settled = _settled_renewal(captured)
+        if settled is _REFUSED:
+            # Bambu already refused this very refresh token; asking again
+            # changes nothing. The mark is a compare-and-set, so it lands once.
+            await mark_invalid(captured)
+            return None, None, None
+        if settled is not None:
+            # Another caller renewed this sign-in while we waited. If its pair
+            # was replaced since (logout, new sign-in), this old expiry says
+            # nothing about the replacement: nothing is spent and nothing marked.
+            return await _adopt_renewed(settled, cloud) or (None, None, None)
     owned = None
     try:
-        if cloud is None and isinstance(captured, CredentialSnapshot):
+        if cloud is None and identified:
             from backend.app.core.database import async_session
 
             async with async_session() as db:
@@ -180,6 +277,8 @@ async def renew_or_invalidate(captured, cloud=None, *, mark_invalid=None):
                 renewed = False
             if renewed:
                 stored = await _persist_renewed(captured, cloud.access_token, cloud.refresh_token)
+                if stored is not None:
+                    _remember_renewal(captured, stored)
                 return RENEWED, cloud.access_token, stored
             if getattr(cloud, "last_refresh_failure", None) == RENEW_UNREACHABLE:
                 return RENEW_UNREACHABLE, None, None
@@ -187,6 +286,8 @@ async def renew_or_invalidate(captured, cloud=None, *, mark_invalid=None):
         if owned is not None:
             await owned.close()
     await mark_invalid(captured)
+    if identified:
+        _remember_renewal(captured, _REFUSED)
     return None, None, None
 
 
