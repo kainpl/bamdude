@@ -2800,6 +2800,7 @@ def printer_state_to_dict(
     """
     from backend.app.services.layer_projection import resolve_layer_pair
     from backend.app.services.mqtt_recorder import mqtt_recorder
+    from backend.app.services.pause_forecast import next_pause
 
     layer_pair = layer_pair or resolve_layer_pair(printer_manager, printer_id, state)
     raw_data = state.raw_data or {}
@@ -2834,6 +2835,8 @@ def printer_state_to_dict(
         "layer_num": layer_pair.layer_num,
         "total_layers": layer_pair.total_layers,
         "total_layers_source": layer_pair.source,
+        # The next slicer pause of the proven run, from memory; None when unknown.
+        "next_pause": next_pause(printer_manager, printer_id),
         "temperatures": temperatures,
         # Same shape as the REST HMSErrorResponse — the HMS modal renders its
         # action buttons (and submits them with full_code/job_id) from whichever

@@ -2792,7 +2792,11 @@ async def _broadcast_printer_status_projection(printer_id: int, state=None, *, d
     if state is None:
         return
     pair = resolve_layer_pair(printer_manager, printer_id, state)
-    key = (_printer_status_effect_key(state), pair)
+    # The next slicer pause appears when the print's file has been analysed, and
+    # nothing else in this key moves then.
+    from backend.app.services.pause_forecast import forecast_next_pause
+
+    key = (_printer_status_effect_key(state), pair, forecast_next_pause(printer_manager, printer_id))
     if deduplicate and _last_projection_broadcast.get(printer_id) == key:
         return
     payload = printer_state_to_dict(

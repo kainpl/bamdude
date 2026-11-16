@@ -492,6 +492,17 @@ class ModelCompatibilityResponse(BaseModel):
     models: dict[str, list[str]]
 
 
+class NextPauseResponse(BaseModel):
+    """The next pause the slicer put into the running print (``services/pause_forecast``).
+
+    ``minutes`` is an estimate given only at Standard speed for a file that carries
+    time markers; otherwise only the layer is known.
+    """
+
+    layer: int
+    minutes: int | None = None
+
+
 class PrinterStatus(BaseModel):
     id: int
     name: str
@@ -509,6 +520,8 @@ class PrinterStatus(BaseModel):
     layer_num: int | None = None
     total_layers: int | None = None
     total_layers_source: Literal["mqtt", "file", "unknown"] = "unknown"
+    # Absent (None) whenever it is not known: no file, no proven run, not RUNNING, no pause ahead.
+    next_pause: NextPauseResponse | None = None
     temperatures: dict | None = None
     cover_url: str | None = None
     hms_errors: list[HMSErrorResponse] = []

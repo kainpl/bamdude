@@ -1469,6 +1469,7 @@ async def _build_printer_status(
         )
 
     from backend.app.services.layer_projection import resolve_layer_pair
+    from backend.app.services.pause_forecast import next_pause
 
     layers = resolve_layer_pair(printer_manager, printer_id, state)
     return PrinterStatus(
@@ -1488,6 +1489,7 @@ async def _build_printer_status(
         layer_num=layers.layer_num,
         total_layers=layers.total_layers,
         total_layers_source=layers.source,
+        next_pause=next_pause(printer_manager, printer_id),
         temperatures=temperatures,
         cover_url=cover_url,
         hms_errors=hms_errors,
