@@ -765,14 +765,18 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
     }
   });
   const [bedTypeNote, setBedTypeNote] = useState<BedTypeNote | null>(null);
-  useEffect(() => {
+  // The remembered plate is the one somebody CHOSE — picked in the field or
+  // applied from saved settings. The switch the dialog itself makes for Bambu
+  // Studio is not written: a Textured Cool Plate remembered for OrcaSlicer is
+  // still the starting plate of the next OrcaSlicer dialog.
+  const rememberBedType = (chosen: BedType) => {
     if (typeof localStorage === 'undefined') return;
     try {
-      localStorage.setItem('bamdude:slice-modal:bed-type', bedType);
+      localStorage.setItem('bamdude:slice-modal:bed-type', chosen);
     } catch {
       /* private mode / quota — silently skip */
     }
-  }, [bedType]);
+  };
   // When the owner filter narrows the visible set, any current selection
   // that no longer matches must drop to null — otherwise the dropdown
   // would render an out-of-section value the user can no longer see in
@@ -917,6 +921,18 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
     setBedTypeNote({ kind: 'reset', bed: bedType });
     setBedType(DEFAULT_BED_TYPE);
   }, [sliceSlicer, bedType]);
+  // Both slicer notes are about Bambu Studio lacking a plate. Once OrcaSlicer
+  // is the slicer neither sentence is true: the note goes, and a plate the
+  // dialog took away is put back (nobody chose its replacement — a pick by
+  // hand clears the note first). A plate saved settings named and Bambu Studio
+  // lacked is not applied after the fact; applying the settings again does it.
+  useEffect(() => {
+    if (sliceSlicer !== 'orcaslicer' || bedTypeNote == null || bedTypeNote.kind === 'unknown') return;
+    if (bedTypeNote.kind === 'reset' && (ALLOWED_BED_TYPES as string[]).includes(bedTypeNote.bed)) {
+      setBedType(bedTypeNote.bed as BedType);
+    }
+    setBedTypeNote(null);
+  }, [sliceSlicer, bedTypeNote]);
   // Persist user's pick across modal opens.
   useEffect(() => {
     if (pickedSlicer == null || typeof localStorage === 'undefined') return;
@@ -1446,8 +1462,13 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
       } else {
         if (picked.bed_type !== bedType) changed.push(t('slice.bedType.label', 'Bed plate'));
         setBedType(picked.bed_type as BedType);
+        rememberBedType(picked.bed_type as BedType);
         setBedTypeNote(null);
       }
+    } else if (bedTypeNote && bedTypeNote.kind !== 'reset') {
+      // These settings name no plate: what earlier ones said about theirs is
+      // not about this selection any more.
+      setBedTypeNote(null);
     }
     // Computed from current state rather than inside a setState updater —
     // the updater can run twice (StrictMode) and runs after this function
@@ -1771,6 +1792,7 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
               onChange={(next) => {
                 setBedTypeNote(null);
                 setBedType(next);
+                rememberBedType(next);
               }}
               disabled={isEnqueuing || useEmbedded}
               slicer={sliceSlicer}
