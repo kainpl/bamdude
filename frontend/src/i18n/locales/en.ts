@@ -12193,6 +12193,8 @@ export default {
     zoomIn: 'Zoom in',
     zoomOut: 'Zoom out',
     resetZoom: 'Reset zoom',
+    fullscreen: 'Fullscreen',
+    exitFullscreen: 'Exit fullscreen',
     imageFailed: 'This image could not be loaded.',
     imageTooLarge: 'This image is too large to preview. Download it to open it.'
   },

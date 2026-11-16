@@ -6,6 +6,8 @@ import { Modal } from './Modal';
 import { ModelViewer } from './ModelViewer';
 import { GcodePreview } from './GcodePreview';
 import { Button } from './Button';
+import { FullscreenButton } from './FullscreenButton';
+import { useElementFullscreen } from '../hooks/useElementFullscreen';
 import { api, withMediaToken } from '../api/client';
 import { desktopSlicersFor, openInSlicer, type SlicerType, isApiSliceableFileType } from '../utils/slicer';
 import { useTheme } from '../contexts/ThemeContext';
@@ -156,6 +158,13 @@ export function ModelViewerModal({ archiveId, libraryFileId, title, fileType, ar
   const [selectedPlateId, setSelectedPlateId] = useState<number | null>(null);
   const [platePage, setPlatePage] = useState(0);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  // Real fullscreen (the Fullscreen API), beside "fill the window" above: it
+  // takes the VIEWER — tabs and stage — not the panel. The header stays out on
+  // purpose: its buttons open dialogs, and a dialog portalled into `body` is
+  // not part of what fullscreen shows.
+  const viewerRef = useRef<HTMLDivElement>(null);
+  const fullscreenToggleRef = useRef<HTMLButtonElement>(null);
+  const realFullscreen = useElementFullscreen(viewerRef, fullscreenToggleRef);
   const [platePanelHeight, setPlatePanelHeight] = useState<number | null>(null);
   const [isDraggingDivider, setIsDraggingDivider] = useState(false);
   const [hasCustomSplit, setHasCustomSplit] = useState(false);
@@ -530,6 +539,10 @@ export function ModelViewerModal({ archiveId, libraryFileId, title, fileType, ar
         </div>
       }
     >
+      <div
+        ref={viewerRef}
+        className={`flex min-h-0 flex-1 flex-col ${realFullscreen.active ? 'bg-bambu-dark-secondary' : ''}`}
+      >
       {/* Tabs — only render the ones the file actually supports.
           Hides the 3D tab on raw .gcode (no mesh) and the G-code tab
           on unsliced .3mf / .stl / .obj / .step. The whole bar only
@@ -568,9 +581,10 @@ export function ModelViewerModal({ archiveId, libraryFileId, title, fileType, ar
               drawn against what's reported. Useful for debugging A1
               mini / H2D rendering and as plain "what bed is this
               for" UX sanity. */}
+          <div className="ml-auto flex items-center gap-2 pr-2">
           {(activeTab === '3d' || activeTab === 'gcode') && (
             <span
-              className="ml-auto mr-4 text-xs text-bambu-gray font-mono whitespace-nowrap"
+              className="mr-2 text-xs text-bambu-gray font-mono whitespace-nowrap"
               title={t('modelViewer.buildVolumeTooltip', { defaultValue: 'Build volume drawn under the preview' })}
             >
               {t('modelViewer.buildVolumeLabel', { defaultValue: 'Bed' })}{' '}
@@ -578,6 +592,12 @@ export function ModelViewerModal({ archiveId, libraryFileId, title, fileType, ar
               {t('modelViewer.buildVolumeUnit', { defaultValue: 'mm' })}
             </span>
           )}
+          <FullscreenButton
+            ref={fullscreenToggleRef}
+            fullscreen={realFullscreen}
+            className="rounded p-1.5 text-bambu-gray transition-colors hover:bg-bambu-dark hover:text-white"
+          />
+          </div>
         </div>
       )}
 
@@ -931,6 +951,7 @@ export function ModelViewerModal({ archiveId, libraryFileId, title, fileType, ar
             {t('modelViewer.noPreview')}
           </div>
         )}
+      </div>
       </div>
     </Modal>
   );
