@@ -296,3 +296,30 @@ export function pickFilamentForSlot(
   // rest of the picker logic for shape consistency.
   return pickDefault(by, 'filament');
 }
+
+/**
+ * The same pick over only the presets `keep` offers — the ones of filaments
+ * that are loaded, while "only loaded filaments" is on (upstream 7f00816f7).
+ * `null` when nothing offered suits the slot: the picker itself degrades to a
+ * wrong material or another printer's preset when that is all it has, and a
+ * loaded PETG is no answer for a PLA slot (#2982) — the caller then picks from
+ * the whole listing as it always did.
+ */
+export function pickOfferedFilamentForSlot(
+  by: UnifiedPresetsResponse,
+  keep: (preset: UnifiedPreset) => boolean,
+  required: { type: string; color: string },
+  printerName: string | null,
+  compatIndex: PrinterCompatibilityIndex,
+): PresetRef | null {
+  const offered = { ...by };
+  for (const tier of SLICE_MODAL_TIER_ORDER) {
+    offered[tier] = { ...by[tier], filament: by[tier].filament.filter(keep) };
+  }
+  const ref = pickFilamentForSlot(offered, required, printerName, compatIndex);
+  const preset = findPreset(offered, ref, 'filament');
+  if (!ref || !preset) return null;
+  if (statesDifferentMaterial(preset, required.type)) return null;
+  if (presetCompatibility(preset, 'filament', printerName, compatIndex) === 'mismatch') return null;
+  return ref;
+}
