@@ -15929,7 +15929,6 @@ export interface LibraryFile {
   thumbnail_path: string | null;
   metadata: Record<string, unknown> | null;
   last_printed_at: string | null;
-  notes: string | null;
   duplicates: LibraryFileDuplicate[] | null;
   duplicate_count: number;
   // User tracking (Issue #206)
@@ -16146,7 +16145,6 @@ export interface LibraryFileUpdate {
   // replace the whole list. ⚠️ A move without this field inherits the target
   // folder's products — send it explicitly when the move must NOT re-link.
   product_ids?: number[];
-  notes?: string | null;
 }
 
 export interface LibraryFileUploadResponse {

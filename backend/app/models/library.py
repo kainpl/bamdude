@@ -136,7 +136,10 @@ class LibraryFile(Base):
     print_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     last_printed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
-    # User notes
+    # ⚠️ LEGACY, unused: Bambuddy's single notes text. m231 moved whatever it held
+    # into the notes thread (``library_file_notes`` / ``file_notes`` below) and the
+    # API no longer reads or writes it. The column stays only because dropping it
+    # would mean recreating the table; never read it, never offer it again.
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Provenance — populated by MakerWorld import + slicer output (m033). NULL

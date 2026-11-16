@@ -5802,7 +5802,6 @@ async def get_file(
         thumbnail_path=file.thumbnail_path,
         metadata=file.file_metadata,
         last_printed_at=file.last_printed_at,
-        notes=file.notes,
         duplicates=duplicates if duplicates else None,
         duplicate_count=duplicate_count,
         created_by_id=file.created_by_id,
@@ -6031,9 +6030,6 @@ async def update_file(
 
     if data.folder_id is not None:
         file.folder_id = data.folder_id or None
-
-    if data.notes is not None:
-        file.notes = data.notes if data.notes else None
 
     # One call, on the final list: the sync owns ``product_files`` and the
     # plates both, so the collection is never assigned here. The refresh puts
