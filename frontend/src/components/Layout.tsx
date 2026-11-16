@@ -78,7 +78,8 @@ export const defaultNavItems: NavItem[] = [
     { id: 'stock', to: '/stock', labelKey: 'projects.tabs.stock', match: /^\/stock(\/|$)/, badge: 'stockBelowMin', permission: 'stock:read' },
   ] },
   { id: 'files', to: '/files', icon: FolderOpen, labelKey: 'nav.files', group: 'workshop' },
-  { id: 'makerworld', to: '/makerworld', icon: MakerWorldIcon, labelKey: 'nav.makerworld', group: 'workshop' },
+  // The id is from when the page was MakerWorld's alone: saved sidebar orders and hidden items still apply.
+  { id: 'makerworld', to: '/model-sources', icon: MakerWorldIcon, labelKey: 'nav.modelSources', group: 'workshop' },
   // Resources — consumables + slicer presets
   { id: 'inventory', to: '/inventory', icon: Disc3, labelKey: 'nav.inventory', group: 'resources' },
   { id: 'profiles', to: '/profiles', icon: Cloud, labelKey: 'nav.profiles', group: 'resources' },
@@ -437,7 +438,7 @@ export function Layout() {
       projects: ['orders:read', 'products:read', 'customers:read', 'stock:read'],
       inventory: 'inventory:read',
       files: ['library:read', 'library:read_own', 'library:read_all'],
-      makerworld: 'makerworld:view',
+      makerworld: ['makerworld:view', 'manyfold:view'],
       firmware: 'firmware:read',
       settings: 'settings:read',
       notifications: 'notifications:inbox',

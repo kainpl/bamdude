@@ -26,7 +26,7 @@ import { OrderPage } from './pages/orders/OrderPage';
 import { FileManagerPage } from './pages/FileManagerPage';
 import { LibraryTrashPage } from './pages/LibraryTrashPage';
 import { ArchiveTrashPage } from './pages/ArchiveTrashPage';
-import { MakerworldPage } from './pages/MakerworldPage';
+import { ModelSourcesPage } from './pages/ModelSourcesPage';
 import { CameraPage } from './pages/CameraPage';
 import { StreamOverlayPage } from './pages/StreamOverlayPage';
 import { CamWallPage } from './pages/CamWallPage';
@@ -277,7 +277,9 @@ function AppRoutes() {
           <Route path="inventory" element={<InventoryPage />} />
           <Route path="files" element={<FileManagerPage />} />
           <Route path="files/trash" element={<LibraryTrashPage />} />
-          <Route path="makerworld" element={<PermissionRoute permission="makerworld:view"><MakerworldPage /></PermissionRoute>} />
+          <Route path="model-sources" element={<PermissionRoute permission={['makerworld:view', 'manyfold:view']}><ModelSourcesPage /></PermissionRoute>} />
+          {/* The page was MakerWorld's alone until Manyfold joined it: old links and bookmarks open that tab. */}
+          <Route path="makerworld" element={<Navigate to="/model-sources?tab=makerworld" replace />} />
           <Route path="settings" element={<PermissionRoute permission="settings:read"><SettingsPage /></PermissionRoute>} />
           <Route path="groups/new" element={<PermissionRoute permission="groups:create"><GroupEditPage /></PermissionRoute>} />
           <Route path="groups/:id/edit" element={<PermissionRoute permission="groups:update"><GroupEditPage /></PermissionRoute>} />
