@@ -716,6 +716,8 @@ class GitBackupService:
             "orca_cloud_token",
             "orca_cloud_refresh_token",
             "orca_cloud_pending_verifier",
+            # The OAuth client secret of the installation's Manyfold connection.
+            "manyfold_client_secret",
             "auth_secret_key",
             CONFIG_GUARD_KEY,
             SOURCE_SETTING,
