@@ -13055,6 +13055,16 @@ export const api = {
     request<LabelSheet>(`/label-templates/sheets/${id}/duplicate`, { method: 'POST' }),
   deleteLabelSheet: (id: number) =>
     request<void>(`/label-templates/sheets/${id}`, { method: 'DELETE' }),
+  /**
+   * What is wrong with a sheet that is still being typed — every problem at
+   * once, in the system's language, with nothing saved or drawn.
+   *
+   * ⚠️ The editor asks instead of computing: the paper table, the slack and the
+   * bounds live on the server, and a second copy here is how the editor and the
+   * save would stop agreeing.
+   */
+  checkLabelSheet: (body: LabelSheetInput) =>
+    request<{ problems: string[] }>('/label-templates/sheets/check', { method: 'POST', body: JSON.stringify(body) }),
 
   /**
    * The whole page, with a design laid into every cell.

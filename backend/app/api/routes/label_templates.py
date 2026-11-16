@@ -34,11 +34,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.core.auth import RequirePermission
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
+from backend.app.i18n import current_language
+from backend.app.i18n.api_errors import translate_sentence
 from backend.app.models.label_template import LabelSheet, LabelTemplate
 from backend.app.models.spool import Spool
 from backend.app.models.user import User
 from backend.app.schemas.label_template import (
     LabelPreviewRequest,
+    LabelSheetCheck,
+    LabelSheetDraft,
     LabelSheetIn,
     LabelSheetOut,
     LabelSheetPreviewRequest,
@@ -54,6 +58,7 @@ from backend.app.services.label_template import (
     LabelSheetSpec,
     LabelTemplateSpec,
     Placeholder,
+    draft_sheet_problems,
     fits_within,
     fitting_ids,
     sheet_problems,
@@ -272,6 +277,27 @@ async def delete_sheet(
     # design — so there is no in-use check to make here.
     await db.delete(row)
     await db.commit()
+
+
+@router.post("/sheets/check", response_model=LabelSheetCheck)
+async def check_sheet(
+    body: LabelSheetDraft,
+    _: User | None = RequirePermission(Permission.LABEL_TEMPLATES_READ),
+) -> LabelSheetCheck:
+    """What is wrong with the sheet being typed — every problem, nothing drawn.
+
+    ⚠️ The editor asks this while you type instead of working it out itself.
+    The paper table, the slack and the bounds live in ``label_template``; a copy
+    of them in the browser is how the editor and the save stop agreeing.
+
+    Answered 200 with a list, never 422: half a number is not an error, it is
+    somebody typing. Translated here because it is not a refusal — nothing
+    passes through the boundary that translates those.
+    """
+    lang = current_language()
+    return LabelSheetCheck(
+        problems=[translate_sentence(problem, lang) for problem in draft_sheet_problems(body.model_dump())]
+    )
 
 
 @router.post("/sheets/preview")

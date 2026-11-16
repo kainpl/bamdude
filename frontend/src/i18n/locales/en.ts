@@ -3048,6 +3048,8 @@ export default {
     doesNotFit: 'Does not fit the paper',
     preview: 'Preview the page',
     saved: 'Sheet saved',
+    scaleHint:
+      'Print a sheet at 100 % (actual size), never "Fit to page" — scaling moves every label off its sticker.',
     deleteTitle: 'Delete this sheet?',
     deleteMessage: 'Delete the sheet "{{name}}"? This cannot be undone.',
     deleteBuiltinMessage:
@@ -9954,6 +9956,8 @@ export default {
       sheet: {
         label: 'Paper:',
         none: 'One label per page',
+        scaleHint:
+          'Print the sheet at 100 % (actual size), never "Fit to page" — scaling moves every label off its sticker.',
       },
       deviceDesign: 'Design:',
       design: 'Design',

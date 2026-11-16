@@ -39,6 +39,7 @@ describe('LabelSheetEditor', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     vi.spyOn(api, 'getLabelTemplates').mockResolvedValue([] as never);
+    vi.spyOn(api, 'checkLabelSheet').mockResolvedValue({ problems: [] });
   });
 
   const show = async (sheets: unknown[]) => {
@@ -121,6 +122,62 @@ describe('LabelSheetEditor', () => {
 
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
     expect(remove).not.toHaveBeenCalled();
+  });
+
+  it('says what is wrong with the grid while it is typed, in the server\'s words', async () => {
+    // The arithmetic is the server's: this editor asks, it never works it out.
+    const check = vi
+      .spyOn(api, 'checkLabelSheet')
+      .mockImplementation(async (draft) => ({
+        problems: draft.cols > 3 ? ['The grid is 260.0mm wide but A4 is 210.0mm.'] : [],
+      }));
+    await show([MINE]);
+
+    const across = screen.getByLabelText(/Across/) as HTMLInputElement;
+    await userEvent.clear(across);
+    await userEvent.type(across, '4');
+
+    expect(await screen.findByText(/260.0mm wide/)).toBeInTheDocument();
+    expect(check).toHaveBeenLastCalledWith(expect.objectContaining({ cols: 4 }));
+    // Save would be refused for the same reason, so it is not offered.
+    expect(screen.getByRole('button', { name: /save/i })).toBeDisabled();
+  });
+
+  it('offers Save again once the grid fits', async () => {
+    vi.spyOn(api, 'checkLabelSheet').mockImplementation(async (draft) => ({
+      problems: draft.cols > 3 ? ['The grid is 260.0mm wide but A4 is 210.0mm.'] : [],
+    }));
+    await show([MINE]);
+
+    const across = screen.getByLabelText(/Across/) as HTMLInputElement;
+    await userEvent.clear(across);
+    await userEvent.type(across, '4');
+    await screen.findByText(/260.0mm wide/);
+    await userEvent.clear(across);
+    await userEvent.type(across, '3');
+
+    await waitFor(() => expect(screen.queryByText(/260.0mm wide/)).not.toBeInTheDocument());
+    expect(screen.getByRole('button', { name: /save/i })).not.toBeDisabled();
+  });
+
+  it('does not ask on every keystroke', async () => {
+    const check = vi.spyOn(api, 'checkLabelSheet').mockResolvedValue({ problems: [] });
+    await show([MINE]);
+    await waitFor(() => expect(check).toHaveBeenCalledTimes(1));
+
+    const left = screen.getByLabelText(/Left margin/) as HTMLInputElement;
+    await userEvent.clear(left);
+    await userEvent.type(left, '12.5');
+
+    await waitFor(() => expect(check).toHaveBeenLastCalledWith(expect.objectContaining({ margin_left_mm: 12.5 })));
+    // Five keystrokes, one question (plus the one on load).
+    expect(check.mock.calls.length).toBeLessThanOrEqual(3);
+  });
+
+  it('reminds you to print a sheet at 100 %', async () => {
+    await show([MINE]);
+
+    expect(screen.getByText(/100\s?%/)).toBeInTheDocument();
   });
 
   it('saves the numbers you typed', async () => {

@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Loader2, Printer, Search, FileText } from 'lucide-react';
 import { SelectionBox } from './SelectionBox';
@@ -40,6 +40,47 @@ interface LabelTemplatePickerModalProps {
  *  ``device`` is a thermal printer on somebody's desk, reached through the
  *  bridge running there. */
 type PrintRoute = 'driver' | 'device';
+
+/** How the last driver print went out, kept per browser.
+ *
+ *  Somebody with one box of sheets picks the same paper and the same design
+ *  every time. ⚠️ Ids, so everything read back is checked against the catalogue
+ *  before it is used — a remembered row that is gone, or a design that stopped
+ *  fitting its paper, is dropped without a word. Only the driver route is
+ *  remembered: a desk printer prints on the click, and a design chosen for it
+ *  on somebody's behalf is a label nobody looked at. */
+const MEMORY_KEY = 'bamdude-label-print-dialog';
+
+interface RememberedPrint {
+  sheetId: number | null;
+  templateId: number | null;
+  start: string;
+}
+
+function readRemembered(): RememberedPrint | null {
+  try {
+    const raw = window.localStorage.getItem(MEMORY_KEY);
+    if (!raw) return null;
+    const stored = JSON.parse(raw) as Partial<RememberedPrint> | null;
+    if (!stored || typeof stored !== 'object') return null;
+    return {
+      sheetId: typeof stored.sheetId === 'number' ? stored.sheetId : null,
+      templateId: typeof stored.templateId === 'number' ? stored.templateId : null,
+      start: typeof stored.start === 'string' ? stored.start : '1',
+    };
+  } catch {
+    // Storage blocked, cleared mid-read, or holding something else: no memory.
+    return null;
+  }
+}
+
+function remember(print: RememberedPrint): void {
+  try {
+    window.localStorage.setItem(MEMORY_KEY, JSON.stringify(print));
+  } catch {
+    // A private window or a full quota — the print already happened.
+  }
+}
 
 /**
  * Show the finished PDF in a tab. What happens to it is the person's call —
@@ -285,9 +326,30 @@ export function LabelTemplatePickerModal({
       setStartInput('1');
       setDeviceTemplateId(null);
       setDriverTemplateId(null);
+      restored.current = false;
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen]);
+
+  // Once per opening, and only when the catalogue has arrived: what is
+  // remembered is two ids and a cell, and each is worth only what the lists
+  // say about it now.
+  const restored = useRef(false);
+  useEffect(() => {
+    if (!isOpen || restored.current || !templates || !sheets) return;
+    restored.current = true;
+    const last = readRemembered();
+    if (!last) return;
+
+    const paper = sheets.find((row) => row.id === last.sheetId) ?? null;
+    if (paper) {
+      setSheetId(paper.id);
+      const cell = Number(last.start);
+      if (Number.isInteger(cell) && cell >= 1 && cell <= paper.cols * paper.rows) setStartInput(last.start);
+    }
+    const drawn = templates.find((row) => row.id === last.templateId && row.target === 'driver') ?? null;
+    if (drawn && (!paper || paper.fitting_design_ids.includes(drawn.id))) setDriverTemplateId(drawn.id);
+  }, [isOpen, templates, sheets]);
 
   const sortedSpools = useMemo(() => {
     const copy = [...availableSpools];
@@ -476,6 +538,7 @@ export function LabelTemplatePickerModal({
         ? await api.printSpoolmanSpoolLabels(body)
         : await api.printSpoolLabels(body);
       showPdfInTab(tab, blob);
+      remember({ sheetId, templateId, start: sheetId !== null ? startInput : '1' });
       onClose();
     } catch (err) {
       // The blank tab is ours and now pointless — leaving it is litter the
@@ -757,6 +820,12 @@ export function LabelTemplatePickerModal({
               }}
               disabled={pending !== null}
             />
+          )}
+
+          {/* The usual reason a sheet drifts off its stickers, and it looks just
+              like a wrong geometry — so it is said where the sheet is chosen. */}
+          {effectiveRoute === 'driver' && sheet !== null && (
+            <p className="text-xs text-bambu-gray">{t('inventory.labels.sheet.scaleHint')}</p>
           )}
 
           {/* A half-used sheet: where the first label goes. Only a sheet has cells. */}

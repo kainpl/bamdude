@@ -17,9 +17,9 @@ from __future__ import annotations
 import math
 import re
 from collections.abc import Iterable
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, ValidationError, model_validator
 
 
 class Placeholder(BaseModel):
@@ -437,6 +437,11 @@ LABEL_GEOMETRY_MESSAGES = {
     "sheet_rows": "A sheet takes at most {} rows.",
     "sheet_cell": "A cell must be at least {} mm on each side.",
     "sheet_length": "No measurement of a sheet may be more than {} mm.",
+    "sheet_shape": (
+        "Columns and rows must be whole numbers of at least 1, cell sizes more than zero, "
+        "and margins and gaps not negative."
+    ),
+    "sheet_paper": "'{}' is not a paper size BamDude knows.",
     "grid_wide": (
         "The grid is {}mm wide but {} is {}mm — reduce the columns, the cell width, the gap or the left margin."
     ),
@@ -533,6 +538,42 @@ def sheet_problems(sheet: LabelSheetSpec) -> list[str]:
     return problems or sheet_overflow(sheet)
 
 
+def draft_sheet_problems(raw: dict[str, Any]) -> list[str]:
+    """The same answer for a sheet that is still being typed.
+
+    ⚠️ A draft may not be a sheet yet: clearing a field to type another passes
+    through zero, and a column count can be "3.5" for a keystroke. Those are
+    moments of editing, so they get a sentence here instead of the validation
+    error a save would answer with. Everything that IS a sheet goes on to
+    :func:`sheet_problems` — one validator, asked earlier.
+    """
+    from backend.app.services.label_renderer import PAGE_SIZES_MM
+
+    say = LABEL_GEOMETRY_MESSAGES
+    numbers = [raw.get(field) for field in _SHEET_NUMBERS]
+    if not all(isinstance(value, (int, float)) and math.isfinite(value) for value in numbers):
+        return [say["not_finite"]]
+    if raw.get("page_size") not in PAGE_SIZES_MM:
+        return [say["sheet_paper"].format(raw.get("page_size"))]
+    try:
+        sheet = LabelSheetSpec(**{**raw, "name": raw.get("name") or "-"})
+    except ValidationError:
+        return [say["sheet_shape"]]
+    return sheet_problems(sheet)
+
+
+_SHEET_NUMBERS = (
+    "cell_width_mm",
+    "cell_height_mm",
+    "cols",
+    "rows",
+    "margin_top_mm",
+    "margin_left_mm",
+    "gap_x_mm",
+    "gap_y_mm",
+)
+
+
 def sheet_overflow(sheet: LabelSheetSpec) -> list[str]:
     """What about this grid does not fit its page, in words.
 
@@ -594,6 +635,7 @@ __all__ = [
     "SwatchElement",
     "TextElement",
     "design_problems",
+    "draft_sheet_problems",
     "fits_within",
     "fitting_ids",
     "orientation",

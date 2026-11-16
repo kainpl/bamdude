@@ -69,6 +69,32 @@ class LabelSheetIn(BaseModel):
     gap_y_mm: float = Field(default=0.0, ge=0)
 
 
+class LabelSheetDraft(BaseModel):
+    """A sheet as it stands in the editor mid-keystroke — possibly not a sheet yet.
+
+    ⚠️ Deliberately unconstrained, and the counts are floats: this body is
+    CHECKED, never saved, and a zero or a "3.5" has to arrive so the answer can
+    say what is wrong with it. ``LabelSheetIn`` stays the only body a save takes.
+    """
+
+    name: str = ""
+    page_size: str = "A4"
+    cell_width_mm: float = 0.0
+    cell_height_mm: float = 0.0
+    cols: float = 0.0
+    rows: float = 0.0
+    margin_top_mm: float = 0.0
+    margin_left_mm: float = 0.0
+    gap_x_mm: float = 0.0
+    gap_y_mm: float = 0.0
+
+
+class LabelSheetCheck(BaseModel):
+    #: Everything that stops this sheet being saved or printed, in the system's
+    #: language. Empty is fine.
+    problems: list[str] = Field(default_factory=list)
+
+
 class LabelSheetPreviewRequest(BaseModel):
     """Lay a saved design onto an unsaved page geometry.
 

@@ -136,6 +136,7 @@ const press = () => fireEvent.click(screen.getByRole('button', { name: /^Print$/
 
 beforeEach(() => {
   vi.clearAllMocks();
+  localStorage.clear();
   vi.mocked(api.printSpoolLabels).mockResolvedValue(PDF_BLOB);
   vi.mocked(api.printSpoolmanSpoolLabels).mockResolvedValue(PDF_BLOB);
   vi.mocked(api.getLabelTemplates).mockResolvedValue([design()] as never);
@@ -325,6 +326,145 @@ describe('whether a design fits is the server\'s answer', () => {
     fireEvent.click(screen.getByText('Niimbot B1'));
 
     await waitFor(() => expect(api.createLabelJobs).toHaveBeenCalled());
+  });
+});
+
+describe('a sheet PDF comes with a reminder about scale', () => {
+  // "Fit to page" is the usual reason a sheet drifts off its stickers by the
+  // third row, and it looks exactly like a wrong geometry.
+  it('says to print at 100 % once a sheet is chosen', async () => {
+    vi.mocked(api.getLabelSheets).mockResolvedValue([L7160] as never);
+    show();
+
+    await choose(PAPER, /Avery L7160/);
+
+    expect(screen.getByText(/100\s?%/)).toBeInTheDocument();
+  });
+
+  it('says nothing about scale for one label per page', async () => {
+    vi.mocked(api.getLabelSheets).mockResolvedValue([L7160] as never);
+    show();
+    await screen.findByRole('combobox', { name: PAPER });
+
+    expect(screen.queryByText(/100\s?%/)).not.toBeInTheDocument();
+  });
+});
+
+describe('the dialog remembers how you last printed', () => {
+  // Somebody with one roll or one box of sheets picks the same paper and the
+  // same design every time. Per browser, and silently forgotten when what it
+  // remembers is gone.
+  const MEMORY = 'bamdude-label-print-dialog';
+
+  const printOnASheet = async () => {
+    vi.mocked(api.getLabelSheets).mockResolvedValue([L7160] as never);
+    const first = show();
+    await choose(PAPER, /Avery L7160/);
+    await choose(DESIGN, /Box label 40 × 30/);
+    fireEvent.change(screen.getByLabelText(/Starting position/i), { target: { value: '5' } });
+    press();
+    await waitFor(() => expect(api.printSpoolLabels).toHaveBeenCalledTimes(1));
+    first.unmount();
+    vi.mocked(api.printSpoolLabels).mockClear();
+  };
+
+  it('opens on the paper, the design and the starting cell of the last print', async () => {
+    await printOnASheet();
+
+    show();
+    await waitFor(() => expect(screen.getByRole('button', { name: /^Print$/ })).not.toBeDisabled());
+    expect((screen.getByLabelText(/Starting position/i) as HTMLInputElement).value).toBe('5');
+    press();
+
+    await waitFor(() => {
+      expect(api.printSpoolLabels).toHaveBeenCalledWith(
+        expect.objectContaining({ template_id: 7, sheet_id: 4, starting_position: 5 }),
+      );
+    });
+  });
+
+  it('remembers nothing until something was printed', async () => {
+    vi.mocked(api.getLabelSheets).mockResolvedValue([L7160] as never);
+    const first = show();
+    await choose(PAPER, /Avery L7160/);
+    await choose(DESIGN, /Box label 40 × 30/);
+    first.unmount();
+
+    show();
+    await screen.findByRole('combobox', { name: DESIGN });
+
+    expect(screen.getByRole('button', { name: /^Print$/ })).toBeDisabled();
+    expect(screen.queryByLabelText(/Starting position/i)).toBeNull();
+  });
+
+  it('forgets a design and a paper that no longer exist', async () => {
+    localStorage.setItem(MEMORY, JSON.stringify({ sheetId: 99, templateId: 98, start: '4' }));
+    vi.mocked(api.getLabelSheets).mockResolvedValue([L7160] as never);
+    show();
+    await screen.findByRole('combobox', { name: DESIGN });
+
+    // Nothing pre-aimed at a row that is gone: no paper, no design, no cell.
+    expect(screen.getByRole('button', { name: /^Print$/ })).toBeDisabled();
+    expect(screen.queryByLabelText(/Starting position/i)).toBeNull();
+
+    await choose(DESIGN, /Box label 40 × 30/);
+    press();
+    await waitFor(() => expect(api.printSpoolLabels).toHaveBeenCalled());
+    const sent = vi.mocked(api.printSpoolLabels).mock.calls[0][0];
+    expect(sent).toEqual(expect.objectContaining({ template_id: 7 }));
+    expect(sent).not.toHaveProperty('sheet_id');
+  });
+
+  it('keeps the paper but not a design that stopped fitting it', async () => {
+    localStorage.setItem(MEMORY, JSON.stringify({ sheetId: 4, templateId: 7, start: '2' }));
+    vi.mocked(api.getLabelSheets).mockResolvedValue([{ ...L7160, fitting_design_ids: [] }] as never);
+    show();
+
+    expect(await screen.findByLabelText(/Starting position/i)).toHaveValue(2);
+    expect(screen.getByRole('button', { name: /^Print$/ })).toBeDisabled();
+  });
+
+  it('drops a starting cell the paper does not have', async () => {
+    localStorage.setItem(MEMORY, JSON.stringify({ sheetId: 4, templateId: 7, start: '99' }));
+    vi.mocked(api.getLabelSheets).mockResolvedValue([L7160] as never);
+    show();
+
+    expect(await screen.findByLabelText(/Starting position/i)).toHaveValue(1);
+  });
+
+  it('opens as usual when the browser will not hand over its storage', async () => {
+    // Only this dialog's key: the rest of the app has its own readers.
+    const read = Storage.prototype.getItem;
+    const write = Storage.prototype.setItem;
+    const refuse = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(function (this: Storage, key: string) {
+      if (key === MEMORY) throw new Error('denied');
+      return read.call(this, key);
+    });
+    const refuseWrite = vi
+      .spyOn(Storage.prototype, 'setItem')
+      .mockImplementation(function (this: Storage, key: string, value: string) {
+        if (key === MEMORY) throw new Error('denied');
+        write.call(this, key, value);
+      });
+    try {
+      show();
+      await choose(DESIGN, /Box label 40 × 30/);
+      press();
+      await waitFor(() => expect(api.printSpoolLabels).toHaveBeenCalled());
+      expect(refuse).toHaveBeenCalledWith(MEMORY);
+      expect(refuseWrite).toHaveBeenCalledWith(MEMORY, expect.any(String));
+    } finally {
+      refuse.mockRestore();
+      refuseWrite.mockRestore();
+    }
+  });
+
+  it('ignores a memory that is not what it wrote', async () => {
+    localStorage.setItem(MEMORY, '{"sheetId":"4","templateId":{},"start":5');
+    show();
+
+    expect(await screen.findByRole('combobox', { name: DESIGN })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^Print$/ })).toBeDisabled();
   });
 });
 
