@@ -14,6 +14,7 @@ import { server } from '../mocks/server';
 import { SliceModal } from '../../components/SliceModal';
 import { SliceJobTrackerProvider } from '../../contexts/SliceJobTrackerContext';
 import type { UnifiedPreset, UnifiedPresetsBySlot } from '../../api/client';
+import { MODAL_SIZE_CLASS } from '../../components/Modal';
 
 type Tier = 'local' | 'orca_cloud' | 'cloud' | 'standard';
 type Listing = Partial<Record<Tier, Partial<Record<keyof UnifiedPresetsBySlot, Partial<UnifiedPreset>[]>>>>;
@@ -201,5 +202,41 @@ describe('SliceModal — searching a preset list', () => {
     for (const list of ['Printer profile', 'Process profile', 'Filament profile']) {
       expect(screen.getByRole('button', { name: `Search: ${list}` })).toBeInTheDocument();
     }
+  });
+});
+
+describe('SliceModal — how wide it gets', () => {
+  const listing: Listing = {
+    local: { printer: [{ name: H2D }], process: [{ name: '0.20mm Mine' }] },
+    standard: { filament: [{ name: 'Generic PLA', filament_type: 'PLA' }] },
+  };
+
+  it('widens with the screen in steps of the modal size table, and adds none', async () => {
+    serve(listing);
+    open();
+
+    const panel = await screen.findByRole('dialog');
+    const classes = panel.className.split(/\s+/);
+    // One column, at the narrow width, until there is room for two.
+    expect(classes).toContain('max-w-xl');
+    const steps = classes.filter((c) => /^(lg|xl|2xl):max-w-/.test(c));
+    expect(steps).toEqual(['lg:max-w-5xl', 'xl:max-w-7xl', '2xl:max-w-8xl']);
+    const table = Object.values(MODAL_SIZE_CLASS);
+    for (const step of steps) expect(table).toContain(step.split(':')[1]);
+  });
+
+  it('gives the preset column a floor and a share, never a fixed width', async () => {
+    serve(listing);
+    open();
+
+    const process = await picker('Process profile');
+    const grid = process.closest('[class*="lg:grid-cols-"]') as HTMLElement;
+    const classes = grid.className.split(/\s+/);
+    expect(classes).toContain('lg:grid-cols-[minmax(20rem,2fr)_minmax(0,3fr)]');
+    // Every grid class is `lg:`-prefixed: below it the dialog is one stack.
+    expect(classes).toContain('lg:grid');
+    expect(classes).not.toContain('grid');
+    // The list itself fills its column, so a long preset name gets the room.
+    expect(process.className.split(/\s+/)).toEqual(expect.arrayContaining(['flex-1', 'min-w-0']));
   });
 });

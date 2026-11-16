@@ -1275,7 +1275,7 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
       closeDisabled={isEnqueuing}
       labelledBy={headingId}
       size="xl"
-      panelClassName="lg:max-w-5xl"
+      panelClassName="lg:max-w-5xl xl:max-w-7xl 2xl:max-w-8xl"
       bodyClassName="flex flex-col"
       header={
         <div className="min-w-0">
@@ -1366,8 +1366,13 @@ export function SliceModal({ source, onClose }: SliceModalProps) {
                 gives the process-settings panel a column of its own, which
                 is the only way 348 options are comfortable to work through.
                 ⚠️ Below lg both collapse back into the single stack this
-                dialog used to be, so nothing on a phone changes. */}
-            <div className="lg:grid lg:grid-cols-[minmax(0,20rem)_minmax(0,1fr)] lg:gap-4 lg:items-start">
+                dialog used to be, so nothing on a phone changes.
+                The left column grows with the frame (upstream bda14f753):
+                fixed at 20rem it cut preset names off and wrapped every
+                filament label while the settings panel sat half empty. 20rem
+                is its floor now, and the frame keeps widening past lg in
+                steps of the modal's own size table. */}
+            <div className="lg:grid lg:grid-cols-[minmax(20rem,2fr)_minmax(0,3fr)] lg:gap-4 lg:items-start">
               <div className="space-y-4 min-w-0">
             {/* Slicer picker — two big card-buttons matching the
                 "Filament Tracking" pattern in Settings. Each card carries

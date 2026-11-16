@@ -17,7 +17,7 @@ import { describe, it, expect } from 'vitest';
 import modalSource from '../../components/SliceModal.tsx?raw';
 
 const sourceLines = modalSource.split(/\r?\n/);
-const gridLine = sourceLines.find((line) => line.includes('lg:grid-cols-[minmax(0,20rem)'));
+const gridLine = sourceLines.find((line) => line.includes('lg:grid-cols-[minmax(20rem,2fr)_minmax(0,3fr)]'));
 
 describe('SliceModal layout', () => {
   it('puts the body in a two-column grid', () => {
@@ -43,8 +43,18 @@ describe('SliceModal layout', () => {
     // The frame is the modal shell's panel now, so the base width is its `size`
     // and the breakpoint override rides along in `panelClassName` — the shell
     // appends that after the size class, so `lg:` still wins.
+    //
+    // It keeps widening past `lg` (upstream bda14f753): capped at 5xl the left
+    // column cut preset names off while the settings panel sat half empty.
+    // Every step is a width of the shell's closed size table — none added.
     expect(modalSource, 'the base width').toContain('size="xl"');
-    expect(modalSource, 'the wide width').toContain('panelClassName="lg:max-w-5xl"');
+    expect(modalSource, 'the wide widths').toContain('panelClassName="lg:max-w-5xl xl:max-w-7xl 2xl:max-w-8xl"');
+  });
+
+  it('lets the left column grow with the frame instead of pinning it at 20rem', () => {
+    // 20rem is now the floor, and the two columns share the width 2 : 3.
+    expect(gridLine).toContain('lg:grid-cols-[minmax(20rem,2fr)_minmax(0,3fr)]');
+    expect(modalSource).not.toContain('minmax(0,20rem)');
   });
 
   it('keeps the settings panel open and its toggle inert when it owns a column', () => {
@@ -67,7 +77,7 @@ describe('SliceModal layout', () => {
     // ⚠️ Ours is inline and non-blocking; upstream's equivalent is a step in a
     // modal above the modal that holds the preset query back while it is open.
     const plateAt = modalSource.indexOf('<SlicePlateSelector');
-    const gridAt = modalSource.indexOf('lg:grid-cols-[minmax(0,20rem)');
+    const gridAt = modalSource.indexOf('lg:grid-cols-[minmax(20rem,2fr)_minmax(0,3fr)]');
     expect(plateAt).toBeGreaterThan(-1);
     expect(plateAt).toBeLessThan(gridAt);
   });
