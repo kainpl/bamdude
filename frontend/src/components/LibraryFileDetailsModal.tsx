@@ -4,18 +4,20 @@
  *
  * The link is NOT the file's origin: `source_url` is written by the MakerWorld
  * import and the slicer and is shown as it is. The notes thread stays on the
- * card; this dialog only says how many there are.
+ * card; this dialog only says how many there are. Below the link sits the
+ * file's photo gallery (`LibraryFilePhotos`).
  *
  * The server decides what a valid link is and who may write it; its refusal is
  * shown as it comes. An address is rendered as an `href` only when it is
  * http(s) — anything else stays text.
  */
-import { useEffect, useState, type FormEvent, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ExternalLink, Info } from 'lucide-react';
 import { api, type LibraryFile, type LibraryFileListItem } from '../api/client';
 import { Modal } from './Modal';
+import { LibraryFilePhotos } from './LibraryFilePhotos';
 import { Button } from './Button';
 import { formatDateTime, type DateFormat, type TimeFormat } from '../utils/date';
 import { formatFileSize } from '../utils/file';
@@ -62,6 +64,8 @@ export function LibraryFileDetailsModal({ file, canEdit, onClose, timeFormat, da
     queryFn: () => api.getLibraryFile(file.id),
   });
   const savedLink = data?.external_url ?? null;
+  // The whole body takes dropped photos, not only the gallery at its foot.
+  const bodyRef = useRef<HTMLDivElement>(null);
   const [draft, setDraft] = useState('');
   const [touched, setTouched] = useState(false);
   // The box follows the saved link until the operator types in it.
@@ -101,7 +105,7 @@ export function LibraryFileDetailsModal({ file, canEdit, onClose, timeFormat, da
         </div>
       }
     >
-      <div className="space-y-5 p-4">
+      <div ref={bodyRef} data-testid="file-details-body" className="space-y-5 p-4">
         <dl className="grid grid-cols-[max-content_minmax(0,1fr)] gap-x-4 gap-y-2">
           <Fact label={t('fileDetails.name')}>{data?.filename ?? file.filename}</Fact>
           <Fact label={t('fileDetails.type')}>{file.file_type.toUpperCase()}</Fact>
@@ -192,6 +196,10 @@ export function LibraryFileDetailsModal({ file, canEdit, onClose, timeFormat, da
             )}
           </form>
         )}
+
+        <div className="border-t border-bambu-dark-tertiary pt-4">
+          <LibraryFilePhotos fileId={file.id} canEdit={canEdit} dropZoneRef={bodyRef} />
+        </div>
       </div>
     </Modal>
   );

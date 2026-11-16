@@ -31,7 +31,7 @@ from backend.app.core.database import async_session
 from backend.app.models.archive import PrintArchive
 from backend.app.models.library import LibraryFile
 from backend.app.models.settings import Settings
-from backend.app.services import part_images, queue_source_release
+from backend.app.services import library_file_photos, part_images, queue_source_release
 from backend.app.services.product_sync import purge_file_product_links
 
 logger = logging.getLogger(__name__)
@@ -562,6 +562,9 @@ class LibraryTrashService:
         # file would leave a plate row a product still renders and nothing can
         # open.
         await purge_file_product_links(db, row_ids)
+        # And the photos (m233): their rows have no cascade on SQLite either, and
+        # their folder is named by the id the next file may be given.
+        await library_file_photos.forget_files(db, row_ids)
         await db.execute(delete(LibraryFile).where(LibraryFile.id.in_(row_ids)))
         await db.commit()
         logger.info("Library trash sweeper: hard-deleted %d row(s) past %d-day retention", deleted, retention)
@@ -633,6 +636,7 @@ class LibraryTrashService:
                 db, library_file_ids=[file.id], reason=queue_source_release.REASON_FILE_DELETED
             )
             await purge_file_product_links(db, [file.id])
+            await library_file_photos.forget_files(db, [file.id])
             await db.delete(file)
             return False
 
@@ -676,6 +680,7 @@ class LibraryTrashService:
             db, library_file_ids=[file.id], reason=queue_source_release.REASON_FILE_DELETED
         )
         await purge_file_product_links(db, [file.id])
+        await library_file_photos.forget_files(db, [file.id])
         await db.delete(file)
         await db.commit()
 

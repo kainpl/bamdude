@@ -2296,6 +2296,11 @@ async def list_files(
         )
         notes_counts = dict(note_result.all())
 
+    # Photo counts (m233) — one grouped query, like the notes.
+    from backend.app.services import library_file_photos
+
+    photo_counts = await library_file_photos.counts(db, [f.id for f in files])
+
     # Prevent browser caching of file list
     response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
 
@@ -2380,6 +2385,7 @@ async def list_files(
                 source_type=f.source_type,
                 source_url=f.source_url,
                 external_url=f.external_url,
+                photos_count=photo_counts.get(f.id, 0),
                 notes_count=notes_counts.get(f.id, 0),
                 print_count=f.print_count,
                 # USER tags only. ``LibraryFile.tags`` spans both kinds since
@@ -5648,6 +5654,10 @@ async def get_file(
         if isinstance(printable_objects, dict):
             object_count = len(printable_objects)
 
+    from backend.app.services import library_file_photos
+
+    photos_count = (await library_file_photos.counts(db, [file.id])).get(file.id, 0)
+
     return FileResponseSchema(
         id=file.id,
         folder_id=file.folder_id,
@@ -5680,6 +5690,7 @@ async def get_file(
         source_type=file.source_type,
         source_url=file.source_url,
         external_url=file.external_url,
+        photos_count=photos_count,
     )
 
 

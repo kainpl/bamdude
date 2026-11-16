@@ -188,6 +188,8 @@ class FileResponse(BaseModel):
     source_url: str | None = None
     # The operator's own link (m232): http/https, set by hand, never fetched.
     external_url: str | None = None
+    # Photos attached to the file (m233).
+    photos_count: int = 0
 
     # Duplicate detection
     duplicates: list[FileDuplicate] | None = None
@@ -358,6 +360,8 @@ class FileListResponse(BaseModel):
     source_url: str | None = None
     # The operator's own link (m232) — the card's link marker.
     external_url: str | None = None
+    # Photos attached to the file (m233) — the card's photo marker.
+    photos_count: int = 0
     # Number of notes attached (gh#3) - drives the card icon variant
     # (MessageSquarePlus when 0, MessageSquare when >0).
     notes_count: int = 0

@@ -3,14 +3,14 @@
  * operator edits — a link of their own.
  */
 
-import { describe, it, expect, beforeEach } from 'vitest';
-import { screen, waitFor, within } from '@testing-library/react';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { render } from '../utils';
 import { server } from '../mocks/server';
 import { LibraryFileDetailsModal } from '../../components/LibraryFileDetailsModal';
-import type { LibraryFileListItem } from '../../api/client';
+import { api, type LibraryFileListItem } from '../../api/client';
 
 const HASH = 'a3f5c9d2e1b40718293a4b5c6d7e8f90112233445566778899aabbccddeeff00';
 
@@ -63,10 +63,12 @@ function detail(extra: Record<string, unknown> = {}) {
 }
 
 let saved: unknown[] = [];
+let photos: unknown[] = [];
 
 function serve(file: Record<string, unknown>, put?: (body: { external_url: string | null }) => Response) {
   server.use(
     http.get('/api/v1/library/files/7', () => HttpResponse.json(file)),
+    http.get('/api/v1/library/files/7/photos', () => HttpResponse.json(photos)),
     http.put('/api/v1/library/files/7/external-url', async ({ request }) => {
       const body = (await request.json()) as { external_url: string | null };
       saved.push(body);
@@ -84,6 +86,10 @@ function show(canEdit = true) {
 describe('LibraryFileDetailsModal', () => {
   beforeEach(() => {
     saved = [];
+    photos = [];
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
   it("shows the file's facts", async () => {
@@ -177,6 +183,43 @@ describe('LibraryFileDetailsModal', () => {
     expect(within(dialog).queryAllByRole('link')).toEqual([]);
   });
 
+  it("holds the file's photo gallery", async () => {
+    photos = [
+      {
+        id: 4,
+        library_file_id: 7,
+        original_name: 'IMG_4.jpg',
+        content_type: 'image/jpeg',
+        file_size: 10,
+        width: 4,
+        height: 3,
+        caption: 'Assembled',
+        uploaded_by_name: 'iryna',
+        created_at: '2024-01-02T10:00:00Z',
+      },
+    ];
+    serve(detail());
+    const dialog = await show();
+
+    expect(await within(dialog).findByRole('heading', { name: /Photos/ })).toBeInTheDocument();
+    const thumb = await within(dialog).findByRole('img', { name: 'Assembled' });
+    expect(thumb.getAttribute('src')).toMatch(/^\/api\/v1\/library\/files\/7\/photos\/4\/thumbnail(\?token=.*)?$/);
+    expect(within(dialog).getByLabelText('Add photos')).toBeInTheDocument();
+  });
+
+  it('takes photos dropped anywhere on the dialog', async () => {
+    const upload = vi.spyOn(api, 'uploadLibraryFilePhoto').mockResolvedValue({} as never);
+    serve(detail());
+    const dialog = await show();
+    await within(dialog).findByText('No photos yet.');
+
+    // On the facts at the top of the dialog — far from the gallery.
+    const dropped = new File(['bytes'], 'dropped.jpg', { type: 'image/jpeg' });
+    fireEvent.drop(within(dialog).getByText('Name'), { dataTransfer: { files: [dropped], types: ['Files'] } });
+
+    await waitFor(() => expect(upload).toHaveBeenCalledWith(7, dropped));
+  });
+
   it('is read-only for someone who may not edit the file', async () => {
     serve(detail({ external_url: 'https://example.com/a' }));
     const dialog = await show(false);
@@ -186,5 +229,6 @@ describe('LibraryFileDetailsModal', () => {
     expect(within(dialog).queryByRole('textbox', { name: 'Link' })).not.toBeInTheDocument();
     expect(within(dialog).queryByRole('button', { name: 'Save' })).not.toBeInTheDocument();
     expect(within(dialog).queryByRole('button', { name: 'Remove link' })).not.toBeInTheDocument();
+    expect(within(dialog).queryByLabelText('Add photos')).not.toBeInTheDocument();
   });
 });

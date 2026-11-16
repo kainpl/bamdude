@@ -885,13 +885,14 @@ export function useWebSocket() {
       }
 
       case 'library_file_details_changed': {
-        // A file's link (or what else its details dialog holds) changed
-        // somewhere: the lists carry the card's marks, and an open dialog
-        // reads the file's own record.
+        // A file's link or photos changed somewhere: the lists carry the
+        // card's marks, and an open dialog reads the file's own record and
+        // its photo list.
         const fileId = (message as unknown as { data?: { file_id?: number } }).data?.file_id;
         debouncedInvalidate('library-files');
         if (typeof fileId === 'number') {
           queryClient.invalidateQueries({ queryKey: ['library-file', fileId] });
+          queryClient.invalidateQueries({ queryKey: ['library-file-photos', fileId] });
         }
         break;
       }

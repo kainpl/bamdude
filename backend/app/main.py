@@ -51,6 +51,7 @@ from backend.app.api.routes import (
     library,
     library_assembly,
     library_notes,
+    library_photos,
     library_tags,
     library_thumbnail_jobs,
     library_trash,
@@ -12957,6 +12958,11 @@ PUBLIC_API_PATTERNS: tuple[re.Pattern[str], ...] = (
     # <img> from the File Manager's viewer. Serves picture types only; the
     # bearer /download beside it has no pattern and stays behind the header.
     re.compile(r"^/api/v1/library/files/\d+/image$"),
+    # /library/files/{id}/photos/{photo}/image and /thumbnail — a photo attached
+    # to a library file, loaded by <img> from the details dialog. Each checks
+    # the parent file's visibility; the list and the writes have no pattern.
+    re.compile(r"^/api/v1/library/files/\d+/photos/\d+/image$"),
+    re.compile(r"^/api/v1/library/files/\d+/photos/\d+/thumbnail$"),
     # /products/{id}/attachment-image/{filename} — a product's gallery
     # pictures, loaded by <img> from the product page. Same reasoning: the
     # bearer-only attachment download deliberately lives under /attachments/
@@ -13560,6 +13566,7 @@ app.include_router(stock.router, prefix=app_settings.api_prefix)
 app.include_router(stock_issues.router, prefix=app_settings.api_prefix)
 app.include_router(library.router, prefix=app_settings.api_prefix)
 app.include_router(library_notes.router, prefix=app_settings.api_prefix)
+app.include_router(library_photos.router, prefix=app_settings.api_prefix)
 app.include_router(library_thumbnail_jobs.router, prefix=app_settings.api_prefix)
 app.include_router(library_tags.router, prefix=app_settings.api_prefix)
 app.include_router(library_trash.router, prefix=app_settings.api_prefix)

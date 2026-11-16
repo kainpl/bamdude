@@ -548,6 +548,10 @@ async def delete_user(
             (await db.execute(select(LibraryFile.id).where(LibraryFile.created_by_id == user_id))).scalars().all()
         )
         await purge_file_product_links(db, list(_doomed_file_ids))
+        # And the photos attached to those files (m233): no cascade on SQLite.
+        from backend.app.services import library_file_photos
+
+        await library_file_photos.forget_files(db, list(_doomed_file_ids))
         await db.execute(delete(LibraryFile).where(LibraryFile.created_by_id == user_id))
     else:
         # Explicitly set created_by_id to NULL for all items (ensures consistent behavior
@@ -608,6 +612,10 @@ async def delete_user(
     await part_stock.detach_user(db, user_id)
     await finished_stock.detach_user(db, user_id)
     await stock_issues.detach_user(db, user_id)
+    # Photos the user attached to library files stay, under their name snapshot (m233).
+    from backend.app.services import library_file_photos
+
+    await library_file_photos.detach_user(db, user_id)
 
     await db.execute(delete(AuthSession).where(AuthSession.account_identity == target_capture.account_identity))
     await db.delete(user)

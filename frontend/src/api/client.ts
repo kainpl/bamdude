@@ -14832,6 +14832,26 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify(data),
     }),
+  // -- photos attached to a library file (m233) --
+  getLibraryFilePhotos: (fileId: number) => request<LibraryFilePhoto[]>(`/library/files/${fileId}/photos`),
+  /** One photo per request: the server answers for exactly this file. */
+  uploadLibraryFilePhoto: (fileId: number, file: File) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    return sendForm<LibraryFilePhoto>(`/library/files/${fileId}/photos`, formData);
+  },
+  updateLibraryFilePhoto: (fileId: number, photoId: number, caption: string | null) =>
+    request<LibraryFilePhoto>(`/library/files/${fileId}/photos/${photoId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ caption }),
+    }),
+  deleteLibraryFilePhoto: (fileId: number, photoId: number) =>
+    request<{ success: boolean }>(`/library/files/${fileId}/photos/${photoId}`, { method: 'DELETE' }),
+  /** A photo full size, and its small copy — `<img>` URLs, so they carry the media token. */
+  getLibraryFilePhotoUrl: (fileId: number, photoId: number) =>
+    withMediaToken(`${API_BASE}/library/files/${fileId}/photos/${photoId}/image`),
+  getLibraryFilePhotoThumbnailUrl: (fileId: number, photoId: number) =>
+    withMediaToken(`${API_BASE}/library/files/${fileId}/photos/${photoId}/thumbnail`),
   /** Set (`https://…`) or clear (`null`) the operator's own link on a file. */
   setLibraryFileExternalUrl: (id: number, externalUrl: string | null) =>
     request<LibraryFile>(`/library/files/${id}/external-url`, {
@@ -15984,6 +16004,8 @@ export interface LibraryFile {
   source_url?: string | null;
   /** The operator's own link (m232) — http(s), set by hand in the details dialog. */
   external_url?: string | null;
+  /** Photos attached to the file (m233). */
+  photos_count?: number;
 }
 
 /** One plate as the library card pages through it (vault 60-specs/library-multiplate-card-spec 4).
@@ -16055,6 +16077,8 @@ export interface LibraryFileListItem {
   source_url?: string | null;
   /** The operator's own link (m232) — http(s), set by hand in the details dialog. */
   external_url?: string | null;
+  /** Photos attached to the file (m233) — the card's photo mark. */
+  photos_count?: number;
   notes_count: number;
   // Successful completions only — the backend increments it on completion, so
   // 0 means "never finished a print", not "never attempted one".
@@ -16154,6 +16178,21 @@ export interface LibraryTagBulkAssignResult {
 }
 
 // gh#3 - User-authored notes attached to library files
+/** A photo attached to a library file (m233). Addressed by its id, through its file. */
+export interface LibraryFilePhoto {
+  id: number;
+  library_file_id: number;
+  /** The name the file came with — for display only. */
+  original_name: string | null;
+  content_type: string;
+  file_size: number;
+  width: number;
+  height: number;
+  caption: string | null;
+  uploaded_by_name: string | null;
+  created_at: string;
+}
+
 export interface LibraryFileNote {
   id: number;
   library_file_id: number;

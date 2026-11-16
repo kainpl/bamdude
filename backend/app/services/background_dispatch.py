@@ -4265,6 +4265,10 @@ class BackgroundDispatchService:
                         # clears ``product_plates`` — it has no cascade from the
                         # library file on SQLite, where FK actions never fire.
                         await purge_file_product_links(db, [library_id])
+                        # The transient file's photos, if anyone attached one (m233).
+                        from backend.app.services import library_file_photos
+
+                        await library_file_photos.forget_files(db, [library_id])
                         transient = await db.get(LibraryFile, library_id)
                         if transient is not None:
                             await db.delete(transient)

@@ -12208,7 +12208,22 @@ export default {
     linkHint: 'A web page of your choice for this file: a model page, a datasheet. It must start with http:// or https://. Everyone who can see the file sees the link.',
     openLink: 'Open link',
     removeLink: 'Remove link',
-    saveFailed: 'The link could not be saved.'
+    saveFailed: 'The link could not be saved.',
+    photos: {
+      title: 'Photos',
+      none: 'No photos yet.',
+      add: 'Add photos',
+      hint: 'PNG, JPEG or WebP, up to 20 MB each — choose several or drop them here. Location and other metadata are removed from a photo before it is saved.',
+      uploading: 'Uploading {{done}} of {{total}}…',
+      uploadFailed: 'The request failed.',
+      view: 'View photo: {{name}}',
+      unnamed: 'Photo {{n}}',
+      caption: 'Caption',
+      captionPlaceholder: 'Add a caption',
+      delete: 'Delete photo',
+      confirmDelete: 'Delete this photo?',
+      count: 'Photos: {{count}}'
+    }
   },
 
   filePreview: {

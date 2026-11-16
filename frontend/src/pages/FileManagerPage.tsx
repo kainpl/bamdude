@@ -1345,7 +1345,7 @@ function FileCard({ file, isSelected, onSelect, onOpenArchives, onDelete, onDown
         {/* Notes overlay - bottom-left corner */}
         <div className="absolute bottom-1 left-2 flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
           <LibraryFileNotesButton fileId={file.id} initialCount={file.notes_count} variant="overlay" />
-          <LibraryFileMarks file={file} variant="overlay" />
+          <LibraryFileMarks file={file} variant="overlay" onPhotos={onDetails ? () => onDetails(file) : undefined} />
         </div>
         {/* Product link overlay - bottom-right, same height as notes */}
         {onLink && (
@@ -4175,7 +4175,7 @@ export function FileManagerPage() {
                           overlay button (line 1029). MakerWorld imports and
                           unsliced project 3MFs deserve notes too. */}
                       <LibraryFileNotesButton fileId={file.id} initialCount={file.notes_count} variant="inline" />
-                      <LibraryFileMarks file={file} variant="inline" />
+                      <LibraryFileMarks file={file} variant="inline" onPhotos={() => setDetailsFile(file)} />
                       {/* Print + Schedule — gated on isPrintable because they
                           send G-code to a printer. Unsliced 3MFs go through
                           the slice modal first (separate button further down). */}

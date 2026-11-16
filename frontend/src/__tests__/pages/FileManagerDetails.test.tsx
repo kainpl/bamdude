@@ -36,6 +36,7 @@ const base = {
 const mockFiles = [
   { ...base, id: 7, filename: 'linked.stl', file_type: 'stl', external_url: 'https://www.printables.com/model/1' },
   { ...base, id: 8, filename: 'plain.stl', file_type: 'stl', external_url: null },
+  { ...base, id: 10, filename: 'pictured.stl', file_type: 'stl', external_url: null, photos_count: 3 },
   { ...base, id: 9, filename: 'odd.stl', file_type: 'stl', external_url: 'javascript:alert(1)' },
 ];
 
@@ -48,6 +49,7 @@ function mockLibrary() {
         meta: { total: mockFiles.length, current_page: 1, per_page: 50, last_page: 1 },
       }),
     ),
+    http.get('/api/v1/library/files/:id/photos', () => HttpResponse.json([])),
     http.get('/api/v1/library/files/:id', ({ params }) => {
       const file = mockFiles.find((f) => f.id === Number(params.id));
       return HttpResponse.json({ ...file, folder_name: null, file_hash: null, updated_at: '2024-01-01T00:00:00Z' });
@@ -101,6 +103,18 @@ describe.each(['grid', 'list'] as const)('file details from the %s view', (viewM
 
     await userEvent.click(within(dialog).getAllByRole('button', { name: 'Close' })[0]);
     expect(screen.queryByRole('dialog', { name: 'File details' })).not.toBeInTheDocument();
+  });
+
+  it('marks a file that has photos with their number, and the mark opens its details', async () => {
+    render(<FileManagerPage />);
+
+    const mark = within(await itemOf('pictured.stl')).getByRole('button', { name: 'Photos: 3' });
+    expect(mark).toHaveTextContent('3');
+    expect(within(await itemOf('plain.stl')).queryByRole('button', { name: /^Photos:/ })).not.toBeInTheDocument();
+
+    await userEvent.click(mark);
+    const dialog = await screen.findByRole('dialog', { name: 'File details' });
+    expect(within(dialog).getByText('pictured.stl')).toBeInTheDocument();
   });
 
   it("marks a file that has a link, and the mark opens the link apart from the app", async () => {
