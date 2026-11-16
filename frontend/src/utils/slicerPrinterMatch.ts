@@ -105,6 +105,19 @@ function normalizeModelFragment(s: string): string {
   return s.replace(/\s+/g, '').toLowerCase();
 }
 
+/**
+ * Drop the GUI's `"# "` prefix of a cloned system preset.
+ *
+ * Editing a system printer preset saves a copy named `"# Bambu Lab X1 Carbon
+ * 0.4 nozzle"`. Compared raw, that name is in no `compatible_printers` list
+ * and fails the "Bambu Lab ..." test of the name rule, so every process and
+ * filament preset read as made for another printer. The sidecar strips the
+ * same prefix before it slices.
+ */
+export function stripUserClonePrefix(name: string): string {
+  return name.replace(/^#\s*/, '').trim();
+}
+
 // Bambu Studio's naming convention for bundled presets: the 0.4 nozzle is
 // the default and its variants drop the nozzle suffix; 0.2 / 0.6 / 0.8
 // carry an explicit "<size> nozzle" segment. So a process with no suffix
@@ -137,7 +150,7 @@ function extractBblToken(presetName: string): { token: string; nozzle: string | 
 // nozzle]" printer preset name. Returns null for non-Bambu printer
 // presets — there is no reliable name-based match against those.
 function extractPrinterPresetModel(printerPresetName: string): { model: string; nozzle: string | null } | null {
-  const m = printerPresetName.match(/^Bambu Lab\s+(.+)$/i);
+  const m = stripUserClonePrefix(printerPresetName).match(/^Bambu Lab\s+(.+)$/i);
   if (!m) return null;
   const { stripped, nozzle } = takeNozzleSuffix(m[1]);
   return stripped ? { model: stripped, nozzle } : null;
@@ -285,7 +298,10 @@ export function presetCompatibility(
   // authoritative when set.
   const compat = preset.compatible_printers;
   if (compat && compat.length > 0) {
-    return compat.includes(selectedPrinterName) ? 'match' : 'mismatch';
+    // Compared with the clone prefix off both sides: a list names the system
+    // printer while the selected clone carries "# ", or the other way round.
+    const selected = stripUserClonePrefix(selectedPrinterName);
+    return compat.some((name) => stripUserClonePrefix(name) === selected) ? 'match' : 'mismatch';
   }
   // (2) BambuStudio's `@BBL <model>` name convention — covers cloud /
   // standard presets that don't carry compatible_printers.

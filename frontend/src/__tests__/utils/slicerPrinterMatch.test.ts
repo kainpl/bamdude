@@ -400,3 +400,34 @@ describe('H2D Pro spelled H2DP in preset names (upstream e9daa212, #2982)', () =
     );
   });
 });
+
+describe('presetCompatibility — the GUI clone prefix on a printer preset', () => {
+  // Editing a system printer preset saves a copy the GUI names
+  // "# Bambu Lab X1 Carbon 0.4 nozzle". Compared raw, it is in nobody's
+  // compatible_printers and does not start with "Bambu Lab".
+  const idx = buildCompatibilityIndex(PRINTER_MODELS);
+  const CLONE = '# Bambu Lab X1 Carbon 0.4 nozzle';
+
+  it('matches a compatible_printers list naming the system printer', () => {
+    expect(
+      presetCompatibility({ name: 'My PLA', compatible_printers: [X1C] }, 'filament', CLONE, idx),
+    ).toBe('match');
+  });
+
+  it('still tells another printer apart', () => {
+    expect(
+      presetCompatibility({ name: 'My PLA', compatible_printers: [P2S] }, 'filament', CLONE, idx),
+    ).toBe('mismatch');
+  });
+
+  it('matches a list that carries the prefix when the plain printer is selected', () => {
+    expect(
+      presetCompatibility({ name: 'My PLA', compatible_printers: [CLONE] }, 'filament', X1C, idx),
+    ).toBe('match');
+  });
+
+  it('reads the model of a prefixed printer for the @BBL name rule', () => {
+    expect(presetCompatibility({ name: '0.20mm Standard @BBL X1C' }, 'process', CLONE, idx)).toBe('match');
+    expect(presetCompatibility({ name: '0.20mm Standard @BBL P2S' }, 'process', CLONE, idx)).toBe('mismatch');
+  });
+});
