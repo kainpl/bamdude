@@ -79,7 +79,7 @@ def _provider_for_url(url: str) -> ModelProvider:
     """The registered provider that claims *url* — a pasted link for a host
     nobody serves is a client-input problem, a 400."""
     provider = registry.find_for_url(url)
-    if provider is None:
+    if provider is None or getattr(provider, "configured_origin", False):
         raise HTTPException(status_code=400, detail=f"This link is not from a supported model site: {url!r}")
     return provider
 
@@ -92,11 +92,15 @@ def _provider_for_source(source_type: str) -> ModelProvider:
     repr of its argument and would ship the quotes to the client.
     """
     try:
-        return registry.get(source_type)
-    except KeyError as exc:
-        raise HTTPException(
-            status_code=400, detail=f"No model provider registered for source_type {source_type!r}"
-        ) from exc
+        provider = registry.get(source_type)
+    except KeyError:
+        provider = None
+    # A provider with an administrator-configured origin (Manyfold) has its own routes, with its
+    # own publication check and file naming; it is never reached through these, whatever the ids
+    # look like — and before any call to it or the creation of its folder.
+    if provider is None or getattr(provider, "configured_origin", False):
+        raise HTTPException(status_code=400, detail=f"No model provider registered for source_type {source_type!r}")
+    return provider
 
 
 async def _authorize_for_provider(

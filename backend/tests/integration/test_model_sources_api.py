@@ -441,6 +441,29 @@ class TestImport:
         assert response.status_code >= 400
         assert (await db_session.execute(select(LibraryFile))).all() == []
 
+    async def test_makerworlds_door_refuses_manyfold_even_for_ids_that_look_like_its_own(
+        self, async_client, fake, db_session
+    ):
+        """Review MB-M5: all-digit Manyfold ids got through, without Manyfold's publication check."""
+        await connect(async_client)
+        fake.models["12345"] = {
+            "name": "Digits",
+            "files": {"678": ("Clip", "model/stl", "clip.stl", STL)},
+            "preview": None,
+            "creator": None,
+        }
+        fake.requests.clear()
+        response = await async_client.post(
+            "/api/v1/makerworld/import", json={"model_id": 12345, "profile_id": 678, "source_type": "manyfold"}
+        )
+        assert response.status_code == 400, response.text
+        assert fake.requests == [], "MakerWorld's route called Manyfold"
+        assert (await db_session.execute(select(LibraryFile))).all() == []
+        assert (await db_session.execute(select(LibraryFolder).where(LibraryFolder.name == "Manyfold"))).all() == []
+        # The same file through Manyfold's own door is fine.
+        own = await async_client.post(f"{API}/import", json={"model_id": "12345", "file_id": "678"})
+        assert own.status_code == 200, own.text
+
 
 class TestProvenance:
     async def test_the_file_details_say_where_an_imported_file_came_from(self, async_client, fake):
