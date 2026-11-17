@@ -13,9 +13,10 @@ the one import core (``services/model_import``).
 A source's refusals are answered as ``{"error": code, "message": …}`` with 400 /
 404 / 409 / 413 / 502 — never 401 or 403, which are words about OUR session.
 
-Below it, the editor of the installation's one Manyfold connection
-(``settings:read`` / ``settings:update``): the client secret is write-only and
-belongs to its destination.
+Below it, the editor of the installation's one Manyfold connection: read under
+``settings:read`` (presence of the secret, never its value); saved, cleared and
+tested only by a real administrator who also holds ``settings:update``. The
+client secret is write-only and belongs to its destination.
 """
 
 from __future__ import annotations
@@ -29,7 +30,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.core.auth import RequirePermission, require_media_permission
+from backend.app.core.auth import RequireAdmin, RequirePermission, require_media_permission
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.models.library import LibraryFile
@@ -439,7 +440,10 @@ async def get_connection(
     return _presence(await manyfold_config.stored_values(db))
 
 
-@connection_router.put("", response_model=ManyfoldConnection)
+# A credential and its destination are administrative even when a custom group holds
+# ``settings:update`` (as Obico's and Home Assistant's are): the write and the draft test — which
+# makes the server call an address the caller typed — need a real administrator on top of it.
+@connection_router.put("", response_model=ManyfoldConnection, dependencies=[RequireAdmin()])
 async def save_connection(
     body: ManyfoldConnectionUpdate,
     db: AsyncSession = Depends(get_db),
@@ -456,7 +460,7 @@ async def save_connection(
     return _presence(merged)
 
 
-@connection_router.post("/test", response_model=ManyfoldConnectionTest)
+@connection_router.post("/test", response_model=ManyfoldConnectionTest, dependencies=[RequireAdmin()])
 async def test_connection(
     body: ManyfoldConnectionUpdate,
     db: AsyncSession = Depends(get_db),

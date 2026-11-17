@@ -168,6 +168,52 @@ class TestConnection:
         assert fake.requests == []
 
 
+class TestConnectionNeedsARealAdministrator:
+    """Review MB-I5: a custom group with ``settings:update`` is not an administrator."""
+
+    BODY = {"enabled": True, "url": BASE, "client_id": CLIENT_ID, "client_secret": CLIENT_SECRET}
+
+    async def test_settings_update_alone_cannot_aim_the_installation_at_another_server(
+        self, async_client, fake, db_session
+    ):
+        headers = await limited("mf-settings", ["settings:read", "settings:update", "manyfold:view"])
+        response = await async_client.put(CONNECTION, json=self.BODY, headers=headers)
+        assert response.status_code == 403, response.text
+        stored = (await db_session.execute(select(Settings.value).where(Settings.key == "manyfold_url"))).scalar()
+        assert not stored
+        assert fake.requests == []
+
+    async def test_settings_update_alone_cannot_probe_an_address_or_clear_the_secret(self, async_client, fake):
+        await connect(async_client)
+        fake.requests.clear()
+        headers = await limited("mf-settings2", ["settings:read", "settings:update"])
+        probe = await async_client.post(
+            f"{CONNECTION}/test",
+            json={"url": "http://192.168.1.20:3214", "client_id": "x", "client_secret": "y"},
+            headers=headers,
+        )
+        assert probe.status_code == 403, probe.text
+        cleared = await async_client.put(
+            CONNECTION, json={"enabled": False, "secret_actions": {"manyfold_client_secret": "clear"}}, headers=headers
+        )
+        assert cleared.status_code == 403, cleared.text
+        assert fake.requests == [] and fake.sockets.attempts == []
+        assert (await async_client.get(CONNECTION)).json()["client_secret_configured"] is True
+
+    async def test_an_api_key_cannot_edit_or_test_the_connection(self, async_client, fake):
+        headers = {"X-API-Key": "bd_not-a-real-key"}
+        assert (await async_client.put(CONNECTION, json=self.BODY, headers=headers)).status_code in (401, 403)
+        assert (await async_client.post(f"{CONNECTION}/test", json=self.BODY, headers=headers)).status_code in (
+            401,
+            403,
+        )
+        assert fake.requests == []
+
+    async def test_the_administrator_still_can(self, async_client, fake):
+        assert (await async_client.put(CONNECTION, json=self.BODY)).status_code == 200
+        assert (await async_client.post(f"{CONNECTION}/test", json={})).json()["ok"] is True
+
+
 class TestCatalogue:
     async def test_status_says_whether_it_is_connected(self, async_client, fake):
         assert (await async_client.get(f"{API}/status")).json() == {
