@@ -293,14 +293,37 @@ class TestRequest:
     async def test_the_queue_is_bounded_per_caller(self, async_client, printer_files):
         printer_files.transport.files.update({f"/f{i}.txt": b"x" for i in range(6)})
         printer_files.transport.block()
-        jobs = [await _start(async_client, printer_files, [f"/f{i}.txt"]) for i in range(4)]
+        # All four at once: a job is "queued" until its task takes a slot, and a burst
+        # must not be refused while slots are free.
+        jobs = await asyncio.gather(*(_start(async_client, printer_files, [f"/f{i}.txt"]) for i in range(4)))
         await asyncio.wait_for(printer_files.transport.entered.wait(), 3)
         listed = (await async_client.get(printer_files.base)).json()["jobs"]
-        assert [j["job_id"] for j in listed] == [j["job_id"] for j in jobs]
+        assert sorted(j["job_id"] for j in listed) == sorted(j["job_id"] for j in jobs)
         assert sorted(j["phase"] for j in listed) == ["preparing", "preparing", "queued", "queued"]
         refused = await async_client.post(printer_files.base, json={"paths": ["/f5.txt"]})
         assert refused.status_code == 429 and refused.json()["detail"]["error"] == "download_user_limit"
         assert refused.headers["retry-after"] == "30"
+
+    async def test_the_one_request_downloads_wait_in_the_same_bounded_queue(
+        self, async_client, printer_files, monkeypatch
+    ):
+        monkeypatch.setattr(media_downloads, "MAX_WAITING", 1)
+        printer_files.transport.files.update({f"/f{i}.txt": b"x" for i in range(5)})
+        printer_files.transport.block()
+        url = f"/api/v1/printers/{printer_files.printer.id}/files/download"
+        held = [asyncio.create_task(async_client.get(url, params={"path": f"/f{i}.txt"})) for i in range(3)]
+        await asyncio.wait_for(printer_files.transport.entered.wait(), 3)
+        for _ in range(100):
+            if sum(1 for job in media_download_runtime.jobs.values() if job.waiting) == 1:
+                break
+            await asyncio.sleep(0.02)
+        # Two are being prepared, one waits: the bound is reached, for the old endpoints too.
+        refused = await async_client.get(url, params={"path": "/f4.txt"})
+        assert refused.status_code == 429 and refused.json()["detail"]["error"] == "download_queue_full"
+        printer_files.transport.worker_ended.set()
+        printer_files.transport.hold.set()
+        answers = await asyncio.gather(*held)
+        assert [a.status_code for a in answers] == [200, 200, 200]
 
 
 class TestCancel:

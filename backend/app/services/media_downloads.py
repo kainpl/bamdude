@@ -519,12 +519,18 @@ class MediaDownloadRuntime:
         if len(sources) > 1:
             as_zip = True
         capture = scope.descriptor.capture
+        # A job reads ``queued`` from its creation until its task takes a slot — also when a
+        # slot is free. Only the jobs beyond the free slots are really waiting, so a burst of
+        # requests is not refused while nothing is running. A compatibility request's hidden
+        # job waits for the same slots and counts toward the same global bound.
+        running = sum(1 for job in self.jobs.values() if job.phase in (PHASE_PREPARING, PHASE_CANCELLING))
+        free = max(0, MAX_ACTIVE - running)
+        queued = [job for job in self.jobs.values() if job.waiting]
+        if len(queued) - free >= MAX_WAITING:
+            raise DownloadRefused(429, "download_queue_full", "Too many downloads are waiting", retry_after=30)
         if not hidden:
-            waiting = [job for job in self.jobs.values() if job.waiting and not job.hidden]
-            if len(waiting) >= MAX_WAITING:
-                raise DownloadRefused(429, "download_queue_full", "Too many downloads are waiting", retry_after=30)
-            mine = [job for job in waiting if self._same_caller(job.capture, capture)]
-            if len(mine) >= MAX_WAITING_PER_USER:
+            mine = [job for job in queued if not job.hidden and self._same_caller(job.capture, capture)]
+            if len(mine) - free >= MAX_WAITING_PER_USER:
                 raise DownloadRefused(429, "download_user_limit", "You already have downloads waiting", retry_after=30)
         known = [s.advisory_size for s in sources if s.advisory_size and s.advisory_size > 0]
         need = sum(known) + (max(known) if as_zip and known else 0)
