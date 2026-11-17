@@ -366,6 +366,33 @@ class TestImport:
         model = (await async_client.get(f"{API}/models/{MODEL}", headers=headers)).json()
         assert model["already_imported"] == {}
 
+    async def test_a_hidden_duplicate_is_answered_exactly_as_an_upload_of_the_same_bytes_is(self, async_client, fake):
+        """Review MB-M9: the import follows the library's own rule for a duplicate the caller cannot see.
+
+        An ordinary upload of bytes another user's hidden file already holds is refused by the
+        library's shared writer (``find_reusable_row``: it neither hands the hidden row over nor
+        makes a second copy). The import answers the same way — same status, same body, no id.
+        """
+        await connect(async_client)
+        mine = (await async_client.post(f"{API}/import", json={"model_id": MODEL, "file_id": STL_FILE})).json()
+        headers = await limited("mf-own2", ["manyfold:view", "manyfold:import", "library:upload", "library:read_own"])
+        upload = await async_client.post(
+            "/api/v1/library/files", files={"file": ("clip.stl", STL, "application/octet-stream")}, headers=headers
+        )
+        imported = await async_client.post(
+            f"{API}/import", json={"model_id": MODEL, "file_id": STL_FILE}, headers=headers
+        )
+        assert upload.status_code == 400, upload.text
+        assert (imported.status_code, imported.json()) == (upload.status_code, upload.json())
+        assert str(mine["library_file_id"]) not in imported.text and "clip" not in imported.text
+        # A different file of the same model, which nobody imported, is theirs to import.
+        other = await async_client.post(
+            f"{API}/import", json={"model_id": MODEL, "file_id": SUPPORTED_FILE}, headers=headers
+        )
+        assert other.status_code == 200, other.text
+        model = (await async_client.get(f"{API}/models/{MODEL}", headers=headers)).json()
+        assert list(model["already_imported"]) == [SUPPORTED_FILE]
+
     @pytest.mark.parametrize("file_id", ["z9b0c1d2f3g4", "h5j6k7l8m9n0", "p1q2r3s4t5v6"])
     async def test_pictures_documents_and_archives_are_not_imported(self, async_client, fake, db_session, file_id):
         await connect(async_client)
