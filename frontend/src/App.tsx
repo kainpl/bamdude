@@ -227,7 +227,8 @@ class ErrorBoundary extends React.Component<
   }
 }
 
-function AppRoutes() {
+/** Exported for the route tests: the table itself, rendered under a router of their own. */
+export function AppRoutes() {
   return (
     <WorkingPlanNavigationProvider>
       <Routes>
