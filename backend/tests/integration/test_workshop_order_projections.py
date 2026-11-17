@@ -67,8 +67,9 @@ async def test_a_reader_of_the_order_sees_its_prints_as_minimal_rows(async_clien
     ).json()
     assert row["id"] == desk["archive"]
     assert row["restricted"] is True
-    assert row["print_name"] == "Shade"
     assert row["quantity"] == 2
+    # The print's and the file's names are the archive section's (G01 A).
+    assert "print_name" not in row and "filename" not in row
     assert "notes" not in row
     assert "file_path" not in row
 

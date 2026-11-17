@@ -12,6 +12,7 @@ from sqlalchemy import event, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from backend.app.core.config import settings
+from backend.app.core.credential_config import initialize_credential_config_anchor
 from backend.app.core.database import Base, _strip_tz_from_params, configure_sqlite_connection, import_all_models
 
 
@@ -44,6 +45,8 @@ async def test_engine(monkeypatch, tmp_path):
         if schema:
             await connection.execute(text(f'CREATE SCHEMA "{schema}"'))
         await connection.run_sync(Base.metadata.create_all)
+        # What ``init_db`` and conftest's engine create: a settings save without it is a 503.
+        await initialize_credential_config_anchor(connection)
     monkeypatch.setattr("backend.app.core.database.async_session", async_sessionmaker(engine, expire_on_commit=False))
     yield engine
     async with engine.begin() as connection:

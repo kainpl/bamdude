@@ -47,6 +47,12 @@ def _valid_number(column):
     return and_(column >= 0, column <= 1e308)
 
 
+def _flag(key):
+    """A JSON ``true`` in ``extra_data``. SQLite extracts it as the INTEGER 1, which equals no string
+    until it is cast to text; PostgreSQL extracts the text ``true``."""
+    return cast(Archive.extra_data[key].as_string(), String).in_(("true", "1"))
+
+
 def _facts(db, conditions):
     if db.get_bind().dialect.name == "postgresql":
         seconds = cast(extract("epoch", Archive.completed_at - Archive.started_at), Float)
@@ -55,8 +61,8 @@ def _facts(db, conditions):
     endpoints = and_(Archive.started_at.isnot(None), Archive.completed_at.isnot(None))
     positive = and_(endpoints, Archive.completed_at > Archive.started_at)
     synthetic = or_(
-        Archive.extra_data["recovered_by_startup_sweep"].as_string().in_(("true", "1")),
-        Archive.extra_data["recovered_by_cleanup"].as_string().in_(("true", "1")),
+        _flag("recovered_by_startup_sweep"),
+        _flag("recovered_by_cleanup"),
         and_(
             cast(Archive.extra_data["operator_recovery_end"], String).isnot(None),
             cast(Archive.extra_data["operator_recovery_end"], String) != "null",
@@ -78,7 +84,7 @@ def _facts(db, conditions):
         (kind == "unavailable", "unavailable"),
         (kind == "estimated", "estimated"),
         (
-            and_(kind == "measured", Archive.extra_data["energy_is_approximate"].as_string().in_(("true", "1"))),
+            and_(kind == "measured", _flag("energy_is_approximate")),
             "approximate",
         ),
         (kind == "measured", "measured"),

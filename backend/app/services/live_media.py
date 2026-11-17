@@ -38,6 +38,7 @@ MEDIA_ROUTES = frozenset(
         "/cameras/{camera_id}/snapshot",
         "/archives/{archive_id}/thumbnail",
         "/archives/{archive_id}/timelapse",
+        "/archives/{archive_id}/photos/{filename}",
         "/archives/{archive_id}/qrcode",
         "/archives/{archive_id}/plate-preview",
         "/archives/{archive_id}/plate-thumbnail/{plate_index}",

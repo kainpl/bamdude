@@ -123,6 +123,7 @@ async def test_actual_stack_and_route_inventory(newline):
     }
     assert writes == {
         ("DELETE", "/archives/{archive_id}/timelapse"),
+        ("DELETE", "/archives/{archive_id}/photos/{filename}"),
         ("POST", "/projects/{project_id}/cover-image"),
         ("DELETE", "/projects/{project_id}/cover-image"),
         ("PUT", "/products/{product_id}/cover-image"),
@@ -139,6 +140,7 @@ async def test_actual_stack_and_route_inventory(newline):
     "method,path",
     [
         ("DELETE", "/archives/1/timelapse"),
+        ("DELETE", "/archives/1/photos/a.jpg"),
         ("POST", "/projects/1/cover-image"),
         ("DELETE", "/projects/1/cover-image"),
         ("PUT", "/products/1/cover-image"),

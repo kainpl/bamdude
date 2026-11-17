@@ -468,6 +468,19 @@ def _archive_media_admission_bootstrap():
 
 
 @pytest.fixture(autouse=True)
+def _folder_scan_admission_bootstrap():
+    """Every test starts with folder scans admitted, as lifespan startup leaves them.
+
+    A restore test closes them for good, as production does until the restart, and every scan test
+    after it in the same process was refused with 503 -- which test that hit depended on the order
+    the worker happened to run them in. With a scan still running they stay closed.
+    """
+    from backend.app.services import library_scan
+
+    library_scan.open_admission()
+
+
+@pytest.fixture(autouse=True)
 def _printer_file_admission_bootstrap():
     """Every test starts with printer file admission open, as lifespan startup leaves it (G10 A).
 
