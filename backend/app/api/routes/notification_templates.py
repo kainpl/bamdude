@@ -55,6 +55,20 @@ EVENT_NAMES = {
 }
 
 
+def event_display_name(event_type: str) -> str:
+    """The name the editor shows for an event.
+
+    The hand-kept table above first; an event it does not list takes the name of
+    its default template, so a new event is never shown as a raw key.
+    """
+    if event_type in EVENT_NAMES:
+        return EVENT_NAMES[event_type]
+    for template in DEFAULT_TEMPLATES:
+        if template["event_type"] == event_type:
+            return template["name"]
+    return event_type
+
+
 @router.get("", response_model=list[NotificationTemplateResponse])
 @router.get("/", response_model=list[NotificationTemplateResponse])
 async def get_templates(
@@ -74,7 +88,7 @@ async def get_variables(
     return [
         EventVariablesResponse(
             event_type=event_type,
-            event_name=EVENT_NAMES.get(event_type, event_type),
+            event_name=event_display_name(event_type),
             variables=variables,
         )
         for event_type, variables in EVENT_VARIABLES.items()
