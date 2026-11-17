@@ -349,6 +349,7 @@ def import_all_models() -> None:
         ams_setting_audit,
         api_key,
         archive,
+        archive_media_asset,
         archive_part,
         auth_ephemeral,
         auth_session,

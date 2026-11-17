@@ -2300,6 +2300,13 @@ class ArchiveService:
 
         await delete_for_archive(self.db, archive_id)
 
+        # The registry of this archive's videos goes with it (m237). Explicit
+        # for the same reason: the CASCADE fires on PostgreSQL only, and a row
+        # left under this id would be read as the next archive's video source.
+        from backend.app.services import archive_media
+
+        await archive_media.forget_archives(self.db, [archive_id])
+
         # Completion receipts are disposable run-bound acknowledgements.  The
         # model declares CASCADE, but SQLite does not enforce it in every
         # deployment, so remove them explicitly with the hard delete.
