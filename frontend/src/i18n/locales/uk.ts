@@ -1611,7 +1611,7 @@ export default {
       noPrintersFoundNetwork: 'Принтерів у мережі не знайдено.',
       allConfigured: 'Усі знайдені принтери вже налаштовані.',
       subnetToScan: 'Підмережа для сканування',
-      dockerNote: 'Виявлено Docker. Введіть підмережу принтера в нотації CIDR. Потрібен network_mode: host у docker-compose.yml.',
+      dockerNote: 'Виявлено Docker. Введіть підмережу принтера в нотації CIDR. Контейнер має бути в мережі принтера: режим host, macvlan або ipvlan.',
       customSubnetOption: 'Інша підмережа...',
       customSubnetLabel: 'Інша підмережа (CIDR)',
       customSubnetNote: 'Вкажіть іншу підмережу, якщо принтер у мережі, відмінній від цього сервера. Порти FTP (990) та MQTT (8883) мають бути доступні через межу маршрутизації.',

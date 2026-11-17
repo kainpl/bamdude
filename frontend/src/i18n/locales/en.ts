@@ -1587,7 +1587,7 @@ export default {
       noPrintersFoundNetwork: 'No printers found on the network.',
       allConfigured: 'All discovered printers are already configured.',
       subnetToScan: 'Subnet to scan',
-      dockerNote: 'Docker detected. Enter your printer\'s subnet in CIDR notation. Requires network_mode: host in docker-compose.yml.',
+      dockerNote: 'Docker detected. Enter your printer\'s subnet in CIDR notation. The container must be on the same network as the printer: host, macvlan or ipvlan networking.',
       customSubnetOption: 'Custom subnet...',
       customSubnetLabel: 'Custom subnet (CIDR)',
       customSubnetNote: 'Use a custom subnet if your printer is on a different network than this server. The FTP (990) and MQTT (8883) ports must be reachable across the routing boundary.',
