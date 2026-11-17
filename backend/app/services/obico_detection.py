@@ -447,7 +447,11 @@ class ObicoDetectionService:
         detections = payload.get("detections", []) if isinstance(payload, dict) else []
         responded_at = datetime.now(timezone.utc)
         current_p = score_from_detections(detections)
-        state = self._states[printer_id]
+        state = self._states.get(printer_id)
+        if state is None:
+            # The printer was deleted while its frame was being judged: its state left with it
+            # (``printer_deletion``), and a verdict written now would greet the next printer with the id.
+            return
         score = state.update(current_p)
         verdict = classify(score, settings["sensitivity"])
         self._last_class[printer_id] = verdict

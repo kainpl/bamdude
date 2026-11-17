@@ -1095,6 +1095,26 @@ def delete_calibration(printer_id: int, plate_type: str | None = None) -> bool:
     return detector.delete_calibration(printer_id, plate_type)
 
 
+def forget_printer_references(printer_id: int) -> int:
+    """Remove every plate reference file of a deleted printer; returns how many.
+
+    The files are named by the printer's id, and SQLite gives a deleted id to
+    the next printer created: it would read as calibrated and have its plate
+    compared with another machine's bed (upstream 578add28d). Needs no OpenCV.
+    """
+    directory = _get_calibration_dir()
+    if not directory.is_dir():
+        return 0
+    removed = 0
+    for path in directory.glob(f"printer_{int(printer_id)}_*"):
+        if path.is_file():
+            path.unlink(missing_ok=True)
+            removed += 1
+    if removed:
+        logger.info("Removed %s plate reference file(s) of deleted printer %s", removed, printer_id)
+    return removed
+
+
 def is_plate_detection_available() -> bool:
     """Check if plate detection feature is available (OpenCV installed)."""
     return OPENCV_AVAILABLE
