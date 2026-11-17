@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { CheckCircle2, Library, Loader2, XCircle } from 'lucide-react';
@@ -10,8 +10,11 @@ import { credentialDraft } from '../utils/credentialDraft';
 import { Button } from './Button';
 import { Card, CardContent, CardHeader } from './Card';
 import { SecretInput } from './SecretInput';
+import { useManyfoldRefusal } from './manyfoldRefusal';
 
 const SECRET_KEY = 'manyfold_client_secret';
+/** The server's refusal to keep a stored secret for a changed address or client ID. */
+const SECRET_REQUIRED = 'manyfold_secret_required';
 const inputClass =
   'w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white disabled:opacity-50';
 
@@ -28,15 +31,27 @@ export function ManyfoldConnectionCard() {
   const { hasPermission } = useAuth();
   const { showToast } = useToast();
   const queryClient = useQueryClient();
-  const canEdit = hasPermission('settings:update');
+  const refusal = useManyfoldRefusal();
+  // The server has the last word on who may change the connection (it may ask for more than
+  // `settings:update`): a save or test it forbids turns the card read-only for this user.
+  const [writeForbidden, setWriteForbidden] = useState(false);
+  const canEdit = hasPermission('settings:update') && !writeForbidden;
 
-  const saved = useQuery({ queryKey: ['manyfold-connection'], queryFn: () => api.getManyfoldConnection() });
+  const saved = useQuery({
+    queryKey: ['manyfold-connection'],
+    queryFn: () => api.getManyfoldConnection(),
+    retry: false,
+  });
   const [enabled, setEnabled] = useState(false);
   const [url, setUrl] = useState('');
   const [clientId, setClientId] = useState('');
   const [secret, setSecret] = useState('');
   const [secretAction, setSecretAction] = useState<SecretAction>('keep');
   const [tested, setTested] = useState<ManyfoldConnectionTest | null>(null);
+  // The card must have the secret before it can go on (said in words under the field).
+  const [secretNeeded, setSecretNeeded] = useState(false);
+  // "Replace" chosen by the card because the address or client ID was edited — not by the admin.
+  const autoReplace = useRef(false);
 
   useEffect(() => {
     if (!saved.data) return;
@@ -45,7 +60,43 @@ export function ManyfoldConnectionCard() {
     setClientId(saved.data.client_id);
     setSecret('');
     setSecretAction(saved.data.client_secret_configured ? 'keep' : 'replace');
+    setSecretNeeded(false);
+    autoReplace.current = false;
   }, [saved.data]);
+
+  const storedSecret = saved.data?.client_secret_configured === true;
+  const differs = (nextUrl: string, nextClientId: string) =>
+    saved.data !== undefined && (nextUrl.trim() !== saved.data.url || nextClientId.trim() !== saved.data.client_id);
+  // A stored secret belongs to the address and client ID it was saved for (the server
+  // refuses to keep it for another): editing either asks for the secret at once.
+  const destinationChanged = storedSecret && differs(url, clientId);
+  const editDestination = (nextUrl: string, nextClientId: string) => {
+    setUrl(nextUrl);
+    setClientId(nextClientId);
+    setTested(null); // the test line was about another draft
+    if (!storedSecret) return;
+    if (differs(nextUrl, nextClientId)) {
+      if (secretAction === 'keep') {
+        autoReplace.current = true;
+        setSecretAction('replace');
+      }
+    } else if (autoReplace.current && secretAction === 'replace' && !secret) {
+      autoReplace.current = false;
+      setSecretAction('keep');
+      setSecretNeeded(false);
+    }
+  };
+  /** The server will not keep the secret: open the field and say why. */
+  const askForSecret = () => {
+    setSecretAction('replace');
+    setSecretNeeded(true);
+  };
+  /** A replacement of a stored secret with nothing typed is not sent: the server would only refuse it. */
+  const secretMissing = () => {
+    if (!(storedSecret && secretAction === 'replace' && !secret)) return false;
+    setSecretNeeded(true);
+    return true;
+  };
 
   const draft = (): ManyfoldConnectionDraft => {
     // "Replace" with nothing typed, where nothing is stored, is no change — not an empty replacement.
@@ -56,31 +107,62 @@ export function ManyfoldConnectionCard() {
     if (credential.secret_actions) body.secret_actions = credential.secret_actions;
     return body;
   };
-  const refusal = (error: unknown) =>
-    error instanceof ApiError && error.code
-      ? t(`manyfold.errors.${error.code}`, { defaultValue: error.message })
-      : error instanceof Error
-        ? error.message
-        : t('manyfold.errors.manyfold_failed');
+  /** A refusal that is about this user's rights, not about the draft. */
+  const forbidden = (error: unknown) => {
+    if (!(error instanceof ApiError && error.status === 403)) return false;
+    setWriteForbidden(true);
+    return true;
+  };
 
   const save = useMutation({
     mutationFn: () => api.saveManyfoldConnection(draft()),
     onSuccess: (connection) => {
       queryClient.setQueryData(['manyfold-connection'], connection);
+      // The secret is written: let go of it here, not when the cached answer changes —
+      // an answer equal to the cached one (only the secret was replaced) changes nothing there.
+      setSecret('');
+      setSecretAction(connection.client_secret_configured ? 'keep' : 'replace');
+      setSecretNeeded(false);
+      autoReplace.current = false;
       queryClient.invalidateQueries({ queryKey: ['manyfold-status'] });
       queryClient.invalidateQueries({ queryKey: ['manyfold-models'] });
+      // A model read from the previous address is not this library's.
+      queryClient.invalidateQueries({ queryKey: ['manyfold-model'] });
       setTested(null);
       showToast(t('manyfold.connectionSaved'), 'success');
     },
-    onError: (error) => showToast(refusal(error), 'error'),
+    onError: (error) => {
+      setTested(null);
+      if (error instanceof ApiError && error.code === SECRET_REQUIRED) askForSecret();
+      else {
+        forbidden(error);
+        showToast(refusal(error), 'error');
+      }
+    },
   });
   const test = useMutation({
     mutationFn: () => api.testManyfoldConnection(draft()),
-    onSuccess: setTested,
-    onError: (error) => setTested({ ok: false, models: null, error: null, message: refusal(error) }),
+    onSuccess: (result) => {
+      if (!result.ok && result.error === SECRET_REQUIRED) askForSecret();
+      else setTested(result);
+    },
+    onError: (error) => {
+      if (error instanceof ApiError && error.code === SECRET_REQUIRED) askForSecret();
+      else {
+        forbidden(error);
+        setTested({ ok: false, models: null, error: null, message: refusal(error) });
+      }
+    },
   });
 
   const pending = save.isPending || test.isPending;
+  // Until the stored connection is here the form is empty, not the connection: nothing in it
+  // may be edited or sent (saving it would wipe the address and switch Manyfold off).
+  const ready = saved.data !== undefined;
+  const locked = !canEdit || pending || !ready;
+
+  // The server does not let this user read the connection: the card is not theirs to see.
+  if (saved.error instanceof ApiError && saved.error.status === 403) return null;
 
   return (
     <Card>
@@ -94,14 +176,24 @@ export function ManyfoldConnectionCard() {
         <p className="text-sm text-bambu-gray">{t('manyfold.connectionHelp')}</p>
         <p className="text-xs text-bambu-gray">{t('manyfold.connectionTls')}</p>
 
+        {saved.isError && !saved.isFetching && (
+          <div role="alert" className="flex flex-wrap items-center gap-3 text-sm">
+            <p className="text-red-400">{t('manyfold.connectionReadFailed')}</p>
+            <Button size="sm" variant="secondary" onClick={() => void saved.refetch()}>{t('common.retry')}</Button>
+          </div>
+        )}
+
         <label className="flex items-center justify-between gap-3">
           <span className="text-white">{t('manyfold.enabled')}</span>
           <input
             type="checkbox"
             role="switch"
             checked={enabled}
-            disabled={!canEdit || pending}
-            onChange={(event) => setEnabled(event.target.checked)}
+            disabled={locked}
+            onChange={(event) => {
+              setEnabled(event.target.checked);
+              setTested(null);
+            }}
           />
         </label>
 
@@ -116,8 +208,8 @@ export function ManyfoldConnectionCard() {
             maxLength={300}
             value={url}
             placeholder={t('manyfold.urlPlaceholder')}
-            disabled={!canEdit || pending}
-            onChange={(event) => setUrl(event.target.value)}
+            disabled={locked}
+            onChange={(event) => editDestination(event.target.value, clientId)}
             className={inputClass}
           />
         </div>
@@ -130,8 +222,8 @@ export function ManyfoldConnectionCard() {
             spellCheck={false}
             maxLength={255}
             value={clientId}
-            disabled={!canEdit || pending}
-            onChange={(event) => setClientId(event.target.value)}
+            disabled={locked}
+            onChange={(event) => editDestination(url, event.target.value)}
             className={inputClass}
           />
         </div>
@@ -141,10 +233,23 @@ export function ManyfoldConnectionCard() {
             value={secret}
             action={secretAction}
             configured={saved.data?.client_secret_configured}
-            disabled={!canEdit || pending}
-            onChange={setSecret}
-            onActionChange={setSecretAction}
+            disabled={locked}
+            onChange={(value) => {
+              setSecret(value);
+              setTested(null);
+              if (value) setSecretNeeded(false);
+            }}
+            onActionChange={(action) => {
+              autoReplace.current = false;
+              setSecretAction(action);
+              setSecretNeeded(false);
+              setTested(null);
+            }}
           />
+          {destinationChanged && <p className="text-xs text-bambu-gray mt-2">{t('manyfold.secretBelongs')}</p>}
+          {secretNeeded && (
+            <p role="alert" className="text-sm text-red-400 mt-2">{t('manyfold.secretRequired')}</p>
+          )}
         </div>
 
         {tested && (
@@ -162,13 +267,13 @@ export function ManyfoldConnectionCard() {
           </p>
         )}
 
-        {canEdit && (
+        {canEdit && !saved.isError && (
           <div className="flex flex-wrap gap-2">
-            <Button variant="secondary" size="sm" disabled={pending || !url.trim()} onClick={() => test.mutate()}>
+            <Button variant="secondary" size="sm" disabled={pending || !ready || !url.trim()} onClick={() => !secretMissing() && test.mutate()}>
               {test.isPending && <Loader2 className="w-4 h-4 mr-1 animate-spin" />}
               {t('manyfold.test')}
             </Button>
-            <Button size="sm" disabled={pending} onClick={() => save.mutate()}>
+            <Button size="sm" disabled={pending || !ready} onClick={() => !secretMissing() && save.mutate()}>
               {save.isPending && <Loader2 className="w-4 h-4 mr-1 animate-spin" />}
               {t('manyfold.saveConnection')}
             </Button>
