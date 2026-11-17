@@ -1,3 +1,5 @@
+import { colorDistance } from './amsHelpers';
+
 // Runtime color-name catalog, populated once at app startup by ColorCatalogProvider
 // from /api/inventory/colors/map. The backend color_catalog table is the single
 // source of truth - no hardcoded hex→name tables live on the frontend anymore
@@ -18,10 +20,36 @@ let runtimeColorCatalog: Record<string, string> = {};
 // it as tray_sub_brands) gets the right one instead of whichever row the
 // backend's collapse happened to keep (#2875).
 let runtimeMaterialCatalog: Record<string, string> = {};
+// Every Bambu Lab catalogue colour, for naming a hex no exact lookup finds. A
+// colour picked on the printer's screen is reported a step or two off the
+// catalogue's hex -- 5A657B for Blue Grey 5B6579 -- and fell through to the hue
+// bucket, which called it "Blue" (upstream #3279). Rows of the backend's
+// color_catalog, never a table of our own.
+export interface BambuCatalogColor {
+  hex: string;
+  name: string;
+  material: string;
+}
+let runtimeBambuColors: BambuCatalogColor[] = [];
+// Bambu preset id (upper case) to its product line in lower case: GFA00 -> "pla basic".
+let runtimePresetMaterials: Record<string, string> = {};
+// Nearest-name answers by "<line>|<hex>": each miss compares against every
+// Bambu colour. Emptied whenever the catalogue is replaced.
+let nearestNameCache = new Map<string, string | null>();
+// CIEDE2000 delta-E within which a hex is taken to be the catalogue colour.
+// Blue Grey's two hexes are 0.78 apart; the next Bambu colour from 5A657B is
+// 8.3 away. Different Bambu colours can sit closer than this ACROSS product
+// lines, which is why the slot's own line is searched first.
+const NEAREST_NAME_MAX_DELTA_E = 3;
 let catalogVersion = 0;
 const catalogListeners = new Set<() => void>();
 
-export function setColorCatalog(map: Record<string, string>, byMaterial?: Record<string, string>): void {
+export function setColorCatalog(
+  map: Record<string, string>,
+  byMaterial?: Record<string, string>,
+  bambu?: BambuCatalogColor[],
+  presetMaterials?: Record<string, string>,
+): void {
   // Normalize keys to lowercase 6-char hex (no '#'), defensively. Backend already
   // does this, but the frontend contract is explicit so callers from tests or
   // future integrations can't accidentally break lookups.
@@ -44,6 +72,19 @@ export function setColorCatalog(map: Record<string, string>, byMaterial?: Record
   }
   runtimeColorCatalog = normalized;
   runtimeMaterialCatalog = normalizedByMaterial;
+  runtimeBambuColors = (bambu || [])
+    .map((entry) => ({
+      hex: (entry?.hex || '').replace('#', '').toLowerCase().slice(0, 6),
+      name: entry?.name || '',
+      material: (entry?.material || '').trim().toLowerCase(),
+    }))
+    .filter((entry) => /^[0-9a-f]{6}$/.test(entry.hex) && entry.name);
+  const normalizedPresets: Record<string, string> = {};
+  for (const [preset, line] of Object.entries(presetMaterials || {})) {
+    if (preset && line) normalizedPresets[preset.trim().toUpperCase()] = line.trim().toLowerCase();
+  }
+  runtimePresetMaterials = normalizedPresets;
+  nearestNameCache = new Map();
   catalogVersion += 1;
   // Snapshot listeners to avoid mutation-during-iteration if a listener unsubscribes.
   for (const listener of Array.from(catalogListeners)) {
@@ -66,6 +107,9 @@ export function getColorCatalogVersion(): number {
 export function __resetColorCatalogForTests(): void {
   runtimeColorCatalog = {};
   runtimeMaterialCatalog = {};
+  runtimeBambuColors = [];
+  runtimePresetMaterials = {};
+  nearestNameCache = new Map();
   catalogVersion = 0;
   catalogListeners.clear();
 }
@@ -281,18 +325,56 @@ export function colorSortKey(rgba: string | null | undefined): string {
  * An unknown material falls through to the flat lookup, so passing one can only
  * ever improve the answer.
  */
-export function getColorName(hexColor: string, material?: string | null): string {
+export function getColorName(hexColor: string, material?: string | null, trayInfoIdx?: string | null): string {
   if (!hexColor) return hexToColorName(hexColor);
   const clean = hexColor.replace('#', '').toLowerCase();
   if (clean.length === 8 && clean.substring(6, 8) === '00') return 'Clear';
   const hex = clean.substring(0, 6);
-  if (material) {
-    const qualified = runtimeMaterialCatalog[`${material.trim().toLowerCase()}|${hex}`];
+  // Without RFID the printer sends no tray_sub_brands, but it does report the
+  // preset picked on its screen, and a Bambu preset names its product line.
+  const line = (material || '').trim().toLowerCase() || runtimePresetMaterials[(trayInfoIdx || '').trim().toUpperCase()] || '';
+  if (line) {
+    const qualified = runtimeMaterialCatalog[`${line}|${hex}`];
     if (qualified) return qualified;
+  }
+  const lineColors = line ? runtimeBambuColors.filter((entry) => entry.material === line) : [];
+  if (lineColors.length > 0) {
+    const inLine = nearestBambuColorName(hex, line, lineColors);
+    if (inLine) return inLine;
   }
   const mapped = runtimeColorCatalog[hex];
   if (mapped) return mapped;
+  // Other lines only for a slot whose own line has no Bambu colours: a PLA
+  // Basic grey is not Translucent Gray because PLA Basic's Gray is further off.
+  if (lineColors.length === 0) {
+    const anyLine = nearestBambuColorName(hex, '', runtimeBambuColors);
+    if (anyLine) return anyLine;
+  }
   return hexToColorName(hexColor);
+}
+
+/**
+ * The colour in `entries` within NEAREST_NAME_MAX_DELTA_E of `hex`, or null.
+ * Nearest wins, the first listed on a tie. `line` keys the cache: the same hex
+ * has a different answer in each product line.
+ */
+function nearestBambuColorName(hex: string, line: string, entries: BambuCatalogColor[]): string | null {
+  const cacheKey = `${line}|${hex}`;
+  const cached = nearestNameCache.get(cacheKey);
+  if (cached !== undefined) return cached;
+
+  let best: string | null = null;
+  let bestDistance = Infinity;
+  for (const entry of entries) {
+    const distance = colorDistance(hex, entry.hex);
+    if (distance !== null && distance < bestDistance) {
+      best = entry.name;
+      bestDistance = distance;
+    }
+  }
+  const name = bestDistance <= NEAREST_NAME_MAX_DELTA_E ? best : null;
+  nearestNameCache.set(cacheKey, name);
+  return name;
 }
 
 /**

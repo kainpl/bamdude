@@ -5354,7 +5354,7 @@ const PrinterCard = memo(function PrinterCard({
                                     || tray.tray_sub_brands
                                     || tray.tray_type,
                                   colorName: resolveMultiColorName(trayActual ? (trayActual.cols ?? null) : tray.cols)
-                                    ?? getColorName((trayActual?.tray_color ?? tray.tray_color) || '', tray.tray_sub_brands),
+                                    ?? getColorName((trayActual?.tray_color ?? tray.tray_color) || '', tray.tray_sub_brands, trayActual?.tray_info_idx ?? tray.tray_info_idx),
                                   colorHex: (trayActual?.tray_color ?? tray.tray_color) || null,
                                   kFactor: formatKValue(tray.k),
                                   fillLevel: effectiveFill,
@@ -5753,7 +5753,7 @@ const PrinterCard = memo(function PrinterCard({
                             || tray.tray_sub_brands
                             || tray.tray_type,
                           colorName: resolveMultiColorName(htTrayActual ? (htTrayActual.cols ?? null) : tray.cols)
-                            ?? getColorName((htTrayActual?.tray_color ?? tray.tray_color) || '', tray.tray_sub_brands),
+                            ?? getColorName((htTrayActual?.tray_color ?? tray.tray_color) || '', tray.tray_sub_brands, htTrayActual?.tray_info_idx ?? tray.tray_info_idx),
                           colorHex: (htTrayActual?.tray_color ?? tray.tray_color) || null,
                           kFactor: formatKValue(tray.k),
                           fillLevel: htEffectiveFill,
@@ -6262,7 +6262,7 @@ const PrinterCard = memo(function PrinterCard({
                                   || extTray.tray_sub_brands
                                   || extTray.tray_type
                                   || 'Unknown',
-                                colorName: resolveMultiColorName(extTray.cols) ?? getColorName(extTray.tray_color || '', extTray.tray_sub_brands),
+                                colorName: resolveMultiColorName(extTray.cols) ?? getColorName(extTray.tray_color || '', extTray.tray_sub_brands, extTray.tray_info_idx),
                                 colorHex: extTray.tray_color || null,
                                 kFactor: formatKValue(extTray.k),
                                 fillLevel: extEffectiveFill,

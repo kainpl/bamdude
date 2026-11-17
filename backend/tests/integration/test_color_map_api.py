@@ -137,4 +137,42 @@ class TestColorNameMapEndpoint:
     async def test_empty_catalog_returns_empty_map(self, async_client: AsyncClient):
         response = await async_client.get("/api/v1/inventory/colors/map")
         assert response.status_code == 200
-        assert response.json() == {"colors": {}, "by_material": {}}
+        body = response.json()
+        assert body["colors"] == {} and body["by_material"] == {} and body["bambu"] == []
+
+
+class TestNearestBambuColourData:
+    """What the frontend needs to name a hex one step off a Bambu colour."""
+
+    @pytest.fixture
+    async def entries(self, db_session):
+        from backend.app.models.color_catalog import ColorCatalogEntry
+
+        db_session.add_all(
+            [
+                ColorCatalogEntry(
+                    manufacturer="Bambu Lab", color_name="Blue Grey", hex_color="#5B6579", material="PLA Basic"
+                ),
+                ColorCatalogEntry(
+                    manufacturer="Polymaker", color_name="Slate", hex_color="#5B6570", material="PolyLite PLA"
+                ),
+            ]
+        )
+        await db_session.commit()
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_only_bambu_rows_are_listed_with_their_range(self, async_client: AsyncClient, entries):
+        body = (await async_client.get("/api/v1/inventory/colors/map")).json()
+
+        assert {"hex": "5b6579", "name": "Blue Grey", "material": "PLA Basic"} in body["bambu"]
+        assert all(row["name"] != "Slate" for row in body["bambu"])
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_a_bambu_preset_id_names_its_range(self, async_client: AsyncClient, entries):
+        body = (await async_client.get("/api/v1/inventory/colors/map")).json()
+
+        assert body["preset_materials"]["GFA00"] == "PLA Basic"
+        assert body["preset_materials"]["GFA01"] == "PLA Matte"
+        assert all(not name.startswith("Bambu ") for name in body["preset_materials"].values())
