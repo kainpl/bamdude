@@ -32,6 +32,29 @@ _RETIRE_SLOW_SECONDS = 5.0
 _CALLBACKS = ("on_connect", "on_disconnect", "on_subscribe", "on_message")
 
 
+def discard_queued_publishes(client) -> int:
+    """Empty paho's outbox; returns how many publishes it held.
+
+    paho re-sends every QoS 1 publish still waiting for its PUBACK right after
+    ``on_connect`` returns, and a Bambu printer often never sends one. Uses
+    paho 2.x internals (``_out_messages`` under ``_out_message_mutex``), pinned
+    by ``test_mqtt_reconnect_replay.py``; a client without them holds nothing
+    we can reach and answers 0.
+    """
+    pending = getattr(client, "_out_messages", None)
+    if not isinstance(pending, dict):
+        return 0
+    mutex = getattr(client, "_out_message_mutex", None)
+    if mutex is None:
+        held = len(pending)
+        pending.clear()
+        return held
+    with mutex:
+        held = len(pending)
+        pending.clear()
+    return held
+
+
 def retire_paho_client(client, label: str) -> threading.Thread | None:
     """Shut *client* down on a thread of its own and return immediately.
 
@@ -46,9 +69,12 @@ def retire_paho_client(client, label: str) -> threading.Thread | None:
     callback under ``_callback_mutex`` and invokes it outside it, so the setter
     never waits on a callback in flight.
 
-    The DISCONNECT still goes out, first thing on the thread: it is what stops
-    paho's auto-reconnect, and with it an unacked ``project_file`` replaying
-    onto a revived session (#1136).
+    The DISCONNECT still goes out on the thread: it is what stops paho's
+    auto-reconnect (#1136). It does NOT stop a replay by itself: a client let go
+    while its network thread is inside ``reconnect()`` has no socket, so
+    ``disconnect()`` only sets a flag, the handshake finishes anyway, and paho
+    re-sends the outbox on that revived session -- with ``on_connect`` detached
+    nothing else empties it. So the outbox is emptied first (upstream #3454).
 
     Returns the teardown thread (tests join it), or None when no thread could be
     started -- the DISCONNECT is then sent inline and the network thread is left
@@ -62,6 +88,12 @@ def retire_paho_client(client, label: str) -> threading.Thread | None:
 
     def _teardown() -> None:
         started = time.monotonic()
+        try:
+            dropped = discard_queued_publishes(client)
+            if dropped:
+                logger.info("[%s] Retiring MQTT client: dropped %d unacknowledged command(s)", label, dropped)
+        except Exception:  # noqa: BLE001 — never let the outbox keep the teardown from running
+            logger.debug("[%s] Retiring MQTT client: could not empty the outbox", label, exc_info=True)
         try:
             client.disconnect()
         except Exception:  # noqa: BLE001 — the old client is often already broken
@@ -91,6 +123,10 @@ def retire_paho_client(client, label: str) -> threading.Thread | None:
         # still sent inline -- it is what keeps the abandoned session from
         # reconnecting and replaying (#1136).
         logger.error("[%s] Could not start the MQTT teardown thread: %s", label, exc)
+        try:
+            discard_queued_publishes(client)
+        except Exception:  # noqa: BLE001
+            pass
         try:
             client.disconnect()
         except Exception:  # noqa: BLE001
