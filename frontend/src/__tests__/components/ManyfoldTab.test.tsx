@@ -410,6 +410,73 @@ describe('ManyfoldTab', () => {
     expect(await screen.findByText('Spool Holder')).toBeInTheDocument();
   });
 
+  it('keeps ticks across pages, names a model it could not read, and clears the selection after the run', async () => {
+    connected();
+    server.use(
+      http.get(`${BASE}/models/:id`, ({ params }) =>
+        params.id === 'm3'
+          ? HttpResponse.json({ detail: { error: 'manyfold_not_found', message: 'gone' } }, { status: 404 })
+          : HttpResponse.json(model({ files: [file('a')] })),
+      ),
+    );
+    render(<ManyfoldTab />);
+    fireEvent.click(await screen.findByRole('checkbox', { name: 'Select Cable Clip' }));
+    fireEvent.click(screen.getByRole('button', { name: /Next/ }));
+    fireEvent.click(await screen.findByRole('checkbox', { name: 'Select Third' }));
+    expect(screen.getByText('Models selected: 2')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Import their files' }));
+    expect(await screen.findByText('Imported: 1 · already in library: 0 · failed: 0')).toBeInTheDocument();
+    expect(screen.getByText('Could not read: Third')).toBeInTheDocument();
+    expect(importRequests.map((request) => `${request.model_id}/${request.file_id}`)).toEqual(['m1/a']);
+    expect(screen.queryByText(/Models selected/)).not.toBeInTheDocument();
+  });
+
+  it('tells "nothing printable" from "everything is already in the library"', async () => {
+    connected();
+    server.use(
+      http.get(`${BASE}/models/:id`, () =>
+        HttpResponse.json(model({ files: [file('pic', { mime: 'image/jpeg', importable: false })] })),
+      ),
+    );
+    render(<ManyfoldTab />);
+    fireEvent.click(await screen.findByRole('checkbox', { name: 'Select Cable Clip' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Import their files' }));
+    expect(await screen.findByText(/these models hold no file BamDude can print/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+
+    server.use(
+      http.get(`${BASE}/models/:id`, () =>
+        HttpResponse.json(model({ files: [file('a')], already_imported: { a: { library_file_id: 5, folder_id: null, filename: 'a.stl' } } })),
+      ),
+    );
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select Cable Clip' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Import their files' }));
+    expect(await screen.findByText(/every printable file is already in your library/)).toBeInTheDocument();
+    expect(importRequests).toHaveLength(0);
+  });
+
+  it('shows the server\'s own sentence for a refusal code this build does not know', async () => {
+    connected();
+    server.use(
+      http.post(`${BASE}/import`, () =>
+        HttpResponse.json(
+          { detail: { error: 'a_code_from_a_newer_server', message: 'Imports are busy. Try again in a moment.' } },
+          { status: 503 },
+        ),
+      ),
+    );
+    render(<ManyfoldTab />);
+    fireEvent.click(await screen.findByText('Cable Clip'));
+    fireEvent.click(
+      within((await screen.findByText('a.stl')).closest('li') as HTMLElement).getByRole('button', { name: 'Import' }),
+    );
+
+    expect(
+      await within(screen.getByTestId('toast-viewport')).findByText('Imports are busy. Try again in a moment.', {}, { timeout: 5000 }),
+    ).toBeInTheDocument();
+  });
+
   it('a failed page is not a dead end: Retry, and the pager stays', async () => {
     connected();
     let failing = true;
