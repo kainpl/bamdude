@@ -3087,6 +3087,7 @@ class BackgroundDispatchService:
                                 retry_delay=ftp_retry_delay,
                                 operation_name=f"Upload for reprint to {printer_name}",
                                 non_retry_exceptions=(DispatchJobCancelled, UploadFailed),
+                                stop_retrying=lambda: self._is_cancel_requested(job.id),
                                 report=upload_report,
                                 may_run=file_gate(remote_path),
                             )
@@ -3105,6 +3106,8 @@ class BackgroundDispatchService:
                 except (DispatchJobCancelled, UploadFailed):
                     raise
                 except Exception as exc:
+                    # A cancel that could not finish tidily (the partial file stayed) is still a cancel.
+                    self._raise_if_cancel_requested(job)
                     raise UploadFailed(str(exc) or _upload_failure_message(storage, upload_report)) from exc
                 # The gate kept the name — a print began on the printer while this
                 # upload waited for the file channel: say that, not "upload failed".
@@ -3113,6 +3116,8 @@ class BackgroundDispatchService:
                 if uploaded:
                     await self._set_active_upload_progress(job, 1, 1)
 
+                # An upload that ended without its file while a cancel was asked for was cancelled.
+                self._raise_if_cancel_requested(job)
                 if not uploaded:
                     raise UploadFailed(_upload_failure_message(storage, upload_report))
                 # The file is on the printer: what follows until the start is preparation.
@@ -4084,6 +4089,7 @@ class BackgroundDispatchService:
                                 retry_delay=ftp_retry_delay,
                                 operation_name=f"Upload for print to {printer_name}",
                                 non_retry_exceptions=(DispatchJobCancelled, UploadFailed),
+                                stop_retrying=lambda: self._is_cancel_requested(job.id),
                                 report=upload_report,
                                 may_run=file_gate(remote_path),
                             )
@@ -4102,6 +4108,8 @@ class BackgroundDispatchService:
                 except (DispatchJobCancelled, UploadFailed):
                     raise
                 except Exception as exc:
+                    # A cancel that could not finish tidily (the partial file stayed) is still a cancel.
+                    self._raise_if_cancel_requested(job)
                     raise UploadFailed(str(exc) or _upload_failure_message(storage, upload_report)) from exc
                 # The gate kept the name — a print began on the printer while this
                 # upload waited for the file channel: say that, not "upload failed".
@@ -4110,6 +4118,8 @@ class BackgroundDispatchService:
                 if uploaded:
                     await self._set_active_upload_progress(job, 1, 1)
 
+                # An upload that ended without its file while a cancel was asked for was cancelled.
+                self._raise_if_cancel_requested(job)
                 if not uploaded:
                     raise UploadFailed(_upload_failure_message(storage, upload_report))
                 # The file is on the printer: what follows until the start is preparation.

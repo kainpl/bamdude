@@ -348,6 +348,13 @@ class FileNotOnPrinterError(Exception):
     """
 
 
+# How long a cancelled upload waits for the printer's reply to the transfer it cut short, before it asks
+# for the partial file's removal anyway. The reply is read only to keep the control channel in step; a
+# completed upload waits a minute for its 226 because that 226 is the proof the file is whole, and a
+# cancel needs no such proof.
+CANCEL_REPLY_SECONDS = 10.0
+
+
 def _graceful_close_data_conn(conn) -> None:
     """Close an FTP data-channel socket, draining the TLS layer first.
 
@@ -1136,6 +1143,45 @@ class BambuFTPClient:
             return "unknown", None
         return ("ok" if server_size == expected else "truncated"), server_size
 
+    def _finish_cancelled_upload(self, remote_path: str, stop: Exception) -> None:
+        """End an upload its callback stopped. Always raises: ``stop`` once the partial file is gone.
+
+        ⚠️ Never through the completed upload's checks. What the printer says about a transfer we cut
+        short -- 226, a 426, or nothing -- and the size of what it kept say nothing about a cancel;
+        read as an upload's outcome they turned the cancel into "the upload failed", which the
+        dispatcher retried, so the Cancel button did nothing. The reply is read only so the DELE that
+        follows does not take it for its own, and only for ``CANCEL_REPLY_SECONDS``.
+        """
+        control = self._ftp.sock
+        old_timeout = control.gettimeout()
+        control.settimeout(min(self.timeout, CANCEL_REPLY_SECONDS))
+        try:
+            self._ftp.voidresp()
+        except ftplib.Error:
+            pass  # the printer's own word that the transfer ended short
+        except Exception as e:
+            logger.info(
+                "FTP cancel: no reply to the aborted transfer of %s (%s); removing the partial file anyway",
+                remote_path,
+                type(e).__name__,
+            )
+        finally:
+            control.settimeout(old_timeout)
+
+        cleanup_result: DeleteResult = DeleteResult.FAILED
+        try:
+            cleanup_result = self.delete_file(remote_path)
+        except Exception as cleanup_error:
+            logger.warning("FTP cancel cleanup failed for %s: %s", remote_path, cleanup_error)
+
+        # NOT_FOUND is success here — the partial file is gone (printer
+        # may have already swept on cancel), which is the goal.
+        if cleanup_result in (DeleteResult.DELETED, DeleteResult.NOT_FOUND):
+            logger.info("FTP cancel cleanup succeeded for %s (%s)", remote_path, cleanup_result.value)
+            raise stop
+
+        raise RuntimeError(f"Upload cancelled but failed to remove partial file {remote_path} from printer") from stop
+
     def upload_file(
         self,
         local_path: Path,
@@ -1204,6 +1250,9 @@ class BambuFTPClient:
                     raise
                 finally:
                     _graceful_close_data_conn(conn)
+
+            if callback_exception is not None:
+                self._finish_cancelled_upload(remote_path, callback_exception)
 
             # Wait for the server's 226 "Transfer complete" response to confirm
             # the file has been flushed to the SD card. Without this, the printer
@@ -1291,23 +1340,6 @@ class BambuFTPClient:
                     e,
                     type(e).__name__,
                 )
-
-            if callback_exception is not None:
-                cleanup_result: DeleteResult = DeleteResult.FAILED
-                try:
-                    cleanup_result = self.delete_file(remote_path)
-                except Exception as cleanup_error:
-                    logger.warning("FTP cancel cleanup failed for %s: %s", remote_path, cleanup_error)
-
-                # NOT_FOUND is success here — the partial file is gone (printer
-                # may have already swept on cancel), which is the goal.
-                if cleanup_result in (DeleteResult.DELETED, DeleteResult.NOT_FOUND):
-                    logger.info("FTP cancel cleanup succeeded for %s (%s)", remote_path, cleanup_result.value)
-                    raise callback_exception
-
-                raise RuntimeError(
-                    f"Upload cancelled but failed to remove partial file {remote_path} from printer"
-                ) from callback_exception
 
             # ⚠️ A 226 says the printer finished reading the stream, not that
             # what it stored is what we sent. Nothing verified the outgoing file
@@ -2386,6 +2418,7 @@ async def with_ftp_retry(
     retry_delay: float = 2.0,
     operation_name: str = "FTP operation",
     non_retry_exceptions: tuple[type[BaseException], ...] = (),
+    stop_retrying: Callable[[], bool] | None = None,
     **kwargs,
 ) -> T | None:
     """Execute FTP operation with retry logic.
@@ -2397,6 +2430,7 @@ async def with_ftp_retry(
         retry_delay: Seconds to wait between retries (default: 2.0)
         operation_name: Name for logging purposes
         non_retry_exceptions: Exception types that should immediately abort retries
+        stop_retrying: Asked after a failed attempt; True ends the retries (the work was cancelled)
         **kwargs: Keyword arguments for the operation
 
     Returns:
@@ -2425,6 +2459,9 @@ async def with_ftp_retry(
         # 30s) so a printer that's momentarily busy / refusing a second FTP
         # session (P2S right after a print finishes) gets progressively more
         # time to recover instead of being hammered every 2s.
+        if stop_retrying is not None and stop_retrying():
+            logger.info("%s is not retried: the work was cancelled", operation_name)
+            return None
         if attempt < max_retries:
             wait = min(retry_delay * (2**attempt), 30.0)
             logger.info("%s will retry in %.1fs...", operation_name, wait)
