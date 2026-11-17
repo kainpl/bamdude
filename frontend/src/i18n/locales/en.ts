@@ -5590,6 +5590,7 @@ export default {
     testOkUnknown: 'Connected.',
     saveConnection: 'Save connection',
     connectionSaved: 'Manyfold connection saved',
+    connectionReadFailed: 'BamDude could not read the Manyfold connection.',
     editConnection: 'Connection settings',
     searchPlaceholder: 'Search models',
     search: 'Search',

@@ -5626,6 +5626,7 @@ export default {
     testOkUnknown: 'Підключено.',
     saveConnection: 'Зберегти підключення',
     connectionSaved: 'Підключення Manyfold збережено',
+    connectionReadFailed: 'BamDude не зміг прочитати підключення Manyfold.',
     editConnection: 'Налаштування підключення',
     searchPlaceholder: 'Пошук моделей',
     search: 'Шукати',
