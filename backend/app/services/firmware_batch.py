@@ -39,6 +39,10 @@ class BatchTarget:
     from_version: str | None = None
 
 
+#: Printers a bulk run is writing firmware to right now (``firmware_update.upload_in_progress``).
+_uploading: set[int] = set()
+
+
 def _is_printing(printer_id: int) -> bool:
     """True if the printer is mid-job — never FTP to its SD then.
 
@@ -55,25 +59,37 @@ async def _ftp_upload(item, sf) -> None:
     async with async_session() as db:
         printer = (await db.execute(select(Printer).where(Printer.id == item.printer_id))).scalar_one()
         ip, code, model = printer.ip_address, printer.access_code, printer.model or "Unknown"
+    from backend.app.services.firmware_update import may_upload, upload_refusal
+
     remote_path = f"/{sf.filename}"
     ftp_retry_enabled, ftp_retry_count, ftp_retry_delay, ftp_timeout = await get_ftp_retry_settings()
-    if ftp_retry_enabled:
-        ok = await with_ftp_retry(
-            upload_file_async,
-            ip,
-            code,
-            sf.path,
-            remote_path,
-            socket_timeout=ftp_timeout,
-            printer_model=model,
-            max_retries=ftp_retry_count,
-            retry_delay=ftp_retry_delay,
-            operation_name=f"Bulk firmware upload to printer {item.printer_id}",
-        )
-    else:
-        ok = await upload_file_async(ip, code, sf.path, remote_path, socket_timeout=ftp_timeout, printer_model=model)
+    # Asked again right before the first byte: the wait for the printer's file
+    # channel can be long, and a job may have started on it meanwhile.
+    may_run = may_upload(item.printer_id)
+    _uploading.add(item.printer_id)
+    try:
+        if ftp_retry_enabled:
+            ok = await with_ftp_retry(
+                upload_file_async,
+                ip,
+                code,
+                sf.path,
+                remote_path,
+                socket_timeout=ftp_timeout,
+                printer_model=model,
+                may_run=may_run,
+                max_retries=ftp_retry_count,
+                retry_delay=ftp_retry_delay,
+                operation_name=f"Bulk firmware upload to printer {item.printer_id}",
+            )
+        else:
+            ok = await upload_file_async(
+                ip, code, sf.path, remote_path, socket_timeout=ftp_timeout, printer_model=model, may_run=may_run
+            )
+    finally:
+        _uploading.discard(item.printer_id)
     if not ok:
-        raise RuntimeError("FTP upload returned failure")
+        raise RuntimeError(upload_refusal(item.printer_id) or "FTP upload returned failure")
 
 
 async def _broadcast(run_id: int, printer_id: int, status: str, message: str = "", percent: int = 0) -> None:

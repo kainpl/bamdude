@@ -1591,6 +1591,15 @@ class PrintScheduler:
             logger.debug("Printer %d: no status available", printer_id)
             return False
 
+        # A firmware file is being fetched for, or written to, this printer's
+        # card: a job dispatched now would start under that write, or sit
+        # behind it on the printer's file channel.
+        from backend.app.services.firmware_update import upload_in_progress
+
+        if upload_in_progress(printer_id):
+            logger.debug("Printer %d: firmware upload in progress", printer_id)
+            return False
+
         # IDLE = ready for next print
         # FINISH/FAILED = ready if plate-clear not required, or user confirmed plate is cleared
         # Printer is ready for dispatch when it's IDLE (never printed / user cleared)

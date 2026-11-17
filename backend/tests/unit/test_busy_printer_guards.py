@@ -119,7 +119,7 @@ class TestFirmwarePreparationRefuses:
         printer = await printer_factory(model="X1C")
         with (
             patch("backend.app.services.firmware_update.printer_manager") as pm,
-            patch("backend.app.services.firmware_update.is_printer_busy", return_value=True),
+            patch("backend.app.services.firmware_update.printer_file_guard.wide_refusal", return_value="active_print"),
         ):
             pm.get_client.return_value = _client("RUNNING")
             result = await FirmwareUpdateService().prepare_update(printer.id, db_session)

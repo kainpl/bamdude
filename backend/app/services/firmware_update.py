@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.core.tasks import spawn_background_task
 from backend.app.core.websocket import ws_manager
 from backend.app.models.printer import Printer
+from backend.app.services import printer_file_guard
 from backend.app.services.bambu_ftp import (
     get_ftp_retry_settings,
     get_storage_info_async,
@@ -26,7 +27,7 @@ from backend.app.services.bambu_ftp import (
     with_ftp_retry,
 )
 from backend.app.services.firmware_check import get_firmware_service
-from backend.app.services.printer_manager import is_printer_busy, printer_manager
+from backend.app.services.printer_manager import printer_manager
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +69,51 @@ def get_upload_state(printer_id: int) -> FirmwareUploadState:
 def reset_upload_state(printer_id: int):
     """Reset the upload state for a printer."""
     _upload_states[printer_id] = FirmwareUploadState()
+
+
+_RUNNING = (FirmwareUploadStatus.PREPARING, FirmwareUploadStatus.DOWNLOADING, FirmwareUploadStatus.UPLOADING)
+
+BUSY_ERROR = "Printer is busy — finish or cancel the job first"
+UNKNOWN_ERROR = "The printer has not reported its state yet — wait for it to come online and try again"
+
+
+def upload_refusal(printer_id: int) -> str | None:
+    """Why a firmware file may not be written to this printer's SD card now, else ``None``.
+
+    The file guard's own rule for touching a printer's storage: a fresh,
+    connected observation of IDLE / FINISH / FAILED with no dispatch expecting a
+    print there. A blacklist of busy states let an unreported printer ("unknown")
+    and a dispatch that had claimed it but not yet started through.
+    """
+    reason = printer_file_guard.wide_refusal(printer_id)
+    if reason is None:
+        return None
+    return UNKNOWN_ERROR if reason == printer_file_guard.STATE_UNKNOWN else BUSY_ERROR
+
+
+def may_upload(printer_id: int):
+    """The transport's ``may_run``: asked after the wait for the printer's file
+    channel and again right before the first byte, so a job that arrived while
+    the file was being fetched or while the upload queued is never written under."""
+
+    def check() -> bool:
+        return upload_refusal(printer_id) is None
+
+    return check
+
+
+def upload_in_progress(printer_id: int) -> bool:
+    """Whether a firmware upload -- single or bulk -- is under way for this printer.
+
+    The queue asks this and leaves the printer alone meanwhile: a dispatch would
+    only sit behind the firmware on the printer's file channel.
+    """
+    state = _upload_states.get(printer_id)
+    if state is not None and state.status in _RUNNING:
+        return True
+    from backend.app.services.firmware_batch import _uploading
+
+    return printer_id in _uploading
 
 
 class FirmwareUpdateService:
@@ -140,8 +186,9 @@ class FirmwareUpdateService:
         # flash itself. ``firmware_batch`` already refuses to FTP to a printer
         # mid-job; preparing one single-handed skipped that check entirely, so
         # the bulk path was safe and the individual one was not.
-        if is_printer_busy(printer_id):
-            result["errors"].append("Printer is busy — finish or cancel the job first")
+        refusal = upload_refusal(printer_id)
+        if refusal:
+            result["errors"].append(refusal)
             return result
 
         # Get current firmware version
@@ -357,6 +404,13 @@ class FirmwareUpdateService:
             # Get FTP retry settings
             ftp_retry_enabled, ftp_retry_count, ftp_retry_delay, ftp_timeout = await get_ftp_retry_settings()
 
+            # The prepare check is as old as the download took. Asked again here
+            # and, through ``may_run``, immediately before the first byte.
+            refusal = upload_refusal(printer_id)
+            if refusal:
+                raise Exception(refusal)
+            may_run = may_upload(printer_id)
+
             if ftp_retry_enabled:
                 success = await with_ftp_retry(
                     upload_file_async,
@@ -367,6 +421,7 @@ class FirmwareUpdateService:
                     progress_callback=on_upload_progress,
                     socket_timeout=ftp_timeout,
                     printer_model=model,
+                    may_run=may_run,
                     max_retries=ftp_retry_count,
                     retry_delay=ftp_retry_delay,
                     operation_name=f"Upload firmware to printer {printer_id}",
@@ -380,10 +435,11 @@ class FirmwareUpdateService:
                     progress_callback=on_upload_progress,
                     socket_timeout=ftp_timeout,
                     printer_model=model,
+                    may_run=may_run,
                 )
 
             if not success:
-                raise Exception("Failed to upload firmware to printer")
+                raise Exception(upload_refusal(printer_id) or "Failed to upload firmware to printer")
 
             # Complete
             state.status = FirmwareUploadStatus.COMPLETE

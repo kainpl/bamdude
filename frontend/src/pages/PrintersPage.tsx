@@ -7553,6 +7553,7 @@ const PrinterCard = memo(function PrinterCard({
           printerId={printer.id}
           slotInfo={configureSlotModal}
           printerModel={mapModelCode(printer.model) || undefined}
+          printerBusy={['RUNNING', 'PAUSE', 'PREPARE', 'SLICING'].includes(status?.state ?? '')}
           nozzleDiameter={resolveSlotNozzleDiameter(status, configureSlotModal.amsId, configureSlotModal.extruderId)}
           nozzleFlow={resolveSlotNozzleFlow(status, configureSlotModal.amsId, configureSlotModal.extruderId)}
           onSuccess={() => {
@@ -7588,6 +7589,7 @@ const PrinterCard = memo(function PrinterCard({
         <FirmwareUpdateModal
           printer={printer}
           firmwareInfo={firmwareInfo}
+          printerIdle={['IDLE', 'FINISH', 'FAILED'].includes(status?.state ?? '')}
           onClose={() => setShowFirmwareModal(false)}
         />
       )}
@@ -8629,10 +8631,13 @@ export function AddPrinterModal({
 function FirmwareUpdateModal({
   printer,
   firmwareInfo,
+  printerIdle,
   onClose,
 }: {
   printer: Printer;
   firmwareInfo: FirmwareUpdateInfo;
+  // The live card state: a firmware file is written only to a printer seen idle.
+  printerIdle: boolean;
   onClose: () => void;
 }) {
   const { t } = useTranslation();
@@ -8650,7 +8655,9 @@ function FirmwareUpdateModal({
   // Prepare check query — runs when a version is selected and user can update.
   // Keying on selectedVersion so switching targets re-runs the pre-flight.
   const { data: prepareInfo, isLoading: isPreparing } = useQuery({
-    queryKey: ['firmwarePrepare', printer.id, selectedVersion],
+    // ...and on idleness, so a job that starts (or ends) while the dialog is
+    // open re-runs the pre-flight instead of leaving a 30 s old answer on screen.
+    queryKey: ['firmwarePrepare', printer.id, selectedVersion, printerIdle],
     queryFn: () => firmwareApi.prepareUpload(printer.id, selectedVersion ?? undefined),
     staleTime: 30000,
     enabled: !!selectedVersion && canUpdate && !isUploading,
@@ -8888,7 +8895,7 @@ function FirmwareUpdateModal({
           <Button variant="secondary" onClick={onClose}>
             {uploadStatus?.status === 'complete' ? t('printers.firmwareModal.done') : t('common.cancel')}
           </Button>
-          {prepareInfo?.can_proceed && !isUploading && uploadStatus?.status !== 'complete' && canUpdate && (
+          {prepareInfo?.can_proceed && printerIdle && !isUploading && uploadStatus?.status !== 'complete' && canUpdate && (
             <Button
               onClick={handleStartUpload}
               disabled={uploadMutation.isPending}
@@ -10595,7 +10602,7 @@ export function PrintersPage() {
       cameraViewMode={cameraViewMode}
       onCameraViewModeChange={chooseCameraViewMode}
       onOpenEmbeddedCamera={handleOpenEmbeddedCamera}
-      checkPrinterFirmware={settings?.check_printer_firmware !== false}
+      checkPrinterFirmware={settings !== undefined && settings.check_printer_firmware !== false}
       useSlicerApi={settings?.use_slicer_api ?? false}
       dryingPresets={effectiveDryingPresets}
       isSelected={selectedPrinterIds.has(printer.id)}
@@ -10864,7 +10871,7 @@ export function PrintersPage() {
               cameraViewMode={cameraViewMode}
               onCameraViewModeChange={chooseCameraViewMode}
               onOpenEmbeddedCamera={(id, name) => openEmbeddedCamera({ kind: 'printer', id, name })}
-              checkPrinterFirmware={settings?.check_printer_firmware !== false}
+              checkPrinterFirmware={settings !== undefined && settings.check_printer_firmware !== false}
               useSlicerApi={settings?.use_slicer_api ?? false}
               dryingPresets={effectiveDryingPresets}
               isSelected={selectedPrinterIds.has(expandedPrinter.id)}
