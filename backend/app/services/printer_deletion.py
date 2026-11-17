@@ -43,6 +43,7 @@ _ID_KEYED = (
     ("backend.app.main", "_active_swap_config"),
     ("backend.app.main", "_active_macro_selection"),
     ("backend.app.main", "_last_progress_milestone"),
+    ("backend.app.main", "_progress_milestone_run"),
     ("backend.app.main", "_first_layer_notified"),
     ("backend.app.main", "_notified_hms_errors"),
     ("backend.app.main", "_hms_print_state"),

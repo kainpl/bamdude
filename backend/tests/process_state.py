@@ -57,6 +57,7 @@ PRINTER_KEYED_REGISTRIES = (
     ("backend.app.main", "_last_printer_state"),
     ("backend.app.main", "_last_printer_state_generation"),
     ("backend.app.main", "_last_progress_milestone"),
+    ("backend.app.main", "_progress_milestone_run"),
     ("backend.app.main", "_last_status_broadcast"),
     ("backend.app.main", "_notified_hms_errors"),
     ("backend.app.main", "_nozzle_count_updated"),

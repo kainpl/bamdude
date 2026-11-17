@@ -1928,6 +1928,45 @@ async def _bump_library_file_usage_if_completed(db, item, queue_status: str) -> 
     await _bump_library_file_usage(db, item.library_file_id)
 
 
+# Which print run (its archive id) each printer's milestone memory belongs to.
+_progress_milestone_run: dict[int, int] = {}
+
+
+def _progress_milestone_to_notify(
+    progress: float, *, layer_num: int, total_layers: int, stg_cur: int, last: int
+) -> int:
+    """The 25 / 50 / 75 milestone to announce now, or 0.
+
+    Nothing counts before the first layer: some printers report a large
+    percentage in the first RUNNING frame while still heating (an A1 mini says
+    85), which sent "75 %" beside "print started" and made 25 and 50
+    unreachable. A printer that reports no layers at all is held back only
+    while its stage says it is preparing. Read off the printer's own counters,
+    never the file's total.
+    """
+    if progress <= 0:
+        return 0
+    if (layer_num or 0) < 1 and ((total_layers or 0) > 0 or stg_cur not in (0, -1, 255)):
+        return 0
+    reached = 75 if progress >= 75 else 50 if progress >= 50 else 25 if progress >= 25 else 0
+    return reached if reached > last else 0
+
+
+def _milestones_follow_run(printer_id: int, archive_id: int) -> None:
+    """Start the milestone memory over when the printer is bound to ANOTHER run.
+
+    A print that follows one finished at 100 % may never show a frame under
+    5 %, so the old run's 75 stayed and the new run got no milestone. The same
+    run bound again -- a reconnect -- keeps what it has already announced, and so
+    does the first run this process binds: after a restart in the middle of a
+    print the frames before the bind may already have announced a milestone.
+    """
+    previous = _progress_milestone_run.get(printer_id)
+    _progress_milestone_run[printer_id] = archive_id
+    if previous is not None and previous != archive_id:
+        _last_progress_milestone[printer_id] = 0
+
+
 def _take_expected_print(expected_keys: list[tuple[int, str]]) -> tuple[int | None, int | None]:
     """Take a started print's expectation: its archive id and who queued it.
 
@@ -2715,19 +2754,16 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
     is_printing = state.state in ("RUNNING", "PRINTING")
 
     if is_printing and progress > 0:
-        # Determine which milestone we've reached
-        current_milestone = 0
-        if progress >= 75:
-            current_milestone = 75
-        elif progress >= 50:
-            current_milestone = 50
-        elif progress >= 25:
-            current_milestone = 25
-
-        last_milestone = _last_progress_milestone.get(printer_id, 0)
+        current_milestone = _progress_milestone_to_notify(
+            progress,
+            layer_num=state.layer_num,
+            total_layers=state.total_layers,
+            stg_cur=state.stg_cur,
+            last=_last_progress_milestone.get(printer_id, 0),
+        )
 
         # If we've crossed a new milestone, send notification
-        if current_milestone > last_milestone:
+        if current_milestone:
             _last_progress_milestone[printer_id] = current_milestone
             try:
                 from backend.app.models.printer import Printer
@@ -4633,6 +4669,8 @@ def _bind_print_file_analysis_context(
         origin=origin,
     )
     _forget_unbound_user_stop(printer_id)
+    if bound.archive_id == archive.id:
+        _milestones_follow_run(printer_id, archive.id)
     # The run's first layer was announced before this process bound it (a restart): the cache follows the run.
     from backend.app.services import first_layer_announcement
 
