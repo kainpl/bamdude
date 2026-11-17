@@ -3527,21 +3527,14 @@ async def stop_print(
     if not client:
         raise HTTPException(400, "Printer not connected")
 
-    success = client.stop_print()
-    if not success:
+    # Sent and marked in one step: the mark is what makes on_print_complete
+    # read the resulting "failed"/"aborted" as "cancelled" — otherwise the HMS
+    # heuristic in _dispatch_archive_update would mislabel a user's cancel (e.g.
+    # the H2D's cancel-sequence module-0x0C HMS) as a failure, "Layer shift".
+    from backend.app.services.print_control import stop_print_by_user
+
+    if not stop_print_by_user(printer_id):
         raise HTTPException(500, "Failed to stop print")
-
-    # Mark this printer as user-stopped so on_print_complete reclassifies
-    # the resulting "failed"/"aborted" MQTT status as "cancelled" — otherwise
-    # the HMS heuristic in _dispatch_archive_update would mislabel
-    # user-cancels (e.g. the H2D's cancel-sequence module-0x0C HMS) as a
-    # genuine failure with reason="Layer shift".
-    try:
-        from backend.app.main import mark_printer_stopped_by_user
-
-        mark_printer_stopped_by_user(printer_id, unless_idle=True)
-    except Exception as _mark_err:
-        logger.warning("Failed to mark printer %s as user-stopped: %s", printer_id, _mark_err)
 
     return {"success": True, "message": "Print stop command sent"}
 
@@ -4533,6 +4526,12 @@ async def execute_hms_action(
     success = client.execute_hms_action(body.print_error, body.action, body.job_id)
     if not success:
         raise HTTPException(400, "Failed to execute HMS action")
+
+    # The dialog's Stop Printing is a person's stop: marked before the first
+    # await below, so the printer's "failed" is read as "cancelled".
+    from backend.app.services.print_control import mark_hms_action
+
+    mark_hms_action(printer_id, body.action)
 
     if body.action in HMS_UI_ONLY_ACTIONS:
         # These publish nothing by design — the printer's own screen owns them.

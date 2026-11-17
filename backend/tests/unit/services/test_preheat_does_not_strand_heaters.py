@@ -146,7 +146,7 @@ class TestAStoppedItemReachesTheDispatch:
         source = inspect.getsource(print_queue)
         block = source[source.index("Can only stop items that are printing") :]
         signal = block.index("cancel_dispatch_for_queue_item")
-        stop = block.index("printer_manager.stop_print")
+        stop = block.index("stop_print_by_user(printer_id")
         assert signal < stop
 
 

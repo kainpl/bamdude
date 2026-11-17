@@ -1461,25 +1461,16 @@ async def stop_queue_item(
     except Exception as exc:  # noqa: BLE001 - the stop below matters more
         logger.warning("Could not signal the dispatcher for stopped queue item %s: %s", item_id, exc)
 
-    # Try to send stop command to printer
-    stop_sent = False
-    try:
-        stop_sent = printer_manager.stop_print(printer_id)
-        if not stop_sent:
-            logger.warning("stop_print returned False for printer %s - printer may not be connected", printer_id)
-    except Exception as e:
-        logger.error("Error sending stop command for queue item %s: %s", item_id, e)
+    # Send the stop and mark the printer as user-stopped BEFORE the first
+    # await, so that if the MQTT on_print_complete callback fires during the
+    # db.commit() yield the "failed" status is read as "cancelled" (no spurious
+    # "print failed" notification). The row is cancelled whether or not the
+    # printer could be reached, so the mark stands either way.
+    from backend.app.services.print_control import stop_print_by_user
 
-    # Mark this printer as user-stopped BEFORE the first await so that if the
-    # MQTT on_print_complete callback fires during the db.commit() yield the flag
-    # is already set and the "failed" status will be correctly overridden to
-    # "cancelled" (preventing a spurious "print failed" notification).
-    try:
-        from backend.app.main import mark_printer_stopped_by_user
-
-        mark_printer_stopped_by_user(printer_id)
-    except Exception as _mark_err:
-        logger.warning("Failed to mark printer %s as user-stopped: %s", printer_id, _mark_err)
+    stop_sent = stop_print_by_user(printer_id, mark_when_unsent=True, unless_idle=False)
+    if not stop_sent:
+        logger.warning("stop_print returned False for printer %s - printer may not be connected", printer_id)
 
     # Update queue item status regardless - if printer is off, print is already stopped
     item.status = "cancelled"

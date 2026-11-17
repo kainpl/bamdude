@@ -743,17 +743,20 @@ class TestPrintControlAPI:
         """Verify successful stop print request."""
         printer = await printer_factory(name="Printing Printer")
 
-        mock_client = MagicMock()
-        mock_client.stop_print.return_value = True
-
-        with patch("backend.app.api.routes.printers.printer_manager") as mock_pm:
-            mock_pm.get_client.return_value = mock_client
+        with (
+            patch("backend.app.api.routes.printers.printer_manager") as mock_pm,
+            patch("backend.app.services.print_control.printer_manager") as control_pm,
+            patch("backend.app.services.print_control._mark") as mark,
+        ):
+            mock_pm.get_client.return_value = MagicMock()
+            control_pm.stop_print.return_value = True
 
             response = await async_client.post(f"/api/v1/printers/{printer.id}/print/stop")
 
             assert response.status_code == 200
             assert response.json()["success"] is True
-            mock_client.stop_print.assert_called_once()
+            control_pm.stop_print.assert_called_once_with(printer.id)
+            mark.assert_called_once_with(printer.id, unless_idle=True)
 
     # ========================================================================
     # Pause print endpoint

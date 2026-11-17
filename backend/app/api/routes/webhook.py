@@ -10,6 +10,7 @@ from backend.app.core.database import get_db
 from backend.app.models.api_key import APIKey
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.printer import Printer
+from backend.app.services.print_control import stop_print_by_user
 from backend.app.services.printer_manager import printer_manager
 
 logger = logging.getLogger(__name__)
@@ -114,7 +115,7 @@ async def webhook_stop_print(
     if not status or not status.connected:
         raise HTTPException(status_code=503, detail="Printer not connected")
 
-    if status.state != "RUNNING":
+    if status.state not in ("RUNNING", "PAUSE"):
         raise HTTPException(status_code=409, detail="No print in progress")
 
     # re-Connect MQTT if stalled
@@ -122,7 +123,7 @@ async def webhook_stop_print(
         raise HTTPException(status_code=503, detail="Can`t re-connect printer MQTT")
 
     try:
-        success = printer_manager.stop_print(printer_id)
+        success = stop_print_by_user(printer_id)
         if not success:
             raise HTTPException(status_code=503, detail="Failed to send stop command")
     except HTTPException:
@@ -159,7 +160,7 @@ async def webhook_cancel_print(
         raise HTTPException(status_code=503, detail="Can`t re-connect printer MQTT")
 
     try:
-        success = printer_manager.stop_print(printer_id)
+        success = stop_print_by_user(printer_id)
         if not success:
             raise HTTPException(status_code=503, detail="Failed to send stop command")
     except HTTPException:
