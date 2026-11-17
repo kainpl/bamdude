@@ -51,7 +51,7 @@ def _public_obico_error(message: str | None) -> str | None:
         if message.startswith("No address for the ML API"):
             return (
                 "No address for the ML API to fetch snapshots from. Set the BamDude address for the ML API in "
-                "Failure detection settings, or Settings → General → External URL."
+                "Failure detection settings, or Settings → Network → External URL."
             )
         if re.fullmatch(r"Check failed for printer \d+: \w+", message):
             return message

@@ -505,7 +505,7 @@ class ObicoDetectionService:
             self._no_verdict(
                 printer_id,
                 "No address for the ML API to fetch the snapshot from — set Settings → Failure detection → "
-                "BamDude address for the ML API, or Settings → General → External URL.",
+                "BamDude address for the ML API, or Settings → Network → External URL.",
             )
             return
 

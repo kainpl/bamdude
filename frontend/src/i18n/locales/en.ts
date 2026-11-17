@@ -12776,7 +12776,7 @@ export default {
     pollInterval: 'Poll interval (seconds)',
     pollIntervalHint: 'How often to check each printer while it is printing. Minimum 5s, maximum 120s.',
     externalUrlMissing: 'No address set for the ML API to fetch snapshots from.',
-    externalUrlHint: 'The ML API fetches the camera snapshot by URL. Set the BamDude address for the ML API above, or the External URL in General settings.',
+    externalUrlHint: 'The ML API fetches the camera snapshot by URL. Set the BamDude address for the ML API above, or the External URL in Settings → Network.',
     perPrinterTitle: 'Monitored Printers',
     perPrinterHint: 'Choose which printers the detection service watches.',
     monitorAll: 'Monitor all connected printers',
