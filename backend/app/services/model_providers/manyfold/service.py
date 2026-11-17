@@ -110,18 +110,28 @@ _token_cache: dict[tuple[str, str, str], tuple[str, float]] = {}
 _refused: dict[tuple[str, str, str], tuple[ManyfoldError, float]] = {}
 # base -> monotonic time until which its capabilities are known good
 _capable: dict[str, float] = {}
-_token_lock: asyncio.Lock | None = None
+#: How long a request waits for a sign-in somebody else is making before it gives up.
+SIGN_IN_WAIT_SECONDS = 20.0
+#: An unreachable instance is not asked again by every tile of a page for this long.
+_UNREACHABLE_FOR_SECONDS = 10.0
+_token_locks: dict[tuple[str, str, str], asyncio.Lock] = {}
 _token_lock_loop: asyncio.AbstractEventLoop | None = None
 
 
-def _sign_in_lock() -> asyncio.Lock:
-    """One sign-in at a time; bound to the running loop, recreated if it changes."""
-    global _token_lock, _token_lock_loop
+def _sign_in_lock(key: tuple[str, str, str]) -> asyncio.Lock:
+    """One sign-in at a time PER connection (a draft being tested never holds up the saved one);
+    bound to the running loop, recreated if it changes."""
+    global _token_lock_loop
     loop = asyncio.get_running_loop()
-    if _token_lock is None or _token_lock_loop is not loop:
-        _token_lock = asyncio.Lock()
+    if _token_lock_loop is not loop:
+        _token_locks.clear()
         _token_lock_loop = loop
-    return _token_lock
+    if key not in _token_locks:
+        if len(_token_locks) > 64:  # drafts come and go; an idle lock is nobody's
+            for stale in [known for known, lock in _token_locks.items() if not lock.locked()]:
+                del _token_locks[stale]
+        _token_locks[key] = asyncio.Lock()
+    return _token_locks[key]
 
 
 class ManyfoldError(ProviderError):
@@ -177,6 +187,8 @@ def clear_caches() -> None:
     _token_cache.clear()
     _refused.clear()
     _capable.clear()
+    for key in [known for known, lock in _token_locks.items() if not lock.locked()]:
+        del _token_locks[key]
 
 
 def valid_id(value: Any) -> str:
@@ -307,24 +319,47 @@ class ManyfoldService(ProviderService, BrowsableService):
         digest = hashlib.sha256(self._config.client_secret.encode()).hexdigest()
         return (self._base, self._config.client_id, digest)
 
-    async def _token(self, *, renew: bool = False) -> str:
+    async def _token(self, *, refused: str | None = None) -> str:
+        """The connection's token. ``refused`` is one Manyfold just answered 401 to: it is replaced
+        — by ONE sign-in, however many requests met that 401 (the rest take the new token).
+
+        The cache is read before the lock, so a request with a good token never waits for a
+        sign-in; waiting for one has a deadline.
+        """
         self._ready()
         key = self._cache_key()
-        async with _sign_in_lock():
-            cached = _token_cache.get(key)
-            if cached and not renew and cached[1] > time.monotonic():
-                return cached[0]
-            refused = _refused.get(key)
-            if refused and refused[1] > time.monotonic():
-                earlier = refused[0]
-                raise type(earlier)(str(earlier), earlier.code, earlier.status)
+
+        def cached() -> str | None:
+            entry = _token_cache.get(key)
+            return entry[0] if entry and entry[0] != refused and entry[1] > time.monotonic() else None
+
+        token = cached()
+        if token:
+            return token
+        lock = _sign_in_lock(key)
+        try:
+            async with asyncio.timeout(SIGN_IN_WAIT_SECONDS):
+                await lock.acquire()
+        except TimeoutError as exc:
+            raise ManyfoldUnavailable("Manyfold is still answering an earlier sign-in", "manyfold_unreachable") from exc
+        try:
+            token = cached()
+            if token:
+                return token
+            earlier = _refused.get(key)
+            if earlier and earlier[1] > time.monotonic():
+                raise type(earlier[0])(str(earlier[0]), earlier[0].code, earlier[0].status)
             try:
                 await self.capabilities()
                 return await self._sign_in(key)
             except ManyfoldError as exc:
                 if isinstance(exc, ManyfoldCredentials) or exc.code == "manyfold_rate_limited":
                     _refused[key] = (exc, time.monotonic() + _REFUSED_FOR_SECONDS)
+                elif exc.code == "manyfold_unreachable":
+                    _refused[key] = (exc, time.monotonic() + _UNREACHABLE_FOR_SECONDS)
                 raise
+        finally:
+            lock.release()
 
     async def _sign_in(self, key: tuple[str, str, str]) -> str:
         """Ask Manyfold for a token; the caller holds the sign-in lock."""
@@ -400,8 +435,9 @@ class ManyfoldService(ProviderService, BrowsableService):
         """GET with the token; a 401 drops the cached token and asks once more."""
         transport = self._ready()
         answer: GuardedAnswer | None = None
+        token: str | None = None
         for attempt in range(2):
-            token = await self._token(renew=attempt > 0)
+            token = await self._token(refused=token)
             answer = await self._ask(lambda: transport.get(path, params=params, accept=API_MEDIA_TYPE, bearer=token))  # noqa: B023
             if answer.status != 401 or attempt:
                 break
@@ -586,6 +622,9 @@ class ManyfoldService(ProviderService, BrowsableService):
 
     async def check(self) -> dict[str, Any]:
         """Test connection: capabilities, a sign-in, the first page. Returns what the form shows."""
+        earlier = _refused.get(self._cache_key())
+        if earlier and earlier[0].code == "manyfold_unreachable":
+            _refused.pop(self._cache_key(), None)  # a test is always a fresh try at reaching it
         await self.capabilities(fresh=True)
         listing = await self.list_models()
         return {"models": listing["total"], "minimum_version": MINIMUM_VERSION}
@@ -595,8 +634,9 @@ class ManyfoldService(ProviderService, BrowsableService):
     async def _stream_to(self, path: str, sink: Callable[[bytes], Any], *, cap: int, params=None, what: str) -> int:
         """GET ``path`` (one storage hop allowed) into ``sink``; returns the byte count."""
         transport = self._ready()
+        token: str | None = None
         for attempt in range(2):
-            token = await self._token(renew=attempt > 0)
+            token = await self._token(refused=token)
             try:
                 async with transport.stream(path, params=params, bearer=token, foreign_hop=True) as answer:
                     # Only Manyfold's own 401 means the token was refused; storage never saw it.

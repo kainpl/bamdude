@@ -250,6 +250,96 @@ class TestSignIn:
         assert fake.requests == []
 
 
+class TestSignInUnderLoad:
+    """Review MB-M3 / MB-M4: one sign-in for everybody, and nobody waits for it without a deadline."""
+
+    async def test_a_revoked_token_is_renewed_once_for_every_request_that_was_refused(self, fake):
+        import asyncio
+
+        await service_for(fake).list_models()
+        fake.expire_tokens()
+        # A catalogue page: every tile's request meets the 401 at once.
+        listings = await asyncio.gather(*(service_for(fake).list_models() for _ in range(40)))
+        assert all(listing["total"] == 3 for listing in listings)
+        assert fake.sign_ins == 2, (
+            f"{fake.sign_ins - 1} sign-ins for one revoked token (Manyfold allows 10 in 3 minutes)"
+        )
+
+    async def test_a_download_refused_with_the_old_token_shares_the_renewal_too(self, fake, tmp_path):
+        import asyncio
+
+        service = service_for(fake)
+        file = await service.get_file(MODEL, "f1c2d3g4h5j6")
+        fake.expire_tokens()
+        sizes = await asyncio.gather(
+            *(service_for(fake).download_file(file, tmp_path / f"{index}.stl") for index in range(6))
+        )
+        assert sizes == [len(STL)] * 6 and fake.sign_ins == 2
+
+    async def test_waiting_for_somebody_elses_sign_in_has_a_deadline(self, fake, monkeypatch):
+        import asyncio
+
+        never = asyncio.Event()
+
+        async def stuck(self, key):
+            await never.wait()
+
+        monkeypatch.setattr(ManyfoldService, "_sign_in", stuck)
+        monkeypatch.setattr(manyfold, "SIGN_IN_WAIT_SECONDS", 0.05, raising=False)
+        first = asyncio.create_task(service_for(fake).list_models())
+        await asyncio.sleep(0.02)
+        try:
+            with pytest.raises(ManyfoldUnavailable) as caught:
+                await asyncio.wait_for(service_for(fake).list_models(), 2)
+            assert caught.value.code == "manyfold_unreachable"
+        finally:
+            first.cancel()
+            await asyncio.gather(first, return_exceptions=True)
+
+    async def test_a_request_with_a_good_token_never_waits_for_a_sign_in(self, fake, monkeypatch):
+        import asyncio
+
+        await service_for(fake).list_models()  # the installation's token is cached
+        never = asyncio.Event()
+        real = ManyfoldService._sign_in
+
+        async def stuck(self, key):
+            if self._config.client_secret == "draft":
+                await never.wait()  # an administrator's draft test against an address that never answers
+            return await real(self, key)
+
+        monkeypatch.setattr(ManyfoldService, "_sign_in", stuck)
+        draft = asyncio.create_task(service_for(fake, secret="draft").list_models())
+        await asyncio.sleep(0.02)
+        try:
+            listing = await asyncio.wait_for(service_for(fake).list_models(), 2)
+            assert listing["total"] == 3
+            # ... and a sign-in for the saved connection does not queue behind the draft's either.
+            fake.expire_tokens()
+            assert (await asyncio.wait_for(service_for(fake).list_models(), 2))["total"] == 3
+        finally:
+            draft.cancel()
+            await asyncio.gather(draft, return_exceptions=True)
+
+    async def test_an_unreachable_manyfold_is_not_asked_again_by_every_tile(self, fake, monkeypatch):
+        asked: list[str] = []
+
+        async def down(host, port):
+            asked.append(host)
+            raise OSError("no route")
+
+        monkeypatch.setattr(outbound, "resolve_host", down)
+        for _ in range(5):
+            with pytest.raises(ManyfoldUnavailable) as caught:
+                await service_for(fake).fetch_preview(MODEL)
+            assert caught.value.code == "manyfold_unreachable"
+        assert len(asked) == 1
+        # "Test connection" is always a fresh try.
+        with pytest.raises(ManyfoldUnavailable):
+            await service_for(fake).check()
+        assert len(asked) == 2
+
+
 class TestFiles:
     async def test_the_download_path_is_rebuilt_from_the_decoded_segments(self, fake):
         file = await service_for(fake).get_file(MODEL, "k7l8m9n0p1q2")
