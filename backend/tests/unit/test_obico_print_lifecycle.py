@@ -178,6 +178,31 @@ async def test_notify_only_tells_once_at_the_alert_level(farm):
     assert farm.actions_run() == ["notify"]
 
 
+@pytest.mark.parametrize("action", ["notify", "pause"])
+@pytest.mark.asyncio
+async def test_a_failure_that_lasts_is_told_again_every_three_hours_and_never_paused_again(farm, monkeypatch, action):
+    clock = SimpleNamespace(now=1000.0)
+    monkeypatch.setattr("backend.app.services.obico_detection.time.monotonic", lambda: clock.now)
+    settings = {**SETTINGS, "action": action}
+    await farm.fail(settings)
+    first = ["notify"] if action == "notify" else ["notify", "pause"]
+    assert farm.actions_run() == first
+
+    clock.now += 3 * 3600 - 1
+    await farm.poll(2, settings)
+    assert farm.actions_run() == first
+    clock.now += 1
+    await farm.poll(2, settings)
+    assert farm.actions_run() == first + ["notify"]
+
+    farm.confidence = 0.0
+    await farm.poll(60, settings)  # the detection is gone
+    assert farm.service._last_class[1] == "safe"
+    clock.now += 4 * 3600
+    await farm.poll(2, settings)
+    assert farm.actions_run() == first + ["notify"]
+
+
 @pytest.mark.asyncio
 async def test_pause_and_off_waits_for_the_pause_level_after_the_alert(farm):
     settings = {**SETTINGS, "action": "pause_and_off"}

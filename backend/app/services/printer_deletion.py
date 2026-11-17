@@ -89,6 +89,7 @@ _ID_KEYED = (
     ("backend.app.services.obico_detection", "obico_detection_service._action_fired"),
     ("backend.app.services.obico_detection", "obico_detection_service._print_ids"),
     ("backend.app.services.obico_detection", "obico_detection_service._alerted"),
+    ("backend.app.services.obico_detection", "obico_detection_service._notified_at"),
     ("backend.app.services.obico_detection", "obico_detection_service._baselines"),
     ("backend.app.services.print_scheduler", "scheduler._dispatch_holds"),
     ("backend.app.services.print_scheduler", "scheduler._drying_in_progress"),

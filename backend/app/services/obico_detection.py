@@ -41,6 +41,9 @@ logger = logging.getLogger(__name__)
 # before a print, and catch a reprint whose FINISH fell between two polls.
 _ENDED_STATES = ("FINISH", "FAILED", "IDLE", "PREPARE", "SLICING")
 _PAUSING_ACTIONS = ("pause", "pause_and_off")
+# A failure still suspected this long after the print's last notification is told
+# again -- a notification only, whatever the action: a pause is never repeated.
+REMIND_AFTER = 3 * 60 * 60.0
 
 HISTORY_MAX = 50
 HEALTH_TIMEOUT = 5.0
@@ -144,6 +147,8 @@ class ObicoDetectionService:
         self._baselines: dict[int, Baseline] = {}
         # printer_id -> whether the alert-level notification went out for this print
         self._alerted: dict[int, bool] = {}
+        # printer_id -> when this print's last notification went out (monotonic)
+        self._notified_at: dict[int, float] = {}
         # printer_id -> last classification ("safe"/"warning"/"failure")
         self._last_class: dict[int, str] = {}
         # printer_id -> why the most recent poll produced no verdict; absent
@@ -337,6 +342,7 @@ class ObicoDetectionService:
             self._state_keys,
             self._print_ids,
             self._alerted,
+            self._notified_at,
             self._action_fired,
             self._last_class,
             self._errors,
@@ -482,6 +488,7 @@ class ObicoDetectionService:
             self._state_keys[printer_id] = key
             self._print_ids.pop(printer_id, None)
             self._alerted[printer_id] = False
+            self._notified_at.pop(printer_id, None)
             self._action_fired[printer_id] = False
         if ids:
             self._print_ids.setdefault(printer_id, {}).update(ids)
@@ -592,7 +599,14 @@ class ObicoDetectionService:
             if action not in _PAUSING_ACTIONS:
                 self._action_fired[printer_id] = True
         action_requested = dispatch is not None
+        if (
+            dispatch is None
+            and verdict != "safe"
+            and time.monotonic() - self._notified_at.get(printer_id, time.monotonic()) >= REMIND_AFTER
+        ):
+            dispatch = "notify"  # a reminder: no new action, so the evidence record claims none
         if dispatch:
+            self._notified_at[printer_id] = time.monotonic()  # before the await, so two polls cannot both send
             self._alerted[printer_id] = True
             if dispatch != "notify":
                 self._action_fired[printer_id] = True
