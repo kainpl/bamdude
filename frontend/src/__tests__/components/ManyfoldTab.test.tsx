@@ -312,6 +312,7 @@ describe('ManyfoldTab', () => {
   it('loads the next batch of file details only when the answer says more exist', async () => {
     connected();
     const batches: string[] = [];
+    let firstBatchReads = 0;
     server.use(
       http.get(`${BASE}/models/:id`, ({ request }) => {
         const cursor = new URL(request.url).searchParams.get('detail_cursor');
@@ -319,6 +320,7 @@ describe('ManyfoldTab', () => {
           batches.push(cursor);
           return HttpResponse.json(model({ files: [file('z', { name: 'Bracket', filename: 'bracket.stl', size: 4096 })], detail_cursor: null }));
         }
+        firstBatchReads += 1;
         return HttpResponse.json(
           model({ files: [file('a'), file('z', { name: 'Bracket', filename: null, size: null, presupported: null })], detail_cursor: 'c1' }),
         );
@@ -336,6 +338,13 @@ describe('ManyfoldTab', () => {
     expect(screen.getByText('a.stl')).toBeInTheDocument(); // the first batch stays
     expect(batches).toEqual(['c1']);
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Load more file details' })).not.toBeInTheDocument());
+
+    // An import re-reads the model; the details already loaded are not thrown away.
+    fireEvent.click(within(screen.getByText('a.stl').closest('li') as HTMLElement).getByRole('button', { name: 'Import' }));
+    await waitFor(() => expect(firstBatchReads).toBe(2));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Import all' })).toBeEnabled());
+    expect(screen.getByText('bracket.stl')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Load more file details' })).not.toBeInTheDocument();
   });
 
   it('a model whose answer carries every detail offers no "load more"', async () => {

@@ -196,11 +196,11 @@ export function ManyfoldTab() {
   // The sensitive model whose preview the user asked to see.
   const [revealed, setRevealed] = useState<string | null>(null);
   // File details of a large model arrive in batches: the model's answer carries a cursor while
-  // more exist, and each further batch is asked for by the user. They belong to ONE read of the
-  // model (its cursor is that read's), so a fresh read starts over.
+  // more exist, and each further batch is asked for by the user. What was loaded stays for as
+  // long as that model is open — a re-read of the model (after an import, on returning to the
+  // window) does not throw the batches away.
   const [moreDetails, setMoreDetails] = useState<{
     modelId: string;
-    readAt: number;
     files: Map<string, ModelSourceFile>;
     cursor: string | number | null;
   } | null>(null);
@@ -305,7 +305,7 @@ export function ManyfoldTab() {
   // ---- one model ------------------------------------------------------
   if (openModelId !== null) {
     const data = model.data;
-    const extra = data && moreDetails && moreDetails.modelId === data.id && moreDetails.readAt === modelReadAt ? moreDetails : null;
+    const extra = data && moreDetails && moreDetails.modelId === data.id ? moreDetails : null;
     // Non-null only while the server says more file details exist.
     const detailCursor = extra ? extra.cursor : (data?.detail_cursor ?? null);
     const files = data ? withDetails(data.files, extra?.files) : [];
@@ -316,9 +316,9 @@ export function ManyfoldTab() {
       try {
         const batch = await api.getManyfoldModel(data.id, detailCursor);
         setMoreDetails((previous) => {
-          const known = new Map(previous && previous.modelId === data.id && previous.readAt === modelReadAt ? previous.files : []);
+          const known = new Map(previous && previous.modelId === data.id ? previous.files : []);
           for (const file of batch.files) known.set(file.id, file);
-          return { modelId: data.id, readAt: modelReadAt, files: known, cursor: batch.detail_cursor ?? null };
+          return { modelId: data.id, files: known, cursor: batch.detail_cursor ?? null };
         });
       } catch (error) {
         setDetailsError(refusalText(error));
