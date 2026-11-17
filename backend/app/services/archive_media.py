@@ -151,6 +151,11 @@ async def forget_archives(db: AsyncSession, archive_ids: Iterable[int]) -> int:
             delete(ArchiveMediaAsset).where(ArchiveMediaAsset.archive_id.in_(ids[start : start + _CHUNK]))
         )
         removed += result.rowcount or 0
+    # The files of these archives are about to go: no tidy-up may delete a
+    # printer's original on the strength of a copy of theirs.
+    for pin in _pins:
+        if pin.archive_id in ids:
+            pin.revoked = True
     return removed
 
 
@@ -383,11 +388,9 @@ async def _retire(db: AsyncSession, row: ArchiveMediaAsset, receipts: list | Non
                 "created_at": row.created_at,
             }
         )
-    for pin in _pins:
-        if pin.asset_uuid == row.asset_uuid:
-            # Before the commit, on purpose: a tidy-up must not delete from the
-            # printer on the strength of a copy that is being taken away.
-            pin.revoked = True
+    # Before the commit, on purpose: a tidy-up must not delete from the
+    # printer on the strength of a copy that is being taken away.
+    _revoke(asset_uuid=row.asset_uuid)
     await db.delete(row)
     await db.flush()
 
@@ -430,39 +433,52 @@ class CopyPin:
 
     ``holds()`` is synchronous on purpose: it is asked on the printer's file
     lane — in a worker thread for FTP — immediately before the delete command.
+    It asks two things: nobody took the copy away (every door that does —
+    replace, remove, reprint reset, the hard delete of the archive — revokes the
+    pin), and the file is on disk at this very moment. The second is the
+    physical fact itself, so a door that forgot to revoke still deletes nothing
+    from the printer.
     """
 
     asset_uuid: str
+    archive_id: int
     relative_path: str
     content_sha256: str
+    local: Path
     revoked: bool = False
 
     def holds(self) -> bool:
-        return not self.revoked
+        try:
+            return not self.revoked and self.local.is_file()
+        except OSError:
+            return False
 
     def matches(self, data: bytes | None) -> bool:
         """Whether ``data`` — the recording as it is on the printer NOW — is the very video this copy holds."""
         import hashlib  # noqa: PLC0415
 
-        return bool(data) and self.holds() and hashlib.sha256(data).hexdigest() == self.content_sha256
+        return bool(data) and hashlib.sha256(data).hexdigest() == self.content_sha256 and self.holds()
 
 
 #: Pins of running tidy-ups. Process memory: this process is the only writer that can take the copy away.
 _pins: list[CopyPin] = []
 
 
-async def pin_live_copy(
-    db: AsyncSession, base_dir: Path, printer_identity: str, storage: str, remote_path: str
-) -> CopyPin | None:
-    """Pin the live copy of one printer recording, or ``None`` when no archive holds one.
+def _revoke(*, asset_uuid: str | None = None, relative_path: str | None = None) -> None:
+    for pin in _pins:
+        if (asset_uuid is not None and pin.asset_uuid == asset_uuid) or (
+            relative_path is not None and pin.relative_path == relative_path
+        ):
+            pin.revoked = True
 
-    Live means: a PRIMARY row claims the recording, its archive's pointer names
-    that row's file, and the file is on disk inside the data directory. A
-    receipt is history — the video made from the recording was replaced, and
-    its file may be gone — so it authorises nothing here.
-    """
+
+async def _shown_copy(db: AsyncSession, base_dir: Path, printer_identity: str, storage: str, remote_path: str):
+    """``(row, local file)`` of the live copy as the database and the disk have it NOW, or ``None``."""
     from backend.app.models.archive import PrintArchive  # noqa: PLC0415
 
+    # A statement of its own transaction: on SQLite a session that has already
+    # read keeps its snapshot, and would not see a removal committed since.
+    await db.rollback()
     found = (
         await db.execute(
             select(ArchiveMediaAsset, PrintArchive.timelapse_path)
@@ -475,6 +491,7 @@ async def pin_live_copy(
                 ArchiveMediaAsset.content_sha256.is_not(None),
                 PrintArchive.recovery_identity == ArchiveMediaAsset.archive_identity,
             )
+            .execution_options(populate_existing=True)
             .limit(1)
         )
     ).first()
@@ -486,8 +503,42 @@ async def pin_live_copy(
     local = await asyncio.to_thread(contained, base_dir, row.relative_path)
     if local is None or not await asyncio.to_thread(local.is_file):
         return None
-    pin = CopyPin(row.asset_uuid, row.relative_path, row.content_sha256)
+    return row, local
+
+
+async def pin_live_copy(
+    db: AsyncSession, base_dir: Path, printer_identity: str, storage: str, remote_path: str
+) -> CopyPin | None:
+    """Pin the live copy of one printer recording, or ``None`` when no archive holds one.
+
+    Live means: a PRIMARY row claims the recording, its archive's pointer names
+    that row's file, and the file is on disk inside the data directory. A
+    receipt is history — the video made from the recording was replaced, and
+    its file may be gone — so it authorises nothing here.
+
+    ⚠️ **The pin is registered first and the copy is looked at AGAIN after
+    that.** Finding the copy takes awaits — the query, the disk — and a removal
+    can win any of them; a pin registered on what was seen before would be a
+    valid pin on a copy that is gone. So: look, register, look again. A removal
+    that committed before the second look is seen by it; one that commits after
+    it meets a registered pin and revokes it — in ``_retire`` / ``forget_archives``
+    before its commit, and again by path immediately before its file goes
+    (``_unlink``).
+    """
+    seen = await _shown_copy(db, base_dir, printer_identity, storage, remote_path)
+    if seen is None:
+        return None
+    row, local = seen
+    pin = CopyPin(row.asset_uuid, row.archive_id, row.relative_path, row.content_sha256, local)
     _pins.append(pin)
+    try:
+        again = await _shown_copy(db, base_dir, printer_identity, storage, remote_path)
+    except BaseException:
+        release_pin(pin)
+        raise
+    if again is None or again[0].asset_uuid != pin.asset_uuid or not pin.holds():
+        release_pin(pin)
+        return None
     return pin
 
 
@@ -517,6 +568,8 @@ def contained(base_dir: Path, relative_path: str | None) -> Path | None:
 async def _unlink(base_dir: Path, relative_path: str | None) -> None:
     if not relative_path:
         return
+    # After the commit, before the file goes: a pin registered since the row was retired.
+    _revoke(relative_path=relative_path)
     target = await asyncio.to_thread(contained, base_dir, relative_path)
     if target is None:
         logger.warning(

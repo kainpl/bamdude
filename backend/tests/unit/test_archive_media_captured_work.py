@@ -990,6 +990,72 @@ class TestOnlyALiveCopyIsPinned:
         archive_media.release_pin(pin)
         assert archive_media._pins == []
 
+    async def test_a_removal_that_wins_while_the_copy_is_being_found_leaves_no_pin(self, db_session, base, monkeypatch):
+        """The disk said "there" and, before the pin was registered, the video was removed: look again."""
+        archive, published = await self._claimed(db_session, base)
+        local = base / published.relative_path
+        reached, release = asyncio.Event(), asyncio.Event()
+        real = asyncio.to_thread
+        stopped = False
+
+        async def after_the_disk_answered(fn, *args, **kwargs):
+            nonlocal stopped
+            result = await real(fn, *args, **kwargs)
+            if not stopped and getattr(fn, "__name__", "") == "is_file":
+                stopped = True
+                reached.set()
+                await release.wait()
+            return result
+
+        monkeypatch.setattr(asyncio, "to_thread", after_the_disk_answered)
+        factory = async_sessionmaker(db_session.bind, expire_on_commit=False)
+        async with factory() as other:
+            pinning = asyncio.create_task(
+                archive_media.pin_live_copy(other, base, "printer-identity", "external", "/timelapse/record.avi")
+            )
+            await asyncio.wait_for(reached.wait(), 5)
+            removed = await archive_media.remove_primary(
+                db_session,
+                archive.id,
+                base_dir=base,
+                expected_identity=archive.recovery_identity,
+                expected_epoch=queue_sources.current_epoch(),
+            )
+            assert removed.ok and not local.exists()
+            release.set()
+            assert await asyncio.wait_for(pinning, 5) is None
+        assert archive_media._pins == []
+
+    async def test_the_hard_delete_of_the_archive_revokes_the_pin(self, db_session, base):
+        archive, _ = await self._claimed(db_session, base)
+        pin = await self._pin(db_session, base)
+        try:
+            await archive_media.forget_archives(db_session, [archive.id])
+            await db_session.rollback()  # revoked before the commit, and it stays revoked
+            assert pin.revoked and not pin.holds()
+        finally:
+            archive_media.release_pin(pin)
+
+    async def test_a_pin_asks_the_disk_itself(self, db_session, base):
+        """A door that takes the file without revoking still gets nothing deleted from the printer."""
+        _archive_row, published = await self._claimed(db_session, base)
+        pin = await self._pin(db_session, base)
+        try:
+            assert pin.holds()
+            (base / published.relative_path).unlink()
+            assert not pin.revoked and not pin.holds() and not pin.matches(b"anything")
+        finally:
+            archive_media.release_pin(pin)
+
+    async def test_the_unlink_after_a_commit_revokes_by_path(self, db_session, base):
+        _archive_row, published = await self._claimed(db_session, base)
+        pin = await self._pin(db_session, base)
+        try:
+            await archive_media._unlink(base, published.relative_path)
+            assert pin.revoked
+        finally:
+            archive_media.release_pin(pin)
+
     async def test_another_path_or_printer_has_no_copy(self, db_session, base):
         await self._claimed(db_session, base)
         assert await self._pin(db_session, base, path="/timelapse/other.avi") is None

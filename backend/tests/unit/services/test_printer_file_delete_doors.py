@@ -8,6 +8,7 @@ import asyncio
 import hashlib
 import threading
 from contextlib import asynccontextmanager
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -156,7 +157,10 @@ def _live_copy(data=b"video"):
     lookup itself runs against a real database in ``test_archive_media_captured_work.py``."""
     from backend.app.services.archive_media import CopyPin
 
-    pin = None if data is None else CopyPin("asset", "archive/v.mp4", hashlib.sha256(data).hexdigest())
+    # ``local`` is any file that exists: the pin also asks the disk.
+    pin = (
+        None if data is None else CopyPin("asset", 1, "archive/v.mp4", hashlib.sha256(data).hexdigest(), Path(__file__))
+    )
     return patch("backend.app.services.archive_media.pin_live_copy", new=AsyncMock(return_value=pin))
 
 

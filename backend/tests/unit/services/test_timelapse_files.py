@@ -8,6 +8,7 @@ match the tunnel offers and FTP cannot.
 
 import asyncio
 import hashlib
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -267,7 +268,10 @@ def _live_copy(data=b"video"):
     lookup itself runs against a real database in ``test_archive_media_captured_work.py``."""
     from backend.app.services.archive_media import CopyPin
 
-    pin = None if data is None else CopyPin("asset", "archive/v.mp4", hashlib.sha256(data).hexdigest())
+    # ``local`` is any file that exists: the pin also asks the disk.
+    pin = (
+        None if data is None else CopyPin("asset", 1, "archive/v.mp4", hashlib.sha256(data).hexdigest(), Path(__file__))
+    )
     return patch("backend.app.services.archive_media.pin_live_copy", new=AsyncMock(return_value=pin))
 
 
@@ -341,7 +345,7 @@ class TestRemovingTheRecordingFromThePrinter:
         """The pin is asked on the lane: a video replaced or removed during the wait revokes it."""
         from backend.app.services.archive_media import CopyPin
 
-        pin = CopyPin("asset", "archive/v.mp4", hashlib.sha256(b"video").hexdigest())
+        pin = CopyPin("asset", 1, "archive/v.mp4", hashlib.sha256(b"video").hexdigest(), Path(__file__))
         lane = _Lane()
         real = lane.delete_verified
 
