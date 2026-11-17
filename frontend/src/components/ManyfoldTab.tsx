@@ -8,6 +8,7 @@ import { api, type ModelSourceFile } from '../api/client';
 import { useAuth } from '../contexts/AuthContext';
 import { manyfoldMarkKey, useManyfoldImport, type ManyfoldImportSummary } from '../contexts/ManyfoldImportContext';
 import { formatFileSize } from '../utils/file';
+import { isHttpLink } from '../utils/httpLink';
 import { Button } from './Button';
 import { Card, CardContent } from './Card';
 import { FolderTreeSelect } from './FolderTreeSelect';
@@ -15,6 +16,19 @@ import { LoadingBlock } from './LoadingBlock';
 import { useManyfoldRefusal } from './manyfoldRefusal';
 
 const fileLabel = (file: ModelSourceFile) => file.filename || file.name;
+
+const hasDetails = (file: ModelSourceFile) => file.filename !== null || file.size !== null;
+/** The model's files with the detail batches loaded since laid over them; a detailed entry is never lost. */
+function withDetails(files: ModelSourceFile[], more: Map<string, ModelSourceFile> | undefined): ModelSourceFile[] {
+  if (!more || more.size === 0) return files;
+  const listed = new Set(files.map((file) => file.id));
+  const merged = files.map((file) => {
+    const later = more.get(file.id);
+    return later && (hasDetails(later) || !hasDetails(file)) ? later : file;
+  });
+  for (const [id, file] of more) if (!listed.has(id)) merged.push(file);
+  return merged;
+}
 
 /** The route's own cap on the search words. */
 const SEARCH_MAX = 200;
@@ -25,22 +39,26 @@ function pageFrom(raw: string | null): number {
 }
 
 /** A model's preview from our own proxy; a model without one shows a neutral tile. */
-function Preview({ modelId, name, className }: { modelId: string; name: string; className: string }) {
-  const [broken, setBroken] = useState(false);
-  if (broken) {
+function Preview({ modelId, className, veiled = false }: { modelId: string; className: string; veiled?: boolean }) {
+  const src = api.getManyfoldPreviewUrl(modelId);
+  // Broken is a fact about one address: when the media token arrives the address changes
+  // and the picture is tried again (a first load that beat the token must not latch the tile).
+  const [brokenSrc, setBrokenSrc] = useState<string | null>(null);
+  if (brokenSrc === src) {
     return (
       <div className={`${className} flex items-center justify-center bg-bambu-dark`} aria-hidden="true">
         <Box className="w-10 h-10 text-bambu-gray/50" />
       </div>
     );
   }
+  // alt="": the model's name stands beside every preview as text, and is not read twice.
   return (
     <img
-      src={api.getManyfoldPreviewUrl(modelId)}
-      alt={name}
+      src={src}
+      alt=""
       loading="lazy"
-      onError={() => setBroken(true)}
-      className={`${className} object-cover bg-bambu-dark`}
+      onError={() => setBrokenSrc(src)}
+      className={`${className} object-cover bg-bambu-dark${veiled ? ' blur-xl' : ''}`}
     />
   );
 }
@@ -110,7 +128,8 @@ export function ManyfoldTab() {
   const refusalText = useManyfoldRefusal();
   // The run belongs to the app, not to this tab: it goes on, and is found again, across navigation.
   const { progress, busy, summary, justImported, startFiles, startModels, cancel, dismissSummary } = useManyfoldImport();
-  const canImport = hasPermission('manyfold:import');
+  // An import adds a file to the library: the server asks for that right as well.
+  const canImport = hasPermission('manyfold:import') && hasPermission('library:upload');
   const canConnect = hasPermission('settings:update');
 
   // The place in the catalogue lives in the address (review MF-I3): the search words, the page
@@ -174,6 +193,20 @@ export function ManyfoldTab() {
     if (arrived) setLastPage({ query, page: arrived.page, pages: arrived.pages, hasNext: arrived.has_next });
   }, [arrived, query]);
 
+  // The sensitive model whose preview the user asked to see.
+  const [revealed, setRevealed] = useState<string | null>(null);
+  // File details of a large model arrive in batches: the model's answer carries a cursor while
+  // more exist, and each further batch is asked for by the user. They belong to ONE read of the
+  // model (its cursor is that read's), so a fresh read starts over.
+  const [moreDetails, setMoreDetails] = useState<{
+    modelId: string;
+    readAt: number;
+    files: Map<string, ModelSourceFile>;
+    cursor: string | number | null;
+  } | null>(null);
+  const [loadingDetails, setLoadingDetails] = useState(false);
+  const [detailsError, setDetailsError] = useState<string | null>(null);
+
   // What the library holds of the open model: the model's own answer, plus what this session
   // imported since that answer was read (a later read knows better — the file may be gone again).
   const modelReadAt = model.dataUpdatedAt;
@@ -210,6 +243,24 @@ export function ManyfoldTab() {
   const busyTitle = busy ? t('manyfold.importRunning') : undefined;
 
   if (status.isLoading) return <LoadingBlock label={t('common.loading')} />;
+
+  // "Could not be checked" is not "not connected": a failed status read says so and can be asked again.
+  if (status.isError && status.data === undefined) {
+    return status.isFetching ? (
+      <LoadingBlock label={t('common.loading')} />
+    ) : (
+      <Card>
+        <CardContent className="py-8 flex flex-col items-center text-center gap-3">
+          <AlertCircle className="w-8 h-8 text-bambu-gray" />
+          <p className="text-white font-medium">{t('manyfold.statusFailed')}</p>
+          <Button size="sm" variant="secondary" onClick={() => void status.refetch()}>
+            <RefreshCw className="w-3.5 h-3.5 mr-1" />
+            {t('common.retry')}
+          </Button>
+        </CardContent>
+      </Card>
+    );
+  }
 
   if (!usable) {
     return (
@@ -254,7 +305,28 @@ export function ManyfoldTab() {
   // ---- one model ------------------------------------------------------
   if (openModelId !== null) {
     const data = model.data;
-    const importable = (data?.files ?? []).filter((file) => file.importable && !inLibrary.has(file.id));
+    const extra = data && moreDetails && moreDetails.modelId === data.id && moreDetails.readAt === modelReadAt ? moreDetails : null;
+    // Non-null only while the server says more file details exist.
+    const detailCursor = extra ? extra.cursor : (data?.detail_cursor ?? null);
+    const files = data ? withDetails(data.files, extra?.files) : [];
+    const loadMoreDetails = async () => {
+      if (!data || detailCursor === null || loadingDetails) return;
+      setLoadingDetails(true);
+      setDetailsError(null);
+      try {
+        const batch = await api.getManyfoldModel(data.id, detailCursor);
+        setMoreDetails((previous) => {
+          const known = new Map(previous && previous.modelId === data.id && previous.readAt === modelReadAt ? previous.files : []);
+          for (const file of batch.files) known.set(file.id, file);
+          return { modelId: data.id, readAt: modelReadAt, files: known, cursor: batch.detail_cursor ?? null };
+        });
+      } catch (error) {
+        setDetailsError(refusalText(error));
+      } finally {
+        setLoadingDetails(false);
+      }
+    };
+    const importable = files.filter((file) => file.importable && !inLibrary.has(file.id));
     const picked = importable.filter((file) => pickedFiles.has(file.id));
     const toggleFile = (fileId: string) =>
       setPickedFiles((previous) => {
@@ -282,9 +354,30 @@ export function ManyfoldTab() {
           <Card>
             <CardContent className="space-y-4">
               <div className="flex flex-col sm:flex-row gap-4">
-                {data.has_preview && <Preview modelId={data.id} name={data.name} className="w-full sm:w-48 h-48 rounded-lg shrink-0" />}
+                {data.has_preview &&
+                  (data.sensitive && revealed !== data.id ? (
+                    // Manyfold marks this model sensitive: its picture stays blurred until it is asked for.
+                    <button
+                      type="button"
+                      onClick={() => setRevealed(data.id)}
+                      aria-label={t('manyfold.showPreview')}
+                      className="relative w-full sm:w-48 h-48 rounded-lg shrink-0 overflow-hidden"
+                    >
+                      <Preview modelId={data.id} className="w-full h-full" veiled />
+                      <span className="absolute inset-0 flex items-center justify-center p-2 text-center text-xs text-white bg-black/40">
+                        {t('manyfold.sensitiveHidden')}
+                      </span>
+                    </button>
+                  ) : (
+                    <Preview modelId={data.id} className="w-full sm:w-48 h-48 rounded-lg shrink-0" />
+                  ))}
                 <div className="min-w-0 space-y-2">
                   <h2 className="text-xl font-semibold text-white break-words">{data.name}</h2>
+                  {data.sensitive && (
+                    <span className="inline-block px-2 py-0.5 rounded bg-yellow-500/20 text-yellow-300 text-xs">
+                      {t('manyfold.sensitive')}
+                    </span>
+                  )}
                   {data.caption && <p className="text-sm text-bambu-gray break-words">{data.caption}</p>}
                   <dl className="text-sm grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
                     {data.creator && (
@@ -307,7 +400,7 @@ export function ManyfoldTab() {
                       ))}
                     </ul>
                   )}
-                  {data.url && (
+                  {isHttpLink(data.url) && (
                     <a href={data.url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-sm text-bambu-green hover:underline">
                       <ExternalLink className="w-3.5 h-3.5" />
                       {t('manyfold.openInManyfold')}
@@ -318,17 +411,19 @@ export function ManyfoldTab() {
 
               <div className="space-y-2">
                 <h3 className="text-sm font-medium text-white">{t('manyfold.files')}</h3>
-                {data.files.length === 0 && <p className="text-sm text-bambu-gray">{t('manyfold.noFiles')}</p>}
+                {files.length === 0 && <p className="text-sm text-bambu-gray">{t('manyfold.noFiles')}</p>}
                 {canImport && importable.length > 0 && (
                   <div className="flex flex-wrap items-center gap-2">
-                    <span className="text-sm text-bambu-gray">{t('manyfold.importTo')}</span>
-                    <FolderTreeSelect
-                      folders={folders.data}
-                      value={folderId}
-                      onChange={setFolderId}
-                      rootLabel={t('manyfold.folderAuto')}
-                      disabled={busy}
-                    />
+                    <div role="group" aria-label={t('manyfold.importTo')} className="flex flex-wrap items-center gap-2">
+                      <span className="text-sm text-bambu-gray" aria-hidden="true">{t('manyfold.importTo')}</span>
+                      <FolderTreeSelect
+                        folders={folders.data}
+                        value={folderId}
+                        onChange={setFolderId}
+                        rootLabel={t('manyfold.folderAuto')}
+                        disabled={busy}
+                      />
+                    </div>
                     <label className="inline-flex items-center gap-2 text-sm text-white">
                       <input
                         type="checkbox"
@@ -361,7 +456,7 @@ export function ManyfoldTab() {
                 )}
                 {progressNote}
                 <ul className="divide-y divide-bambu-dark-tertiary">
-                  {data.files.map((file) => {
+                  {files.map((file) => {
                     const held = inLibrary.get(file.id);
                     const label = fileLabel(file);
                     return (
@@ -382,6 +477,7 @@ export function ManyfoldTab() {
                               file.size !== null ? formatFileSize(file.size) : null,
                               file.presupported ? t('manyfold.presupported') : null,
                               !file.importable ? t(file.available ? 'manyfold.notImportable' : 'manyfold.notAvailable') : null,
+                              detailCursor !== null && !hasDetails(file) ? t('manyfold.detailsPending') : null,
                             ]
                               .filter(Boolean)
                               .join(' · ')}
@@ -411,6 +507,16 @@ export function ManyfoldTab() {
                     );
                   })}
                 </ul>
+                {detailCursor !== null && (
+                  <div className="flex flex-wrap items-center gap-3 text-sm">
+                    <p className="text-bambu-gray">{t('manyfold.moreDetailsNote')}</p>
+                    <Button size="sm" variant="secondary" disabled={loadingDetails} onClick={() => void loadMoreDetails()}>
+                      {loadingDetails && <Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" />}
+                      {t('manyfold.loadMoreDetails')}
+                    </Button>
+                    {detailsError && <p role="alert" className="text-red-400">{detailsError}</p>}
+                  </div>
+                )}
               </div>
             </CardContent>
           </Card>
@@ -470,36 +576,41 @@ export function ManyfoldTab() {
       {summary && <SummaryNote summary={summary} onClose={dismissSummary} />}
       {progressNote}
 
-      {canImport && pageModels.length > 0 && (
+      {/* The ticks outlive the page that showed them, so their bar does too: an empty or failed page keeps it. */}
+      {canImport && (pageModels.length > 0 || pickedModels.size > 0) && (
         <div className="flex flex-wrap items-center gap-3 text-sm">
-          <label className="inline-flex items-center gap-2 text-white">
-            <input
-              type="checkbox"
-              checked={pageAllPicked}
-              disabled={busy}
-              onChange={(event) =>
-                setPickedModels((previous) => {
-                  const next = new Map(previous);
-                  for (const entry of pageModels) {
-                    if (event.target.checked) next.set(entry.id, entry.name);
-                    else next.delete(entry.id);
-                  }
-                  return next;
-                })
-              }
-            />
-            {t('manyfold.selectPage')}
-          </label>
+          {pageModels.length > 0 && (
+            <label className="inline-flex items-center gap-2 text-white">
+              <input
+                type="checkbox"
+                checked={pageAllPicked}
+                disabled={busy}
+                onChange={(event) =>
+                  setPickedModels((previous) => {
+                    const next = new Map(previous);
+                    for (const entry of pageModels) {
+                      if (event.target.checked) next.set(entry.id, entry.name);
+                      else next.delete(entry.id);
+                    }
+                    return next;
+                  })
+                }
+              />
+              {t('manyfold.selectPage')}
+            </label>
+          )}
           {pickedModels.size > 0 && (
             <>
               <span className="text-bambu-gray">{t('manyfold.modelsSelected', { count: pickedModels.size })}</span>
-              <FolderTreeSelect
-                folders={folders.data}
-                value={folderId}
-                onChange={setFolderId}
-                rootLabel={t('manyfold.folderAuto')}
-                disabled={busy}
-              />
+              <div role="group" aria-label={t('manyfold.importTo')}>
+                <FolderTreeSelect
+                  folders={folders.data}
+                  value={folderId}
+                  onChange={setFolderId}
+                  rootLabel={t('manyfold.folderAuto')}
+                  disabled={busy}
+                />
+              </div>
               <Button size="sm" disabled={busy} title={busyTitle} onClick={importModels}>{t('manyfold.importModels')}</Button>
               <button type="button" disabled={busy} onClick={() => setPickedModels(new Map())} className="text-bambu-gray hover:text-white">
                 {t('manyfold.clearSelection')}
@@ -529,8 +640,16 @@ export function ManyfoldTab() {
               />
             )}
             <button type="button" onClick={() => goTo({ model: entry.id })} className="block w-full text-left">
-              <Preview modelId={entry.id} name={entry.name} className="w-full aspect-square" />
-              <span className="block p-2 text-sm text-white break-words">{entry.name}</span>
+              {/* A list that says a model is sensitive gets a blurred tile; its picture is shown on the model itself. */}
+              <span className="block overflow-hidden">
+                <Preview modelId={entry.id} className="w-full aspect-square" veiled={entry.sensitive === true} />
+              </span>
+              <span className="block p-2 text-sm text-white break-words">
+                {entry.name}
+                {entry.sensitive === true && (
+                  <span className="ml-2 px-1.5 py-0.5 rounded bg-yellow-500/20 text-yellow-300 text-xs">{t('manyfold.sensitive')}</span>
+                )}
+              </span>
             </button>
           </li>
         ))}

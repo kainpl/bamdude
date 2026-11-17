@@ -58,6 +58,24 @@ const model = (over: Record<string, unknown> = {}) => ({
 
 let listRequests: URL[] = [];
 let importRequests: Array<{ model_id: string; file_id: string; folder_id: number | null }> = [];
+/** Not the harness's administrator: a user with exactly these permissions. */
+function asUser(permissions: string[]) {
+  server.use(
+    http.get('/api/v1/auth/me', () =>
+      HttpResponse.json({
+        id: 2,
+        username: 'operator',
+        role: 'user',
+        is_active: true,
+        is_admin: false,
+        groups: [],
+        permissions,
+        created_at: '2024-01-01T00:00:00Z',
+      }),
+    ),
+  );
+}
+
 /** What the mocked library holds after the imports of this test, by model id and file id. */
 let landed: Record<string, Record<string, { library_file_id: number; filename: string; folder_id: number }>> = {};
 /** An import of this file waits until `release()` — a run caught in flight. */
@@ -226,6 +244,170 @@ describe('ManyfoldTab', () => {
     render(<ManyfoldTab />);
 
     expect(await screen.findByText('This Manyfold is too old. BamDude needs Manyfold 0.150 or newer.')).toBeInTheDocument();
+  });
+
+  it('with the right to view only, shows the catalogue and no import control', async () => {
+    connected();
+    asUser(['manyfold:view']);
+    let folderRequests = 0;
+    server.use(
+      http.get('/api/v1/library/folders', () => {
+        folderRequests += 1;
+        return HttpResponse.json([]);
+      }),
+    );
+    render(<ManyfoldTab />);
+    await screen.findByText('Spool Holder');
+    expect(screen.queryByRole('checkbox')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByText('Cable Clip'));
+    await screen.findByText('a.stl');
+    expect(screen.queryByRole('checkbox')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Import/ })).not.toBeInTheDocument();
+    expect(screen.queryByText('Import to')).not.toBeInTheDocument();
+    expect(folderRequests).toBe(0);
+  });
+
+  it('offers no import without the right to add files to the library', async () => {
+    connected();
+    asUser(['manyfold:view', 'manyfold:import']); // the server asks library:upload too
+    render(<ManyfoldTab />);
+    fireEvent.click(await screen.findByText('Cable Clip'));
+    await screen.findByText('a.stl');
+
+    expect(screen.queryByRole('button', { name: /Import/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('checkbox')).not.toBeInTheDocument();
+  });
+
+  it('keeps the ticked models and their import bar when a search finds nothing', async () => {
+    connected();
+    server.use(
+      http.get(`${BASE}/models`, ({ request }) => {
+        const q = new URL(request.url).searchParams.get('q');
+        return HttpResponse.json({
+          total: q ? 0 : 2,
+          page: 1,
+          pages: 1,
+          has_next: false,
+          has_previous: false,
+          models: q ? [] : [{ id: 'm1', name: 'Cable Clip' }, { id: 'm2', name: 'Spool Holder' }],
+        });
+      }),
+    );
+    render(<ManyfoldTab />);
+    await screen.findByText('Spool Holder');
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select page' }));
+
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'nothing like it' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+    await screen.findByText('No models found.');
+
+    expect(screen.getByText('Models selected: 2')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Import their files' })).toBeEnabled();
+    expect(screen.queryByRole('checkbox', { name: 'Select page' })).not.toBeInTheDocument(); // nothing on the page to tick
+    fireEvent.click(screen.getByRole('button', { name: 'Clear selection' }));
+    expect(screen.queryByText('Models selected: 2')).not.toBeInTheDocument();
+  });
+
+  it('loads the next batch of file details only when the answer says more exist', async () => {
+    connected();
+    const batches: string[] = [];
+    server.use(
+      http.get(`${BASE}/models/:id`, ({ request }) => {
+        const cursor = new URL(request.url).searchParams.get('detail_cursor');
+        if (cursor) {
+          batches.push(cursor);
+          return HttpResponse.json(model({ files: [file('z', { name: 'Bracket', filename: 'bracket.stl', size: 4096 })], detail_cursor: null }));
+        }
+        return HttpResponse.json(
+          model({ files: [file('a'), file('z', { name: 'Bracket', filename: null, size: null, presupported: null })], detail_cursor: 'c1' }),
+        );
+      }),
+    );
+    render(<ManyfoldTab />);
+    fireEvent.click(await screen.findByText('Cable Clip'));
+
+    // The file past the first batch is listed by its title and says its details are still to come.
+    const pending = (await screen.findByText('Bracket')).closest('li') as HTMLElement;
+    expect(within(pending).getByText(/details not loaded yet/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Load more file details' }));
+
+    expect(await screen.findByText('bracket.stl')).toBeInTheDocument();
+    expect(screen.getByText('a.stl')).toBeInTheDocument(); // the first batch stays
+    expect(batches).toEqual(['c1']);
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Load more file details' })).not.toBeInTheDocument());
+  });
+
+  it('a model whose answer carries every detail offers no "load more"', async () => {
+    connected();
+    render(<ManyfoldTab />);
+    fireEvent.click(await screen.findByText('Cable Clip'));
+    await screen.findByText('a.stl');
+    expect(screen.queryByRole('button', { name: 'Load more file details' })).not.toBeInTheDocument();
+    expect(screen.queryByText(/details not loaded yet/)).not.toBeInTheDocument();
+  });
+
+  it('marks a sensitive model and keeps its preview blurred until it is asked for', async () => {
+    connected();
+    server.use(http.get(`${BASE}/models/:id`, () => HttpResponse.json(model({ sensitive: true, has_preview: true }))));
+    const { container } = render(<ManyfoldTab />);
+    fireEvent.click(await screen.findByText('Cable Clip'));
+
+    expect(await screen.findByText('Sensitive')).toBeInTheDocument();
+    const picture = () => container.querySelector('img[src*="/models/m1/preview"]') as HTMLImageElement;
+    await waitFor(() => expect(picture()).not.toBeNull());
+    expect(picture().className).toContain('blur');
+    fireEvent.click(screen.getByRole('button', { name: 'Show the preview' }));
+    expect(picture().className).not.toContain('blur');
+  });
+
+  it('shows previews through our own proxy, and a neutral tile when one fails', async () => {
+    connected();
+    const { container } = render(<ManyfoldTab />);
+    await screen.findByText('Spool Holder');
+
+    const pictures = [...container.querySelectorAll('img')];
+    expect(pictures).toHaveLength(2);
+    for (const picture of pictures) {
+      expect(picture.getAttribute('src')).toMatch(/^\/api\/v1\/model-sources\/manyfold\/models\/m[12]\/preview/);
+      expect(picture).toHaveAttribute('alt', ''); // the name is the tile's text; not read twice
+    }
+    fireEvent.error(pictures[0]);
+    expect(container.querySelectorAll('img')).toHaveLength(1);
+  });
+
+  it('links to Manyfold only through an http(s) address, in a new tab without an opener', async () => {
+    connected();
+    render(<ManyfoldTab />);
+    fireEvent.click(await screen.findByText('Cable Clip'));
+    const link = await screen.findByRole('link', { name: /Open in Manyfold/ });
+    expect(link).toHaveAttribute('target', '_blank');
+    expect(link).toHaveAttribute('rel', 'noopener noreferrer');
+
+    server.use(http.get(`${BASE}/models/:id`, () => HttpResponse.json(model({ id: 'm2', url: 'javascript:alert(1)' }))));
+    fireEvent.click(screen.getByRole('button', { name: 'Back to models' }));
+    fireEvent.click(await screen.findByText('Spool Holder'));
+    await screen.findByText('Jane Doe');
+    expect(screen.queryByRole('link', { name: /Open in Manyfold/ })).not.toBeInTheDocument();
+  });
+
+  it('says a failed status read could not be checked, not that Manyfold is not connected', async () => {
+    connected();
+    let failing = true;
+    server.use(
+      http.get(`${BASE}/status`, () =>
+        failing
+          ? HttpResponse.json({ detail: 'Internal Server Error' }, { status: 500 })
+          : HttpResponse.json({ source: 'manyfold', name: 'Manyfold', configured: true, usable: true, base_url: null }),
+      ),
+    );
+    render(<ManyfoldTab />);
+
+    expect(await screen.findByText('BamDude could not check the Manyfold connection.')).toBeInTheDocument();
+    expect(screen.queryByText('Manyfold is not connected')).not.toBeInTheDocument();
+    failing = false;
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(await screen.findByText('Spool Holder')).toBeInTheDocument();
   });
 
   it('a failed page is not a dead end: Retry, and the pager stays', async () => {

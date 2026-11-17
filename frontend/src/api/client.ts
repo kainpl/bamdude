@@ -5575,7 +5575,8 @@ export interface ModelSourcePage {
   pages: number | null;
   has_next: boolean;
   has_previous: boolean;
-  models: { id: string; name: string }[];
+  /** `sensitive` only when the source's list says it; the model's own answer always does. */
+  models: { id: string; name: string; sensitive?: boolean }[];
 }
 
 export interface ModelSourceFile {
@@ -5604,6 +5605,12 @@ export interface ModelSourceModel {
   has_preview: boolean;
   files: ModelSourceFile[];
   already_imported: Record<string, { library_file_id: number; folder_id: number | null; filename: string }>;
+  /**
+   * Present and non-null while the source holds more per-file details (name, size) than this
+   * answer carries: asking the same model again with it returns the next batch. Absent or
+   * null — the answer is complete.
+   */
+  detail_cursor?: string | number | null;
 }
 
 export interface ModelSourceImportResponse {
@@ -12382,8 +12389,13 @@ export const api = {
     if (query) qs.set('q', query);
     return request<ModelSourcePage>(`/model-sources/manyfold/models?${qs}`);
   },
-  getManyfoldModel: (modelId: string) =>
-    request<ModelSourceModel>(`/model-sources/manyfold/models/${encodeURIComponent(modelId)}`),
+  getManyfoldModel: (modelId: string, detailCursor?: string | number | null) =>
+    request<ModelSourceModel>(
+      `/model-sources/manyfold/models/${encodeURIComponent(modelId)}` +
+        (detailCursor === undefined || detailCursor === null
+          ? ''
+          : `?${new URLSearchParams({ detail_cursor: String(detailCursor) })}`),
+    ),
   getManyfoldPreviewUrl: (modelId: string) =>
     withMediaToken(`${API_BASE}/model-sources/manyfold/models/${encodeURIComponent(modelId)}/preview`),
   importManyfoldFile: (model_id: string, file_id: string, folder_id?: number | null) =>
