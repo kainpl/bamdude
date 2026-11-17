@@ -168,6 +168,55 @@ class TestPrinterManager:
         manager._schedule_async(coro)
         coro.close()
 
+    def test_a_callback_cancelled_at_shutdown_is_not_logged_as_an_error(self, manager, caplog):
+        """A cancelled future raises CancelledError from result(); shutdown cancels by design."""
+        import concurrent.futures
+        import logging
+        from unittest.mock import patch
+
+        mock_loop = MagicMock()
+        mock_loop.is_running.return_value = True
+        manager._loop = mock_loop
+        future = concurrent.futures.Future()
+
+        async def dummy_coro():
+            pass
+
+        coro = dummy_coro()
+        with (
+            patch("backend.app.services.printer_manager.asyncio.run_coroutine_threadsafe", return_value=future),
+            caplog.at_level(logging.DEBUG),
+        ):
+            manager._schedule_async(coro)
+            future.cancel()
+        coro.close()
+
+        assert [r for r in caplog.records if r.levelno >= logging.ERROR] == []
+
+    def test_a_callback_that_raised_is_still_logged(self, manager, caplog):
+        import concurrent.futures
+        import logging
+        from unittest.mock import patch
+
+        mock_loop = MagicMock()
+        mock_loop.is_running.return_value = True
+        manager._loop = mock_loop
+        future = concurrent.futures.Future()
+
+        async def dummy_coro():
+            pass
+
+        coro = dummy_coro()
+        with (
+            patch("backend.app.services.printer_manager.asyncio.run_coroutine_threadsafe", return_value=future),
+            caplog.at_level(logging.DEBUG),
+        ):
+            manager._schedule_async(coro)
+            future.set_exception(RuntimeError("boom"))
+        coro.close()
+
+        assert any("Exception in scheduled callback" in r.getMessage() for r in caplog.records)
+
     # ========================================================================
     # Tests for connect_printer
     # ========================================================================

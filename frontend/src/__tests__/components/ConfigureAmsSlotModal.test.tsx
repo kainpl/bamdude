@@ -322,6 +322,26 @@ describe('ConfigureAmsSlotModal', () => {
     expect(screen.getByRole('button', { name: /Reset Slot/i })).toBeInTheDocument();
   });
 
+  it('Reset Slot asks before it clears the slot', async () => {
+    render(<ConfigureAmsSlotModal {...defaultProps} />);
+    fireEvent.click(await screen.findByRole('button', { name: /Reset Slot/i }));
+
+    expect(await screen.findByText('Reset this slot?')).toBeInTheDocument();
+    expect(api.resetAmsSlot).not.toHaveBeenCalled();
+
+    const confirm = screen.getAllByRole('button', { name: /Reset Slot/i }).at(-1)!;
+    fireEvent.click(confirm);
+    await waitFor(() => expect(api.resetAmsSlot).toHaveBeenCalledWith(1, 0, 0));
+  });
+
+  it('Reset Slot is off while a job is on the printer', async () => {
+    render(<ConfigureAmsSlotModal {...defaultProps} printerBusy />);
+    const reset = await screen.findByRole('button', { name: /Reset Slot/i });
+
+    expect(reset).toBeDisabled();
+    expect(reset).toHaveAttribute('title', 'A job is on the printer. Reset the slot after it ends.');
+  });
+
   it('search narrows the family list', async () => {
     render(<ConfigureAmsSlotModal {...defaultProps} />);
     await waitFor(() => {
