@@ -288,7 +288,7 @@ class DownloadJob:
     phase: str = PHASE_QUEUED
     error: str | None = None
     results: list[dict] = field(default_factory=list)
-    received: int = 0
+    done_bytes: int = 0
     current_index: int | None = None
     current_received: int = 0
     artifact: Path | None = None
@@ -332,7 +332,7 @@ class DownloadJob:
         return self.phase == PHASE_READY and self.succeeded < len(self.sources)
 
     def unspent_reservation(self) -> int:
-        return max(0, self.reserved - self.received - self.current_received) if self.active else 0
+        return max(0, self.reserved - self.done_bytes - self.current_received) if self.active else 0
 
     def status(self) -> dict:
         """The public state: counts and safe codes — never a path on this server, never a credential."""
@@ -350,7 +350,7 @@ class DownloadJob:
             "requested": len(self.sources),
             "succeeded": self.succeeded,
             "failed": len(failed),
-            "bytes_received": self.received + (self.current_received if self.phase == PHASE_PREPARING else 0),
+            "bytes_received": self.done_bytes + (self.current_received if self.phase == PHASE_PREPARING else 0),
             "bytes_expected": sum(s.advisory_size or 0 for s in self.sources) or None,
             "current": self.names[self.current_index]
             if self.current_index is not None and self.phase == PHASE_PREPARING
@@ -859,7 +859,7 @@ class MediaDownloadRuntime:
                     await disk(destination.unlink)
                 else:
                     await disk(os.replace, destination, artifact)
-                job.received += outcome.received
+                job.done_bytes += outcome.received
                 result.update(status=FILE_DONE, bytes=outcome.received, check=outcome.check)
             if archive is not None:
                 # Closing writes the central directory: part of the result, never swallowed.

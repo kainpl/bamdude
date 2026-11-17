@@ -480,25 +480,14 @@ async def _visible_archive(db, archive_id: int, auth_result):
 
 async def _local_videos(db, archive) -> list[dict]:
     """The archive's attached video as the registry and the disk have it now: ``asset``, ``name``, ``size``, ``path``."""
-    from sqlalchemy import select
-
-    from backend.app.models.archive_media_asset import ROLE_PRIMARY, ArchiveMediaAsset
-    from backend.app.services.archive_media import contained
+    from backend.app.services.archive_media import contained, primary_of
 
     pointer = (archive.timelapse_path or "").strip()
     if not pointer:
         return []
-    rows = (
-        await db.scalars(
-            select(ArchiveMediaAsset).where(
-                ArchiveMediaAsset.archive_id == archive.id,
-                ArchiveMediaAsset.role == ROLE_PRIMARY,
-                ArchiveMediaAsset.archive_identity == archive.recovery_identity,
-            )
-        )
-    ).all()
+    primary = await primary_of(db, archive.id, archive.recovery_identity)
     found = []
-    for row in rows:
+    for row in [primary] if primary is not None else []:
         if row.relative_path != pointer:
             continue
         path = await asyncio.to_thread(contained, settings.base_dir, row.relative_path)
