@@ -211,7 +211,11 @@ async def _detach_queue_children(db: AsyncSession, queue_id: int) -> int:
     halves are done here in code — the archive column is ``ON DELETE SET NULL``
     by declaration only.
     """
-    dropped = (await db.execute(delete(PrintQueueItem).where(PrintQueueItem.queue_id == queue_id))).rowcount or 0
+    from backend.app.services.queue_counters import detach_print_queue_refs
+
+    item_ids = list(await db.scalars(select(PrintQueueItem.id).where(PrintQueueItem.queue_id == queue_id)))
+    await detach_print_queue_refs(db, item_ids)
+    dropped = (await db.execute(delete(PrintQueueItem).where(PrintQueueItem.id.in_(item_ids)))).rowcount or 0
     await db.execute(update(PrintArchive).where(PrintArchive.queue_id == queue_id).values(queue_id=None))
     return dropped
 

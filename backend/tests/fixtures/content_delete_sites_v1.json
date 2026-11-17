@@ -1766,7 +1766,7 @@
         "sqlalchemy.delete",
         "backend.app.models.print_queue.PrintQueueItem"
       ],
-      "owner_policy": "Outside C parent purge: services/printer_queues.py::_detach_queue_children retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+      "owner_policy": "C-D15 queue repair: detach_print_queue_refs precedes queue-row deletion in the existing owner transaction; verified companion removed, calibration/unproven navigation detached"
     },
     {
       "site": [
@@ -1818,6 +1818,14 @@
     },
     {
       "site": [
+        "services/product_facets.py::delete_for_files",
+        "sqlalchemy.delete",
+        "backend.app.models.product.ProductFacet"
+      ],
+      "owner_policy": "C shared purge: product_facets is the sole facet writer; exact file-id cleanup only flushes under the owning library/product plan"
+    },
+    {
+      "site": [
         "services/product_facets.py::delete_for_product",
         "sqlalchemy.delete",
         "backend.app.models.product.ProductFacet"
@@ -1839,14 +1847,6 @@
         "backend.app.models.product.product_files"
       ],
       "owner_policy": "Outside C parent purge: services/product_sync.py::_reconcile_links retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
-    },
-    {
-      "site": [
-        "services/product_sync.py::purge_file_product_links",
-        "sqlalchemy.delete",
-        "backend.app.models.product.ProductFacet"
-      ],
-      "owner_policy": "Outside C parent purge: services/product_sync.py::purge_file_product_links retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
     },
     {
       "site": [
@@ -2416,10 +2416,10 @@
     },
     {
       "site": [
-        "services/library_trash.py::LibraryTrashService._sweep",
+        "services/library_trash.py::LibraryTrashService._purge_retention_batch",
         "self.purge_rows"
       ],
-      "owner_policy": "C-D07: Service/scheduler owner uses planned row/batch scope and common flush-only phase; hard delete cleanup only after root commit, no raw fallback."
+      "owner_policy": "C-D07 retention root: complete batch plan, rollback before per-file fallback; each successful file owns its commit and cleanup, refusals are retained/reported"
     },
     {
       "site": [
@@ -2483,6 +2483,13 @@
         "backend.app.services.queue_counters.detach_print_queue_refs"
       ],
       "owner_policy": "C-D10..D16: physical recovery preview/apply proof and current lane; shared navigation before terminal row delete"
+    },
+    {
+      "site": [
+        "services/printer_queues.py::_detach_queue_children",
+        "backend.app.services.queue_counters.detach_print_queue_refs"
+      ],
+      "owner_policy": "C-D15 queue repair: detach_print_queue_refs precedes queue-row deletion in the existing owner transaction; verified companion removed, calibration/unproven navigation detached"
     },
     {
       "site": [
@@ -2635,6 +2642,13 @@
     },
     {
       "site": [
+        "api/routes/printers.py::create_printer",
+        "backend.app.services.printer_queues.ensure_printer_queue"
+      ],
+      "owner_policy": "C-D15 queue repair caller: existing queue owner and transaction delegate child detachment to detach_print_queue_refs before deletion; no raw companion bypass"
+    },
+    {
+      "site": [
         "api/routes/printers.py::debug_simulate_print_complete",
         "backend.app.main.on_print_complete"
       ],
@@ -2684,6 +2698,27 @@
     },
     {
       "site": [
+        "main.py::_adopt_running_print",
+        "backend.app.main._default_queue_id_for_printer"
+      ],
+      "owner_policy": "C-D15 queue repair caller: existing queue owner and transaction delegate child detachment to detach_print_queue_refs before deletion; no raw companion bypass"
+    },
+    {
+      "site": [
+        "main.py::_adopt_running_print",
+        "backend.app.main.mark_queue_printing_for_printer"
+      ],
+      "owner_policy": "C-D15 queue repair caller: existing queue owner and transaction delegate child detachment to detach_print_queue_refs before deletion; no raw companion bypass"
+    },
+    {
+      "site": [
+        "main.py::_adopt_running_print",
+        "backend.app.services.print_execution.publish_start"
+      ],
+      "owner_policy": "C-D15 queue repair caller: existing queue owner and transaction delegate child detachment to detach_print_queue_refs before deletion; no raw companion bypass"
+    },
+    {
+      "site": [
         "main.py::_application_lifespan",
         "backend.app.main.on_print_complete"
       ],
@@ -2705,6 +2740,13 @@
     },
     {
       "site": [
+        "main.py::_application_lifespan",
+        "backend.app.services.printer_queues.ensure_all_printer_queues"
+      ],
+      "owner_policy": "C-D15 queue repair caller: existing queue owner and transaction delegate child detachment to detach_print_queue_refs before deletion; no raw companion bypass"
+    },
+    {
+      "site": [
         "main.py::_auto_clean_completed_item",
         "backend.app.services.plate_hold.clean_up_finished_row"
       ],
@@ -2716,6 +2758,13 @@
         "backend.app.main.on_print_complete"
       ],
       "owner_policy": "C-D21 + C-D26: Call/callback locator into completion owner. This is not a direct library DELETE; the concrete owning function must finish terminal/reconcile sessions before separate counter/calibration cleanup. Context evidence distinguishes registration from calls."
+    },
+    {
+      "site": [
+        "main.py::_default_queue_id_for_printer",
+        "backend.app.services.printer_queues.ensure_printer_queue"
+      ],
+      "owner_policy": "C-D15 queue repair caller: existing queue owner and transaction delegate child detachment to detach_print_queue_refs before deletion; no raw companion bypass"
     },
     {
       "site": [
@@ -2741,9 +2790,30 @@
     {
       "site": [
         "main.py::_on_print_start_impl",
+        "backend.app.main._default_queue_id_for_printer"
+      ],
+      "owner_policy": "C-D15 queue repair caller: existing queue owner and transaction delegate child detachment to detach_print_queue_refs before deletion; no raw companion bypass"
+    },
+    {
+      "site": [
+        "main.py::_on_print_start_impl",
+        "backend.app.main.mark_queue_printing_for_printer"
+      ],
+      "owner_policy": "C-D15 queue repair caller: existing queue owner and transaction delegate child detachment to detach_print_queue_refs before deletion; no raw companion bypass"
+    },
+    {
+      "site": [
+        "main.py::_on_print_start_impl",
         "backend.app.services.plate_hold.answer_by_clearing"
       ],
       "owner_policy": "C-D21 + C-D26: Call/callback locator into completion owner. This is not a direct library DELETE; the concrete owning function must finish terminal/reconcile sessions before separate counter/calibration cleanup. Context evidence distinguishes registration from calls."
+    },
+    {
+      "site": [
+        "main.py::_on_print_start_impl",
+        "backend.app.services.print_execution.publish_start"
+      ],
+      "owner_policy": "C-D15 queue repair caller: existing queue owner and transaction delegate child detachment to detach_print_queue_refs before deletion; no raw companion bypass"
     },
     {
       "site": [
@@ -2758,6 +2828,13 @@
         "backend.app.main._application_lifespan"
       ],
       "owner_policy": "C-D21 + C-D26: Call/callback locator into completion owner. This is not a direct library DELETE; the concrete owning function must finish terminal/reconcile sessions before separate counter/calibration cleanup. Context evidence distinguishes registration from calls."
+    },
+    {
+      "site": [
+        "main.py::mark_queue_printing_for_printer",
+        "backend.app.services.print_claims.observe_claim"
+      ],
+      "owner_policy": "C-D15 queue repair caller: existing queue owner and transaction delegate child detachment to detach_print_queue_refs before deletion; no raw companion bypass"
     },
     {
       "site": [
@@ -2790,9 +2867,23 @@
     {
       "site": [
         "main.py::on_print_running_observed",
+        "backend.app.main.mark_queue_printing_for_printer"
+      ],
+      "owner_policy": "C-D15 queue repair caller: existing queue owner and transaction delegate child detachment to detach_print_queue_refs before deletion; no raw companion bypass"
+    },
+    {
+      "site": [
+        "main.py::on_print_running_observed",
         "backend.app.services.plate_hold.answer_by_clearing"
       ],
       "owner_policy": "C-D21 + C-D26: Call/callback locator into completion owner. This is not a direct library DELETE; the concrete owning function must finish terminal/reconcile sessions before separate counter/calibration cleanup. Context evidence distinguishes registration from calls."
+    },
+    {
+      "site": [
+        "main.py::on_print_running_observed",
+        "backend.app.services.print_execution.publish_start"
+      ],
+      "owner_policy": "C-D15 queue repair caller: existing queue owner and transaction delegate child detachment to detach_print_queue_refs before deletion; no raw companion bypass"
     },
     {
       "site": [
@@ -2807,6 +2898,20 @@
         "backend.app.main._on_print_start_impl"
       ],
       "owner_policy": "C-D21 + C-D26: Call/callback locator into completion owner. This is not a direct library DELETE; the concrete owning function must finish terminal/reconcile sessions before separate counter/calibration cleanup. Context evidence distinguishes registration from calls."
+    },
+    {
+      "site": [
+        "main.py::on_print_start",
+        "backend.app.main.mark_queue_printing_for_printer"
+      ],
+      "owner_policy": "C-D15 queue repair caller: existing queue owner and transaction delegate child detachment to detach_print_queue_refs before deletion; no raw companion bypass"
+    },
+    {
+      "site": [
+        "main.py::on_print_start",
+        "backend.app.services.print_execution.publish_start"
+      ],
+      "owner_policy": "C-D15 queue repair caller: existing queue owner and transaction delegate child detachment to detach_print_queue_refs before deletion; no raw companion bypass"
     },
     {
       "site": [
@@ -2943,6 +3048,13 @@
     },
     {
       "site": [
+        "services/library_trash.py::LibraryTrashService._purge_retention_batch",
+        "backend.app.services.library_trash.LibraryTrashService.purge_rows"
+      ],
+      "owner_policy": "C-D07 retention root: complete batch plan, rollback before per-file fallback; each successful file owns its commit and cleanup, refusals are retained/reported"
+    },
+    {
+      "site": [
         "services/library_trash.py::LibraryTrashService._scheduler_loop",
         "backend.app.services.library_trash.LibraryTrashService._sweep"
       ],
@@ -2951,9 +3063,9 @@
     {
       "site": [
         "services/library_trash.py::LibraryTrashService._sweep",
-        "backend.app.services.library_trash.LibraryTrashService.purge_rows"
+        "backend.app.services.library_trash.LibraryTrashService._purge_retention_batch"
       ],
-      "owner_policy": "C-D07: Service/scheduler owner uses planned row/batch scope and common flush-only phase; hard delete cleanup only after root commit, no raw fallback."
+      "owner_policy": "C-D07 retention root: complete batch plan, rollback before per-file fallback; each successful file owns its commit and cleanup, refusals are retained/reported"
     },
     {
       "site": [
@@ -3017,6 +3129,20 @@
         "backend.app.services.queue_counters.detach_print_queue_refs"
       ],
       "owner_policy": "Outside C parent purge: services/plate_hold.py::clean_up_finished_row retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/print_claims.py::observe_claim",
+        "backend.app.services.printer_queues.ensure_printer_queue"
+      ],
+      "owner_policy": "C-D15 queue repair caller: existing queue owner and transaction delegate child detachment to detach_print_queue_refs before deletion; no raw companion bypass"
+    },
+    {
+      "site": [
+        "services/print_execution.py::publish_start",
+        "backend.app.services.print_claims.observe_claim"
+      ],
+      "owner_policy": "C-D15 queue repair caller: existing queue owner and transaction delegate child detachment to detach_print_queue_refs before deletion; no raw companion bypass"
     },
     {
       "site": [
@@ -3104,10 +3230,66 @@
     },
     {
       "site": [
+        "services/printer_queues.py::_adopt_orphan",
+        "backend.app.services.printer_queues._detach_queue_children"
+      ],
+      "owner_policy": "C-D15 queue repair: detach_print_queue_refs precedes queue-row deletion in the existing owner transaction; verified companion removed, calibration/unproven navigation detached"
+    },
+    {
+      "site": [
+        "services/printer_queues.py::_detach_queue_children",
+        "backend.app.services.queue_counters.detach_print_queue_refs"
+      ],
+      "owner_policy": "C-D15 queue repair: detach_print_queue_refs precedes queue-row deletion in the existing owner transaction; verified companion removed, calibration/unproven navigation detached"
+    },
+    {
+      "site": [
+        "services/printer_queues.py::_rekey_queue",
+        "backend.app.services.printer_queues._detach_queue_children"
+      ],
+      "owner_policy": "C-D15 queue repair: detach_print_queue_refs precedes queue-row deletion in the existing owner transaction; verified companion removed, calibration/unproven navigation detached"
+    },
+    {
+      "site": [
+        "services/printer_queues.py::_rekey_queue",
+        "backend.app.services.printer_queues.ensure_printer_queue"
+      ],
+      "owner_policy": "C-D15 queue repair caller: existing queue owner and transaction delegate child detachment to detach_print_queue_refs before deletion; no raw companion bypass"
+    },
+    {
+      "site": [
+        "services/printer_queues.py::ensure_all_printer_queues",
+        "backend.app.services.printer_queues.ensure_printer_queue"
+      ],
+      "owner_policy": "C-D15 queue repair caller: existing queue owner and transaction delegate child detachment to detach_print_queue_refs before deletion; no raw companion bypass"
+    },
+    {
+      "site": [
+        "services/printer_queues.py::ensure_printer_queue",
+        "backend.app.services.printer_queues._adopt_orphan"
+      ],
+      "owner_policy": "C-D15 queue repair caller: existing queue owner and transaction delegate child detachment to detach_print_queue_refs before deletion; no raw companion bypass"
+    },
+    {
+      "site": [
+        "services/printer_queues.py::ensure_printer_queue",
+        "backend.app.services.printer_queues._rekey_queue"
+      ],
+      "owner_policy": "C-D15 queue repair caller: existing queue owner and transaction delegate child detachment to detach_print_queue_refs before deletion; no raw companion bypass"
+    },
+    {
+      "site": [
         "services/queue_auto_transfer.py::apply",
         "backend.app.services.queue_counters.detach_print_queue_refs"
       ],
       "owner_policy": "C-D10..D16: existing transfer actor/lane/incarnation plan; preserve new ancestor and detach old printer row"
+    },
+    {
+      "site": [
+        "services/queue_batch.py::claim_printer_for_direct_print.build",
+        "backend.app.services.printer_queues.ensure_printer_queue"
+      ],
+      "owner_policy": "C-D15 queue repair caller: existing queue owner and transaction delegate child detachment to detach_print_queue_refs before deletion; no raw companion bypass"
     },
     {
       "site": [
@@ -3150,6 +3332,13 @@
         "backend.app.services.plate_answers.answer_plate_run"
       ],
       "owner_policy": "Outside C parent purge: services/telegram_handlers/actions.py::cb_repeat_print retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/telegram_handlers/printer_add_scene.py::cb_confirm",
+        "backend.app.services.printer_queues.ensure_printer_queue"
+      ],
+      "owner_policy": "C-D15 queue repair caller: existing queue owner and transaction delegate child detachment to detach_print_queue_refs before deletion; no raw companion bypass"
     },
     {
       "site": [

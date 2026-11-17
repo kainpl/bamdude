@@ -47,7 +47,7 @@ async def test_only_current_execution_completes_and_books_without_sweep(make_rig
         new_id = new.id
         main._bind_print_file_analysis_context(rig.printer_id, new, origin="external")
     library = AsyncMock()
-    monkeypatch.setattr(main, "_bump_library_file_usage", library)
+    monkeypatch.setattr("backend.app.services.library_usage.increment", library)
     await main.on_print_complete(
         rig.printer_id, {"status": "completed", "filename": "b.3mf", "subtask_name": "b", "subtask_id": "82"}
     )
@@ -77,5 +77,6 @@ async def test_only_current_execution_completes_and_books_without_sweep(make_rig
         assert active == []
         assert (await db.get(PrinterQueue, rig.queue_id)).is_paused
     assert usage_tracker.on_print_complete.await_count == 1
-    library.assert_awaited_once()
+    # These archives have no library source: the new writer is not invoked.
+    library.assert_not_awaited()
     rig.macro.assert_not_called()

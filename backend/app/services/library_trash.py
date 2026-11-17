@@ -496,6 +496,17 @@ class LibraryTrashService:
         )
         return int(result.scalar() or 0)
 
+    async def _purge_retention_batch(self, db, batch):
+        from backend.app.services.library_delete_cleanup import finish
+        from backend.app.services.library_delete_scope import library_delete_scope
+
+        async with library_delete_scope(db, batch):
+            for proof in batch:
+                current = await db.get(LibraryFile, proof.id, populate_existing=True)
+                await self.purge_rows(db, current)
+            await db.commit()
+        await finish(db)
+
     async def _sweep(self, db: AsyncSession) -> int:
         """Hard-delete trashed rows whose retention window has elapsed.
 
@@ -519,26 +530,31 @@ class LibraryTrashService:
         if not rows:
             return 0
 
-        from backend.app.services.library_delete_cleanup import finish
-        from backend.app.services.library_delete_scope import library_delete_scope
         from backend.app.services.library_identity import LibraryIdentity
 
         proofs = [LibraryIdentity.capture(row) for row in rows]
         await db.commit()
         deleted, failures = 0, 0
+
         for start in range(0, len(proofs), 100):
             batch = proofs[start : start + 100]
             try:
-                async with library_delete_scope(db, batch):
-                    for proof in batch:
-                        current = await db.get(LibraryFile, proof.id, populate_existing=True)
-                        await self.purge_rows(db, current)
-                    await db.commit()
-                await finish(db)
+                await self._purge_retention_batch(db, batch)
                 deleted += len(batch)
             except Exception:
                 await db.rollback()
-                failures += len(batch)
+                if len(batch) == 1:
+                    failures += 1
+                    continue
+                # The refused batch rolled back as a whole. A busy/retained
+                # neighbour must not pin every other expired file indefinitely.
+                for proof in batch:
+                    try:
+                        await self._purge_retention_batch(db, [proof])
+                        deleted += 1
+                    except Exception:
+                        await db.rollback()
+                        failures += 1
         if failures:
             logger.warning("Library trash sweep retained %d row(s)", failures)
         logger.info("Library trash sweeper: hard-deleted %d row(s) past %d-day retention", deleted, retention)

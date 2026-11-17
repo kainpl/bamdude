@@ -279,7 +279,12 @@ async def plan(db, capture, *, inspect_files=True):
     copies = []
     if inspect_files:
         for row in selected_queue:
-            if row.queue_source_id is not None and row.status != "pending":
+            if (
+                row.queue_source_id is not None
+                and row.status != "pending"
+                and row.archive_id is not None
+                and row.archive_id not in ids_by_table.get("print_archives", ())
+            ):
                 copies.append((row.id, await independent_archive_bytes(db, row.archive_id)))
     return Plan(
         tuple(parents),

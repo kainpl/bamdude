@@ -1117,6 +1117,7 @@
   "This account still owns active or retained print work. Resolve it through the queue or recovery page, then retry.": "Цей акаунт ще має активну або утримувану друковану роботу. Завершіть її обробку в черзі чи на сторінці відновлення, потім повторіть спробу.",
   "This archive does not say whether its file carries its own plate-swap sequence, or its file is no longer the one it describes, so it cannot be saved to the library. The archive itself stays available.": "Цей архів не повідомляє, чи містить його файл власну послідовність зміни столу, або файл уже не той, який він описує, тож його не можна зберегти в бібліотеку. Сам архів лишається доступним.",
   "This archive has no 3MF stored — it was printed from the printer's own screen and the file could not be retrieved.": "У цьому архіві не збережено 3MF — друк запустили з екрана самого принтера, і файл не вдалося отримати.",
+  "This archive is retained by print work. Resolve it through the queue or recovery page, then retry.": "Цей архів утримується для роботи з друком. Владнайте її через сторінку черги або відновлення стану й повторіть.",
   "This archive is still printing. Declare its source once the print has ended.": "Цей архів ще друкується. Задекларуйте його джерело, коли друк завершиться.",
   "This bot token is already used by Telegram provider '{}'": "Цей токен бота вже використовує Telegram-провайдер «{}»",
   "This camera is switched off.": "Цю камеру вимкнено.",

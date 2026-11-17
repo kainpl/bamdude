@@ -2247,12 +2247,12 @@ class ArchiveService:
 
         return {"materials": materials, "colors": colors, "tags": tags}
 
-    async def delete_archive(self, archive_id: int) -> bool:
+    async def delete_archive(self, archive_id: int, *, refuse_kept: bool = False) -> bool:
         """Hard-delete one archive under the shared archive-facts writer guard."""
         from backend.app.services.archive_write_scope import archive_write_scope
 
         async with archive_write_scope(self.db, archive_id):
-            deleted = await self._delete_archive_locked(archive_id)
+            deleted = await self._delete_archive_locked(archive_id, refuse_kept=refuse_kept)
         return deleted
 
     async def delete_archive_rows(self, archive):
@@ -2261,7 +2261,7 @@ class ArchiveService:
 
         return await archive_rows(self.db, archive)
 
-    async def _delete_archive_locked(self, archive_id: int) -> bool:
+    async def _delete_archive_locked(self, archive_id: int, *, refuse_kept: bool = False) -> bool:
         from backend.app.services.archive_write_scope import archive_file_reference_scope, lock_prints
 
         rows = await lock_prints(self.db, [archive_id])
@@ -2270,7 +2270,21 @@ class ArchiveService:
             return False
         from backend.app.services.content_delete_keeps import archive_keep_reasons
 
-        if await archive_keep_reasons(self.db, archive, retired_printer_id=self.db.info.get("retired_printer_cleanup")):
+        reasons = await archive_keep_reasons(
+            self.db, archive, retired_printer_id=self.db.info.get("retired_printer_cleanup")
+        )
+        if reasons:
+            if refuse_kept:
+                from fastapi import HTTPException
+
+                raise HTTPException(
+                    409,
+                    {
+                        "error": "archive_retained",
+                        "message": "This archive is retained by print work. Resolve it through the queue or recovery page, then retry.",
+                        "reasons": reasons,
+                    },
+                )
             return False
         stored = archive.file_path
 
