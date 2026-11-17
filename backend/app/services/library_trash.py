@@ -32,7 +32,7 @@ from backend.app.models.archive import PrintArchive
 from backend.app.models.library import LibraryFile
 from backend.app.models.library_file_note import LibraryFileNote
 from backend.app.models.settings import Settings
-from backend.app.services import library_file_photos, part_images, queue_source_release
+from backend.app.services import library_file_photos, library_import_meta, part_images, queue_source_release
 from backend.app.services.product_sync import purge_file_product_links
 
 logger = logging.getLogger(__name__)
@@ -579,6 +579,8 @@ class LibraryTrashService:
         # And the photos (m233): their rows have no cascade on SQLite either, and
         # their folder is named by the id the next file may be given.
         await library_file_photos.forget_files(db, row_ids)
+        # And the record of where a model source imported them from (m235).
+        await library_import_meta.forget_files(db, row_ids)
         # And the notes: a bulk DELETE goes past the ORM cascade that removes them.
         await forget_file_notes(db, row_ids)
         await db.execute(delete(LibraryFile).where(LibraryFile.id.in_(row_ids)))
@@ -653,6 +655,7 @@ class LibraryTrashService:
             )
             await purge_file_product_links(db, [file.id])
             await library_file_photos.forget_files(db, [file.id])
+            await library_import_meta.forget_files(db, [file.id])
             await db.delete(file)
             return False
 
@@ -697,6 +700,7 @@ class LibraryTrashService:
         )
         await purge_file_product_links(db, [file.id])
         await library_file_photos.forget_files(db, [file.id])
+        await library_import_meta.forget_files(db, [file.id])
         await db.delete(file)
         await db.commit()
 

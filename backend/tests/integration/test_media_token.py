@@ -60,6 +60,7 @@ MEDIA_ROUTES = [
     "/api/v1/makerworld/imports/1/cover",
     "/api/v1/makerworld/imports/1/cover-variant",
     "/api/v1/makerworld/thumbnail?url=https://makerworld.bblmw.com/x.png",
+    "/api/v1/model-sources/manyfold/models/x7q3k2pdbm4z/preview",
 ]
 
 STILL_ANONYMOUS = [

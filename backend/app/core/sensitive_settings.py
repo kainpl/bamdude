@@ -14,6 +14,7 @@ SENSITIVE_SETTING_FRAGMENTS = frozenset(
         "secret",
         "api_key",
         "installation_id",
+        "client_id",
         "cloud_token",
         "mqtt_password",
         "email",

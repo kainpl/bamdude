@@ -5556,6 +5556,97 @@ export interface BuiltinFilament {
   name: string;
 }
 
+// Model sources with a catalogue (`/model-sources/{source}/…`) — Manyfold, a self-hosted model library.
+export interface ModelSourceStatus {
+  source: string;
+  name: string;
+  /** Has an administrator set the connection up at all? */
+  configured: boolean;
+  /** Connected and switched on. */
+  usable: boolean;
+  /** The source's own address, for "open there" links. */
+  base_url: string | null;
+  /** Streamed imports of the installation right now: running, waiting for a slot, and the limit. */
+  imports?: { active?: number; waiting?: number; limit?: number };
+}
+
+/** One page as the SOURCE cut it: its page size, its totals. Never sorted or filtered here. */
+export interface ModelSourcePage {
+  total: number | null;
+  page: number;
+  pages: number | null;
+  has_next: boolean;
+  has_previous: boolean;
+  /** `sensitive` only when the source's list says it; the model's own answer always does. */
+  models: { id: string; name: string; sensitive?: boolean }[];
+}
+
+export interface ModelSourceFile {
+  id: string;
+  /** The source's display title — NOT the file name (two files may share it). */
+  name: string;
+  mime: string;
+  importable: boolean;
+  filename: string | null;
+  size: number | null;
+  presupported: boolean | null;
+  /** False when the source lists the file but will not hand it to us. */
+  available: boolean;
+  /** True once the file's name and size were read from the source (a page of files at a time). */
+  detailed: boolean;
+}
+
+export interface ModelSourceModel {
+  id: string;
+  name: string;
+  caption: string | null;
+  description: string | null;
+  license: string | null;
+  creator: string | null;
+  tags: string[];
+  sensitive: boolean;
+  url: string | null;
+  has_preview: boolean;
+  /** EVERY file of the model. Names and sizes are read a page of importable files at a time. */
+  files: ModelSourceFile[];
+  /** The page of file details this answer read. */
+  files_page: number;
+  files_pages: number;
+  /** The page to ask for next (`?files_page=N`); null when there is none. */
+  files_next_page: number | null;
+  already_imported: Record<string, { library_file_id: number; folder_id: number | null; filename: string }>;
+}
+
+export interface ModelSourceImportResponse {
+  library_file_id: number;
+  filename: string;
+  folder_id: number | null;
+  was_existing: boolean;
+}
+
+export interface ManyfoldConnection {
+  enabled: boolean;
+  url: string;
+  client_id: string;
+  /** Presence only — the secret is never sent back. */
+  client_secret_configured: boolean;
+}
+
+export interface ManyfoldConnectionDraft {
+  enabled?: boolean;
+  url?: string;
+  client_id?: string;
+  client_secret?: string;
+  secret_actions?: Record<string, SecretAction>;
+}
+
+export interface ManyfoldConnectionTest {
+  ok: boolean;
+  models: number | null;
+  error: string | null;
+  message: string | null;
+}
+
 // MakerWorld URL-paste import flow (B.5 — 0.5.x cycle).
 export interface MakerworldStatus {
   has_cloud_token: boolean;
@@ -9436,6 +9527,7 @@ export type Permission =
   | 'git:backup' | 'git:restore'
   | 'cloud:auth' | 'orca_cloud:auth' | 'cloud_link:manage'
   | 'makerworld:view' | 'makerworld:import'
+  | 'manyfold:view' | 'manyfold:import'
   | 'api_keys:read' | 'api_keys:create' | 'api_keys:update' | 'api_keys:delete'
   | 'users:read' | 'users:read_slim' | 'users:create' | 'users:update' | 'users:delete'
   | 'groups:read' | 'groups:create' | 'groups:update' | 'groups:delete'
@@ -12293,6 +12385,34 @@ export const api = {
   redownloadMakerworldImport: (libraryFileId: number) =>
     request<MakerworldImportResponse>(`/makerworld/imports/${libraryFileId}/redownload`, {
       method: 'POST',
+    }),
+  // Manyfold (a model source with a catalogue). Paging and search are the source's.
+  getManyfoldStatus: () => request<ModelSourceStatus>('/model-sources/manyfold/status'),
+  listManyfoldModels: (query: string, page: number) => {
+    const qs = new URLSearchParams({ page: String(page) });
+    if (query) qs.set('q', query);
+    return request<ModelSourcePage>(`/model-sources/manyfold/models?${qs}`);
+  },
+  /** A model with all its files; `filesPage` names the page of files whose names and sizes are read (1 when omitted). */
+  getManyfoldModel: (modelId: string, filesPage?: number) =>
+    request<ModelSourceModel>(
+      `/model-sources/manyfold/models/${encodeURIComponent(modelId)}` +
+        (filesPage === undefined ? '' : `?${new URLSearchParams({ files_page: String(filesPage) })}`),
+    ),
+  getManyfoldPreviewUrl: (modelId: string) =>
+    withMediaToken(`${API_BASE}/model-sources/manyfold/models/${encodeURIComponent(modelId)}/preview`),
+  importManyfoldFile: (model_id: string, file_id: string, folder_id?: number | null) =>
+    request<ModelSourceImportResponse>('/model-sources/manyfold/import', {
+      method: 'POST',
+      body: JSON.stringify({ model_id, file_id, folder_id: folder_id ?? null }),
+    }),
+  getManyfoldConnection: () => request<ManyfoldConnection>('/model-sources/manyfold/connection'),
+  saveManyfoldConnection: (draft: ManyfoldConnectionDraft) =>
+    request<ManyfoldConnection>('/model-sources/manyfold/connection', { method: 'PUT', body: JSON.stringify(draft) }),
+  testManyfoldConnection: (draft: ManyfoldConnectionDraft) =>
+    request<ManyfoldConnectionTest>('/model-sources/manyfold/connection/test', {
+      method: 'POST',
+      body: JSON.stringify(draft),
     }),
   getCloudSettingDetail: (settingId: string) =>
     request<SlicerSettingDetail>(`/cloud/settings/${settingId}`),
@@ -16162,6 +16282,14 @@ export interface LibraryFile {
   external_url?: string | null;
   /** Photos attached to the file (m233). */
   photos_count?: number;
+  /** Where a model source imported the file from (m235); null for every other file. */
+  import_origin?: {
+    source_type: string;
+    title: string | null;
+    creator: string | null;
+    license: string | null;
+    url: string | null;
+  } | null;
 }
 
 /** One plate as the library card pages through it (vault 60-specs/library-multiplate-card-spec 4).

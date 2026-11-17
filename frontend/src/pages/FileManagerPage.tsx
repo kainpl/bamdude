@@ -109,6 +109,7 @@ import { MakerWorldIcon } from '../components/BrandIcons';
 import { useToast } from '../contexts/ToastContext';
 import { useAnchoredPosition } from '../hooks/useAnchoredPosition';
 import { useAuth } from '../contexts/AuthContext';
+import { isHttpLink } from '../utils/httpLink';
 import { formatDateTime, formatDuration, type TimeFormat, type DateFormat } from '../utils/date';
 import { fileActivityAt, formatFileSize } from '../utils/file';
 import { FileTagBadges } from '../components/FileTagBadges';
@@ -1173,6 +1174,18 @@ function FileListActions({ file, t, hasPermission, canModify, onPrint, onSchedul
                 {t('fileManager.source.openOriginal', { defaultValue: 'Open on MakerWorld' })}
               </a>
             )}
+            {file.source_type === 'manyfold' && isHttpLink(file.source_url) && (
+              <a
+                href={file.source_url ?? undefined}
+                target="_blank"
+                rel="noopener noreferrer"
+                onClick={closeMenu}
+                className="w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 text-white hover:bg-bambu-dark"
+              >
+                <ExternalLink className="w-3.5 h-3.5 text-white" />
+                {t('fileManager.source.openManyfold')}
+              </a>
+            )}
             {/* Seeing the file listed is being allowed to read its details. */}
             {onDetails && (
               <button
@@ -1702,6 +1715,18 @@ function FileCard({ file, isSelected, onSelect, onOpenArchives, onDelete, onDown
                 >
                   <MakerWorldIcon className="w-3.5 h-3.5 text-white" />
                   {t('fileManager.source.openOriginal', { defaultValue: 'Open on MakerWorld' })}
+                </a>
+              )}
+              {file.source_type === 'manyfold' && isHttpLink(file.source_url) && (
+                <a
+                  href={file.source_url ?? undefined}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  onClick={closeActions}
+                  className="w-full px-3 py-1.5 text-left text-sm flex items-center gap-2 text-white hover:bg-bambu-dark"
+                >
+                  <ExternalLink className="w-3.5 h-3.5 text-white" />
+                  {t('fileManager.source.openManyfold')}
                 </a>
               )}
               {onDetails && (

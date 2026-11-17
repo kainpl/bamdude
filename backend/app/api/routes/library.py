@@ -638,6 +638,27 @@ def _write_upload(path: Path, content: bytes) -> None:
         f.write(content)
 
 
+def _adopt_staged(path: Path, staged: Path) -> int:
+    """Put a file an importer streamed to a staging file at its library path; returns its size.
+
+    The staging file lies outside library storage, so this — a worker thread's job, owned by
+    ``upload_writes`` like every initial write — is the only moment the import touches it. A rename
+    when both are on one filesystem, a copy otherwise; the staging file is gone either way.
+    A copy that fails half-way (a full disk) leaves no partial file at the library path.
+    """
+    size = staged.stat().st_size
+    try:
+        os.replace(staged, path)
+    except OSError:
+        try:
+            shutil.copyfile(staged, path)
+        except BaseException:
+            path.unlink(missing_ok=True)
+            raise
+        staged.unlink(missing_ok=True)
+    return size
+
+
 def _stored_file_path(abs_path: Path, is_external: bool) -> str:
     """Produce the value to persist in ``LibraryFile.file_path``.
 
@@ -706,7 +727,7 @@ async def _discard_ingest_stage(file_path, thumbnail_path=None):
 async def save_3mf_bytes_to_library(
     db: AsyncSession,
     *,
-    content: bytes,
+    content: bytes | None,
     filename: str,
     folder: LibraryFolder | None = None,
     created_by_id: int | None = None,
@@ -720,8 +741,13 @@ async def save_3mf_bytes_to_library(
     publication_check=None,
     destination: Literal["upload", "unique"] = "upload",
     swap_origin: Literal["generated"] | None = None,
+    staged: Path | None = None,
 ) -> IngestResult:
     """Persist raw 3MF / gcode bytes as a ``LibraryFile`` row.
+
+    ``staged`` (with ``content=None``) is a file a model import streamed to disk
+    outside library storage: it is adopted instead of written, so a large file is
+    never held in memory. Everything else is the same door.
 
     Used by automated sources that already hold the full file in memory —
     MakerWorld import (`source_type="makerworld"`, source_url=canonical URL)
@@ -811,7 +837,11 @@ async def save_3mf_bytes_to_library(
     from backend.app.services.library_file_runtime import UploadWritesClosed, upload_writes
 
     try:
-        await upload_writes.run(_write_upload, file_path, content)
+        if staged is not None:
+            content_size = await upload_writes.run(_adopt_staged, file_path, staged)
+        else:
+            await upload_writes.run(_write_upload, file_path, content)
+            content_size = len(content)
     except UploadWritesClosed as exc:
         raise HTTPException(503, "Library uploads are unavailable while storage is being restored") from exc
 
@@ -892,7 +922,7 @@ async def save_3mf_bytes_to_library(
         # keeps its name, folder, notes, tags, products and print history; the
         # hash matched, so the content is identical — a restore, not a swap.
         existing.file_path = _stored_file_path(file_path, False)
-        existing.file_size = len(content)
+        existing.file_size = content_size
         existing.fs_modified_at = None
         if commit:
             await db.commit()
@@ -924,7 +954,7 @@ async def save_3mf_bytes_to_library(
         file_path=_stored_file_path(file_path, is_external_upload),
         file_type=file_type,
         skip_objects_supported=skip_objects_supported_from_metadata(metadata or None),
-        file_size=len(content),
+        file_size=content_size,
         file_hash=file_hash,
         thumbnail_path=thumbnail_path,
         file_metadata=_without_print_name(metadata) or None,
@@ -5838,6 +5868,10 @@ async def get_file(
     from backend.app.services import library_file_photos
 
     photos_count = (await library_file_photos.counts(db, [file.id])).get(file.id, 0)
+    from backend.app.schemas.library import ImportOrigin
+    from backend.app.services import library_import_meta
+
+    origin = await library_import_meta.for_file(db, file.id)
 
     return FileResponseSchema(
         id=file.id,
@@ -5871,6 +5905,15 @@ async def get_file(
         source_url=file.source_url,
         external_url=file.external_url,
         photos_count=photos_count,
+        import_origin=ImportOrigin(
+            source_type=origin.source_type,
+            title=origin.title,
+            creator=origin.creator,
+            license=origin.license,
+            url=origin.canonical_url,
+        )
+        if origin is not None
+        else None,
     )
 
 

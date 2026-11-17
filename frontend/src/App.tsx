@@ -26,7 +26,7 @@ import { OrderPage } from './pages/orders/OrderPage';
 import { FileManagerPage } from './pages/FileManagerPage';
 import { LibraryTrashPage } from './pages/LibraryTrashPage';
 import { ArchiveTrashPage } from './pages/ArchiveTrashPage';
-import { MakerworldPage } from './pages/MakerworldPage';
+import { ModelSourcesPage } from './pages/ModelSourcesPage';
 import { CameraPage } from './pages/CameraPage';
 import { StreamOverlayPage } from './pages/StreamOverlayPage';
 import { CamWallPage } from './pages/CamWallPage';
@@ -43,6 +43,7 @@ import { useStreamTokenSync } from './hooks/useCameraStreamToken';
 import { ThemeProvider } from './contexts/ThemeContext';
 import { ToastProvider } from './contexts/ToastContext';
 import { SliceJobTrackerProvider } from './contexts/SliceJobTrackerContext';
+import { ManyfoldImportProvider } from './contexts/ManyfoldImportContext';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { ColorCatalogProvider } from './contexts/ColorCatalogContext';
 import { ConnectionProvider } from './contexts/ConnectionContext';
@@ -226,7 +227,8 @@ class ErrorBoundary extends React.Component<
   }
 }
 
-function AppRoutes() {
+/** Exported for the route tests: the table itself, rendered under a router of their own. */
+export function AppRoutes() {
   return (
     <WorkingPlanNavigationProvider>
       <Routes>
@@ -277,7 +279,9 @@ function AppRoutes() {
           <Route path="inventory" element={<InventoryPage />} />
           <Route path="files" element={<FileManagerPage />} />
           <Route path="files/trash" element={<LibraryTrashPage />} />
-          <Route path="makerworld" element={<PermissionRoute permission="makerworld:view"><MakerworldPage /></PermissionRoute>} />
+          <Route path="model-sources" element={<PermissionRoute permission={['makerworld:view', 'manyfold:view']}><ModelSourcesPage /></PermissionRoute>} />
+          {/* The page was MakerWorld's alone until Manyfold joined it: old links and bookmarks open that tab. */}
+          <Route path="makerworld" element={<Navigate to="/model-sources?tab=makerworld" replace />} />
           <Route path="settings" element={<PermissionRoute permission="settings:read"><SettingsPage /></PermissionRoute>} />
           <Route path="groups/new" element={<PermissionRoute permission="groups:create"><GroupEditPage /></PermissionRoute>} />
           <Route path="groups/:id/edit" element={<PermissionRoute permission="groups:update"><GroupEditPage /></PermissionRoute>} />
@@ -305,8 +309,10 @@ function App() {
             <ConnectionProvider>
             <ColorCatalogProvider>
             <SliceJobTrackerProvider>
+            <ManyfoldImportProvider>
             <StreamTokenSync />
             <RouterProvider router={router} />
+            </ManyfoldImportProvider>
             </SliceJobTrackerProvider>
             </ColorCatalogProvider>
             </ConnectionProvider>

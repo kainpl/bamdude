@@ -120,7 +120,9 @@ def assert_safe_lan_service_url(url: str, *, label: str) -> None:
     if parsed.scheme.lower() not in ("http", "https"):
         raise ValueError(f"{label} must use http or https")
 
-    hostname = (parsed.hostname or "").lower()
+    # A trailing dot names the same host to every resolver (the FQDN form): strip it before any
+    # denylist or address check, or ``metadata.google.internal.`` walks past them.
+    hostname = (parsed.hostname or "").lower().rstrip(".")
 
     # "http:///path" parses to an empty hostname. Never a valid destination, and
     # without this it falls through to the ``ip_address()`` ValueError branch

@@ -101,7 +101,8 @@ function useElapsedSeconds(active: boolean): number {
   return elapsed;
 }
 
-export function MakerworldPage() {
+/** ``embedded`` renders it as the MakerWorld tab of the Model sources page, which brings its own title. */
+export function MakerworldPage({ embedded = false }: { embedded?: boolean } = {}) {
   const { t } = useTranslation();
   const { hasPermission } = useAuth();
   const { showToast } = useToast();
@@ -526,10 +527,12 @@ export function MakerworldPage() {
   const downloadCount = pickNumber(design, 'downloadCount');
 
   return (
-    <div className="p-4 space-y-4">
-      <div>
-        <h1 className="text-2xl font-bold text-white flex items-center gap-3"><MakerWorldIcon className="w-6 h-6 text-bambu-green" />{t('makerworld.title')}</h1>
-      </div>
+    <div className={embedded ? 'space-y-4' : 'p-4 space-y-4'}>
+      {!embedded && (
+        <div>
+          <h1 className="text-2xl font-bold text-white flex items-center gap-3"><MakerWorldIcon className="w-6 h-6 text-bambu-green" />{t('makerworld.title')}</h1>
+        </div>
+      )}
 
       {/* Tab Navigation */}
       <div className="flex border-b border-bambu-dark-tertiary">

@@ -132,6 +132,10 @@ PUBLIC_ROUTES: dict[str, tuple[str, str]] = {
     "/api/v1/makerworld/imports/{library_file_id}/cover": ("media-token", "MakerWorld import cover"),
     "/api/v1/makerworld/imports/{library_file_id}/cover-variant": ("media-token", "MakerWorld variant cover"),
     "/api/v1/makerworld/thumbnail": ("media-token", "MakerWorld CDN proxy for <img>, SSRF-allowlisted upstream"),
+    "/api/v1/model-sources/manyfold/models/{model_id}/preview": (
+        "media-token",
+        "a Manyfold model's preview for <img>, fetched by model id from the configured instance only",
+    ),
     # Anonymous by decision (owner, 2026-09-26): notification templates link a
     # finished print's photo, and Discord / webhooks / ntfy fetch it without
     # credentials.

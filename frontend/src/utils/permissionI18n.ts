@@ -48,6 +48,7 @@ const CATEGORY_KEYS: Record<string, string> = {
   'Queue': 'queue',
   'Library': 'library',
   'MakerWorld': 'makerworld',
+  'Manyfold': 'manyfold',
   'Orders': 'orders',
   'Products': 'products',
   'Customers': 'customers',

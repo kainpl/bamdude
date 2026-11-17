@@ -80,6 +80,14 @@ class Permission(StrEnum):
     MAKERWORLD_VIEW = "makerworld:view"
     MAKERWORLD_IMPORT = "makerworld:import"
 
+    # Manyfold (a self-hosted model library, the second model source). VIEW lets
+    # a user browse the configured instance's catalogue through BamDude — what
+    # they see is whatever the OAuth application's owner sees there. IMPORT
+    # downloads a file into the library. Connecting the instance is
+    # ``settings:update``.
+    MANYFOLD_VIEW = "manyfold:view"
+    MANYFOLD_IMPORT = "manyfold:import"
+
     # Workshop (WS-13 E13, m194): each domain has its own rights. ``orders:file_prints`` files
     # any print — past or future, own, someone else's or ownerless — under an open order; it
     # opens nothing else of an archive. ``stock:move`` is the flow of goods, ``stock:adjust``
@@ -294,6 +302,10 @@ PERMISSION_CATEGORIES = {
         Permission.MAKERWORLD_VIEW,
         Permission.MAKERWORLD_IMPORT,
     ],
+    "Manyfold": [
+        Permission.MANYFOLD_VIEW,
+        Permission.MANYFOLD_IMPORT,
+    ],
     "Orders": [
         Permission.ORDERS_READ,
         Permission.ORDERS_CREATE,
@@ -488,6 +500,8 @@ DEFAULT_GROUPS = {
             # MakerWorld - browse + import
             Permission.MAKERWORLD_VIEW.value,
             Permission.MAKERWORLD_IMPORT.value,
+            Permission.MANYFOLD_VIEW.value,
+            Permission.MANYFOLD_IMPORT.value,
             # Orca Cloud — operators need to authenticate so the Slice modal's
             # Orca Cloud preset picker populates. Bambu Cloud (CLOUD_AUTH)
             # stays admin-only (more sensitive account binding).
@@ -596,6 +610,7 @@ DEFAULT_GROUPS = {
             Permission.LIBRARY_READ_ALL.value,
             Permission.LIBRARY_NOTES_WRITE.value,
             Permission.MAKERWORLD_VIEW.value,
+            Permission.MANYFOLD_VIEW.value,
             Permission.ORDERS_READ.value,
             Permission.PRODUCTS_READ.value,
             Permission.CUSTOMERS_READ.value,

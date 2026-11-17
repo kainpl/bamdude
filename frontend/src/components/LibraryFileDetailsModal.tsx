@@ -137,6 +137,10 @@ export function LibraryFileDetailsModal({ file, canEdit, onClose, timeFormat, da
               <Address value={data.source_url} />
             </Fact>
           )}
+          {/* What the model source said about the model when the file was imported (m235). */}
+          {data?.import_origin?.title && <Fact label={t('fileDetails.originModel')}>{data.import_origin.title}</Fact>}
+          {data?.import_origin?.creator && <Fact label={t('fileDetails.originCreator')}>{data.import_origin.creator}</Fact>}
+          {data?.import_origin?.license && <Fact label={t('fileDetails.originLicense')}>{data.import_origin.license}</Fact>}
           <Fact label={t('fileDetails.notes')}>{file.notes_count}</Fact>
           {!canEdit && (
             <Fact label={t('fileDetails.link')}>{savedLink ? <Address value={savedLink} /> : dash}</Fact>

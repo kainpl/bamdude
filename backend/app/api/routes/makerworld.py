@@ -30,14 +30,13 @@ from fastapi.responses import Response
 from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
 
 from backend.app.api.routes.cloud import resolve_api_key_cloud_owner
-from backend.app.api.routes.library import _LIBRARY_MEDIA_READ, _ensure_library_file_visible, save_3mf_bytes_to_library
+from backend.app.api.routes.library import _LIBRARY_MEDIA_READ, _ensure_library_file_visible
 from backend.app.core.auth import RequirePermission, require_media_permission, require_permission, security
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
-from backend.app.models.library import LibraryFile, LibraryFolder
+from backend.app.models.library import LibraryFile
 from backend.app.models.library_file_makerworld_meta import LibraryFileMakerworldMeta
 from backend.app.models.user import User
 from backend.app.schemas.library_file_makerworld_meta import LibraryFileMakerworldMetaResponse
@@ -80,7 +79,7 @@ def _provider_for_url(url: str) -> ModelProvider:
     """The registered provider that claims *url* — a pasted link for a host
     nobody serves is a client-input problem, a 400."""
     provider = registry.find_for_url(url)
-    if provider is None:
+    if provider is None or getattr(provider, "configured_origin", False):
         raise HTTPException(status_code=400, detail=f"This link is not from a supported model site: {url!r}")
     return provider
 
@@ -93,11 +92,15 @@ def _provider_for_source(source_type: str) -> ModelProvider:
     repr of its argument and would ship the quotes to the client.
     """
     try:
-        return registry.get(source_type)
-    except KeyError as exc:
-        raise HTTPException(
-            status_code=400, detail=f"No model provider registered for source_type {source_type!r}"
-        ) from exc
+        provider = registry.get(source_type)
+    except KeyError:
+        provider = None
+    # A provider with an administrator-configured origin (Manyfold) has its own routes, with its
+    # own publication check and file naming; it is never reached through these, whatever the ids
+    # look like — and before any call to it or the creation of its folder.
+    if provider is None or getattr(provider, "configured_origin", False):
+        raise HTTPException(status_code=400, detail=f"No model provider registered for source_type {source_type!r}")
+    return provider
 
 
 async def _authorize_for_provider(
@@ -389,57 +392,19 @@ async def import_instance(
         provider, provider.import_permission, makerworld_provider.import_permission, request, credentials, x_api_key
     )
 
-    from backend.app.services.domain_authority import guard
+    from backend.app.services import model_import
 
     ingest_authority = await request_authority(request, current_user)
-    await db.commit()
-    await guard(db, ingest_authority, permissions=(Permission.LIBRARY_UPLOAD.value,))
-    effective_folder: LibraryFolder | None
-    if body.folder_id is not None:
-        # Eager-load .products so save_3mf_bytes_to_library's
-        # inherit_folder_products() doesn't trip async lazy-load.
-        folder_q = await db.execute(
-            select(LibraryFolder)
-            .where(LibraryFolder.id == body.folder_id)
-            .options(selectinload(LibraryFolder.products))
-        )
-        target_folder = folder_q.scalar_one_or_none()
-        if target_folder is None:
-            raise HTTPException(status_code=404, detail="Folder not found")
-        if target_folder.is_external and target_folder.external_readonly:
-            raise HTTPException(
-                status_code=403,
-                detail="Cannot import into a read-only external folder",
-            )
-        effective_folder = target_folder
-    elif provider.default_folder_name is None:
-        # A provider without a default folder imports into the library root
-        # rather than minting a NULL-named folder.
-        effective_folder = None
-    else:
-        # Default destination: the provider's dedicated top-level folder
-        # ("MakerWorld"). Keeps imports out of the library root so power users
-        # can still organise manually in subfolders, and auto-creates the
-        # folder on the first import so users don't have to set it up.
-        default_folder_q = await db.execute(
-            select(LibraryFolder).where(
-                LibraryFolder.name == provider.default_folder_name,
-                LibraryFolder.parent_id.is_(None),
-                LibraryFolder.is_external.is_(False),
-            )
-        )
-        default_folder = default_folder_q.scalar_one_or_none()
-        if default_folder is None:
-            default_folder = LibraryFolder(name=provider.default_folder_name, parent_id=None)
-            db.add(default_folder)
-            await db.flush()
-        effective_folder = default_folder
+    # Folder resolution, de-duplication, download and the library's ingest door
+    # are the provider-neutral core (``services/model_import``); what is
+    # MakerWorld's stays here: the file's name, the cloud credential that guards
+    # the publication, and the meta row below.
+    effective_folder = await model_import.destination_folder(db, provider, body.folder_id, ingest_authority)
 
     # API-keyed callers carry identity on the key, not in current_user — see
     # the /status handler comment and #1777. The same resolved user is reused
     # for created_by_id on save_3mf_bytes_to_library below so the library row
     # is attributed to the key's owner rather than NULL.
-    await db.commit()
     cloud_token_user = current_user or api_key_cloud_owner
     service = await _build_service(db, provider, current_user, api_key_cloud_owner)
     # One close for the whole request: the meta row and the covers below reuse
@@ -450,86 +415,66 @@ async def import_instance(
             external_id=str(body.model_id),
             sub_id=str(body.profile_id) if body.profile_id else None,
         )
-        # Finding the download link (the instance behind the plate, or the old
-        # profile endpoint with the alphanumeric modelId as a fallback) and
-        # picking the first plate when none was named live in ``get_download``,
-        # which hands the chosen plate back in ``info.ref``.
+
+        def filename_for(info) -> str:
+            # Basename-strip any path components from the upstream filename so a
+            # malicious response (``name: "../../evil.3mf"``) can't persist a
+            # suspect string into the library row or the UI. On-disk storage uses
+            # a UUID filename regardless (see library.py), so this is
+            # defence-in-depth. MakerWorld emits percent-encoded names (`%20` for
+            # spaces, etc.) because the same string round-trips through HTTP URLs
+            # in the CDN download path — decode before persisting so every UI
+            # surface shows the human-readable form.
+            raw_name = info.suggested_filename
+            if isinstance(raw_name, str) and raw_name.strip():
+                suggested_name = os.path.basename(unquote(raw_name.strip())) or f"makerworld-{body.model_id}.3mf"
+            else:
+                suggested_name = f"makerworld-{body.model_id}.3mf"
+            # The server-provided human-readable name is the file's name; the
+            # signed URL's path ends in a UUID that means nothing to a user and is
+            # never used. ``download`` has proven the bytes are a 3MF container,
+            # and the library decides a file's type by its name: a name without
+            # the ending (``Benchy``) gets it, in whatever case it came
+            # (``Model.3MF`` is kept as it is).
+            if not suggested_name.lower().endswith(".3mf"):
+                suggested_name = f"{suggested_name}.3mf"
+            return suggested_name
+
+        # ``credential_snapshot`` is MakerWorld's (the caller's Bambu Cloud
+        # sign-in); a provider without one guards nothing here.
+        snapshot = getattr(service, "credential_snapshot", None)
+
+        async def fresh_authority():
+            return await request_authority(request, current_user)
+
         try:
-            info = await service.get_download(ref)
+            imported = await model_import.import_resource(
+                db,
+                provider=provider,
+                service=service,
+                ref=ref,
+                folder=effective_folder,
+                authority=ingest_authority,
+                fresh_authority=fresh_authority,
+                created_by_id=cloud_token_user.id if cloud_token_user else None,
+                filename_for=filename_for,
+                credential_snapshots=(snapshot,) if snapshot is not None else (),
+            )
         except ProviderError as exc:
             raise _map_service_error(exc) from exc
-        profile_id = int(info.ref.sub_id) if info.ref.sub_id else None
-        # Canonical URL includes the plate so each plate gets its own library
-        # entry (see ``ModelProvider.canonical_url``).
-        source_url = provider.canonical_url(info.ref)
-
-        # Dedupe check upfront so we don't burn bandwidth re-downloading.
-        existing_q = await db.execute(
-            LibraryFile.active().where(LibraryFile.source_url == source_url).order_by(LibraryFile.id).limit(1)
-        )
-        existing_row = existing_q.scalar_one_or_none()
-        if existing_row is not None:
-            from backend.app.services.cloud_credentials import guard_snapshot
-            from backend.app.services.domain_authority import guard
-
-            await guard(db, ingest_authority, permissions=(Permission.LIBRARY_UPLOAD.value,))
-            if service.credential_snapshot is not None:
-                await guard_snapshot(db, service.credential_snapshot)
-            (await read_access(db, authority=await request_authority(request, current_user))).ensure(existing_row)
-            await db.commit()
+        profile_id = int(imported.ref.sub_id) if imported.ref.sub_id else None
+        source_url = imported.source_url
+        if imported.result is None:
+            # The same plate was imported before: that row, and no download.
             return MakerWorldImportResponse(
-                library_file_id=existing_row.id,
-                filename=existing_row.filename,
-                folder_id=existing_row.folder_id,
+                library_file_id=imported.file.id,
+                filename=imported.file.filename,
+                folder_id=imported.file.folder_id,
                 profile_id=profile_id,
                 was_existing=True,
             )
-
-        try:
-            download = await service.download(info)
-        except ProviderError as exc:
-            raise _map_service_error(exc) from exc
-
-        # Basename-strip any path components from the upstream filename so a
-        # malicious response (``name: "../../evil.3mf"``) can't persist a
-        # suspect string into the library row or the UI. On-disk storage uses
-        # a UUID filename regardless (see library.py), so this is
-        # defence-in-depth. MakerWorld emits percent-encoded names (`%20` for
-        # spaces, etc.) because the same string round-trips through HTTP URLs
-        # in the CDN download path — decode before persisting so every UI
-        # surface shows the human-readable form.
-        raw_name = info.suggested_filename
-        if isinstance(raw_name, str) and raw_name.strip():
-            suggested_name = os.path.basename(unquote(raw_name.strip())) or f"makerworld-{body.model_id}.3mf"
-        else:
-            suggested_name = f"makerworld-{body.model_id}.3mf"
-        # The server-provided human-readable name is the file's name; the
-        # signed URL's path ends in a UUID that means nothing to a user and is
-        # never used. ``download`` has proven the bytes are a 3MF container,
-        # and the library decides a file's type by its name: a name without
-        # the ending (``Benchy``) gets it, in whatever case it came
-        # (``Model.3MF`` is kept as it is).
-        filename = suggested_name
-        if not filename.lower().endswith(".3mf"):
-            filename = f"{filename}.3mf"
-
-        result = await save_3mf_bytes_to_library(
-            db,
-            content=download.file_bytes,
-            filename=filename,
-            folder=effective_folder,
-            created_by_id=cloud_token_user.id if cloud_token_user else None,
-            source_type=provider.source_type,
-            source_url=source_url,
-            authority=ingest_authority,
-            credential_snapshots=(service.credential_snapshot,) if service.credential_snapshot is not None else (),
-        )
-        # ⚠️ ``result.file`` may be a row this import did not create — either
-        # the same source_url was imported before, or another row already
-        # holds these exact bytes. Both mean the metadata work below has
-        # already been done.
-        library_file = result.file
-        was_existing = result.outcome != "created"
+        library_file = imported.file
+        was_existing = imported.was_existing
 
         # MakerWorld's meta row + locally stored covers (m056 — MakerWorld's
         # own table). A meta failure never breaks the import: the 3MF is
@@ -547,8 +492,8 @@ async def import_instance(
                 from backend.app.services.domain_authority import guard
 
                 await guard(db, ingest_authority, permissions=(Permission.LIBRARY_UPLOAD.value,))
-                if service.credential_snapshot is not None:
-                    await guard_snapshot(db, service.credential_snapshot)
+                if snapshot is not None:
+                    await guard_snapshot(db, snapshot)
                 current_file = await db.scalar(LibraryFile.active().where(LibraryFile.id == library_file.id))
                 if current_file is None or current_file.file_hash != library_file.file_hash:
                     raise HTTPException(409, {"code": "source_changed"})

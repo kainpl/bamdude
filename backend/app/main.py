@@ -64,6 +64,7 @@ from backend.app.api.routes import (
     measurement_history,
     metrics,
     mfa,
+    model_sources,
     monitor,
     notification_templates,
     notifications,
@@ -12669,6 +12670,15 @@ async def _application_lifespan(app: FastAPI):
         await start_part_render(Path(app_settings.base_dir), Path(app_settings.app_dir))
     except Exception:
         logging.getLogger(__name__).exception("Part render service unavailable at startup")
+    # What a killed process left of a streamed model import (its own old ``.part`` files only).
+    try:
+        from backend.app.services import model_import
+
+        swept = await asyncio.to_thread(model_import.sweep_stale_staging, create=False)
+        if swept:
+            logging.getLogger(__name__).info("Removed %d unfinished model import file(s)", swept)
+    except Exception:
+        logging.getLogger(__name__).exception("Model import staging sweep failed at startup")
 
     yield
 
@@ -13228,6 +13238,11 @@ PUBLIC_API_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"^/api/v1/makerworld/imports/\d+/cover$"),
     re.compile(r"^/api/v1/makerworld/imports/\d+/cover-variant$"),
     re.compile(r"^/api/v1/makerworld/thumbnail$"),
+    # A Manyfold model's preview for the catalogue's <img> tags: the route's own
+    # media-token gate (the source's view permission) authenticates it. The
+    # picture is addressed by model id — the request names no address — and is
+    # fetched from the configured instance only.
+    re.compile(r"^/api/v1/model-sources/manyfold/models/[A-Za-z0-9_-]{1,64}/preview$"),
 )
 
 
@@ -13700,6 +13715,8 @@ app.include_router(slicer_pipelines.router, prefix=app_settings.api_prefix)
 app.include_router(slice_jobs.router, prefix=app_settings.api_prefix)
 app.include_router(library_assembly.router, prefix=app_settings.api_prefix)
 app.include_router(makerworld.router, prefix=app_settings.api_prefix)
+app.include_router(model_sources.connection_router, prefix=app_settings.api_prefix)
+app.include_router(model_sources.manyfold_router, prefix=app_settings.api_prefix)
 app.include_router(smart_plugs.router, prefix=app_settings.api_prefix)
 app.include_router(zigbee.router, prefix=app_settings.api_prefix)
 app.include_router(ha_sensors.router, prefix=app_settings.api_prefix)
