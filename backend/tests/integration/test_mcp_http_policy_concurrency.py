@@ -7,6 +7,7 @@ import pytest
 from sqlalchemy import event, select
 
 from backend.app.api.routes import settings as route
+from backend.app.core.credential_config import CONFIG_GUARD_KEY
 from backend.app.models.settings import Settings
 from backend.tests.integration.queue_test_database import test_engine  # noqa: F401
 
@@ -42,8 +43,19 @@ async def _overlap_policy_writes(test_engine, monkeypatch, first, second, *, ini
 
     def watch_sql(conn, cursor, statement, parameters, context, executemany):
         nonlocal second_connection
-        if is_second.get() and (statement == "BEGIN IMMEDIATE" or statement.startswith("SELECT pg_advisory_xact_lock")):
-            second_connection = conn.connection.driver_connection
+        # A settings save takes the installation's credential anchor before the policy lock, so that is
+        # where a second writer now waits: SQLite's writer through the anchor's UPDATE, PostgreSQL's row
+        # through its FOR UPDATE.
+        anchor = CONFIG_GUARD_KEY in (parameters or ()) and (
+            statement.startswith("UPDATE") or "FOR UPDATE" in statement
+        )
+        if is_second.get() and (
+            anchor or statement == "BEGIN IMMEDIATE" or statement.startswith("SELECT pg_advisory_xact_lock")
+        ):
+            # The first attempt is the one that waits; a later statement of the same request may run on a
+            # connection the first writer has since returned to the pool.
+            if second_connection is None:
+                second_connection = conn.connection.driver_connection
             second_lock_attempt.set()
 
     async def run_second():

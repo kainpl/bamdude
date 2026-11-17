@@ -141,6 +141,9 @@ async def test_narrowed_key_class_retires_old_socket_then_fresh_admission_gets_o
     monkeypatch.setattr(websocket, "live_authority", runtime)
     monkeypatch.setattr(live_projection, "live_authority", runtime)
     first, _ = await issue(factory)
+    # Production's one second is a liveness bound, not what this test is about: on a loaded machine an
+    # admission read took longer and the test failed as 503 before it reached what it checks.
+    monkeypatch.setattr(module, "CHECK_SECONDS", 15.0)
     async with factory() as db:
         owner = await db.get(User, first.capture.user_id)
         printers = [

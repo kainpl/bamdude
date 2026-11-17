@@ -905,7 +905,10 @@ async def _own_still_beside_live_view(
     if not live_view_frame(printer_id, "external")[0]:
         return None
     if lit_since is not None:
-        await asyncio.sleep(max(0.0, lit_since - time.monotonic()))
+        # Not one sleep: the event loop may run a timer up to its clock resolution early (about 16 ms on
+        # Windows), and a still fetched before the light shows is the picture this wait exists to avoid.
+        while (remaining := lit_since - time.monotonic()) > 0:
+            await asyncio.sleep(remaining)
     try:
         captured = await capture(
             CameraCaptureRequest.external(

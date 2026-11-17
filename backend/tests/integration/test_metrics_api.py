@@ -28,12 +28,21 @@ class TestMetricsAPI:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_metrics_enabled_without_token(self, async_client: AsyncClient):
-        """Verify metrics endpoint works when enabled without token."""
-        # Enable prometheus without token
-        await async_client.put("/api/v1/settings/", json={"prometheus_enabled": True, "prometheus_token": ""})
+    async def test_metrics_cannot_be_enabled_without_a_token(self, async_client: AsyncClient):
+        """An open metrics endpoint is not a setting: enabling needs a token, and the refusal changes nothing."""
+        refused = await async_client.put("/api/v1/settings/", json={"prometheus_enabled": True, "prometheus_token": ""})
+        assert refused.status_code == 400, refused.text
 
-        response = await async_client.get("/api/v1/metrics")
+        assert (await async_client.get("/api/v1/metrics")).status_code == 404
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_metrics_answer_in_prometheus_text(self, async_client: AsyncClient):
+        await async_client.put(
+            "/api/v1/settings/", json={"prometheus_enabled": True, "prometheus_token": "scrape-token"}
+        )
+
+        response = await async_client.get("/api/v1/metrics", headers={"Authorization": "Bearer scrape-token"})
 
         assert response.status_code == 200
         assert response.headers["content-type"].startswith("text/plain")
@@ -66,9 +75,11 @@ class TestMetricsAPI:
     async def test_metrics_format(self, async_client: AsyncClient):
         """Verify metrics are in Prometheus text format."""
         # Enable prometheus
-        await async_client.put("/api/v1/settings/", json={"prometheus_enabled": True, "prometheus_token": ""})
+        await async_client.put(
+            "/api/v1/settings/", json={"prometheus_enabled": True, "prometheus_token": "scrape-token"}
+        )
 
-        response = await async_client.get("/api/v1/metrics")
+        response = await async_client.get("/api/v1/metrics", headers={"Authorization": "Bearer scrape-token"})
 
         assert response.status_code == 200
         content = response.text
@@ -82,9 +93,11 @@ class TestMetricsAPI:
     async def test_metrics_contains_expected_metrics(self, async_client: AsyncClient):
         """Verify expected metrics are present."""
         # Enable prometheus
-        await async_client.put("/api/v1/settings/", json={"prometheus_enabled": True, "prometheus_token": ""})
+        await async_client.put(
+            "/api/v1/settings/", json={"prometheus_enabled": True, "prometheus_token": "scrape-token"}
+        )
 
-        response = await async_client.get("/api/v1/metrics")
+        response = await async_client.get("/api/v1/metrics", headers={"Authorization": "Bearer scrape-token"})
 
         assert response.status_code == 200
         content = response.text
@@ -102,9 +115,11 @@ class TestMetricsAPI:
     async def test_metrics_printer_metrics_when_no_printers(self, async_client: AsyncClient):
         """Verify printer metrics work when no printers configured."""
         # Enable prometheus
-        await async_client.put("/api/v1/settings/", json={"prometheus_enabled": True, "prometheus_token": ""})
+        await async_client.put(
+            "/api/v1/settings/", json={"prometheus_enabled": True, "prometheus_token": "scrape-token"}
+        )
 
-        response = await async_client.get("/api/v1/metrics")
+        response = await async_client.get("/api/v1/metrics", headers={"Authorization": "Bearer scrape-token"})
 
         assert response.status_code == 200
         content = response.text
@@ -129,7 +144,8 @@ class TestMetricsAPI:
         settings = response.json()
 
         assert settings["prometheus_enabled"] is True
-        assert settings["prometheus_token"] == "mytoken"
+        # Write-only: a read says that a token is stored, never what it is.
+        assert settings["prometheus_token_configured"] is True and "prometheus_token" not in settings
 
         # Disable and verify
         await async_client.put("/api/v1/settings/", json={"prometheus_enabled": False})
@@ -142,8 +158,10 @@ class TestMetricsAPI:
     async def test_database_gauges_are_exported(self, async_client: AsyncClient):
         """Cheap probes only: a scrape can run every 15 seconds, so per-table
         sizes are deliberately NOT here."""
-        await async_client.put("/api/v1/settings/", json={"prometheus_enabled": True, "prometheus_token": ""})
-        body = (await async_client.get("/api/v1/metrics")).text
+        await async_client.put(
+            "/api/v1/settings/", json={"prometheus_enabled": True, "prometheus_token": "scrape-token"}
+        )
+        body = (await async_client.get("/api/v1/metrics", headers={"Authorization": "Bearer scrape-token"})).text
 
         assert "# TYPE bamdude_db_info gauge" in body
         assert "bamdude_db_info{" in body
@@ -161,8 +179,10 @@ class TestMetricsAPI:
             raise RuntimeError("nope")
 
         monkeypatch.setattr("backend.app.services.db_health.probe_size_bytes", boom)
-        await async_client.put("/api/v1/settings/", json={"prometheus_enabled": True, "prometheus_token": ""})
-        body = (await async_client.get("/api/v1/metrics")).text
+        await async_client.put(
+            "/api/v1/settings/", json={"prometheus_enabled": True, "prometheus_token": "scrape-token"}
+        )
+        body = (await async_client.get("/api/v1/metrics", headers={"Authorization": "Bearer scrape-token"})).text
 
         assert "bamdude_db_size_bytes" not in body
         # …and the rest of the block still shipped.

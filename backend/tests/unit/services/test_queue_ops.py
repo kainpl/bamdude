@@ -507,6 +507,9 @@ class TestACloneCarriesEveryPrintOption:
         # ⚠️ The lineage of the row that was promoted (m217). A clone is a new job, not a descendant of that
         # AutoQueue job: inheriting it would make an old connector receipt follow a print it never queued.
         "source_auto_identity",
+        # The receipt of THIS row's return to AutoQueue (m226). A clone is a new job that was never
+        # returned; carrying the mark would make it unrepeatable and count it as already returned.
+        "returned_receipt_identity",
         # ⚠️ Deliberately dropped, both of them. A clone is a normal print, not
         # a second run of that calibration session: carrying the flag without
         # the session breaks the completion hook that looks for one, and

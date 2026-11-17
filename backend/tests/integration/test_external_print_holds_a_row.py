@@ -412,7 +412,9 @@ async def test_terminal_effect_attempt_is_addressed_to_its_archive(
     printer, _queue_row = await _queue(db_session, printer_factory)
     archive = await archive_factory(printer.id, status="printing", print_name="Repeat me")
 
-    await main._record_terminal_effect_stage(archive.id, "swap_change_table", "attempted")
+    await main._record_terminal_effect_stage(
+        archive.id, "swap_change_table", "attempted", expected_identity=archive.recovery_identity
+    )
     await db_session.refresh(archive)
 
     assert archive.extra_data[main._TERMINAL_EFFECTS_KEY]["swap_change_table"]["stage"] == "attempted"

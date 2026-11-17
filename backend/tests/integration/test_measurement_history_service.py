@@ -158,7 +158,8 @@ class TestSampling:
         disabled = await async_client.patch(settings_url, json={"ha_enabled": False})
         assert disabled.status_code == 200, disabled.text
         assert disabled.json()["ha_enabled"] is False
-        assert {key: disabled.json()[key] for key in ha_config} == ha_config
+        assert disabled.json()["ha_url"] == ha_config["ha_url"]
+        assert disabled.json()["ha_token_configured"] is True and "ha_token" not in disabled.json()
 
         sampled = await sample_polled_plugs(db_session)
         assert requests == []

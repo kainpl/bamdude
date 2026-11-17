@@ -1337,6 +1337,15 @@ def close_admission() -> None:
     _admitting = False
 
 
+def open_admission() -> bool:
+    """Lifespan startup only (and the tests' bootstrap, which stands in for it): a restore closes scans
+    for the life of the process. With a scan still running it stays closed. Returns whether it is open."""
+    global _admitting
+    if not _running:
+        _admitting = True
+    return _admitting
+
+
 async def quiesce_for_restore(seconds: float = 30.0) -> bool:
     close_admission()
     tasks = set(_running.values())

@@ -13008,6 +13008,11 @@ async def _application_lifespan(app: FastAPI):
         archive_media_runtime.reopen()
     except RuntimeError:
         logging.getLogger(__name__).exception("Archive video operations still running at startup")
+    from backend.app.services import library_scan
+
+    # And for folder scans, which a restore closes for the life of the process.
+    if not library_scan.open_admission():
+        logging.getLogger(__name__).error("Folder scans still running at startup; scans stay closed")
     from backend.app.services.part_render_scheduler import start_part_render, stop_part_render
 
     try:

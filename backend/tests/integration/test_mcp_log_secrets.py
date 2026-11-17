@@ -63,6 +63,7 @@ async def test_persisted_opaque_secret_is_collected_before_log_search(db_session
 async def test_every_sensitive_settings_key_is_collected_with_literal_case_insensitive_rule(db_session):
     from sqlalchemy import select
 
+    from backend.app.core.credential_config import CONFIG_GUARD_KEY
     from backend.app.core.sensitive_settings import SENSITIVE_SETTING_FRAGMENTS, is_sensitive_setting
 
     # New, mixed-case setting names exercise every fragment independently.
@@ -75,7 +76,8 @@ async def test_every_sensitive_settings_key_is_collected_with_literal_case_insen
     await db_session.commit()
     values = await log_reader.collect_diagnostic_sensitive_strings(db_session)
     for key, value in (await db_session.execute(select(Settings.key, Settings.value))).all():
-        if is_sensitive_setting(key) and value:
+        # The anchor row holds "1": a lock target, not a credential -- redacting it would blank every 1.
+        if key != CONFIG_GUARD_KEY and is_sensitive_setting(key) and value:
             assert value in values, key
     assert all(value in values for value in expected.values())
     assert all(not is_sensitive_setting(key) and value not in values for key, value in controls.items())
