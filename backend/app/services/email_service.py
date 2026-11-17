@@ -11,6 +11,7 @@ import string
 from datetime import datetime, timezone
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from email.utils import formataddr, formatdate, make_msgid, parseaddr
 from typing import Any
 
 from sqlalchemy import select
@@ -21,6 +22,25 @@ from backend.app.models.settings import Settings
 from backend.app.schemas.auth import MIN_PASSWORD_LENGTH, SMTPSettings
 
 logger = logging.getLogger(__name__)
+
+# The Message-ID domain when the sender address has none to offer.
+_FALLBACK_MESSAGE_ID_DOMAIN = "bamdude.local"
+
+
+def add_required_headers(msg, from_email: str | None) -> None:
+    """Give an outgoing message the ``Date`` and ``Message-ID`` RFC 5322 asks for.
+
+    A message without them is completed by the first relay that feels like it,
+    scored as spam by filters, or quarantined outright. The Message-ID's domain
+    is the sender address's own -- never this host's name, which a LAN install
+    has no business publishing and a lookup of which can stall.
+    """
+    if "Date" not in msg:
+        msg["Date"] = formatdate(localtime=True)
+    if "Message-ID" not in msg:
+        _local, at, domain = parseaddr(from_email or "")[1].rpartition("@")
+        domain = (domain.strip() if at else "") or _FALLBACK_MESSAGE_ID_DOMAIN
+        msg["Message-ID"] = make_msgid(domain=domain)
 
 
 def generate_secure_password(length: int = 16) -> str:
@@ -206,9 +226,12 @@ def send_email(
         Exception: If email sending fails
     """
     msg = MIMEMultipart("alternative")
-    msg["From"] = f"{smtp_settings.smtp_from_name} <{smtp_settings.smtp_from_email}>"
+    # ``formataddr`` quotes a display name that needs it (a comma, a non-ASCII
+    # letter); a hand-built "Name <addr>" with either is a malformed header.
+    msg["From"] = formataddr((smtp_settings.smtp_from_name or "", smtp_settings.smtp_from_email))
     msg["To"] = to_email
     msg["Subject"] = subject
+    add_required_headers(msg, smtp_settings.smtp_from_email)
 
     # Attach plain text part
     msg.attach(MIMEText(body_text, "plain"))

@@ -1026,6 +1026,9 @@ class NotificationService:
             #      thread so the loop stays live and the connection releases on
             #      schedule.
             smtp_timeout = 30.0
+            from backend.app.services.email_service import add_required_headers
+
+            add_required_headers(msg, from_email)
             msg_str = msg.as_string()
 
             def _blocking_send() -> None:
