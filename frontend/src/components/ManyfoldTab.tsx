@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { Link, useSearchParams } from 'react-router';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { AlertCircle, ArrowLeft, Box, Check, ChevronLeft, ChevronRight, Download, ExternalLink, Loader2, Search, Settings } from 'lucide-react';
+import { AlertCircle, ArrowLeft, Box, Check, ChevronLeft, ChevronRight, Download, ExternalLink, Loader2, RefreshCw, Search, Settings } from 'lucide-react';
 
 import { api, type ModelSourceFile } from '../api/client';
 import { useAuth } from '../contexts/AuthContext';
@@ -42,6 +42,20 @@ function Preview({ modelId, name, className }: { modelId: string; name: string; 
       onError={() => setBroken(true)}
       className={`${className} object-cover bg-bambu-dark`}
     />
+  );
+}
+
+/** Why a read failed, and the way on: asking again. */
+function FailureNote({ text, onRetry }: { text: string; onRetry: () => void }) {
+  const { t } = useTranslation();
+  return (
+    <div role="alert" className="flex flex-wrap items-center gap-3 text-sm">
+      <p className="text-red-400">{text}</p>
+      <Button size="sm" variant="secondary" onClick={onRetry}>
+        <RefreshCw className="w-3.5 h-3.5 mr-1" />
+        {t('common.retry')}
+      </Button>
+    </div>
   );
 }
 
@@ -152,6 +166,14 @@ export function ManyfoldTab() {
     setPickedFiles(new Set());
   }, [openModelId]);
 
+  // The last page that did arrive, for this search: when a page fails, the pager is drawn
+  // from it, so the way back (and forward, as far as is known) survives the failure.
+  const [lastPage, setLastPage] = useState<{ query: string; page: number; pages: number | null; hasNext: boolean } | null>(null);
+  const arrived = models.data;
+  useEffect(() => {
+    if (arrived) setLastPage({ query, page: arrived.page, pages: arrived.pages, hasNext: arrived.has_next });
+  }, [arrived, query]);
+
   // What the library holds of the open model: the model's own answer, plus what this session
   // imported since that answer was read (a later read knows better — the file may be gone again).
   const modelReadAt = model.dataUpdatedAt;
@@ -252,8 +274,10 @@ export function ManyfoldTab() {
           {t('manyfold.back')}
         </button>
         {summary && <SummaryNote summary={summary} onClose={dismissSummary} />}
-        {model.isLoading && <LoadingBlock label={t('common.loading')} />}
-        {model.isError && <p className="text-red-400 text-sm">{refusalText(model.error)}</p>}
+        {model.isFetching && !data && <LoadingBlock label={t('common.loading')} />}
+        {model.isError && !model.isFetching && (
+          <FailureNote text={refusalText(model.error)} onRetry={() => void model.refetch()} />
+        )}
         {data && (
           <Card>
             <CardContent className="space-y-4">
@@ -405,9 +429,20 @@ export function ManyfoldTab() {
       else next.set(id, name);
       return next;
     });
+  // The pager is the server's while the page is on screen. For a page that failed it is drawn
+  // from the last page that arrived for this search: back always, forward only as far as known.
+  const known = lastPage && lastPage.query === query ? lastPage : null;
+  const hasPrevious = models.data ? models.data.has_previous : models.isError && page > 1;
+  const hasNext = models.data
+    ? models.data.has_next
+    : models.isError && known !== null && (known.pages !== null ? page < known.pages : known.hasNext && page <= known.page);
   const submitSearch = (event: FormEvent) => {
     event.preventDefault();
-    goTo({ q: searchInput.trim(), page: 1 });
+    const words = searchInput.trim();
+    // The same words on the same page are no new place: ask the server again
+    // (after a failure nothing else on the screen would).
+    if (words === query && page === 1) void models.refetch();
+    else goTo({ q: words, page: 1 });
   };
 
   return (
@@ -474,8 +509,10 @@ export function ManyfoldTab() {
         </div>
       )}
 
-      {models.isLoading && <LoadingBlock label={t('common.loading')} />}
-      {models.isError && <p className="text-red-400 text-sm">{refusalText(models.error)}</p>}
+      {models.isFetching && !models.data && <LoadingBlock label={t('common.loading')} />}
+      {models.isError && !models.isFetching && (
+        <FailureNote text={refusalText(models.error)} onRetry={() => void models.refetch()} />
+      )}
       {models.data && pageModels.length === 0 && <p className="text-sm text-bambu-gray">{t('manyfold.noModels')}</p>}
 
       <ul className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-3">
@@ -499,18 +536,18 @@ export function ManyfoldTab() {
         ))}
       </ul>
 
-      {models.data && (models.data.has_previous || models.data.has_next) && (
+      {(hasPrevious || hasNext) && (
         <nav className="flex items-center justify-center gap-3" aria-label={t('manyfold.pages')}>
-          <Button size="sm" variant="secondary" disabled={!models.data.has_previous} onClick={() => goTo({ page: page - 1 })}>
+          <Button size="sm" variant="secondary" disabled={!hasPrevious} onClick={() => goTo({ page: page - 1 })}>
             <ChevronLeft className="w-4 h-4" />
             {t('manyfold.previous')}
           </Button>
           <span className="text-sm text-bambu-gray">
-            {models.data.pages
+            {models.data?.pages
               ? t('manyfold.pageOf', { page: models.data.page, pages: models.data.pages })
-              : t('manyfold.page', { page: models.data.page })}
+              : t('manyfold.page', { page: models.data?.page ?? page })}
           </span>
-          <Button size="sm" variant="secondary" disabled={!models.data.has_next} onClick={() => goTo({ page: page + 1 })}>
+          <Button size="sm" variant="secondary" disabled={!hasNext} onClick={() => goTo({ page: page + 1 })}>
             {t('manyfold.next')}
             <ChevronRight className="w-4 h-4" />
           </Button>

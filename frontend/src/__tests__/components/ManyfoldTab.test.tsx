@@ -58,6 +58,8 @@ const model = (over: Record<string, unknown> = {}) => ({
 
 let listRequests: URL[] = [];
 let importRequests: Array<{ model_id: string; file_id: string; folder_id: number | null }> = [];
+/** What the mocked library holds after the imports of this test, by model id and file id. */
+let landed: Record<string, Record<string, { library_file_id: number; filename: string; folder_id: number }>> = {};
 /** An import of this file waits until `release()` — a run caught in flight. */
 let held: { fileId: string; gate: Promise<void> } | null = null;
 let release: () => void = () => {};
@@ -83,10 +85,11 @@ function connected(usable = true) {
           : [{ id: 'm3', name: 'Third' }];
       return HttpResponse.json({ total: q ? 1 : 3, page, pages: q ? 1 : 2, has_next: !q && page === 1, has_previous: page > 1, models });
     }),
+    // Like the server, a model read names the files the library holds — also the ones just imported.
     http.get(`${BASE}/models/:id`, ({ params }) =>
       params.id === 'm2'
-        ? HttpResponse.json(model({ id: 'm2', name: 'Spool Holder', files: [file('c')] }))
-        : HttpResponse.json(model()),
+        ? HttpResponse.json(model({ id: 'm2', name: 'Spool Holder', files: [file('c')], already_imported: landed.m2 ?? {} }))
+        : HttpResponse.json(model({ already_imported: landed.m1 ?? {} })),
     ),
     http.post(`${BASE}/import`, async ({ request }) => {
       const body = (await request.json()) as { model_id: string; file_id: string; folder_id: number | null };
@@ -98,12 +101,9 @@ function connected(usable = true) {
           { status: 413 },
         );
       }
-      return HttpResponse.json({
-        library_file_id: importRequests.length,
-        filename: `${body.file_id}.stl`,
-        folder_id: 7,
-        was_existing: body.file_id === 'c',
-      });
+      const row = { library_file_id: importRequests.length, filename: `${body.file_id}.stl`, folder_id: 7 };
+      landed[body.model_id] = { ...landed[body.model_id], [body.file_id]: row };
+      return HttpResponse.json({ ...row, was_existing: body.file_id === 'c' });
     }),
   );
 }
@@ -112,6 +112,7 @@ beforeEach(() => {
   listRequests = [];
   importRequests = [];
   held = null;
+  landed = {};
   window.sessionStorage.clear();
   window.history.replaceState({}, '', '/');
 });
@@ -225,6 +226,83 @@ describe('ManyfoldTab', () => {
     render(<ManyfoldTab />);
 
     expect(await screen.findByText('This Manyfold is too old. BamDude needs Manyfold 0.150 or newer.')).toBeInTheDocument();
+  });
+
+  it('a failed page is not a dead end: Retry, and the pager stays', async () => {
+    connected();
+    let failing = true;
+    server.use(
+      http.get(`${BASE}/models`, ({ request }) => {
+        const page = Number(new URL(request.url).searchParams.get('page') ?? '1');
+        if (page === 2 && failing) {
+          return HttpResponse.json({ detail: { error: 'manyfold_rate_limited', message: 'Slow down' } }, { status: 429 });
+        }
+        return HttpResponse.json({
+          total: 3,
+          page,
+          pages: 2,
+          has_next: page === 1,
+          has_previous: page > 1,
+          models: page === 1 ? [{ id: 'm1', name: 'Cable Clip' }] : [{ id: 'm3', name: 'Third' }],
+        });
+      }),
+    );
+    render(<ManyfoldTab />);
+    await screen.findByText('Cable Clip');
+    fireEvent.click(screen.getByRole('button', { name: /Next/ }));
+
+    expect(await screen.findByText('Manyfold is limiting requests. Try again in a few minutes.')).toBeInTheDocument();
+    // The way back is still there, and the way forward is not offered past the last known page.
+    expect(screen.getByRole('button', { name: /Previous/ })).toBeEnabled();
+    expect(screen.getByRole('button', { name: /Next/ })).toBeDisabled();
+    expect(screen.getByText('Page 2')).toBeInTheDocument();
+
+    failing = false;
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(await screen.findByText('Third')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /Previous/ }));
+    expect(await screen.findByText('Cable Clip')).toBeInTheDocument();
+  });
+
+  it('Search with the same words asks again after a failure', async () => {
+    connected();
+    let failing = true;
+    server.use(
+      http.get(`${BASE}/models`, () => {
+        listRequests.push(new URL('http://x/'));
+        return failing
+          ? HttpResponse.json({ detail: { error: 'manyfold_unreachable', message: 'unreachable' } }, { status: 502 })
+          : HttpResponse.json({ total: 1, page: 1, pages: 1, has_next: false, has_previous: false, models: [{ id: 'm1', name: 'Cable Clip' }] });
+      }),
+    );
+    render(<ManyfoldTab />);
+    await screen.findByText(/BamDude cannot reach Manyfold/);
+    expect(listRequests).toHaveLength(1);
+
+    failing = false;
+    fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+    expect(await screen.findByText('Cable Clip')).toBeInTheDocument();
+    expect(listRequests).toHaveLength(2);
+  });
+
+  it('a model that could not be read offers Retry', async () => {
+    connected();
+    let failing = true;
+    server.use(
+      http.get(`${BASE}/models/:id`, () =>
+        failing
+          ? HttpResponse.json({ detail: { error: 'manyfold_unreachable', message: 'unreachable' } }, { status: 502 })
+          : HttpResponse.json(model()),
+      ),
+    );
+    render(<ManyfoldTab />);
+    fireEvent.click(await screen.findByText('Cable Clip'));
+    await screen.findByText(/BamDude cannot reach Manyfold/);
+
+    failing = false;
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(await screen.findByText('Jane Doe')).toBeInTheDocument();
   });
 
   it('keeps the place in the catalogue in the address, so Back returns to it', async () => {
