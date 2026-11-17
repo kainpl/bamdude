@@ -77,6 +77,13 @@ USER_AGENT = f"BamDude/{APP_VERSION} (+https://github.com/kainpl/bamdude)"
 
 REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 _NAT64 = ipaddress.IPv6Network("64:ff9b::/96")
+#: Local-use NAT64 (RFC 8215): where the IPv4 address sits is the operator's choice — unjudgeable.
+_NAT64_LOCAL = ipaddress.IPv6Network("64:ff9b:1::/48")
+#: IPv4-compatible (``::a.b.c.d``) and SIIT (``::ffff:0:a.b.c.d``): the IPv4 address is the low 32 bits.
+_IPV4_COMPATIBLE = ipaddress.IPv6Network("::/96")
+_SIIT = ipaddress.IPv6Network("::ffff:0:0:0/96")
+_LOW_32 = (_NAT64, _IPV4_COMPATIBLE, _SIIT)
+_SITE_LOCAL = ipaddress.IPv6Network("fec0::/10")
 _BROADCAST = ipaddress.IPv4Address("255.255.255.255")
 _NUMERIC_PART = re.compile(r"0x[0-9a-f]*|[0-9]+", re.I)
 #: connect / pause-between-chunks budgets; a whole-request deadline is the caller's.
@@ -150,23 +157,32 @@ def address_refusal(text: str, *, public_only: bool) -> str | None:
     """Why a connection to this ADDRESS is refused, or None.
 
     Always: cloud metadata, link-local, multicast, unspecified, broadcast — also when carried inside
-    an IPv4-mapped, 6to4 or NAT64 address. ``public_only`` (the storage hop) adds everything that is
-    not a public address: loopback, private, carrier-grade NAT, unique-local, reserved — and every
-    translation prefix, which no storage service lives behind.
+    an IPv4-mapped, IPv4-compatible, SIIT, 6to4, NAT64 or Teredo address, each of which is unwrapped
+    and its IPv4 address judged. What cannot be judged is refused under both policies: local-use
+    NAT64 (the embedding is the operator's) and deprecated site-local (``is_global`` calls it
+    public). ``public_only`` (the storage hop) adds everything that is not a public address:
+    loopback, private, carrier-grade NAT, unique-local, reserved — and every translation prefix,
+    which no storage service lives behind.
     """
     try:
         address = unwrap_ipv4_mapped(ipaddress.ip_address(text.split("%", 1)[0]))
     except ValueError:
         return "not an address"
     candidates = [address]
-    if isinstance(address, ipaddress.IPv6Address):
-        embedded = address.sixtofour
-        if address in _NAT64:
-            embedded = ipaddress.IPv4Address(int(address) & 0xFFFFFFFF)
-        if embedded is not None:
+    if isinstance(address, ipaddress.IPv6Address) and int(address) > 1:  # ``::`` and ``::1`` are themselves
+        if address in _NAT64_LOCAL:
+            return "a translated address that cannot be checked"
+        if address in _SITE_LOCAL:
+            return "a deprecated site-local address"
+        embedded = [address.sixtofour] if address.sixtofour is not None else []
+        if any(address in network for network in _LOW_32):
+            embedded.append(ipaddress.IPv4Address(int(address) & 0xFFFFFFFF))
+        if address.teredo is not None:
+            embedded += list(address.teredo)  # the relay's server and the client behind it
+        if embedded:
             if public_only:
                 return "a translated address"
-            candidates.append(embedded)
+            candidates += embedded
     for candidate in candidates:
         if candidate in CLOUD_METADATA_IPS:
             return "a cloud metadata address"

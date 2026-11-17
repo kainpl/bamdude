@@ -458,3 +458,66 @@ class TestTheStorageHopIsPublicOnly:
         transport = transport_for(net)
         status, _data, foreign = await body_of(transport, "/models/m/raw/a.stl", bearer="tok", foreign_hop=True)
         assert (status, foreign) == (302, False) and len(net.seen) == 1
+
+
+class TestAddressesThatCarryAnotherAddress:
+    """Review MB-M1: IPv6 forms that embed an IPv4 address, or that ``is_global`` wrongly calls public."""
+
+    @pytest.mark.parametrize(
+        "address",
+        [
+            "::169.254.169.254",  # IPv4-compatible
+            "::a9fe:a9fe",
+            "::ffff:0:169.254.169.254",  # SIIT (RFC 2765)
+            "::ffff:0:a9fe:a9fe",
+            "64:ff9b:1::a9fe:a9fe",  # local-use NAT64 (RFC 8215): the embedding is the operator's
+            "64:ff9b:1:abc::7f00:1",
+            "2001:0:a9fe:a9fe::1",  # Teredo, metadata as its server
+            "2001:0:808:808:0:0:5601:5601",  # Teredo, client 169.254.169.254 (stored inverted)
+            "fec0::1",  # deprecated site-local
+            "feff::1",
+        ],
+    )
+    def test_neither_policy_connects_to_it(self, address):
+        assert outbound.address_refusal(address, public_only=False) is not None
+        assert outbound.address_refusal(address, public_only=True) is not None
+
+    @pytest.mark.parametrize(
+        "address", ["::127.0.0.1", "::7f00:1", "::10.0.0.5", "::ffff:0:127.0.0.1", "::8.8.8.8", "::ffff:0:8.8.8.8"]
+    )
+    def test_an_embedded_address_is_judged_for_the_origin_and_never_public_storage(self, address):
+        # The configured origin may be loopback or private, embedded or not; storage is never translated.
+        assert outbound.address_refusal(address, public_only=False) is None
+        assert outbound.address_refusal(address, public_only=True) is not None
+
+    @pytest.mark.parametrize("address", ["::1", "fd00::1", "2606:4700::1111", "::ffff:8.8.8.8", "8.8.8.8"])
+    def test_ordinary_addresses_are_judged_as_before(self, address):
+        assert outbound.address_refusal(address, public_only=False) is None
+
+    @pytest.mark.parametrize("address", ["2606:4700::1111", "2001:4860:4860::8888", "::ffff:8.8.8.8", "8.8.8.8"])
+    def test_public_storage_is_still_public(self, address):
+        assert outbound.address_refusal(address, public_only=True) is None
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "http://[::169.254.169.254]/",
+            "http://[64:ff9b:1::a9fe:a9fe]/",
+            "http://[2001:0:a9fe:a9fe::1]/",
+            "http://[fec0::1]/",
+        ],
+    )
+    def test_such_an_address_is_not_a_configured_origin(self, url):
+        with pytest.raises(ValueError):
+            PinnedOrigin.admit(url, label="Manyfold URL")
+
+    @pytest.mark.parametrize(
+        "location", ["https://[::127.0.0.1]/x", "https://[fec0::1]/x", "https://[::ffff:0:808:808]/x"]
+    )
+    async def test_storage_at_such_an_address_is_refused_without_a_request(self, location):
+        net = Net({f"{BASE}/models/m/raw/a.stl": redirect(location)})
+        transport = transport_for(net)
+        with pytest.raises(OutboundRefused) as caught:
+            await body_of(transport, "/models/m/raw/a.stl", bearer="tok", foreign_hop=True)
+        assert caught.value.reason == "foreign_refused"
+        assert net.urls() == [f"{BASE}/models/m/raw/a.stl"]
