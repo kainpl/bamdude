@@ -12443,6 +12443,9 @@ export default {
     hexLabel: 'Hex: #{{hex}}',
     resetting: 'Resetting...',
     resetSlot: 'Reset Slot',
+    resetConfirmTitle: 'Reset this slot?',
+    resetConfirmMessage: 'The filament setting of this slot will be cleared on the printer. The slot will read as unconfigured until you set it again.',
+    resetBlockedPrinting: 'A job is on the printer. Reset the slot after it ends.',
     cancel: 'Cancel',
     configuring: 'Configuring...',
     configureSlot: 'Configure Slot'

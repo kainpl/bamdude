@@ -3321,6 +3321,12 @@ async def reset_ams_slot(
     if not client:
         raise HTTPException(status_code=400, detail="Printer not connected")
 
+    if is_printer_busy(printer_id):
+        # The slot's filament setting is what the job on the printer feeds from.
+        # The dialog disables the button, but this route is reachable by an API
+        # key and by a tab left open since before the print started.
+        raise HTTPException(409, "Printer is busy — cannot reset a slot while a job is on it")
+
     # Reset the slot
     success = client.reset_ams_slot(ams_id=ams_id, tray_id=tray_id)
 
