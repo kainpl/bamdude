@@ -90,6 +90,8 @@ _NUMERIC_PART = re.compile(r"0x[0-9a-f]*|[0-9]+", re.I)
 #: connect / pause-between-chunks budgets; a whole-request deadline is the caller's.
 DEFAULT_TIMEOUT = httpx.Timeout(connect=10.0, read=60.0, write=30.0, pool=10.0)
 _JSON_CAP = 4 * 1024 * 1024
+#: How many of a name's (checked) addresses a connection is attempted to.
+MAX_ADDRESSES_TRIED = 3
 
 
 class OutboundRefused(ProviderUnavailableError):
@@ -683,18 +685,26 @@ class GuardedTransport:
         # Built directly, never through ``client.build_request``: no client default and no cookie
         # an earlier answer set is merged in.
         sent = {"User-Agent": USER_AGENT, "Accept": "*/*", "Accept-Encoding": "identity", **(headers or {})}
-        address = addresses[0].split("%", 1)[0]
-        request = httpx.Request(method, url, headers=sent, data=data, extensions={"pinned_address": address})
-        # The pin travels with THIS call (a context variable, read by the socket layer in the same
-        # task): two requests never see each other's address, whatever policy checked it.
-        token = _PIN.set((host, port, address))
-        try:
-            return await client.send(request, stream=True, follow_redirects=False)
-        except httpx.HTTPError as exc:
-            # The type only: an httpx message may carry the URL, and a URL may carry a signature.
-            raise OutboundRefused(f"Could not connect: {type(exc).__name__}", "unreachable") from exc
-        finally:
-            _PIN.reset(token)
+        # EVERY address passed the check above, so a failed CONNECT may move on to the next one (a
+        # dual-stack name on a host without working IPv6). Nothing was sent by then; any later
+        # failure ends the request — it is never sent twice.
+        tried = [address.split("%", 1)[0] for address in addresses[:MAX_ADDRESSES_TRIED]]
+        for position, address in enumerate(tried):
+            request = httpx.Request(method, url, headers=sent, data=data, extensions={"pinned_address": address})
+            # The pin travels with THIS call (a context variable, read by the socket layer in the
+            # same task): two requests never see each other's address, whatever policy checked it.
+            token = _PIN.set((host, port, address))
+            try:
+                return await client.send(request, stream=True, follow_redirects=False)
+            except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+                if position + 1 == len(tried):
+                    raise OutboundRefused(f"Could not connect: {type(exc).__name__}", "unreachable") from exc
+            except httpx.HTTPError as exc:
+                # The type only: an httpx message may carry the URL, and a URL may carry a signature.
+                raise OutboundRefused(f"Could not connect: {type(exc).__name__}", "unreachable") from exc
+            finally:
+                _PIN.reset(token)
+        raise OutboundRefused("The host name has no address", "unreachable")
 
     def _classify(self, current: httpx.URL, location: str | None) -> tuple[str, str | None]:
         """``(kind, absolute target)`` of a redirect; raises for a Location nobody may follow."""
