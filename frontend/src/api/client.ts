@@ -1306,6 +1306,80 @@ export type PrinterStorage = 'external' | 'internal';
 /** How much a printer listing proves: see GET /printers/{id}/files. */
 export type PrinterListingStatus = 'complete' | 'missing' | 'unreadable' | 'unavailable' | 'slow';
 
+// A download prepared on the server (G10 D). The job is created once and polled;
+// its result is saved by the browser itself from a one-time URL — no Blob.
+export type DownloadJobPhase = 'queued' | 'preparing' | 'cancelling' | 'ready' | 'failed' | 'cancelled' | 'expired';
+/** Why a whole job ended without a result — a code the UI words, never a sentence. */
+export type DownloadJobError =
+  | 'authority_lost'
+  | 'limit_exceeded'
+  | 'insufficient_storage'
+  | 'time_limit'
+  | 'nothing_downloaded'
+  | 'interrupted'
+  | 'cleanup_incomplete'
+  | 'internal';
+export interface DownloadJobFailure {
+  name: string;
+  /** The transfer's outcome for this file: `not_readable`, `unavailable`, `stalled`, … or `not_attempted`. */
+  status: string;
+  reason?: string | null;
+}
+export interface DownloadJob {
+  job_id: string;
+  kind: 'printer' | 'archive';
+  phase: DownloadJobPhase;
+  as_zip: boolean;
+  filename: string;
+  requested: number;
+  succeeded: number;
+  failed: number;
+  bytes_received: number;
+  bytes_expected: number | null;
+  current: string | null;
+  /** Ready, but some files could not be read: the user confirms before taking the rest. */
+  partial: boolean;
+  failures: DownloadJobFailure[];
+  error: DownloadJobError | null;
+  size: number | null;
+  expires_in: number | null;
+}
+export interface DownloadUrl {
+  url: string;
+  expires_in: number;
+}
+export const DOWNLOAD_JOB_TERMINAL: readonly DownloadJobPhase[] = ['ready', 'failed', 'cancelled', 'expired'];
+
+export type MediaSourceStatus = 'ok' | 'empty' | 'forbidden' | 'unsupported' | 'unavailable' | 'slow' | 'no_printer';
+export interface ArchiveLocalVideo {
+  asset: string;
+  name: string;
+  size: number;
+}
+export interface ArchiveRemoteVideo {
+  printer_id: number;
+  storage: PrinterStorage;
+  path: string;
+  name: string;
+  size: number | null;
+  mtime: string | null;
+  /** `exact` — an instant; `unconfirmed` — the printer's wall clock, zone unknown; `unknown` — no time at all. */
+  time_basis: 'exact' | 'unconfirmed' | 'unknown';
+  /** null — the time is not known well enough to say. */
+  overlap: boolean | null;
+  /** The overlap was computed with the operator's own clock offset. */
+  assumed: boolean;
+}
+export interface ArchiveMediaSources {
+  archive_id: number;
+  window: { from: string; to: string; margin_minutes: number } | null;
+  offset_minutes: number | null;
+  printer_id: number | null;
+  local: { status: 'ok' | 'empty'; items: ArchiveLocalVideo[] };
+  timelapse: { status: MediaSourceStatus; items: ArchiveRemoteVideo[] };
+  camera: { status: MediaSourceStatus; items: ArchiveRemoteVideo[] };
+}
+
 /** The two catalogues internal storage serves. ⚠️ On the card these are
  *  directories, not catalogues — there the path says which is meant. */
 export type PrinterFileType = 'model' | 'timelapse';
@@ -11377,51 +11451,23 @@ export const api = {
   // No per-plate image URL here on purpose: an <img> cannot carry the
   // Authorization header, so `getPrinterFilePlates` answers each plate's
   // `thumbnail_url` itself — an anonymous archive route or a data URL.
-  downloadPrinterFile: async (printerId: number, path: string, storage?: PrinterStorage): Promise<void> => {
-    const headers: Record<string, string> = {};
-    if (authToken) {
-      headers['Authorization'] = `Bearer ${authToken}`;
-    }
-    const response = await fetch(
-      `${API_BASE}/printers/${printerId}/files/download?path=${encodeURIComponent(path)}${storageParam(storage)}`,
-      { headers }
-    );
-    if (!response.ok) {
-      const error = await response.json().catch(() => ({}));
-      throw new Error(error.detail || `HTTP ${response.status}`);
-    }
-    const disposition = response.headers.get('Content-Disposition');
-    const filename = parseContentDispositionFilename(disposition) || path.split('/').pop() || 'download';
-    const blob = await response.blob();
-    const url = window.URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    window.URL.revokeObjectURL(url);
-  },
-  downloadPrinterFilesAsZip: async (
+  // Downloads are jobs (G10 D): created once, prepared on the server's disk, polled,
+  // and saved by the browser from a one-time URL. Nothing passes through a Blob.
+  createPrinterDownloadJob: (
     printerId: number,
-    paths: string[],
-    storage?: PrinterStorage,
-  ): Promise<Blob> => {
-    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-    if (authToken) {
-      headers['Authorization'] = `Bearer ${authToken}`;
-    }
-    const response = await fetch(`${API_BASE}/printers/${printerId}/files/download-zip`, {
+    body: { paths: string[]; storage?: PrinterStorage; sizes?: Record<string, number>; as_zip?: boolean; filename?: string },
+  ) => request<DownloadJob>(`/printers/${printerId}/files/download-jobs`, { method: 'POST', body: JSON.stringify(body) }),
+  listPrinterDownloadJobs: (printerId: number) =>
+    request<{ jobs: DownloadJob[] }>(`/printers/${printerId}/files/download-jobs`),
+  getPrinterDownloadJob: (printerId: number, jobId: string) =>
+    request<DownloadJob>(`/printers/${printerId}/files/download-jobs/${jobId}`),
+  cancelPrinterDownloadJob: (printerId: number, jobId: string) =>
+    request<DownloadJob>(`/printers/${printerId}/files/download-jobs/${jobId}`, { method: 'DELETE' }),
+  mintPrinterDownloadUrl: (printerId: number, jobId: string, acceptPartial = false) =>
+    request<DownloadUrl>(`/printers/${printerId}/files/download-jobs/${jobId}/download-token`, {
       method: 'POST',
-      headers,
-      body: JSON.stringify({ paths, storage }),
-    });
-    if (!response.ok) {
-      const error = await response.json().catch(() => ({}));
-      throw new Error(error.detail || `HTTP ${response.status}`);
-    }
-    return response.blob();
-  },
+      body: JSON.stringify({ accept_partial: acceptPartial }),
+    }),
   deletePrinterFile: (printerId: number, path: string, storage?: PrinterStorage) =>
     request<{ status: string; path: string }>(
       `/printers/${printerId}/files?path=${encodeURIComponent(path)}${storageParam(storage)}`,
@@ -11774,6 +11820,33 @@ export const api = {
   // Same cache-stability policy as ``getArchiveThumbnail``.
   getArchiveTimelapse: (id: number, version?: string | number) =>
     withMediaToken(`${API_BASE}/archives/${id}/timelapse${version ? `?v=${encodeURIComponent(String(version))}` : ''}`),
+  // What can be downloaded for a print: its attached video and what its printer still holds.
+  getArchiveMediaSources: (id: number, options: { offsetMinutes?: number | null; marginMinutes?: number } = {}) => {
+    const params = new URLSearchParams();
+    if (options.offsetMinutes != null) params.set('offset_minutes', String(options.offsetMinutes));
+    if (options.marginMinutes != null) params.set('margin_minutes', String(options.marginMinutes));
+    const query = params.toString();
+    return request<ArchiveMediaSources>(`/archives/${id}/media-sources${query ? `?${query}` : ''}`);
+  },
+  createArchiveDownloadJob: (
+    id: number,
+    body: {
+      assets?: string[];
+      remote?: Array<{ printer_id: number; storage: PrinterStorage; path: string; size?: number | null }>;
+      as_zip?: boolean;
+      filename?: string;
+    },
+  ) => request<DownloadJob>(`/archives/${id}/media-download-jobs`, { method: 'POST', body: JSON.stringify(body) }),
+  listArchiveDownloadJobs: (id: number) => request<{ jobs: DownloadJob[] }>(`/archives/${id}/media-download-jobs`),
+  getArchiveDownloadJob: (id: number, jobId: string) =>
+    request<DownloadJob>(`/archives/${id}/media-download-jobs/${jobId}`),
+  cancelArchiveDownloadJob: (id: number, jobId: string) =>
+    request<DownloadJob>(`/archives/${id}/media-download-jobs/${jobId}`, { method: 'DELETE' }),
+  mintArchiveDownloadUrl: (id: number, jobId: string, acceptPartial = false) =>
+    request<DownloadUrl>(`/archives/${id}/media-download-jobs/${jobId}/download-token`, {
+      method: 'POST',
+      body: JSON.stringify({ accept_partial: acceptPartial }),
+    }),
   scanArchiveTimelapse: (id: number) =>
     request<{
       status: string;
