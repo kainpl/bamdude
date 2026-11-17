@@ -40,7 +40,7 @@ def fake(monkeypatch, tmp_path: Path):
         return list(DNS[host])
 
     monkeypatch.setattr(outbound, "resolve_host", resolve)
-    monkeypatch.setattr(outbound, "_pinned_http", lambda _sockets=None: real_layer(sockets))
+    monkeypatch.setattr(outbound, "_pinned_http", lambda _sockets, context: real_layer(sockets, context))
     monkeypatch.setattr(app_settings, "archive_dir", str(tmp_path / "data"), raising=False)
     manyfold.clear_caches()
     yield server

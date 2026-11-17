@@ -194,3 +194,34 @@ async def test_the_handshake_gets_the_verifying_context():
     (context,) = sockets.tls_contexts
     assert context.verify_mode == ssl.CERT_REQUIRED and context.check_hostname is True
     assert sockets.opened[0].server_hostname == "a.example.com"
+
+
+async def test_the_trust_store_is_built_once_per_process_and_never_on_the_event_loop(monkeypatch):
+    """Review MB-I3: every request used to build a TLS context (~0.3 s) inside the loop."""
+    import threading
+
+    import httpx
+
+    from backend.tests._fixtures.wire import WireSockets
+
+    built: list[int] = []
+    real = ssl.create_default_context
+
+    def counted(*args, **kwargs):
+        built.append(threading.get_ident())
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(ssl, "create_default_context", counted)
+    monkeypatch.setattr(outbound, "_tls_cache", {}, raising=False)
+    contexts = []
+    for _ in range(6):  # six API requests, each with a service — and a transport — of its own
+        sockets = WireSockets(lambda request: httpx.Response(200, content=b"ok"))
+        transport = GuardedTransport(PinnedOrigin.admit("https://a.example.com", label="x"), sockets=sockets)
+        await transport.get("/models")
+        await transport.get("/models")
+        await transport.aclose()
+        contexts += sockets.tls_contexts
+    assert len(built) == 1, f"{len(built)} trust stores built for 6 transports"
+    assert built[0] != threading.get_ident(), "the trust store was built on the event loop's thread"
+    assert len(contexts) == 6 and len({id(context) for context in contexts}) == 1
+    assert contexts[0].verify_mode == ssl.CERT_REQUIRED and contexts[0].check_hostname is True

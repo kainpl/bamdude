@@ -55,6 +55,7 @@ import os
 import re
 import socket
 import ssl
+import threading
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
@@ -217,13 +218,34 @@ def _same_host(host: str | None) -> str | None:
         return None
 
 
-def _tls_context() -> ssl.SSLContext:
-    """What the rest of the app trusts: ``SSL_CERT_FILE`` / ``SSL_CERT_DIR``, else certifi."""
-    if os.environ.get("SSL_CERT_FILE"):
-        return ssl.create_default_context(cafile=os.environ["SSL_CERT_FILE"])
-    if os.environ.get("SSL_CERT_DIR"):
-        return ssl.create_default_context(capath=os.environ["SSL_CERT_DIR"])
-    return ssl.create_default_context(cafile=certifi.where())
+#: (SSL_CERT_FILE, SSL_CERT_DIR) -> the context built for them. One entry in practice.
+_tls_cache: dict[tuple[str | None, str | None], ssl.SSLContext] = {}
+_tls_lock = threading.Lock()
+
+
+def _build_tls_context(key: tuple[str | None, str | None]) -> ssl.SSLContext:
+    """What the rest of the app trusts: ``SSL_CERT_FILE`` / ``SSL_CERT_DIR``, else certifi.
+
+    Loading a trust store takes ~0.3 s: a worker thread's job, done once (``tls_context``).
+    """
+    with _tls_lock:
+        if key not in _tls_cache:
+            cafile, capath = key
+            if cafile:
+                context = ssl.create_default_context(cafile=cafile)
+            elif capath:
+                context = ssl.create_default_context(capath=capath)
+            else:
+                context = ssl.create_default_context(cafile=certifi.where())
+            _tls_cache.clear()
+            _tls_cache[key] = context
+        return _tls_cache[key]
+
+
+async def tls_context() -> ssl.SSLContext:
+    """The process's ONE verifying context (CERT_REQUIRED, host name checked), built off the loop."""
+    key = (os.environ.get("SSL_CERT_FILE") or None, os.environ.get("SSL_CERT_DIR") or None)
+    return _tls_cache.get(key) or await asyncio.to_thread(_build_tls_context, key)
 
 
 #: (normalised host, port, checked address) of the request being sent in this task.
@@ -375,10 +397,10 @@ class _PinnedHTTP(httpx.AsyncBaseTransport):
         await self._pool.aclose()
 
 
-def _pinned_http(inner: httpcore.AsyncNetworkBackend | None = None) -> _PinnedHTTP:
-    """The pinning HTTP layer with certificate verification ON (``_tls_context``: CERT_REQUIRED,
-    host name checked), done for the request's host name."""
-    return _PinnedHTTP(inner, ssl_context=_tls_context())
+def _pinned_http(inner: httpcore.AsyncNetworkBackend | None, context: ssl.SSLContext) -> _PinnedHTTP:
+    """The pinning HTTP layer with certificate verification ON (``tls_context``), done for the
+    request's host name."""
+    return _PinnedHTTP(inner, ssl_context=context)
 
 
 # ---- the proof that the pin holds in THIS process --------------------------------------------
@@ -554,7 +576,7 @@ class GuardedTransport:
     async def _http(self) -> httpx.AsyncClient:
         """The client, built at first use — only ever over the pinning HTTP layer."""
         if self._client is None:
-            layer = _pinned_http(self._sockets)
+            layer = _pinned_http(self._sockets, await tls_context())
             if not isinstance(layer, _PinnedHTTP):
                 # Never an ordinary client instead: it would resolve names itself.
                 raise OutboundRefused("The checked-address transport could not be built", "transport_disabled")
