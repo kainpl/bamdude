@@ -47,6 +47,9 @@ BAMBU_WIKI_BASE = "https://wiki.bambulab.com"
 # Cache TTL in seconds (1 hour)
 CACHE_TTL = 3600
 
+# How the download page is named in the log.
+FIRMWARE_PAGE_NAME = "Bambu Lab's firmware download page"
+
 # Map BamDude model names to Bambu Lab API keys
 MODEL_TO_API_KEY = {
     "X1": "x1",
@@ -153,6 +156,9 @@ class FirmwareCheckService:
         # Bambu doesn't have the file rather than "we can't reach Bambu"
         # — upstream Bambuddy #1350 / commit 405dd152).
         self._download_page_unreachable: bool = False
+        # Sources known to be unreachable right now, so an outage is logged
+        # once and not on every card's every check (``_note_unreachable``).
+        self._outages: set[str] = set()
         self._version_cache: dict[str, FirmwareVersion] = {}
         self._versions_list_cache: dict[str, list[FirmwareVersion]] = {}
         self._cache_time: float = 0
@@ -213,6 +219,24 @@ class FirmwareCheckService:
         except OSError as e:
             logger.debug("Could not persist buildId: %s", e)
 
+    def _note_unreachable(self, source: str, detail: object) -> None:
+        """Log an unreachable source once per outage; repeats are debug."""
+        if source in self._outages:
+            logger.debug("%s is still unreachable: %s", source, detail)
+            return
+        self._outages.add(source)
+        logger.warning(
+            "%s is unreachable (%s). Firmware checks keep retrying quietly and use what is cached; "
+            "this is logged once until it answers again",
+            source,
+            detail,
+        )
+
+    def _note_reachable(self, source: str) -> None:
+        if source in self._outages:
+            self._outages.discard(source)
+            logger.info("%s is reachable again", source)
+
     async def _get_build_id(self) -> str | None:
         """Fetch the Next.js build ID from Bambu Lab's firmware page (CF-bypassed).
 
@@ -255,6 +279,7 @@ class FirmwareCheckService:
                     self._build_id = new_build_id
                     self._build_id_time = time.time()
                     self._download_page_unreachable = False
+                    self._note_reachable(FIRMWARE_PAGE_NAME)
                     self._save_build_id_to_disk(new_build_id)
                     return self._build_id
             else:
@@ -262,13 +287,10 @@ class FirmwareCheckService:
                 # flag the page as unreachable so callers can surface an
                 # honest error instead of misleadingly saying the file
                 # isn't on Bambu's side.
-                logger.warning(
-                    "Failed to get Bambu Lab page: %s (will try cached buildId if available)",
-                    response.status_code,
-                )
+                self._note_unreachable(FIRMWARE_PAGE_NAME, f"HTTP {response.status_code}")
                 self._download_page_unreachable = True
         except Exception as e:
-            logger.error("Error fetching Bambu Lab build ID: %s", e)
+            self._note_unreachable(FIRMWARE_PAGE_NAME, str(e) or type(e).__name__)
             self._download_page_unreachable = True
 
         return self._build_id  # Return whatever we have — stale beats nothing
@@ -450,7 +472,13 @@ class FirmwareCheckService:
         if download_info:
             return download_info
 
-        logger.warning("Could not fetch firmware info for %s from wiki or download page", api_key)
+        # During a known outage the outage itself has been said once; a line
+        # per model per check on top of it is the noise this replaces.
+        logger.log(
+            logging.DEBUG if self._outages else logging.WARNING,
+            "Could not fetch firmware info for %s from wiki or download page",
+            api_key,
+        )
         return None
 
     def _resolve_api_key(self, model: str) -> str | None:
