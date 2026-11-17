@@ -1,0 +1,6 @@
+{
+  "high_type": "Power above limit",
+  "low_type": "Power below limit",
+  "high_detail": "Power draw is {power} W, above the limit of {threshold} W.",
+  "low_detail": "Power draw is {power} W, below the limit of {threshold} W."
+}

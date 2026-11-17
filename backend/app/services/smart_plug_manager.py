@@ -157,6 +157,7 @@ class SmartPlugManager:
             sample_polled_plugs,
         )
         from backend.app.services.meter_watch import meter_watch
+        from backend.app.services.power_alerts import run_power_alerts
         from backend.app.services.sensor_alerts import run_sensor_alerts
 
         await asyncio.sleep(20)  # let the rest of the application finish booting
@@ -172,6 +173,9 @@ class SmartPlugManager:
                     # just wrote. Wrapped inside run_sensor_alerts — this loop
                     # also prunes, and an exception here would stop that too.
                     await run_sensor_alerts(db)
+                    # Power limits of the plugs, on the readings just written --
+                    # in the background, not only while a page asks for status.
+                    await run_power_alerts(db)
                 # The meter watch reads what the flush just wrote, at most every five
                 # minutes, each plug in its own short session (spec plug-meter-watchdog
                 # W5, W12). Guarded on its own: it must never cost the loop its prune.

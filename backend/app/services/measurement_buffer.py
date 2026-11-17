@@ -105,6 +105,7 @@ class MeasurementBuffer:
         # which is the right end to lose: an old reading nobody has drawn yet
         # matters less than the one describing what is happening now.
         self._sensors: deque[SensorSample] = deque(maxlen=MAX_BUFFERED)
+        self._switch: dict[int, str] = {}
         self._in_flight: list[PowerSample] = []
         # (plug, token) -> [first, last] moment of readings dropped by overflow. Oldest-first
         # dropping makes them a contiguous run with nothing of that plug between: two markers say it.
@@ -129,6 +130,8 @@ class MeasurementBuffer:
         whose watts may outlive its relay (``phantom_risk``). No value at all is no reading.
         """
         try:
+            if state in ("ON", "OFF"):
+                self._switch[int(plug_id)] = state
             if watts is None:
                 return
             value = _valid_watts(watts)
@@ -146,6 +149,15 @@ class MeasurementBuffer:
                 self._append(sample)
         except Exception as exc:  # noqa: BLE001 — a callback must not raise
             logger.debug("Measurement buffer: power reading ignored: %s", exc)
+
+    def switch_state(self, plug_id: int) -> str | None:
+        """The relay as the newest reading of this plug knew it, or None.
+
+        Kept beside the readings for the power alerts: a low-power alert is asked
+        only of a plug known to be ON, and the plug row's own state is written
+        by the status page and the control actions, not by every reading.
+        """
+        return self._switch.get(int(plug_id))
 
     def record_sensor(self, ieee: str, kind: str, value) -> None:
         """One sensor reading. Never raises — see the module docstring."""
