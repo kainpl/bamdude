@@ -199,7 +199,7 @@ class ArchivePurgeService:
         return archive
 
     @staticmethod
-    async def hard_delete_now(archive_id: int) -> bool:
+    async def hard_delete_now(archive_id: int, *, retention_cutoff: datetime | None = None) -> bool:
         """Hard-delete an already-trashed archive bypassing the retention window.
 
         Runs in its own session via ``ArchiveService.delete_archive`` so the
@@ -210,7 +210,9 @@ class ArchivePurgeService:
         """
         async with _database.async_session() as delete_db:
             service = ArchiveService(delete_db)
-            return await service.delete_archive(archive_id, refuse_kept=True, trashed_only=True)
+            return await service.delete_archive(
+                archive_id, refuse_kept=True, trashed_only=True, retention_cutoff=retention_cutoff
+            )
 
     async def empty_trash(self, db: AsyncSession) -> int:
         """Hard-delete every trashed archive immediately. Returns the count."""
@@ -251,7 +253,7 @@ class ArchivePurgeService:
         await db.commit()
         for archive_id in ids:
             try:
-                if await self.hard_delete_now(archive_id):
+                if await self.hard_delete_now(archive_id, retention_cutoff=cutoff):
                     deleted += 1
                 else:
                     failed.append(archive_id)

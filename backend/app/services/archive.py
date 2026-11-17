@@ -2247,12 +2247,21 @@ class ArchiveService:
 
         return {"materials": materials, "colors": colors, "tags": tags}
 
-    async def delete_archive(self, archive_id: int, *, refuse_kept: bool = False, trashed_only: bool = False) -> bool:
+    async def delete_archive(
+        self,
+        archive_id: int,
+        *,
+        refuse_kept: bool = False,
+        trashed_only: bool = False,
+        retention_cutoff: datetime | None = None,
+    ) -> bool:
         """Hard-delete one archive under the shared archive-facts writer guard."""
         from backend.app.services.archive_write_scope import archive_write_scope
 
         async with archive_write_scope(self.db, archive_id):
-            deleted = await self._delete_archive_locked(archive_id, refuse_kept=refuse_kept, trashed_only=trashed_only)
+            deleted = await self._delete_archive_locked(
+                archive_id, refuse_kept=refuse_kept, trashed_only=trashed_only, retention_cutoff=retention_cutoff
+            )
         return deleted
 
     async def delete_archive_rows(self, archive):
@@ -2262,7 +2271,12 @@ class ArchiveService:
         return await archive_rows(self.db, archive)
 
     async def _delete_archive_locked(
-        self, archive_id: int, *, refuse_kept: bool = False, trashed_only: bool = False
+        self,
+        archive_id: int,
+        *,
+        refuse_kept: bool = False,
+        trashed_only: bool = False,
+        retention_cutoff: datetime | None = None,
     ) -> bool:
         from backend.app.services.archive_write_scope import archive_file_reference_scope, lock_prints
 
@@ -2272,6 +2286,16 @@ class ArchiveService:
         # this operation waits for its row lock; use the fresh locked state.
         if archive is None or (trashed_only and archive.deleted_at is None):
             return False
+        if retention_cutoff is not None:
+            # A restore followed by another trash starts a new recovery window.
+            # DB timestamps are UTC-naive; tolerate UTC-aware callers as well.
+            deleted_at = archive.deleted_at
+            if deleted_at is None:
+                return False
+            deleted_at = deleted_at.replace(tzinfo=deleted_at.tzinfo or timezone.utc)
+            cutoff = retention_cutoff.replace(tzinfo=retention_cutoff.tzinfo or timezone.utc)
+            if deleted_at >= cutoff:
+                return False
         from backend.app.services.content_delete_keeps import archive_keep_reasons
 
         reasons = await archive_keep_reasons(

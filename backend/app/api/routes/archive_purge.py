@@ -160,7 +160,14 @@ async def restore_archive_from_trash(
 
         await ensure_may_file(creds, [archive])
         await order_journal.record(db, archive.project_id, "print_restored", _print_snapshot(archive), actor=user)
-    await archive_purge_service.restore(db, archive)
+    from sqlalchemy.orm.exc import StaleDataError
+
+    try:
+        await archive_purge_service.restore(db, archive)
+    except StaleDataError as exc:
+        # Purge won after our candidate read. Roll back any order journal too.
+        await db.rollback()
+        raise HTTPException(status_code=404, detail="Trashed archive not found") from exc
     return {"status": "success", "id": archive.id}
 
 

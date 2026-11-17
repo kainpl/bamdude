@@ -1959,7 +1959,7 @@ class TestAbortedStatusNormalisation:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_on_print_complete_normalises_aborted_to_cancelled(self, queue_item_factory, db_session):
+    async def test_on_print_complete_normalises_aborted_to_cancelled(self, queue_item_factory, db_session, caplog):
         """Verify the completion handler maps 'aborted' → 'cancelled' for queue items."""
         from unittest.mock import AsyncMock, patch
 
@@ -1977,6 +1977,12 @@ class TestAbortedStatusNormalisation:
 
         with (
             patch("backend.app.main.async_session", new=factory),
+            patch(
+                "backend.app.services.archive_download_retry.archive_download_retry.retry_archive",
+                new=AsyncMock(return_value="already_has_file"),
+            ),
+            patch("backend.app.main._report_spoolman_usage", new=AsyncMock()),
+            patch("backend.app.services.notification_inbox.has_subscriber", new=AsyncMock(return_value=False)),
             patch("backend.app.main.ws_manager") as mock_ws,
             patch("backend.app.main.mqtt_relay") as mock_relay,
             patch("backend.app.main.notification_service") as mock_notif,
@@ -1987,10 +1993,12 @@ class TestAbortedStatusNormalisation:
             patch("backend.app.main.spawn_background_task", side_effect=lambda coro, **kw: coro.close()),
         ):
             mock_ws.send_print_complete = AsyncMock()
+            mock_ws.send_archive_updated = AsyncMock()
             mock_ws.broadcast = AsyncMock()
             mock_relay.on_print_complete = AsyncMock()
             mock_relay.on_queue_job_completed = AsyncMock()
             mock_notif.on_print_complete = AsyncMock()
+            mock_notif._get_providers_for_event = AsyncMock(return_value=[])
             mock_plug.on_print_complete = AsyncMock()
             mock_pm.get_printer.return_value = None
             mock_pm.get_current_print_user.return_value = None
@@ -2000,6 +2008,7 @@ class TestAbortedStatusNormalisation:
 
             from backend.app.main import on_print_complete
 
+            caplog.clear()
             await on_print_complete(
                 item.queue_id,  # queue_id == printer_id
                 {
@@ -2013,10 +2022,11 @@ class TestAbortedStatusNormalisation:
         # The item status should be normalised to 'cancelled', not 'aborted'
         await db_session.refresh(item)
         assert item.status == "cancelled"
+        assert not [(r.name, r.getMessage()) for r in caplog.records if r.levelno >= 30]
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_startup_fixup_converts_aborted_to_cancelled(self, queue_item_factory, db_session):
+    async def test_startup_fixup_converts_aborted_to_cancelled(self, queue_item_factory, db_session, caplog):
         """Verify the startup fixup converts existing 'aborted' rows to 'cancelled'."""
         from sqlalchemy import select
 
@@ -2052,7 +2062,7 @@ class TestAbortedStatusNormalisation:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_completed_status_passes_through_unchanged(self, queue_item_factory, db_session):
+    async def test_completed_status_passes_through_unchanged(self, queue_item_factory, db_session, caplog):
         """Verify normal statuses like 'completed' are not affected by normalisation."""
         from unittest.mock import AsyncMock, patch
 
@@ -2070,6 +2080,12 @@ class TestAbortedStatusNormalisation:
 
         with (
             patch("backend.app.main.async_session", new=factory),
+            patch(
+                "backend.app.services.archive_download_retry.archive_download_retry.retry_archive",
+                new=AsyncMock(return_value="already_has_file"),
+            ),
+            patch("backend.app.main._report_spoolman_usage", new=AsyncMock()),
+            patch("backend.app.services.notification_inbox.has_subscriber", new=AsyncMock(return_value=False)),
             patch("backend.app.main.ws_manager") as mock_ws,
             patch("backend.app.main.mqtt_relay") as mock_relay,
             patch("backend.app.main.notification_service") as mock_notif,
@@ -2080,10 +2096,12 @@ class TestAbortedStatusNormalisation:
             patch("backend.app.main.spawn_background_task", side_effect=lambda coro, **kw: coro.close()),
         ):
             mock_ws.send_print_complete = AsyncMock()
+            mock_ws.send_archive_updated = AsyncMock()
             mock_ws.broadcast = AsyncMock()
             mock_relay.on_print_complete = AsyncMock()
             mock_relay.on_queue_job_completed = AsyncMock()
             mock_notif.on_print_complete = AsyncMock()
+            mock_notif._get_providers_for_event = AsyncMock(return_value=[])
             mock_plug.on_print_complete = AsyncMock()
             mock_pm.get_printer.return_value = None
             mock_pm.get_current_print_user.return_value = None
@@ -2093,6 +2111,7 @@ class TestAbortedStatusNormalisation:
 
             from backend.app.main import on_print_complete
 
+            caplog.clear()
             await on_print_complete(
                 item.queue_id,  # queue_id == printer_id
                 {
@@ -2105,6 +2124,7 @@ class TestAbortedStatusNormalisation:
 
         await db_session.refresh(item)
         assert item.status == "completed"
+        assert not [(r.name, r.getMessage()) for r in caplog.records if r.levelno >= 30]
 
     # ========================================================================
     # Library file usage tracking on print completion (#1008)

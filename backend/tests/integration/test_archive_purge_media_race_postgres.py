@@ -86,7 +86,8 @@ async def _restore(factory, archive_id):
         return True
 
 
-async def test_a_restore_that_wins_keeps_the_archive_and_its_video_rows(factory, monkeypatch):
+@pytest.mark.parametrize("retrash", [False, True], ids=["restore", "restore-then-trash"])
+async def test_a_restore_that_wins_keeps_the_archive_and_its_video_rows(factory, monkeypatch, retrash):
     """Restore owns the row; the per-id root must reread after waiting for it."""
     (archive_id,) = await _trashed(factory, 1)
     service = _sweeper(monkeypatch)
@@ -95,13 +96,21 @@ async def test_a_restore_that_wins_keeps_the_archive_and_its_video_rows(factory,
         task = asyncio.create_task(service._sweep(sweep))
         try:
             await wait_for_pg_lock(factory, contender=task)
-            await ArchivePurgeService.restore(operator, row)
+            if retrash:
+                # The two state transitions finish before releasing the row lock.
+                row.deleted_at = None
+                await operator.flush()
+                row.deleted_at = datetime.now(timezone.utc)
+                await operator.commit()
+            else:
+                await ArchivePurgeService.restore(operator, row)
             assert await task == 0
         finally:
             await operator.rollback()
             await asyncio.gather(task, return_exceptions=True)
     archives, assets = await _state(factory)
-    assert archives == {archive_id: None}
+    assert set(archives) == {archive_id}
+    assert (archives[archive_id] is not None) is retrash
     assert assets == [archive_id]
 
 
@@ -130,11 +139,11 @@ async def test_a_mixed_batch_gives_each_archive_its_own_outcome(factory, monkeyp
     real = ArchivePurgeService.hard_delete_now
     seen = []
 
-    async def delete_after_scan(archive_id):
+    async def delete_after_scan(archive_id, **kwargs):
         seen.append(archive_id)
         if archive_id == restored:
             assert await _restore(factory, archive_id)
-        return await real(archive_id)
+        return await real(archive_id, **kwargs)
 
     monkeypatch.setattr(ArchivePurgeService, "hard_delete_now", staticmethod(delete_after_scan))
     async with factory() as sweep:
@@ -150,6 +159,8 @@ async def test_refused_per_id_delete_keeps_both_parent_and_video_rows(factory, m
     monkeypatch.setattr(ArchivePurgeService, "hard_delete_now", staticmethod(refused))
     async with factory() as sweep:
         assert await service._sweep(sweep) == 0
-    refused.assert_awaited_once_with(ids[0])
+    refused.assert_awaited_once()
+    assert refused.await_args.args == (ids[0],)
+    assert refused.await_args.kwargs["retention_cutoff"] is not None
     archives, assets = await _state(factory)
     assert set(archives) == set(ids) and assets == ids
