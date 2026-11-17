@@ -103,9 +103,41 @@ class TestConnection:
             method = async_client.put if route == CONNECTION else async_client.post
             response = await method(route, json=change)
             assert response.status_code == 400, response.text
-            assert "replace or clear credential" in response.text
+            # Machine-readable, so the form can open the secret field and say why.
+            detail = response.json()["detail"]
+            assert detail["error"] == "manyfold_secret_required" and detail["message"]
+            assert CLIENT_SECRET not in response.text
         assert (await async_client.get(CONNECTION)).json()["url"] == BASE
         assert all(request.url.host == "manyfold.lan" for request in fake.requests)
+
+    @pytest.mark.parametrize(
+        "change",
+        [
+            {"url": "http://other.lan:3214", "secret_actions": {"manyfold_client_secret": "keep"}},
+            {"url": "http://other.lan:3214", "client_id": "another-client"},
+            {"url": ""},
+        ],
+    )
+    async def test_every_way_of_keeping_the_secret_for_another_destination_says_so(self, async_client, fake, change):
+        await connect(async_client)
+        response = await async_client.put(CONNECTION, json=change)
+        assert (response.status_code, response.json()["detail"]["error"]) == (400, "manyfold_secret_required")
+        stored = (await async_client.get(CONNECTION)).json()
+        assert (stored["url"], stored["client_id"], stored["client_secret_configured"]) == (BASE, CLIENT_ID, True)
+
+    async def test_the_generic_credential_rule_still_answers_what_is_not_about_the_destination(
+        self, async_client, fake
+    ):
+        await connect(async_client)
+        # An action together with a value, and an action for a key that is not the secret: 422 as before.
+        both = await async_client.put(
+            CONNECTION, json={"client_secret": "x", "secret_actions": {"manyfold_client_secret": "keep"}}
+        )
+        other = await async_client.put(CONNECTION, json={"secret_actions": {"manyfold_url": "clear"}})
+        assert (both.status_code, other.status_code) == (422, 422)
+        # The same destination spelled another way keeps the secret without a word.
+        same = await async_client.put(CONNECTION, json={"url": BASE + "/", "client_id": CLIENT_ID})
+        assert same.status_code == 200 and same.json()["client_secret_configured"] is True
 
     async def test_the_destination_changes_with_a_new_secret_or_a_cleared_one(self, async_client, fake):
         await connect(async_client)

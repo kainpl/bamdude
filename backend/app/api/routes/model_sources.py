@@ -364,6 +364,9 @@ manyfold_router = make_source_router(manyfold_provider)
 connection_router = APIRouter(prefix="/model-sources/manyfold/connection", tags=["model-sources"])
 
 _SECRET = manyfold_config.CLIENT_SECRET_KEY
+SECRET_REQUIRED = (
+    "The Manyfold address or client ID changed. Enter the client secret for it, or clear the stored secret."
+)
 
 
 class ManyfoldConnection(BaseModel):
@@ -438,7 +441,18 @@ async def _resolve_edit(db: AsyncSession, body: ManyfoldConnectionUpdate) -> dic
 
     # A kept secret belongs to the address and client id it was entered for: changing either
     # without replacing or clearing it is refused here (400), in the save and in the draft test.
-    merged = merge_secret_fields(stored, changes, {_SECRET}, body.secret_actions, scope=destination)
+    # The shared credential rule decides; its refusal of exactly that case is answered with a code
+    # the form reacts to (it opens the secret field and says why), never with another outcome.
+    try:
+        merged = merge_secret_fields(stored, changes, {_SECRET}, body.secret_actions, scope=destination)
+    except HTTPException as exc:
+        action = (body.secret_actions or {}).get(_SECRET)
+        kept = body.client_secret is None and action in (None, "keep") and bool(stored.get(_SECRET))
+        if exc.status_code == 400 and kept and destination({**stored, **changes}) != destination(stored):
+            raise HTTPException(
+                status_code=400, detail={"error": "manyfold_secret_required", "message": SECRET_REQUIRED}
+            ) from exc
+        raise
     if manyfold_config.from_values(merged).enabled and not manyfold_config.from_values(merged).configured:
         raise HTTPException(
             status_code=400, detail="Manyfold needs its URL, client ID and client secret before it is switched on"
