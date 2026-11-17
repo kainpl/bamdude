@@ -2686,21 +2686,21 @@ async def get_photo(
     archive_id: int,
     filename: str,
     db: AsyncSession = Depends(get_db),
+    auth_result: tuple[User | None, bool] = _ARCHIVE_MEDIA_READ,
 ):
-    """Get a specific photo.
+    """Get a specific photo — media token or headers, owner-scoped.
 
-    ⚠️ Anonymous by decision (audit D9 a2, owner 2026-09-26), unlike the other
-    archive pictures: notification templates link a finished print's photo
-    (``{finish_photo_url}``), and Discord, webhooks and ntfy fetch it without
-    credentials. The file name carries a timestamp and random suffix.
+    Like every other archive picture (owner, 2026-11-17). It used to be
+    anonymous so that a notification's ``{finish_photo_url}`` opened for services
+    without credentials; that link now leads to a short-lived copy with an
+    unguessable name (``utils/notification_photos``), and the archive's own
+    photos are no longer readable by whoever holds or guesses a URL.
     """
-    result = await db.execute(select(PrintArchive).where(PrintArchive.id == archive_id))
-    archive = result.scalar_one_or_none()
-    if not archive:
-        raise HTTPException(404, "Archive not found")
+    user, can_read_all = auth_result
+    archive = _ensure_archive_visible(await ArchiveService(db).get_archive(archive_id), user, can_read_all)
 
-    # ``filename`` is a path component from the URL on an UNAUTHENTICATED route
-    # (served to <img> tags). Without containment it FileResponse-served any
+    # ``filename`` is a path component from the URL (served to <img> tags).
+    # Without containment it FileResponse-served any
     # file the backend could read (``..%2f..%2fetc%2fpasswd``) — safe_join_under
     # rejects traversal with 400 (path-traversal hardening, GHSA-r2qv).
     #

@@ -136,12 +136,16 @@ PUBLIC_ROUTES: dict[str, tuple[str, str]] = {
         "media-token",
         "a Manyfold model's preview for <img>, fetched by model id from the configured instance only",
     ),
-    # Anonymous by decision (owner, 2026-09-26): notification templates link a
-    # finished print's photo, and Discord / webhooks / ntfy fetch it without
-    # credentials.
     "/api/v1/archives/{archive_id}/photos/{filename}": (
+        "media-token",
+        "an archive's photos for <img>, like its other pictures (owner, 2026-11-17)",
+    ),
+    # Anonymous by decision (owner, 2026-11-17): a notification links a camera
+    # frame for services and people without a session. What is served is a copy
+    # with an unguessable name that lives three days — never the archive's photo.
+    "/api/v1/notifications/photos/{filename}": (
         "anonymous",
-        "operator photos — linked from notifications for services without credentials",
+        "a notification's short-lived photo copy; the 192-bit file name is the credential",
     ),
     # Truly public: the login page draws the OIDC button before anyone is
     # signed in, and a link's favicon is the site's own public icon.

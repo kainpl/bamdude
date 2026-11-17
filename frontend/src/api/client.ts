@@ -7924,6 +7924,8 @@ export interface NotificationProvider {
   quiet_hours_enabled: boolean;
   quiet_hours_start: string | null;
   quiet_hours_end: string | null;
+  // Whether camera frames are sent to this channel at all
+  attach_photo: boolean;
   // Daily digest
   daily_digest_enabled: boolean;
   daily_digest_time: string | null;
@@ -8003,6 +8005,7 @@ export interface NotificationProviderCreate {
   quiet_hours_enabled?: boolean;
   quiet_hours_start?: string | null;
   quiet_hours_end?: string | null;
+  attach_photo?: boolean;
   // Daily digest
   daily_digest_enabled?: boolean;
   daily_digest_time?: string | null;
@@ -8075,6 +8078,7 @@ export interface NotificationProviderUpdate {
   quiet_hours_enabled?: boolean;
   quiet_hours_start?: string | null;
   quiet_hours_end?: string | null;
+  attach_photo?: boolean;
   // Daily digest
   daily_digest_enabled?: boolean;
   daily_digest_time?: string | null;
@@ -11861,11 +11865,11 @@ export const api = {
     }
     return response.json();
   },
-  // Photos. ⚠️ No token, deliberately: the route is anonymous because
-  // notifications link a finished print's photo for services that fetch without
-  // credentials (audit D9 a2).
+  // Photos: behind the media token like the archive's other pictures. A
+  // notification's {finish_photo_url} no longer points here — it leads to a
+  // short-lived copy of its own.
   getArchivePhotoUrl: (archiveId: number, filename: string) =>
-    `${API_BASE}/archives/${archiveId}/photos/${encodeURIComponent(filename)}`,
+    withMediaToken(`${API_BASE}/archives/${archiveId}/photos/${encodeURIComponent(filename)}`),
   uploadArchivePhoto: async (archiveId: number, file: File): Promise<{ status: string; filename: string; photos: string[] }> => {
     const formData = new FormData();
     formData.append('file', file);

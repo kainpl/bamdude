@@ -9,8 +9,10 @@ import secrets
 import smtplib
 import string
 from datetime import datetime, timezone
+from email.mime.image import MIMEImage
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from email.utils import formataddr, formatdate, make_msgid, parseaddr
 from typing import Any
 
 from sqlalchemy import select
@@ -21,6 +23,28 @@ from backend.app.models.settings import Settings
 from backend.app.schemas.auth import MIN_PASSWORD_LENGTH, SMTPSettings
 
 logger = logging.getLogger(__name__)
+
+# The Content-ID an HTML body names to show ``send_email``'s inline picture.
+INLINE_IMAGE_CID = "bamdude-finish-photo"
+
+# The Message-ID domain when the sender address has none to offer.
+_FALLBACK_MESSAGE_ID_DOMAIN = "bamdude.local"
+
+
+def add_required_headers(msg, from_email: str | None) -> None:
+    """Give an outgoing message the ``Date`` and ``Message-ID`` RFC 5322 asks for.
+
+    A message without them is completed by the first relay that feels like it,
+    scored as spam by filters, or quarantined outright. The Message-ID's domain
+    is the sender address's own -- never this host's name, which a LAN install
+    has no business publishing and a lookup of which can stall.
+    """
+    if "Date" not in msg:
+        msg["Date"] = formatdate(localtime=True)
+    if "Message-ID" not in msg:
+        _local, at, domain = parseaddr(from_email or "")[1].rpartition("@")
+        domain = (domain.strip() if at else "") or _FALLBACK_MESSAGE_ID_DOMAIN
+        msg["Message-ID"] = make_msgid(domain=domain)
 
 
 def generate_secure_password(length: int = 16) -> str:
@@ -192,8 +216,12 @@ def send_email(
     subject: str,
     body_text: str,
     body_html: str | None = None,
+    inline_image: bytes | None = None,
 ) -> None:
     """Send an email using SMTP.
+
+    ``inline_image`` is a JPEG the HTML body shows through
+    ``cid:INLINE_IMAGE_CID``; without an HTML body it is not sent.
 
     Args:
         smtp_settings: SMTP configuration
@@ -205,17 +233,30 @@ def send_email(
     Raises:
         Exception: If email sending fails
     """
-    msg = MIMEMultipart("alternative")
-    msg["From"] = f"{smtp_settings.smtp_from_name} <{smtp_settings.smtp_from_email}>"
+    # A message with a picture is multipart/related around the alternative
+    # text / HTML pair; without one it is that pair alone, as before.
+    alternative = MIMEMultipart("alternative")
+    msg = MIMEMultipart("related") if (inline_image and body_html) else alternative
+    # ``formataddr`` quotes a display name that needs it (a comma, a non-ASCII
+    # letter); a hand-built "Name <addr>" with either is a malformed header.
+    msg["From"] = formataddr((smtp_settings.smtp_from_name or "", smtp_settings.smtp_from_email))
     msg["To"] = to_email
     msg["Subject"] = subject
+    add_required_headers(msg, smtp_settings.smtp_from_email)
 
     # Attach plain text part
-    msg.attach(MIMEText(body_text, "plain"))
+    alternative.attach(MIMEText(body_text, "plain"))
 
     # Attach HTML part if provided
     if body_html:
-        msg.attach(MIMEText(body_html, "html"))
+        alternative.attach(MIMEText(body_html, "html"))
+
+    if msg is not alternative:
+        msg.attach(alternative)
+        image = MIMEImage(inline_image, _subtype="jpeg")
+        image.add_header("Content-ID", f"<{INLINE_IMAGE_CID}>")
+        image.add_header("Content-Disposition", "inline", filename="finish-photo.jpg")
+        msg.attach(image)
 
     # Send email
     try:
@@ -438,8 +479,13 @@ async def send_user_print_notification(
     user_email: str,
     username: str,
     variables: dict,
+    image_data: bytes | None = None,
 ) -> None:
     """Send a print notification email to a user using Advanced Auth SMTP settings.
+
+    ``image_data`` is the print's finish photo. It is shown inside the letter:
+    where the template names ``{finish_photo_url}`` the picture takes the
+    link's place, otherwise it follows the text.
 
     Args:
         db: Database session
@@ -465,6 +511,7 @@ async def send_user_print_notification(
         "username": username,
         "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
         "app_name": "BamDude",
+        "finish_photo_url": "",
         **variables,
     }
 
@@ -473,6 +520,16 @@ async def send_user_print_notification(
 
     # Build HTML body - content comes entirely from the database template
     escaped_text_body = html.escape(text_body).replace("\n", "<br>\n")
+    if image_data:
+        picture = (
+            f'<img src="cid:{INLINE_IMAGE_CID}" alt="" '
+            'style="max-width:100%;height:auto;border:1px solid #ddd;border-radius:4px;">'
+        )
+        link = html.escape(str(all_variables.get("finish_photo_url") or ""))
+        if link and link in escaped_text_body:
+            escaped_text_body = escaped_text_body.replace(link, picture)
+        else:
+            escaped_text_body = f"{escaped_text_body}<br>\n<br>\n{picture}"
     html_body = f"""<!DOCTYPE html>
 <html>
 <head>
@@ -491,7 +548,7 @@ async def send_user_print_notification(
 """
 
     try:
-        send_email(smtp_settings, user_email, subject, text_body, html_body)
+        send_email(smtp_settings, user_email, subject, text_body, html_body, inline_image=image_data)
         logger.info("Sent %s notification email to %s", event_type, user_email)
     except Exception as e:
         logger.error("Failed to send %s notification to %s: %s", event_type, user_email, e)

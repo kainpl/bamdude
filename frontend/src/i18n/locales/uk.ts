@@ -4890,7 +4890,7 @@ export default {
       tokenExchangeFailed: 'Помилка обміну OIDC-token'
     },
     forgotPasswordTitle: 'Забули пароль',
-    forgotPasswordEmailMessage: 'Введіть вашу email адресу, і ми надішлемо вам новий пароль.',
+    forgotPasswordEmailMessage: 'Введіть вашу email адресу, і ми надішлемо посилання для встановлення нового пароля.',
     emailAddress: 'Email адреса',
     emailPlaceholder: 'your.email@example.com',
     cancel: 'Скасувати',
@@ -12346,6 +12346,8 @@ export default {
     // Daily digest
     dailyDigest: 'Щоденний дайджест',
     batchNotifications: 'Збирати сповіщення в один щоденний підсумок',
+    attachPhoto: 'Прикріплювати фото',
+    attachPhotoHint: 'Надсилати кадри з камери разом зі сповіщеннями цього каналу. Вимкнено — лише текст.',
     sendAt: 'Надсилати о {{time}}',
     editProviderToChangeDigestTime: 'Редагуйте провайдер для зміни часу дайджесту',
     // Actions

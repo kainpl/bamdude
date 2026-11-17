@@ -40,7 +40,6 @@ from backend.app.services.discovery import tasmota_scanner
 from backend.app.services.homeassistant import homeassistant_service
 from backend.app.services.mqtt_relay import mqtt_relay
 from backend.app.services.mqtt_smart_plug import subscribe_plug_to_mqtt
-from backend.app.services.notification_service import notification_service
 from backend.app.services.printer_manager import printer_manager
 from backend.app.services.rest_smart_plug import rest_smart_plug_service
 from backend.app.services.smart_plug_manager import smart_plug_manager
@@ -1163,9 +1162,6 @@ async def get_plug_status(
                     power=data.power,
                     today=data.energy,
                 )
-                # Check power alerts
-                if data.power is not None:
-                    await check_power_alerts(plug, data.power, db)
 
             return SmartPlugStatus(
                 state=data.state,
@@ -1202,9 +1198,6 @@ async def get_plug_status(
             if energy.get("yesterday") is None:
                 energy = {**energy, "yesterday": await _yesterday_from_snapshots(db, plug.id, request)}
             energy_data = SmartPlugEnergy(**energy)
-
-            # Check power alerts
-            await check_power_alerts(plug, energy.get("power"), db)
 
     return SmartPlugStatus(
         state=status["state"],
@@ -1310,64 +1303,6 @@ async def _yesterday_from_snapshots(db: AsyncSession, plug_id: int, request: Req
     # Clamped for the same reason as today's: a counter reset mid-day would
     # otherwise report a negative day.
     return round(max(0.0, float(closing) - float(opening)), 3)
-
-
-async def check_power_alerts(plug: SmartPlug, current_power: float | None, db: AsyncSession):
-    """Check if power crosses alert thresholds and send notifications."""
-    if not plug.power_alert_enabled or current_power is None:
-        return
-
-    # Cooldown: don't alert more than once per 5 minutes
-    cooldown_minutes = 5
-    if plug.power_alert_last_triggered:
-        last_triggered = plug.power_alert_last_triggered
-        if last_triggered.tzinfo is None:
-            last_triggered = last_triggered.replace(tzinfo=timezone.utc)
-        time_since_last = datetime.now(timezone.utc) - last_triggered
-        if time_since_last < timedelta(minutes=cooldown_minutes):
-            return
-
-    alert_triggered = False
-    alert_type = None
-    threshold = None
-
-    # Check high threshold
-    if plug.power_alert_high is not None and current_power > plug.power_alert_high:
-        alert_triggered = True
-        alert_type = "high"
-        threshold = plug.power_alert_high
-
-    # Check low threshold
-    if plug.power_alert_low is not None and current_power < plug.power_alert_low:
-        alert_triggered = True
-        alert_type = "low"
-        threshold = plug.power_alert_low
-
-    if alert_triggered:
-        plug.power_alert_last_triggered = datetime.now(timezone.utc)
-        await db.commit()
-
-        # Send notification
-        title = f"Power Alert: {plug.name}"
-        if alert_type == "high":
-            message = f"Power consumption is {current_power:.1f}W, above threshold of {threshold:.1f}W"
-        else:
-            message = f"Power consumption is {current_power:.1f}W, below threshold of {threshold:.1f}W"
-
-        logger.info("Power alert triggered for %s: %s", plug.name, message)
-
-        # Use printer_error event type for power alerts (closest match)
-        await notification_service.send_notification(
-            event_type="printer_error",
-            title=title,
-            message=message,
-            printer_id=plug.printer_id,
-            printer_name=plug.name,
-            context={
-                "error_type": f"Power {alert_type.title()}",
-                "error_detail": message,
-            },
-        )
 
 
 @router.post("/test-connection")

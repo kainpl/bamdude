@@ -118,6 +118,8 @@ class NotificationProviderBase(BaseModel):
     quiet_hours_start: str | None = Field(default=None, description="Start time in HH:MM format")
     quiet_hours_end: str | None = Field(default=None, description="End time in HH:MM format")
 
+    attach_photo: bool = Field(default=True, description="Send camera frames to this channel")
+
     # Daily digest
     daily_digest_enabled: bool = Field(default=False, description="Batch notifications into daily digest")
     daily_digest_time: str | None = Field(default=None, description="Time to send digest in HH:MM format")
@@ -224,6 +226,8 @@ class NotificationProviderUpdate(BaseModel):
     quiet_hours_enabled: bool | None = None
     quiet_hours_start: str | None = None
     quiet_hours_end: str | None = None
+
+    attach_photo: bool | None = None
 
     # Daily digest
     daily_digest_enabled: bool | None = None

@@ -35,6 +35,9 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
   const [quietHoursStart, setQuietHoursStart] = useState(provider?.quiet_hours_start || '22:00');
   const [quietHoursEnd, setQuietHoursEnd] = useState(provider?.quiet_hours_end || '07:00');
 
+  // Camera frames: on unless the channel opted out
+  const [attachPhoto, setAttachPhoto] = useState(provider?.attach_photo ?? true);
+
   // Daily digest
   const [dailyDigestEnabled, setDailyDigestEnabled] = useState(provider?.daily_digest_enabled || false);
   const [dailyDigestTime, setDailyDigestTime] = useState(provider?.daily_digest_time || '08:00');
@@ -258,6 +261,7 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
       quiet_hours_enabled: quietHoursEnabled,
       quiet_hours_start: quietHoursEnabled ? quietHoursStart : null,
       quiet_hours_end: quietHoursEnabled ? quietHoursEnd : null,
+      attach_photo: attachPhoto,
       // Daily digest
       daily_digest_enabled: dailyDigestEnabled,
       daily_digest_time: dailyDigestEnabled ? dailyDigestTime : null,
@@ -726,6 +730,18 @@ export function AddNotificationModal({ provider, onClose }: AddNotificationModal
             )}
           </div>
         )}
+
+        {/* Camera frames */}
+        <div className="flex items-center justify-between">
+          <div>
+            <label className="text-sm text-white">{t('notifications.attachPhoto')}</label>
+            <p className="text-xs text-bambu-gray">{t('notifications.attachPhotoHint')}</p>
+          </div>
+          <Toggle
+            checked={attachPhoto}
+            onChange={setAttachPhoto}
+          />
+        </div>
 
         {/* Daily Digest */}
         <div className="space-y-2">

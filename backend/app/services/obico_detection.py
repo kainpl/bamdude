@@ -477,7 +477,7 @@ class ObicoDetectionService:
         action_requested = verdict == "failure" and not self._action_fired.get(printer_id)
         if action_requested:
             self._action_fired[printer_id] = True
-            await self._dispatch_action(printer_id, settings["action"], task_name, score)
+            await self._dispatch_action(printer_id, settings["action"], task_name, score, frame)
 
         if (verdict != "safe" or detections) and settings.get("save_detections", False):
             # Recorder failure must never undo/suppress the inference action.
@@ -514,7 +514,9 @@ class ObicoDetectionService:
                 obico_history.dropped["enqueue_failed"] += 1
                 logger.exception("Obico evidence enqueue failed")
 
-    async def _dispatch_action(self, printer_id: int, action: str, task_name: str, score: float):
+    async def _dispatch_action(
+        self, printer_id: int, action: str, task_name: str, score: float, frame: bytes | None = None
+    ):
         from backend.app.services.obico_actions import execute_action
 
         logger.warning(
@@ -525,7 +527,7 @@ class ObicoDetectionService:
             action,
         )
         try:
-            await execute_action(printer_id, action, task_name, score)
+            await execute_action(printer_id, action, task_name, score, frame)
         except Exception as e:
             self._last_error = f"Action dispatch failed: {e or type(e).__name__}"
             logger.error(self._last_error)

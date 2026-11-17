@@ -866,6 +866,37 @@ async def _warn_if_low_stock(db: AsyncSession, spool: Spool, printer_id: int, gl
         logger.exception("[UsageTracker] filament_low notification failed for spool %s", spool.id)
 
 
+async def warn_if_low_stock_in_slot(db: AsyncSession, spool: Spool) -> None:
+    """Announce a spool that is ALREADY low, without waiting for a print to use it.
+
+    For the two moments that are not consumption: a spool is put into a slot, or
+    its weight is corrected by hand. Until now a spool below its threshold stayed
+    silent until the next print booked usage against it -- which is after the
+    operator could still have swapped it. Asked of a spool that sits in a slot;
+    one on a shelf is the Inventory page's and the stock alerts' business.
+
+    The same rule and the same persisted flag as ``_warn_if_low_stock``, so it
+    announces a run-down once whichever path sees it first. Never raises: the
+    assignment or the edit it follows must not fail on an announcement.
+    """
+    from backend.app.models.spool_assignment import SpoolAssignment
+
+    try:
+        slot = (
+            await db.execute(
+                select(SpoolAssignment.printer_id, SpoolAssignment.ams_id, SpoolAssignment.tray_id)
+                .where(SpoolAssignment.spool_id == spool.id)
+                .order_by(SpoolAssignment.id.desc())
+                .limit(1)
+            )
+        ).first()
+        if slot is None:
+            return
+        await _warn_if_low_stock(db, spool, slot.printer_id, _global_tray_id(slot.ams_id, slot.tray_id))
+    except Exception:
+        logger.exception("[UsageTracker] low-stock check on assignment failed for spool %s", spool.id)
+
+
 def journal_touched_trays(events: list) -> set[int]:
     """Every tray the journal names — excluded from the remain%-delta path.
 

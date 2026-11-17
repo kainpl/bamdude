@@ -130,6 +130,10 @@ class NotificationProvider(Base):
     quiet_hours_start = Column(String(5), nullable=True)  # HH:MM format, e.g., "22:00"
     quiet_hours_end = Column(String(5), nullable=True)  # HH:MM format, e.g., "07:00"
 
+    # Whether this channel is sent camera frames at all (m239). A transport
+    # option of the channel -- never an event toggle; NULL reads as on.
+    attach_photo = Column(Boolean, default=True)
+
     # Daily digest (batch notifications into a single daily summary)
     daily_digest_enabled = Column(Boolean, default=False)
     daily_digest_time = Column(String(5), nullable=True)  # HH:MM format, e.g., "08:00"

@@ -105,6 +105,7 @@ def _provider_to_dict(provider: NotificationProvider) -> dict:
         "quiet_hours_enabled": provider.quiet_hours_enabled,
         "quiet_hours_start": provider.quiet_hours_start,
         "quiet_hours_end": provider.quiet_hours_end,
+        "attach_photo": provider.attach_photo is not False,
         # Daily digest
         "daily_digest_enabled": provider.daily_digest_enabled,
         "daily_digest_time": provider.daily_digest_time,
@@ -244,6 +245,7 @@ async def create_notification_provider(
         quiet_hours_start=provider_data.quiet_hours_start,
         quiet_hours_end=provider_data.quiet_hours_end,
         # Daily digest
+        attach_photo=provider_data.attach_photo,
         daily_digest_enabled=provider_data.daily_digest_enabled,
         daily_digest_time=provider_data.daily_digest_time,
         # Printer filter
@@ -358,6 +360,26 @@ async def test_all_notification_providers(
 # ============================================================================
 # Notification Log Routes (must come BEFORE /{provider_id} routes)
 # ============================================================================
+
+
+@router.get("/photos/{filename}")
+async def get_notification_photo(filename: str):
+    """A short-lived copy of a camera frame a notification linked to.
+
+    Anonymous on purpose: Home Assistant, Bark, a Slack-format webhook and
+    whoever opens ``{finish_photo_url}`` from a chat fetch it with no session.
+    The unguessable name is the credential and opens this one picture for three
+    days (``utils/notification_photos``); anything else is a 404. Declared above
+    ``GET /{provider_id}`` or ``photos`` would parse as an id.
+    """
+    from fastapi.responses import FileResponse
+
+    from backend.app.utils.notification_photos import find_notification_photo
+
+    photo_path = find_notification_photo(filename)
+    if photo_path is None:
+        raise HTTPException(404, "Photo not found")
+    return FileResponse(path=photo_path, media_type="image/jpeg", headers={"Cache-Control": "private, no-store"})
 
 
 @router.get("/events", response_model=list[ProviderEventInfo])

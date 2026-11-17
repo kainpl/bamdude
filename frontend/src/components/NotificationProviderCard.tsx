@@ -15,6 +15,7 @@ import {
     ChevronDown,
     ChevronUp,
     Calendar,
+    Camera,
     MessageCircle,
     Plus
 } from 'lucide-react';
@@ -423,6 +424,18 @@ export function NotificationProviderCard({provider, onEdit}: NotificationProvide
                                 )}
                             </div>
                             )}
+
+                            {/* Camera frames */}
+                            <div className="flex items-center justify-between">
+                                <div className="flex items-center gap-2">
+                                    <Camera className="w-4 h-4 text-sky-600 dark:text-sky-400"/>
+                                    <p className="text-sm text-white">{t('notifications.attachPhoto')}</p>
+                                </div>
+                                <Toggle
+                                    checked={provider.attach_photo !== false}
+                                    onChange={(checked) => updateMutation.mutate({attach_photo: checked})}
+                                />
+                            </div>
 
                             {/* Daily Digest */}
                             <div className="space-y-2">

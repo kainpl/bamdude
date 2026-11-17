@@ -1,0 +1,6 @@
+{
+  "high_type": "Потужність вище межі",
+  "low_type": "Потужність нижче межі",
+  "high_detail": "Споживання {power} Вт — вище межі {threshold} Вт.",
+  "low_detail": "Споживання {power} Вт — нижче межі {threshold} Вт."
+}

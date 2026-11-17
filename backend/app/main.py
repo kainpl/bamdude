@@ -554,13 +554,19 @@ _first_layer_notified: dict[int, bool] = {}
 _running_print_adoptions: dict[int, list[asyncio.Event]] = {}
 _RUN_ADOPTION_WAIT_SECONDS = 30.0
 
-# Track HMS errors that have been notified: {printer_id: set of error codes}
-# This prevents sending duplicate notifications for the same error
-_notified_hms_errors: dict[int, set[str]] = {}
-# Track when HMS errors were last seen: {printer_id: timestamp}
-# Used to debounce clearing - prevents flapping errors from re-triggering notifications
-_hms_last_seen: dict[int, float] = {}
-_HMS_CLEAR_GRACE_SECONDS = 30.0
+# HMS faults already announced, with when each was last seen:
+# {printer_id: {fault key: timestamp}}. Kept per FAULT, not per printer: one set
+# for the whole stack was forgotten only when the stack emptied, so a fault that
+# flickers beside one that stays was announced on every return (upstream #3226).
+# The window is long because measured gaps reach 64 s. In process memory on
+# purpose: a restart announces a standing fault again (owner, 2026-08-29).
+_notified_hms_errors: dict[int, dict[str, float]] = {}
+_HMS_CLEAR_GRACE_SECONDS = 600.0
+# The print state each printer was last seen in, and the faults recorded before
+# it last changed -- those are forgotten as soon as they are gone, without the
+# window (see ``_take_new_hms_fault_keys``).
+_hms_print_state: dict[int, str] = {}
+_hms_forget_when_gone: dict[int, set[str]] = {}
 
 # How long post-print housekeeping on the printer may take before it is
 # abandoned. Generous enough for a slow A1 over FTP, short enough that a
@@ -661,6 +667,78 @@ def _hms_short_code(attr: int, code: int | str) -> str:
         code_int = int(code or 0)
     attr_int = int(attr or 0)
     return f"{(attr_int >> 16) & 0xFFFF:04X}_{code_int & 0xFFFF:04X}"
+
+
+def _hms_notify_key(error) -> str:
+    """What identifies a fault for the announcement memory: its full code.
+
+    ``attr`` alone is unique for a ``print_error``, but for an ``hms[]`` fault it
+    is only the module and the part, so two faults on one part shared a key and
+    the second was never announced -- and a quiet one that came first silenced a
+    fatal one (upstream #2728).
+    """
+    full_code = getattr(error, "full_code", "") or ""
+    if full_code:
+        return full_code.upper()
+    return f"{int(error.attr or 0):08X}:{error.code}"
+
+
+def _take_new_hms_fault_keys(
+    printer_id: int, errors: list, print_state: str | None = None, *, now: float | None = None
+) -> set[str]:
+    """The faults on this printer not announced yet; records them as announced.
+
+    The memory is written before anything is sent, so two status callbacks
+    cannot announce one fault twice. A fault is forgotten once it has been gone
+    for ``_HMS_CLEAR_GRACE_SECONDS``: one that flickers is announced once, one
+    that returns much later is announced again.
+
+    When ``print_state`` changes (a print resumed, started, finished), every
+    fault recorded so far is forgotten the first time it is gone, without the
+    wait -- a runout fixed before resuming must be announced when it happens
+    again a minute later. Not only the faults gone at the change itself: the
+    frame that flips the state can still carry the old fault.
+    """
+    now = time.time() if now is None else now
+    current = {_hms_notify_key(e) for e in errors}
+    seen = _notified_hms_errors.setdefault(printer_id, {})
+    forget_when_gone = _hms_forget_when_gone.setdefault(printer_id, set())
+
+    if print_state:
+        print_state = print_state.upper()
+        if _hms_print_state.get(printer_id, print_state) != print_state:
+            forget_when_gone.update(seen)
+        _hms_print_state[printer_id] = print_state
+
+    for key, last_seen in list(seen.items()):
+        # A fault still on the stack has its time refreshed by every frame, so one
+        # past the window was absent that long -- whether or not a frame said so.
+        if now - last_seen >= _HMS_CLEAR_GRACE_SECONDS or (key not in current and key in forget_when_gone):
+            del seen[key]
+            forget_when_gone.discard(key)
+
+    new = current - seen.keys()
+    for key in current:
+        seen[key] = now
+    if not seen:
+        _notified_hms_errors.pop(printer_id, None)
+    if not forget_when_gone:
+        _hms_forget_when_gone.pop(printer_id, None)
+    return new
+
+
+def _hms_label(full_code: str | None, short_code: str) -> str:
+    """How a fault is named to a person.
+
+    An ``hms[]`` fault is named by its full code in the printer screen's four
+    groups: its short form drops the part and the level, so ``0500_0070`` read
+    as a code nobody could look up. A ``print_error`` keeps the short form, which
+    IS what the printer shows for it.
+    """
+    full_code = full_code or ""
+    if len(full_code) == 16:
+        return "-".join(full_code[i : i + 4] for i in range(0, 16, 4)).upper()
+    return short_code
 
 
 def derive_failure_reason(status: str, hms_errors: list[dict] | None) -> str | None:
@@ -1832,8 +1910,10 @@ def _format_hms_error_summary(hms_errors: list[dict], device: str = "") -> str |
             continue
         # ⚠️ The short code goes in WITHOUT its separator: that is how both
         # halves of Bambu's catalogue are keyed, and how hms_actions is called.
-        description = describe(device, str(err.get("full_code") or "") or None, short_code.replace("_", ""))
-        parts.append(f"[{short_code}] {description}" if description else f"[{short_code}]")
+        full_code = str(err.get("full_code") or "")
+        description = describe(device, full_code or None, short_code.replace("_", ""))
+        label = _hms_label(full_code, short_code)
+        parts.append(f"[{label}] {description}" if description else f"[{label}]")
     return "; ".join(parts) if parts else None
 
 
@@ -1846,6 +1926,67 @@ async def _bump_library_file_usage_if_completed(db, item, queue_status: str) -> 
     if queue_status != "completed":
         return
     await _bump_library_file_usage(db, item.library_file_id)
+
+
+# Which print run (its archive id) each printer's milestone memory belongs to.
+_progress_milestone_run: dict[int, int] = {}
+
+
+def _progress_milestone_to_notify(
+    progress: float, *, layer_num: int, total_layers: int, stg_cur: int, last: int
+) -> int:
+    """The 25 / 50 / 75 milestone to announce now, or 0.
+
+    Nothing counts before the first layer: some printers report a large
+    percentage in the first RUNNING frame while still heating (an A1 mini says
+    85), which sent "75 %" beside "print started" and made 25 and 50
+    unreachable. A printer that reports no layers at all is held back only
+    while its stage says it is preparing. Read off the printer's own counters,
+    never the file's total.
+    """
+    if progress <= 0:
+        return 0
+    if (layer_num or 0) < 1 and ((total_layers or 0) > 0 or stg_cur not in (0, -1, 255)):
+        return 0
+    reached = 75 if progress >= 75 else 50 if progress >= 50 else 25 if progress >= 25 else 0
+    return reached if reached > last else 0
+
+
+def _milestones_follow_run(printer_id: int, archive_id: int) -> None:
+    """Start the milestone memory over when the printer is bound to ANOTHER run.
+
+    A print that follows one finished at 100 % may never show a frame under
+    5 %, so the old run's 75 stayed and the new run got no milestone. The same
+    run bound again -- a reconnect -- keeps what it has already announced, and so
+    does the first run this process binds: after a restart in the middle of a
+    print the frames before the bind may already have announced a milestone.
+    """
+    previous = _progress_milestone_run.get(printer_id)
+    _progress_milestone_run[printer_id] = archive_id
+    if previous is not None and previous != archive_id:
+        _last_progress_milestone[printer_id] = 0
+
+
+def _take_expected_print(expected_keys: list[tuple[int, str]]) -> tuple[int | None, int | None]:
+    """Take a started print's expectation: its archive id and who queued it.
+
+    All three registries are emptied for every alias of the file name, together.
+    The creator used to be removed only on the path that sent the start
+    notification for a found archive; on any other path it stayed, the TTL sweep
+    could not see it (it walks the registration times, already gone), and a later
+    print of the same name was attributed to that user (upstream dad7fea37).
+    """
+    archive_id: int | None = None
+    creator: int | None = None
+    for key in expected_keys:
+        taken = _expected_prints.pop(key, None)
+        _expected_print_registered_at.pop(key, None)
+        taken_creator = _expected_print_creators.pop(key, None)
+        if archive_id is None and taken:
+            archive_id = taken
+        if creator is None:
+            creator = taken_creator
+    return archive_id, creator
 
 
 def mark_printer_stopped_by_user(printer_id: int, *, unless_idle: bool = False) -> None:
@@ -2613,19 +2754,16 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
     is_printing = state.state in ("RUNNING", "PRINTING")
 
     if is_printing and progress > 0:
-        # Determine which milestone we've reached
-        current_milestone = 0
-        if progress >= 75:
-            current_milestone = 75
-        elif progress >= 50:
-            current_milestone = 50
-        elif progress >= 25:
-            current_milestone = 25
-
-        last_milestone = _last_progress_milestone.get(printer_id, 0)
+        current_milestone = _progress_milestone_to_notify(
+            progress,
+            layer_num=state.layer_num,
+            total_layers=state.total_layers,
+            stg_cur=state.stg_cur,
+            last=_last_progress_milestone.get(printer_id, 0),
+        )
 
         # If we've crossed a new milestone, send notification
-        if current_milestone > last_milestone:
+        if current_milestone:
             _last_progress_milestone[printer_id] = current_milestone
             try:
                 from backend.app.models.printer import Printer
@@ -2688,16 +2826,9 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
     # Check for new HMS errors and send notifications
     current_hms_errors = getattr(state, "hms_errors", []) or []
     if current_hms_errors:
-        # Build set of current error codes (using attr for uniqueness)
-        current_error_codes = {f"{e.attr:08x}" for e in current_hms_errors}
-        previously_notified = _notified_hms_errors.get(printer_id, set())
-
-        # Find new errors that haven't been notified yet
-        new_error_codes = current_error_codes - previously_notified
-
-        # Update tracking immediately to prevent duplicate notifications from concurrent callbacks
-        _notified_hms_errors[printer_id] = current_error_codes
-        _hms_last_seen[printer_id] = time.time()
+        # Recorded before anything is sent, so a concurrent callback cannot
+        # announce the same fault twice.
+        new_error_codes = _take_new_hms_fault_keys(printer_id, current_hms_errors, state.state)
 
         if new_error_codes:
             # Get the actual new errors for the notification
@@ -2709,7 +2840,7 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
             new_errors = [
                 e
                 for e in current_hms_errors
-                if f"{e.attr:08x}" in new_error_codes and e.severity <= HMS_SEVERITY_NOTIFY_THRESHOLD
+                if _hms_notify_key(e) in new_error_codes and e.severity <= HMS_SEVERITY_NOTIFY_THRESHOLD
             ]
 
             try:
@@ -2775,7 +2906,7 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
                         description = describe(
                             hms_device, getattr(error, "full_code", None), short_code.replace("_", "")
                         )
-                        error_type = short_code
+                        error_type = _hms_label(getattr(error, "full_code", None), short_code)
                         # ⚠️ Not `description or short_code`. The title already
                         # carries the code, so falling back to it printed the
                         # same eight characters twice with the printer name
@@ -2821,15 +2952,10 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
                 logging.getLogger(__name__).warning(f"HMS error notification failed: {e}")
 
     else:
-        # No HMS errors - only clear tracking after a grace period to prevent
-        # flapping errors (brief hms:[] gaps) from re-triggering notifications.
-        # Some HMS codes (e.g. chamber temp regulation during PETG prints) toggle
-        # on/off every few seconds as conditions fluctuate around thresholds.
-        if printer_id in _notified_hms_errors:
-            last_seen = _hms_last_seen.get(printer_id, 0)
-            if time.time() - last_seen >= _HMS_CLEAR_GRACE_SECONDS:
-                _notified_hms_errors.pop(printer_id, None)
-                _hms_last_seen.pop(printer_id, None)
+        # Nothing to send, but faults gone long enough -- or gone across a print
+        # state change -- are forgotten. Some codes (chamber temperature
+        # regulation during a PETG print) toggle every few seconds.
+        _take_new_hms_fault_keys(printer_id, [], state.state)
 
     if not printer_manager.session_still_lives(printer_id):
         return
@@ -4455,6 +4581,8 @@ async def _dispatch_user_print_email(
     printer_name: str,
     filename: str,
     db,
+    image_data: bytes | None = None,
+    finish_photo_url: str | None = None,
 ) -> None:
     """Send a user-specific print-completion email based on print status.
 
@@ -4481,6 +4609,8 @@ async def _dispatch_user_print_email(
         printer_name=printer_name,
         filename=filename,
         db=db,
+        image_data=image_data,
+        finish_photo_url=finish_photo_url,
     )
 
 
@@ -4543,6 +4673,8 @@ def _bind_print_file_analysis_context(
         origin=origin,
     )
     _forget_unbound_user_stop(printer_id)
+    if bound.archive_id == archive.id:
+        _milestones_follow_run(printer_id, archive.id)
     # The run's first layer was announced before this process bound it (a restart): the cache follows the run.
     from backend.app.services import first_layer_announcement
 
@@ -4731,6 +4863,7 @@ async def _check_plate_at_print_start(printer, db, *, may_run=None):
                 printer_name=printer.name,
                 db=db,
                 difference_percent=result.difference_percent,
+                image_data=getattr(result, "frame", None),
             )
         except Exception as exc:
             logger.warning("[PLATE CHECK] Failed to send notification: %s", exc)
@@ -5239,18 +5372,9 @@ async def _on_print_start_impl(printer_id: int, data: dict):
         from backend.app.services.print_execution import decide_start
 
         decision = data.get("_execution_decision") or await decide_start(db, printer_id, data)
-        expected_archive_id = None
-        for key in expected_keys:
-            expected_archive_id = _expected_prints.pop(key, None)
-            _expected_print_registered_at.pop(key, None)
-            if not owns_start():
-                return
-            if expected_archive_id:
-                # Clean up other possible keys for this print
-                for other_key in expected_keys:
-                    _expected_prints.pop(other_key, None)
-                    _expected_print_registered_at.pop(other_key, None)
-                break
+        expected_archive_id, fallback_creator = _take_expected_print(expected_keys)
+        if not owns_start():
+            return
 
         if expected_archive_id != decision.current_id:
             expected_archive_id = None
@@ -5374,13 +5498,8 @@ async def _on_print_start_impl(printer_id: int, data: dict):
                 if not notification_sent and owns_start():
                     # Use archive's created_by_id; fall back to the creator registered via
                     # register_expected_print (handles library-file-based queue items where
-                    # the freshly-created archive has no created_by_id yet).
-                    # Pop ALL matching keys so no stale entries remain in the dict.
-                    fallback_creator = None
-                    for key in expected_keys:
-                        popped = _expected_print_creators.pop(key, None)
-                        if fallback_creator is None:
-                            fallback_creator = popped
+                    # the freshly-created archive has no created_by_id yet). It was
+                    # taken together with the expectation, by ``_take_expected_print``.
                     archive_data = {
                         "print_time_seconds": archive.print_time_seconds,
                         "created_by_id": archive.created_by_id or fallback_creator,
@@ -10429,21 +10548,11 @@ async def _on_print_complete_impl(
                             archive_data["usage_results"] = usage_results
                         # Add finish photo URL and image bytes if available
                         if finish_photo_filename:
-                            from backend.app.api.routes.settings import get_setting
-
-                            external_url = await get_setting(db, "external_url")
-                            if external_url:
-                                external_url = external_url.rstrip("/")
-                                archive_data["finish_photo_url"] = (
-                                    f"{external_url}/api/v1/archives/{archive_id}/photos/{finish_photo_filename}"
-                                )
-                            else:
-                                # Fallback to relative URL (won't work for external services)
-                                archive_data["finish_photo_url"] = (
-                                    f"/api/v1/archives/{archive_id}/photos/{finish_photo_filename}"
-                                )
-
                             # Read finish photo bytes for image attachment (e.g. Pushover)
+                            # and for the link: {finish_photo_url} leads to a short-lived
+                            # copy with an unguessable name, never to the archive's own
+                            # photo, which is behind the media token like its other
+                            # pictures (owner, 2026-11-17).
                             try:
                                 from backend.app.utils.archive_paths import find_photo
 
@@ -10453,6 +10562,11 @@ async def _on_print_complete_impl(
                                 photo_path = find_photo(archive, finish_photo_filename)
                                 if photo_path is not None:
                                     photo_bytes = await asyncio.to_thread(photo_path.read_bytes)
+                                    photo_link = await notification_service.photo_link(
+                                        db, photo_bytes, "print_complete", absolute_only=False
+                                    )
+                                    if photo_link:
+                                        archive_data["finish_photo_url"] = photo_link
                                     if len(photo_bytes) <= 2_500_000:
                                         archive_data["image_data"] = photo_bytes
                                         logger.info("[NOTIFY-BG] Loaded finish photo bytes: %s bytes", len(photo_bytes))
@@ -10478,6 +10592,8 @@ async def _on_print_complete_impl(
                         printer_name,
                         raw_filename,
                         db,
+                        image_data=archive_data.get("image_data"),
+                        finish_photo_url=archive_data.get("finish_photo_url"),
                     )
 
                 logger.info("[NOTIFY-BG] Completed")
@@ -10639,6 +10755,22 @@ async def _on_print_complete_impl(
 _ams_history_task: asyncio.Task | None = None
 AMS_HISTORY_INTERVAL = 300  # Record every 5 minutes
 AMS_HISTORY_RETENTION_DAYS = 30  # Keep data for 30 days
+
+
+def _retention_days(raw, default: int) -> int:
+    """A stored retention as whole days, never less than one.
+
+    Zero or a negative number puts the cutoff at or after now, and the daily
+    sweep then deletes the whole history; a value that is not a number used to
+    stop the sweep with an error. Either reads as the default instead.
+    """
+    try:
+        days = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return default
+    return days if days >= 1 else default
+
+
 INBOX_RETENTION_DAYS = 30  # in-app inbox rows; spec: notification-center §4.4
 _ams_cleanup_counter = 0  # Track recordings to trigger periodic cleanup
 # (printer_id, ams_id) already reported as sending the drop index and no
@@ -11157,7 +11289,7 @@ async def record_ams_history():
 
                     result = await db.execute(select(Settings).where(Settings.key == "ams_history_retention_days"))
                     setting = result.scalar_one_or_none()
-                    retention_days = int(setting.value) if setting else AMS_HISTORY_RETENTION_DAYS
+                    retention_days = _retention_days(setting.value if setting else None, AMS_HISTORY_RETENTION_DAYS)
 
                     cutoff = datetime.utcnow() - timedelta(days=retention_days)
                     result = await db.execute(delete(AMSSensorHistory).where(AMSSensorHistory.recorded_at < cutoff))
@@ -11339,7 +11471,9 @@ async def record_printer_sensor_history():
                         select(Settings).where(Settings.key == "printer_sensor_history_retention_days")
                     )
                     setting = result.scalar_one_or_none()
-                    retention_days = int(setting.value) if setting else PRINTER_SENSOR_HISTORY_RETENTION_DAYS
+                    retention_days = _retention_days(
+                        setting.value if setting else None, PRINTER_SENSOR_HISTORY_RETENTION_DAYS
+                    )
 
                     cutoff = datetime.utcnow() - timedelta(days=retention_days)
                     cleanup = await db.execute(
@@ -13115,8 +13249,8 @@ PUBLIC_API_PATTERNS: tuple[re.Pattern[str], ...] = (
     # route's MEDIA-token dependency (``require_media_*`` — a signed-in user's
     # token in ``?token=``, or the ordinary headers, then the resource's own
     # permission and ownership rule; audit D9 a2). The camera routes keep the
-    # stream token. Anonymous by decision: archive photos (linked from
-    # notifications), external-link icons and the OIDC button icon.
+    # stream token. Anonymous by decision: a notification's short-lived photo
+    # copy, external-link icons and the OIDC button icon.
     # Thumbnails
     re.compile(r"^/api/v1/archives/\d+/thumbnail$"),
     re.compile(r"^/api/v1/library/files/\d+/thumbnail$"),
@@ -13126,6 +13260,9 @@ PUBLIC_API_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"^/api/v1/archives/\d+/plate-preview$"),
     # Images and media
     re.compile(r"^/api/v1/archives/\d+/photos/[^/]+$"),
+    # A notification's short-lived photo copy: anonymous, the unguessable file
+    # name is the credential (utils/notification_photos).
+    re.compile(r"^/api/v1/notifications/photos/[^/]+$"),
     # ``{image_path:path}`` — the ONLY reason a ``.+`` appears here, and it sits
     # behind the route's own fixed segment.
     re.compile(r"^/api/v1/archives/\d+/project-image/.+$"),

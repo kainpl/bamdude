@@ -1294,6 +1294,13 @@ async def update_spool(db: AsyncSession, spool_id: int, spool_data: SpoolUpdate)
     for field, value in update_data.items():
         setattr(spool, field, value)
 
+    # A weight or threshold corrected by hand may put a loaded spool below its
+    # line -- or back above it, which re-arms the announcement.
+    if update_data.keys() & {"weight_used", "label_weight", "low_stock_threshold_pct"}:
+        from backend.app.services.usage_tracker import warn_if_low_stock_in_slot
+
+        await warn_if_low_stock_in_slot(db, spool)
+
     await db.commit()
     # Re-link when the family / resolved filament_id changed (or on any save —
     # cheap and keeps links current with the spool's current preset).

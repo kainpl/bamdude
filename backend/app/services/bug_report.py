@@ -70,6 +70,8 @@ async def submit_report(
     from backend.app.core.install_id import get_install_id
 
     payload: dict = {"description": description, "install_id": get_install_id()}
+    # The address travels with the report so the maintainers can answer. It is
+    # NOT kept on the local row: nothing here ever read it.
     if reporter_email:
         payload["reporter_email"] = reporter_email
     if screenshot_base64:
@@ -86,7 +88,6 @@ async def submit_report(
                 async with async_session() as db:
                     report = BugReport(
                         description=description,
-                        reporter_email=reporter_email,
                         status="failed",
                         error_message=error_msg,
                     )
@@ -104,7 +105,6 @@ async def submit_report(
         async with async_session() as db:
             report = BugReport(
                 description=description,
-                reporter_email=reporter_email,
                 status="failed",
                 error_message="Failed to reach bug report relay",
             )
@@ -122,7 +122,6 @@ async def submit_report(
         async with async_session() as db:
             report = BugReport(
                 description=description,
-                reporter_email=reporter_email,
                 status="failed",
                 error_message=relay_data.get("message", "Relay returned failure"),
             )
@@ -142,7 +141,6 @@ async def submit_report(
     async with async_session() as db:
         report = BugReport(
             description=description,
-            reporter_email=reporter_email,
             github_issue_number=issue_number,
             github_issue_url=issue_url,
             status="submitted",

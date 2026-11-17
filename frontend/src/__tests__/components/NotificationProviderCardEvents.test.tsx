@@ -29,6 +29,7 @@ function provider(over: Partial<NotificationProvider> = {}): NotificationProvide
     enabled: true,
     config: { topic: 'bamdude' },
     quiet_hours_enabled: false,
+    attach_photo: true,
     daily_digest_enabled: false,
     created_at: '2026-09-18T10:00:00Z',
     updated_at: '2026-09-18T10:00:00Z',

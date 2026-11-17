@@ -917,12 +917,13 @@ class AppSettingsUpdate(BaseModel):
     ams_temp_good: float | None = None
     ams_temp_fair: float | None = None
     ams_temp_alarm: float | None = None
-    ams_history_retention_days: int | None = None
+    # At least one day: zero would put the cutoff at now and wipe the history.
+    ams_history_retention_days: int | None = Field(default=None, ge=1)
     inbox_retention_days: int | None = Field(default=None, ge=1, le=365)
     plug_power_history_retention_days: int | None = Field(default=None, ge=1, le=365)
     sensor_history_retention_days: int | None = Field(default=None, ge=1, le=365)
     plug_power_sample_seconds: int | None = Field(default=None, ge=10, le=3600)
-    printer_sensor_history_retention_days: int | None = None
+    printer_sensor_history_retention_days: int | None = Field(default=None, ge=1)
     prefer_lowest_filament: bool | None = None
     queue_shortest_first: bool | None = None
     auto_queue_rebalance_models: bool | None = None
