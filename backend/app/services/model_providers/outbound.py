@@ -593,7 +593,8 @@ class GuardedAnswer:
                     raise OutboundTooLarge(cap)
                 yield chunk
         except httpx.HTTPError as exc:
-            raise OutboundRefused(f"The connection failed while reading: {type(exc).__name__}", "unreachable") from exc
+            reason = "storage_unreachable" if self.foreign else "unreachable"
+            raise OutboundRefused(f"The connection failed while reading: {type(exc).__name__}", reason) from exc
 
     def json(self) -> Any:
         """The parsed body, or None when it is not JSON (a plain-text 401 under a JSON content type) or
@@ -771,7 +772,14 @@ class GuardedTransport:
                     raise OutboundRefused("File storage redirected too often", "redirect_chain")
                 await response.aclose()
                 url = self._admit_foreign(target)
-                response = await self._send("GET", url)  # no token, no cookies: its own headers
+                try:
+                    response = await self._send("GET", url)  # no token, no cookies: its own headers
+                except OutboundRefused as exc:
+                    if exc.reason == "unreachable":
+                        # Said apart from the origin: a storage address only the source can reach
+                        # (a compose service name) is the administrator's to fix elsewhere.
+                        raise OutboundRefused(str(exc), "storage_unreachable") from exc
+                    raise
                 foreign, redirect = True, None
             encoding = response.headers.get("Content-Encoding", "").strip().lower()
             if redirect is None and encoding not in ("", "identity"):

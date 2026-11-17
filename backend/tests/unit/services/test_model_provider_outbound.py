@@ -299,6 +299,19 @@ class TestRedirects:
         assert (status, data, foreign) == (200, b"solid", True)
         assert [("authorization" in request.headers) for request in net.seen] == [True, False, False]
 
+    async def test_storage_that_cannot_be_reached_says_it_was_storage(self):
+        net = Net({f"{BASE}/models/m/raw/a.stl": redirect("http://minio:9000/a.stl")})  # an unscripted name
+        transport = transport_for(net)
+        with pytest.raises(OutboundRefused) as caught:
+            await body_of(transport, "/models/m/raw/a.stl", bearer="tok", foreign_hop=True)
+        assert caught.value.reason == "storage_unreachable"
+
+    async def test_an_origin_that_cannot_be_reached_is_still_unreachable(self):
+        transport = transport_for(Net({}), "http://nowhere.example.com")
+        with pytest.raises(OutboundRefused) as caught:
+            await body_of(transport, "/models/m/raw/a.stl", bearer="tok", foreign_hop=True)
+        assert caught.value.reason == "unreachable"
+
     async def test_a_chain_longer_than_the_limit_is_refused(self):
         hop = "https://bucket.s3.example.com/hop{}"
         routes = {f"{BASE}/models/m/raw/a.stl": redirect(hop.format(0))}

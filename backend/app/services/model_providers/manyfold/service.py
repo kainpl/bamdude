@@ -163,6 +163,10 @@ def _sign_in_lock(key: tuple[str, str, str]) -> asyncio.Lock:
 #: Refusals whose sentence is translated at the API boundary: ``scripts/api_error_catalog.py``
 #: reads this map (``FORWARDED_MESSAGE_MAPS``) and the guard test demands their Ukrainian.
 MANYFOLD_MESSAGES = {
+    "storage_unreachable": (
+        "BamDude cannot reach the file storage Manyfold redirected to. "
+        "The storage address must be reachable from the BamDude server, not only from Manyfold."
+    ),
     "compressed": (
         "Manyfold sent a compressed answer although BamDude asked for a plain one. "
         "Switch off response compression for BamDude on the proxy in front of Manyfold."
@@ -270,6 +274,8 @@ def _from_transport(exc: OutboundRefused) -> ManyfoldError:
         return ManyfoldUnavailable("The file is larger than BamDude accepts from Manyfold", "manyfold_too_large", 413)
     if exc.reason == "unreachable":
         return ManyfoldUnavailable(f"Could not reach Manyfold. {exc}", "manyfold_unreachable")
+    if exc.reason == "storage_unreachable":
+        return ManyfoldUnavailable(MANYFOLD_MESSAGES["storage_unreachable"], "manyfold_storage_unreachable")
     if exc.reason == "encoded":
         return ManyfoldUnavailable(MANYFOLD_MESSAGES["compressed"], "manyfold_incompatible")
     if exc.reason == "transport_disabled":
@@ -754,17 +760,35 @@ class ManyfoldService(ProviderService, BrowsableService):
     async def fetch_preview(self, model_id: str) -> tuple[bytes, str]:
         """The model's preview as an image, from Manyfold's own derivatives.
 
-        An image comes as its small "preview" copy, a 3D file as its render when Manyfold made one.
-        Without a derivative Manyfold sends the ORIGINAL file, and the content type of a render is
-        the model's — so the bytes are sniffed, and anything that does not start like an image is
-        dropped after its first bytes.
+        Manyfold's preview file first; when it gives no picture, the model's first image file.
+        Manyfold names a 3D file as the preview file even when the model has a photo, and makes
+        renders only when that is switched on — so without the second try most models of a fresh
+        library have no picture (measured on 0.154.2, 2026-11-17).
         """
         no_preview = ManyfoldNotFound("This model has no preview", "manyfold_no_preview")
         model = await self.get_model(model_id, details=False)
-        file_id = model["preview_file_id"]
-        if not file_id:
-            raise no_preview
-        file = await self.get_file(model["id"], file_id)
+        first = model["preview_file_id"]
+        image = next(
+            (entry["id"] for entry in model["files"] if entry["mime"].startswith("image/") and entry["id"] != first),
+            None,
+        )
+        for file_id in (first, image):
+            if not file_id:
+                continue
+            try:
+                return await self._picture_of(model["id"], file_id)
+            except ManyfoldNotFound as exc:
+                if exc.code != "manyfold_no_preview":
+                    raise
+        raise no_preview
+
+    async def _picture_of(self, model_id: str, file_id: str) -> tuple[bytes, str]:
+        """One file's picture. An image comes as its small "preview" copy, a 3D file as its render
+        when Manyfold made one. Without a derivative Manyfold sends the ORIGINAL file, and the
+        content type of a render is the model's — so the bytes are sniffed, and anything that does
+        not start like an image is dropped after its first bytes."""
+        no_preview = ManyfoldNotFound("This model has no preview", "manyfold_no_preview")
+        file = await self.get_file(model_id, file_id)
         extension = os.path.splitext(file["filename"])[1].lower()
         if file["mime"].startswith("image/"):
             derivative = "preview"
@@ -787,7 +811,7 @@ class ManyfoldService(ProviderService, BrowsableService):
         try:
             async with asyncio.timeout(PREVIEW_DEADLINE_SECONDS):
                 await self._stream_to(
-                    f"/models/{model['id']}/model_files/{file_id}{extension}",
+                    f"/models/{model_id}/model_files/{file_id}{extension}",
                     collect,
                     cap=MAX_PREVIEW_BYTES,
                     params={"derivative": derivative},

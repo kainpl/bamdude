@@ -5711,6 +5711,7 @@ export default {
       manyfold_refused: 'BamDude не зміг запитати це в Manyfold.',
       manyfold_storage_refused: 'Сховище файлів, до якого перенаправив Manyfold, має адресу, з якою BamDude не з’єднується.',
       manyfold_storage_failed: 'Сховище файлів за Manyfold відмовило в завантаженні.',
+      manyfold_storage_unreachable: 'BamDude не може звʼязатися зі сховищем файлів, до якого перенаправив Manyfold. Адреса сховища має бути досяжною із сервера BamDude, а не лише з Manyfold.',
       manyfold_failed: 'Manyfold відповів помилкою.',
       source_connection_changed: 'Підключення Manyfold змінилося під час імпорту. Спробуйте ще раз.',
       manyfold_transport_unavailable: 'Перевірка безпеки підключення до Manyfold не пройшла. Manyfold вимкнено до перезапуску BamDude.',

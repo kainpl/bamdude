@@ -498,6 +498,22 @@ class TestFiles:
         assert caught.value.code == "manyfold_storage_refused"
         assert all(request.url.host == "manyfold.lan" for request in fake.requests)
 
+    async def test_storage_bamdude_cannot_reach_is_named_as_storage_not_as_manyfold(self, fake, tmp_path):
+        """Live check, 2026-11-17: a storage endpoint only Manyfold can resolve (a compose service
+        name) read as "Could not reach Manyfold"."""
+        from backend.app.i18n.api_errors import translate_sentence
+
+        fake._raw = lambda model_id, path, request: httpx.Response(
+            302, headers={"Location": "http://minio:9000/models/clip.stl?X-Amz-Signature=abc"}
+        )
+        service = service_for(fake)
+        file = await service.get_file(MODEL, "f1c2d3g4h5j6")
+        with pytest.raises(ManyfoldUnavailable) as caught:
+            await service.download_file(file, tmp_path / "out.stl")
+        assert caught.value.code == "manyfold_storage_unreachable"
+        assert "storage" in str(caught.value) and "reach Manyfold" not in str(caught.value)
+        assert translate_sentence(str(caught.value), "uk") != str(caught.value)
+
     async def test_another_storage_refusal_does_not_claim_a_private_address(self, fake, tmp_path):
         fake._raw = lambda model_id, path, request: httpx.Response(
             302, headers={"Location": "https://user:pw@bucket.s3.example.com/library/clip.stl"}
@@ -571,9 +587,33 @@ class TestPreviews:
 
     async def test_the_original_file_sent_for_a_missing_render_is_not_a_preview(self, fake):
         fake.models[MODEL]["preview"] = "f1c2d3g4h5j6"  # an STL, and Manyfold made no render
+        del fake.models[MODEL]["files"]["z9b0c1d2f3g4"]  # ... and the model has no picture of its own
         with pytest.raises(ManyfoldNotFound) as caught:
             await service_for(fake).fetch_preview(MODEL)
         assert caught.value.code == "manyfold_no_preview"
+
+    async def test_a_model_whose_preview_file_has_no_render_shows_its_first_image(self, fake):
+        """Live check, 2026-11-17: Manyfold names a 3D file as the preview file even when the model
+        has a photo, and makes renders only when that is switched on."""
+        fake.models[MODEL]["preview"] = "f1c2d3g4h5j6"
+        data, content_type = await service_for(fake).fetch_preview(MODEL)
+        assert content_type == "image/jpeg" and data.startswith(b"\xff\xd8\xff")
+        asked = [
+            request
+            for request in fake.requests
+            if "/model_files/" in request.url.path and "." in request.url.path.rsplit("/", 1)[1]
+        ]
+        assert [(r.url.path.rsplit(".", 1)[1], r.url.params["derivative"]) for r in asked] == [
+            ("stl", "render"),
+            ("jpg", "preview"),
+        ]
+
+    async def test_a_render_wins_over_an_image_of_the_model(self, fake):
+        fake.models[MODEL]["preview"] = "f1c2d3g4h5j6"
+        fake.render["f1c2d3g4h5j6"] = PNG
+        _data, content_type = await service_for(fake).fetch_preview(MODEL)
+        assert content_type == "image/png"
+        assert not any(".jpg" in request.url.path for request in fake.requests)
 
     async def test_a_model_without_a_preview_file_has_no_preview(self, fake):
         with pytest.raises(ManyfoldNotFound):
