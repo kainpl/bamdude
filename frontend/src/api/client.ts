@@ -5566,6 +5566,8 @@ export interface ModelSourceStatus {
   usable: boolean;
   /** The source's own address, for "open there" links. */
   base_url: string | null;
+  /** Streamed imports of the installation right now: running, waiting for a slot, and the limit. */
+  imports?: { active?: number; waiting?: number; limit?: number };
 }
 
 /** One page as the SOURCE cut it: its page size, its totals. Never sorted or filtered here. */
@@ -5590,6 +5592,8 @@ export interface ModelSourceFile {
   presupported: boolean | null;
   /** False when the source lists the file but will not hand it to us. */
   available: boolean;
+  /** True once the file's name and size were read from the source (a page of files at a time). */
+  detailed: boolean;
 }
 
 export interface ModelSourceModel {
@@ -5603,14 +5607,14 @@ export interface ModelSourceModel {
   sensitive: boolean;
   url: string | null;
   has_preview: boolean;
+  /** EVERY file of the model. Names and sizes are read a page of importable files at a time. */
   files: ModelSourceFile[];
+  /** The page of file details this answer read. */
+  files_page: number;
+  files_pages: number;
+  /** The page to ask for next (`?files_page=N`); null when there is none. */
+  files_next_page: number | null;
   already_imported: Record<string, { library_file_id: number; folder_id: number | null; filename: string }>;
-  /**
-   * Present and non-null while the source holds more per-file details (name, size) than this
-   * answer carries: asking the same model again with it returns the next batch. Absent or
-   * null — the answer is complete.
-   */
-  detail_cursor?: string | number | null;
 }
 
 export interface ModelSourceImportResponse {
@@ -12389,12 +12393,11 @@ export const api = {
     if (query) qs.set('q', query);
     return request<ModelSourcePage>(`/model-sources/manyfold/models?${qs}`);
   },
-  getManyfoldModel: (modelId: string, detailCursor?: string | number | null) =>
+  /** A model with all its files; `filesPage` names the page of files whose names and sizes are read (1 when omitted). */
+  getManyfoldModel: (modelId: string, filesPage?: number) =>
     request<ModelSourceModel>(
       `/model-sources/manyfold/models/${encodeURIComponent(modelId)}` +
-        (detailCursor === undefined || detailCursor === null
-          ? ''
-          : `?${new URLSearchParams({ detail_cursor: String(detailCursor) })}`),
+        (filesPage === undefined ? '' : `?${new URLSearchParams({ files_page: String(filesPage) })}`),
     ),
   getManyfoldPreviewUrl: (modelId: string) =>
     withMediaToken(`${API_BASE}/model-sources/manyfold/models/${encodeURIComponent(modelId)}/preview`),

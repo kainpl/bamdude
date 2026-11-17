@@ -17,14 +17,15 @@ import { useManyfoldRefusal } from './manyfoldRefusal';
 
 const fileLabel = (file: ModelSourceFile) => file.filename || file.name;
 
-const hasDetails = (file: ModelSourceFile) => file.filename !== null || file.size !== null;
-/** The model's files with the detail batches loaded since laid over them; a detailed entry is never lost. */
+/** An importable file whose name and size were not read yet (a file BamDude does not take is never read). */
+const awaitsDetails = (file: ModelSourceFile) => file.importable && !file.detailed;
+/** The model's files with the detail pages loaded since laid over them; a detailed entry is never lost. */
 function withDetails(files: ModelSourceFile[], more: Map<string, ModelSourceFile> | undefined): ModelSourceFile[] {
   if (!more || more.size === 0) return files;
   const listed = new Set(files.map((file) => file.id));
   const merged = files.map((file) => {
     const later = more.get(file.id);
-    return later && (hasDetails(later) || !hasDetails(file)) ? later : file;
+    return later && (later.detailed || !file.detailed) ? later : file;
   });
   for (const [id, file] of more) if (!listed.has(id)) merged.push(file);
   return merged;
@@ -195,14 +196,17 @@ export function ManyfoldTab() {
 
   // The sensitive model whose preview the user asked to see.
   const [revealed, setRevealed] = useState<string | null>(null);
-  // File details of a large model arrive in batches: the model's answer carries a cursor while
-  // more exist, and each further batch is asked for by the user. What was loaded stays for as
-  // long as that model is open — a re-read of the model (after an import, on returning to the
-  // window) does not throw the batches away.
+  // File details of a large model arrive a page at a time: the model's answer lists every file
+  // and names the next page while one exists, and each further page is asked for by the user.
+  // What was loaded stays for as long as that model is open — a re-read of the model (after an
+  // import, on returning to the window) does not throw the pages away.
   const [moreDetails, setMoreDetails] = useState<{
     modelId: string;
     files: Map<string, ModelSourceFile>;
-    cursor: string | number | null;
+    /** The page to ask for next; null when there is nothing more to ask. */
+    next: number | null;
+    /** Pages asked in a row that brought no new detail. */
+    idle: number;
   } | null>(null);
   const [loadingDetails, setLoadingDetails] = useState(false);
   const [detailsError, setDetailsError] = useState<string | null>(null);
@@ -306,19 +310,39 @@ export function ManyfoldTab() {
   if (openModelId !== null) {
     const data = model.data;
     const extra = data && moreDetails && moreDetails.modelId === data.id ? moreDetails : null;
-    // Non-null only while the server says more file details exist.
-    const detailCursor = extra ? extra.cursor : (data?.detail_cursor ?? null);
     const files = data ? withDetails(data.files, extra?.files) : [];
+    const awaiting = files.filter(awaitsDetails).length;
+    // The page of file details to ask for; null when there is nothing more to ask. The server
+    // names the next page; past the last one, a page that came back with files still undetailed
+    // (it ran out of time) is asked again.
+    const detailsPage = extra
+      ? extra.next
+      : data && (data.files_next_page !== null || awaiting > 0)
+        ? (data.files_next_page ?? data.files_page)
+        : null;
     const loadMoreDetails = async () => {
-      if (!data || detailCursor === null || loadingDetails) return;
+      if (!data || detailsPage === null || loadingDetails) return;
       setLoadingDetails(true);
       setDetailsError(null);
       try {
-        const batch = await api.getManyfoldModel(data.id, detailCursor);
+        const batch = await api.getManyfoldModel(data.id, detailsPage);
         setMoreDetails((previous) => {
-          const known = new Map(previous && previous.modelId === data.id ? previous.files : []);
-          for (const file of batch.files) known.set(file.id, file);
-          return { modelId: data.id, files: known, cursor: batch.detail_cursor ?? null };
+          const mine = previous && previous.modelId === data.id ? previous : null;
+          const known = new Map(mine ? mine.files : []);
+          for (const file of batch.files) {
+            const earlier = known.get(file.id);
+            // A page does not repeat another page's details: what is detailed stays.
+            if (!earlier || file.detailed || !earlier.detailed) known.set(file.id, file);
+          }
+          const left = withDetails(data.files, known).filter(awaitsDetails).length;
+          const idle = left < awaiting ? 0 : (mine ? mine.idle : 0) + 1;
+          let next = batch.files_next_page;
+          if (next === null && left > 0) {
+            // The same page while it still brings something; else once more from the first page,
+            // until a whole round has brought nothing (a file Manyfold never details).
+            next = idle > Math.max(1, batch.files_pages) ? null : idle === 0 ? detailsPage : 1;
+          }
+          return { modelId: data.id, files: known, next, idle };
         });
       } catch (error) {
         setDetailsError(refusalText(error));
@@ -477,7 +501,7 @@ export function ManyfoldTab() {
                               file.size !== null ? formatFileSize(file.size) : null,
                               file.presupported ? t('manyfold.presupported') : null,
                               !file.importable ? t(file.available ? 'manyfold.notImportable' : 'manyfold.notAvailable') : null,
-                              detailCursor !== null && !hasDetails(file) ? t('manyfold.detailsPending') : null,
+                              awaitsDetails(file) ? t('manyfold.detailsPending') : null,
                             ]
                               .filter(Boolean)
                               .join(' · ')}
@@ -507,7 +531,7 @@ export function ManyfoldTab() {
                     );
                   })}
                 </ul>
-                {detailCursor !== null && (
+                {detailsPage !== null && (
                   <div className="flex flex-wrap items-center gap-3 text-sm">
                     <p className="text-bambu-gray">{t('manyfold.moreDetailsNote')}</p>
                     <Button size="sm" variant="secondary" disabled={loadingDetails} onClick={() => void loadMoreDetails()}>

@@ -5630,7 +5630,7 @@ export default {
     sensitiveHidden: 'Marked sensitive in Manyfold. Click to show.',
     showPreview: 'Show the preview',
     detailsPending: 'details not loaded yet',
-    moreDetailsNote: 'This model has many files: names and sizes are loaded in batches.',
+    moreDetailsNote: 'The names and sizes of some files are not loaded yet.',
     loadMoreDetails: 'Load more file details',
     bulkNoPrintable:'Nothing to import: these models hold no file BamDude can print (3MF, STL, STEP or OBJ).',
     cancelImport: 'Cancel import',

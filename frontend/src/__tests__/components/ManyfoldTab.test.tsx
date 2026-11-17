@@ -37,6 +37,7 @@ const file = (id: string, over: Record<string, unknown> = {}) => ({
   size: 2048,
   presupported: false,
   available: true,
+  detailed: true,
   ...over,
 });
 
@@ -51,7 +52,10 @@ const model = (over: Record<string, unknown> = {}) => ({
   sensitive: false,
   url: 'http://manyfold.lan:3214/models/m1',
   has_preview: false,
-  files: [file('a'), file('b', { presupported: true }), file('pic', { mime: 'image/jpeg', importable: false, filename: null, size: null })],
+  files: [file('a'), file('b', { presupported: true }), file('pic', { mime: 'image/jpeg', importable: false, filename: null, size: null, detailed: false })],
+  files_page: 1,
+  files_pages: 1,
+  files_next_page: null,
   already_imported: {},
   ...over,
 });
@@ -88,7 +92,14 @@ function hold(fileId: string) {
 function connected(usable = true) {
   server.use(
     http.get(`${BASE}/status`, () =>
-      HttpResponse.json({ source: 'manyfold', name: 'Manyfold', configured: usable, usable, base_url: usable ? 'http://manyfold.lan:3214' : null }),
+      HttpResponse.json({
+        source: 'manyfold',
+        name: 'Manyfold',
+        configured: usable,
+        usable,
+        base_url: usable ? 'http://manyfold.lan:3214' : null,
+        imports: { active: 0, waiting: 0, limit: 2 },
+      }),
     ),
     http.get('/api/v1/library/folders', () => HttpResponse.json([])),
     http.get(`${BASE}/models`, ({ request }) => {
@@ -309,42 +320,93 @@ describe('ManyfoldTab', () => {
     expect(screen.queryByText('Models selected: 2')).not.toBeInTheDocument();
   });
 
-  it('loads the next batch of file details only when the answer says more exist', async () => {
+  it('loads file details a page at a time, and asks the same page again when it came back incomplete', async () => {
     connected();
-    const batches: string[] = [];
-    let firstBatchReads = 0;
+    const pages: string[] = [];
+    let firstPageReads = 0;
+    const waiting = (id: string, name: string) => file(id, { name, filename: null, size: null, presupported: null, detailed: false });
     server.use(
       http.get(`${BASE}/models/:id`, ({ request }) => {
-        const cursor = new URL(request.url).searchParams.get('detail_cursor');
-        if (cursor) {
-          batches.push(cursor);
-          return HttpResponse.json(model({ files: [file('z', { name: 'Bracket', filename: 'bracket.stl', size: 4096 })], detail_cursor: null }));
+        const page = new URL(request.url).searchParams.get('files_page');
+        expect(new URL(request.url).searchParams.has('detail_cursor')).toBe(false);
+        if (page === null) {
+          firstPageReads += 1;
+          // Every file is listed; the names and sizes of the first page only.
+          return HttpResponse.json(
+            model({ files: [file('a'), waiting('y', 'Hook'), waiting('z', 'Bracket')], files_page: 1, files_pages: 2, files_next_page: 2 }),
+          );
         }
-        firstBatchReads += 1;
+        pages.push(page);
+        // The second page, cut short by the deadline the first time it is asked.
+        const whole = pages.length > 1;
         return HttpResponse.json(
-          model({ files: [file('a'), file('z', { name: 'Bracket', filename: null, size: null, presupported: null })], detail_cursor: 'c1' }),
+          model({
+            // A page does not repeat the details of another one: "a" comes undetailed here.
+            files: [
+              file('a', { filename: null, size: null, detailed: false }),
+              file('y', { name: 'Hook', filename: 'hook.stl', size: 1024 }),
+              whole ? file('z', { name: 'Bracket', filename: 'bracket.stl', size: 4096 }) : waiting('z', 'Bracket'),
+            ],
+            files_page: 2,
+            files_pages: 2,
+            files_next_page: null,
+          }),
         );
       }),
     );
     render(<ManyfoldTab />);
     fireEvent.click(await screen.findByText('Cable Clip'));
 
-    // The file past the first batch is listed by its title and says its details are still to come.
+    // A file whose details were not read yet is listed by its title, without a size, and says so.
     const pending = (await screen.findByText('Bracket')).closest('li') as HTMLElement;
     expect(within(pending).getByText(/details not loaded yet/)).toBeInTheDocument();
+    expect(within(pending).queryByText(/KB/)).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Load more file details' }));
 
+    expect(await screen.findByText('hook.stl')).toBeInTheDocument();
+    expect(pages).toEqual(['2']);
+    expect(screen.getByText('a.stl')).toBeInTheDocument(); // a detailed file is never replaced by an undetailed one
+    // The page came back with a file still undetailed: the same page can be asked again.
+    expect(within(screen.getByText('Bracket').closest('li') as HTMLElement).getByText(/details not loaded yet/)).toBeInTheDocument();
+    fireEvent.click(await screen.findByRole('button', { name: 'Load more file details' }));
+
     expect(await screen.findByText('bracket.stl')).toBeInTheDocument();
-    expect(screen.getByText('a.stl')).toBeInTheDocument(); // the first batch stays
-    expect(batches).toEqual(['c1']);
+    expect(pages).toEqual(['2', '2']);
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Load more file details' })).not.toBeInTheDocument());
+    expect(screen.queryByText(/details not loaded yet/)).not.toBeInTheDocument();
 
     // An import re-reads the model; the details already loaded are not thrown away.
     fireEvent.click(within(screen.getByText('a.stl').closest('li') as HTMLElement).getByRole('button', { name: 'Import' }));
-    await waitFor(() => expect(firstBatchReads).toBe(2));
+    await waitFor(() => expect(firstPageReads).toBe(2));
     await waitFor(() => expect(screen.getByRole('button', { name: 'Import all' })).toBeEnabled());
     expect(screen.getByText('bracket.stl')).toBeInTheDocument();
+    expect(screen.getByText('hook.stl')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Load more file details' })).not.toBeInTheDocument();
+  });
+
+  it('stops offering more details when asking again brings nothing new', async () => {
+    connected();
+    let reads = 0;
+    server.use(
+      http.get(`${BASE}/models/:id`, () => {
+        reads += 1;
+        return HttpResponse.json(
+          model({ files: [file('a'), file('z', { name: 'Bracket', filename: null, size: null, detailed: false })] }),
+        );
+      }),
+    );
+    render(<ManyfoldTab />);
+    fireEvent.click(await screen.findByText('Cable Clip'));
+    await screen.findByText('Bracket');
+
+    // One page, one file Manyfold never details: asked again twice, then the control goes.
+    fireEvent.click(screen.getByRole('button', { name: 'Load more file details' }));
+    await waitFor(() => expect(reads).toBe(2));
+    fireEvent.click(await screen.findByRole('button', { name: 'Load more file details' }));
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Load more file details' })).not.toBeInTheDocument());
+    expect(reads).toBe(3);
+    // The file is still offered: an import reads its own details.
+    expect(within(screen.getByText('Bracket').closest('li') as HTMLElement).getByRole('button', { name: 'Import' })).toBeEnabled();
   });
 
   it('a model whose answer carries every detail offers no "load more"', async () => {
