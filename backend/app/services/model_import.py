@@ -123,6 +123,40 @@ def sweep_stale_staging(*, create: bool = True) -> int:
     return removed
 
 
+#: A staging file a worker thread still holds (Windows refuses the unlink) is tried again this often.
+REMOVE_ATTEMPTS = 10
+REMOVE_PAUSE_SECONDS = 0.2
+
+
+def remove_staged(path: Path, *, attempts: int | None = None, pause: float | None = None) -> bool:
+    """Remove one staging file. Never raises: a file that stays held is the sweep's (its name says whose)."""
+    attempts = REMOVE_ATTEMPTS if attempts is None else attempts
+    pause = REMOVE_PAUSE_SECONDS if pause is None else pause
+    for attempt in range(attempts):
+        try:
+            path.unlink(missing_ok=True)
+            return True
+        except OSError:
+            if attempt + 1 < attempts:
+                time.sleep(pause)
+    logger.warning("A model import's staging file is still in use; a later sweep removes it")
+    return False
+
+
+@asynccontextmanager
+async def staging(staged: Path) -> AsyncIterator[Path]:
+    """The life of one staging file: gone when the block ends, however it ends.
+
+    The removal is shielded and cannot raise — it runs while a refusal or a cancellation is on
+    its way out, and must not replace it (on Windows the owned worker thread that is still
+    copying the file refuses the unlink for a moment).
+    """
+    try:
+        yield staged
+    finally:
+        await asyncio.shield(asyncio.to_thread(remove_staged, staged))
+
+
 def storage_full() -> HTTPException:
     return HTTPException(status_code=507, detail={"error": "storage_full", "message": STORAGE_FULL})
 
@@ -318,19 +352,20 @@ async def import_resource(
     if service.streams_downloads:
         async with import_slot():
             # Outside library storage: nothing is written there except by the ingest door itself.
+            await asyncio.to_thread(sweep_stale_staging)  # what an earlier import could not remove
             await asyncio.to_thread(ensure_space, info.size)
-            staged = await asyncio.to_thread(new_staging_file)
-            try:
-                await service.download_to(info, staged)
-                filename = filename_for(info)
-                validate_print_file_upload(filename, await asyncio.to_thread(_head, staged))
-                result = await save_3mf_bytes_to_library(db, content=None, staged=staged, filename=filename, **common)
-            except OSError as exc:
-                if exc.errno == errno.ENOSPC:
-                    raise storage_full() from exc
-                raise
-            finally:
-                await asyncio.to_thread(staged.unlink, True)
+            async with staging(await asyncio.to_thread(new_staging_file)) as staged:
+                try:
+                    await service.download_to(info, staged)
+                    filename = filename_for(info)
+                    validate_print_file_upload(filename, await asyncio.to_thread(_head, staged))
+                    result = await save_3mf_bytes_to_library(
+                        db, content=None, staged=staged, filename=filename, **common
+                    )
+                except OSError as exc:
+                    if exc.errno == errno.ENOSPC:
+                        raise storage_full() from exc
+                    raise
     else:
         download = await service.download(info)
         result = await save_3mf_bytes_to_library(db, content=download.file_bytes, filename=filename_for(info), **common)

@@ -119,3 +119,62 @@ def test_space_is_asked_for_before_a_download(monkeypatch):
     monkeypatch.setattr(shutil, "disk_usage", lambda path: usage(10**12, 0, 10**11))
     model_import.ensure_space(10 * 1024 * 1024)
     model_import.ensure_space(None)
+
+
+class TestRemovingAStagingFileThatIsStillHeld:
+    """Review MB-M10: on Windows a worker thread still copying the staging file refuses its unlink."""
+
+    def held(self, monkeypatch, times: int) -> list[int]:
+        calls: list[int] = []
+        real = Path.unlink
+
+        def unlink(self, missing_ok=False):
+            calls.append(1)
+            if len(calls) <= times:
+                raise PermissionError(13, "The process cannot access the file because it is being used")
+            return real(self, missing_ok=missing_ok)
+
+        monkeypatch.setattr(Path, "unlink", unlink)
+        return calls
+
+    def test_it_is_tried_again_until_the_copy_lets_go(self, data_dir, monkeypatch):
+        staged = model_import.new_staging_file()
+        staged.write_bytes(b"x")
+        calls = self.held(monkeypatch, 2)
+        assert model_import.remove_staged(staged, pause=0.01) is True
+        assert len(calls) == 3 and not staged.exists()
+
+    def test_a_file_that_stays_held_is_left_to_the_sweep_without_an_error(self, data_dir, monkeypatch):
+        staged = model_import.new_staging_file()
+        staged.write_bytes(b"x")
+        self.held(monkeypatch, 10**6)
+        assert model_import.remove_staged(staged, attempts=3, pause=0.01) is False
+        assert staged.exists() and staged.name.startswith(model_import.STAGING_PREFIX)
+
+    async def test_a_cancelled_import_stays_cancelled_when_its_file_is_held(self, data_dir, monkeypatch):
+        """The refusal to unlink used to REPLACE the cancellation."""
+        staged = model_import.new_staging_file()
+        staged.write_bytes(b"x")
+        self.held(monkeypatch, 10**6)
+        monkeypatch.setattr(model_import, "REMOVE_ATTEMPTS", 2)
+        monkeypatch.setattr(model_import, "REMOVE_PAUSE_SECONDS", 0.01)
+
+        async def importing():
+            async with model_import.staging(staged):
+                await asyncio.sleep(30)
+
+        task = asyncio.create_task(importing())
+        await asyncio.sleep(0.02)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    async def test_the_staging_file_is_removed_on_success_and_on_failure(self, data_dir):
+        first, second = model_import.new_staging_file(), model_import.new_staging_file()
+        async with model_import.staging(first):
+            first.write_bytes(b"x")
+        with pytest.raises(RuntimeError):
+            async with model_import.staging(second):
+                second.write_bytes(b"x")
+                raise RuntimeError("the download failed")
+        assert not first.exists() and not second.exists()
