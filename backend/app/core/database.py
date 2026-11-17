@@ -1,10 +1,12 @@
 import asyncio
 import logging
+from contextlib import AsyncExitStack, asynccontextmanager
 
 from sqlalchemy import Table, event, update
 from sqlalchemy.dialects.postgresql.base import PGDialect
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Session
+from starlette.requests import HTTPConnection
 
 from backend.app.core import (  # noqa: F401 — lock_ledger installs its session listeners
     case_folding,
@@ -290,7 +292,43 @@ def _recompute_archive_time_metrics(session, flush_context, instances):
             )
 
 
-async def get_db() -> AsyncSession:
+async def enter_before_response(connection: HTTPConnection, scope):
+    """Enter ``scope`` so that it is left when the handler has returned and BEFORE the response is sent.
+
+    FastAPI keeps two exit stacks per request: the handler (and the serialisation of
+    its answer) runs inside both, the inner "function" stack is left right after it,
+    the response is sent, and only then is the outer "request" stack left. A yield
+    dependency lands on the outer one unless its ``Depends(...)`` says
+    ``scope="function"`` -- at every one of its call sites. Entering the inner stack
+    from the dependency itself gives the same order for every route there is and
+    every route to come, with no call site to forget.
+
+    The stack is FastAPI's own (``fastapi/routing.py`` puts it in the ASGI scope,
+    ``solve_dependencies`` asserts it is there). Without it this refuses: quietly
+    falling back to the outer stack is the defect itself.
+    """
+    stack = connection.scope.get("fastapi_function_astack")
+    if not isinstance(stack, AsyncExitStack):
+        raise RuntimeError(
+            "FastAPI's function-scope exit stack is not in the request scope, so the transaction "
+            "cannot be closed before the response is sent"
+        )
+    return await stack.enter_async_context(scope)
+
+
+async def get_db(connection: HTTPConnection) -> AsyncSession:
+    """The request's session; committed when the handler has returned, before its answer leaves.
+
+    Not a yield dependency on purpose (upstream #3320): as one, at FastAPI's default
+    scope, its commit ran AFTER the response was sent -- a client could read the old
+    value right after a 200, and a commit that failed was rolled back behind a 200
+    the client already had. Now a failed commit is the request's error.
+    """
+    return await enter_before_response(connection, _request_session())
+
+
+@asynccontextmanager
+async def _request_session():
     async with async_session() as session:
         try:
             yield session
