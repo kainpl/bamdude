@@ -286,3 +286,52 @@ describe('disambiguateColorNames', () => {
     expect(disambiguateColorNames({}, {})).toEqual(['', '']);
   });
 });
+
+describe('a colour a step off the catalogue is named after its Bambu colour', () => {
+  // A colour picked on the printer's screen is reported a step or two off the
+  // catalogue's hex: 5A657B for Blue Grey 5B6579. No exact lookup finds it.
+  const bambu = [
+    { hex: '5B6579', name: 'Blue Grey', material: 'PLA Basic' },
+    { hex: '0A2989', name: 'Blue', material: 'PLA Basic' },
+    { hex: '8E9089', name: 'Gray', material: 'PLA Basic' },
+    { hex: '8E9088', name: 'Translucent Gray', material: 'PETG Translucent' },
+    { hex: 'F5547C', name: 'Hot Pink', material: 'PLA Matte' },
+  ];
+  const presets = { GFA00: 'PLA Basic', GFA01: 'PLA Matte' };
+
+  beforeEach(() => {
+    setColorCatalog({ '0a2989': 'Blue' }, {}, bambu, presets);
+  });
+
+  it('names it by the slot range', () => {
+    expect(getColorName('5A657BFF', 'PLA Basic')).toBe('Blue Grey');
+  });
+
+  it('takes the range from the preset id when the slot has no RFID', () => {
+    expect(getColorName('5A657BFF', null, 'GFA00')).toBe('Blue Grey');
+    expect(getColorName('5A657BFF', '', 'gfa00')).toBe('Blue Grey');
+  });
+
+  it('stays within the slot range when Bambu makes it', () => {
+    // One step from PETG Translucent's grey, yet this is a PLA Basic slot.
+    expect(getColorName('8E9088FF', 'PLA Basic')).toBe('Gray');
+  });
+
+  it('looks in other ranges only for filament outside Bambu ranges', () => {
+    expect(getColorName('5A657BFF', 'Some Other PLA')).toBe('Blue Grey');
+    expect(getColorName('5A657BFF')).toBe('Blue Grey');
+  });
+
+  it('keeps the hue bucket for a colour near nothing', () => {
+    expect(getColorName('00FF00FF', 'PLA Basic')).toBe(hexToColorName('00FF00FF'));
+  });
+
+  it('an exact catalogue colour still wins', () => {
+    expect(getColorName('0A2989FF', 'PLA Basic')).toBe('Blue');
+  });
+
+  it('answers as before when the catalogue carries no Bambu rows', () => {
+    setColorCatalog({ '0a2989': 'Blue' });
+    expect(getColorName('5A657BFF', 'PLA Basic')).toBe(hexToColorName('5A657BFF'));
+  });
+});

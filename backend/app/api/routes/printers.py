@@ -52,6 +52,7 @@ from backend.app.schemas.printer import (
     PlateAnswerIn,
     PrinterCreate,
     PrinterDiagnosticResult,
+    PrinterPlacementRequest,
     PrinterResponse,
     PrinterResponseWithSecret,
     PrinterStatus,
@@ -135,7 +136,12 @@ from backend.app.services.printer_manager import (
     vt_trays_for,
 )
 from backend.app.services.printer_status_context import current_archive_ids, printers_with_waiting_rows
-from backend.app.services.printer_tag_service import delete_links_for_printer, replace_links
+from backend.app.services.printer_tag_service import (
+    add_links,
+    delete_links_for_printer,
+    remove_links,
+    replace_links,
+)
 from backend.app.utils.fila_switch import extruder_slots_payload, inlet_bindings, switch_ready
 from backend.app.utils.http import build_content_disposition
 from backend.app.utils.model_compatibility import compatibility_matrix, effective_model_for_state, model_compatibility
@@ -651,6 +657,50 @@ async def update_printer(
             logger.warning("Cloud Link: could not refresh the publish set after parking printer %s: %s", printer_id, e)
 
     return printer
+
+
+@router.post("/placement")
+async def place_printers(
+    body: PrinterPlacementRequest,
+    _=RequirePermission(Permission.PRINTERS_UPDATE),
+    db: AsyncSession = Depends(get_db),
+):
+    """Give several printers a location and / or tags in one transaction.
+
+    All or none: a printer that is missing or archived, or a location or tag
+    that names nothing, refuses the whole request -- a loop of per-printer
+    edits left a farm half placed when one of them failed. A printer's other
+    tags stay; the place is touched only with ``set_location``.
+    """
+    printer_ids = sorted(set(body.printer_ids))
+    add_ids = sorted(set(body.add_tag_ids))
+    remove_ids = sorted(set(body.remove_tag_ids))
+    if not body.set_location and not add_ids and not remove_ids:
+        raise HTTPException(422, "Nothing to change: choose a location or a tag.")
+    if set(add_ids) & set(remove_ids):
+        raise HTTPException(422, "A tag cannot be both added and removed.")
+    if body.set_location:
+        await _require_known_location(db, body.location_id)
+    await _require_known_tags(db, [*add_ids, *remove_ids])
+
+    printers = (
+        (await db.execute(select(Printer).where(Printer.id.in_(printer_ids)).order_by(Printer.id).with_for_update()))
+        .scalars()
+        .all()
+    )
+    if len(printers) != len(printer_ids):
+        raise HTTPException(404, "Printer not found")
+    archived = [printer.name for printer in printers if printer.archived]
+    if archived:
+        raise HTTPException(409, f"Archived printers cannot be placed: {', '.join(archived)}.")
+
+    if body.set_location:
+        for printer in printers:
+            printer.location_id = body.location_id
+    await remove_links(db, printer_ids, remove_ids)
+    await add_links(db, printer_ids, add_ids)
+    await db.commit()
+    return {"updated": len(printers)}
 
 
 @router.post("/{printer_id}/mqtt-recording")
@@ -3321,6 +3371,12 @@ async def reset_ams_slot(
     if not client:
         raise HTTPException(status_code=400, detail="Printer not connected")
 
+    if is_printer_busy(printer_id):
+        # The slot's filament setting is what the job on the printer feeds from.
+        # The dialog disables the button, but this route is reachable by an API
+        # key and by a tab left open since before the print started.
+        raise HTTPException(409, "Printer is busy — cannot reset a slot while a job is on it")
+
     # Reset the slot
     success = client.reset_ams_slot(ams_id=ams_id, tray_id=tray_id)
 
@@ -3527,21 +3583,14 @@ async def stop_print(
     if not client:
         raise HTTPException(400, "Printer not connected")
 
-    success = client.stop_print()
-    if not success:
+    # Sent and marked in one step: the mark is what makes on_print_complete
+    # read the resulting "failed"/"aborted" as "cancelled" — otherwise the HMS
+    # heuristic in _dispatch_archive_update would mislabel a user's cancel (e.g.
+    # the H2D's cancel-sequence module-0x0C HMS) as a failure, "Layer shift".
+    from backend.app.services.print_control import stop_print_by_user
+
+    if not stop_print_by_user(printer_id):
         raise HTTPException(500, "Failed to stop print")
-
-    # Mark this printer as user-stopped so on_print_complete reclassifies
-    # the resulting "failed"/"aborted" MQTT status as "cancelled" — otherwise
-    # the HMS heuristic in _dispatch_archive_update would mislabel
-    # user-cancels (e.g. the H2D's cancel-sequence module-0x0C HMS) as a
-    # genuine failure with reason="Layer shift".
-    try:
-        from backend.app.main import mark_printer_stopped_by_user
-
-        mark_printer_stopped_by_user(printer_id, unless_idle=True)
-    except Exception as _mark_err:
-        logger.warning("Failed to mark printer %s as user-stopped: %s", printer_id, _mark_err)
 
     return {"success": True, "message": "Print stop command sent"}
 
@@ -4533,6 +4582,12 @@ async def execute_hms_action(
     success = client.execute_hms_action(body.print_error, body.action, body.job_id)
     if not success:
         raise HTTPException(400, "Failed to execute HMS action")
+
+    # The dialog's Stop Printing is a person's stop: marked before the first
+    # await below, so the printer's "failed" is read as "cancelled".
+    from backend.app.services.print_control import mark_hms_action
+
+    mark_hms_action(printer_id, body.action)
 
     if body.action in HMS_UI_ONLY_ACTIONS:
         # These publish nothing by design — the printer's own screen owns them.

@@ -27,6 +27,8 @@ logger = logging.getLogger(__name__)
 #: Containers keyed by the printer's id (or by a tuple that starts with it, or a ``"<id>:..."`` string) that carry
 #: no generation of their own, as ``(module, attribute path)``. Taken out by :func:`begin`, put back or dropped by
 #: :func:`finish`. A new one belongs here when a deleted printer's value would mislead the next printer.
+#: ⚠️ Only containers keyed by the PRINTER: ``main._print_ams_mappings`` is keyed by archive id, and listing it
+#: here dropped the mapping of whichever archive shared the deleted printer's number.
 _ID_KEYED = (
     ("backend.app.services.printer_manager", "printer_manager._awaiting_plate_clear"),
     ("backend.app.services.printer_manager", "printer_manager._last_trays"),
@@ -39,7 +41,6 @@ _ID_KEYED = (
     ("backend.app.main", "_expected_prints"),
     ("backend.app.main", "_expected_print_creators"),
     ("backend.app.main", "_expected_print_registered_at"),
-    ("backend.app.main", "_print_ams_mappings"),
     ("backend.app.main", "_active_swap_config"),
     ("backend.app.main", "_active_macro_selection"),
     ("backend.app.main", "_last_progress_milestone"),
@@ -76,6 +77,38 @@ _ID_KEYED = (
     ("backend.app.services.print_usage_journal", "_pending_replays"),
     ("backend.app.services.print_usage_journal", "_replay_writers"),
     ("backend.app.services.print_usage_journal", "_unstated_unknowns"),
+    # What upstream 578add28d's audit found still greeting the next printer with the id: an Obico verdict and
+    # its spent action, dispatch and drying holds, the low-filament memory, caches and cooldowns.
+    ("backend.app.main", "_active_print_identities"),
+    ("backend.app.main", "_last_projection_broadcast"),
+    ("backend.app.main", "_projection_repeat_available"),
+    ("backend.app.services.obico_detection", "obico_detection_service._states"),
+    ("backend.app.services.obico_detection", "obico_detection_service._state_keys"),
+    ("backend.app.services.obico_detection", "obico_detection_service._last_class"),
+    ("backend.app.services.obico_detection", "obico_detection_service._errors"),
+    ("backend.app.services.obico_detection", "obico_detection_service._action_fired"),
+    ("backend.app.services.print_scheduler", "scheduler._dispatch_holds"),
+    ("backend.app.services.print_scheduler", "scheduler._drying_in_progress"),
+    ("backend.app.services.print_scheduler", "scheduler._scheduled_drying_printers"),
+    ("backend.app.services.print_scheduler", "scheduler._scheduled_dry_units"),
+    ("backend.app.services.print_scheduler", "scheduler._armed_dry_cycles"),
+    ("backend.app.services.print_scheduler", "scheduler._dry_unit_history"),
+    ("backend.app.services.print_scheduler", "scheduler._auto_dry_above"),
+    ("backend.app.services.filament_low", "_announced"),
+    ("backend.app.services.connection_watchdog", "_last_rebuild"),
+    ("backend.app.services.auto_queue_scheduler", "auto_queue_scheduler._wake_cooldowns"),
+    ("backend.app.services.auto_queue_scheduler", "auto_queue_scheduler._confirmed_wakes"),
+    ("backend.app.api.routes.printers", "_cover_cache"),
+    ("backend.app.api.routes.printers", "_plates_cache"),
+    ("backend.app.services.chamber_history", "_history"),
+    ("backend.app.services.pause_warning", "_runs"),
+    ("backend.app.services.mqtt_relay", "mqtt_relay._last_printer_status"),
+    ("backend.app.services.mqtt_relay", "mqtt_relay._last_status_payload"),
+    ("backend.app.services.timelapse_files", "_listing_answered"),
+    ("backend.app.services.macro_trigger", "_fired_layer_macros"),
+    ("backend.app.services.interrupted_dispatch", "_waiting"),
+    ("backend.app.services.ams_backup_compatibility_apply", "_deferred_attempts"),
+    ("backend.app.services.ams_sync_debounce", "debounce._candidates"),
 )
 
 
@@ -179,4 +212,12 @@ def finish(deletion: PrinterDeletion, *, committed: bool) -> None:
     )
     for _unused, taken in deletion.taken:
         _drop(taken)
+    # Files named by the id, removed here -- synchronously, before the route's first await after the commit, so a
+    # printer created with the reused id cannot have calibrated yet.
+    try:
+        from backend.app.services.plate_detection import forget_printer_references
+
+        forget_printer_references(printer_id)
+    except Exception:  # noqa: BLE001 - leftovers of a deleted printer never fail its deletion
+        logger.warning("Could not remove the plate references of deleted printer %s", printer_id, exc_info=True)
     logger.info("Printer %s deleted: its runtime is gone, the next printer with this id starts clean", printer_id)

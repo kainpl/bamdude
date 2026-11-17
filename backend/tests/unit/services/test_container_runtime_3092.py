@@ -232,7 +232,8 @@ class TestDetectContainerNetworkMode:
             assert _detect_container_network_mode(discovery.RUNTIME_DOCKER) == "host"
 
     def test_docker_bridge_mode(self):
-        with _netns(_BRIDGE_NETNS):
+        # The link is a plain veth: no macvlan / ipvlan among the kernel's link kinds.
+        with _netns(_BRIDGE_NETNS), patch(f"{MOD}._lan_link_mode", return_value="none"):
             assert _detect_container_network_mode(discovery.RUNTIME_DOCKER) == "bridge"
 
     def test_podman_host_mode_on_a_host_with_no_engine_bridges(self):
@@ -246,7 +247,7 @@ class TestDetectContainerNetworkMode:
             assert _detect_container_network_mode(discovery.RUNTIME_PODMAN) == "host"
 
     def test_podman_bridge_mode(self):
-        with _netns(_BRIDGE_NETNS):
+        with _netns(_BRIDGE_NETNS), patch(f"{MOD}._lan_link_mode", return_value="none"):
             assert _detect_container_network_mode(discovery.RUNTIME_PODMAN) == "bridge"
 
     def test_podmans_own_bridge_is_a_host_signal_too(self):

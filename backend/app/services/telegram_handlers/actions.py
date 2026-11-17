@@ -407,7 +407,9 @@ async def cb_printer_action(callback: CallbackQuery, tg_chat: TelegramChat | Non
             await callback.answer(t(lang, NS, "printers.not_connected"), show_alert=True)
 
     elif action == "stop":
-        success = printer_manager.stop_print(printer_id)
+        from backend.app.services.print_control import stop_print_by_user
+
+        success = stop_print_by_user(printer_id)
         if success:
             await callback.answer(f"\u23f9 {t(lang, NS, 'actions.stop_ok')}")
         else:

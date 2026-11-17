@@ -180,7 +180,7 @@ describe('confirmed batch printer actions', () => {
     const user = userEvent.setup();
     const client = new QueryClient();
     const onAction = vi.fn();
-    render(<QueryClientProvider client={client}><BulkPrinterToolbar selectedIds={new Set([1, 2])} printers={printers} onClose={vi.fn()} onSelectAll={vi.fn()} onSelectByLocation={vi.fn()} onSelectByState={vi.fn()} onAction={onAction} actionPending={false} /></QueryClientProvider>);
+    render(<QueryClientProvider client={client}><BulkPrinterToolbar selectedIds={new Set([1, 2])} printers={printers} onClose={vi.fn()} onSelectAll={vi.fn()} onSelectByLocation={vi.fn()} onSelectByState={vi.fn()} onAction={onAction} onPlacement={vi.fn()} actionPending={false} /></QueryClientProvider>);
     await user.click(screen.getByRole('button', { name: 'Actions' }));
     await user.click(screen.getByRole('menuitem', { name: 'Home axes…' }));
     expect(onAction).toHaveBeenCalledExactlyOnceWith('home');

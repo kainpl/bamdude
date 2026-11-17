@@ -3084,9 +3084,9 @@ class BambuMQTTClient:
         zombie detection inside ``_update_state``) → socket-close fallback.
         There is no running loop on that thread to hand the rebuilt client, so
         the safe pattern there is to close the socket and let paho's own loop
-        detect it and auto-reconnect on the same client. Queue replay is
-        theoretically possible from those paths but #1136 was specifically
-        traced through the dispatch-deadline path which now hard-resets.
+        detect it and auto-reconnect on the same client. That reconnect ends in
+        ``_on_connect``, which empties paho's outbox before paho re-sends it,
+        so nothing queued on the old link is replayed from those paths either.
         """
         logger.warning("[%s] Forcing MQTT reconnect: %s", self.serial_number, reason)
         self._stale_reconnecting = True

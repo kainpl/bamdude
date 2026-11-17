@@ -8,6 +8,7 @@ import { useAuth } from '../contexts/AuthContext';
 import type { KProfile } from '../api/client';
 import { isMatchingCalibration, nozzleFlowFromId } from './spool-form/utils';
 import { Button } from './Button';
+import { ConfirmModal } from './ConfirmModal';
 import { Modal } from './Modal';
 import { Select } from './Select';
 
@@ -64,6 +65,8 @@ interface ConfigureAmsSlotModalProps {
   // undefined when the printer does not report one.
   nozzleFlow?: string;
   printerModel?: string;
+  // A job is on the printer: Reset Slot would clear the filament it feeds from.
+  printerBusy?: boolean;
   onSuccess?: () => void;
   fullScreen?: boolean;
 }
@@ -174,6 +177,7 @@ export function ConfigureAmsSlotModal({
   nozzleDiameter = '0.4',
   nozzleFlow,
   onSuccess,
+  printerBusy,
   fullScreen,
 }: ConfigureAmsSlotModalProps) {
   const { t } = useTranslation();
@@ -313,7 +317,8 @@ export function ConfigureAmsSlotModal({
     },
   });
 
-  // Reset slot mutation
+  // Reset slot mutation — destructive, so it runs only from the confirm.
+  const [confirmReset, setConfirmReset] = useState(false);
   const resetMutation = useMutation({
     mutationFn: async () => {
       return api.resetAmsSlot(printerId, slotInfo.amsId, slotInfo.trayId);
@@ -1086,8 +1091,9 @@ export function ConfigureAmsSlotModal({
         {/* Reset button on the left */}
         <Button
           variant="secondary"
-          onClick={() => resetMutation.mutate()}
-          disabled={resetMutation.isPending || configureMutation.isPending}
+          onClick={() => setConfirmReset(true)}
+          disabled={printerBusy || resetMutation.isPending || configureMutation.isPending}
+          title={printerBusy ? t('configureAmsSlot.resetBlockedPrinting') : undefined}
           className="text-red-600 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300 hover:bg-red-50 dark:hover:bg-red-500/10"
         >
           {resetMutation.isPending ? (
@@ -1131,6 +1137,20 @@ export function ConfigureAmsSlotModal({
         <div className="mx-4 mb-4 p-2 bg-red-100 dark:bg-red-500/20 border border-red-300 dark:border-red-500/50 rounded text-sm text-red-700 dark:text-red-400">
           {(configureMutation.error as Error)?.message || (resetMutation.error as Error)?.message}
         </div>
+      )}
+
+      {confirmReset && (
+        <ConfirmModal
+          title={t('configureAmsSlot.resetConfirmTitle')}
+          message={t('configureAmsSlot.resetConfirmMessage')}
+          confirmText={t('configureAmsSlot.resetSlot')}
+          variant="danger"
+          onConfirm={() => {
+            setConfirmReset(false);
+            resetMutation.mutate();
+          }}
+          onCancel={() => setConfirmReset(false)}
+        />
       )}
     </Modal>
   );

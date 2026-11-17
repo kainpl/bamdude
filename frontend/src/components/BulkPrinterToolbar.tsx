@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '../contexts/AuthContext';
-import { X, Square, Pause, Play, ChevronDown, BellOff, Eraser, Home, Wrench, SlidersHorizontal, Lightbulb, Clock, Power } from 'lucide-react';
+import { X, Square, Pause, Play, ChevronDown, BellOff, Eraser, Home, Wrench, SlidersHorizontal, Lightbulb, Clock, Power, MapPin } from 'lucide-react';
 import { Button } from './Button';
 import { CardActionMenu } from './CardActionMenu';
 import type { Printer, Permission } from '../api/client';
@@ -25,9 +25,12 @@ interface BulkPrinterToolbarProps {
   printers: Printer[];
   onClose: () => void;
   onSelectAll: () => void;
-  onSelectByLocation: (locationId: number) => void;
+  /** `null` selects the printers that stand in no location. */
+  onSelectByLocation: (locationId: number | null) => void;
   onSelectByState: (state: PrinterStateFilter) => void;
   onAction: (action: BulkAction) => void;
+  /** Opens the location-and-tags dialog for the selection. */
+  onPlacement: () => void;
   actionPending: boolean;
 }
 
@@ -48,6 +51,7 @@ export function BulkPrinterToolbar({
   onSelectByLocation,
   onSelectByState,
   onAction,
+  onPlacement,
   actionPending,
 }: BulkPrinterToolbarProps) {
   const { t } = useTranslation();
@@ -78,6 +82,7 @@ export function BulkPrinterToolbar({
   // row now instead of being two entries that merely look alike.
   const locations = [...new Map(printers.filter(p => p.location).map(p => [p.location!.id, p.location!])).values()]
     .sort(byLocationName(loc => loc.name));
+  const unplaced = printers.filter(p => !p.location).length;
 
   const stateCounts: Record<PrinterStateFilter, number> = { printing: 0, paused: 0, finished: 0, idle: 0, error: 0, offline: 0 };
   printers.forEach(p => {
@@ -156,7 +161,7 @@ export function BulkPrinterToolbar({
       </div>
 
       {/* Select by Location */}
-      {locations.length > 0 && (
+      {(locations.length > 0 || unplaced > 0) && (
         <div className="relative">
           <Button
             variant="secondary"
@@ -180,6 +185,15 @@ export function BulkPrinterToolbar({
                     {location.name}
                   </button>
                 ))}
+                {unplaced > 0 && (
+                  <button
+                    onClick={() => { onSelectByLocation(null); setShowLocationDropdown(false); }}
+                    className="w-full text-left px-3 py-2 text-sm text-bambu-gray hover:bg-bambu-dark-tertiary hover:text-white transition-colors flex items-center gap-2"
+                  >
+                    {t('printers.ungrouped')}
+                    <span className="ml-auto text-bambu-gray text-xs">{unplaced}</span>
+                  </button>
+                )}
               </div>
             </>
           )}
@@ -196,7 +210,15 @@ export function BulkPrinterToolbar({
         width={280}
         estimatedHeight={400}
         disabled={actionPending || selectedIds.size === 0}
-      >{close => ([
+      >{close => [
+        <button key="placement" role="menuitem" type="button"
+          disabled={!hasPermission('printers:update')}
+          onClick={() => { close(); onPlacement(); }}
+          className="flex w-full items-center gap-2 px-3 py-2 text-sm text-bambu-gray hover:bg-bambu-dark-tertiary hover:text-white disabled:opacity-40"
+        >
+          <MapPin className="w-4 h-4" />{t('printers.bulk.placement.action')}
+        </button>,
+        ...([
         { action: 'home', icon: Home, permission: 'printers:control' },
         { action: 'calibrate', icon: SlidersHorizontal, permission: 'printers:control' },
         { action: 'maintenance', icon: Wrench, permission: 'maintenance:update', read: 'maintenance:read' },
@@ -214,7 +236,8 @@ export function BulkPrinterToolbar({
         >
           <Icon className="w-4 h-4" />{t(`printers.bulk.actions.${action}`)}
         </button>
-      ))}</CardActionMenu>
+      )),
+      ]}</CardActionMenu>
       <Button size="sm" className="bg-red-500 hover:bg-red-600" onClick={() => onAction('stop')}
         disabled={actionPending || !canControl || !anyStoppable}
       >

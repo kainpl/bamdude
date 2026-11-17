@@ -89,6 +89,14 @@ class LatestFirmwareInfo(BaseModel):
     release_notes: str | None = None
 
 
+async def _automatic_checks_enabled(db: AsyncSession) -> bool:
+    """The "Check printer firmware" setting; on unless it was switched off."""
+    from backend.app.api.routes.settings import get_setting
+
+    value = await get_setting(db, "check_printer_firmware")
+    return (value or "true").strip().lower() != "false"
+
+
 @router.get("/updates", response_model=FirmwareUpdatesResponse)
 async def check_firmware_updates(
     db: AsyncSession = Depends(get_db),
@@ -167,8 +175,23 @@ async def check_printer_firmware(
     if mqtt_client and mqtt_client.state:
         current_version = mqtt_client.state.firmware_version
 
-    # Check for update
     model = printer.model or "Unknown"
+
+    # This is the printer card's automatic check. With "Check printer firmware"
+    # off it contacts nobody -- enforced here and not only in the UI, which
+    # asks before its settings have loaded. The Firmware page and an upload are
+    # an operator's explicit request and are not gated by the setting.
+    if not await _automatic_checks_enabled(db):
+        return FirmwareUpdateInfo(
+            printer_id=printer.id,
+            printer_name=printer.name,
+            model=model,
+            current_version=current_version,
+            latest_version=None,
+            update_available=False,
+        )
+
+    # Check for update
     update_info = await firmware_service.check_for_update(model, current_version or "")
 
     return FirmwareUpdateInfo(

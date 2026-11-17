@@ -10801,6 +10801,14 @@ export const api = {
   deletePrinterLocation: (id: number) =>
     request<{ deleted: number }>(`/printer-locations/${id}`, { method: 'DELETE' }),
   getPrinterTags: () => request<{ tags: PrinterTagListItem[] }>('/printer-tags'),
+  /** A location and / or tags for several printers at once; the server applies all or none. */
+  placePrinters: (body: {
+    printer_ids: number[];
+    set_location: boolean;
+    location_id: number | null;
+    add_tag_ids: number[];
+    remove_tag_ids: number[];
+  }) => request<{ updated: number }>('/printers/placement', { method: 'POST', body: JSON.stringify(body) }),
   createPrinterTag: (name: string, color: string | null = null) =>
     request<PrinterTag>('/printer-tags', { method: 'POST', body: JSON.stringify({ name, color }) }),
   /**
@@ -13797,7 +13805,12 @@ export const api = {
   getColorCatalog: () =>
     request<ColorCatalogEntry[]>('/inventory/colors'),
   getColorNameMap: () =>
-    request<{ colors: Record<string, string>; by_material?: Record<string, string> }>('/inventory/colors/map'),
+    request<{
+      colors: Record<string, string>;
+      by_material?: Record<string, string>;
+      bambu?: Array<{ hex: string; name: string; material: string }>;
+      preset_materials?: Record<string, string>;
+    }>('/inventory/colors/map'),
   addColorEntry: (data: { manufacturer: string; color_name: string; hex_color: string; material: string | null; extra_colors?: string | null; effect_type?: string | null }) =>
     request<ColorCatalogEntry>('/inventory/colors', { method: 'POST', body: JSON.stringify(data) }),
   updateColorEntry: (id: number, data: { manufacturer: string; color_name: string; hex_color: string; material: string | null; extra_colors?: string | null; effect_type?: string | null }) =>

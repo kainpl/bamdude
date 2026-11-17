@@ -250,6 +250,21 @@ def _all_families() -> list[CatalogFamily]:
 
 
 @cache
+def bambu_ranges_by_family() -> dict[str, str]:
+    """Bambu family id -> its product line: ``GFA00`` -> ``PLA Basic``.
+
+    The line is how the colour catalogue files Bambu's colours, and a slot
+    without RFID reports only the preset id picked on the printer's screen.
+    """
+    prefix = "Bambu "
+    return {
+        fam.filament_id: fam.alias[len(prefix) :].strip()
+        for fam in _all_families()
+        if fam.filament_id and (fam.alias or "").startswith(prefix)
+    }
+
+
+@cache
 def _catalog_types() -> frozenset[str]:
     return frozenset((fam.filament_type or "").upper() for fam in _all_families() if fam.filament_type)
 

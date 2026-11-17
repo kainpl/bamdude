@@ -283,6 +283,21 @@ class HmsMuteBody(BaseModel):
     full_code: str = Field(min_length=16, max_length=16, pattern=r"^[0-9A-Fa-f]{16}$")
 
 
+class PrinterPlacementRequest(BaseModel):
+    """Place several printers at once: a location and / or tags, all or none.
+
+    ``set_location`` says whether the place is part of the request at all --
+    ``location_id: null`` alone could not tell "take them out of their place"
+    from "leave the place alone".
+    """
+
+    printer_ids: list[int] = Field(..., min_length=1, max_length=500)
+    set_location: bool = False
+    location_id: int | None = None
+    add_tag_ids: list[int] = Field(default_factory=list, max_length=200)
+    remove_tag_ids: list[int] = Field(default_factory=list, max_length=200)
+
+
 class HmsActionBody(BaseModel):
     # Canonical hex identifier (HMSErrorResponse.full_code): 8 chars for `print_error`
     # faults, 16 chars for `hms[]`-array faults. Length-bounded to those two valid shapes.

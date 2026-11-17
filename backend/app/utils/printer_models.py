@@ -170,7 +170,7 @@ ETHERNET_MODELS = frozenset(
         "BLP001",  # X1C
         "C13",  # X1E
         "C12",  # P1S
-        "P1S",  # P1S (display)
+        "N7",  # P2S
         "N6",  # X2D
         "O1D",  # H2D
         "O1E",  # H2D Pro

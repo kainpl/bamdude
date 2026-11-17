@@ -11,6 +11,7 @@ user-side setup errors clustered on exactly these causes.
 
 import asyncio
 import ipaddress
+import json
 import logging
 import os
 import socket
@@ -167,8 +168,64 @@ def _has_native_interface() -> bool:
     return False
 
 
+# Link kinds that put a container straight onto the LAN with an address of
+# its own: the parent NIC's network, not a NAT behind the host.
+_LAN_LINK_KINDS = ("macvlan", "ipvlan")
+# The ``ip`` call reads the kernel's own table; a guard, not a budget.
+_IP_TIMEOUT = 2.0
+
+
+def _lan_link_kinds() -> dict[str, str] | None:
+    """The macvlan / ipvlan interfaces here: name -> "macvlan", "ipvlan" or
+    "ipvlan_l3" (L3 or L3S mode). ``None`` when the link kinds cannot be read.
+
+    A macvlan or ipvlan interface is created in the host's namespace and moved
+    into the container's, so like a veth its ``iflink`` names an interface
+    elsewhere and ``_has_native_interface`` passes it by: such a container read
+    as bridge networking (upstream #3417). Only the kernel's link kind tells
+    them apart, and only netlink carries it (``ip -d``): neither driver gives
+    sysfs a device type to read instead.
+    """
+    try:
+        result = subprocess.run(["ip", "-d", "-j", "link", "show"], capture_output=True, text=True, timeout=_IP_TIMEOUT)
+        if result.returncode != 0:
+            return None
+        found: dict[str, str] = {}
+        for link in json.loads(result.stdout or "[]"):
+            info = link.get("linkinfo") or {}
+            kind = info.get("info_kind")
+            if kind not in _LAN_LINK_KINDS or not link.get("ifname"):
+                continue
+            mode = (info.get("info_data") or {}).get("mode") if kind == "ipvlan" else None
+            # iproute2 prints l2 / l3 / l3s; L3 routes, so no broadcast or
+            # multicast crosses it. Any other mode is not known to.
+            found[link["ifname"]] = "ipvlan_l3" if mode in ("l3", "l3s") else kind
+        return found
+    except Exception:
+        logger.debug("ip -d link probe failed", exc_info=True)
+        return None
+
+
+def _lan_link_mode() -> str | None:
+    """How a macvlan or ipvlan interface here connects: ``macvlan``, ``ipvlan``
+    (L2, or a mode not known to route), ``ipvlan_l3``; ``none`` when there is
+    no such interface, ``None`` when it cannot be told."""
+    kinds = _lan_link_kinds()
+    if kinds is None:
+        return None
+    values = set(kinds.values())
+    # A container on a bridge network AND a macvlan one reaches the LAN
+    # through the macvlan; the most capable link answers.
+    for mode in ("macvlan", "ipvlan", "ipvlan_l3"):
+        if mode in values:
+            return mode
+    return "none"
+
+
 def _detect_container_network_mode(runtime: str | None) -> str | None:
-    """Return "host", "bridge", or None when it genuinely cannot be told.
+    """Return "host", "bridge", "macvlan", "ipvlan", "ipvlan_l3", or None when
+    it genuinely cannot be told. Reads the kernel's link table through ``ip``:
+    call it off the event loop.
 
     The first rule is the original Docker one and is kept exactly: a Docker
     *host* always has a docker0, so a container that can see it shares the
@@ -180,7 +237,8 @@ def _detect_container_network_mode(runtime: str | None) -> str | None:
     The second rule is the general form of the same idea and is what answers
     for Podman. The third is the fallback the first rule always implied: an
     OCI container that can see neither is isolated, which is what bridge
-    networking means.
+    networking means -- unless its interface is a macvlan or ipvlan, which
+    puts it on the LAN with an address of its own (upstream #3417).
     """
     try:
         for _idx, name in socket.if_nameindex():
@@ -190,9 +248,12 @@ def _detect_container_network_mode(runtime: str | None) -> str | None:
         pass
     if _has_native_interface():
         return "host"
-    if runtime in OCI_RUNTIMES:
-        return "bridge"
-    return None
+    if runtime not in OCI_RUNTIMES:
+        return None
+    lan = _lan_link_mode()
+    # None without the link kinds: a veth and a macvlan look alike then, and
+    # "unknown" is better than a confident, wrong "bridge".
+    return "bridge" if lan == "none" else lan
 
 
 def _host_source_ip(destination_ip: str) -> str | None:
@@ -424,6 +485,7 @@ async def run_connection_diagnostic(
     serial_number: str | None = None,
     access_code: str | None = None,
     wait_for_publish_seconds: float = 0.0,
+    progress: dict | None = None,
 ) -> PrinterDiagnosticResult:
     """Run connection checks for a printer.
 
@@ -433,10 +495,20 @@ async def run_connection_diagnostic(
     Each check carries a stable ``id`` and a ``status`` of
     pass / fail / warn / skip; the frontend renders the human-readable
     title and fix text (localized) keyed on that id + status.
+
+    ``progress``, when given, is kept current while the checks run: its
+    ``checks`` key is the list of finished checks and ``stage`` names the step
+    in flight. The support bundle cancels a run that overruns its budget, and
+    this is how it can still say which step hung and keep what finished
+    (upstream #3164).
     """
     checks: list[DiagnosticCheck] = []
+    if progress is None:
+        progress = {}
+    progress["checks"] = checks
 
     # --- Port reachability (probed in parallel) ---
+    progress["stage"] = "ports"
     camera_port, camera_protocol = _camera_port_for_printer(printer)
     mqtt_ok, ftps_state, camera_ok = await asyncio.gather(
         _check_port(ip_address, PORT_MQTT),
@@ -463,6 +535,7 @@ async def run_connection_diagnostic(
     )
 
     # --- macOS Local Network permission ---
+    progress["stage"] = "macos_local_network"
     # Appended on macOS only. Everywhere else there is nothing to say, and a
     # permanently dimmed "skipped" row would be noise for the users who make
     # up nearly all of them.
@@ -496,6 +569,7 @@ async def run_connection_diagnostic(
                 checks.append(DiagnosticCheck(id="macos_local_network", status="warn", params={"reason": "permission"}))
 
     # --- Container network mode ---
+    progress["stage"] = "network_mode"
     # Not Docker-only: Podman runs BamDude in exactly the same two shapes and
     # its users were told "Not running in Docker", which reads as "you are on
     # bare metal" and sent them looking for the problem somewhere else (#3092).
@@ -510,21 +584,29 @@ async def run_connection_diagnostic(
             DiagnosticCheck(id="network_mode", status="skip", params={"reason": "system_container", "runtime": runtime})
         )
     else:
-        network_mode = _detect_container_network_mode(runtime)
+        # Off the loop: the link kinds come from `ip -d link show`.
+        network_mode = await asyncio.to_thread(_detect_container_network_mode, runtime)
         if network_mode is None:
             checks.append(
                 DiagnosticCheck(id="network_mode", status="skip", params={"reason": "unknown", "runtime": runtime})
             )
         else:
+            # macvlan and ipvlan L2 sit on the LAN with their own address, so
+            # discovery and the Virtual Printer work there. ipvlan L3 routes
+            # instead: no broadcast or multicast, so SSDP discovery cannot.
+            params: dict = {"mode": network_mode, "runtime": runtime}
+            if network_mode in ("macvlan", "ipvlan", "ipvlan_l3"):
+                params["reason"] = network_mode
             checks.append(
                 DiagnosticCheck(
                     id="network_mode",
-                    status="pass" if network_mode == "host" else "warn",
-                    params={"mode": network_mode, "runtime": runtime},
+                    status="pass" if network_mode in ("host", "macvlan", "ipvlan") else "warn",
+                    params=params,
                 )
             )
 
     # --- Subnet match ---
+    progress["stage"] = "subnet"
     # Skipped in bridge mode: the container IP is the bridge IP, not the host's,
     # so the comparison is meaningless and the network_mode check already covers it.
     if network_mode == "bridge":
@@ -545,6 +627,7 @@ async def run_connection_diagnostic(
             )
 
     # --- MQTT credentials / connection ---
+    progress["stage"] = "mqtt_auth"
     # ⚠️ The ORDER here is the point of the block, not a detail.
     #
     # A live, connected client answers this question for free. Asking it again
@@ -586,6 +669,7 @@ async def run_connection_diagnostic(
         checks.append(DiagnosticCheck(id="mqtt_auth", status="skip"))
 
     # --- LAN developer mode (only readable over a live MQTT connection) ---
+    progress["stage"] = "developer_mode"
     if state is not None and state.connected:
         if state.developer_mode is True:
             dev_status = "pass"
@@ -597,9 +681,11 @@ async def run_connection_diagnostic(
     else:
         checks.append(DiagnosticCheck(id="developer_mode", status="skip"))
 
+    progress["stage"] = "external_storage"
     checks.append(_external_storage_check(state, printer))
 
     # --- Printer is actually publishing on its report topic ---
+    progress["stage"] = "printer_publishing"
     # The mqtt_auth check above only proves TCP + TLS + auth + SUBSCRIBE
     # succeed. A printer with a wrong-cased serial — or one that simply isn't
     # publishing — still passes mqtt_auth because the broker accepts the
