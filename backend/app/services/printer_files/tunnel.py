@@ -119,8 +119,10 @@ class TunnelTransport:
             connector=self._connector,
         )
 
-    async def _on_lane(self, name: str, factory):
-        return await printer_file_runtime.run_task(tunnel_key(self._ip, self._port), name, factory)
+    async def _on_lane(self, name: str, factory, *, join_on_cancel: bool = False):
+        return await printer_file_runtime.run_task(
+            tunnel_key(self._ip, self._port), name, factory, join_on_cancel=join_on_cancel
+        )
 
     async def list_files(self, path: str, file_type: str = FILE_TYPE_MODEL) -> list[RemoteFile]:
         """``path`` is ignored: the internal catalogue is flat, not a tree.
@@ -198,6 +200,7 @@ class TunnelTransport:
         byte_budget: int | None = None,
         reserve_bytes: int = 0,
         progress: Callable[[int], None] | None = None,
+        join_on_cancel: bool = False,
     ) -> TransferOutcome:
         """Stream one whole file to ``destination``: each frame's body goes to disk as it comes.
 
@@ -261,7 +264,7 @@ class TunnelTransport:
                     await _settle(asyncio.to_thread(_discard, handle, destination))
 
         try:
-            return await self._on_lane("fetch", operation)
+            return await self._on_lane("fetch", operation, join_on_cancel=join_on_cancel)
         except _Stop as stop:
             return TransferOutcome(stop.status, received, reason=stop.reason)
         except TunnelProtocolError as exc:

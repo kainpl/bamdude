@@ -55,6 +55,11 @@ MEDIA_ROUTES = frozenset(
         "/product-parts/{part_id}/image",
         "/products/{product_id}/files/{library_file_id}/plates/{plate_index}/objects/{identify_id}/image",
         "/printers/{printer_id}/camera-cover",
+        # G10 D: a prepared download leaves through the same final gate as a picture —
+        # by a one-time grant (the browser's native download) or by the ordinary headers.
+        "/media-downloads/{grant}/{filename}",
+        "/printers/{printer_id}/files/download-jobs/{job_id}/artifact",
+        "/archives/{archive_id}/media-download-jobs/{job_id}/artifact",
         "/products/{product_id}/attachment-image/{filename}",
         "/products/{product_id}/cover-image",
         "/projects/{project_id}/cover-image",
@@ -205,6 +210,42 @@ class _MjpegBody(Response):
             await self.background()
 
 
+class WholeFileResponse(FileResponse):
+    """A file that is only ever sent whole (G10 D, P1-6).
+
+    A one-time download grant cannot honour a resume: the grant is spent by the
+    first request. So ``Range`` / ``If-Range`` are removed before Starlette's
+    range handling can see them — the answer is always a full 200 with
+    ``Accept-Ranges: none``. ``lease`` (optional) is told when the body opens
+    the file and when its cleanup has closed it, so the file's owner knows
+    exactly how long it is being read.
+    """
+
+    whole_only = True
+
+    def __init__(self, *args, lease=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.headers["accept-ranges"] = "none"
+        self.lease = lease
+
+    async def __call__(self, scope, receive, send):
+        # Sent as it is only outside the live-media routes (a compatibility download);
+        # on those routes the owned body below takes over and does the same.
+        if self.lease is not None:
+            self.lease.start()
+        try:
+            await super().__call__(_without_range(scope), receive, send)
+        finally:
+            if self.lease is not None:
+                self.lease.release()
+
+
+def _without_range(scope):
+    scope = dict(scope)
+    scope["headers"] = [(k, v) for k, v in scope["headers"] if k.lower() not in (b"range", b"if-range")]
+    return scope
+
+
 class _OwnedFileBody(FileResponse):
     """Keep Starlette Range/header semantics; own actual file I/O and close."""
 
@@ -212,6 +253,11 @@ class _OwnedFileBody(FileResponse):
         self.__dict__.update(response.__dict__)
         self.file = None
         self.pending: set[asyncio.Task] = set()
+        self.whole_only = getattr(response, "whole_only", False)
+        self.lease = getattr(response, "lease", None)
+
+    async def __call__(self, scope, receive, send):
+        await super().__call__(_without_range(scope) if self.whole_only else scope, receive, send)
 
     async def _io(self, function, *args):
         task = live_authority.own(asyncio.create_task(asyncio.to_thread(function, *args), name="live-media-file-io"))
@@ -225,6 +271,8 @@ class _OwnedFileBody(FileResponse):
 
     async def _open(self):
         if self.file is None:
+            if self.lease is not None:
+                self.lease.start()
 
             async def opening():
                 self.file = await asyncio.to_thread(open, self.path, "rb")
@@ -241,6 +289,8 @@ class _OwnedFileBody(FileResponse):
         if self.file is not None:
             await self._io(self.file.close)
             self.file = None
+        if self.lease is not None:
+            self.lease.release()
 
     async def _handle_simple(self, send, send_header_only, send_pathsend):
         await send({"type": "http.response.start", "status": self.status_code, "headers": self.raw_headers})

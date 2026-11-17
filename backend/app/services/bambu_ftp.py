@@ -185,6 +185,7 @@ async def _on_lane(
     *,
     admission_timeout: float | None = None,
     timeout: float | None = None,
+    join_on_cancel: bool = False,
 ) -> T:
     """Run ``target`` as one owned FTP worker on the printer's lane.
 
@@ -192,7 +193,12 @@ async def _on_lane(
     ``timeout`` bounds the wait for the result. Neither frees the lane early.
     """
     return await printer_file_runtime.call(
-        ftp_key(ip_address), name, target, admission_timeout=admission_timeout, timeout=timeout
+        ftp_key(ip_address),
+        name,
+        target,
+        admission_timeout=admission_timeout,
+        timeout=timeout,
+        join_on_cancel=join_on_cancel,
     )
 
 
@@ -1953,13 +1959,15 @@ async def download_to_path_async(
     byte_budget: int | None = None,
     reserve_bytes: int = 0,
     progress: Callable[[int], None] | None = None,
+    join_on_cancel: bool = False,
 ):
     """Stream one file to ``local_path`` on the printer's FTP lane; a typed :class:`TransferOutcome`.
 
     No cap on a healthy transfer: a stall is the socket idle deadline
     (``socket_timeout``). ``admission_timeout`` bounds only the wait for the lane
     and a worker slot. A cancelled caller asks the worker to stop; the lane is
-    released when its thread has ended.
+    released when its thread has ended. With ``join_on_cancel`` the cancelled
+    caller is also held until then, so the partial file is gone when it resumes.
     """
     from backend.app.services.printer_files.base import TRANSFER_BUSY, TRANSFER_CANCELLED, TransferOutcome
 
@@ -1984,7 +1992,9 @@ async def download_to_path_async(
             _end_session(worker, client)
 
     try:
-        return await _on_lane(ip_address, "fetch", target, admission_timeout=admission_timeout)
+        return await _on_lane(
+            ip_address, "fetch", target, admission_timeout=admission_timeout, join_on_cancel=join_on_cancel
+        )
     except LaneRefused as refused:
         return TransferOutcome(TRANSFER_BUSY, reason=refused.reason)
     except WorkerCancelled as cancelled:

@@ -56,7 +56,9 @@ from backend.app.i18n.api_errors import is_code  # noqa: E402
 # Forwarded refusals whose sentence is NOT the first argument: ``VariantError(status,
 # detail)`` and its builder ``_refusal(status, code, message)`` (services/product_variants,
 # WS-13 E1) — the index of the argument that carries the sentence (or ``{"message": …}``).
-FORWARDED_ARG_INDEX = {"VariantError": 1, "_refusal": 2, "ConnectorRefusal": 2}
+# ``DownloadRefused(status, code, message)`` (services/media_downloads, G10 D) is answered
+# as ``{"error": code, "message": message}``.
+FORWARDED_ARG_INDEX = {"VariantError": 1, "_refusal": 2, "ConnectorRefusal": 2, "DownloadRefused": 2}
 
 FORWARDED_EXCEPTIONS = frozenset(
     {

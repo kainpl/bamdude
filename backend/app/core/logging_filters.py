@@ -274,6 +274,26 @@ class CancelledPoolNoiseFilter(logging.Filter):
         return True
 
 
+class DownloadGrantFilter(logging.Filter):
+    """Mask the one-time grant in an access line of the native download door (G10 D).
+
+    ``GET /api/v1/media-downloads/<grant>/<name>`` carries its credential in the
+    path. The file handler drops GETs anyway, but the console — and whatever
+    collects it, journald or ``docker logs`` — would keep the secret. Attached
+    to the ``uvicorn.access`` LOGGER, so every handler sees the masked path.
+    The grant is spent by the request that logged it; masking it keeps a
+    refused or unfinished attempt from leaving a usable one behind.
+    """
+
+    _GRANT = re.compile(r"(/media-downloads/)[A-Za-z0-9_-]+")
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        args = record.args
+        if isinstance(args, tuple) and len(args) >= 3 and isinstance(args[2], str) and "/media-downloads/" in args[2]:
+            record.args = (*args[:2], self._GRANT.sub(lambda found: found.group(1) + "[grant]", args[2]), *args[3:])
+        return True
+
+
 class WriteRequestsOnlyFilter(logging.Filter):
     """Pass only state-changing HTTP verbs through uvicorn's access log.
 
