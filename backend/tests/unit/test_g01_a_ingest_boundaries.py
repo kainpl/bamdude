@@ -9,20 +9,36 @@ def test_every_request_upload_carries_its_actor_into_the_shared_writer():
     seen = set()
     for source in root.rglob("*.py"):
         for call in ast.walk(ast.parse(source.read_text(encoding="utf-8"))):
-            if not isinstance(call, ast.Call) or not isinstance(call.func, ast.Name):
+            if not isinstance(call, ast.Call):
                 continue
-            if call.func.id not in {"save_3mf_bytes_to_library", "store_library_upload"}:
+            direct = isinstance(call.func, ast.Name) and call.func.id in {
+                "save_3mf_bytes_to_library",
+                "store_library_upload",
+            }
+            provider = (
+                isinstance(call.func, ast.Attribute)
+                and isinstance(call.func.value, ast.Name)
+                and call.func.value.id == "model_import"
+                and call.func.attr == "import_resource"
+            )
+            if not (direct or provider):
                 continue
             assert "authority" in {argument.arg for argument in call.keywords}, (
                 f"{source.relative_to(root)}:{call.lineno}: carry the request actor; None is not an API-key identity"
             )
+            if provider:
+                assert "fresh_authority" in {argument.arg for argument in call.keywords}, (
+                    f"{source.relative_to(root)}:{call.lineno}: revalidate the provider import actor before publication"
+                )
             seen.add(source.relative_to(root).as_posix())
     assert {
         "api/routes/archives.py",
         "api/routes/printers.py",
         "api/routes/makerworld.py",
+        "api/routes/model_sources.py",
         "api/routes/library.py",
         "services/product_card.py",
+        "services/model_import.py",
         "services/telegram_handlers/library_upload_scene.py",
     } <= seen
 

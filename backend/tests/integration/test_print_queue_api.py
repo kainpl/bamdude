@@ -1961,39 +1961,30 @@ class TestAbortedStatusNormalisation:
     @pytest.mark.integration
     async def test_on_print_complete_normalises_aborted_to_cancelled(self, queue_item_factory, db_session):
         """Verify the completion handler maps 'aborted' → 'cancelled' for queue items."""
-        import asyncio
-        from unittest.mock import AsyncMock, MagicMock, patch
+        from unittest.mock import AsyncMock, patch
 
         from backend.app.models.archive import PrintArchive as _ArchiveForGuard
 
         item = await queue_item_factory(status="printing")
 
-        # Build a mock session whose execute returns our item
-        mock_result = MagicMock()
-        mock_result.scalars.return_value.all.return_value = [item]
+        from sqlalchemy.ext.asyncio import async_sessionmaker
 
-        mock_session = AsyncMock()
-        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session.__aexit__ = AsyncMock(return_value=False)
-        mock_session.execute = AsyncMock(return_value=mock_result)
-        mock_session.commit = AsyncMock()
-        # ⚠️ The completion guard reads the row's archive to check the event is
-        # the one that closes it. Hand it the real archive, and name the print
-        # in the payload below accordingly — a completion for some other print
-        # is now correctly refused, which is what this fixture used to rely on
-        # without meaning to.
         archive = await db_session.get(_ArchiveForGuard, item.archive_id)
-        mock_session.get = AsyncMock(return_value=archive)
-
-        tasks_before = set(asyncio.all_tasks())
+        archive.status = "printing"
+        archive.printer_id = item.queue_id
+        await db_session.commit()
+        factory = async_sessionmaker(db_session.bind, expire_on_commit=False)
 
         with (
-            patch("backend.app.main.async_session", return_value=mock_session),
+            patch("backend.app.main.async_session", new=factory),
             patch("backend.app.main.ws_manager") as mock_ws,
             patch("backend.app.main.mqtt_relay") as mock_relay,
             patch("backend.app.main.notification_service") as mock_notif,
             patch("backend.app.main.smart_plug_manager") as mock_plug,
             patch("backend.app.main.printer_manager") as mock_pm,
+            # Keep printer effects outside this queue-status regression; no
+            # fire-and-forget task may race the fixture's in-memory connection.
+            patch("backend.app.main.spawn_background_task", side_effect=lambda coro, **kw: coro.close()),
         ):
             mock_ws.send_print_complete = AsyncMock()
             mock_ws.broadcast = AsyncMock()
@@ -2002,6 +1993,10 @@ class TestAbortedStatusNormalisation:
             mock_notif.on_print_complete = AsyncMock()
             mock_plug.on_print_complete = AsyncMock()
             mock_pm.get_printer.return_value = None
+            mock_pm.get_current_print_user.return_value = None
+            mock_pm.get_status.return_value = None
+            mock_pm.get_finishing_print_runs.return_value = ()
+            mock_pm.get_current_print_run.return_value = None
 
             from backend.app.main import on_print_complete
 
@@ -2015,15 +2010,8 @@ class TestAbortedStatusNormalisation:
                 },
             )
 
-            # Cancel background tasks before leaving mock context
-            for task in asyncio.all_tasks() - tasks_before:
-                task.cancel()
-                try:
-                    await task
-                except (asyncio.CancelledError, Exception):
-                    pass
-
         # The item status should be normalised to 'cancelled', not 'aborted'
+        await db_session.refresh(item)
         assert item.status == "cancelled"
 
     @pytest.mark.asyncio
@@ -2066,38 +2054,30 @@ class TestAbortedStatusNormalisation:
     @pytest.mark.integration
     async def test_completed_status_passes_through_unchanged(self, queue_item_factory, db_session):
         """Verify normal statuses like 'completed' are not affected by normalisation."""
-        import asyncio
-        from unittest.mock import AsyncMock, MagicMock, patch
+        from unittest.mock import AsyncMock, patch
 
         from backend.app.models.archive import PrintArchive as _ArchiveForGuard
 
         item = await queue_item_factory(status="printing")
 
-        mock_result = MagicMock()
-        mock_result.scalars.return_value.all.return_value = [item]
+        from sqlalchemy.ext.asyncio import async_sessionmaker
 
-        mock_session = AsyncMock()
-        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session.__aexit__ = AsyncMock(return_value=False)
-        mock_session.execute = AsyncMock(return_value=mock_result)
-        mock_session.commit = AsyncMock()
-        # ⚠️ The completion guard reads the row's archive to check the event is
-        # the one that closes it. Hand it the real archive, and name the print
-        # in the payload below accordingly — a completion for some other print
-        # is now correctly refused, which is what this fixture used to rely on
-        # without meaning to.
         archive = await db_session.get(_ArchiveForGuard, item.archive_id)
-        mock_session.get = AsyncMock(return_value=archive)
-
-        tasks_before = set(asyncio.all_tasks())
+        archive.status = "printing"
+        archive.printer_id = item.queue_id
+        await db_session.commit()
+        factory = async_sessionmaker(db_session.bind, expire_on_commit=False)
 
         with (
-            patch("backend.app.main.async_session", return_value=mock_session),
+            patch("backend.app.main.async_session", new=factory),
             patch("backend.app.main.ws_manager") as mock_ws,
             patch("backend.app.main.mqtt_relay") as mock_relay,
             patch("backend.app.main.notification_service") as mock_notif,
             patch("backend.app.main.smart_plug_manager") as mock_plug,
             patch("backend.app.main.printer_manager") as mock_pm,
+            # Keep printer effects outside this queue-status regression; no
+            # fire-and-forget task may race the fixture's in-memory connection.
+            patch("backend.app.main.spawn_background_task", side_effect=lambda coro, **kw: coro.close()),
         ):
             mock_ws.send_print_complete = AsyncMock()
             mock_ws.broadcast = AsyncMock()
@@ -2106,6 +2086,10 @@ class TestAbortedStatusNormalisation:
             mock_notif.on_print_complete = AsyncMock()
             mock_plug.on_print_complete = AsyncMock()
             mock_pm.get_printer.return_value = None
+            mock_pm.get_current_print_user.return_value = None
+            mock_pm.get_status.return_value = None
+            mock_pm.get_finishing_print_runs.return_value = ()
+            mock_pm.get_current_print_run.return_value = None
 
             from backend.app.main import on_print_complete
 
@@ -2119,14 +2103,7 @@ class TestAbortedStatusNormalisation:
                 },
             )
 
-            # Cancel background tasks before leaving mock context
-            for task in asyncio.all_tasks() - tasks_before:
-                task.cancel()
-                try:
-                    await task
-                except (asyncio.CancelledError, Exception):
-                    pass
-
+        await db_session.refresh(item)
         assert item.status == "completed"
 
     # ========================================================================
