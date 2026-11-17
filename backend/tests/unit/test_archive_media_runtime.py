@@ -166,7 +166,9 @@ class TestTheWritersAreOwned:
         service = ArchiveService(db_session)
         assert await service.attach_timelapse(archive_id, b"video", "a.mp4") is False
         assert service.media_refusal == archive_media.REFUSED_RESTORING
-        assert [p for p in tmp_path.rglob("*") if p.is_file()] == []
+        # Not a folder, not a staged file: the attach itself never began (a refused
+        # publication alone would have left the archive's folder behind).
+        assert list(tmp_path.rglob("*")) == []
 
     async def test_a_conversion_does_not_start(self, tmp_path, monkeypatch):
         from backend.app.services import archive as archive_module
