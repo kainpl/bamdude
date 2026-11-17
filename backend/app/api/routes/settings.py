@@ -1316,6 +1316,13 @@ async def _restore_backup(file: UploadFile, db: AsyncSession, *, authority=None)
 
                 if not await printer_file_runtime.quiesce():
                     raise HTTPException(409, "Printer file transfers have not stopped; retry restore after they finish")
+                # Attaching, converting or removing an archive's video writes the files and
+                # rows this restore replaces (G10 C4): admission closes, and every such
+                # operation is waited for to its real end, or the restore is refused.
+                from backend.app.services.archive_media_runtime import archive_media_runtime
+
+                if not await archive_media_runtime.quiesce():
+                    raise HTTPException(409, "Archive video work has not stopped; retry restore after it finishes")
                 if virtual_printer_manager.is_enabled:
                     await virtual_printer_manager.configure(enabled=False)
                 print_scheduler.stop()

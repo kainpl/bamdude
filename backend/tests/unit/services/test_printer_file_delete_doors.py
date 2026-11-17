@@ -8,6 +8,7 @@ import asyncio
 import hashlib
 import threading
 from contextlib import asynccontextmanager
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -124,6 +125,48 @@ async def _refused():
     return DeleteResult.FAILED
 
 
+class _Lane:
+    """A transport double: read, check and delete in ONE call — what a real transport does in one
+    occupancy of the printer's file lane (``delete_verified``)."""
+
+    def __init__(self, there=b"video", answer=None, raises=None):
+        from backend.app.services.bambu_ftp import DeleteResult
+
+        self.there, self.raises = there, raises
+        self.answer = DeleteResult.DELETED if answer is None else answer
+        self.failed = DeleteResult.FAILED
+        self.reads, self.deleted, self.allowed = 0, [], None
+
+    async def delete_verified(self, path, *, ready, verify, may_run=None):
+        if not ready():
+            return self.failed
+        self.reads += 1
+        if not verify(self.there):
+            return self.failed
+        self.allowed = may_run() if may_run is not None else True
+        if not self.allowed:
+            return self.failed
+        if self.raises is not None:
+            raise self.raises
+        self.deleted.append(path)
+        return self.answer
+
+
+def _live_copy(data=b"video"):
+    """An archive shows a live copy of ``data`` read from the path under test (G10 C): the registry
+    lookup itself runs against a real database in ``test_archive_media_captured_work.py``."""
+    from backend.app.services.archive_media import CopyPin
+
+    # ``local`` is any file that exists: the pin also asks the disk.
+    pin = (
+        None if data is None else CopyPin("asset", 1, "archive/v.mp4", hashlib.sha256(data).hexdigest(), Path(__file__))
+    )
+    return patch("backend.app.services.archive_media.pin_live_copy", new=AsyncMock(return_value=pin))
+
+
+_DEVICE = {"id": 1, "name": "X2D", "model": "X2D", "connector_identity": "printer-identity"}
+
+
 class TestTheAnswerIsRead:
     async def test_a_copy_the_printer_did_not_delete_is_not_counted(self):
         from backend.app.services.printer_cleanup import remove_verified_copies
@@ -143,36 +186,30 @@ class TestTheAnswerIsRead:
     async def test_a_recording_the_printer_kept_is_not_reported_removed(self, printer):
         from backend.app.services.timelapse_files import remove_recording_after_attach
 
-        device = SimpleNamespace(id=1, name="X2D", model="X2D")
         for answer, expected in ((DeleteResult.FAILED, False), (DeleteResult.DELETED, True)):
-            transport = SimpleNamespace(delete=AsyncMock(return_value=answer))
+            lane = _Lane(answer=answer)
             with (
                 patch("backend.app.api.routes.settings.get_setting", new=AsyncMock(return_value="true")),
-                patch("backend.app.services.printer_files.factory.transport_for", return_value=transport),
+                patch("backend.app.services.printer_files.factory.transport_for", return_value=lane),
+                _live_copy(),
             ):
-                assert await remove_recording_after_attach(device, "/timelapse/video.mp4") is expected
-            assert transport.delete.await_args.kwargs["may_run"]() is True
+                assert (
+                    await remove_recording_after_attach(SimpleNamespace(**_DEVICE), "/timelapse/video.mp4") is expected
+                )
+            assert lane.allowed is True
 
     async def test_a_recording_is_not_removed_from_a_printer_nobody_hears(self, printer):
         from backend.app.services.timelapse_files import remove_recording_after_attach
 
         printer.state.connected = False
-        seen = {}
-
-        async def delete(path, *, may_run=None):
-            seen["allowed"] = may_run()
-            return DeleteResult.DELETED if seen["allowed"] else DeleteResult.FAILED
-
-        device = SimpleNamespace(id=1, name="X2D", model="X2D")
+        lane = _Lane()
         with (
             patch("backend.app.api.routes.settings.get_setting", new=AsyncMock(return_value="true")),
-            patch(
-                "backend.app.services.printer_files.factory.transport_for",
-                return_value=SimpleNamespace(delete=delete),
-            ),
+            patch("backend.app.services.printer_files.factory.transport_for", return_value=lane),
+            _live_copy(),
         ):
-            assert await remove_recording_after_attach(device, "/timelapse/video.mp4") is False
-        assert seen == {"allowed": False}
+            assert await remove_recording_after_attach(SimpleNamespace(**_DEVICE), "/timelapse/video.mp4") is False
+        assert lane.allowed is False and lane.deleted == []
 
 
 class TestTheCardClear:

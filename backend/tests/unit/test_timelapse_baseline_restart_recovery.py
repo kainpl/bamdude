@@ -94,7 +94,8 @@ async def test_running_observed_captures_baseline_on_restart_recovery():
         # the baseline at the moment it returned.
         captured = _timelapse_baselines.get(1)
 
-    assert captured == {"earlier_a.mp4", "earlier_b.mp4", "earlier_c.mp4"}, (
+    # One recording on one medium — the storage and the path, not the bare name (G10 C3).
+    assert captured == {f"external:/timelapse/earlier_{c}.mp4" for c in "abc"}, (
         "restart-recovery handler must capture the printer's existing-videos "
         "baseline so the completion-time scan can set-diff to find the new file"
     )

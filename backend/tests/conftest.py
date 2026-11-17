@@ -450,6 +450,24 @@ def _current_credential_admission_bootstrap():
 
 
 @pytest.fixture(autouse=True)
+def _archive_media_admission_bootstrap():
+    """Every test starts with archive media admission open, as lifespan startup leaves it (G10 C4).
+
+    The lesson of the printer file runtime: a restore test closes admission for
+    good, as production does until the restart, and every later test in the
+    same process is then refused. Reopened the way lifespan does — with an
+    operation still running it stays closed.
+    """
+    from backend.app.services.archive_media_runtime import archive_media_runtime
+
+    if archive_media_runtime.closed:
+        try:
+            archive_media_runtime.reopen()
+        except RuntimeError:
+            pass
+
+
+@pytest.fixture(autouse=True)
 def _printer_file_admission_bootstrap():
     """Every test starts with printer file admission open, as lifespan startup leaves it (G10 A).
 

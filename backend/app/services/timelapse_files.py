@@ -38,6 +38,14 @@ INTERNAL_TIMELAPSE_ROOT = "/userdata/media/timelapse/"
 # answered", and a baseline recorded from the second is not evidence of anything.
 _listing_answered: dict[int, bool] = {}
 
+# What each medium said in the last listing of each printer (G10 C3): the
+# baseline kept with an archive records it per medium, so "the card was not
+# asked" and "the card is empty" stay two different facts after a restart.
+MEDIUM_ANSWERED = "answered"
+MEDIUM_UNAVAILABLE = "unavailable"
+MEDIUM_NOT_ASKED = "not_asked"
+_listing_media: dict[int, dict[str, str]] = {}
+
 # Automatic scans of a card whose file service did not let us connect wait
 # before they knock again (upstream 36991dadc, G10 spec r4 §5.2): per endpoint,
 # 30 s doubling to 5 min. A manual scan is never held back, and any answer from
@@ -77,6 +85,34 @@ def last_listing_answered(printer_id: int) -> bool:
     listed: nothing has been heard from it (G10 CR2).
     """
     return _listing_answered.get(printer_id, False)
+
+
+def last_listing_media(printer_id: int) -> dict[str, str]:
+    """``{"external": …, "internal": …}`` of the last listing: answered, unavailable or not asked."""
+    return dict(_listing_media.get(printer_id, {}))
+
+
+def recording_storage(remote_path: str) -> str:
+    """The medium a recording's path belongs to — read off the path, as the reader and the deleter read it."""
+    return "internal" if (remote_path or "").startswith(INTERNAL_TIMELAPSE_ROOT) else "external"
+
+
+def recording_key(entry: dict) -> str:
+    """One recording on one medium: ``<storage>:<normalised path>``.
+
+    Two files of the same name on the card and in internal storage are two
+    recordings; a bare name cannot tell them apart.
+    """
+    from backend.app.services.archive_media import normalise_remote_path
+
+    path = entry.get("path") or f"/timelapse/{entry.get('name', '')}"
+    return f"{recording_storage(path)}:{normalise_remote_path(path)}"
+
+
+def _is_in_baseline(entry: dict, baseline: set[str]) -> bool:
+    """Whether a listed recording was already there. A baseline holds keys (:func:`recording_key`);
+    a bare name in it — an older caller's — excludes that name on every medium, the safe direction."""
+    return recording_key(entry) in baseline or entry.get("name", "") in baseline
 
 
 def _videos_only(entries: list[dict]) -> list[dict]:
@@ -151,14 +187,20 @@ async def _list_both_media(printer, *, automatic: bool = False) -> tuple[list[di
         videos = _videos_only(found)
         if videos:
             _note_answered(printer)
+            _listing_media[printer.id] = {
+                "external": MEDIUM_ANSWERED if card_answered else MEDIUM_UNAVAILABLE,
+                "internal": MEDIUM_NOT_ASKED,
+            }
             return videos, directory, card_answered
     if card_answered:
         _note_answered(printer)
+    card_state = MEDIUM_NOT_ASKED if card_skipped else MEDIUM_ANSWERED if card_answered else MEDIUM_UNAVAILABLE
 
     # Nothing on the card. On a machine that records internally there is a
     # whole catalogue FTP cannot see — this is the gap that left an archive
     # without its recording while the file sat on the printer.
     if not _supports_internal_timelapse(printer):
+        _listing_media[printer.id] = {"external": card_state, "internal": MEDIUM_NOT_ASKED}
         return [], None, card_answered
 
     from backend.app.services.printer_files.factory import transport_for
@@ -167,8 +209,10 @@ async def _list_both_media(printer, *, automatic: bool = False) -> tuple[list[di
         entries = await transport_for(printer, "internal").list_files("/", file_type="timelapse")
     except Exception as exc:  # noqa: BLE001 — same as above: absence is normal
         logger.debug("[TIMELAPSE] internal catalogue failed on %s: %s", printer.name, exc)
+        _listing_media[printer.id] = {"external": card_state, "internal": MEDIUM_UNAVAILABLE}
         return [], None, False
 
+    _listing_media[printer.id] = {"external": card_state, "internal": MEDIUM_ANSWERED}
     videos = _videos_only([e.as_dict() for e in entries])
     return (videos, "internal", card_answered) if videos else ([], None, card_answered)
 
@@ -215,7 +259,7 @@ def pick_new_recording(
     Scan for timelapse — the first of them would be an arbitrary video attached
     to this print, and with the tidy-up on, deleted off the printer.
     """
-    new_files = [f for f in video_files if f.get("name", "") not in baseline_names]
+    new_files = [f for f in video_files if not _is_in_baseline(f, baseline_names)]
     if not new_files:
         return None
 
@@ -249,12 +293,64 @@ async def read_timelapse_video(printer, remote_path: str) -> bytes | None:
     """
     from backend.app.services.printer_files.factory import transport_for
 
-    storage = "internal" if remote_path.startswith(INTERNAL_TIMELAPSE_ROOT) else "external"
-    return await transport_for(printer, storage).read_bytes(remote_path)
+    return await transport_for(printer, recording_storage(remote_path)).read_bytes(remote_path)
 
 
-async def remove_recording_after_attach(printer, remote_path: str) -> bool:
+def remote_source(printer, remote_path: str, entry: dict | None = None):
+    """The recording at ``remote_path`` as the publication seam claims it (``archive_media.RemoteSource``).
+
+    The printer is named by its immutable ``connector_identity`` — a numeric id
+    is handed to the next printer once this one is deleted — and the medium is
+    read off the path, exactly as :func:`read_timelapse_video` reads it. ``None``
+    for a printer without an identity: nothing is claimed then, rather than a
+    claim under a name that identifies nobody.
+    """
+    from backend.app.services.archive_media import RemoteSource
+
+    identity = getattr(printer, "connector_identity", None)
+    if not isinstance(identity, str) or not identity:
+        return None
+    entry = entry or {}
+    size = entry.get("size")
+    mtime = entry.get("mtime")
+    return RemoteSource(
+        printer_identity=identity,
+        storage=recording_storage(remote_path),
+        path=remote_path,
+        size=size if isinstance(size, int) and not isinstance(size, bool) else None,
+        mtime_raw=str(mtime) if mtime is not None else None,
+    )
+
+
+async def remove_recording_after_attach(printer, remote_path: str, *, may_run=None) -> bool:
     """Delete a recording from the printer once BamDude has a copy of it.
+
+    ⚠️ **"A copy" means these bytes, proven, on disk, now — not this name** (G10 C).
+    Three things must all hold at the moment of the command:
+
+    * an archive holds a LIVE copy — the primary row that claims this printer,
+      medium and path, shown by its archive, its file on disk. It is pinned
+      for the whole tidy-up (``archive_media.pin_live_copy``): replacing or
+      removing that video meanwhile revokes the pin, and a revoked pin
+      deletes nothing. A receipt left by a replaced video is history and
+      authorises nothing;
+    * the recording as it is on the printer NOW has that copy's SHA-256 — it
+      is read again and deleted in ONE occupancy of the printer's file lane
+      (``delete_verified``), so nothing of ours comes between the proof and
+      the command. A printer that recorded another video under the name
+      meanwhile keeps it;
+    * the file guard and the caller's own proof, asked last.
+
+    A transport that cannot read and delete in one occupancy deletes nothing.
+    The cost is a second read of the recording, paid only by installs that
+    switched the tidy-up on. What stays outside: another client of the printer
+    that replaces the file in the instant between that read and the command,
+    and a delete the firmware has already accepted.
+
+    *may_run* — the caller's own proof that it still owns this printer's
+    moment (the scan after a print: still the same run). It is asked with the
+    file guard after the wait for the printer's file channel, immediately
+    before the command.
 
     Opt-in, off by default, and asked here rather than at each of the three
     call sites so the answer cannot differ between the automatic scan after a
@@ -289,11 +385,37 @@ async def remove_recording_after_attach(printer, remote_path: str) -> bool:
             enabled = (await get_setting(db, "delete_timelapse_after_attach") or "").lower() == "true"
         if not enabled:
             return False
+        if may_run is not None and not may_run():
+            return False
 
-        storage = "internal" if remote_path.startswith(INTERNAL_TIMELAPSE_ROOT) else "external"
-        result = await transport_for(printer, storage).delete(
-            remote_path, may_run=printer_file_guard.may_delete(printer.id, remote_path)
-        )
+        from backend.app.core.config import settings as app_settings
+        from backend.app.services import archive_media
+
+        identity = getattr(printer, "connector_identity", None)
+        storage = recording_storage(remote_path)
+        pin = None
+        if isinstance(identity, str) and identity:
+            async with async_session() as db:
+                pin = await archive_media.pin_live_copy(db, app_settings.base_dir, identity, storage, remote_path)
+        try:
+            transport = transport_for(printer, storage)
+            verified_delete = getattr(transport, "delete_verified", None)
+            if verified_delete is None:
+                logger.info(
+                    "[TIMELAPSE] %s stays on %s — this transport cannot prove what it deletes",
+                    remote_path,
+                    printer.name,
+                )
+                return False
+            # Decided on the lane, after its wait: a place in the lane is no right to delete.
+            result = await verified_delete(
+                remote_path,
+                ready=lambda: pin is not None and pin.holds(),
+                verify=lambda data: pin is not None and pin.matches(data),
+                may_run=printer_file_guard.may_delete(printer.id, remote_path, also=may_run),
+            )
+        finally:
+            archive_media.release_pin(pin)
     except Exception as exc:  # noqa: BLE001 — tidying up must not cost an archive
         logger.warning("[TIMELAPSE] Could not remove %s from %s: %s", remote_path, printer.name, exc)
         return False

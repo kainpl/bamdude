@@ -167,6 +167,24 @@ class PrinterFileTransport(Protocol):
         """Delete one file. ``may_run`` is asked after the lane wait, immediately before the command."""
         ...
 
+    async def delete_verified(
+        self,
+        path: str,
+        *,
+        ready: Callable[[], bool],
+        verify: Callable[[bytes | None], bool],
+        may_run: Callable[[], bool] | None = None,
+    ) -> DeleteResult:
+        """Delete one file only as the very bytes the caller expects — read, checked and deleted in ONE
+        occupancy of the printer's file lane, so nothing of ours can change the file in between.
+
+        ``ready`` is asked first, after the lane wait and before anything is read; ``verify`` gets the
+        bytes that are on the printer now; ``may_run`` is asked last, immediately before the command.
+        All three are synchronous: on FTP they run in the lane's worker thread. Anything but a
+        positive answer from all of them is ``FAILED`` and the file stays.
+        """
+        ...
+
     async def upload(
         self,
         local_path: Path,

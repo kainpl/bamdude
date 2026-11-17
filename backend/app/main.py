@@ -5,6 +5,7 @@ import os
 import re
 import secrets
 import time
+from collections.abc import Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -118,7 +119,7 @@ from backend.app.i18n.api_errors import install as install_api_error_translation
 from backend.app.models.smart_plug import SmartPlug
 from backend.app.services import swap_compatibility
 from backend.app.services.ams_slot_presence import spool_present
-from backend.app.services.archive import ArchiveService, resolve_display_stem
+from backend.app.services.archive import ArchiveService
 from backend.app.services.auto_queue_scheduler import auto_queue_scheduler
 from backend.app.services.background_dispatch import background_dispatch, delete_internal_by_name
 from backend.app.services.bambu_mqtt import HMS_SEVERITY_NOTIFY_THRESHOLD, PrinterState
@@ -162,10 +163,13 @@ from backend.app.services.stock_forecast_alerts import stock_forecast_alerts
 # recording in internal storage and then tried to fetch it over FTP.
 from backend.app.services.timelapse_files import (
     last_listing_answered as _last_listing_answered,
+    last_listing_media as _last_listing_media,
     last_recording_path as _last_recording_path,
     list_timelapse_videos as _list_timelapse_videos,
     pick_new_recording as _pick_new_recording,
     read_timelapse_video,
+    recording_key as _recording_key,
+    remote_source,
     remove_recording_after_attach,
 )
 from backend.app.utils.ams_humidity import ams_humidity_percent
@@ -584,6 +588,10 @@ _timelapse_baselines: dict[int, set[str]] = {}
 # completion, and an empty baseline resolves it — but the completion scan then
 # refuses to guess between several new recordings.
 _untrusted_timelapse_baselines: set[int] = set()
+# Whose baseline that is: (archive incarnation, process storage epoch) of the
+# capture. A numeric printer id alone would hand one print's list to the next
+# print — or to the next printer — that got the id (G10 C3).
+_timelapse_baseline_owners: dict[int, tuple[str | None, int]] = {}
 
 # Track active bed cooldown monitoring tasks: {printer_id: asyncio.Task}
 _bed_cooldown_tasks: dict[int, asyncio.Task] = {}
@@ -5407,22 +5415,15 @@ async def _on_print_start_impl(printer_id: int, data: dict):
                 # is left alone — accumulating one finish photo per run is fine.
                 stale_timelapse_relpath = archive.timelapse_path
                 if stale_timelapse_relpath:
-                    archive.timelapse_path = None
-                    try:
-                        stale_path = app_settings.base_dir / stale_timelapse_relpath
-                        if stale_path.is_file():
-                            stale_path.unlink()
-                            logger.info(
-                                "Deleted stale timelapse %s on reprint of archive %s",
-                                stale_timelapse_relpath,
-                                expected_archive_id,
-                            )
-                    except OSError as e:
-                        logger.warning(
-                            "Failed to delete stale timelapse %s on reprint: %s",
-                            stale_timelapse_relpath,
-                            e,
-                        )
+                    # The registry row goes with the pointer, in this transaction —
+                    # the seam's writer, not a bare assignment (G10 C).
+                    from backend.app.services import archive_media
+
+                    await archive_media.detach_primary_in(db, archive)
+                # The earlier run's list of recordings is not this run's boundary.
+                from backend.app.services import timelapse_baseline as _timelapse_baseline
+
+                _timelapse_baseline.forget_in(archive)
                 # #1403 follow-up: our dispatcher normally creates the archive
                 # with printer_id already set, but reprint / adopted /
                 # externally-registered expected prints can reach this branch
@@ -5434,6 +5435,16 @@ async def _on_print_start_impl(printer_id: int, data: dict):
                 if archive.printer_id != printer_id:
                     archive.printer_id = printer_id
                 await db.commit()
+                if stale_timelapse_relpath:
+                    # Only now, after the commit that took it off the row, and
+                    # only when nobody else shows it (G10 C): a rollback used to
+                    # leave the row pointing at a file already gone.
+                    await archive_media.unlink_released(db, app_settings.base_dir, stale_timelapse_relpath, archive.id)
+                    logger.info(
+                        "Released stale timelapse %s on reprint of archive %s",
+                        stale_timelapse_relpath,
+                        expected_archive_id,
+                    )
 
                 # Our own dispatch, registered by the dispatcher itself: a proven run.
                 bound = _bind_print_file_analysis_context(
@@ -5529,7 +5540,14 @@ async def _on_print_start_impl(printer_id: int, data: dict):
                 # falls into its "take baseline now" fallback, which snapshots
                 # AFTER the new MP4 already exists and never matches a diff
                 # (#1403 follow-up).
-                await _capture_timelapse_baseline_at_start(printer, printer_id, logger)
+                await _capture_timelapse_baseline_at_start(
+                    printer,
+                    printer_id,
+                    logger,
+                    archive_id=archive.id,
+                    archive_identity=archive.recovery_identity,
+                    may_run=owns_start,
+                )
 
             return  # Skip creating a new archive
 
@@ -5799,7 +5817,14 @@ async def _on_print_start_impl(printer_id: int, data: dict):
         # is still true. Taken after the 3MF download instead, a print shorter
         # than its own download would already have closed its video, and the
         # completion-time diff would find nothing new to attach.
-        await _capture_timelapse_baseline_at_start(printer, printer_id, logger)
+        await _capture_timelapse_baseline_at_start(
+            printer,
+            printer_id,
+            logger,
+            archive_id=archive.id,
+            archive_identity=archive.recovery_identity,
+            may_run=owns_start,
+        )
 
         await ws_manager.send_archive_created(
             {
@@ -6146,42 +6171,162 @@ async def _on_print_start_impl(printer_id: int, data: dict):
             logger.warning("[SPOOLMAN] Failed to store tracking data: %s", e)
 
 
-async def _capture_timelapse_baseline_at_start(printer, printer_id: int, logger: logging.Logger) -> None:
-    """Snapshot the printer's existing timelapse video filenames into
-    ``_timelapse_baselines[printer_id]`` so the completion-time scan can diff
-    against it and attach only the video this print produced. Best-effort:
-    a capture failure just means the completion scan falls back to its own
-    baseline. Shared by ``on_print_start`` and the restart-recovery hook
-    ``on_print_running_observed`` (#1485 follow-up)."""
+async def _capture_timelapse_baseline_at_start(
+    printer,
+    printer_id: int,
+    logger: logging.Logger,
+    *,
+    archive_id: int | None = None,
+    archive_identity: str | None = None,
+    taken: str = "start",
+    may_run: Callable[[], bool] | None = None,
+) -> None:
+    """Snapshot the printer's existing timelapse video filenames so the
+    completion-time scan can diff against it and attach only the video this
+    print produced. Shared by ``on_print_start`` and the restart-recovery hook
+    ``on_print_running_observed`` (#1485 follow-up).
+
+    Kept in ``_timelapse_baselines[printer_id]`` and — when the archive is known
+    — with the archive itself (``services/timelapse_baseline``, G10 C3), so a
+    restart during the print does not lose the boundary. Best-effort: a capture
+    that fails leaves no baseline, and the scan then attaches nothing by itself.
+
+    ⚠️ The list belongs to one execution, one printer and one storage epoch.
+    The process epoch is captured before the listing and compared after it — a
+    restore that won meanwhile gets no old observation written into its storage
+    — and *may_run* (the start's own proof) is asked at the same two points and
+    again under the archive's write scope. A **late** capture first reads what
+    the archive already keeps: a trusted boundary addressed to this very
+    execution is taken back into memory and the card is not read again — a
+    reread that fails must not replace it.
+    """
+    from backend.app.services import queue_sources, timelapse_baseline
+
     try:
+        epoch = queue_sources.current_epoch()
+        if may_run is not None and not may_run():
+            return
+        if taken == timelapse_baseline.TAKEN_LATE and archive_id is not None:
+            async with async_session() as db:
+                from backend.app.models.archive import PrintArchive
+
+                kept_row = await db.get(PrintArchive, archive_id)
+                kept = None
+                if kept_row is not None and kept_row.recovery_identity == archive_identity:
+                    address = await timelapse_baseline.address_of(db, kept_row, printer)
+                    kept = timelapse_baseline.read(kept_row.extra_data, address=address) if address else None
+            if kept is not None and kept[1]:
+                if queue_sources.current_epoch() != epoch or (may_run is not None and not may_run()):
+                    return  # overtaken while the archive was read: nothing of the old run reaches memory
+                _timelapse_baselines[printer_id] = kept[0]
+                _untrusted_timelapse_baselines.discard(printer_id)
+                _timelapse_baseline_owners[printer_id] = (
+                    archive_identity,
+                    epoch,
+                    timelapse_baseline.media_of(kept_row.extra_data),
+                )
+                logger.info(
+                    "[TIMELAPSE] Baseline for printer %s restored from archive %s (%s recordings)",
+                    printer_id,
+                    archive_id,
+                    len(kept[0]),
+                )
+                return
         baseline_files, _ = await _list_timelapse_videos(printer, automatic=True)
-        _timelapse_baselines[printer_id] = {f.get("name", "") for f in baseline_files}
-        if _last_listing_answered(printer.id):
+        if queue_sources.current_epoch() != epoch or (may_run is not None and not may_run()):
+            # A restore, or a newer print, won while the printer was being read.
+            logger.info("[TIMELAPSE] Baseline for printer %s discarded: it was overtaken while being read", printer_id)
+            return
+        names = {f.get("name", "") for f in baseline_files}
+        keys = {_recording_key(f) for f in baseline_files}
+        trusted = bool(_last_listing_answered(printer.id))
+        media = _last_listing_media(printer.id)
+        if archive_id is not None:
+            # The archive first, memory after: a list the archive refused — the run
+            # was reset, a restore won, a proven list is already kept — must not
+            # sit in memory as this printer's boundary. The scan then reads what
+            # the archive keeps.
+            async with async_session() as db:
+                address = (
+                    timelapse_baseline.Address(
+                        archive_identity, printer.connector_identity, await timelapse_baseline.storage_epoch(db)
+                    )
+                    if archive_identity and getattr(printer, "connector_identity", None)
+                    else None
+                )
+                await db.rollback()
+                kept_with_archive = await timelapse_baseline.save(
+                    db,
+                    archive_id,
+                    archive_identity,
+                    timelapse_baseline.record(
+                        names, trusted=trusted, taken=taken, entries=baseline_files, media=media, address=address
+                    ),
+                    expected_epoch=epoch,
+                    may_run=may_run,
+                )
+            if (
+                not kept_with_archive
+                or queue_sources.current_epoch() != epoch
+                or (may_run is not None and not may_run())
+            ):
+                logger.info(
+                    "[TIMELAPSE] Baseline for printer %s is not taken into memory: archive %s did not keep it",
+                    printer_id,
+                    archive_id,
+                )
+                return
+        _timelapse_baselines[printer_id] = keys
+        _timelapse_baseline_owners[printer_id] = (archive_identity, epoch, media)
+        if trusted:
             _untrusted_timelapse_baselines.discard(printer_id)
         else:
             _untrusted_timelapse_baselines.add(printer_id)
             logger.warning(
-                "[TIMELAPSE] Baseline for printer %s taken while its storage did not answer — a single new "
-                "recording will still be attached at completion, several will not be guessed between",
+                "[TIMELAPSE] Baseline for printer %s taken while its storage did not answer — nothing will be "
+                "attached automatically at completion; Scan for timelapse stays available",
                 printer_id,
             )
         logger.info(
             "[TIMELAPSE] Baseline at print start: %s video files for printer %s",
-            len(_timelapse_baselines[printer_id]),
+            len(names),
             printer_id,
         )
     except Exception as e:
         logger.warning("[TIMELAPSE] Failed to capture baseline at print start: %s", e)
 
 
-def _pop_timelapse_baseline(printer_id: int) -> tuple[set[str] | None, bool]:
-    """Hand a finished print's baseline to its scan: ``(names, trusted)``, both forgotten here.
+def _pop_timelapse_baseline(printer_id: int, *, archive_identity: str | None = None) -> tuple[set[str] | None, bool]:
+    """Hand a finished print's baseline to its scan: ``(recordings, trusted)``, both forgotten here.
 
-    ``(None, True)`` when no baseline was taken — the scan takes its own.
+    ``(None, True)`` when memory holds none FOR THIS PRINT — none was taken, or
+    the one held was taken for another archive incarnation or in another
+    storage epoch. The scan then reads the one kept with the archive.
     """
+
+    recordings, trusted, _media = _take_timelapse_baseline(printer_id, archive_identity=archive_identity)
+    return recordings, trusted
+
+
+def _take_timelapse_baseline(
+    printer_id: int, *, archive_identity: str | None = None
+) -> tuple[set[str] | None, bool, dict | None]:
+    """``(recordings, trusted, media)`` — :func:`_pop_timelapse_baseline` plus what each medium said at the capture."""
+    from backend.app.services import queue_sources
+
     trusted = printer_id not in _untrusted_timelapse_baselines
     _untrusted_timelapse_baselines.discard(printer_id)
-    return _timelapse_baselines.pop(printer_id, None), trusted
+    recordings = _timelapse_baselines.pop(printer_id, None)
+    owner = _timelapse_baseline_owners.pop(printer_id, None)
+    media = None
+    if recordings is not None and owner is not None:
+        owner_identity, owner_epoch, *rest = owner
+        media = rest[0] if rest else None
+        if owner_epoch != queue_sources.current_epoch() or (
+            archive_identity is not None and owner_identity is not None and owner_identity != archive_identity
+        ):
+            return None, True, None
+    return recordings, trusted, media
 
 
 async def _scan_for_timelapse_with_retries(
@@ -6189,27 +6334,52 @@ async def _scan_for_timelapse_with_retries(
     baseline_names: set[str] | None = None,
     *,
     baseline_trusted: bool = True,
+    baseline_media: dict | None = None,
     expected_identity: str | None = None,
     expected_epoch: int | None = None,
+    may_run: Callable[[], bool] | None = None,
 ):
     """
     Scan for timelapse with retries using a snapshot-diff approach.
 
     Instead of picking the "most recent by mtime" (unreliable when the printer
-    clock is wrong in LAN-only mode), we snapshot existing MP4 filenames BEFORE
-    waiting, then look for any NEW filename that appears after each delay.
+    clock is wrong in LAN-only mode), the names that existed BEFORE this print
+    recorded anything are the boundary, and a NEW name after each delay is the
+    print's recording.
 
-    If baseline_names is provided (captured at print start), it is used directly.
-    Otherwise falls back to taking a baseline at completion time (best-effort
-    for prints started before app restart).
+    ⚠️ **The boundary is never taken here** (G10 C3). ``baseline_names`` is the
+    one captured at print start; without it the one kept with the archive is
+    read (a restart during the print). A list taken now, after the print, is
+    not a boundary — it already holds the print's own video — so with neither,
+    nothing is attached and **Scan for timelapse** is left to the operator.
+    The same when the boundary was read off storage that did not answer
+    (*baseline_trusted* False): not even a single new recording is taken, an
+    unread card is not an empty one.
 
-    Falls back to name-matching (print name contained in MP4 filename) if no
-    new file appears after all retries.
+    ⚠️ **A name that resembles the print is no reason to attach.** The old
+    name-match fallback is gone: it attached, and with the tidy-up on deleted
+    from the printer, an earlier print's video of the same model.
 
-    *baseline_trusted* is False when the baseline was taken off a card that did
-    not answer; several new recordings are then left for Scan for timelapse
-    instead of the first being taken (audit D6 part 4).
+    *may_run* — still the same physical run? A newer print on this printer
+    stops the scan: before a listing, before a download, before the attach,
+    inside the publication itself (the seam asks again immediately before the
+    bytes take their name — staging and the wait for locks are long enough for
+    a print to start) and before the recording is removed from the printer.
+
+    *baseline_media* — what each medium said when the boundary was taken
+    (``timelapse_files.last_listing_media``). A recording on a medium that was
+    not asked then, or did not answer, is not known to be new: the listing stops
+    at the card when the card has videos, so internal storage may never have
+    been looked at. Such a recording is left to the operator.
+
+    ⚠️ Each attempt captures the video the archive shows before it lists and
+    downloads, and publishes only over that; a recording on a printer that has
+    no immutable identity is claimable by nobody and is left to the operator.
     """
+
+    def _superseded() -> bool:
+        return may_run is not None and not may_run()
+
     from backend.app.services import queue_sources
 
     expected_epoch = queue_sources.current_epoch() if expected_epoch is None else expected_epoch
@@ -6240,41 +6410,33 @@ async def _scan_for_timelapse_with_retries(
                 logger.warning("[TIMELAPSE] Archive %s has no printer, aborting", archive_id)
                 return
 
-            if baseline_names is not None:
-                # Use pre-captured baseline from print start (no race condition)
-                logger.info(
-                    "[TIMELAPSE] Using print-start baseline: %s existing video files for archive %s",
-                    len(baseline_names),
-                    archive_id,
-                )
-            else:
-                # Fallback: take baseline now (e.g. app restarted mid-print)
-                result = await db.execute(select(Printer).where(Printer.id == archive.printer_id))
-                printer = result.scalar_one_or_none()
-                if not printer:
-                    logger.warning("[TIMELAPSE] Printer not found for archive %s, aborting", archive_id)
-                    return
+            from backend.app.services import timelapse_baseline
 
-                baseline_files, _ = await _list_timelapse_videos(printer, automatic=True)
-                baseline_names = {f.get("name", "") for f in baseline_files}
-                if not _last_listing_answered(printer.id):
-                    baseline_trusted = False
-                    logger.warning(
-                        "[TIMELAPSE] Fallback baseline for archive %s taken while printer %s did not answer",
-                        archive_id,
-                        printer.id,
-                    )
-                logger.info(
-                    "[TIMELAPSE] Baseline snapshot (fallback): %s existing video files for archive %s",
-                    len(baseline_names),
+            if baseline_names is None:
+                # Memory has none (this process restarted during the print): the
+                # one kept with the archive, if the start or a late capture left
+                # one — and only when it is addressed to this very incarnation,
+                # this printer and this storage epoch.
+                baseline_printer = await db.get(Printer, archive.printer_id)
+                address = await timelapse_baseline.address_of(db, archive, baseline_printer)
+                kept = timelapse_baseline.read(archive.extra_data, address=address) if address else None
+                if kept is not None:
+                    baseline_names, baseline_trusted = kept
+                    baseline_media = timelapse_baseline.media_of(archive.extra_data)
+            refusal = timelapse_baseline.automatic_attach_refusal(baseline_names, baseline_trusted)
+            if refusal is not None:
+                logger.warning(
+                    "[TIMELAPSE] Nothing is attached to archive %s automatically (%s): there is no trusted "
+                    "list of what was on the printer before this print recorded. Scan for timelapse stays available",
                     archive_id,
+                    refusal,
                 )
-
-            # Derive base_name for name-matching fallback. `resolve_display_stem`
-            # (#1152) drops the full `.gcode.3mf` double-suffix Bambu Studio
-            # writes by default — replaces the previous two-step strip-stem-
-            # then-strip-`.gcode` sequence with one canonical helper.
-            base_name = resolve_display_stem(archive.filename) if archive.filename else ""
+                return
+            logger.info(
+                "[TIMELAPSE] Using the baseline of %s existing video files for archive %s",
+                len(baseline_names),
+                archive_id,
+            )
 
     except Exception as e:
         logger.warning("[TIMELAPSE] Failed to take baseline snapshot for archive %s: %s", archive_id, e)
@@ -6292,6 +6454,9 @@ async def _scan_for_timelapse_with_retries(
             archive_id,
         )
         await asyncio.sleep(delay)
+        if _superseded():
+            logger.info("[TIMELAPSE] A newer print owns the printer — the scan for archive %s stops", archive_id)
+            return
 
         try:
             from backend.app.models.printer import Printer
@@ -6313,6 +6478,10 @@ async def _scan_for_timelapse_with_retries(
                 if archive.timelapse_path:
                     logger.info("[TIMELAPSE] Archive %s already has timelapse attached, stopping retries", archive_id)
                     return
+                from backend.app.services import archive_media
+
+                # Before the listing and the download: what this attempt starts from.
+                started_from = await archive_media.primary_token(db, archive)
 
                 result = await db.execute(select(Printer).where(Printer.id == archive.printer_id))
                 printer = result.scalar_one_or_none()
@@ -6333,16 +6502,39 @@ async def _scan_for_timelapse_with_retries(
 
             # Which of them is ours: new since this print started, and — when
             # the printer named the file it just closed — that one specifically.
-            target = _pick_new_recording(
-                video_files,
-                baseline_names,
-                _last_recording_path(printer),
-                require_unambiguous=not baseline_trusted,
-            )
+            if _superseded():
+                logger.info("[TIMELAPSE] A newer print owns the printer — the scan for archive %s stops", archive_id)
+                return
+            if baseline_media is not None:
+                from backend.app.services.timelapse_files import MEDIUM_ANSWERED, recording_storage
+
+                observed = [
+                    f
+                    for f in video_files
+                    if baseline_media.get(recording_storage(f.get("path") or "")) == MEDIUM_ANSWERED
+                ]
+                if len(observed) != len(video_files):
+                    logger.info(
+                        "[TIMELAPSE] %s recording(s) on a medium the baseline of archive %s never saw are not "
+                        "candidates; Scan for timelapse stays available",
+                        len(video_files) - len(observed),
+                        archive_id,
+                    )
+                video_files = observed
+            target = _pick_new_recording(video_files, baseline_names, _last_recording_path(printer))
 
             if target is not None:
                 file_name = target.get("name")
                 remote_path = target.get("path") or f"/timelapse/{file_name}"
+                claimed_source = remote_source(printer, remote_path, target)
+                if claimed_source is None:
+                    logger.warning(
+                        "[TIMELAPSE] Printer of archive %s has no identity to claim %s under — nothing is "
+                        "attached automatically; Scan for timelapse stays available",
+                        archive_id,
+                        file_name,
+                    )
+                    return
                 logger.info(
                     "[TIMELAPSE] Attempt %s: New file detected: %s (downloading for archive %s)",
                     attempt,
@@ -6351,6 +6543,10 @@ async def _scan_for_timelapse_with_retries(
                 )
 
                 timelapse_data = await read_timelapse_video(printer, remote_path)
+                if timelapse_data and _superseded():
+                    # Downloaded, and the printer has moved on: neither attached nor deleted from it.
+                    logger.info("[TIMELAPSE] A newer print owns the printer — %s is not attached", file_name)
+                    return
                 if timelapse_data:
                     # Write phase: attach in a fresh short-lived session.
                     async with async_session() as db:
@@ -6360,12 +6556,19 @@ async def _scan_for_timelapse_with_retries(
                             file_name,
                             expected_identity=expected_identity,
                             expected_epoch=expected_epoch,
+                            expected_token=started_from,
+                            origin="printer",
+                            # Claimed: a recording another archive already holds is refused.
+                            remote=claimed_source,
+                            # Asked again inside the publication, after staging and the locks.
+                            may_run=may_run,
                         )
                     if success:
                         logger.info("[TIMELAPSE] Successfully attached timelapse to archive %s", archive_id)
                         # Opt-in tidy-up, and only now: "we have a copy" is the
-                        # entire justification for removing somebody's video.
-                        await remove_recording_after_attach(printer, remote_path)
+                        # entire justification for removing somebody's video —
+                        # these bytes, re-read and compared, while this run still owns the printer.
+                        await remove_recording_after_attach(printer, remote_path, may_run=may_run)
                         await ws_manager.send_archive_updated({"id": archive_id, "timelapse_attached": True})
                         return
                     else:
@@ -6378,58 +6581,10 @@ async def _scan_for_timelapse_with_retries(
         except Exception as e:
             logger.warning("[TIMELAPSE] Attempt %s failed with error: %s", attempt, e)
 
-    # --- Phase 3: Fallback - try name matching against all files ---
-    if base_name:
-        logger.info("[TIMELAPSE] Retries exhausted, trying name-match fallback for '%s'", base_name)
-        try:
-            from backend.app.models.printer import Printer
-
-            # Read phase: short session, released before the FTP work (#2572).
-            async with async_session() as db:
-                archive = await ArchiveService(db).get_archive(archive_id)
-                if (
-                    queue_sources.current_epoch() != expected_epoch
-                    or not archive
-                    or archive.recovery_identity != expected_identity
-                    or archive.timelapse_path
-                ):
-                    return
-
-                result = await db.execute(select(Printer).where(Printer.id == archive.printer_id))
-                printer = result.scalar_one_or_none()
-                if not printer:
-                    return
-
-            # I/O phase (no DB connection held): FTP list + download.
-            video_files, found_path = await _list_timelapse_videos(printer, automatic=True)
-            for f in video_files:
-                fname = f.get("name", "")
-                if base_name.lower() in fname.lower():
-                    remote_path = f.get("path") or f"/timelapse/{fname}"
-                    logger.info("[TIMELAPSE] Name-match fallback: '%s' matches '%s'", base_name, fname)
-
-                    timelapse_data = await read_timelapse_video(printer, remote_path)
-                    if timelapse_data:
-                        # Write phase: attach in a fresh short-lived session.
-                        async with async_session() as db:
-                            success = await ArchiveService(db).attach_timelapse(
-                                archive_id,
-                                timelapse_data,
-                                fname,
-                                expected_identity=expected_identity,
-                                expected_epoch=expected_epoch,
-                            )
-                        if success:
-                            logger.info("[TIMELAPSE] Name-match fallback attached timelapse to archive %s", archive_id)
-                            await remove_recording_after_attach(printer, remote_path)
-                            await ws_manager.send_archive_updated({"id": archive_id, "timelapse_attached": True})
-                            return
-                    break  # Only try the first name match
-
-        except Exception as e:
-            logger.warning("[TIMELAPSE] Name-match fallback failed: %s", e)
-
-    logger.warning("[TIMELAPSE] All attempts exhausted for archive %s, giving up", archive_id)
+    logger.warning(
+        "[TIMELAPSE] No new recording appeared for archive %s — nothing attached; Scan for timelapse stays available",
+        archive_id,
+    )
 
 
 # Defaults for the finish-photo-from-timelapse polling loop (#1397). These are
@@ -7506,7 +7661,25 @@ async def _recover_running_print(printer_id: int, data: dict):
             )
             return
 
-    await _capture_timelapse_baseline_at_start(printer, printer_id, logger)
+    # A late baseline: the print is already running. What exists now is not new;
+    # it is kept with the archive when the running print has one unique address.
+    late_archive_id = late_identity = None
+    try:
+        late = await _live_archive_for_running_print(printer_id, data)
+        late_archive_id, late_identity = late.archive_id, late.archive_identity
+    except Exception as exc:  # noqa: BLE001 — recovery must never break the connect path
+        logger.debug("[TIMELAPSE] No archive address for the late baseline of printer %s: %s", printer_id, exc)
+    await _capture_timelapse_baseline_at_start(
+        printer,
+        printer_id,
+        logger,
+        archive_id=late_archive_id,
+        archive_identity=late_identity,
+        taken="late",
+        # The recovery's own proof: a list read for a run that was reset or
+        # replaced meanwhile reaches neither the archive nor memory.
+        may_run=recovery_current,
+    )
 
 
 async def on_finish_photo_moment(printer_id: int, data: dict):
@@ -10690,22 +10863,47 @@ async def _on_print_complete_impl(
                 return
             if print_status == "completed":
                 logger.info("[LAYER-TL] Stitching layer timelapse for printer %s", printer_id)
+                # Before the stitch: the video this result may replace (G10 C). A
+                # recording attached while ffmpeg ran is not overwritten by it.
+                layer_started_from = None
+                if archive_id:
+                    from backend.app.models.archive import PrintArchive
+                    from backend.app.services import archive_media
+
+                    async with async_session() as db:
+                        layer_archive = await db.get(PrintArchive, archive_id)
+                        if layer_archive is not None and (
+                            terminal_archive_identity is None
+                            or layer_archive.recovery_identity == terminal_archive_identity
+                        ):
+                            layer_started_from = await archive_media.primary_token(db, layer_archive)
                 timelapse_path = await finish_session(layer_session)
                 if timelapse_path and archive_id:
                     logger.info("[LAYER-TL] Attaching timelapse %s to archive %s", timelapse_path, archive_id)
                     async with async_session() as db:
                         service = ArchiveService(db)
                         timelapse_data = await asyncio.to_thread(timelapse_path.read_bytes)
-                        await service.attach_timelapse(
+                        attached = await service.attach_timelapse(
                             archive_id,
                             timelapse_data,
                             "layer_timelapse.mp4",
                             expected_identity=terminal_archive_identity,
                             expected_epoch=completion_epoch,
+                            expected_token=layer_started_from,
+                            origin="layer",
                         )
                         # Clean up the temp file
                         await asyncio.to_thread(timelapse_path.unlink, missing_ok=True)
-                        logger.info("[LAYER-TL] Layer timelapse attached successfully")
+                        if attached:
+                            logger.info("[LAYER-TL] Layer timelapse attached successfully")
+                            # Open Archives pages learn of it, as they do for a printer's recording.
+                            await ws_manager.send_archive_updated({"id": archive_id, "timelapse_attached": True})
+                        else:
+                            logger.info(
+                                "[LAYER-TL] Layer timelapse was not attached to archive %s (%s)",
+                                archive_id,
+                                service.media_refusal,
+                            )
                 elif timelapse_path:
                     # Timelapse created but no archive - just clean up
                     await asyncio.to_thread(timelapse_path.unlink, missing_ok=True)
@@ -10732,14 +10930,19 @@ async def _on_print_complete_impl(
         logger.info("[TIMELAPSE] Timelapse was active during print, scheduling auto-scan for archive %s", archive_id)
         # Schedule timelapse scan as background task with retries
         # The printer needs time to encode the video after print completion
-        baseline, baseline_trusted = _pop_timelapse_baseline(printer_id)
+        baseline, baseline_trusted, baseline_media = _take_timelapse_baseline(
+            printer_id, archive_identity=terminal_archive_identity
+        )
         spawn_background_task(
             _scan_for_timelapse_with_retries(
                 archive_id,
                 baseline,
                 baseline_trusted=baseline_trusted,
+                baseline_media=baseline_media,
                 expected_identity=terminal_archive_identity,
                 expected_epoch=completion_epoch,
+                # A newer print on this printer ends the scan (G10 C3).
+                may_run=_owns_printer_effect,
             ),
             name=f"timelapse-scan-{archive_id}",
         )
@@ -12798,6 +13001,13 @@ async def _application_lifespan(app: FastAPI):
         printer_file_runtime.reopen()
     except RuntimeError:
         logging.getLogger(__name__).exception("Printer file operations still running at startup")
+    from backend.app.services.archive_media_runtime import archive_media_runtime
+
+    # The same rule for archive video work (G10 C4).
+    try:
+        archive_media_runtime.reopen()
+    except RuntimeError:
+        logging.getLogger(__name__).exception("Archive video operations still running at startup")
     from backend.app.services.part_render_scheduler import start_part_render, stop_part_render
 
     try:
@@ -12996,6 +13206,11 @@ async def _application_lifespan(app: FastAPI):
     if not await printer_file_runtime.quiesce(10):
         logging.getLogger(__name__).warning(
             "Printer file operations did not end before shutdown; admission stays closed"
+        )
+    # Archive video work is waited for, bounded; an unproven end is logged, never treated as done.
+    if not await archive_media_runtime.quiesce(10):
+        logging.getLogger(__name__).warning(
+            "Archive video operations did not end before shutdown; admission stays closed"
         )
     printer_manager.disconnect_all()
     await stop_library_file_runtime()

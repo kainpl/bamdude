@@ -151,7 +151,8 @@ async def test_reissued_archive_id_rejects_background_consumers(
         original = asyncio.to_thread
 
         async def barrier(fn, *args, **kwargs):
-            if getattr(fn, "__name__", "") == "write_bytes":
+            # The attach stages its bytes in ``_stage`` (G10 C); the id is reused during that write.
+            if getattr(fn, "__name__", "") in {"write_bytes", "_stage"}:
                 await reuse()
             return await original(fn, *args, **kwargs)
 
@@ -165,8 +166,26 @@ async def test_reissued_archive_id_rejects_background_consumers(
 
         monkeypatch.setattr("backend.app.core.database.async_session", factory)
         monkeypatch.setattr("backend.app.services.camera.get_ffmpeg_path", lambda: "ffmpeg")
+        # The conversion converts the video the archive shows (G10 C): the AVI is published first.
+        from backend.app.services import archive_media, queue_sources
+
+        staged = tmp_path / ".old-video.part"
+        staged.write_bytes(b"old")
+        async with factory() as db:
+            published = await archive_media.publish_primary(
+                db,
+                aid,
+                staged=staged,
+                directory=tmp_path,
+                filename="old-video.avi",
+                base_dir=tmp_path,
+                origin="upload",
+                expected_identity=identity,
+                expected_epoch=queue_sources.current_epoch(),
+                expected_token="none:0",
+            )
+        assert published.ok
         source = tmp_path / "old-video.avi"
-        source.write_bytes(b"old")
 
         async def finish():
             await reuse()

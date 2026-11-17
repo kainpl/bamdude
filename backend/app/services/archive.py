@@ -2412,26 +2412,103 @@ class ArchiveService:
         *,
         expected_identity: str | None = None,
         expected_epoch: int | None = None,
+        origin: str = "upload",
+        remote=None,
+        expected_token: str | None = None,
+        authority=None,
+        permissions: tuple = (),
+        may_run=None,
     ) -> bool:
-        """Attach a timelapse video to an archive.
+        """Attach a timelapse video to an archive, through the publication seam (``services/archive_media``).
 
-        Non-MP4 videos (e.g. AVI from P1S) are saved as-is and a background
-        task converts them to MP4 for browser compatibility.
+        Non-MP4 videos (e.g. AVI from P1S) are published as they are and a
+        background task converts them to MP4 for browser compatibility.
+
+        ``remote`` (``archive_media.RemoteSource``) names the recording on the
+        printer this video was read from: it is then claimed, and a recording
+        another archive already holds is refused. ``expected_token``
+        (``archive_media.primary_token``) is the video the caller started from;
+        a publication that finds another one is refused. Why a refusal happened
+        is left in ``self.media_refusal``.
+
+        ⚠️ A caller that read or downloaded the bytes first captures identity,
+        epoch and token BEFORE that I/O and hands all three in; what is left
+        ``None`` is captured here, on entry — before the bytes are staged, which
+        is the latest moment that is still "before this attach's own I/O".
+        ``authority`` + ``permissions`` (a manual door) are asked again inside
+        the publication; a refusal there is the gate's own 401 / 403, raised.
+        ``may_run`` (the scan after a print) is asked again immediately before
+        the publication.
+
+        The whole attach — staging the bytes included — is one operation the
+        media runtime owns (G10 C4): refused while a restore holds admission,
+        waited for by a restore that comes after it began.
         """
-        import asyncio
+        from backend.app.services import archive_media
+        from backend.app.services.archive_media_runtime import MediaAdmissionClosed, archive_media_runtime
 
+        self.media_refusal: str | None = None
+        try:
+            return await archive_media_runtime.own(
+                f"attach:{archive_id}",
+                self._attach_timelapse(
+                    archive_id,
+                    timelapse_data,
+                    filename,
+                    expected_identity=expected_identity,
+                    expected_epoch=expected_epoch,
+                    origin=origin,
+                    remote=remote,
+                    expected_token=expected_token,
+                    authority=authority,
+                    permissions=permissions,
+                    may_run=may_run,
+                ),
+            )
+        except MediaAdmissionClosed:
+            self.media_refusal = archive_media.REFUSED_RESTORING
+            return False
+
+    async def _attach_timelapse(
+        self,
+        archive_id: int,
+        timelapse_data: bytes,
+        filename: str,
+        *,
+        expected_identity: str | None,
+        expected_epoch: int | None,
+        origin: str,
+        remote,
+        expected_token: str | None,
+        authority=None,
+        permissions: tuple = (),
+        may_run=None,
+    ) -> bool:
+        import asyncio
+        import hashlib
+
+        from backend.app.services import archive_media
+
+        self.media_refusal: str | None = None
         archive = await self.get_archive(archive_id)
         if not archive or (expected_identity is not None and archive.recovery_identity != expected_identity):
+            self.media_refusal = archive_media.REFUSED_TARGET_GONE
             return False
         from backend.app.services import queue_sources
         from backend.app.services.print_execution import NONCURRENT
 
         if NONCURRENT in (archive.extra_data or {}):
+            self.media_refusal = archive_media.REFUSED_TARGET_GONE
             return False
         expected_identity = archive.recovery_identity
         epoch = queue_sources.current_epoch() if expected_epoch is None else expected_epoch
         if queue_sources.current_epoch() != epoch:
+            self.media_refusal = archive_media.REFUSED_TARGET_GONE
             return False
+        if expected_token is None:
+            # Nothing was captured by the caller: this attach starts from what
+            # the archive shows now, before a byte of it is staged.
+            expected_token = await archive_media.primary_token(self.db, archive)
 
         # Where this archive's files live — the shared helper, never derived
         # from ``file_path`` by hand. A print whose 3MF could not be fetched
@@ -2455,39 +2532,57 @@ class ArchiveService:
             timelapse_file = safe_join_under(archive_dir, filename, http=False)
         except PathTraversalError:
             logger.warning("attach_timelapse: rejected traversal filename %r for archive %s", filename, archive_id)
+            self.media_refusal = archive_media.REFUSED_TARGET_GONE
             return False
 
         # Created only once the name has been vetted, so a rejected filename
         # leaves nothing behind. A no-3MF archive has never had a folder of its
         # own, and the timelapse can be the first thing to want one.
         await asyncio.to_thread(lambda: timelapse_file.parent.mkdir(parents=True, exist_ok=True))
-        # Save timelapse - use thread pool to avoid blocking event loop
-        # (timelapse files can be 100MB+, sync write blocks for seconds)
-        await asyncio.to_thread(timelapse_file.write_bytes, timelapse_data)
+        # The bytes go to a staged name of their own — never over the file the
+        # archive shows now — in the private incarnation directory, so a reused
+        # numeric id cannot have its file overwritten either. Thread pool: a
+        # timelapse can be 100 MB+, and a sync write blocks the loop for seconds.
+        staged = archive_dir / f".{uuid4().hex}.part"
 
-        # I/O used a private incarnation directory; a reused numeric id cannot
-        # have its file overwritten, even when deletion raced the write above.
-        from backend.app.services.archive_write_scope import archive_write_scope, load_active_archive_for_write
+        def _stage() -> str:
+            staged.write_bytes(timelapse_data)
+            return hashlib.sha256(timelapse_data).hexdigest()
 
-        await self.db.commit()
-        async with queue_sources.storage_mutation(), archive_write_scope(self.db, archive_id):
-            current = await load_active_archive_for_write(self.db, archive_id)
-            if (
-                current is None
-                or current.recovery_identity != expected_identity
-                or queue_sources.current_epoch() != epoch
-                or NONCURRENT in (current.extra_data or {})
-            ):
-                await self.db.rollback()
-                return False
-            current.timelapse_path = str(timelapse_file.relative_to(settings.base_dir))
-            await self.db.commit()
+        digest = await asyncio.to_thread(_stage)
+        result = await archive_media.publish_primary(
+            self.db,
+            archive_id,
+            staged=staged,
+            directory=archive_dir,
+            filename=timelapse_file.name,
+            base_dir=settings.base_dir,
+            origin=origin,
+            expected_identity=expected_identity,
+            expected_epoch=epoch,
+            expected_token=expected_token,
+            content_sha256=digest,
+            size_bytes=len(timelapse_data),
+            remote=remote,
+            authority=authority,
+            permissions=permissions,
+            may_run=may_run,
+        )
+        if not result.ok:
+            self.media_refusal = result.refusal
+            return False
 
         # For non-MP4 videos (e.g. AVI from P1S), kick off background conversion
-        if not filename.lower().endswith(".mp4"):
+        published = settings.base_dir / result.relative_path
+        if published.suffix.lower() != ".mp4":
             spawn_background_task(
                 _convert_timelapse_to_mp4(
-                    archive_id, timelapse_file, expected_identity=expected_identity, expected_epoch=epoch
+                    archive_id,
+                    published,
+                    expected_identity=expected_identity,
+                    expected_epoch=epoch,
+                    # Exactly the publication made above, not "whatever the archive shows when ffmpeg starts".
+                    started_from=f"{result.revision}:{result.asset_uuid}",
                 ),
                 name=f"timelapse-convert-{archive_id}",
             )
@@ -2517,9 +2612,55 @@ def _remove_id_owned_folders(archive_id: int) -> None:
 
 
 async def _convert_timelapse_to_mp4(
-    archive_id: int, source_path: Path, *, expected_identity: str | None = None, expected_epoch: int | None = None
+    archive_id: int,
+    source_path: Path,
+    *,
+    expected_identity: str | None = None,
+    expected_epoch: int | None = None,
+    started_from: str | None = None,
 ) -> None:
     """Background task: convert non-MP4 timelapse (e.g. AVI from P1S) to MP4.
+
+    An operation the media runtime owns (G10 C4): a restore waits for it, or is
+    refused while its ffmpeg is still running — it is never left converting
+    into a tree that is being replaced.
+    """
+    from backend.app.services.archive_media_runtime import MediaAdmissionClosed, archive_media_runtime
+
+    try:
+        await archive_media_runtime.own(
+            f"convert:{archive_id}",
+            _convert_timelapse_to_mp4_owned(
+                archive_id,
+                source_path,
+                expected_identity=expected_identity,
+                expected_epoch=expected_epoch,
+                started_from=started_from,
+            ),
+        )
+    except MediaAdmissionClosed:
+        logging.getLogger(__name__).info(
+            "Timelapse conversion for archive %s not started: a restore holds archive media admission", archive_id
+        )
+
+
+async def _convert_timelapse_to_mp4_owned(
+    archive_id: int,
+    source_path: Path,
+    *,
+    expected_identity: str | None = None,
+    expected_epoch: int | None = None,
+    started_from: str | None = None,
+) -> None:
+    """The conversion itself.
+
+    ⚠️ It converts the video the archive SHOWS, and only that: on entry the
+    archive's pointer must name ``source_path`` (and, when the attach handed its
+    own publication in as ``started_from``, be that very publication). A
+    conversion queued for bytes that were replaced or removed meanwhile — the
+    old file can outlive its row, an open handle keeps it on disk — does not
+    start, and so can neither replace the newer video nor bring a removed one
+    back.
 
     Runs with low CPU priority (-threads 1, nice) so it doesn't starve
     other processes on resource-constrained devices like Raspberry Pi.
@@ -2540,12 +2681,10 @@ async def _convert_timelapse_to_mp4(
         )
         return
 
-    from backend.app.services import queue_sources
-    from backend.app.services.archive_write_scope import archive_write_scope, load_active_archive_for_write
-    from backend.app.services.print_execution import NONCURRENT
-
     # The production attach supplies its pre-I/O identity. Legacy direct callers
     # acquire it before launching the converter, never after it has returned.
+    from backend.app.services import archive_media, queue_sources
+
     async with async_session() as db:
         from backend.app.models.archive import PrintArchive
 
@@ -2553,8 +2692,27 @@ async def _convert_timelapse_to_mp4(
         if archive is None or (expected_identity is not None and archive.recovery_identity != expected_identity):
             return
         expected_identity = archive.recovery_identity
+        # The video this conversion starts from. It runs for minutes; whatever
+        # replaced or removed that video meanwhile wins, not the converter.
+        shown_token = await archive_media.primary_token(db, archive)
+        shown_file = archive_media.contained(settings.base_dir, archive.timelapse_path)
+        if (
+            shown_file is None
+            or shown_file != source_path.resolve()
+            or (started_from is not None and started_from != shown_token)
+        ):
+            logger.info(
+                "Timelapse conversion for archive %s not started: %s is no longer the archive's video",
+                archive_id,
+                source_path.name,
+            )
+            return
+        started_from = shown_token
     expected_epoch = queue_sources.current_epoch() if expected_epoch is None else expected_epoch
-    mp4_path = source_path.with_suffix(".mp4")
+    if queue_sources.current_epoch() != expected_epoch:
+        return
+    # ffmpeg writes to a staged name of its own; the seam gives it the real one.
+    mp4_path = source_path.with_name(f".{uuid4().hex}.converting.mp4")
 
     try:
         cmd = [
@@ -2605,28 +2763,44 @@ async def _convert_timelapse_to_mp4(
                 mp4_path.unlink()
             return
 
-        # Update DB path to the new MP4 file
-        async with async_session() as db, queue_sources.storage_mutation(), archive_write_scope(db, archive_id):
-            archive = await load_active_archive_for_write(db, archive_id)
-            if (
-                archive is None
-                or archive.recovery_identity != expected_identity
-                or queue_sources.current_epoch() != expected_epoch
-                or NONCURRENT in (archive.extra_data or {})
-            ):
-                return
-            archive.timelapse_path = str(mp4_path.relative_to(settings.base_dir))
-            await db.commit()
+        # Publish through the seam: the same archive incarnation and epoch, and
+        # still the very video this started from. The seam removes the source
+        # after its commit, and the staged MP4 when it refuses.
+        async with async_session() as db:
+            result = await archive_media.publish_primary(
+                db,
+                archive_id,
+                staged=mp4_path,
+                directory=source_path.parent,
+                filename=source_path.with_suffix(".mp4").name,
+                base_dir=settings.base_dir,
+                origin="conversion",
+                expected_identity=expected_identity,
+                expected_epoch=expected_epoch,
+                expected_token=started_from,
+            )
+        if not result.ok:
+            logger.info(
+                "Converted timelapse for archive %s was not published (%s): the archive's video changed meanwhile",
+                archive_id,
+                result.refusal,
+            )
+            return
+        # The source was the archive's video (checked on entry and again by the
+        # seam's token), so the seam removed it after its commit — under its
+        # reference check, never by a second unlink here.
+        try:
+            from backend.app.core.websocket import ws_manager
 
-        # Remove original non-MP4 file
-        if source_path.exists():
-            source_path.unlink()
+            await ws_manager.send_archive_updated({"id": archive_id, "timelapse_attached": True})
+        except Exception as exc:  # noqa: BLE001 — the video is published; a missed refresh is cosmetic
+            logger.debug("archive_updated after conversion of archive %s was not sent: %s", archive_id, exc)
 
         logger.info(
             "Converted timelapse to MP4 for archive %s (%s → %s)",
             archive_id,
             source_path.name,
-            mp4_path.name,
+            Path(result.relative_path).name,
         )
 
     except Exception as e:

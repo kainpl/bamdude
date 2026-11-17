@@ -295,6 +295,9 @@ class TestScanForTimelapseWithRetries:
         mock_printer.ip_address = "192.168.1.100"
         mock_printer.access_code = "12345678"
         mock_printer.model = "X1C"
+        # The scan claims the recording under the printer's immutable identity;
+        # a printer without one is claimable by nobody (G10 C).
+        mock_printer.connector_identity = "printer-identity"
 
         return mock_archive, mock_printer
 
@@ -352,7 +355,7 @@ class TestScanForTimelapseWithRetries:
 
             from backend.app.main import _scan_for_timelapse_with_retries
 
-            await _scan_for_timelapse_with_retries(1)
+            await _scan_for_timelapse_with_retries(1, {"old_video.mp4"})
 
         # Should have attached the NEW file, not the old one
         mock_service.attach_timelapse.assert_called_once()
@@ -403,8 +406,8 @@ class TestScanForTimelapseWithRetries:
         mock_service.attach_timelapse.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_name_match_fallback(self):
-        """When no new file appears, should fall back to name matching."""
+    async def test_a_name_that_resembles_the_print_is_never_attached(self):
+        """No new file appeared: a video whose name contains the print's name stays where it is (G10 C3)."""
         mock_archive, mock_printer = self._make_mocks()
 
         baseline_files = [
@@ -443,12 +446,11 @@ class TestScanForTimelapseWithRetries:
 
             from backend.app.main import _scan_for_timelapse_with_retries
 
-            await _scan_for_timelapse_with_retries(1)
+            await _scan_for_timelapse_with_retries(1, {"old_video.mp4", "benchy_20240101.mp4"})
 
-        # Name-match fallback: "benchy" is in "benchy_20240101.mp4"
-        mock_service.attach_timelapse.assert_called_once()
-        attached_filename = mock_service.attach_timelapse.call_args[0][2]
-        assert attached_filename == "benchy_20240101.mp4"
+        # "benchy" is in "benchy_20240101.mp4" — an earlier print of the same model, not this one's video.
+        mock_service.attach_timelapse.assert_not_called()
+        mock_download.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_stops_when_archive_already_has_timelapse(self):
@@ -523,7 +525,7 @@ class TestScanForTimelapseWithRetries:
 
             from backend.app.main import _scan_for_timelapse_with_retries
 
-            await _scan_for_timelapse_with_retries(1)
+            await _scan_for_timelapse_with_retries(1, set())
 
         # Should have slept 4 times with delays [5, 10, 20, 30]
         assert mock_sleep.call_count == 4
@@ -541,6 +543,7 @@ class TestListTimelapseVideosAvi:
         mock_printer.ip_address = "192.168.1.100"
         mock_printer.access_code = "12345678"
         mock_printer.model = "P1S"
+        mock_printer.connector_identity = "printer-identity"
 
         mock_files = [
             {
@@ -569,6 +572,7 @@ class TestListTimelapseVideosAvi:
         mock_printer.ip_address = "192.168.1.100"
         mock_printer.access_code = "12345678"
         mock_printer.model = "P1S"
+        mock_printer.connector_identity = "printer-identity"
 
         mock_files = [
             {"name": "VIDEO.AVI", "is_directory": False, "size": 1000, "path": "/timelapse/VIDEO.AVI"},
@@ -597,6 +601,7 @@ class TestListTimelapseVideosAvi:
         mock_printer.ip_address = "192.168.1.100"
         mock_printer.access_code = "12345678"
         mock_printer.model = "P1S"
+        mock_printer.connector_identity = "printer-identity"
 
         baseline_files = []
         new_files = [
@@ -646,7 +651,7 @@ class TestListTimelapseVideosAvi:
 
             from backend.app.main import _scan_for_timelapse_with_retries
 
-            await _scan_for_timelapse_with_retries(1)
+            await _scan_for_timelapse_with_retries(1, {f["name"] for f in baseline_files})
 
         mock_service.attach_timelapse.assert_called_once()
         attached_filename = mock_service.attach_timelapse.call_args[0][2]
@@ -662,15 +667,32 @@ class TestConvertTimelapseToMp4:
         from sqlalchemy.ext.asyncio import async_sessionmaker
 
         from backend.app.core.config import settings
+        from backend.app.services import archive_media, queue_sources
         from backend.app.services.archive import _convert_timelapse_to_mp4
 
         printer = await printer_factory()
         archive = await archive_factory(printer.id, file_path="")
-        source = tmp_path / "video.avi"
-        source.write_bytes(b"avi")
-        output = source.with_suffix(".mp4")
-        output.write_bytes(b"mp4")
+        archive_id, identity = archive.id, archive.recovery_identity
         monkeypatch.setattr(settings, "base_dir", tmp_path)
+        # The conversion converts the video the archive SHOWS (G10 C): the AVI is
+        # published first, as the attach publishes it.
+        staged_avi = tmp_path / ".upload.part"
+        staged_avi.write_bytes(b"avi")
+        published = await archive_media.publish_primary(
+            db_session,
+            archive_id,
+            staged=staged_avi,
+            directory=tmp_path,
+            filename="video.avi",
+            base_dir=tmp_path,
+            origin="upload",
+            expected_identity=identity,
+            expected_epoch=queue_sources.current_epoch(),
+            expected_token="none:0",
+        )
+        assert published.ok
+        source = tmp_path / "video.avi"
+        output = source.with_suffix(".mp4")
         monkeypatch.setattr(
             "backend.app.core.database.async_session", async_sessionmaker(test_engine, expire_on_commit=False)
         )
@@ -678,14 +700,28 @@ class TestConvertTimelapseToMp4:
         process = AsyncMock()
         process.communicate.return_value = (b"", b"failure" if exit_code else b"")
         process.returncode = exit_code
-        execute = AsyncMock(return_value=process)
+        staged = []
+
+        async def run(*args, **_kwargs):
+            # ffmpeg writes to the staged name it was given — never to the final one (G10 C).
+            from pathlib import Path
+
+            staged.append(Path(args[-1]))
+            if not exit_code:
+                staged[-1].write_bytes(b"mp4")
+            return process
+
+        execute = AsyncMock(side_effect=run)
         monkeypatch.setattr("asyncio.create_subprocess_exec", execute)
-        await _convert_timelapse_to_mp4(archive.id, source, expected_identity=archive.recovery_identity)
+        await _convert_timelapse_to_mp4(archive_id, source, expected_identity=identity)
+        db_session.expire_all()
         await db_session.refresh(archive)
         assert source.exists() == bool(exit_code)
         assert output.exists() == (not exit_code)
-        assert archive.timelapse_path == (None if exit_code else "video.mp4")
+        assert archive.timelapse_path == ("video.avi" if exit_code else "video.mp4")
         assert "-threads" in execute.call_args.args
+        assert staged[0] != output and staged[0].name.startswith(".")
+        assert not staged[0].exists()  # published, or removed on failure: never left behind
 
     @pytest.mark.asyncio
     async def test_skips_when_no_ffmpeg(self, tmp_path, monkeypatch):
@@ -726,34 +762,38 @@ class TestDeleteTimelapse:
     """Test DELETE /archives/{id}/timelapse endpoint."""
 
     @pytest.mark.asyncio
-    async def test_delete_timelapse_removes_file_and_clears_db(self, tmp_path):
-        """Deleting a timelapse should remove the file and clear the DB path."""
-        from backend.app.api.routes.archives import delete_timelapse
+    async def test_delete_timelapse_removes_file_and_clears_db(
+        self, db_session, archive_factory, printer_factory, monkeypatch, tmp_path
+    ):
+        """Deleting a timelapse clears the pointer and its registry row, then removes the file (G10 C)."""
+        from sqlalchemy import select
+
+        from backend.app.api.routes import archives as routes
+        from backend.app.core.config import settings
+        from backend.app.models.archive_media_asset import ArchiveMediaAsset
 
         timelapse_dir = tmp_path / "archives" / "1"
         timelapse_dir.mkdir(parents=True)
         timelapse_file = timelapse_dir / "timelapse.mp4"
         timelapse_file.write_bytes(b"fake video data")
+        monkeypatch.setattr(settings, "base_dir", tmp_path)
+        announced = AsyncMock()
+        monkeypatch.setattr(routes.ws_manager, "send_archive_updated", announced)
 
-        mock_archive = MagicMock()
-        mock_archive.timelapse_path = "archives/1/timelapse.mp4"
-        mock_archive.deleted_at = None
+        printer = await printer_factory()
+        archive = await archive_factory(printer.id, file_path="", timelapse_path="archives/1/timelapse.mp4")
+        archive_id = archive.id
 
-        mock_db = AsyncMock()
-        mock_db.execute = AsyncMock()
-        mock_result = MagicMock()
-        mock_result.scalar_one_or_none.return_value = mock_archive
-        mock_db.execute.return_value = mock_result
-
-        with patch("backend.app.api.routes.archives.settings") as mock_settings:
-            mock_settings.base_dir = tmp_path
-            # auth_result=(None, True) → the auth-disabled / can_modify_all path.
-            result = await delete_timelapse(archive_id=1, db=mock_db, auth_result=(None, True))
+        # auth_result=(None, True) → the auth-disabled / can_modify_all path.
+        result = await routes.delete_timelapse(archive_id=archive_id, db=db_session, auth_result=(None, True))
 
         assert result == {"status": "deleted"}
-        assert mock_archive.timelapse_path is None
-        mock_db.commit.assert_awaited_once()
+        db_session.expire_all()
+        assert (await db_session.get(type(archive), archive_id)).timelapse_path is None
+        # Only the removal's mark is left: the "no video" that follows has its own revision (G10 C).
+        assert [row.role for row in (await db_session.execute(select(ArchiveMediaAsset))).scalars()] == ["retired"]
         assert not timelapse_file.exists()
+        announced.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_delete_timelapse_404_when_no_timelapse(self):

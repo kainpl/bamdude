@@ -71,6 +71,7 @@ PRINTER_KEYED_REGISTRIES = (
     ("backend.app.main", "_timelapse_baselines"),
     ("backend.app.main", "_unknown_tag_last_broadcast"),
     ("backend.app.main", "_untrusted_timelapse_baselines"),
+    ("backend.app.main", "_timelapse_baseline_owners"),
     ("backend.app.main", "_user_stopped_printers"),
     ("backend.app.services.layer_timelapse", "_active_sessions"),
     ("backend.app.services.preheat", "_pinned"),
