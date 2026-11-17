@@ -67,6 +67,10 @@ export function ManyfoldConnectionCard() {
     mutationFn: () => api.saveManyfoldConnection(draft()),
     onSuccess: (connection) => {
       queryClient.setQueryData(['manyfold-connection'], connection);
+      // The secret is written: let go of it here, not when the cached answer changes —
+      // an answer equal to the cached one (only the secret was replaced) changes nothing there.
+      setSecret('');
+      setSecretAction(connection.client_secret_configured ? 'keep' : 'replace');
       queryClient.invalidateQueries({ queryKey: ['manyfold-status'] });
       queryClient.invalidateQueries({ queryKey: ['manyfold-models'] });
       setTested(null);

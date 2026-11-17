@@ -74,6 +74,34 @@ describe('ManyfoldConnectionCard', () => {
     });
   });
 
+  it('clears the typed secret once it is saved, also when nothing else changed', async () => {
+    const sent = stored(CONNECTED);
+    // The server's real answer: the stored connection, field for field as before.
+    server.use(
+      http.put(URL, async ({ request }) => {
+        sent.put.push((await request.json()) as Record<string, unknown>);
+        return HttpResponse.json(CONNECTED);
+      }),
+    );
+    render(<ManyfoldConnectionCard />);
+    await screen.findByDisplayValue('client-abc');
+
+    fireEvent.change(screen.getByRole('combobox', { name: 'Credential action' }), { target: { value: 'replace' } });
+    fireEvent.change(document.querySelector('input[type="password"]') as HTMLInputElement, { target: { value: 'n3w-secret' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save connection' }));
+    await waitFor(() => expect(sent.put).toHaveLength(1));
+    expect(sent.put[0].client_secret).toBe('n3w-secret');
+
+    // The answer equals what was stored before (only the secret changed): the form still lets go of it.
+    await waitFor(() => expect(document.querySelector('input[type="password"]')).toBeNull());
+    expect(screen.getByRole('combobox', { name: 'Credential action' })).toHaveValue('keep');
+    // A later save sends no secret again.
+    fireEvent.click(screen.getByRole('button', { name: 'Save connection' }));
+    await waitFor(() => expect(sent.put).toHaveLength(2));
+    expect(sent.put[1]).not.toHaveProperty('client_secret');
+    expect(sent.put[1].secret_actions).toEqual({ manyfold_client_secret: 'keep' });
+  });
+
   it('saving an empty form sends no empty replacement', async () => {
     const sent = stored(EMPTY);
     render(<ManyfoldConnectionCard />);
