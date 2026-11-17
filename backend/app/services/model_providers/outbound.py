@@ -598,10 +598,11 @@ class GuardedAnswer:
             raise OutboundRefused(f"The connection failed while reading: {type(exc).__name__}", "unreachable") from exc
 
     def json(self) -> Any:
-        """The parsed body, or None when it is not JSON (a plain-text 401 under a JSON content type)."""
+        """The parsed body, or None when it is not JSON (a plain-text 401 under a JSON content type) or
+        nests deeper than the parser goes — a hostile body is an unreadable answer, never a crash."""
         try:
             return json.loads(self.body)
-        except ValueError:
+        except (ValueError, RecursionError):
             return None
 
 

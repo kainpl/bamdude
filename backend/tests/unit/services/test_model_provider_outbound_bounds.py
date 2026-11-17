@@ -183,3 +183,45 @@ class TestManyfoldPaths:
         assert isinstance(raised, ManyfoldUnavailable) and raised.code == "manyfold_incompatible"
         assert peak < HEADROOM
         assert not target.exists() or target.stat().st_size == 0
+
+
+class TestHostileJson:
+    """Review MB-M8: a body that is JSON only in name is an unreadable answer (502), never a 500."""
+
+    DEEP = b"[" * 200_000
+
+    def service(self, answers) -> ManyfoldService:
+        fake = FakeManyfold()
+        sockets = WireSockets(lambda request: answers(request) or serialise(fake.handle(request)))
+        config = ManyfoldConfig(url=BASE, client_id=CLIENT_ID, client_secret=CLIENT_SECRET, enabled=True)
+        transport = GuardedTransport(PinnedOrigin.admit(BASE, label="Manyfold URL"), sockets=sockets)
+        return ManyfoldService(config, transport=transport)
+
+    def deep(self, request, path: str):
+        if request.url.path != path:
+            return None
+        return httpx.Response(200, content=self.DEEP, headers={"Content-Type": "application/json"})
+
+    async def test_a_deeply_nested_body_is_not_json(self):
+        sockets = WireSockets(lambda request: httpx.Response(200, content=self.DEEP))
+        transport = transport_over(sockets)
+        answer = await transport.get("/models")
+        await transport.aclose()
+        assert answer.json() is None
+
+    @pytest.mark.parametrize("path", ["/models", "/oauth/token", "/api/v0/openapi.json", f"/models/{MODEL}"])
+    async def test_manyfold_answers_something_unreadable(self, path):
+        service = self.service(lambda request: self.deep(request, path))
+        with pytest.raises(ManyfoldUnavailable) as caught:
+            await (service.get_model(MODEL) if path.endswith(MODEL) else service.list_models())
+        await service.close()
+        assert caught.value.status == 502
+
+    @pytest.mark.parametrize("body", [b"NaN", b"1e999999", b'"\\ud800"', b"\xff\xfe", b"[1," + b" " * 1000])
+    async def test_other_bodies_a_parser_dislikes_are_not_a_crash_either(self, body):
+        service = self.service(
+            lambda request: httpx.Response(200, content=body) if request.url.path == "/models" else None
+        )
+        with pytest.raises(ManyfoldUnavailable):
+            await service.list_models()
+        await service.close()
