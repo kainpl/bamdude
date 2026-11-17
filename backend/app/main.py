@@ -4581,6 +4581,8 @@ async def _dispatch_user_print_email(
     printer_name: str,
     filename: str,
     db,
+    image_data: bytes | None = None,
+    finish_photo_url: str | None = None,
 ) -> None:
     """Send a user-specific print-completion email based on print status.
 
@@ -4607,6 +4609,8 @@ async def _dispatch_user_print_email(
         printer_name=printer_name,
         filename=filename,
         db=db,
+        image_data=image_data,
+        finish_photo_url=finish_photo_url,
     )
 
 
@@ -4859,6 +4863,7 @@ async def _check_plate_at_print_start(printer, db, *, may_run=None):
                 printer_name=printer.name,
                 db=db,
                 difference_percent=result.difference_percent,
+                image_data=getattr(result, "frame", None),
             )
         except Exception as exc:
             logger.warning("[PLATE CHECK] Failed to send notification: %s", exc)
@@ -10543,21 +10548,11 @@ async def _on_print_complete_impl(
                             archive_data["usage_results"] = usage_results
                         # Add finish photo URL and image bytes if available
                         if finish_photo_filename:
-                            from backend.app.api.routes.settings import get_setting
-
-                            external_url = await get_setting(db, "external_url")
-                            if external_url:
-                                external_url = external_url.rstrip("/")
-                                archive_data["finish_photo_url"] = (
-                                    f"{external_url}/api/v1/archives/{archive_id}/photos/{finish_photo_filename}"
-                                )
-                            else:
-                                # Fallback to relative URL (won't work for external services)
-                                archive_data["finish_photo_url"] = (
-                                    f"/api/v1/archives/{archive_id}/photos/{finish_photo_filename}"
-                                )
-
                             # Read finish photo bytes for image attachment (e.g. Pushover)
+                            # and for the link: {finish_photo_url} leads to a short-lived
+                            # copy with an unguessable name, never to the archive's own
+                            # photo, which is behind the media token like its other
+                            # pictures (owner, 2026-11-17).
                             try:
                                 from backend.app.utils.archive_paths import find_photo
 
@@ -10567,6 +10562,11 @@ async def _on_print_complete_impl(
                                 photo_path = find_photo(archive, finish_photo_filename)
                                 if photo_path is not None:
                                     photo_bytes = await asyncio.to_thread(photo_path.read_bytes)
+                                    photo_link = await notification_service.photo_link(
+                                        db, photo_bytes, "print_complete", absolute_only=False
+                                    )
+                                    if photo_link:
+                                        archive_data["finish_photo_url"] = photo_link
                                     if len(photo_bytes) <= 2_500_000:
                                         archive_data["image_data"] = photo_bytes
                                         logger.info("[NOTIFY-BG] Loaded finish photo bytes: %s bytes", len(photo_bytes))
@@ -10592,6 +10592,8 @@ async def _on_print_complete_impl(
                         printer_name,
                         raw_filename,
                         db,
+                        image_data=archive_data.get("image_data"),
+                        finish_photo_url=archive_data.get("finish_photo_url"),
                     )
 
                 logger.info("[NOTIFY-BG] Completed")
@@ -13247,8 +13249,8 @@ PUBLIC_API_PATTERNS: tuple[re.Pattern[str], ...] = (
     # route's MEDIA-token dependency (``require_media_*`` — a signed-in user's
     # token in ``?token=``, or the ordinary headers, then the resource's own
     # permission and ownership rule; audit D9 a2). The camera routes keep the
-    # stream token. Anonymous by decision: archive photos (linked from
-    # notifications), external-link icons and the OIDC button icon.
+    # stream token. Anonymous by decision: a notification's short-lived photo
+    # copy, external-link icons and the OIDC button icon.
     # Thumbnails
     re.compile(r"^/api/v1/archives/\d+/thumbnail$"),
     re.compile(r"^/api/v1/library/files/\d+/thumbnail$"),
@@ -13258,6 +13260,9 @@ PUBLIC_API_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"^/api/v1/archives/\d+/plate-preview$"),
     # Images and media
     re.compile(r"^/api/v1/archives/\d+/photos/[^/]+$"),
+    # A notification's short-lived photo copy: anonymous, the unguessable file
+    # name is the credential (utils/notification_photos).
+    re.compile(r"^/api/v1/notifications/photos/[^/]+$"),
     # ``{image_path:path}`` — the ONLY reason a ``.+`` appears here, and it sits
     # behind the route's own fixed segment.
     re.compile(r"^/api/v1/archives/\d+/project-image/.+$"),

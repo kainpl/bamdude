@@ -4854,7 +4854,7 @@ export default {
       tokenExchangeFailed: 'OIDC token exchange failed'
     },
     forgotPasswordTitle: 'Forgot Password',
-    forgotPasswordEmailMessage: "Enter your email address and we'll send you a new password.",
+    forgotPasswordEmailMessage: "Enter your email address and we'll send you a link to set a new password.",
     emailAddress: 'Email Address',
     emailPlaceholder: 'your.email@example.com',
     cancel: 'Cancel',
@@ -12131,6 +12131,8 @@ export default {
     // Daily digest
     dailyDigest: 'Daily Digest',
     batchNotifications: 'Batch notifications into a single daily summary',
+    attachPhoto: 'Attach photos',
+    attachPhotoHint: 'Send camera frames with the notifications of this channel. Off: text only.',
     sendAt: 'Send at {{time}}',
     editProviderToChangeDigestTime: 'Edit provider to change digest time',
     // Actions

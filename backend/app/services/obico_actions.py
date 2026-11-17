@@ -13,7 +13,9 @@ from backend.app.models.printer import Printer
 logger = logging.getLogger(__name__)
 
 
-async def execute_action(printer_id: int, action: str, task_name: str, score: float) -> None:
+async def execute_action(
+    printer_id: int, action: str, task_name: str, score: float, frame: bytes | None = None
+) -> None:
     """Run the configured action for a detected print failure.
 
     action: 'notify' | 'pause' | 'pause_and_off'
@@ -26,7 +28,7 @@ async def execute_action(printer_id: int, action: str, task_name: str, score: fl
     if action == "pause_and_off":
         await _turn_off_linked_plugs(printer_id)
 
-    await _notify(printer_id, printer_name, task_name, score, action)
+    await _notify(printer_id, printer_name, task_name, score, action, frame)
 
 
 async def _get_printer_name(printer_id: int) -> str:
@@ -63,7 +65,9 @@ async def _turn_off_linked_plugs(printer_id: int) -> None:
                 logger.error("Obico action: failed to turn off plug %s: %s", plug.name, e)
 
 
-async def _notify(printer_id: int, printer_name: str, task_name: str, score: float, action: str) -> None:
+async def _notify(
+    printer_id: int, printer_name: str, task_name: str, score: float, action: str, frame: bytes | None = None
+) -> None:
     """Fire the AI Failure Detection notification (#1794).
 
     Routed to its own event; previously rode the multiplexed on_printer_error
@@ -81,6 +85,9 @@ async def _notify(printer_id: int, printer_name: str, task_name: str, score: flo
                 confidence=score,
                 action=action,
                 db=db,
+                # The frame the model flagged, not a fresh capture: the printer
+                # has moved on by the time this is sent.
+                image_data=frame,
             )
         except Exception as e:
             logger.error("Obico notify failed for printer %s: %s", printer_id, e)

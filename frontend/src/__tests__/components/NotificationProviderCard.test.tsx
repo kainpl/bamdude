@@ -94,6 +94,7 @@ const createMockProvider = (
   quiet_hours_enabled: false,
   quiet_hours_start: null,
   quiet_hours_end: null,
+  attach_photo: true,
   daily_digest_enabled: false,
   daily_digest_time: null,
   printer_ids: null,

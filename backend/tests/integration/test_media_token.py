@@ -61,10 +61,12 @@ MEDIA_ROUTES = [
     "/api/v1/makerworld/imports/1/cover-variant",
     "/api/v1/makerworld/thumbnail?url=https://makerworld.bblmw.com/x.png",
     "/api/v1/model-sources/manyfold/models/x7q3k2pdbm4z/preview",
+    # An archive's photos joined the rest (owner, 2026-11-17): a notification links a short-lived copy instead.
+    "/api/v1/archives/1/photos/finish_1.jpg",
 ]
 
 STILL_ANONYMOUS = [
-    "/api/v1/archives/1/photos/finish_1.jpg",
+    "/api/v1/notifications/photos/print_complete_20260101_000000_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.jpg",
     "/api/v1/external-links/1/icon",
     "/api/v1/auth/oidc/providers/1/icon",
 ]

@@ -163,6 +163,8 @@ class NotificationService:
         self._template_cache: dict[str, NotificationTemplate] = {}
         self._digest_scheduler_task: asyncio.Task | None = None
         self._last_digest_check: str = ""  # "HH:MM" to avoid duplicate checks
+        # sha256 of a frame -> the name of its short-lived copy (see photo_link).
+        self._photo_copies: dict[str, str] = {}
 
     async def _get_client(self) -> httpx.AsyncClient:
         """Get or create HTTP client."""
@@ -545,7 +547,9 @@ class NotificationService:
                 )
 
     @credential_safe_sender("bark")
-    async def _send_bark(self, config: dict, title: str, message: str) -> tuple[bool, str]:
+    async def _send_bark(
+        self, config: dict, title: str, message: str, image_url: str | None = None
+    ) -> tuple[bool, str]:
         """Send notification via Bark, the account-free iOS push service (upstream Bambuddy #1495).
 
         POSTs JSON to ``{server}/push``. Defaults to the official ``api.day.app``
@@ -585,6 +589,9 @@ class NotificationService:
         level = (config.get("level") or "").strip()
         if level in _BARK_INTERRUPTION_LEVELS:
             payload["level"] = level
+        if image_url:
+            # The closest Bark has to a photo: shown as the notification's icon.
+            payload["icon"] = image_url
 
         client = await self._get_client()
         response = await client.post(f"{server}/push", json=payload)
@@ -1123,6 +1130,7 @@ class NotificationService:
         image_data: bytes | None = None,
         event_type: str = "unknown",
         variables: dict[str, Any] | None = None,
+        image_url: str | None = None,
     ) -> tuple[bool, str]:
         """Send notification via generic webhook (POST JSON).
 
@@ -1150,6 +1158,9 @@ class NotificationService:
         if payload_format == "slack":
             # Slack/Mattermost format - just text field
             data = {"text": f"*{title}*\n{message}"}
+            if image_url:
+                # Slack and Mattermost fetch the picture themselves.
+                data["attachments"] = [{"fallback": title, "image_url": image_url}]
         else:
             # Generic format with custom field names
             custom_field_title = config.get("field_title", "title").strip() or "title"
@@ -1278,7 +1289,12 @@ class NotificationService:
 
     @credential_safe_sender("homeassistant")
     async def _send_homeassistant(
-        self, config: dict, title: str, message: str, db: AsyncSession | None = None
+        self,
+        config: dict,
+        title: str,
+        message: str,
+        db: AsyncSession | None = None,
+        image_url: str | None = None,
     ) -> tuple[bool, str]:
         """Send notification via Home Assistant.
 
@@ -1369,6 +1385,13 @@ class NotificationService:
             if parsed_data:
                 payload["data"] = parsed_data
 
+        if image_url and service:
+            # A notify.* service fetches data.image itself. Only with a custom
+            # service: the default persistent_notification.create has a strict
+            # schema and refuses a field it does not know. The user's own
+            # "image" in the Data field wins.
+            payload.setdefault("data", {}).setdefault("image", image_url)
+
         client = await self._get_client()
         try:
             response = await client.post(url, json=payload, headers=headers)
@@ -1409,6 +1432,11 @@ class NotificationService:
 
         config = json.loads(provider.config) if isinstance(provider.config, str) else provider.config
 
+        # A channel may opt out of camera frames altogether (its own setting, not
+        # an event toggle). NULL -- a row from before the column -- reads as on.
+        if provider.attach_photo is False:
+            image_data = None
+
         try:
             if provider.provider_type == "callmebot":
                 return await self._send_callmebot(config, f"{title}\n{message}")
@@ -1417,7 +1445,9 @@ class NotificationService:
             elif provider.provider_type == "pushover":
                 return await self._send_pushover(config, title, message, image_data=image_data)
             elif provider.provider_type == "bark":
-                return await self._send_bark(config, title, message)
+                return await self._send_bark(
+                    config, title, message, image_url=await self.photo_link(db, image_data, event_type)
+                )
             elif provider.provider_type == "telegram":
                 return await self._send_telegram_to_chats(
                     config,
@@ -1441,11 +1471,20 @@ class NotificationService:
             elif provider.provider_type == "discord":
                 return await self._send_discord(config, title, message, image_data=image_data)
             elif provider.provider_type == "webhook":
+                slack = (config.get("payload_format") or "generic").strip() == "slack"
                 return await self._send_webhook(
-                    config, title, message, image_data=image_data, event_type=event_type, variables=variables
+                    config,
+                    title,
+                    message,
+                    image_data=image_data,
+                    event_type=event_type,
+                    variables=variables,
+                    image_url=await self.photo_link(db, image_data, event_type) if slack else None,
                 )
             elif provider.provider_type == "homeassistant":
-                return await self._send_homeassistant(config, title, message, db=db)
+                return await self._send_homeassistant(
+                    config, title, message, db=db, image_url=await self.photo_link(db, image_data, event_type)
+                )
             elif provider.provider_type == "signal":
                 return await self._send_signal(config, title, message, image_data=image_data)
             else:
@@ -1453,6 +1492,56 @@ class NotificationService:
         except Exception as e:
             logger.warning("Error sending notification via %s (%s)", provider.provider_type, type(e).__name__)
             return False, safe_provider_message(str(e), provider.provider_type, config)
+
+    async def photo_link(
+        self,
+        db: AsyncSession | None,
+        image_data: bytes | None,
+        event_type: str | None,
+        *,
+        absolute_only: bool = True,
+    ) -> str | None:
+        """A link to a short-lived copy of this frame, for whoever fetches it without a session.
+
+        Home Assistant, Bark and a Slack-format webhook fetch the picture
+        themselves, and ``{finish_photo_url}`` is opened from a chat. The copy has
+        an unguessable name and lives three days (``utils/notification_photos``);
+        the link opens that one picture and nothing else -- not the archive, not
+        a camera.
+
+        Without an ``external_url`` setting there is no address another service
+        could reach: None, unless the caller can use a relative path
+        (``absolute_only=False``). One frame is copied once however many
+        channels link it.
+        """
+        if not image_data or db is None:
+            return None
+        from backend.app.api.routes.settings import get_setting
+
+        external_url = (await get_setting(db, "external_url") or "").strip().rstrip("/")
+        if not external_url and absolute_only:
+            return None
+
+        import hashlib
+
+        from backend.app.utils.notification_photos import (
+            ROUTE_PREFIX,
+            find_notification_photo,
+            save_notification_photo,
+        )
+
+        digest = hashlib.sha256(image_data).hexdigest()
+        filename = self._photo_copies.get(digest)
+        if filename is None or find_notification_photo(filename) is None:
+            try:
+                filename = await asyncio.to_thread(save_notification_photo, image_data, event_type or "event")
+            except Exception as exc:  # noqa: BLE001 -- a photo is never the reason a notification fails
+                logger.warning("Notification photo copy was not written: %s", exc)
+                return None
+            if len(self._photo_copies) >= 32:
+                self._photo_copies.pop(next(iter(self._photo_copies)))
+            self._photo_copies[digest] = filename
+        return f"{external_url}{ROUTE_PREFIX}{filename}"
 
     async def _build_telegram_actions(
         self,
@@ -2453,8 +2542,13 @@ class NotificationService:
         printer_name: str,
         db: AsyncSession,
         difference_percent: float | None = None,
+        image_data: bytes | None = None,
     ):
-        """Handle plate not empty event - objects detected on build plate before print."""
+        """Handle plate not empty event - objects detected on build plate before print.
+
+        ``image_data`` is the frame the check judged, so the operator sees what
+        was found on the plate without walking to the printer.
+        """
         providers = await self._get_providers_for_event(db, "on_plate_not_empty", printer_id)
         if not providers:
             return
@@ -2473,6 +2567,7 @@ class NotificationService:
             "plate_not_empty",
             printer_id,
             printer_name,
+            image_data=image_data,
             variables=variables,
         )
 
@@ -3038,6 +3133,8 @@ class NotificationService:
         printer_name: str,
         filename: str,
         db: AsyncSession,
+        image_data: bytes | None = None,
+        finish_photo_url: str | None = None,
     ) -> None:
         """Send a print event email notification to the user who submitted the job.
 
@@ -3131,6 +3228,7 @@ class NotificationService:
             variables = {
                 "printer": printer_name,
                 "filename": self._clean_filename(filename),
+                "finish_photo_url": finish_photo_url or "",
             }
 
             # Send the email
@@ -3140,6 +3238,7 @@ class NotificationService:
                 user_email=user.email,
                 username=user.username,
                 variables=variables,
+                image_data=image_data,
             )
             logger.info("[EMAIL] User print email sent: event=%s → %s", event_type, user.email)
         except Exception as e:

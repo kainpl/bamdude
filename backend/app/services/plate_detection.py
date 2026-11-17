@@ -49,6 +49,7 @@ class PlateDetectionResult:
         needs_calibration: bool = False,
         status: str | None = None,
         source_image: bytes | None = None,
+        frame: bytes | None = None,
     ):
         self.status = "unavailable" if needs_calibration else status or ("clear" if is_empty else "occupied")
         self.is_empty = bool(is_empty and self.status == "clear")
@@ -58,6 +59,7 @@ class PlateDetectionResult:
         self.debug_image = debug_image  # Optional annotated image for debugging
         self.needs_calibration = needs_calibration  # True if no reference image exists
         self.source_image = source_image  # Original frame for editing the detection area
+        self.frame = frame  # The judged frame as JPEG, kept when objects were found (for the notification)
 
     def to_dict(self) -> dict:
         return {
@@ -629,12 +631,24 @@ class PlateDetector:
                 _, buffer = cv2.imencode(".jpg", debug_frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
                 debug_image = buffer.tobytes()
 
+            # The frame the verdict was reached on travels with an "objects
+            # found" result, so the notification shows what was seen. Never the
+            # reason the check fails.
+            frame_jpeg = None
+            if not is_empty:
+                try:
+                    encoded, buffer = cv2.imencode(".jpg", current_frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                    frame_jpeg = buffer.tobytes() if encoded else None
+                except Exception:  # noqa: BLE001
+                    frame_jpeg = None
+
             return PlateDetectionResult(
                 is_empty=is_empty,
                 confidence=confidence,
                 difference_percent=difference_percent,
                 message=message,
                 debug_image=debug_image,
+                frame=frame_jpeg,
             )
 
         except Exception as e:

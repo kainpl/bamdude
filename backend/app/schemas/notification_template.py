@@ -159,9 +159,9 @@ EVENT_VARIABLES: dict[str, list[str]] = {
     "password_reset_link": ["username", "app_name", "ttl_hours", "timestamp"],
     # User email print notifications
     "user_print_start": ["username", "printer", "filename", "timestamp", "app_name"],
-    "user_print_complete": ["username", "printer", "filename", "timestamp", "app_name"],
-    "user_print_failed": ["username", "printer", "filename", "timestamp", "app_name"],
-    "user_print_stopped": ["username", "printer", "filename", "timestamp", "app_name"],
+    "user_print_complete": ["username", "printer", "filename", "finish_photo_url", "timestamp", "app_name"],
+    "user_print_failed": ["username", "printer", "filename", "finish_photo_url", "timestamp", "app_name"],
+    "user_print_stopped": ["username", "printer", "filename", "finish_photo_url", "timestamp", "app_name"],
 }
 
 # Sample data for previewing templates
@@ -533,6 +533,7 @@ SAMPLE_DATA: dict[str, dict[str, str]] = {
         "filename": "Benchy.3mf",
         "timestamp": "2024-01-15 15:48",
         "app_name": "BamDude",
+        "finish_photo_url": "https://bamdude.example/api/v1/notifications/photos/sample.jpg",
     },
     "user_print_failed": {
         "username": "john_doe",
@@ -540,6 +541,7 @@ SAMPLE_DATA: dict[str, dict[str, str]] = {
         "filename": "Benchy.3mf",
         "timestamp": "2024-01-15 15:15",
         "app_name": "BamDude",
+        "finish_photo_url": "https://bamdude.example/api/v1/notifications/photos/sample.jpg",
     },
     "user_print_stopped": {
         "username": "john_doe",
@@ -547,6 +549,7 @@ SAMPLE_DATA: dict[str, dict[str, str]] = {
         "filename": "Benchy.3mf",
         "timestamp": "2024-01-15 15:15",
         "app_name": "BamDude",
+        "finish_photo_url": "https://bamdude.example/api/v1/notifications/photos/sample.jpg",
     },
 }
 

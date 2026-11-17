@@ -95,6 +95,8 @@ describe('the URL builders pick the token by what they serve', () => {
     ['archive timelapse', () => api.getArchiveTimelapse(5)],
     ['archive QR code', () => api.getArchiveQRCodeUrl(5)],
     ['archive project image', () => api.getArchiveProjectImageUrl(5, 'Metadata/pick_1.png')],
+    // No longer anonymous: a notification links a short-lived copy of its own.
+    ['archive photo', () => api.getArchivePhotoUrl(5, 'finish_1.jpg')],
     ['library thumbnail', () => api.getLibraryFileThumbnailUrl(9)],
     ['library plate thumbnail', () => api.getLibraryFilePlateThumbnail(9, 1)],
     ['MakerWorld import cover', () => api.getMakerworldImportCoverUrl(9)],
@@ -111,9 +113,6 @@ describe('the URL builders pick the token by what they serve', () => {
     expect(api.getCameraSnapshotUrl(3)).toContain('token=CAMERA');
   });
 
-  it('an operator photo needs none — notifications link it', () => {
-    expect(api.getArchivePhotoUrl(5, 'finish_1.jpg')).not.toContain('token=');
-  });
 });
 
 describe('rewriteMediaSrcWithToken, by path', () => {
