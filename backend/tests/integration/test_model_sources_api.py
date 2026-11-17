@@ -269,6 +269,33 @@ class TestCatalogue:
         assert none.status_code == 404
 
 
+class TestAModelsFilesComeAPageAtATime:
+    """Review MB-M11, through the route."""
+
+    async def test_the_view_details_twenty_files_and_the_next_page_the_rest(self, async_client, fake):
+        await connect(async_client)
+        fake.models[MODEL]["files"] = {
+            f"file{index:03d}": (f"Part {index}", "model/stl", f"part-{index}.stl", STL) for index in range(25)
+        }
+        fake.requests.clear()
+        first = (await async_client.get(f"{API}/models/{MODEL}")).json()
+        assert len(first["files"]) == 25
+        assert sum(entry["detailed"] for entry in first["files"]) == 20
+        assert (first["files_page"], first["files_pages"], first["files_next_page"]) == (1, 2, 2)
+        assert sum("/model_files/" in path for path in fake.paths()) == 20
+        second = (await async_client.get(f"{API}/models/{MODEL}", params={"files_page": 2})).json()
+        assert all(entry["detailed"] and entry["filename"] for entry in second["files"])
+        assert (second["files_page"], second["files_next_page"]) == (2, None)
+        assert sum("/model_files/" in path for path in fake.paths()) == 25
+        assert sum(path == f"/models/{MODEL}" for path in fake.paths()) == 1
+
+    @pytest.mark.parametrize("page", ["0", "-1", "x", "10001"])
+    async def test_a_page_that_is_not_a_page_is_refused(self, async_client, fake, page):
+        await connect(async_client)
+        response = await async_client.get(f"{API}/models/{MODEL}", params={"files_page": page})
+        assert response.status_code == 422
+
+
 class TestRights:
     async def test_manyfold_rights_alone_are_enough(self, async_client, fake):
         """No MakerWorld permission anywhere: the source's own rights open its routes."""

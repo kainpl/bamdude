@@ -109,6 +109,7 @@ class TestCatalogue:
             "size": len(STL) + 8,
             "presupported": True,
             "available": True,
+            "detailed": True,
         }
         assert files["r3s4t5v6w7x8"]["importable"] is True
         # Pictures, documents and archives are listed and never importable — nor asked about.
@@ -145,6 +146,76 @@ class TestCatalogue:
         with pytest.raises(ManyfoldNotFound):
             await service_for(fake).get_model(bad)
         assert fake.requests == []
+
+
+class TestAModelWithManyFiles:
+    """Review MB-M11: one model view asked Manyfold up to 62 times. Details come a page at a time."""
+
+    def crowded(self, fake: FakeManyfold, count: int = 47) -> None:
+        fake.models[MODEL]["files"] = {
+            f"file{index:03d}": (f"Part {index}", "model/stl", f"part-{index}.stl", STL) for index in range(count)
+        }
+
+    async def test_the_first_view_details_one_page_and_says_there_is_more(self, fake):
+        self.crowded(fake)
+        model = await service_for(fake).get_model(MODEL)
+        assert len(model["files"]) == 47, "every file is listed"
+        detailed = [entry for entry in model["files"] if entry["detailed"]]
+        assert [entry["id"] for entry in detailed] == [f"file{index:03d}" for index in range(20)]
+        assert all(entry["filename"] and entry["size"] == len(STL) for entry in detailed)
+        assert all(entry["filename"] is None for entry in model["files"][20:])
+        assert (model["files_page"], model["files_pages"], model["files_next_page"]) == (1, 3, 2)
+        upstream = [path for path in fake.paths() if path.startswith("/models/") or path.startswith("/creators/")]
+        assert len(upstream) == 22, f"{len(upstream)} upstream requests for one model view"
+
+    async def test_the_next_page_reads_only_its_own_files(self, fake):
+        self.crowded(fake)
+        await service_for(fake).get_model(MODEL)
+        before = len(fake.requests)
+        model = await service_for(fake).get_model(MODEL, files_page=3)  # another request, another service
+        detailed = [entry["id"] for entry in model["files"] if entry["detailed"]]
+        # Page 1 is still known (the short cache), page 3 was just read, page 2 nobody asked for.
+        assert detailed == [f"file{index:03d}" for index in (*range(20), *range(40, 47))]
+        assert (model["files_page"], model["files_pages"], model["files_next_page"]) == (3, 3, None)
+        assert len(fake.requests) - before == 7, "the model, its creator and page 1 were not read again"
+
+    async def test_a_page_past_the_end_is_an_empty_page_not_an_error(self, fake):
+        self.crowded(fake, 3)
+        model = await service_for(fake).get_model(MODEL, files_page=9)
+        assert (model["files_page"], model["files_pages"], model["files_next_page"]) == (9, 1, None)
+
+    async def test_a_model_without_importable_files_has_no_pages(self, fake):
+        model = await service_for(fake).get_model("b4n8tq1zk0fw")
+        assert (model["files_pages"], model["files_next_page"]) == (0, None)
+
+    async def test_a_page_of_previews_reads_each_model_once(self, fake):
+        first = await service_for(fake).fetch_preview(MODEL)
+        before = len(fake.requests)
+        assert await service_for(fake).fetch_preview(MODEL) == first
+        assert len(fake.requests) - before == 1, "only the picture itself is fetched again"
+
+    async def test_the_short_memory_ends_with_the_connection(self, fake):
+        await service_for(fake).get_model(MODEL)
+        manyfold.clear_caches()
+        before = len(fake.requests)
+        await service_for(fake).get_model(MODEL)
+        assert len(fake.requests) - before > 3
+
+    async def test_details_that_take_too_long_leave_the_rest_for_another_ask(self, fake, monkeypatch):
+        import asyncio
+
+        self.crowded(fake, 6)
+        real = ManyfoldService.get_file
+
+        async def slow(self, model_id, file_id):
+            if file_id >= "file003":
+                await asyncio.sleep(30)
+            return await real(self, model_id, file_id)
+
+        monkeypatch.setattr(ManyfoldService, "get_file", slow)
+        monkeypatch.setattr(manyfold, "FILE_DETAIL_DEADLINE_SECONDS", 0.2, raising=False)
+        model = await asyncio.wait_for(service_for(fake).get_model(MODEL), 5)
+        assert [entry["detailed"] for entry in model["files"]] == [True, True, True, False, False, False]
 
 
 class TestCapabilities:

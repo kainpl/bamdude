@@ -89,6 +89,8 @@ class SourceFile(BaseModel):
     size: int | None = None
     presupported: bool | None = None
     available: bool = True
+    #: True once this file's name and size were read from the source (a page of files at a time).
+    detailed: bool = False
 
 
 class ImportedEntry(BaseModel):
@@ -108,7 +110,13 @@ class SourceModel(BaseModel):
     sensitive: bool = False
     url: str | None = None
     has_preview: bool = False
+    #: EVERY file of the model. Names and sizes are read a page at a time: ``files_page`` is the page
+    #: this answer read, ``files_next_page`` the one to ask for next (``?files_page=N``), None when
+    #: there is none. A file is ``detailed`` once it was read — also by an earlier page a moment ago.
     files: list[SourceFile] = []
+    files_page: int = 1
+    files_pages: int = 0
+    files_next_page: int | None = None
     #: file id -> the library file that already holds it (only files the caller may see).
     already_imported: dict[str, ImportedEntry] = {}
 
@@ -209,12 +217,14 @@ def make_source_router(provider: ModelProvider) -> APIRouter:
     async def get_model(
         model_id: str,
         request: Request,
+        files_page: int = Query(default=1, ge=1, le=10_000),
         db: AsyncSession = Depends(get_db),
         current_user: User | None = RequirePermission(view),
     ):
+        """A model with all its files; the names and sizes of one page of them (``files_page``)."""
         service = await service_for(db, current_user)
         try:
-            model = await service.get_model(model_id)
+            model = await service.get_model(model_id, files_page=files_page)
         except ProviderError as exc:
             raise refusal(exc) from exc
         finally:
@@ -251,6 +261,9 @@ def make_source_router(provider: ModelProvider) -> APIRouter:
             sensitive=bool(model.get("sensitive")),
             has_preview=bool(model.get("preview_file_id")),
             files=[SourceFile(**entry) for entry in model.get("files") or []],
+            files_page=model.get("files_page") or 1,
+            files_pages=model.get("files_pages") or 0,
+            files_next_page=model.get("files_next_page"),
             already_imported=already,
         )
 

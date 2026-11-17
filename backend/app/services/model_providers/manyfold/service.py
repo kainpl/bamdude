@@ -84,9 +84,15 @@ IMPORTABLE_EXTENSIONS = (".3mf", ".stl", ".step", ".stp", ".obj")
 
 MAX_FILE_BYTES = 1024 * 1024 * 1024  # Manyfold's own default upload limit
 MAX_PREVIEW_BYTES = 10 * 1024 * 1024
-#: How many of a model's importable files get their name and size read when the model is opened.
-FILE_DETAIL_LIMIT = 60
+#: A model's file list carries no names or sizes: each importable file is one more request. They
+#: are read a page at a time (``get_model(files_page=…)``), a few at once, under one deadline.
+FILE_DETAIL_PAGE = 20
 FILE_DETAIL_CONCURRENCY = 4
+FILE_DETAIL_DEADLINE_SECONDS = 45.0
+#: How long a model, a file's details and a creator's name are remembered between requests: the
+#: next page of details, the same model's preview and its import ask Manyfold only for what is new.
+_REMEMBER_SECONDS = 60.0
+_REMEMBER_ENTRIES = 4096
 JSON_DEADLINE_SECONDS = 30.0
 PREVIEW_DEADLINE_SECONDS = 30.0
 DOWNLOAD_DEADLINE_SECONDS = 30 * 60.0
@@ -108,6 +114,26 @@ _IMAGE_SIGNATURES = (
 _token_cache: dict[tuple[str, str, str], tuple[str, float]] = {}
 # A sign-in Manyfold just refused (or rate-limited), and until when that answer is reused.
 _refused: dict[tuple[str, str, str], tuple[ManyfoldError, float]] = {}
+# (connection, kind, ids…) -> (what Manyfold answered, monotonic expiry). One connection for the
+# whole installation means one view of the catalogue for everybody: sharing it shows nobody more.
+_remembered: dict[tuple, tuple[Any, float]] = {}
+
+
+def _recall(key: tuple) -> Any:
+    entry = _remembered.get(key)
+    return entry[0] if entry and entry[1] > time.monotonic() else None
+
+
+def _remember(key: tuple, value: Any) -> None:
+    if len(_remembered) >= _REMEMBER_ENTRIES:
+        now = time.monotonic()
+        for stale in [known for known, entry in _remembered.items() if entry[1] <= now]:
+            del _remembered[stale]
+        if len(_remembered) >= _REMEMBER_ENTRIES:
+            _remembered.clear()
+    _remembered[key] = (value, time.monotonic() + _REMEMBER_SECONDS)
+
+
 # base -> monotonic time until which its capabilities are known good
 _capable: dict[str, float] = {}
 #: How long a request waits for a sign-in somebody else is making before it gives up.
@@ -187,6 +213,7 @@ def clear_caches() -> None:
     _token_cache.clear()
     _refused.clear()
     _capable.clear()
+    _remembered.clear()
     for key in [known for known, lock in _token_locks.items() if not lock.locked()]:
         del _token_locks[key]
 
@@ -498,20 +525,33 @@ class ManyfoldService(ProviderService, BrowsableService):
         slug = unquote(match.group(1)) if match else None
         if not slug or not _SLUG_RE.match(slug):
             return None, None
+        key = (self._cache_key(), "creator", slug)
+        known = _recall(key)
+        if known is not None:
+            return slug, known or None
         try:
             body = await self._get_json(f"/creators/{quote(slug, safe='')}", "the creator")
         except ManyfoldError:
             return slug, None  # not visible to the application's owner: the model still is
+        _remember(key, _text(body.get("name")) or "")
         return slug, _text(body.get("name"))
 
     async def _model_body(self, model_id: str) -> dict[str, Any]:
         if model_id not in self._models:
-            self._models[model_id] = await self._get_json(f"/models/{model_id}", "this model")
+            key = (self._cache_key(), "model", model_id)
+            body = _recall(key)
+            if body is None:
+                body = await self._get_json(f"/models/{model_id}", "this model")
+                _remember(key, body)
+            self._models[model_id] = body
         return self._models[model_id]
 
-    async def get_model(self, model_id: str, *, details: bool = True) -> dict[str, Any]:
-        """A model and its files. ``details`` reads each importable file's name and size (bounded)."""
+    async def get_model(self, model_id: str, *, details: bool = True, files_page: int = 1) -> dict[str, Any]:
+        """A model and ALL its files. ``details`` reads the name and size of the importable files of
+        one page (``FILE_DETAIL_PAGE`` of them); ``files_next_page`` says which page to ask for next.
+        Files whose details were read a moment ago come detailed too, without another request."""
         model_id = valid_id(model_id)
+        files_page = max(1, int(files_page))
         body = await self._model_body(model_id)
         files: list[dict[str, Any]] = []
         for part in body.get("hasPart") or []:
@@ -531,6 +571,7 @@ class ManyfoldService(ProviderService, BrowsableService):
                     "size": None,
                     "presupported": None,
                     "available": True,
+                    "detailed": False,
                 }
             )
         license_info = body.get("spdx:license")
@@ -551,41 +592,70 @@ class ManyfoldService(ProviderService, BrowsableService):
             "preview_file_id": _id_from(preview.get("@id"), _FILE_ID_IN_URL) if isinstance(preview, dict) else None,
             "files": files,
             "files_detailed": False,
+            "files_page": files_page,
+            "files_pages": 0,
+            "files_next_page": None,
         }
         if details:
             model["creator_slug"], model["creator"] = await self._creator_name(body.get("creator"))
-            await self._detail_files(model_id, files)
-            model["files_detailed"] = True
+            wanted = [entry for entry in files if entry["importable"]]
+            pages = -(-len(wanted) // FILE_DETAIL_PAGE)
+            await self._detail_files(model_id, wanted, files_page)
+            model["files_pages"] = pages
+            model["files_next_page"] = files_page + 1 if files_page < pages else None
+            model["files_detailed"] = all(entry["detailed"] for entry in wanted)
         return model
 
-    async def _detail_files(self, model_id: str, files: list[dict[str, Any]]) -> None:
-        """Name, size and presupported flag of the importable files — the list itself carries none."""
+    @staticmethod
+    def _show(entry: dict[str, Any], file: dict[str, Any] | None) -> None:
+        if file is None:
+            # Listed, but not downloadable by this application (a preview-only model).
+            entry.update(importable=False, available=False, detailed=True)
+            return
+        entry.update(
+            filename=file["filename"],
+            size=file["size"],
+            presupported=file["presupported"],
+            importable=is_importable_filename(file["filename"]),
+            detailed=True,
+        )
+
+    async def _detail_files(self, model_id: str, wanted: list[dict[str, Any]], page: int) -> None:
+        """Name, size and presupported flag of ONE page of the importable files — the list itself
+        carries none. What is still remembered from an earlier page is shown without asking; what
+        the deadline cut off stays undetailed for another ask (importing asks for itself)."""
         gate = asyncio.Semaphore(FILE_DETAIL_CONCURRENCY)
 
         async def detail(entry: dict[str, Any]) -> None:
             async with gate:
                 try:
-                    file = await self.get_file(model_id, entry["id"])
+                    self._show(entry, await self.get_file(model_id, entry["id"]))
                 except ManyfoldNotFound:
-                    # Listed, but not downloadable by this application (a preview-only model).
-                    entry.update(importable=False, available=False)
-                    return
+                    _remember((self._cache_key(), "no-file", model_id, entry["id"]), True)
+                    self._show(entry, None)
                 except ManyfoldError:
-                    return  # the entry stays as the list gave it; importing asks again
-            entry.update(
-                filename=file["filename"],
-                size=file["size"],
-                presupported=file["presupported"],
-                importable=is_importable_filename(file["filename"]),
-            )
+                    return  # the entry stays as the list gave it
 
-        wanted = [entry for entry in files if entry["importable"]][:FILE_DETAIL_LIMIT]
-        await asyncio.gather(*(detail(entry) for entry in wanted))
+        asked = wanted[(page - 1) * FILE_DETAIL_PAGE : page * FILE_DETAIL_PAGE]
+        for entry in wanted:
+            if entry in asked:
+                continue
+            known = _recall((self._cache_key(), "file", model_id, entry["id"]))
+            if known is not None:
+                self._show(entry, known)
+            elif _recall((self._cache_key(), "no-file", model_id, entry["id"])):
+                self._show(entry, None)
+        tasks = [asyncio.ensure_future(detail(entry)) for entry in asked]
+        if tasks:
+            _done, late = await asyncio.wait(tasks, timeout=FILE_DETAIL_DEADLINE_SECONDS)
+            for task in late:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     async def get_file(self, model_id: str, file_id: str) -> dict[str, Any]:
         """One file's details, with the raw-download path rebuilt from its decoded segments."""
         model_id, file_id = valid_id(model_id), valid_id(file_id)
-        cached = self._files.get((model_id, file_id))
+        cached = self._files.get((model_id, file_id)) or _recall((self._cache_key(), "file", model_id, file_id))
         if cached is not None:
             return cached
         body = await self._get_json(f"/models/{model_id}/model_files/{file_id}", "this file")
@@ -618,6 +688,7 @@ class ManyfoldService(ProviderService, BrowsableService):
             "raw_path": marker + "/".join(quote(segment, safe="") for segment in segments),
         }
         self._files[(model_id, file_id)] = file
+        _remember((self._cache_key(), "file", model_id, file_id), file)
         return file
 
     async def check(self) -> dict[str, Any]:
