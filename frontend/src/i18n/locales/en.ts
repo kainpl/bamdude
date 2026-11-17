@@ -5591,6 +5591,7 @@ export default {
     saveConnection: 'Save connection',
     connectionSaved: 'Manyfold connection saved',
     connectionReadFailed: 'BamDude could not read the Manyfold connection.',
+    adminOnly: 'Only an administrator can change or test the Manyfold connection.',
     editConnection: 'Connection settings',
     searchPlaceholder: 'Search models',
     search: 'Search',

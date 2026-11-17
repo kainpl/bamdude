@@ -28,14 +28,16 @@ const inputClass =
  */
 export function ManyfoldConnectionCard() {
   const { t } = useTranslation();
-  const { hasPermission } = useAuth();
+  const { isAdmin, hasPermission } = useAuth();
   const { showToast } = useToast();
   const queryClient = useQueryClient();
   const refusal = useManyfoldRefusal();
-  // The server has the last word on who may change the connection (it may ask for more than
-  // `settings:update`): a save or test it forbids turns the card read-only for this user.
+  // A credential and its destination are an administrator's (as Obico's and Spoolman's are): the
+  // server answers 403 to a save or a test by anyone else, whatever `settings:update` says, so the
+  // card is read-only for them up front. The server still has the last word: a save or test it
+  // forbids all the same turns the card read-only too.
   const [writeForbidden, setWriteForbidden] = useState(false);
-  const canEdit = hasPermission('settings:update') && !writeForbidden;
+  const canEdit = isAdmin && hasPermission('settings:update') && !writeForbidden;
 
   const saved = useQuery({
     queryKey: ['manyfold-connection'],
@@ -175,6 +177,7 @@ export function ManyfoldConnectionCard() {
       <CardContent className="space-y-4">
         <p className="text-sm text-bambu-gray">{t('manyfold.connectionHelp')}</p>
         <p className="text-xs text-bambu-gray">{t('manyfold.connectionTls')}</p>
+        {!canEdit && <p className="text-sm text-yellow-400">{t('manyfold.adminOnly')}</p>}
 
         {saved.isError && !saved.isFetching && (
           <div role="alert" className="flex flex-wrap items-center gap-3 text-sm">

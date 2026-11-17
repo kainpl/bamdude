@@ -5627,6 +5627,7 @@ export default {
     saveConnection: 'Зберегти підключення',
     connectionSaved: 'Підключення Manyfold збережено',
     connectionReadFailed: 'BamDude не зміг прочитати підключення Manyfold.',
+    adminOnly: 'Змінювати й перевіряти підключення до Manyfold може лише адміністратор.',
     editConnection: 'Налаштування підключення',
     searchPlaceholder: 'Пошук моделей',
     search: 'Шукати',

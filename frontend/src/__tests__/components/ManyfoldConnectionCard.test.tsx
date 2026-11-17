@@ -47,6 +47,10 @@ function asUser(permissions: string[]) {
   );
 }
 
+/** The server's own refusal body (routes/model_sources.py), status 400, on the save and on the draft test. */
+const SECRET_REQUIRED_SENTENCE =
+  'The Manyfold address or client ID changed. Enter the client secret for it, or clear the stored secret.';
+
 const CONNECTED = { enabled: true, url: 'http://manyfold.lan:3214', client_id: 'client-abc', client_secret_configured: true };
 const EMPTY = { enabled: false, url: '', client_id: '', client_secret_configured: false };
 
@@ -167,7 +171,7 @@ describe('ManyfoldConnectionCard', () => {
       http.put(URL, async ({ request }) => {
         sent.put.push((await request.json()) as Record<string, unknown>);
         return HttpResponse.json(
-          { detail: { error: 'manyfold_secret_required', message: 'Enter the client secret again: the address or client ID changed.' } },
+          { detail: { error: 'manyfold_secret_required', message: SECRET_REQUIRED_SENTENCE } },
           { status: 400 },
         );
       }),
@@ -202,6 +206,31 @@ describe('ManyfoldConnectionCard', () => {
 
     await waitFor(() => expect(screen.getByRole('combobox', { name: 'Credential action' })).toHaveValue('replace'));
     expect(screen.getByRole('alert')).toHaveTextContent('Enter the client secret');
+  });
+
+  it('a test the server refuses with 400 "secret required" opens the secret field, by its code', async () => {
+    const sent = stored(CONNECTED);
+    server.use(
+      http.post(`${URL}/test`, async ({ request }) => {
+        sent.test.push((await request.json()) as Record<string, unknown>);
+        return HttpResponse.json(
+          { detail: { error: 'manyfold_secret_required', message: SECRET_REQUIRED_SENTENCE } },
+          { status: 400 },
+        );
+      }),
+    );
+    render(<ManyfoldConnectionCard />);
+    const url = await screen.findByDisplayValue('http://manyfold.lan:3214');
+    fireEvent.change(url, { target: { value: 'https://manyfold.lan:3214' } });
+    fireEvent.change(screen.getByRole('combobox', { name: 'Credential action' }), { target: { value: 'keep' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Test connection' }));
+
+    await waitFor(() => expect(sent.test).toHaveLength(1));
+    await waitFor(() => expect(screen.getByRole('combobox', { name: 'Credential action' })).toHaveValue('replace'));
+    expect(document.querySelector('input[type="password"]')).not.toBeNull();
+    expect(screen.getByRole('alert')).toHaveTextContent('Enter the client secret');
+    // The refusal is acted on, not printed as a failed test.
+    expect(screen.queryByText(SECRET_REQUIRED_SENTENCE)).not.toBeInTheDocument();
   });
 
   it('offers neither Save nor Test until the stored connection has loaded', async () => {
@@ -307,13 +336,36 @@ describe('ManyfoldConnectionCard', () => {
     await waitFor(() => expect(container).toBeEmptyDOMElement());
   });
 
-  it('stops offering Save to a user whose save the server forbids', async () => {
+  it('is read-only up front for a user who may change settings and is not an administrator', async () => {
     const sent = stored(CONNECTED);
     asUser(['settings:read', 'settings:update']);
+    render(<ManyfoldConnectionCard />);
+
+    const url = await screen.findByDisplayValue('http://manyfold.lan:3214');
+    await waitFor(() => expect(url).toBeDisabled());
+    expect(screen.getByDisplayValue('client-abc')).toBeDisabled();
+    expect(screen.getByRole('switch')).toBeDisabled();
+    expect(screen.queryByRole('button', { name: 'Save connection' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Test connection' })).not.toBeInTheDocument();
+    expect(screen.getByText('Only an administrator can change or test the Manyfold connection.')).toBeInTheDocument();
+    expect(sent.put).toHaveLength(0);
+    expect(sent.test).toHaveLength(0);
+  });
+
+  it('an administrator is told nothing about administrators', async () => {
+    stored(CONNECTED);
+    render(<ManyfoldConnectionCard />);
+    await screen.findByDisplayValue('client-abc');
+    expect(screen.getByRole('button', { name: 'Save connection' })).toBeEnabled();
+    expect(screen.queryByText('Only an administrator can change or test the Manyfold connection.')).not.toBeInTheDocument();
+  });
+
+  it('stops offering Save when the server forbids the save all the same', async () => {
+    const sent = stored(CONNECTED);
     server.use(
       http.put(URL, async ({ request }) => {
         sent.put.push((await request.json()) as Record<string, unknown>);
-        return HttpResponse.json({ detail: 'Only an administrator can change the Manyfold connection' }, { status: 403 });
+        return HttpResponse.json({ detail: 'Requires admin role' }, { status: 403 });
       }),
     );
     render(<ManyfoldConnectionCard />);
@@ -321,9 +373,21 @@ describe('ManyfoldConnectionCard', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Save connection' }));
 
     const toasts = within(screen.getByTestId('toast-viewport'));
-    expect(await toasts.findByText('Only an administrator can change the Manyfold connection')).toBeInTheDocument();
+    expect(await toasts.findByText('Requires admin role')).toBeInTheDocument();
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Save connection' })).not.toBeInTheDocument());
     expect(screen.getByDisplayValue('client-abc')).toBeDisabled();
+    expect(screen.getByText('Only an administrator can change or test the Manyfold connection.')).toBeInTheDocument();
+  });
+
+  it('stops offering Test when the server forbids the test', async () => {
+    stored(CONNECTED);
+    server.use(http.post(`${URL}/test`, () => HttpResponse.json({ detail: 'Requires admin role' }, { status: 403 })));
+    render(<ManyfoldConnectionCard />);
+    await screen.findByDisplayValue('client-abc');
+    fireEvent.click(await screen.findByRole('button', { name: 'Test connection' }));
+
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Test connection' })).not.toBeInTheDocument());
+    expect(screen.getByText('Only an administrator can change or test the Manyfold connection.')).toBeInTheDocument();
   });
 
   it('says a connection that could not be read could not be read, with a way to ask again', async () => {
