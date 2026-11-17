@@ -5583,6 +5583,8 @@ export default {
     urlPlaceholder: 'http://192.168.1.10:3214',
     clientId: 'Client ID',
     clientSecret: 'Client secret',
+    secretBelongs: 'The stored secret belongs to the address and client ID it was saved for. To connect to another address or with another client ID, enter the secret again.',
+    secretRequired: 'Enter the client secret to continue.',
     test: 'Test connection',
     testOk: 'Connected. Models BamDude can see: {{count}}',
     testOkUnknown: 'Connected.',
@@ -5663,6 +5665,7 @@ export default {
       manyfold_failed: 'Manyfold answered with an error.',
       source_connection_changed: 'The Manyfold connection changed during the import. Try again.',
       no_answer: 'BamDude did not answer. Check your connection and try again.',
+      manyfold_secret_required: 'The address or client ID changed: enter the client secret again.',
     },
   },
   makerworld: {

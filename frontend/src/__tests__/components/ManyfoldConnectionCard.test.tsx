@@ -102,6 +102,90 @@ describe('ManyfoldConnectionCard', () => {
     expect(sent.put[1].secret_actions).toEqual({ manyfold_client_secret: 'keep' });
   });
 
+  it('asks for the secret again as soon as the address of a saved connection is edited', async () => {
+    const sent = stored(CONNECTED);
+    render(<ManyfoldConnectionCard />);
+    const url = await screen.findByDisplayValue('http://manyfold.lan:3214');
+    const action = screen.getByRole('combobox', { name: 'Credential action' });
+
+    // The path "Test connection" itself sends the admin down: http:// → https://.
+    fireEvent.change(url, { target: { value: 'https://manyfold.lan:3214' } });
+    expect(action).toHaveValue('replace');
+    expect(document.querySelector('input[type="password"]')).not.toBeNull();
+    expect(screen.getByText(/The stored secret belongs to the address and client ID it was saved for/)).toBeInTheDocument();
+
+    // Nothing is sent until the secret is entered — and the card says what is missing.
+    fireEvent.click(screen.getByRole('button', { name: 'Save connection' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Test connection' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Enter the client secret');
+    expect(sent.put).toHaveLength(0);
+    expect(sent.test).toHaveLength(0);
+
+    fireEvent.change(document.querySelector('input[type="password"]') as HTMLInputElement, { target: { value: 's3cret' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save connection' }));
+    await waitFor(() => expect(sent.put).toHaveLength(1));
+    expect(sent.put[0]).toMatchObject({
+      url: 'https://manyfold.lan:3214',
+      client_secret: 's3cret',
+      secret_actions: { manyfold_client_secret: 'replace' },
+    });
+  });
+
+  it('goes back to keeping the secret when the address and client ID are put back', async () => {
+    stored(CONNECTED);
+    render(<ManyfoldConnectionCard />);
+    const clientId = await screen.findByDisplayValue('client-abc');
+
+    fireEvent.change(clientId, { target: { value: 'client-xyz' } });
+    expect(screen.getByRole('combobox', { name: 'Credential action' })).toHaveValue('replace');
+    fireEvent.change(clientId, { target: { value: 'client-abc' } });
+    expect(screen.getByRole('combobox', { name: 'Credential action' })).toHaveValue('keep');
+    expect(document.querySelector('input[type="password"]')).toBeNull();
+  });
+
+  it('opens the secret field when the server says the kept secret cannot follow the new address', async () => {
+    const sent = stored(CONNECTED);
+    server.use(
+      http.put(URL, async ({ request }) => {
+        sent.put.push((await request.json()) as Record<string, unknown>);
+        return HttpResponse.json(
+          { detail: { error: 'manyfold_secret_required', message: 'Enter the client secret again: the address or client ID changed.' } },
+          { status: 400 },
+        );
+      }),
+    );
+    render(<ManyfoldConnectionCard />);
+    const url = await screen.findByDisplayValue('http://manyfold.lan:3214');
+    fireEvent.change(url, { target: { value: 'https://manyfold.lan:3214' } });
+    // The admin insists on "Keep": the server's refusal code brings the field back.
+    fireEvent.change(screen.getByRole('combobox', { name: 'Credential action' }), { target: { value: 'keep' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save connection' }));
+
+    await waitFor(() => expect(sent.put).toHaveLength(1));
+    await waitFor(() => expect(screen.getByRole('combobox', { name: 'Credential action' })).toHaveValue('replace'));
+    expect(document.querySelector('input[type="password"]')).not.toBeNull();
+    expect(screen.getByRole('alert')).toHaveTextContent('Enter the client secret');
+    // No settings-key name, no raw sentence in a toast.
+    expect(screen.queryByText(/manyfold_client_secret/)).not.toBeInTheDocument();
+  });
+
+  it('a test that answers "secret required" opens the secret field too', async () => {
+    stored(CONNECTED);
+    server.use(
+      http.post(`${URL}/test`, () =>
+        HttpResponse.json({ ok: false, models: null, error: 'manyfold_secret_required', message: 'Enter the client secret again.' }),
+      ),
+    );
+    render(<ManyfoldConnectionCard />);
+    const url = await screen.findByDisplayValue('http://manyfold.lan:3214');
+    fireEvent.change(url, { target: { value: 'https://manyfold.lan:3214' } });
+    fireEvent.change(screen.getByRole('combobox', { name: 'Credential action' }), { target: { value: 'keep' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Test connection' }));
+
+    await waitFor(() => expect(screen.getByRole('combobox', { name: 'Credential action' })).toHaveValue('replace'));
+    expect(screen.getByRole('alert')).toHaveTextContent('Enter the client secret');
+  });
+
   it('saving an empty form sends no empty replacement', async () => {
     const sent = stored(EMPTY);
     render(<ManyfoldConnectionCard />);
