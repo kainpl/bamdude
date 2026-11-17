@@ -204,12 +204,13 @@ class ArchivePurgeService:
 
         Runs in its own session via ``ArchiveService.delete_archive`` so the
         on-disk cleanup (3MF, thumbnail, timelapse, source 3MF, F3D, photos)
-        goes through the same safety-checked path as the sweeper. Caller
-        should verify the archive is in trash before invoking.
+        goes through the same safety-checked path as the sweeper. The service
+        rechecks that it is still in trash under the archive's row lock: an
+        operator restore that committed after the caller's scan must survive.
         """
         async with _database.async_session() as delete_db:
             service = ArchiveService(delete_db)
-            return await service.delete_archive(archive_id, refuse_kept=True)
+            return await service.delete_archive(archive_id, refuse_kept=True, trashed_only=True)
 
     async def empty_trash(self, db: AsyncSession) -> int:
         """Hard-delete every trashed archive immediately. Returns the count."""

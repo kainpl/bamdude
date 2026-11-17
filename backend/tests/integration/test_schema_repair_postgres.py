@@ -1,6 +1,7 @@
 """D4 addressed PG data-policy gates, destructive only to TEST_POSTGRES_URL."""
 
 import json
+from datetime import datetime
 
 import pytest
 from sqlalchemy import (
@@ -279,6 +280,10 @@ def canonical_check_cases():
 
     import_all_models()
     witnesses = {
+        "ck_aq_return_publication": (
+            {"returned_at": datetime(2026, 1, 1), "ordinal": None},
+            {"returned_at": None, "ordinal": None},
+        ),
         "ck_stock_items_reserved_le_on_hand": ({"reserved": 1, "on_hand": 0}, {"reserved": 0, "on_hand": 0}),
         "ck_ha_history_one_owner": (
             {"printer_sensor_id": None, "location_sensor_id": None},

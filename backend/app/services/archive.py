@@ -2247,12 +2247,12 @@ class ArchiveService:
 
         return {"materials": materials, "colors": colors, "tags": tags}
 
-    async def delete_archive(self, archive_id: int, *, refuse_kept: bool = False) -> bool:
+    async def delete_archive(self, archive_id: int, *, refuse_kept: bool = False, trashed_only: bool = False) -> bool:
         """Hard-delete one archive under the shared archive-facts writer guard."""
         from backend.app.services.archive_write_scope import archive_write_scope
 
         async with archive_write_scope(self.db, archive_id):
-            deleted = await self._delete_archive_locked(archive_id, refuse_kept=refuse_kept)
+            deleted = await self._delete_archive_locked(archive_id, refuse_kept=refuse_kept, trashed_only=trashed_only)
         return deleted
 
     async def delete_archive_rows(self, archive):
@@ -2261,12 +2261,16 @@ class ArchiveService:
 
         return await archive_rows(self.db, archive)
 
-    async def _delete_archive_locked(self, archive_id: int, *, refuse_kept: bool = False) -> bool:
+    async def _delete_archive_locked(
+        self, archive_id: int, *, refuse_kept: bool = False, trashed_only: bool = False
+    ) -> bool:
         from backend.app.services.archive_write_scope import archive_file_reference_scope, lock_prints
 
         rows = await lock_prints(self.db, [archive_id])
         archive = rows[0] if rows else None
-        if archive is None:
+        # The trash scan is only a candidate list. A restore can commit while
+        # this operation waits for its row lock; use the fresh locked state.
+        if archive is None or (trashed_only and archive.deleted_at is None):
             return False
         from backend.app.services.content_delete_keeps import archive_keep_reasons
 
@@ -2334,7 +2338,9 @@ class ArchiveService:
                         is not None
                     ):
                         return
-                    archive_dir = (settings.base_dir / stored).parent
+                    archive_dir = (
+                        settings.base_dir / stored
+                    ).parent  # SEC-PATH-OK: root confinement and depth checked below.
                     try:
                         relative = archive_dir.resolve().relative_to(settings.archive_dir.resolve())
                     except (ValueError, OSError):

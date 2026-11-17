@@ -229,7 +229,7 @@ async def test_empty_trash_reports_both_deleted_and_retained_in_either_id_order(
 
 @pytest.mark.parametrize("status,detail", [(409, {"error": "other_failure"}), (503, "temporarily unavailable")])
 async def test_empty_trash_does_not_mask_an_unrelated_failure(async_client, db_session, monkeypatch, status, detail):
-    from backend.app.services.archive_purge import archive_purge_service
+    from backend.app.services.archive_purge import ArchivePurgeService
 
     db_session.add(
         PrintArchive(filename="other.3mf", file_path="", file_size=0, status="completed", deleted_at=datetime.now())
@@ -239,7 +239,7 @@ async def test_empty_trash_does_not_mask_an_unrelated_failure(async_client, db_s
     async def fail(_archive_id):
         raise HTTPException(status, detail)
 
-    monkeypatch.setattr(archive_purge_service, "hard_delete_now", fail)
+    monkeypatch.setattr(ArchivePurgeService, "hard_delete_now", staticmethod(fail))
     response = await async_client.delete("/api/v1/archives/trash")
     assert response.status_code == status, response.text
     assert response.json()["detail"] == detail
