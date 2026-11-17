@@ -15,11 +15,15 @@ ALLOWED_QUEUE_CALLERS = {
 }
 ALLOWED_ENQUEUE_MODULES = {"api/routes/library.py", "api/routes/library_thumbnail_jobs.py"}
 
-# Every model site is a provider under ``services/model_providers/`` and is reached through the routes in
-# ``api/routes/makerworld.py`` — both are the MakerWorld door (and the next site's).
+# Every model site is a provider under ``services/model_providers/``. MakerWorld is reached through the routes
+# in ``api/routes/makerworld.py``, a source with a catalogue (Manyfold) through ``api/routes/model_sources.py``,
+# and both put a file in the library through ONE import core, ``services/model_import.py`` — the door a STEP
+# from a model site actually comes in by.
 NEGATIVE_DOORS = (
     "services/model_providers",
+    "services/model_import.py",
     "api/routes/makerworld.py",
+    "api/routes/model_sources.py",
     "services/archive.py",
     "services/virtual_printer",
     "services/calibration_service.py",
@@ -70,8 +74,21 @@ def test_the_negative_doors_never_name_the_step_jobs():
         # the code went to ``services/model_providers/`` and asserted nothing about it
         assert files, f"{relative} is gone - name the place its code moved to"
         for path in files:
-            text = path.read_text(encoding="utf-8")
-            assert "library_preview_jobs" not in text and "_queue_step_thumbnail" not in text, path
+            assert not _asks_for_a_step_picture(path.read_text(encoding="utf-8")), path
+
+
+def _asks_for_a_step_picture(text: str) -> bool:
+    return "library_preview_jobs" in text or "_queue_step_thumbnail" in text
+
+
+def test_the_import_core_asking_for_a_step_picture_would_be_caught():
+    """The mutation, kept as a test: the import core as it is passes, and the same source with either way
+    of asking for a STEP thumbnail added does not."""
+    core = (APP / "services" / "model_import.py").read_text(encoding="utf-8")
+    assert "services/model_import.py" in NEGATIVE_DOORS and not _asks_for_a_step_picture(core)
+    through_the_door = core + "\n    await library_routes._queue_step_thumbnail(db, library_file, authority)\n"
+    through_the_queue = core + "\nfrom backend.app.services import library_preview_jobs\n"
+    assert _asks_for_a_step_picture(through_the_door) and _asks_for_a_step_picture(through_the_queue)
 
 
 def test_only_three_modules_start_the_converter():
