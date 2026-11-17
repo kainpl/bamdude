@@ -12674,6 +12674,13 @@ async def _application_lifespan(app: FastAPI):
         printer_file_runtime.reopen()
     except RuntimeError:
         logging.getLogger(__name__).exception("Printer file operations still running at startup")
+    from backend.app.services.archive_media_runtime import archive_media_runtime
+
+    # The same rule for archive video work (G10 C4).
+    try:
+        archive_media_runtime.reopen()
+    except RuntimeError:
+        logging.getLogger(__name__).exception("Archive video operations still running at startup")
     from backend.app.services.part_render_scheduler import start_part_render, stop_part_render
 
     try:
@@ -12863,6 +12870,11 @@ async def _application_lifespan(app: FastAPI):
     if not await printer_file_runtime.quiesce(10):
         logging.getLogger(__name__).warning(
             "Printer file operations did not end before shutdown; admission stays closed"
+        )
+    # Archive video work is waited for, bounded; an unproven end is logged, never treated as done.
+    if not await archive_media_runtime.quiesce(10):
+        logging.getLogger(__name__).warning(
+            "Archive video operations did not end before shutdown; admission stays closed"
         )
     printer_manager.disconnect_all()
     await stop_library_file_runtime()

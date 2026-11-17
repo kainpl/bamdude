@@ -2427,7 +2427,45 @@ class ArchiveService:
         (``archive_media.primary_token``) is the video the caller started from;
         a publication that finds another one is refused. Why a refusal happened
         is left in ``self.media_refusal``.
+
+        The whole attach — staging the bytes included — is one operation the
+        media runtime owns (G10 C4): refused while a restore holds admission,
+        waited for by a restore that comes after it began.
         """
+        from backend.app.services import archive_media
+        from backend.app.services.archive_media_runtime import MediaAdmissionClosed, archive_media_runtime
+
+        self.media_refusal: str | None = None
+        try:
+            return await archive_media_runtime.own(
+                f"attach:{archive_id}",
+                self._attach_timelapse(
+                    archive_id,
+                    timelapse_data,
+                    filename,
+                    expected_identity=expected_identity,
+                    expected_epoch=expected_epoch,
+                    origin=origin,
+                    remote=remote,
+                    expected_token=expected_token,
+                ),
+            )
+        except MediaAdmissionClosed:
+            self.media_refusal = archive_media.REFUSED_RESTORING
+            return False
+
+    async def _attach_timelapse(
+        self,
+        archive_id: int,
+        timelapse_data: bytes,
+        filename: str,
+        *,
+        expected_identity: str | None,
+        expected_epoch: int | None,
+        origin: str,
+        remote,
+        expected_token: str | None,
+    ) -> bool:
         import asyncio
         import hashlib
 
@@ -2547,6 +2585,30 @@ async def _convert_timelapse_to_mp4(
     archive_id: int, source_path: Path, *, expected_identity: str | None = None, expected_epoch: int | None = None
 ) -> None:
     """Background task: convert non-MP4 timelapse (e.g. AVI from P1S) to MP4.
+
+    An operation the media runtime owns (G10 C4): a restore waits for it, or is
+    refused while its ffmpeg is still running — it is never left converting
+    into a tree that is being replaced.
+    """
+    from backend.app.services.archive_media_runtime import MediaAdmissionClosed, archive_media_runtime
+
+    try:
+        await archive_media_runtime.own(
+            f"convert:{archive_id}",
+            _convert_timelapse_to_mp4_owned(
+                archive_id, source_path, expected_identity=expected_identity, expected_epoch=expected_epoch
+            ),
+        )
+    except MediaAdmissionClosed:
+        logging.getLogger(__name__).info(
+            "Timelapse conversion for archive %s not started: a restore holds archive media admission", archive_id
+        )
+
+
+async def _convert_timelapse_to_mp4_owned(
+    archive_id: int, source_path: Path, *, expected_identity: str | None = None, expected_epoch: int | None = None
+) -> None:
+    """The conversion itself.
 
     Runs with low CPU priority (-threads 1, nice) so it doesn't starve
     other processes on resource-constrained devices like Raspberry Pi.

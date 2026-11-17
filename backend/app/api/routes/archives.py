@@ -2118,6 +2118,14 @@ def _refuse_media(refusal: str | None) -> None:
             409,
             {"error": "target_gone", "message": "The archive changed or was removed while this was being prepared"},
         )
+    if refusal == "restoring":
+        raise HTTPException(
+            503,
+            {
+                "error": "restoring",
+                "message": "A restore is in progress; archive videos cannot be changed until it ends",
+            },
+        )
     raise HTTPException(500, "Failed to attach timelapse")
 
 

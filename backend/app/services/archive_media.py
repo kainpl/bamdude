@@ -126,6 +126,8 @@ REFUSED_TARGET_GONE = "target_gone"
 REFUSED_SOURCE_CHANGED = "source_changed"
 #: This recording already belongs to another archive.
 REFUSED_SOURCE_CLAIMED = "source_claimed"
+#: A restore or shutdown has closed admission (``services/archive_media_runtime``).
+REFUSED_RESTORING = "restoring"
 
 
 @dataclass(frozen=True)
@@ -278,7 +280,40 @@ async def _unlink(base_dir: Path, relative_path: str | None) -> None:
         logger.warning("Archive media: could not remove the replaced video %s: %s", relative_path, exc)
 
 
-async def publish_primary(
+async def publish_primary(db: AsyncSession, archive_id: int, *, staged: Path, **kwargs) -> Publication:
+    """Make ``staged`` the archive's video, or refuse and leave everything as it was.
+
+    An operation the media runtime owns (G10 C4): refused while a restore holds
+    admission, and not detached by a cancelled caller. See :func:`_publish_primary`.
+    """
+    from backend.app.services.archive_media_runtime import (  # noqa: PLC0415
+        MediaAdmissionClosed,
+        archive_media_runtime,
+    )
+
+    try:
+        return await archive_media_runtime.own(
+            f"publish:{archive_id}", _publish_primary(db, archive_id, staged=staged, **kwargs)
+        )
+    except MediaAdmissionClosed:
+        await asyncio.to_thread(staged.unlink, missing_ok=True)
+        return Publication(False, REFUSED_RESTORING)
+
+
+async def remove_primary(db: AsyncSession, archive_id: int, **kwargs) -> Publication:
+    """Take the archive's video away — an operation the media runtime owns. See :func:`_remove_primary`."""
+    from backend.app.services.archive_media_runtime import (  # noqa: PLC0415
+        MediaAdmissionClosed,
+        archive_media_runtime,
+    )
+
+    try:
+        return await archive_media_runtime.own(f"remove:{archive_id}", _remove_primary(db, archive_id, **kwargs))
+    except MediaAdmissionClosed:
+        return Publication(False, REFUSED_RESTORING)
+
+
+async def _publish_primary(
     db: AsyncSession,
     archive_id: int,
     *,
@@ -373,7 +408,7 @@ async def publish_primary(
     return Publication(True, None, relative, revision, asset_uuid)
 
 
-async def remove_primary(
+async def _remove_primary(
     db: AsyncSession,
     archive_id: int,
     *,
