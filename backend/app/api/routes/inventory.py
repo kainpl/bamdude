@@ -3026,6 +3026,15 @@ async def _assign_spool(
         await db.commit()
         await db.refresh(assignment)
 
+        # A spool already below its threshold is announced now, while it can
+        # still be swapped -- not after the next print has drawn from it.
+        from backend.app.services.usage_tracker import warn_if_low_stock_in_slot
+
+        assigned_spool = await db.get(Spool, data.spool_id)
+        if assigned_spool is not None:
+            await warn_if_low_stock_in_slot(db, assigned_spool)
+            await db.commit()
+
         # If this slot ran out during the active print, this assignment IS the
         # replacement (the runout notification asks for exactly this) — journal
         # the spool_loaded boundary. Best-effort; the assignment must never fail

@@ -575,6 +575,9 @@ async def auto_assign_spool(
     )
     db.add(assignment)
     await db.flush()
+    from backend.app.services.usage_tracker import warn_if_low_stock_in_slot
+
+    await warn_if_low_stock_in_slot(db, spool)
 
     # A spool sits in one slot (owner decision Р7): the tag just read here is
     # the proof it is no longer in its other slots — the partial-return hold

@@ -310,6 +310,9 @@ async def claim_on_insertion(
     )
     db.add(assignment)
     await db.flush()
+    from backend.app.services.usage_tracker import warn_if_low_stock_in_slot
+
+    await warn_if_low_stock_in_slot(db, spool)
     # The existing journal's writer commits the replacement and its boundary
     # together when a runout exists. Failure is NOT swallowed on this auto path.
     await note_assignment_change(
