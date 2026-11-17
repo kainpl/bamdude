@@ -1,0 +1,282 @@
+{
+  "print_archives.created_by_id": {
+    "table": "print_archives",
+    "column": "created_by_id",
+    "nullable": true,
+    "target": "users.id",
+    "ondelete": "SET NULL",
+    "policy": "retain domain history/state; explicitly detach user reference in the same transaction"
+  },
+  "projects.responsible_id": {
+    "table": "projects",
+    "column": "responsible_id",
+    "nullable": true,
+    "target": "users.id",
+    "ondelete": "SET NULL",
+    "policy": "retain domain history/state; explicitly detach user reference in the same transaction"
+  },
+  "project_events.user_id": {
+    "table": "project_events",
+    "column": "user_id",
+    "nullable": true,
+    "target": "users.id",
+    "ondelete": "SET NULL",
+    "policy": "retain domain history/state; explicitly detach user reference in the same transaction"
+  },
+  "print_queue.created_by_id": {
+    "table": "print_queue",
+    "column": "created_by_id",
+    "nullable": true,
+    "target": "users.id",
+    "ondelete": "SET NULL",
+    "policy": "retain domain history/state; explicitly detach user reference in the same transaction"
+  },
+  "library_files.created_by_id": {
+    "table": "library_files",
+    "column": "created_by_id",
+    "nullable": true,
+    "target": "users.id",
+    "ondelete": "SET NULL",
+    "policy": "retain domain history/state; explicitly detach user reference in the same transaction"
+  },
+  "library_file_notes.user_id": {
+    "table": "library_file_notes",
+    "column": "user_id",
+    "nullable": true,
+    "target": "users.id",
+    "ondelete": "SET NULL",
+    "policy": "retain domain history/state; explicitly detach user reference in the same transaction"
+  },
+  "maintenance_history.performed_by_user_id": {
+    "table": "maintenance_history",
+    "column": "performed_by_user_id",
+    "nullable": true,
+    "target": "users.id",
+    "ondelete": "SET NULL",
+    "policy": "retain domain history/state; explicitly detach user reference in the same transaction"
+  },
+  "telegram_chats.user_id": {
+    "table": "telegram_chats",
+    "column": "user_id",
+    "nullable": true,
+    "target": "users.id",
+    "ondelete": "SET NULL",
+    "policy": "retain domain history/state; explicitly detach user reference in the same transaction"
+  },
+  "ams_setting_audit.user_id": {
+    "table": "ams_setting_audit",
+    "column": "user_id",
+    "nullable": true,
+    "target": "users.id",
+    "ondelete": "SET NULL",
+    "policy": "retain domain history/state; explicitly detach user reference in the same transaction"
+  },
+  "api_keys.user_id": {
+    "table": "api_keys",
+    "column": "user_id",
+    "nullable": true,
+    "target": "users.id",
+    "ondelete": "CASCADE",
+    "policy": "delete owned row; preferences must never become system defaults; recursively count/delete owned dependents"
+  },
+  "auth_sessions.user_id": {
+    "table": "auth_sessions",
+    "column": "user_id",
+    "nullable": false,
+    "target": "users.id",
+    "ondelete": "CASCADE",
+    "policy": "delete owned row; preferences must never become system defaults; recursively count/delete owned dependents"
+  },
+  "calibration_audit.user_id": {
+    "table": "calibration_audit",
+    "column": "user_id",
+    "nullable": true,
+    "target": "users.id",
+    "ondelete": "SET NULL",
+    "policy": "retain domain history/state; explicitly detach user reference in the same transaction"
+  },
+  "calibration_session.user_id": {
+    "table": "calibration_session",
+    "column": "user_id",
+    "nullable": true,
+    "target": "users.id",
+    "ondelete": "SET NULL",
+    "policy": "retain domain history/state; explicitly detach user reference in the same transaction"
+  },
+  "filament_calibration.calibrated_by_user_id": {
+    "table": "filament_calibration",
+    "column": "calibrated_by_user_id",
+    "nullable": true,
+    "target": "users.id",
+    "ondelete": "SET NULL",
+    "policy": "retain domain history/state; explicitly detach user reference in the same transaction"
+  },
+  "user_groups.user_id": {
+    "table": "user_groups",
+    "column": "user_id",
+    "nullable": false,
+    "target": "users.id",
+    "ondelete": "CASCADE",
+    "policy": "delete owned row; preferences must never become system defaults; recursively count/delete owned dependents"
+  },
+  "print_completion_receipts.assessment_actor_id": {
+    "table": "print_completion_receipts",
+    "column": "assessment_actor_id",
+    "nullable": true,
+    "target": "users.id",
+    "ondelete": "SET NULL",
+    "policy": "retain domain history/state; explicitly detach user reference in the same transaction"
+  },
+  "print_completion_receipts.plate_action_actor_id": {
+    "table": "print_completion_receipts",
+    "column": "plate_action_actor_id",
+    "nullable": true,
+    "target": "users.id",
+    "ondelete": "SET NULL",
+    "policy": "retain domain history/state; explicitly detach user reference in the same transaction"
+  },
+  "printer_setting_audit.user_id": {
+    "table": "printer_setting_audit",
+    "column": "user_id",
+    "nullable": true,
+    "target": "users.id",
+    "ondelete": "SET NULL",
+    "policy": "retain domain history/state; explicitly detach user reference in the same transaction"
+  },
+  "user_email_preferences.user_id": {
+    "table": "user_email_preferences",
+    "column": "user_id",
+    "nullable": false,
+    "target": "users.id",
+    "ondelete": "CASCADE",
+    "policy": "delete owned row; preferences must never become system defaults; recursively count/delete owned dependents"
+  },
+  "auto_queue_items.created_by_id": {
+    "table": "auto_queue_items",
+    "column": "created_by_id",
+    "nullable": true,
+    "target": "users.id",
+    "ondelete": "SET NULL",
+    "policy": "retain domain history/state; explicitly detach user reference in the same transaction"
+  },
+  "stock_item_movements.created_by": {
+    "table": "stock_item_movements",
+    "column": "created_by",
+    "nullable": true,
+    "target": "users.id",
+    "ondelete": "SET NULL",
+    "policy": "retain domain history/state; explicitly detach user reference in the same transaction"
+  },
+  "firmware_batch_runs.created_by_id": {
+    "table": "firmware_batch_runs",
+    "column": "created_by_id",
+    "nullable": true,
+    "target": "users.id",
+    "ondelete": null,
+    "policy": "retain nullable firmware history and explicitly detach creator; no new DDL or history deletion"
+  },
+  "long_lived_tokens.user_id": {
+    "table": "long_lived_tokens",
+    "column": "user_id",
+    "nullable": false,
+    "target": "users.id",
+    "ondelete": "CASCADE",
+    "policy": "delete owned row; preferences must never become system defaults; recursively count/delete owned dependents"
+  },
+  "user_oidc_links.user_id": {
+    "table": "user_oidc_links",
+    "column": "user_id",
+    "nullable": false,
+    "target": "users.id",
+    "ondelete": "CASCADE",
+    "policy": "delete owned row; preferences must never become system defaults; recursively count/delete owned dependents"
+  },
+  "product_part_stock_movements.created_by": {
+    "table": "product_part_stock_movements",
+    "column": "created_by",
+    "nullable": true,
+    "target": "users.id",
+    "ondelete": "SET NULL",
+    "policy": "retain domain history/state; explicitly detach user reference in the same transaction"
+  },
+  "print_options_preferences.user_id": {
+    "table": "print_options_preferences",
+    "column": "user_id",
+    "nullable": true,
+    "target": "users.id",
+    "ondelete": "CASCADE",
+    "policy": "delete owned row; preferences must never become system defaults; recursively count/delete owned dependents"
+  },
+  "drying_schedules.created_by_id": {
+    "table": "drying_schedules",
+    "column": "created_by_id",
+    "nullable": true,
+    "target": "users.id",
+    "ondelete": "SET NULL",
+    "policy": "retain domain history/state; explicitly detach user reference in the same transaction"
+  },
+  "scheduled_dryings.created_by_id": {
+    "table": "scheduled_dryings",
+    "column": "created_by_id",
+    "nullable": true,
+    "target": "users.id",
+    "ondelete": "SET NULL",
+    "policy": "retain domain history/state; explicitly detach user reference in the same transaction"
+  },
+  "slicer_pipelines.created_by": {
+    "table": "slicer_pipelines",
+    "column": "created_by",
+    "nullable": true,
+    "target": "users.id",
+    "ondelete": "SET NULL",
+    "policy": "retain domain history/state; explicitly detach user reference in the same transaction"
+  },
+  "stock_issues.created_by": {
+    "table": "stock_issues",
+    "column": "created_by",
+    "nullable": true,
+    "target": "users.id",
+    "ondelete": "SET NULL",
+    "policy": "retain domain history/state; explicitly detach user reference in the same transaction"
+  },
+  "user_filament_presets.owner_user_id": {
+    "table": "user_filament_presets",
+    "column": "owner_user_id",
+    "nullable": true,
+    "target": "users.id",
+    "ondelete": "CASCADE",
+    "policy": "delete owned row; preferences must never become system defaults; recursively count/delete owned dependents"
+  },
+  "user_notifications.user_id": {
+    "table": "user_notifications",
+    "column": "user_id",
+    "nullable": false,
+    "target": "users.id",
+    "ondelete": "CASCADE",
+    "policy": "delete owned row; preferences must never become system defaults; recursively count/delete owned dependents"
+  },
+  "user_otp_codes.user_id": {
+    "table": "user_otp_codes",
+    "column": "user_id",
+    "nullable": false,
+    "target": "users.id",
+    "ondelete": "CASCADE",
+    "policy": "delete owned row; preferences must never become system defaults; recursively count/delete owned dependents"
+  },
+  "user_totp.user_id": {
+    "table": "user_totp",
+    "column": "user_id",
+    "nullable": false,
+    "target": "users.id",
+    "ondelete": "CASCADE",
+    "policy": "delete owned row; preferences must never become system defaults; recursively count/delete owned dependents"
+  },
+  "library_file_photos.uploaded_by_id": {
+    "table": "library_file_photos",
+    "column": "uploaded_by_id",
+    "nullable": true,
+    "target": "users.id",
+    "ondelete": "SET NULL",
+    "policy": "library_file_photos.detach_user: retain photos and uploaded_by_name snapshot, detach uploaded_by_id; if file itself is purged, rows/bytes follow forget_files root-commit policy instead"
+  }
+}

@@ -6,7 +6,7 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import func, select, update
+from sqlalchemy import func, select
 
 from backend.app.models.archive import PrintArchive
 from backend.app.models.archive_media_asset import ArchiveMediaAsset
@@ -146,15 +146,17 @@ def test_every_door_that_deletes_archive_rows_tells_the_registry():
             if id(function) in nested:
                 continue  # a helper inside a function is covered by the function that holds it
             text = ast.unparse(function)
-            deletes_rows = "delete(PrintArchive)" in text or "self.db.delete(archive)" in text
+            deletes_rows = any(
+                call in text for call in ("delete(PrintArchive)", "self.db.delete(archive)", "db.delete(archive)")
+            )
             if deletes_rows and "forget_archives" not in text:
                 missing.append(f"{path.relative_to(APP)}:{function.name}")
     assert missing == []
 
 
 @pytest.mark.asyncio
-async def test_the_fallback_of_the_sweeper_removes_rows_only_of_the_archives_it_took(db_session, monkeypatch):
-    """SQLite runs no FK action: the fallback removes the rows itself — for the archives its DELETE took (C1-1)."""
+async def test_a_refused_sweep_keeps_the_archive_and_its_media_without_raw_fallback(db_session, monkeypatch):
+    """C removed the unsafe raw fallback: a refused guarded root owns nothing."""
     from datetime import timedelta, timezone
     from unittest.mock import AsyncMock
 
@@ -171,23 +173,10 @@ async def test_the_fallback_of_the_sweeper_removes_rows_only_of_the_archives_it_
     service = ArchivePurgeService()
     monkeypatch.setattr(service, "_read_retention", AsyncMock(return_value=1))
     monkeypatch.setattr(service, "hard_delete_now", AsyncMock(return_value=False))
-    real = db_session.execute
-    done = []
-
-    async def execute(statement, *args, **kwargs):
-        # After everything the sweeper read, as its parent DELETE is sent: one archive is restored.
-        if not done and getattr(statement, "is_delete", False) and statement.table.name == "print_archives":
-            done.append(True)
-            await real(update(PrintArchive).where(PrintArchive.id == restored_id).values(deleted_at=None))
-        return await real(statement, *args, **kwargs)
-
-    monkeypatch.setattr(db_session, "execute", execute)
-    await service._sweep(db_session)
-    monkeypatch.undo()
-    assert done == [True]
+    assert await service._sweep(db_session) == 0
+    assert service.hard_delete_now.await_count == 2
 
     archives = sorted((await db_session.execute(select(PrintArchive.id))).scalars().all())
     assets = sorted((await db_session.execute(select(ArchiveMediaAsset.archive_id))).scalars().all())
-    assert archives == sorted([restored_id, live_id])
-    assert assets == sorted([restored_id, live_id])
-    assert gone_id not in archives
+    assert archives == sorted([restored_id, gone_id, live_id])
+    assert assets == archives

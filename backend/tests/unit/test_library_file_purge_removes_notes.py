@@ -69,7 +69,7 @@ def test_a_bulk_delete_of_library_files_removes_their_notes():
             if "forget_file_notes" not in _calls(function):
                 forgetful.append(where)
     # The scan must be looking at something: these are the bulk deletes known today.
-    assert {"services/library_trash.py::_sweep", "api/routes/users.py::delete_user"} <= set(bulk), sorted(bulk)
+    assert bulk == []  # All library DELETEs use the shared flush-only phase.
     assert forgetful == []
 
 
@@ -86,13 +86,7 @@ def test_every_purge_removes_the_notes_one_way_or_the_other():
             purging.append(where)
             if "forget_file_notes" not in calls and not _deletes_through_the_session(function):
                 forgetful.append(where)
-    assert {
-        "services/library_trash.py::_sweep",
-        "services/library_trash.py::trash_or_purge",
-        "services/library_trash.py::hard_delete_now",
-        "services/library_scan.py::remove_vanished",
-        "api/routes/users.py::delete_user",
-    } <= set(purging), sorted(purging)
+    assert set(purging) == {"services/content_delete_rows.py::library_rows"}
     assert forgetful == []
 
 

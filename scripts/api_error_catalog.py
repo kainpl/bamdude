@@ -107,7 +107,9 @@ FORWARDED_EXCEPTIONS = frozenset(
 
 # Safe domain error maps forwarded by code instead of a literal constructor
 # argument. Keep this explicit: arbitrary dictionaries are not API messages.
-FORWARDED_MESSAGE_MAPS = frozenset({"LDAP_ERROR_MESSAGES", "LABEL_GEOMETRY_MESSAGES", "MANYFOLD_MESSAGES"})
+FORWARDED_MESSAGE_MAPS = frozenset(
+    {"LDAP_ERROR_MESSAGES", "LABEL_GEOMETRY_MESSAGES", "MANYFOLD_MESSAGES", "USER_CONTENT_DELETE_MESSAGES"}
+)
 
 # Kinds the guard requires a translation for. ``value`` is optional (see module doc).
 REQUIRED_KINDS = frozenset({"http", "json", "forwarded"})

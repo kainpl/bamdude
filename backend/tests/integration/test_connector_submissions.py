@@ -31,6 +31,8 @@ from backend.app.models.printer import Printer
 from backend.app.models.user import User
 from backend.app.schemas.connector import SubmissionCreate
 from backend.app.services import connector_submissions as cs, queue_sources
+from backend.app.services.library_delete_scope import library_delete_scope
+from backend.app.services.library_identity import LibraryIdentity
 from backend.tests.auth_helpers import bind_test_key
 from backend.tests.integration.test_filament_routing_dispatch import setup_source
 
@@ -528,9 +530,13 @@ async def test_a_published_job_keeps_its_bytes_and_its_receipt_after_the_library
     ids = sorted(published.entries[0].queue_item_ids)
     async with sessions() as db:
         file = await db.get(LibraryFile, farm["source"].id)
-        if await library_trash_service.trash_or_purge(db, file):
-            await library_trash_service.hard_delete_now(db, file)
-        await db.commit()
+        async with library_delete_scope(db, [LibraryIdentity.capture(file)]):
+            if await library_trash_service.trash_or_purge(db, file):
+                await library_trash_service.purge_rows(db, file)
+            await db.commit()
+        from backend.app.services.library_delete_cleanup import finish
+
+        await finish(db)
 
     async with sessions() as db:
         assert await db.get(LibraryFile, farm["source"].id) is None

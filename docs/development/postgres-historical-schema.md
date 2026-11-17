@@ -195,16 +195,10 @@ composition carrying external migrations must run both historical population
 gates, including the migration-created m228 source and the live PG tests that
 reject three altered default values; a head-only case is insufficient.
 
-An installation already stopped by this composed m228 mismatch carries the
-previous verifier's manifest. The exclusively owned offline `schema_repair
-retry` may upgrade only that exact recorded full-plan hash to the exact new
-full-plan hash in `pg_schema_spoolman_manifest_transition_v1.json`. It preserves
-the debt ID, audit owner, failure and attempt budget by compare-and-swap; then
-the ordinary manual claim and complete verification still run. It neither
-clears debt nor adds attempts. `status` and automatic startup never adopt an
-old manifest. A different installed model/repair plan or any other old hash
-still needs its own reviewed recovery; this is not a generic force/rebase.
-The permanent CLI wiring test also pins the installed destination manifest.
-A final composition that changes models or repair contracts must explicitly
-retire this transition or regenerate it with a real old-target recovery proof;
-leaving a silently unreachable transition is not an accepted delivery choice.
+The final composition retires the audit-only manifest transition. Those
+unreleased audit databases are not an upgrade source: startup, status and retry
+never adopt an unknown manifest, refill its budget or erase its debt. Use a
+pre-audit backup in a clean installation; retain the audit database for offline
+diagnosis. The exact three accepted defaults above remain part of the current
+verification plan. The CLI ownership test covers both a current debt and refusal
+of the retired manifest, under the real installation lock and before any DDL.

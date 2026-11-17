@@ -449,8 +449,9 @@ async def test_a_queue_job_reprints_after_its_archive_row_is_gone(
     assert (Path(settings.base_dir) / execution.file_path).is_file()
 
 
+@pytest.mark.parametrize("reuse_id", [False, True], ids=["gone", "foreign-row-reuses-id"])
 async def test_a_direct_print_survives_its_library_row_being_trashed_mid_dispatch(
-    db_session, test_engine, tmp_path, printer_factory, monkeypatch, sessions
+    db_session, test_engine, tmp_path, printer_factory, monkeypatch, sessions, reuse_id
 ):
     """Print now, then the file is deleted while the upload runs — it still prints.
 
@@ -481,7 +482,23 @@ async def test_a_direct_print_survives_its_library_row_being_trashed_mid_dispatc
     claim = await db_session.get(PrintQueueItem, job.queue_item_id)
     blob = await one_blob(db_session)
     assert claim.queue_source_id == blob.id
-    await lose_the_original(db_session, claim, original, row=source)
+    source_id = source.id
+    if reuse_id:
+        # Reproduce the pre-C raw writer too: the accepted claim's old link
+        # is still present when another upload receives that integer.
+        await db_session.delete(source)
+        await db_session.commit()
+        original.unlink()
+        await db_session.refresh(claim)
+        assert claim.library_file_id == source_id
+    else:
+        await lose_the_original(db_session, claim, original, row=source)
+    replacement = None
+    if reuse_id:
+        replacement = await a_library_source(db_session, tmp_path, name="foreign.gcode.3mf")
+        assert replacement.id == source_id  # SQLite's actual allocator, not a mock
+        replacement_path = Path(replacement.file_path)
+        replacement_bytes = replacement_path.read_bytes()
     touched = forbid_reads(monkeypatch, original)
 
     await service._run_active_job(job)
@@ -494,6 +511,75 @@ async def test_a_direct_print_survives_its_library_row_being_trashed_mid_dispatc
     assert archive.filename == "bracket.gcode.3mf"
     assert archive.source_content_hash == blob.sha256
     assert archive.library_file_id is None
+    if replacement is not None:
+        assert await db_session.get(LibraryFile, replacement.id, populate_existing=True) is not None
+        assert replacement_path.read_bytes() == replacement_bytes
+        assert not job.secondary_errors
+        await db_session.refresh(claim)
+        assert claim.library_file_id is None
+
+
+async def test_transient_cleanup_starts_a_fresh_plan_only_after_the_routing_session_is_closed(
+    db_session, test_engine, tmp_path, printer_factory, monkeypatch, sessions
+):
+    from backend.app.services import background_dispatch as dispatch, library_delete_scope as scopes
+
+    _unused, printer, _queue, _mqtt = await setup_source(db_session, tmp_path, printer_factory, monkeypatch)
+    settings.archive_dir.mkdir(parents=True, exist_ok=True)
+    managed = settings.library_dir / "files"
+    managed.mkdir(parents=True, exist_ok=True)
+    source = await a_library_source(db_session, managed, name="transient.gcode.3mf")
+    source_id = source.id
+    path = Path(source.file_path)
+    factory = async_sessionmaker(test_engine, expire_on_commit=False)
+    service = dispatch_mocks(monkeypatch, factory)
+    active = set()
+
+    @asynccontextmanager
+    async def traced():
+        async with factory() as db:
+            active.add(db)
+            try:
+                yield db
+            finally:
+                active.remove(db)
+
+    monkeypatch.setattr(dispatch, "async_session", traced)
+    original = scopes.library_delete_scope
+    observations = []
+
+    @asynccontextmanager
+    async def fresh(db, *args, **kwargs):
+        others = [session for session in active if session is not db]
+        observations.append([session.in_transaction() for session in others])
+        assert others, "the accepted runner still owns its outer context"
+        assert not any(session.in_transaction() for session in others), "routing/reader transaction leaked into cleanup"
+        async with original(db, *args, **kwargs):
+            yield
+
+    monkeypatch.setattr(scopes, "library_delete_scope", fresh)
+    await service.dispatch_print_library_file(
+        file_id=source_id,
+        filename=source.filename,
+        printer_id=printer.id,
+        printer_name=printer.name,
+        options={"plate_id": PLATE},
+        requested_by_user_id=None,
+        requested_by_username=None,
+        cleanup_library_after_dispatch=True,
+    )
+    job = service._queued_jobs[0]
+    await service._run_active_job(job)
+    assert job.outcome["success"] is True, job.outcome
+    assert not job.secondary_errors, job.secondary_errors
+    assert observations and all(not any(states) for states in observations), observations
+    db_session.expire_all()
+    assert await db_session.get(LibraryFile, source_id) is None
+    assert not path.exists()
+    archive = await db_session.get(PrintArchive, job.outcome["archive_id"])
+    claim = await db_session.get(PrintQueueItem, job.queue_item_id)
+    assert archive.library_file_id is None and claim.library_file_id is None
+    assert claim.queue_source_id is not None
 
 
 @pytest.mark.parametrize("owner", ["queue", "direct"])

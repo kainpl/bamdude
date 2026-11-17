@@ -1030,7 +1030,7 @@ class TestUserItemsCountAndDeletion(TestOwnershipPermissionsSetup):
             headers={"Authorization": f"Bearer {auth_setup['admin_token']}"},
         )
 
-        assert response.status_code == 204
+        assert response.status_code == 200, response.text
 
         # Verify archive was deleted
         archive_response = await async_client.get(
@@ -1085,7 +1085,7 @@ class TestUserItemsCountAndDeletion(TestOwnershipPermissionsSetup):
             headers={"Authorization": f"Bearer {auth_setup['admin_token']}"},
         )
 
-        assert response.status_code == 204
+        assert response.status_code == 200, response.text
         db_session.expire_all()
         rows = (
             (await db_session.execute(select(ProductPartStockMovement).where(ProductPartStockMovement.id.is_not(None))))

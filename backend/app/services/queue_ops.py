@@ -99,8 +99,9 @@ async def claim_lanes(db: AsyncSession, queue_ids, *, archive_id: int | None = N
 
     In-process locks, ALL of them before SQLite's writer: the archives ascending, then the lanes ascending. Then
     the database: SQLite's writer, or on PostgreSQL the archives' guards ascending, then the lanes' guards
-    ascending. The caller locks its ROWS after this, archive rows before queue/job rows (and a library row after
-    those). Archive before queue is the order every archive + queue writer keeps: the terminal acceptance, an
+    ascending. A library-source writer uses before_db to lock its library rows
+    and early product/order footprint before these DB guards; then print rows,
+    then queue/job rows. Archive-only callers keep archive-before-jobs. Archive before queue is the order every archive + queue writer keeps: the terminal acceptance, an
     archive's hard delete, the change_table claim, a refresh of an archive's jobs, operator print-state recovery
     and the terminal autorepair.
 

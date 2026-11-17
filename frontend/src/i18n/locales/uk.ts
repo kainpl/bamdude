@@ -3833,6 +3833,7 @@ export default {
     passwordsDoNotMatch: 'Паролі не збігаються',
     // Auth disabled
     // User deletion
+    userAutoQueueCount: 'Завдання AutoQueue: {{count}}',
     userHasCreated: 'Цей користувач створив:',
     userItemsQuestion: 'Що ви хочете зробити з цими елементами?',
     deleteUserConfirm: 'Ви впевнені, що хочете видалити цього користувача?',
@@ -4266,6 +4267,7 @@ export default {
       userCreated: 'Користувача успішно створено',
       userUpdated: 'Користувача успішно оновлено',
       userDeleted: 'Користувача успішно видалено',
+      userDeletedOrderWork: 'Користувача видалено. Прибрано друковані завдання із замовлень: {{orders}}. Заплануйте потрібну незавершену роботу знову.',
       groupDeleted: 'Групу успішно видалено',
       fillRequiredFields: "Будь ласка, заповніть усі обов'язкові поля",
       passwordsDoNotMatch: 'Паролі не збігаються',

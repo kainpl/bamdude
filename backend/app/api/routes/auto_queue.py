@@ -599,6 +599,9 @@ async def cancel_auto_queue_item(
             response = _to_response(item)
             response.status = "cancelled"
             response.cancelled_at = now
+            from backend.app.services.queue_counters import detach_auto_queue_refs
+
+            await detach_auto_queue_refs(db, [item.id])
             await db.delete(item)
             await db.commit()
             logger.info("Deleted un-routed auto-queue item %s on cancel", item_id)
@@ -809,6 +812,9 @@ async def cancel_auto_queue_batch(
         now = datetime.now(timezone.utc)
         for item in pending:
             if item.assigned_to_item_id is None:
+                from backend.app.services.queue_counters import detach_auto_queue_refs
+
+                await detach_auto_queue_refs(db, [item.id])
                 await db.delete(item)
             else:
                 item.status = "cancelled"

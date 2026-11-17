@@ -81,7 +81,7 @@ class LibraryFolder(Base):
     )
     files: Mapped[list["LibraryFile"]] = relationship(
         back_populates="folder",
-        cascade="all, delete-orphan",
+        passive_deletes="all",
     )
     # Products this folder belongs to (spec 2026-09-02: files link to products, not projects).
     products: Mapped[list["Product"]] = relationship(

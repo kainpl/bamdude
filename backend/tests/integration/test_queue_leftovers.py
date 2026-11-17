@@ -61,6 +61,7 @@ async def held_pair(db, printer_factory, archive_factory, *, later=True, stage=N
     db.add(auto)
     await db.flush()
     row.source_auto_item_id = auto.id
+    row.source_auto_identity = auto.recovery_identity
     if later:
         await archive_factory(printer.id, status="printing", started_at=T0 + timedelta(hours=4, minutes=5))
     await db.commit()

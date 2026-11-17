@@ -27,7 +27,7 @@ import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import delete, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core import database as _database
@@ -209,7 +209,7 @@ class ArchivePurgeService:
         """
         async with _database.async_session() as delete_db:
             service = ArchiveService(delete_db)
-            return await service.delete_archive(archive_id)
+            return await service.delete_archive(archive_id, refuse_kept=True)
 
     async def empty_trash(self, db: AsyncSession) -> int:
         """Hard-delete every trashed archive immediately. Returns the count."""
@@ -244,61 +244,20 @@ class ArchivePurgeService:
             return 0
 
         deleted = 0
-        for archive_id in ids:
-            if await self.hard_delete_now(archive_id):
-                deleted += 1
-        # Drop any row ``delete_archive`` left behind, so the sweeper cannot get
-        # stuck re-processing the same id every fifteen minutes forever.
-        #
-        # ⚠️ **This is a liveness guard, not a success signal — and it once
-        # hid the very failure it was written for.** From v0.4.2 until
-        # 2026-08-18 ``delete_archive`` refused every trashed archive and
-        # removed nothing; this statement quietly took the rows anyway, so the
-        # trash appeared to work while never freeing a byte. The honest reading
-        # is ``deleted`` below: when it comes back lower than ``len(ids)``, the
-        # on-disk cleanup did NOT run for the difference, and that is a bug to
-        # chase rather than a tidy-up that succeeded.
-        #
-        # Both usage histories are unlinked first: a row left here never passed
-        # ``delete_archive``'s own detach, and their ``archive_id`` has no ON
-        # DELETE — PostgreSQL would refuse the statement, SQLite would leave
-        # the id to the next archive that takes it.
-        from backend.app.services import spool_usage_service, spoolman_usage_history  # noqa: PLC0415
-
-        await spool_usage_service.detach_archives(db, ids)
-        await spoolman_usage_history.detach_archives(db, ids)
-        # Their video registry rows go too (m237) — for exactly the rows this
-        # statement TOOK, read back from it, in the same transaction.
-        #
-        # ⚠️ Never from a SELECT made beforehand (review C1-1). An operator can
-        # restore an archive between that read and this delete: the delete then
-        # rightly leaves the archive, and rows removed on the strength of the
-        # earlier read would be gone from an archive that is alive. The ids the
-        # DELETE returns are the archives that are really gone. PostgreSQL has
-        # cascaded their rows already; SQLite runs no FK action, so they are
-        # removed here.
-        from backend.app.services import archive_media  # noqa: PLC0415
-
-        taken = (
-            (
-                await db.execute(
-                    delete(PrintArchive)
-                    .where(PrintArchive.id.in_(ids), PrintArchive.deleted_at.isnot(None))
-                    .returning(PrintArchive.id)
-                )
-            )
-            .scalars()
-            .all()
-        )
-        await archive_media.forget_archives(db, taken)
+        failed = []
+        # The scan reader must not retain SQLite's transaction while another
+        # owning session takes its writer.
         await db.commit()
-        if deleted < len(ids):
-            logger.warning(
-                "Archive trash sweeper: %d of %d archive(s) had their row removed without on-disk cleanup — "
-                "their files are still on disk; scripts/prune_orphan_archive_files.py can find them",
-                len(ids) - deleted,
-                len(ids),
-            )
+        for archive_id in ids:
+            try:
+                if await self.hard_delete_now(archive_id):
+                    deleted += 1
+                else:
+                    failed.append(archive_id)
+            except Exception:
+                failed.append(archive_id)
+        if failed:
+            logger.warning("Archive trash sweep retained %d row(s); sample=%s", len(failed), failed[:10])
         logger.info("Archive trash sweeper: hard-deleted %d archive(s) past %d-day retention", deleted, retention)
         return deleted
 

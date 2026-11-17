@@ -159,12 +159,6 @@ async def retry(url):
                 await owned_pg.start()
         if engine.dialect.name == "postgresql":
             await case_folding.probe_postgres_case_folding(engine)
-        # Only this exclusively owned explicit retry may adopt the exact
-        # pre-Spoolman-default plan; startup/status never adopt a manifest.
-        from backend.app.core.schema_spoolman_retry import prepare_known_retry
-
-        async with engine.begin() as conn:
-            await prepare_known_retry(conn, Base.metadata)
         debt = await claim(engine, Base.metadata, automatic=False)
         if debt is not None:
             if engine.dialect.name == "sqlite":

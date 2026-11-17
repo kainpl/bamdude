@@ -26,7 +26,6 @@ from backend.app.services.domain_authority import guard
 from backend.app.services.product_sync import (
     inherit_folder_products,
     join_folder_products,
-    purge_file_product_links,
     resync_file_products,
 )
 
@@ -872,37 +871,28 @@ async def remove_vanished(
             rows = (
                 (await db.execute(select(LibraryFile).where(LibraryFile.id.in_([i for i, _ in chunk])))).scalars().all()
             )
-            # A vanished external source must not take a job that has already
-            # captured its own bytes with it.  The hard-delete helper also
-            # nulls both tiers explicitly, which SQLite otherwise leaves as
-            # dangling foreign-key values.
             from backend.app.services import queue_source_release
+            from backend.app.services.library_delete_cleanup import finish
+            from backend.app.services.library_delete_scope import library_delete_scope
+            from backend.app.services.library_identity import LibraryIdentity
+            from backend.app.services.library_trash import library_trash_service
 
-            await queue_source_release.source_purged(
-                db,
-                library_file_ids=[row.id for row in rows],
-                reason=queue_source_release.REASON_FILE_VANISHED,
-            )
-            # Before the deletes, once for the chunk: the ORM clears the
-            # ``product_files`` pivot but not ``product_plates``, whose cascade
-            # only fires on PostgreSQL.
-            await purge_file_product_links(db, [row.id for row in rows])
-            # A vanished file's photos go with its row (m233).
-            from backend.app.services import library_file_photos
+            proofs = [LibraryIdentity.capture(row) for row in rows]
+            async with library_delete_scope(
+                db, proofs, first=lambda session: guard(session, authority, permissions=("library:upload",))
+            ):
+                for proof in proofs:
+                    row = await db.get(LibraryFile, proof.id, populate_existing=True)
+                    # The preflight selected a path; a moved row may not be
+                    # removed just because its old path vanished.
+                    if (row.id, str(to_absolute_path(row.file_path))) not in chunk:
+                        from fastapi import HTTPException
 
-            await library_file_photos.forget_files(db, [row.id for row in rows])
-            from backend.app.services import library_import_meta
-
-            await library_import_meta.forget_files(db, [row.id for row in rows])
-            for row in rows:
-                if row.thumbnail_path:
-                    with contextlib.suppress(OSError):
-                        abs_thumb = to_absolute_path(row.thumbnail_path)
-                        if abs_thumb and abs_thumb.exists():
-                            abs_thumb.unlink()
-                await db.delete(row)
-                counters["files_removed"] += 1
-            await db.commit()
+                        raise HTTPException(409, "Library content changed; retry the scan.")
+                    await library_trash_service.purge_rows(db, row, reason=queue_source_release.REASON_FILE_VANISHED)
+                await db.commit()
+            await finish(db)
+            counters["files_removed"] += len(proofs)
 
     # Subfolder rows whose directory is gone, deepest first so a parent is only
     # considered once its children have left.
@@ -914,40 +904,54 @@ async def remove_vanished(
             folder_presence.update(zip(paths[start : start + 32], found, strict=True))
     else:
         folder_presence = {}
-    async with async_session() as db:
-        await guard(db, authority, permissions=("library:upload",))
-        subs = (
-            (
-                await db.execute(
-                    select(LibraryFolder).where(
-                        LibraryFolder.id.in_([fid for rel, fid in folder_ids.items() if rel != ""])
-                    )
-                )
+    from backend.app.services.content_delete_rows import folder_rows
+    from backend.app.services.library_delete_cleanup import finish
+    from backend.app.services.library_delete_scope import library_delete_scope
+    from backend.app.services.library_identity import FolderIdentity
+
+    async with async_session() as prep_db:
+        await guard(prep_db, authority, permissions=("library:upload",))
+        subs = list(
+            await prep_db.scalars(
+                select(LibraryFolder).where(LibraryFolder.id.in_([fid for rel, fid in folder_ids.items() if rel != ""]))
             )
-            .scalars()
-            .all()
         )
-        subs = sorted(subs, key=lambda f: (f.external_path or "").count("/"), reverse=True)
-        for sub in subs:
-            if not sub.external_path or (
-                folder_presence.get(sub.external_path, True)
-                if root is not None
-                else await asyncio.to_thread(os.path.exists, sub.external_path)
+        snapshots = [(FolderIdentity.capture(sub), sub.external_path) for sub in subs]
+        await prep_db.commit()
+    # Even the legacy no-runtime probe does its filesystem work before taking
+    # the short owning writer, never while a folder transaction is open.
+    candidates = []
+    for proof, path in snapshots:
+        if path and not (
+            folder_presence.get(path, True) if root is not None else await asyncio.to_thread(os.path.exists, path)
+        ):
+            candidates.append((proof, path))
+    if candidates:
+        async with async_session() as db:
+            proofs = tuple(sorted((proof for proof, _path in candidates), key=lambda proof: proof.id))
+            removed = 0
+            async with library_delete_scope(
+                db,
+                [],
+                folder_proofs=proofs,
+                first=lambda session: guard(session, authority, permissions=("library:upload",)),
             ):
-                continue
-            files_left = (
-                await db.execute(select(LibraryFile.id).where(LibraryFile.folder_id == sub.id).limit(1))
-            ).first()
-            if files_left:
-                continue
-            children = (
-                await db.execute(select(LibraryFolder.id).where(LibraryFolder.parent_id == sub.id).limit(1))
-            ).first()
-            if children:
-                continue
-            await db.delete(sub)
-            counters["folders_removed"] += 1
-        await db.commit()
+                for proof, _path in sorted(candidates, key=lambda pair: pair[1].count("/"), reverse=True):
+                    sub = await db.get(LibraryFolder, proof.id, populate_existing=True)
+                    files_left = await db.scalar(
+                        select(LibraryFile.id).where(LibraryFile.folder_id == proof.id).limit(1)
+                    )
+                    children = await db.scalar(
+                        select(LibraryFolder.id).where(LibraryFolder.parent_id == proof.id).limit(1)
+                    )
+                    if files_left is not None or children is not None:
+                        continue
+                    await folder_rows(db, [proof.id])
+                    await db.delete(sub)
+                    removed += 1
+                await db.commit()
+            await finish(db)
+            counters["folders_removed"] += removed
 
     return False
 

@@ -1,0 +1,3483 @@
+{
+  "delete_sites": [
+    {
+      "site": [
+        "api/routes/ams_history.py::delete_old_history",
+        "backend.app.models.ams_history.AMSSensorHistory.__table__.delete",
+        ""
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/ams_history.py::delete_old_history retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/api_keys.py::delete_api_key",
+        "db.delete",
+        "api_key"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/api_keys.py::delete_api_key retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/archives.py::rebuild_search_index",
+        "raw SQL",
+        "DELETE FROM archive_fts"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/archives.py::rebuild_search_index retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/auth.py::consume_password_reset_token",
+        "sqlalchemy.delete",
+        "backend.app.models.auth_ephemeral.AuthEphemeralToken"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/auth.py::consume_password_reset_token retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/auth.py::create_password_reset_token",
+        "sqlalchemy.delete",
+        "backend.app.models.auth_ephemeral.AuthEphemeralToken"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/auth.py::create_password_reset_token retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/auth.py::setup_auth",
+        "raw SQL",
+        "DELETE FROM user_groups WHERE user_id NOT IN (SELECT id FROM users)"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/auth.py::setup_auth retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/auto_queue.py::cancel_auto_queue_batch",
+        "db.delete",
+        "item"
+      ],
+      "owner_policy": "C-D10..D16: cancellation owns its existing complete lane plan; shared navigation detach before row delete"
+    },
+    {
+      "site": [
+        "api/routes/auto_queue.py::cancel_auto_queue_item",
+        "db.delete",
+        "item"
+      ],
+      "owner_policy": "C-D10..D16: cancellation owns its existing complete lane plan; shared navigation detach before row delete"
+    },
+    {
+      "site": [
+        "api/routes/cameras.py::delete_camera",
+        "db.delete",
+        "camera"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/cameras.py::delete_camera retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/customers.py::_sync_contacts",
+        "sqlalchemy.delete",
+        "backend.app.models.customer.CustomerContact"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/customers.py::_sync_contacts retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/customers.py::delete_customer",
+        "db.delete",
+        "customer"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/customers.py::delete_customer retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/customers.py::delete_customer",
+        "sqlalchemy.delete",
+        "backend.app.models.customer.CustomerContact"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/customers.py::delete_customer retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/delivery_methods.py::delete_delivery_method",
+        "db.delete",
+        "method"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/delivery_methods.py::delete_delivery_method retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/external_links.py::delete_external_link",
+        "db.delete",
+        "link"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/external_links.py::delete_external_link retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/filament_calibration.py::delete_calibration",
+        "db.delete",
+        "row"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/filament_calibration.py::delete_calibration retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/git_backup.py::clear_logs",
+        "sqlalchemy.delete",
+        "backend.app.models.git_backup.GitBackupLog"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/git_backup.py::clear_logs retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/git_backup.py::delete_config",
+        "db.delete",
+        "config"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/git_backup.py::delete_config retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/groups.py::delete_group",
+        "db.delete",
+        "group"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/groups.py::delete_group retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/ha_sensors.py::delete_ha_sensor",
+        "db.delete",
+        "sensor"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/ha_sensors.py::delete_ha_sensor retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/ha_sensors.py::delete_ha_sensor",
+        "sqlalchemy.delete",
+        "backend.app.models.ha_sensor_history.HASensorHistory"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/ha_sensors.py::delete_ha_sensor retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/inbox.py::clear_inbox",
+        "sqlalchemy.delete",
+        "backend.app.models.user_notification.UserNotification"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/inbox.py::clear_inbox retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/inbox.py::delete_item",
+        "db.delete",
+        "row"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/inbox.py::delete_item retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/inventory.py::_assign_spool",
+        "db.delete",
+        "old"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/inventory.py::_assign_spool retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/inventory.py::bulk_delete_catalog_entries",
+        "db.delete",
+        "row"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/inventory.py::bulk_delete_catalog_entries retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/inventory.py::bulk_delete_color_entries",
+        "db.delete",
+        "row"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/inventory.py::bulk_delete_color_entries retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/inventory.py::bulk_delete_spools",
+        "db.delete",
+        "spool"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/inventory.py::bulk_delete_spools retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/inventory.py::clear_shopping_list",
+        "sqlalchemy.delete",
+        "backend.app.models.shopping_list.ShoppingListItem"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/inventory.py::clear_shopping_list retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/inventory.py::clear_spool_usage_history",
+        "db.delete",
+        "row"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/inventory.py::clear_spool_usage_history retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/inventory.py::delete_catalog_entry",
+        "db.delete",
+        "row"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/inventory.py::delete_catalog_entry retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/inventory.py::delete_color_entry",
+        "db.delete",
+        "row"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/inventory.py::delete_color_entry retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/inventory.py::delete_location",
+        "db.delete",
+        "location"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/inventory.py::delete_location retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/inventory.py::delete_spool",
+        "db.delete",
+        "spool"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/inventory.py::delete_spool retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/inventory.py::delete_spool_usage_record",
+        "db.delete",
+        "row"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/inventory.py::delete_spool_usage_record retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/inventory.py::remove_from_shopping_list",
+        "db.delete",
+        "item"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/inventory.py::remove_from_shopping_list retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/inventory.py::replace_k_profiles",
+        "db.delete",
+        "old"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/inventory.py::replace_k_profiles retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/inventory.py::reset_color_catalog",
+        "db.delete",
+        "row"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/inventory.py::reset_color_catalog retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/inventory.py::reset_spool_catalog",
+        "db.delete",
+        "row"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/inventory.py::reset_spool_catalog retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/inventory.py::unassign_spool",
+        "db.delete",
+        "assignment"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/inventory.py::unassign_spool retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/kprofiles.py::delete_kprofile_note",
+        "db.delete",
+        "existing"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/kprofiles.py::delete_kprofile_note retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/kprofiles.py::set_kprofile_note",
+        "db.delete",
+        "existing"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/kprofiles.py::set_kprofile_note retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/label_devices.py::cancel_job",
+        "db.delete",
+        "job"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/label_devices.py::cancel_job retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/label_devices.py::delete_device",
+        "db.delete",
+        "device"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/label_devices.py::delete_device retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/label_devices.py::forget_cassette",
+        "db.delete",
+        "row"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/label_devices.py::forget_cassette retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/label_templates.py::delete_sheet",
+        "db.delete",
+        "row"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/label_templates.py::delete_sheet retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/label_templates.py::delete_template",
+        "db.delete",
+        "row"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/label_templates.py::delete_template retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/library.py::bulk_delete",
+        "db.delete",
+        "folder"
+      ],
+      "owner_policy": "C-D05: Ordinary root operation: single-file or WHOLE bulk plan before first shared phase; no per-file late gates inside the root transaction."
+    },
+    {
+      "site": [
+        "api/routes/library.py::delete_folder",
+        "db.delete",
+        "folder"
+      ],
+      "owner_policy": "C-D06: Recursive selected-subtree plan before first file mutation; helper shares the preowned root scope, never acquires lower guards for the next file."
+    },
+    {
+      "site": [
+        "api/routes/library_notes.py::delete_file_note",
+        "db.delete",
+        "note"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/library_notes.py::delete_file_note retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/library_tags.py::bulk_assign",
+        "sqlalchemy.delete",
+        "backend.app.models.library.LibraryFileTag"
+      ],
+      "owner_policy": "non-parent / tag owner: Replaces tag secondary rows, not LibraryFile; do not classify by a variable name alone."
+    },
+    {
+      "site": [
+        "api/routes/library_tags.py::delete_tag",
+        "db.delete",
+        "tag"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/library_tags.py::delete_tag retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/local_presets.py::delete_local_preset",
+        "db.delete",
+        "preset"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/local_presets.py::delete_local_preset retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/location_ha_sensors.py::delete_location_ha_sensor",
+        "db.delete",
+        "sensor"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/location_ha_sensors.py::delete_location_ha_sensor retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/location_ha_sensors.py::delete_location_ha_sensor",
+        "sqlalchemy.delete",
+        "backend.app.models.ha_sensor_history.HASensorHistory"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/location_ha_sensors.py::delete_location_ha_sensor retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/location_ha_sensors.py::delete_location_ha_sensor",
+        "sqlalchemy.delete",
+        "backend.app.models.location_sensor_primary.LocationSensorPrimary"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/location_ha_sensors.py::delete_location_ha_sensor retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/location_ha_sensors.py::update_location_ha_sensor",
+        "sqlalchemy.delete",
+        "backend.app.models.location_sensor_primary.LocationSensorPrimary"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/location_ha_sensors.py::update_location_ha_sensor retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/macros.py::delete_macro",
+        "db.delete",
+        "macro"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/macros.py::delete_macro retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/maintenance.py::delete_maintenance_type",
+        "db.delete",
+        "maint_type"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/maintenance.py::delete_maintenance_type retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/maintenance.py::remove_maintenance_item",
+        "db.delete",
+        "item"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/maintenance.py::remove_maintenance_item retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/mfa.py::admin_disable_2fa",
+        "sqlalchemy.delete",
+        "backend.app.models.user_otp_code.UserOTPCode"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/mfa.py::admin_disable_2fa retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/mfa.py::admin_disable_2fa",
+        "sqlalchemy.delete",
+        "backend.app.models.user_totp.UserTOTP"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/mfa.py::admin_disable_2fa retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/mfa.py::clear_failed_attempts",
+        "sqlalchemy.delete",
+        "backend.app.models.auth_ephemeral.AuthRateLimitEvent"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/mfa.py::clear_failed_attempts retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/mfa.py::confirm_enable_email_otp",
+        "sqlalchemy.delete",
+        "backend.app.models.auth_ephemeral.AuthEphemeralToken"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/mfa.py::confirm_enable_email_otp retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/mfa.py::consume_pre_auth_token",
+        "sqlalchemy.delete",
+        "backend.app.models.auth_ephemeral.AuthEphemeralToken"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/mfa.py::consume_pre_auth_token retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/mfa.py::delete_oidc_provider",
+        "db.delete",
+        "provider"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/mfa.py::delete_oidc_provider retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/mfa.py::disable_email_otp",
+        "sqlalchemy.delete",
+        "backend.app.models.user_otp_code.UserOTPCode"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/mfa.py::disable_email_otp retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/mfa.py::disable_totp",
+        "db.delete",
+        "row"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/mfa.py::disable_totp retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/mfa.py::enable_email_otp",
+        "sqlalchemy.delete",
+        "backend.app.models.auth_ephemeral.AuthEphemeralToken"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/mfa.py::enable_email_otp retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/mfa.py::oidc_authorize",
+        "sqlalchemy.delete",
+        "backend.app.models.auth_ephemeral.AuthEphemeralToken"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/mfa.py::oidc_authorize retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/mfa.py::oidc_callback",
+        "sqlalchemy.delete",
+        "backend.app.models.auth_ephemeral.AuthEphemeralToken"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/mfa.py::oidc_callback retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/mfa.py::oidc_exchange",
+        "sqlalchemy.delete",
+        "backend.app.models.auth_ephemeral.AuthEphemeralToken"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/mfa.py::oidc_exchange retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/mfa.py::remove_oidc_link",
+        "db.delete",
+        "link"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/mfa.py::remove_oidc_link retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/mfa.py::verify_2fa",
+        "sqlalchemy.delete",
+        "backend.app.models.auth_ephemeral.AuthRateLimitEvent"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/mfa.py::verify_2fa retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/notifications.py::clear_notification_logs",
+        "sqlalchemy.delete",
+        "backend.app.models.notification.NotificationLog"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/notifications.py::clear_notification_logs retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/notifications.py::delete_notification_provider",
+        "db.delete",
+        "provider"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/notifications.py::delete_notification_provider retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/notifications.py::delete_notification_provider",
+        "sqlalchemy.delete",
+        "backend.app.models.telegram_chat.TelegramChat"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/notifications.py::delete_notification_provider retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/orca_cloud.py::_upsert_settings",
+        "db.delete",
+        "row"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/orca_cloud.py::_upsert_settings retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/print_options_preferences.py::admin_delete_preference",
+        "db.delete",
+        "pref"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/print_options_preferences.py::admin_delete_preference retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/print_options_preferences.py::delete_system_preference",
+        "db.delete",
+        "pref"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/print_options_preferences.py::delete_system_preference retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/print_queue.py::bulk_delete_queue_items",
+        "db.delete",
+        "item"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/print_queue.py::bulk_delete_queue_items retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/print_queue.py::delete_queue_item",
+        "db.delete",
+        "item"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/print_queue.py::delete_queue_item retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/printer_locations.py::delete_location",
+        "db.delete",
+        "row"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/printer_locations.py::delete_location retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/printer_sensor_history.py::delete_old_history",
+        "backend.app.models.printer_sensor_history.PrinterSensorHistory.__table__.delete",
+        ""
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/printer_sensor_history.py::delete_old_history retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/printer_tags.py::delete_tag",
+        "db.delete",
+        "row"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/printer_tags.py::delete_tag retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/printers.py::_delete_printer_rows",
+        "db.delete",
+        "printer"
+      ],
+      "owner_policy": "C-D04: existing owned shutdown before per-archive guarded deletion; no raw fallback or archive ORM cascade; explicit queue/JSON references"
+    },
+    {
+      "site": [
+        "api/routes/printers.py::_delete_printer_rows",
+        "sqlalchemy.delete",
+        "backend.app.models.ha_sensor_history.HASensorHistory"
+      ],
+      "owner_policy": "C-D04: existing owned shutdown before per-archive guarded deletion; no raw fallback or archive ORM cascade; explicit queue/JSON references"
+    },
+    {
+      "site": [
+        "api/routes/printers.py::_delete_printer_rows",
+        "sqlalchemy.delete",
+        "backend.app.models.maintenance.MaintenanceHistory"
+      ],
+      "owner_policy": "C-D04: existing owned shutdown before per-archive guarded deletion; no raw fallback or archive ORM cascade; explicit queue/JSON references"
+    },
+    {
+      "site": [
+        "api/routes/printers.py::_delete_printer_rows",
+        "sqlalchemy.delete",
+        "backend.app.models.maintenance.PrinterMaintenance"
+      ],
+      "owner_policy": "C-D04: existing owned shutdown before per-archive guarded deletion; no raw fallback or archive ORM cascade; explicit queue/JSON references"
+    },
+    {
+      "site": [
+        "api/routes/printers.py::_delete_printer_rows",
+        "sqlalchemy.delete",
+        "backend.app.models.print_queue.PrintQueueItem"
+      ],
+      "owner_policy": "C-D04: existing owned shutdown before per-archive guarded deletion; no raw fallback or archive ORM cascade; explicit queue/JSON references"
+    },
+    {
+      "site": [
+        "api/routes/printers.py::_delete_printer_rows",
+        "sqlalchemy.delete",
+        "backend.app.models.smart_sensor_binding.SmartSensorBinding"
+      ],
+      "owner_policy": "C-D04: existing owned shutdown before per-archive guarded deletion; no raw fallback or archive ORM cascade; explicit queue/JSON references"
+    },
+    {
+      "site": [
+        "api/routes/printers.py::_delete_printer_rows",
+        "sqlalchemy.delete",
+        "backend.app.models.smart_sensor_binding.SmartSensorBindingThreshold"
+      ],
+      "owner_policy": "C-D04: existing owned shutdown before per-archive guarded deletion; no raw fallback or archive ORM cascade; explicit queue/JSON references"
+    },
+    {
+      "site": [
+        "api/routes/printers.py::_delete_printer_rows",
+        "sqlalchemy.delete",
+        "model"
+      ],
+      "owner_policy": "C-D04: existing owned shutdown before per-archive guarded deletion; no raw fallback or archive ORM cascade; explicit queue/JSON references"
+    },
+    {
+      "site": [
+        "api/routes/printers.py::clear_mqtt_recording",
+        "backend.app.services.mqtt_recorder.mqtt_recorder.delete",
+        "printer_id"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/printers.py::clear_mqtt_recording retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/printers.py::delete_ams_label",
+        "sqlalchemy.delete",
+        "backend.app.models.ams_label.AmsLabel"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/printers.py::delete_ams_label retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/printers.py::delete_printer_file",
+        ".delete",
+        "path"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/printers.py::delete_printer_file retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/printers.py::save_ams_label",
+        "sqlalchemy.delete",
+        "backend.app.models.ams_label.AmsLabel"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/printers.py::save_ams_label retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/product_categories.py::delete_product_category",
+        "db.delete",
+        "category"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/product_categories.py::delete_product_category retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/products.py::delete_part",
+        "db.delete",
+        "part"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/products.py::delete_part retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/products.py::delete_part",
+        "sqlalchemy.delete",
+        "backend.app.models.project_line.ProjectProcurement"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/products.py::delete_part retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/products.py::merge_part",
+        "db.delete",
+        "source"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/products.py::merge_part retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/products.py::merge_part",
+        "sqlalchemy.delete",
+        "backend.app.models.project_line.ProjectProcurement"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/products.py::merge_part retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/projects.py::delete_project",
+        "db.delete",
+        "project"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/projects.py::delete_project retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/projects.py::delete_project",
+        "sqlalchemy.delete",
+        "backend.app.models.order_working_plan.OrderPlanReceipt"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/projects.py::delete_project retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/projects.py::delete_project",
+        "sqlalchemy.delete",
+        "backend.app.models.order_working_plan.OrderPlanSubmission"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/projects.py::delete_project retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/projects.py::delete_project",
+        "sqlalchemy.delete",
+        "backend.app.models.order_working_plan.OrderWorkingPlan"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/projects.py::delete_project retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/settings.py::clear_stray_builtin_assignments",
+        "sqlalchemy.delete",
+        "backend.app.models.spool_assignment.SpoolAssignment"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/settings.py::clear_stray_builtin_assignments retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/settings.py::reset_settings",
+        "db.delete",
+        "setting"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/settings.py::reset_settings retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/settings.py::update_spoolman_settings",
+        "sqlalchemy.delete",
+        "backend.app.models.spool_assignment.SpoolAssignment"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/settings.py::update_spoolman_settings retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/settings.py::update_spoolman_settings",
+        "sqlalchemy.delete",
+        "backend.app.models.spoolman_slot_assignment.SpoolmanSlotAssignment"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/settings.py::update_spoolman_settings retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/smart_plugs.py::delete_smart_plug",
+        "db.delete",
+        "plug"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/smart_plugs.py::delete_smart_plug retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/smart_plugs.py::delete_smart_plug",
+        "sqlalchemy.delete",
+        "backend.app.models.smart_plug_meter_incident.SmartPlugMeterIncident"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/smart_plugs.py::delete_smart_plug retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/spoolman.py::unlink_spool",
+        "sqlalchemy.delete",
+        "backend.app.models.spoolman_slot_assignment.SpoolmanSlotAssignment"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/spoolman.py::unlink_spool retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/spoolman_inventory.py::get_spoolman_slot_assignment",
+        "sqlalchemy.delete",
+        "backend.app.models.spoolman_slot_assignment.SpoolmanSlotAssignment"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/spoolman_inventory.py::get_spoolman_slot_assignment retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/spoolman_inventory.py::save_spoolman_k_profiles",
+        "sqlalchemy.delete",
+        "backend.app.models.spoolman_k_profile.SpoolmanKProfile"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/spoolman_inventory.py::save_spoolman_k_profiles retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/spoolman_inventory.py::unassign_spoolman_slot",
+        "sqlalchemy.delete",
+        "backend.app.models.spoolman_slot_assignment.SpoolmanSlotAssignment"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/spoolman_inventory.py::unassign_spoolman_slot retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/telegram.py::delete_chat",
+        "db.delete",
+        "chat"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/telegram.py::delete_chat retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/users.py::delete_user",
+        "sqlalchemy.delete",
+        "backend.app.models.user.User"
+      ],
+      "owner_policy": "C-D03: Bounded atomic account batch, complete file/product/lane/archive footprint before mutation."
+    },
+    {
+      "site": [
+        "api/routes/virtual_printers.py::delete_virtual_printer",
+        "sqlalchemy.delete",
+        "backend.app.models.virtual_printer.VirtualPrinter"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/virtual_printers.py::delete_virtual_printer retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/zigbee.py::_bind_sensor",
+        "db.delete",
+        "current"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/zigbee.py::_bind_sensor retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/zigbee.py::delete_sensor_binding",
+        "db.delete",
+        "binding"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/zigbee.py::delete_sensor_binding retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/zigbee.py::delete_sensor_binding",
+        "sqlalchemy.delete",
+        "backend.app.models.location_sensor_primary.LocationSensorPrimary"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/zigbee.py::delete_sensor_binding retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/zigbee.py::drop_sensor",
+        "db.delete",
+        "sensor"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/zigbee.py::drop_sensor retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/zigbee.py::drop_sensor",
+        "sqlalchemy.delete",
+        "backend.app.models.location_sensor_primary.LocationSensorPrimary"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/zigbee.py::drop_sensor retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/zigbee.py::drop_sensor",
+        "sqlalchemy.delete",
+        "backend.app.models.smart_sensor_history.SmartSensorHistory"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/zigbee.py::drop_sensor retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/zigbee.py::drop_sensor",
+        "sqlalchemy.delete",
+        "backend.app.models.smart_sensor_threshold.SmartSensorThreshold"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/zigbee.py::drop_sensor retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/zigbee.py::put_binding_thresholds",
+        "db.delete",
+        "rule"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/zigbee.py::put_binding_thresholds retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/zigbee.py::put_sensor_thresholds",
+        "db.delete",
+        "row"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/zigbee.py::put_sensor_thresholds retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/zigbee.py::remove_device",
+        "db.delete",
+        "plug"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/zigbee.py::remove_device retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/zigbee.py::update_sensor_binding",
+        "sqlalchemy.delete",
+        "backend.app.models.location_sensor_primary.LocationSensorPrimary"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/zigbee.py::update_sensor_binding retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "cli.py::_reset_admin",
+        "sqlalchemy.delete",
+        "backend.app.models.settings.Settings"
+      ],
+      "owner_policy": "Outside C parent purge: cli.py::_reset_admin retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "cli.py::_reset_password",
+        "sqlalchemy.delete",
+        "backend.app.models.settings.Settings"
+      ],
+      "owner_policy": "Outside C parent purge: cli.py::_reset_password retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "cli.py::_reset_password",
+        "sqlalchemy.delete",
+        "backend.app.models.user_otp_code.UserOTPCode"
+      ],
+      "owner_policy": "Outside C parent purge: cli.py::_reset_password retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "cli.py::_reset_password",
+        "sqlalchemy.delete",
+        "backend.app.models.user_totp.UserTOTP"
+      ],
+      "owner_policy": "Outside C parent purge: cli.py::_reset_password retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "core/auth.py::resolve_ephemeral_authority",
+        "sqlalchemy.delete",
+        "backend.app.models.auth_ephemeral.AuthEphemeralToken"
+      ],
+      "owner_policy": "Outside C parent purge: core/auth.py::resolve_ephemeral_authority retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "core/auth.py::revoke_refresh_family",
+        "sqlalchemy.delete",
+        "backend.app.models.auth_ephemeral.AuthEphemeralToken"
+      ],
+      "owner_policy": "Outside C parent purge: core/auth.py::revoke_refresh_family retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "core/auth_lifetime.py::stage_end_sessions",
+        "sqlalchemy.delete",
+        "backend.app.models.auth_ephemeral.AuthEphemeralToken"
+      ],
+      "owner_policy": "Outside C parent purge: core/auth_lifetime.py::stage_end_sessions retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "core/auth_lifetime.py::stage_end_sessions",
+        "sqlalchemy.delete",
+        "backend.app.models.user_otp_code.UserOTPCode"
+      ],
+      "owner_policy": "Outside C parent purge: core/auth_lifetime.py::stage_end_sessions retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "core/auth_lifetime.py::stage_end_sessions",
+        "sqlalchemy.delete",
+        "backend.app.models.user_totp.UserTOTP"
+      ],
+      "owner_policy": "Outside C parent purge: core/auth_lifetime.py::stage_end_sessions retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "core/auth_lifetime.py::stage_restore_invalidation",
+        "sqlalchemy.delete",
+        "backend.app.models.auth_ephemeral.AuthEphemeralToken"
+      ],
+      "owner_policy": "Outside C parent purge: core/auth_lifetime.py::stage_restore_invalidation retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "core/auth_lifetime.py::stage_restore_invalidation",
+        "sqlalchemy.delete",
+        "backend.app.models.user_otp_code.UserOTPCode"
+      ],
+      "owner_policy": "Outside C parent purge: core/auth_lifetime.py::stage_restore_invalidation retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "core/auth_lifetime.py::stage_restore_invalidation",
+        "sqlalchemy.delete",
+        "backend.app.models.user_totp.UserTOTP"
+      ],
+      "owner_policy": "Outside C parent purge: core/auth_lifetime.py::stage_restore_invalidation retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "core/auth_lifetime.py::stage_revoke_session",
+        "sqlalchemy.delete",
+        "backend.app.models.auth_ephemeral.AuthEphemeralToken"
+      ],
+      "owner_policy": "Outside C parent purge: core/auth_lifetime.py::stage_revoke_session retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "core/db_portable.py::_add_foreign_key",
+        "raw SQL",
+        "DELETE FROM"
+      ],
+      "owner_policy": "Outside C parent purge: core/db_portable.py::_add_foreign_key retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "core/db_portable.py::_export_pg_to_sqlite",
+        "raw SQL",
+        "DELETE FROM settings WHERE \"key\"=?"
+      ],
+      "owner_policy": "D4 export copies remove private source repair authority in the same snapshot; not an application parent deletion."
+    },
+    {
+      "site": [
+        "core/rate_limit.py::clear_failed_attempts",
+        "sqlalchemy.delete",
+        "backend.app.models.auth_ephemeral.AuthRateLimitEvent"
+      ],
+      "owner_policy": "Outside C parent purge: core/rate_limit.py::clear_failed_attempts retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "core/schema_conform_repair.py::foreign_keys",
+        "raw SQL",
+        "DELETE FROM public."
+      ],
+      "owner_policy": "D4 conform retains the reviewed pre-classification orphan policy under durable debt before farm admission."
+    },
+    {
+      "site": [
+        "core/schema_repair_state.py::finish_attempt",
+        "raw SQL",
+        "DELETE FROM settings WHERE \"key\"=:key AND value=:expected"
+      ],
+      "owner_policy": "D4 verified repair owner clears only its exact debt token atomically with final verification."
+    },
+    {
+      "site": [
+        "core/schema_repair_state.py::put_record",
+        "raw SQL",
+        "DELETE FROM settings WHERE \"key\"=:key"
+      ],
+      "owner_policy": "D4 private settings owner replaces only its named repair record within the caller transaction."
+    },
+    {
+      "site": [
+        "main.py::_application_lifespan._reconcile_locale_on_startup",
+        "sqlalchemy.delete",
+        "backend.app.models.settings.Settings"
+      ],
+      "owner_policy": "C-D21 + C-D26: Call/callback locator into completion owner. This is not a direct library DELETE; the concrete owning function must finish terminal/reconcile sessions before separate counter/calibration cleanup. Context evidence distinguishes registration from calls."
+    },
+    {
+      "site": [
+        "main.py::_on_ams_change",
+        "db.delete",
+        "a"
+      ],
+      "owner_policy": "Outside C parent purge: main.py::_on_ams_change retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "main.py::_on_print_complete_impl._cleanup_printer_after_print",
+        "internal.delete",
+        "p"
+      ],
+      "owner_policy": "C-D21 + C-D26: Terminal and calibration reconcile commit first. Counter and calibration cleanup each own a separate clean session; no terminal ORM/session reused."
+    },
+    {
+      "site": [
+        "main.py::record_ams_history",
+        "sqlalchemy.delete",
+        "backend.app.models.ams_history.AMSSensorHistory"
+      ],
+      "owner_policy": "Outside C parent purge: main.py::record_ams_history retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "main.py::record_printer_sensor_history",
+        "sqlalchemy.delete",
+        "backend.app.models.printer_sensor_history.PrinterSensorHistory"
+      ],
+      "owner_policy": "Outside C parent purge: main.py::record_printer_sensor_history retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/analysis_runtime.py::AnalysisRuntime.parse.cleanup",
+        "self.store.delete",
+        "JoinedStr(values=[FormattedValue(value=Name(id='attempt', ctx=Load()), conversion=-1), Constant(value='_analysis')])"
+      ],
+      "owner_policy": "Outside C parent purge: services/analysis_runtime.py::AnalysisRuntime.parse.cleanup retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/archive_media.py::forget_archives",
+        "sqlalchemy.delete",
+        "backend.app.models.archive_media_asset.ArchiveMediaAsset"
+      ],
+      "owner_policy": "Archive media sole writer; invoked inside shared guarded archive_rows, flush-only and rollback-owned by the parent."
+    },
+    {
+      "site": [
+        "services/archive_parts.py::seed_archive_parts",
+        "db.delete",
+        "row"
+      ],
+      "owner_policy": "Outside C parent purge: services/archive_parts.py::seed_archive_parts retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/auto_stock_spool.py::claim_on_insertion",
+        "db.delete",
+        "existing"
+      ],
+      "owner_policy": "Outside C parent purge: services/auto_stock_spool.py::claim_on_insertion retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/background_dispatch.py::clear_internal_by_name",
+        "transport.delete",
+        "entry.path"
+      ],
+      "owner_policy": "Printer transport file deletion is owned by existing target printer-file admission; no application library/archive row deletion."
+    },
+    {
+      "site": [
+        "services/bambu_cloud.py::BambuCloudService.delete_setting",
+        "self._client.delete",
+        "JoinedStr(values=[FormattedValue(value=Attribute(value=Name(id='self', ctx=Load()), attr='base_url', ctx=Load()), conversion=-1), Constant(value='/v1/iot-service/api/slicer/setting/'), FormattedValue(value=Name(id='setting_id', ctx=Load()), conversion=-1)])"
+      ],
+      "owner_policy": "Outside C parent purge: services/bambu_cloud.py::BambuCloudService.delete_setting retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/bambu_ftp.py::BambuFTPClient.delete_file",
+        "self._ftp.delete",
+        "remote_path"
+      ],
+      "owner_policy": "Outside C parent purge: services/bambu_ftp.py::BambuFTPClient.delete_file retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/calibration_service.py::sync_printer_kprofiles_to_cache",
+        "sqlalchemy.delete",
+        "backend.app.models.filament_calibration.FilamentCalibration"
+      ],
+      "owner_policy": "Outside C parent purge: services/calibration_service.py::sync_printer_kprofiles_to_cache retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/calibration_service.py::sync_printer_kprofiles_to_cache",
+        "sqlalchemy.delete",
+        "backend.app.models.kprofile_note.KProfileNote"
+      ],
+      "owner_policy": "Outside C parent purge: services/calibration_service.py::sync_printer_kprofiles_to_cache retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/calibration_service.py::sync_printer_kprofiles_to_cache",
+        "sqlalchemy.delete",
+        "backend.app.models.spool_k_profile.SpoolKProfile"
+      ],
+      "owner_policy": "Outside C parent purge: services/calibration_service.py::sync_printer_kprofiles_to_cache retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/calibration_service.py::sync_printer_kprofiles_to_cache",
+        "sqlalchemy.delete",
+        "backend.app.models.spoolman_k_profile.SpoolmanKProfile"
+      ],
+      "owner_policy": "Outside C parent purge: services/calibration_service.py::sync_printer_kprofiles_to_cache retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/cloud_credentials.py::write",
+        "sqlalchemy.delete",
+        "backend.app.models.user_filament.UserFilamentPreset"
+      ],
+      "owner_policy": "Outside C parent purge: services/cloud_credentials.py::write retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/cloud_link/store.py::prune_audit",
+        "sqlalchemy.delete",
+        "backend.app.models.cloud_link.CloudLinkAudit"
+      ],
+      "owner_policy": "Outside C parent purge: services/cloud_link/store.py::prune_audit retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/cloud_link/store.py::set_publish_set",
+        "sqlalchemy.delete",
+        "backend.app.models.cloud_link.CloudLinkPrinter"
+      ],
+      "owner_policy": "Outside C parent purge: services/cloud_link/store.py::set_publish_set retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/content_delete_rows.py::archive_rows",
+        "db.delete",
+        "archive"
+      ],
+      "owner_policy": "C-I1: flush-only domain phase; root owns all gates and commit; exact child policies"
+    },
+    {
+      "site": [
+        "services/content_delete_rows.py::archive_rows",
+        "sqlalchemy.delete",
+        "model"
+      ],
+      "owner_policy": "C-I1: flush-only domain phase; root owns all gates and commit; exact child policies"
+    },
+    {
+      "site": [
+        "services/content_delete_rows.py::folder_rows",
+        "sqlalchemy.delete",
+        "backend.app.models.library_scan.LibraryScanJob"
+      ],
+      "owner_policy": "C-I1: flush-only domain phase; root owns all gates and commit; exact child policies"
+    },
+    {
+      "site": [
+        "services/content_delete_rows.py::library_rows",
+        "db.delete",
+        "file"
+      ],
+      "owner_policy": "C-I1: flush-only domain phase; root owns all gates and commit; exact child policies"
+    },
+    {
+      "site": [
+        "services/content_delete_rows.py::library_rows",
+        "sqlalchemy.delete",
+        "backend.app.models.library.LibraryFileTag"
+      ],
+      "owner_policy": "C-I1: flush-only domain phase; root owns all gates and commit; exact child policies"
+    },
+    {
+      "site": [
+        "services/content_delete_rows.py::library_rows",
+        "sqlalchemy.delete",
+        "backend.app.models.library_file_makerworld_meta.LibraryFileMakerworldMeta"
+      ],
+      "owner_policy": "C-I1: flush-only domain phase; root owns all gates and commit; exact child policies"
+    },
+    {
+      "site": [
+        "services/filament_authoring.py::delete_family",
+        "db.delete",
+        "fam"
+      ],
+      "owner_policy": "Outside C parent purge: services/filament_authoring.py::delete_family retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/filament_authoring.py::delete_family",
+        "db.delete",
+        "preset"
+      ],
+      "owner_policy": "Outside C parent purge: services/filament_authoring.py::delete_family retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/filament_authoring.py::delete_family",
+        "db.delete",
+        "row"
+      ],
+      "owner_policy": "Outside C parent purge: services/filament_authoring.py::delete_family retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/filament_preset_sync.py::_reconcile",
+        "db.delete",
+        "Subscript(value=Name(id='existing', ctx=Load()), slice=Name(id='cloud_id', ctx=Load()), ctx=Load())"
+      ],
+      "owner_policy": "Outside C parent purge: services/filament_preset_sync.py::_reconcile retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/filament_preset_sync.py::drop_local_preset_row",
+        "db.delete",
+        "row"
+      ],
+      "owner_policy": "Outside C parent purge: services/filament_preset_sync.py::drop_local_preset_row retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/finished_stock.py::delete_for_product",
+        "sqlalchemy.delete",
+        "backend.app.models.finished_stock.StockItem"
+      ],
+      "owner_policy": "Outside C parent purge: services/finished_stock.py::delete_for_product retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/finished_stock.py::delete_for_product",
+        "sqlalchemy.delete",
+        "backend.app.models.finished_stock.StockItemMovement"
+      ],
+      "owner_policy": "Outside C parent purge: services/finished_stock.py::delete_for_product retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/hms_mute.py::forget",
+        "sqlalchemy.delete",
+        "backend.app.models.hms_mute.HMSMutedEntry"
+      ],
+      "owner_policy": "Outside C parent purge: services/hms_mute.py::forget retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/kprofile_autolink.py::_apply_links",
+        "db.delete",
+        "ln"
+      ],
+      "owner_policy": "Outside C parent purge: services/kprofile_autolink.py::_apply_links retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/library_file_photos.py::delete_photo",
+        "db.delete",
+        "photo"
+      ],
+      "owner_policy": "Outside C parent purge: services/library_file_photos.py::delete_photo retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/library_file_photos.py::forget_files",
+        "sqlalchemy.delete",
+        "backend.app.models.library_file_photo.LibraryFilePhoto"
+      ],
+      "owner_policy": "Outside C parent purge: services/library_file_photos.py::forget_files retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/library_file_runtime.py::LibraryFileRuntime.request",
+        "self.store.delete",
+        "JoinedStr(values=[FormattedValue(value=Name(id='attempt', ctx=Load()), conversion=-1), Constant(value='_library')])"
+      ],
+      "owner_policy": "Outside C parent purge: services/library_file_runtime.py::LibraryFileRuntime.request retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/library_helpers.py::sync_system_tags",
+        "sqlalchemy.delete",
+        "backend.app.models.library.LibraryFileTag"
+      ],
+      "owner_policy": "Outside C parent purge: services/library_helpers.py::sync_system_tags retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/library_import_meta.py::forget_files",
+        "sqlalchemy.delete",
+        "backend.app.models.library_file_import_meta.LibraryFileImportMeta"
+      ],
+      "owner_policy": "Import metadata sole writer; invoked inside shared guarded library_rows, flush-only and rollback-owned by the parent."
+    },
+    {
+      "site": [
+        "services/library_scan.py::follow_directories",
+        "sqlalchemy.delete",
+        "backend.app.models.library.LibraryFolder"
+      ],
+      "owner_policy": "C-D22: Transfer/deduplicate references onto old folder, delete temporary folder; no library-content purge or new global folder lock transition."
+    },
+    {
+      "site": [
+        "services/library_scan.py::follow_directories",
+        "sqlalchemy.delete",
+        "backend.app.models.product.product_folders"
+      ],
+      "owner_policy": "C-D22: Transfer/deduplicate references onto old folder, delete temporary folder; no library-content purge or new global folder lock transition."
+    },
+    {
+      "site": [
+        "services/library_scan.py::remove_vanished",
+        "db.delete",
+        "sub"
+      ],
+      "owner_policy": "C-D08: Scanner owns bounded remove_vanished chunks. Plan complete chunk before source/product/library phase; offline-share refusal retained."
+    },
+    {
+      "site": [
+        "services/library_trash.py::forget_file_notes",
+        "sqlalchemy.delete",
+        "backend.app.models.library_file_note.LibraryFileNote"
+      ],
+      "owner_policy": "C-D07: explicit soft vs permanent phases; standalone complete plan or preowned compound root"
+    },
+    {
+      "site": [
+        "services/line_config.py::_write_rows",
+        "sqlalchemy.delete",
+        "choice_model"
+      ],
+      "owner_policy": "Outside C parent purge: services/line_config.py::_write_rows retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/line_config.py::_write_rows",
+        "sqlalchemy.delete",
+        "count_model"
+      ],
+      "owner_policy": "Outside C parent purge: services/line_config.py::_write_rows retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/line_config.py::forget_items",
+        "sqlalchemy.delete",
+        "backend.app.models.finished_stock.StockItemChoice"
+      ],
+      "owner_policy": "Outside C parent purge: services/line_config.py::forget_items retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/line_config.py::forget_items",
+        "sqlalchemy.delete",
+        "backend.app.models.finished_stock.StockItemPartCount"
+      ],
+      "owner_policy": "Outside C parent purge: services/line_config.py::forget_items retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/line_config.py::forget_line",
+        "sqlalchemy.delete",
+        "backend.app.models.line_config.ProjectLineChoice"
+      ],
+      "owner_policy": "Outside C parent purge: services/line_config.py::forget_line retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/line_config.py::forget_line",
+        "sqlalchemy.delete",
+        "backend.app.models.line_config.ProjectLinePartCount"
+      ],
+      "owner_policy": "Outside C parent purge: services/line_config.py::forget_line retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/line_config.py::forget_part",
+        "sqlalchemy.delete",
+        "backend.app.models.line_config.ProjectLinePartCount"
+      ],
+      "owner_policy": "Outside C parent purge: services/line_config.py::forget_part retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/line_config.py::repoint_part",
+        "sqlalchemy.delete",
+        "backend.app.models.line_config.ProjectLinePartCount"
+      ],
+      "owner_policy": "Outside C parent purge: services/line_config.py::repoint_part retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/long_lived_tokens.py::remove_retired_token",
+        "sqlalchemy.delete",
+        "backend.app.models.long_lived_token.LongLivedToken"
+      ],
+      "owner_policy": "Outside C parent purge: services/long_lived_tokens.py::remove_retired_token retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/measurement_history.py::prune",
+        "sqlalchemy.delete",
+        "backend.app.models.ha_sensor_history.HASensorHistory"
+      ],
+      "owner_policy": "Outside C parent purge: services/measurement_history.py::prune retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/measurement_history.py::prune",
+        "sqlalchemy.delete",
+        "backend.app.models.smart_plug_power_history.SmartPlugPowerHistory"
+      ],
+      "owner_policy": "Outside C parent purge: services/measurement_history.py::prune retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/measurement_history.py::prune",
+        "sqlalchemy.delete",
+        "backend.app.models.smart_sensor_history.SmartSensorHistory"
+      ],
+      "owner_policy": "Outside C parent purge: services/measurement_history.py::prune retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/notification_inbox.py::prune_older_than",
+        "sqlalchemy.delete",
+        "backend.app.models.user_notification.UserNotification"
+      ],
+      "owner_policy": "Outside C parent purge: services/notification_inbox.py::prune_older_than retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/notification_service.py::NotificationService.send_digest",
+        "db.delete",
+        "entry"
+      ],
+      "owner_policy": "Outside C parent purge: services/notification_service.py::NotificationService.send_digest retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/obico_history.py::ObicoHistory._delete_locked",
+        "sqlalchemy.delete",
+        "backend.app.models.obico_event.ObicoEvent"
+      ],
+      "owner_policy": "Outside C parent purge: services/obico_history.py::ObicoHistory._delete_locked retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/order_journal.py::delete_for_project",
+        "sqlalchemy.delete",
+        "backend.app.models.project.ProjectEvent"
+      ],
+      "owner_policy": "Outside C parent purge: services/order_journal.py::delete_for_project retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/order_resources.py::replan",
+        "db.delete",
+        "item"
+      ],
+      "owner_policy": "C-D10..D16: existing product/order proposal plan and fresh revision; shared navigation cleanup, no blob unlink"
+    },
+    {
+      "site": [
+        "services/part_render_runtime.py::PartRenderRuntime._forget",
+        "self.store.delete",
+        "JoinedStr(values=[FormattedValue(value=Name(id='attempt', ctx=Load()), conversion=-1), Constant(value='_partrender')])"
+      ],
+      "owner_policy": "Outside C parent purge: services/part_render_runtime.py::PartRenderRuntime._forget retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/part_renders.py::gc_remove",
+        "sqlalchemy.delete",
+        "backend.app.models.plate_render.PlateRender"
+      ],
+      "owner_policy": "Outside C parent purge: services/part_renders.py::gc_remove retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/part_renders.py::gc_remove",
+        "sqlalchemy.delete",
+        "backend.app.models.plate_render.PlateRenderObject"
+      ],
+      "owner_policy": "Outside C parent purge: services/part_renders.py::gc_remove retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/part_renders.py::publish",
+        "sqlalchemy.delete",
+        "backend.app.models.plate_render.PlateRenderObject"
+      ],
+      "owner_policy": "Outside C parent purge: services/part_renders.py::publish retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/part_renders.py::reconcile",
+        "sqlalchemy.delete",
+        "backend.app.models.plate_render.PlateRenderObject"
+      ],
+      "owner_policy": "Outside C parent purge: services/part_renders.py::reconcile retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/part_stock.py::_repoint_line_counters",
+        "db.delete",
+        "row"
+      ],
+      "owner_policy": "Outside C parent purge: services/part_stock.py::_repoint_line_counters retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/part_stock.py::delete_for_part",
+        "sqlalchemy.delete",
+        "backend.app.models.part_stock.ProductPartStockMovement"
+      ],
+      "owner_policy": "Outside C parent purge: services/part_stock.py::delete_for_part retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/part_stock.py::delete_for_part",
+        "sqlalchemy.delete",
+        "backend.app.models.project_line.ProjectLinePartStock"
+      ],
+      "owner_policy": "Outside C parent purge: services/part_stock.py::delete_for_part retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/part_stock.py::delete_for_parts",
+        "sqlalchemy.delete",
+        "backend.app.models.part_stock.ProductPartStockMovement"
+      ],
+      "owner_policy": "Outside C parent purge: services/part_stock.py::delete_for_parts retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/part_stock.py::delete_for_parts",
+        "sqlalchemy.delete",
+        "backend.app.models.project_line.ProjectLinePartStock"
+      ],
+      "owner_policy": "Outside C parent purge: services/part_stock.py::delete_for_parts retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/part_stock.py::detach_line",
+        "sqlalchemy.delete",
+        "backend.app.models.project_line.ProjectLinePartStock"
+      ],
+      "owner_policy": "Outside C parent purge: services/part_stock.py::detach_line retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/plate_fit.py::remove_reviewed_pending",
+        "sqlalchemy.delete",
+        "backend.app.models.auto_queue.AutoQueueItem"
+      ],
+      "owner_policy": "C-D10..D16: current clean product/order plan and NOWAIT selected rows; pending CAS and shared navigation cleanup"
+    },
+    {
+      "site": [
+        "services/plate_hold.py::answer_by_clearing",
+        "db.delete",
+        "row"
+      ],
+      "owner_policy": "Outside C parent purge: services/plate_hold.py::answer_by_clearing retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/plate_hold.py::clean_up_finished_row",
+        "db.delete",
+        "queue_item"
+      ],
+      "owner_policy": "Outside C parent purge: services/plate_hold.py::clean_up_finished_row retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/preview_runtime.py::PreviewRuntime.attempt.cleanup",
+        "self.store.delete",
+        "JoinedStr(values=[FormattedValue(value=Name(id='attempt_id', ctx=Load()), conversion=-1), Constant(value='_'), FormattedValue(value=Name(id='role', ctx=Load()), conversion=-1)])"
+      ],
+      "owner_policy": "Outside C parent purge: services/preview_runtime.py::PreviewRuntime.attempt.cleanup retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/print_state_recovery_store.py::_apply_rows",
+        "db.delete",
+        "item"
+      ],
+      "owner_policy": "C-D10..D16: physical recovery preview/apply proof and current lane; shared navigation before terminal row delete"
+    },
+    {
+      "site": [
+        "services/print_usage_journal.py::delete_for_archive",
+        "sqlalchemy.delete",
+        "backend.app.models.print_usage_event.PrintUsageEvent"
+      ],
+      "owner_policy": "Outside C parent purge: services/print_usage_journal.py::delete_for_archive retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/print_usage_journal.py::prune_finished",
+        "sqlalchemy.delete",
+        "backend.app.models.print_usage_event.PrintUsageEvent"
+      ],
+      "owner_policy": "Outside C parent purge: services/print_usage_journal.py::prune_finished retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/printer_cleanup.py::remove_verified_copies",
+        "delete",
+        "path"
+      ],
+      "owner_policy": "Outside C parent purge: services/printer_cleanup.py::remove_verified_copies retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/printer_queues.py::_detach_queue_children",
+        "sqlalchemy.delete",
+        "backend.app.models.print_queue.PrintQueueItem"
+      ],
+      "owner_policy": "C-D15 queue repair: detach_print_queue_refs precedes queue-row deletion in the existing owner transaction; verified companion removed, calibration/unproven navigation detached"
+    },
+    {
+      "site": [
+        "services/printer_queues.py::_rekey_queue",
+        "sqlalchemy.delete",
+        "backend.app.models.printer_queue.PrinterQueue"
+      ],
+      "owner_policy": "Outside C parent purge: services/printer_queues.py::_rekey_queue retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/printer_tag_service.py::delete_links_for_printer",
+        "sqlalchemy.delete",
+        "backend.app.models.printer_tag.PrinterTagLink"
+      ],
+      "owner_policy": "Outside C parent purge: services/printer_tag_service.py::delete_links_for_printer retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/printer_tag_service.py::delete_links_for_tag",
+        "sqlalchemy.delete",
+        "backend.app.models.printer_tag.PrinterTagLink"
+      ],
+      "owner_policy": "Outside C parent purge: services/printer_tag_service.py::delete_links_for_tag retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/printer_tag_service.py::replace_links",
+        "sqlalchemy.delete",
+        "backend.app.models.printer_tag.PrinterTagLink"
+      ],
+      "owner_policy": "Outside C parent purge: services/printer_tag_service.py::replace_links retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/product_delete.py::delete_product",
+        "db.delete",
+        "product"
+      ],
+      "owner_policy": "Outside C parent purge: services/product_delete.py::delete_product retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/product_delete.py::delete_product",
+        "sqlalchemy.delete",
+        "backend.app.models.project_line.ProjectProcurement"
+      ],
+      "owner_policy": "Outside C parent purge: services/product_delete.py::delete_product retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/product_facets.py::delete_for_files",
+        "sqlalchemy.delete",
+        "backend.app.models.product.ProductFacet"
+      ],
+      "owner_policy": "C shared purge: product_facets is the sole facet writer; exact file-id cleanup only flushes under the owning library/product plan"
+    },
+    {
+      "site": [
+        "services/product_facets.py::delete_for_product",
+        "sqlalchemy.delete",
+        "backend.app.models.product.ProductFacet"
+      ],
+      "owner_policy": "Outside C parent purge: services/product_facets.py::delete_for_product retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/product_facets.py::refresh",
+        "sqlalchemy.delete",
+        "backend.app.models.product.ProductFacet"
+      ],
+      "owner_policy": "non-parent / facet owner: Replaces derived product facets, not a parent LibraryFile row."
+    },
+    {
+      "site": [
+        "services/product_sync.py::_reconcile_links",
+        "sqlalchemy.delete",
+        "backend.app.models.product.product_files"
+      ],
+      "owner_policy": "Outside C parent purge: services/product_sync.py::_reconcile_links retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/product_sync.py::purge_file_product_links",
+        "sqlalchemy.delete",
+        "backend.app.models.product.ProductPlate"
+      ],
+      "owner_policy": "Outside C parent purge: services/product_sync.py::purge_file_product_links retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/product_sync.py::purge_file_product_links",
+        "sqlalchemy.delete",
+        "backend.app.models.product.product_files"
+      ],
+      "owner_policy": "Outside C parent purge: services/product_sync.py::purge_file_product_links retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/product_sync.py::purge_folder_product_links",
+        "sqlalchemy.delete",
+        "backend.app.models.product.product_folders"
+      ],
+      "owner_policy": "Outside C parent purge: services/product_sync.py::purge_folder_product_links retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/product_sync.py::sync_product_for_file",
+        "db.delete",
+        "plate"
+      ],
+      "owner_policy": "non-parent / product owner: Replaces product-owned links/plates/derived rows, not LibraryFile; caller gates belong to named domain owners."
+    },
+    {
+      "site": [
+        "services/product_sync.py::sync_product_for_file",
+        "sqlalchemy.delete",
+        "backend.app.models.product.ProductPlate"
+      ],
+      "owner_policy": "non-parent / product owner: Replaces product-owned links/plates/derived rows, not LibraryFile; caller gates belong to named domain owners."
+    },
+    {
+      "site": [
+        "services/product_variants.py::apply",
+        "db.delete",
+        "group"
+      ],
+      "owner_policy": "Outside C parent purge: services/product_variants.py::apply retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/product_variants.py::delete_group",
+        "db.delete",
+        "group"
+      ],
+      "owner_policy": "Outside C parent purge: services/product_variants.py::delete_group retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/queue_auto_transfer.py::apply",
+        "db.delete",
+        "item"
+      ],
+      "owner_policy": "C-D10..D16: existing transfer actor/lane/incarnation plan; preserve new ancestor and detach old printer row"
+    },
+    {
+      "site": [
+        "services/queue_counters.py::detach_print_queue_refs",
+        "sqlalchemy.delete",
+        "backend.app.models.auto_queue.AutoQueueItem"
+      ],
+      "owner_policy": "C-D10..D16: mutable navigation cleanup; preserve calibration history and immutable source incarnation"
+    },
+    {
+      "site": [
+        "services/queue_leftovers.py::_retire_orphan",
+        "sqlalchemy.delete",
+        "backend.app.models.auto_queue.AutoQueueItem"
+      ],
+      "owner_policy": "C-D10..D16: terminal physical keep checks then addressed retirement; shared navigation detach"
+    },
+    {
+      "site": [
+        "services/queue_leftovers.py::_retire_queue",
+        "db.delete",
+        "row"
+      ],
+      "owner_policy": "C-D10..D16: terminal physical keep checks then addressed retirement; shared navigation detach"
+    },
+    {
+      "site": [
+        "services/queue_sources.py::_collect_locked",
+        "session.delete",
+        "row"
+      ],
+      "owner_policy": "Outside C parent purge: services/queue_sources.py::_collect_locked retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/scheduled_drying.py::_drop_pending_runs",
+        "sqlalchemy.delete",
+        "backend.app.models.scheduled_drying.ScheduledDrying"
+      ],
+      "owner_policy": "Outside C parent purge: services/scheduled_drying.py::_drop_pending_runs retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/scheduled_drying.py::_prune",
+        "sqlalchemy.delete",
+        "backend.app.models.scheduled_drying.ScheduledDrying"
+      ],
+      "owner_policy": "Outside C parent purge: services/scheduled_drying.py::_prune retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/scheduled_drying.py::cancel_run",
+        "db.delete",
+        "run"
+      ],
+      "owner_policy": "Outside C parent purge: services/scheduled_drying.py::cancel_run retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/scheduled_drying.py::delete_schedule",
+        "db.delete",
+        "rule"
+      ],
+      "owner_policy": "Outside C parent purge: services/scheduled_drying.py::delete_schedule retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/scheduled_drying.py::forget_printer",
+        "sqlalchemy.delete",
+        "backend.app.models.scheduled_drying.DryingSchedule"
+      ],
+      "owner_policy": "Outside C parent purge: services/scheduled_drying.py::forget_printer retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/scheduled_drying.py::forget_printer",
+        "sqlalchemy.delete",
+        "backend.app.models.scheduled_drying.ScheduledDrying"
+      ],
+      "owner_policy": "Outside C parent purge: services/scheduled_drying.py::forget_printer retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/spool_single_slot.py::_release",
+        "sqlalchemy.delete",
+        "model"
+      ],
+      "owner_policy": "Outside C parent purge: services/spool_single_slot.py::_release retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/spool_tag_matcher.py::auto_assign_spool",
+        "db.delete",
+        "old"
+      ],
+      "owner_policy": "Outside C parent purge: services/spool_tag_matcher.py::auto_assign_spool retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/spoolman_tracking.py::attach_recovered_3mf",
+        "sqlalchemy.delete",
+        "backend.app.models.active_print_spoolman.ActivePrintSpoolman"
+      ],
+      "owner_policy": "Outside C parent purge: services/spoolman_tracking.py::attach_recovered_3mf retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/spoolman_tracking.py::cleanup_tracking",
+        "sqlalchemy.delete",
+        "backend.app.models.active_print_spoolman.ActivePrintSpoolman"
+      ],
+      "owner_policy": "Outside C parent purge: services/spoolman_tracking.py::cleanup_tracking retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/spoolman_tracking.py::report_usage",
+        "db.delete",
+        "tracking"
+      ],
+      "owner_policy": "Outside C parent purge: services/spoolman_tracking.py::report_usage retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/spoolman_tracking.py::store_print_data",
+        "sqlalchemy.delete",
+        "backend.app.models.active_print_spoolman.ActivePrintSpoolman"
+      ],
+      "owner_policy": "Outside C parent purge: services/spoolman_tracking.py::store_print_data retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/spoolman_usage_history.py::clear_for_spool",
+        "sqlalchemy.delete",
+        "backend.app.models.spoolman_usage_history.SpoolmanUsageHistory"
+      ],
+      "owner_policy": "Outside C parent purge: services/spoolman_usage_history.py::clear_for_spool retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/spoolman_usage_history.py::delete_row",
+        "sqlalchemy.delete",
+        "backend.app.models.spoolman_usage_history.SpoolmanUsageHistory"
+      ],
+      "owner_policy": "Outside C parent purge: services/spoolman_usage_history.py::delete_row retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/telegram_handlers/maintenance_handlers.py::_strip_notification_button",
+        "msg.delete",
+        ""
+      ],
+      "owner_policy": "Outside C parent purge: services/telegram_handlers/maintenance_handlers.py::_strip_notification_button retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/telegram_handlers/skip_objects_scene.py::cb_back",
+        "callback.message.delete",
+        ""
+      ],
+      "owner_policy": "Outside C parent purge: services/telegram_handlers/skip_objects_scene.py::cb_back retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/timelapse_files.py::remove_recording_after_attach",
+        ".delete",
+        "remote_path"
+      ],
+      "owner_policy": "Outside C parent purge: services/timelapse_files.py::remove_recording_after_attach retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/usage_tracker.py::clear_persisted_session",
+        "db.delete",
+        "row"
+      ],
+      "owner_policy": "Outside C parent purge: services/usage_tracker.py::clear_persisted_session retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/usage_tracker.py::clear_persisted_session_of",
+        "sqlalchemy.delete",
+        "backend.app.models.active_print_session.ActivePrintSession"
+      ],
+      "owner_policy": "Outside C parent purge: services/usage_tracker.py::clear_persisted_session_of retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/usage_tracker.py::clear_persisted_snapshot",
+        "sqlalchemy.delete",
+        "backend.app.models.active_print_session.ActivePrintSession"
+      ],
+      "owner_policy": "Outside C parent purge: services/usage_tracker.py::clear_persisted_snapshot retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/user_content_delete.py::delete_content",
+        "sqlalchemy.delete",
+        "backend.app.models.auto_queue.AutoQueueItem"
+      ],
+      "owner_policy": "C-I2: bounded whole-account plan, guards and keeps before mutation; one root commit"
+    },
+    {
+      "site": [
+        "services/user_content_delete.py::delete_content",
+        "sqlalchemy.delete",
+        "backend.app.models.print_queue.PrintQueueItem"
+      ],
+      "owner_policy": "C-I2: bounded whole-account plan, guards and keeps before mutation; one root commit"
+    },
+    {
+      "site": [
+        "services/user_content_delete.py::delete_content",
+        "sqlalchemy.delete",
+        "backend.app.models.user.User"
+      ],
+      "owner_policy": "C-I2: bounded whole-account plan, guards and keeps before mutation; one root commit"
+    },
+    {
+      "site": [
+        "services/user_content_delete.py::detach_account_rows",
+        "sqlalchemy.delete",
+        "backend.app.models.auth_ephemeral.AuthEphemeralToken"
+      ],
+      "owner_policy": "C-I2: bounded whole-account plan, guards and keeps before mutation; one root commit"
+    },
+    {
+      "site": [
+        "services/user_content_delete.py::detach_account_rows",
+        "sqlalchemy.delete",
+        "backend.app.models.auth_session.AuthSession"
+      ],
+      "owner_policy": "C-I2: bounded whole-account plan, guards and keeps before mutation; one root commit"
+    },
+    {
+      "site": [
+        "services/user_content_delete.py::detach_account_rows",
+        "sqlalchemy.delete",
+        "backend.app.models.settings.Settings"
+      ],
+      "owner_policy": "C-I2: bounded whole-account plan, guards and keeps before mutation; one root commit"
+    },
+    {
+      "site": [
+        "services/user_content_delete.py::detach_account_rows",
+        "sqlalchemy.delete",
+        "backend.app.models.user_otp_code.UserOTPCode"
+      ],
+      "owner_policy": "C-I2: bounded whole-account plan, guards and keeps before mutation; one root commit"
+    },
+    {
+      "site": [
+        "services/user_content_delete.py::detach_account_rows",
+        "sqlalchemy.delete",
+        "table"
+      ],
+      "owner_policy": "C-I2: bounded whole-account plan, guards and keeps before mutation; one root commit"
+    },
+    {
+      "site": [
+        "services/zigbee/device_settings.py::forget_device_row",
+        "db.delete",
+        "row"
+      ],
+      "owner_policy": "Outside C parent purge: services/zigbee/device_settings.py::forget_device_row retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/zigbee/device_settings.py::forget_device_row",
+        "sqlalchemy.delete",
+        "backend.app.models.smart_sensor.SmartSensor"
+      ],
+      "owner_policy": "Outside C parent purge: services/zigbee/device_settings.py::forget_device_row retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/zigbee/device_settings.py::forget_device_row",
+        "sqlalchemy.delete",
+        "backend.app.models.smart_sensor_binding.SmartSensorBinding"
+      ],
+      "owner_policy": "Outside C parent purge: services/zigbee/device_settings.py::forget_device_row retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/zigbee/device_settings.py::forget_device_row",
+        "sqlalchemy.delete",
+        "backend.app.models.smart_sensor_binding.SmartSensorBindingThreshold"
+      ],
+      "owner_policy": "Outside C parent purge: services/zigbee/device_settings.py::forget_device_row retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/zigbee/device_settings.py::forget_device_row",
+        "sqlalchemy.delete",
+        "backend.app.models.smart_sensor_history.SmartSensorHistory"
+      ],
+      "owner_policy": "Outside C parent purge: services/zigbee/device_settings.py::forget_device_row retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/zigbee/device_settings.py::forget_device_row",
+        "sqlalchemy.delete",
+        "backend.app.models.smart_sensor_threshold.SmartSensorThreshold"
+      ],
+      "owner_policy": "Outside C parent purge: services/zigbee/device_settings.py::forget_device_row retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    }
+  ],
+  "primitive_sites": [
+    {
+      "site": [
+        "api/routes/archive_purge.py::empty_archive_trash",
+        "backend.app.services.archive_purge.archive_purge_service.hard_delete_now"
+      ],
+      "owner_policy": "C-D02: Archive-only public purge wrappers, not a library hard-delete caller."
+    },
+    {
+      "site": [
+        "api/routes/archive_purge.py::hard_delete_archive_from_trash",
+        "backend.app.services.archive_purge.archive_purge_service.hard_delete_now"
+      ],
+      "owner_policy": "C-D02: Archive-only public purge wrappers, not a library hard-delete caller."
+    },
+    {
+      "site": [
+        "api/routes/auto_queue.py::cancel_auto_queue_batch",
+        "backend.app.services.queue_counters.detach_auto_queue_refs"
+      ],
+      "owner_policy": "C-D10..D16: cancellation owns its existing complete lane plan; shared navigation detach before row delete"
+    },
+    {
+      "site": [
+        "api/routes/auto_queue.py::cancel_auto_queue_item",
+        "backend.app.services.queue_counters.detach_auto_queue_refs"
+      ],
+      "owner_policy": "C-D10..D16: cancellation owns its existing complete lane plan; shared navigation detach before row delete"
+    },
+    {
+      "site": [
+        "api/routes/library.py::_trash_folder_contents",
+        "backend.app.services.library_trash.library_trash_service.trash_or_purge"
+      ],
+      "owner_policy": "C-D06: Recursive selected-subtree plan before first file mutation; helper shares the preowned root scope, never acquires lower guards for the next file."
+    },
+    {
+      "site": [
+        "api/routes/library.py::bulk_delete",
+        "backend.app.services.content_delete_rows.folder_rows"
+      ],
+      "owner_policy": "C-D05: Ordinary root operation: single-file or WHOLE bulk plan before first shared phase; no per-file late gates inside the root transaction."
+    },
+    {
+      "site": [
+        "api/routes/library.py::bulk_delete",
+        "backend.app.services.library_trash.library_trash_service.trash_or_purge"
+      ],
+      "owner_policy": "C-D05: Ordinary root operation: single-file or WHOLE bulk plan before first shared phase; no per-file late gates inside the root transaction."
+    },
+    {
+      "site": [
+        "api/routes/library.py::delete_file",
+        "backend.app.services.library_trash.library_trash_service.trash_or_purge"
+      ],
+      "owner_policy": "C-D05: Ordinary root operation: single-file or WHOLE bulk plan before first shared phase; no per-file late gates inside the root transaction."
+    },
+    {
+      "site": [
+        "api/routes/library.py::delete_folder",
+        "backend.app.services.content_delete_rows.folder_rows"
+      ],
+      "owner_policy": "C-D06: Recursive selected-subtree plan before first file mutation; helper shares the preowned root scope, never acquires lower guards for the next file."
+    },
+    {
+      "site": [
+        "api/routes/library_trash.py::empty_trash",
+        "backend.app.services.library_trash.library_trash_service.hard_delete_now"
+      ],
+      "owner_policy": "C-D07: Ordinary trash root wrapper owns its plan; sweeps/empty-trash retain their adjudicated batch/commit boundary."
+    },
+    {
+      "site": [
+        "api/routes/library_trash.py::hard_delete_from_trash",
+        "backend.app.services.library_trash.library_trash_service.hard_delete_now"
+      ],
+      "owner_policy": "C-D07: Ordinary trash root wrapper owns its plan; sweeps/empty-trash retain their adjudicated batch/commit boundary."
+    },
+    {
+      "site": [
+        "api/routes/print_queue.py::bulk_delete_queue_items",
+        "backend.app.services.queue_counters.detach_print_queue_refs"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/print_queue.py::bulk_delete_queue_items retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/print_queue.py::delete_queue_item",
+        "backend.app.services.queue_counters.detach_print_queue_refs"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/print_queue.py::delete_queue_item retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/printers.py::_delete_printer_rows",
+        "archive_service.delete_archive"
+      ],
+      "owner_policy": "C-D04: existing owned shutdown before per-archive guarded deletion; no raw fallback or archive ORM cascade; explicit queue/JSON references"
+    },
+    {
+      "site": [
+        "api/routes/printers.py::_delete_printer_rows",
+        "backend.app.services.queue_counters.detach_print_queue_refs"
+      ],
+      "owner_policy": "C-D04: existing owned shutdown before per-archive guarded deletion; no raw fallback or archive ORM cascade; explicit queue/JSON references"
+    },
+    {
+      "site": [
+        "main.py::_on_print_complete_impl",
+        "backend.app.services.library_trash.library_trash_service.purge_rows"
+      ],
+      "owner_policy": "C-D21 + C-D26: Terminal and calibration reconcile commit first. Counter and calibration cleanup each own a separate clean session; no terminal ORM/session reused."
+    },
+    {
+      "site": [
+        "services/archive.py::ArchiveService._delete_archive_locked.remove",
+        "self.delete_archive_rows"
+      ],
+      "owner_policy": "C-D01/C-I1: archive process/DB/row guards and physical keeps, final path reference guard, shared flush-only children, root commit, exact cleanup"
+    },
+    {
+      "site": [
+        "services/archive.py::ArchiveService.delete_archive_rows",
+        "backend.app.services.content_delete_rows.archive_rows"
+      ],
+      "owner_policy": "C-I1: shared archive database phase only; compound root owns the complete plan and commit"
+    },
+    {
+      "site": [
+        "services/archive_purge.py::ArchivePurgeService._sweep",
+        "self.hard_delete_now"
+      ],
+      "owner_policy": "C-D02: Archive-only service owner, same shared archive phase and refusal policy; not the library primitive."
+    },
+    {
+      "site": [
+        "services/archive_purge.py::ArchivePurgeService.empty_trash",
+        "self.hard_delete_now"
+      ],
+      "owner_policy": "C-D02: Archive-only service owner, same shared archive phase and refusal policy; not the library primitive."
+    },
+    {
+      "site": [
+        "services/archive_purge.py::ArchivePurgeService.hard_delete_now",
+        "service.delete_archive"
+      ],
+      "owner_policy": "Outside C parent purge: services/archive_purge.py::ArchivePurgeService.hard_delete_now retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/assembly/job.py::_trash_previous",
+        "backend.app.services.library_trash.library_trash_service.trash_or_purge"
+      ],
+      "owner_policy": "C-D25: One fresh transaction per accepted previous-file proof; recheck authority/rights and release all guards before next file."
+    },
+    {
+      "site": [
+        "services/assembly/job.py::_withdraw",
+        "backend.app.services.library_trash.library_trash_service.purge_rows"
+      ],
+      "owner_policy": "C-D24: One fresh cleanup transaction per captured published output; preserve partial result if any output remains."
+    },
+    {
+      "site": [
+        "services/background_dispatch.py::BackgroundDispatchService._run_print_library_file.remove_transient_source",
+        "backend.app.services.library_trash.library_trash_service.purge_rows"
+      ],
+      "owner_policy": "C-D23: Named _secondary callback currently captures dispatch db; C splits job routing commit from fresh whole-plan library cleanup. Accepted physical dispatch remains successful."
+    },
+    {
+      "site": [
+        "services/content_delete_rows.py::archive_rows",
+        "backend.app.services.archive_media.forget_archives"
+      ],
+      "owner_policy": "C shared guarded archive removal delegates registry writes to the sole media writer, in its parent transaction."
+    },
+    {
+      "site": [
+        "services/content_delete_rows.py::library_rows",
+        "backend.app.services.library_file_photos.forget_files"
+      ],
+      "owner_policy": "C-I1: flush-only domain phase; root owns all gates and commit; exact child policies"
+    },
+    {
+      "site": [
+        "services/content_delete_rows.py::library_rows",
+        "backend.app.services.library_import_meta.forget_files"
+      ],
+      "owner_policy": "C shared guarded library removal delegates import metadata to its sole writer before parent deletion."
+    },
+    {
+      "site": [
+        "services/content_delete_rows.py::library_rows",
+        "backend.app.services.product_sync.purge_file_product_links"
+      ],
+      "owner_policy": "C-I1: flush-only domain phase; root owns all gates and commit; exact child policies"
+    },
+    {
+      "site": [
+        "services/git_restore.py::GitRestoreService._apply",
+        "backend.app.services.git_restore_records.archive_rows"
+      ],
+      "owner_policy": "G02 guarded Git restore reads archive records and restores only under shared exclusive backup/restore ownership; archive_rows here is a record iterator, not C parent deletion."
+    },
+    {
+      "site": [
+        "services/git_restore.py::GitRestoreService._count_items",
+        "backend.app.services.git_restore_records.archive_rows"
+      ],
+      "owner_policy": "G02 guarded Git restore reads archive records and restores only under shared exclusive backup/restore ownership; archive_rows here is a record iterator, not C parent deletion."
+    },
+    {
+      "site": [
+        "services/git_restore.py::GitRestoreService._restore_archives",
+        "backend.app.services.git_restore_records.archive_rows"
+      ],
+      "owner_policy": "G02 guarded Git restore reads archive records and restores only under shared exclusive backup/restore ownership; archive_rows here is a record iterator, not C parent deletion."
+    },
+    {
+      "site": [
+        "services/library_scan.py::remove_vanished",
+        "backend.app.services.content_delete_rows.folder_rows"
+      ],
+      "owner_policy": "C-D08: Scanner owns bounded remove_vanished chunks. Plan complete chunk before source/product/library phase; offline-share refusal retained."
+    },
+    {
+      "site": [
+        "services/library_scan.py::remove_vanished",
+        "backend.app.services.library_trash.library_trash_service.purge_rows"
+      ],
+      "owner_policy": "C-D08: Scanner owns bounded remove_vanished chunks. Plan complete chunk before source/product/library phase; offline-share refusal retained."
+    },
+    {
+      "site": [
+        "services/library_trash.py::LibraryTrashService._purge_retention_batch",
+        "self.purge_rows"
+      ],
+      "owner_policy": "C-D07 retention root: complete batch plan, rollback before per-file fallback; each successful file owns its commit and cleanup, refusals are retained/reported"
+    },
+    {
+      "site": [
+        "services/library_trash.py::LibraryTrashService.hard_delete_now",
+        "self.purge_rows"
+      ],
+      "owner_policy": "C-D07: Service/scheduler owner uses planned row/batch scope and common flush-only phase; hard delete cleanup only after root commit, no raw fallback."
+    },
+    {
+      "site": [
+        "services/library_trash.py::LibraryTrashService.purge_rows",
+        "backend.app.services.content_delete_rows.library_rows"
+      ],
+      "owner_policy": "C-D07: explicit soft vs permanent phases; standalone complete plan or preowned compound root"
+    },
+    {
+      "site": [
+        "services/library_trash.py::LibraryTrashService.trash_or_purge",
+        "self.purge_rows"
+      ],
+      "owner_policy": "C-D07: Service/scheduler owner uses planned row/batch scope and common flush-only phase; hard delete cleanup only after root commit, no raw fallback."
+    },
+    {
+      "site": [
+        "services/order_resources.py::replan",
+        "backend.app.services.queue_counters.detach_auto_queue_refs"
+      ],
+      "owner_policy": "C-D10..D16: existing product/order proposal plan and fresh revision; shared navigation cleanup, no blob unlink"
+    },
+    {
+      "site": [
+        "services/order_resources.py::replan",
+        "backend.app.services.queue_counters.detach_print_queue_refs"
+      ],
+      "owner_policy": "C-D10..D16: existing product/order proposal plan and fresh revision; shared navigation cleanup, no blob unlink"
+    },
+    {
+      "site": [
+        "services/plate_fit.py::remove_reviewed_pending",
+        "backend.app.services.queue_counters.detach_auto_queue_refs"
+      ],
+      "owner_policy": "C-D10..D16: current clean product/order plan and NOWAIT selected rows; pending CAS and shared navigation cleanup"
+    },
+    {
+      "site": [
+        "services/plate_hold.py::answer_by_clearing",
+        "backend.app.services.queue_counters.detach_print_queue_refs"
+      ],
+      "owner_policy": "Outside C parent purge: services/plate_hold.py::answer_by_clearing retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/plate_hold.py::clean_up_finished_row",
+        "backend.app.services.queue_counters.detach_print_queue_refs"
+      ],
+      "owner_policy": "Outside C parent purge: services/plate_hold.py::clean_up_finished_row retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/print_state_recovery_store.py::_apply_rows",
+        "backend.app.services.queue_counters.detach_print_queue_refs"
+      ],
+      "owner_policy": "C-D10..D16: physical recovery preview/apply proof and current lane; shared navigation before terminal row delete"
+    },
+    {
+      "site": [
+        "services/printer_queues.py::_detach_queue_children",
+        "backend.app.services.queue_counters.detach_print_queue_refs"
+      ],
+      "owner_policy": "C-D15 queue repair: detach_print_queue_refs precedes queue-row deletion in the existing owner transaction; verified companion removed, calibration/unproven navigation detached"
+    },
+    {
+      "site": [
+        "services/queue_auto_transfer.py::apply",
+        "backend.app.services.queue_counters.detach_print_queue_refs"
+      ],
+      "owner_policy": "C-D10..D16: existing transfer actor/lane/incarnation plan; preserve new ancestor and detach old printer row"
+    },
+    {
+      "site": [
+        "services/queue_counters.py::detach_print_queue_refs",
+        "detach_auto_queue_refs"
+      ],
+      "owner_policy": "C-D10..D16: mutable navigation cleanup; preserve calibration history and immutable source incarnation"
+    },
+    {
+      "site": [
+        "services/queue_leftovers.py::_retire_orphan",
+        "backend.app.services.queue_counters.detach_auto_queue_refs"
+      ],
+      "owner_policy": "C-D10..D16: terminal physical keep checks then addressed retirement; shared navigation detach"
+    },
+    {
+      "site": [
+        "services/queue_leftovers.py::_retire_queue",
+        "backend.app.services.queue_counters.detach_print_queue_refs"
+      ],
+      "owner_policy": "C-D10..D16: terminal physical keep checks then addressed retirement; shared navigation detach"
+    },
+    {
+      "site": [
+        "services/user_content_delete.py::delete_content",
+        "backend.app.services.library_trash.library_trash_service.purge_rows"
+      ],
+      "owner_policy": "C-I2: bounded whole-account plan, guards and keeps before mutation; one root commit"
+    },
+    {
+      "site": [
+        "services/user_content_delete.py::delete_content",
+        "backend.app.services.queue_counters.detach_auto_queue_refs"
+      ],
+      "owner_policy": "C-I2: bounded whole-account plan, guards and keeps before mutation; one root commit"
+    },
+    {
+      "site": [
+        "services/user_content_delete.py::delete_content",
+        "backend.app.services.queue_counters.detach_print_queue_refs"
+      ],
+      "owner_policy": "C-I2: bounded whole-account plan, guards and keeps before mutation; one root commit"
+    },
+    {
+      "site": [
+        "services/user_content_delete.py::delete_content",
+        "service.delete_archive_rows"
+      ],
+      "owner_policy": "C-I2: bounded whole-account plan, guards and keeps before mutation; one root commit"
+    }
+  ],
+  "caller_edges": [
+    {
+      "site": [
+        "api/routes/library.py::_trash_folder_contents",
+        "backend.app.api.routes.library._trash_folder_contents"
+      ],
+      "owner_policy": "C-D06: Recursive selected-subtree plan before first file mutation; helper shares the preowned root scope, never acquires lower guards for the next file."
+    },
+    {
+      "site": [
+        "api/routes/library.py::bulk_delete",
+        "backend.app.api.routes.library._trash_folder_contents"
+      ],
+      "owner_policy": "C-D05: Ordinary root operation: single-file or WHOLE bulk plan before first shared phase; no per-file late gates inside the root transaction."
+    },
+    {
+      "site": [
+        "api/routes/library.py::delete_folder",
+        "backend.app.api.routes.library._trash_folder_contents"
+      ],
+      "owner_policy": "C-D06: Recursive selected-subtree plan before first file mutation; helper shares the preowned root scope, never acquires lower guards for the next file."
+    },
+    {
+      "site": [
+        "api/routes/library.py::scan_external_folder",
+        "backend.app.services.library_scan.start_scan"
+      ],
+      "owner_policy": "C-D08: Starts the scan job; remove_vanished owns its later bounded DB chunk, not the route session."
+    },
+    {
+      "site": [
+        "api/routes/library_assembly.py::_enqueue.run",
+        "backend.app.services.assembly.job.run"
+      ],
+      "owner_policy": "C-D24 + C-D25: Route/queued callback submits a captured assembly plan; downstream job owns its sessions and fresh per-file cleanup, not a passed route DB."
+    },
+    {
+      "site": [
+        "api/routes/print_queue.py::bulk_delete_queue_items",
+        "backend.app.services.queue_counters.detach_print_queue_refs"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/print_queue.py::bulk_delete_queue_items retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/print_queue.py::delete_queue_item",
+        "backend.app.services.queue_counters.detach_print_queue_refs"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/print_queue.py::delete_queue_item retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/print_queue.py::move_to_auto",
+        "backend.app.services.queue_auto_transfer.apply"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/print_queue.py::move_to_auto retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/print_queue.py::retire_queue_leftovers",
+        "backend.app.services.queue_leftovers.retire"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/print_queue.py::retire_queue_leftovers retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/print_state_recovery.py::apply",
+        "backend.app.services.print_state_recovery_store.apply_preview"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/print_state_recovery.py::apply retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/printers.py::_delete_printer",
+        "backend.app.api.routes.printers._delete_printer_rows"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/printers.py::_delete_printer retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/printers.py::_delete_printer_rows",
+        "backend.app.services.queue_counters.detach_print_queue_refs"
+      ],
+      "owner_policy": "C-D04: existing owned shutdown before per-archive guarded deletion; no raw fallback or archive ORM cascade; explicit queue/JSON references"
+    },
+    {
+      "site": [
+        "api/routes/printers.py::clear_plate",
+        "backend.app.services.plate_answers.answer_plate_run"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/printers.py::clear_plate retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/printers.py::create_printer",
+        "backend.app.services.printer_queues.ensure_printer_queue"
+      ],
+      "owner_policy": "C-D15 queue repair caller: existing queue owner and transaction delegate child detachment to detach_print_queue_refs before deletion; no raw companion bypass"
+    },
+    {
+      "site": [
+        "api/routes/printers.py::debug_simulate_print_complete",
+        "backend.app.main.on_print_complete"
+      ],
+      "owner_policy": "C-D21 + C-D26: Debug/runtime entry delegates to addressed completion owner; no separate library parent delete here."
+    },
+    {
+      "site": [
+        "api/routes/printers.py::delete_printer",
+        "backend.app.api.routes.printers._delete_printer"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/printers.py::delete_printer retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/printers.py::repeat_print",
+        "backend.app.services.plate_answers.answer_plate_run"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/printers.py::repeat_print retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/projects.py::replan_order_printer_resources",
+        "backend.app.services.order_resources.replan"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/projects.py::replan_order_printer_resources retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/projects.py::update_line",
+        "backend.app.services.plate_fit.remove_reviewed_pending"
+      ],
+      "owner_policy": "Outside C parent purge: api/routes/projects.py::update_line retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "api/routes/users.py::delete_user",
+        "backend.app.services.user_content_delete.delete_content"
+      ],
+      "owner_policy": "C-D03: Bounded atomic account batch, complete file/product/lane/archive footprint before mutation."
+    },
+    {
+      "site": [
+        "main.py::_adopt_running_print",
+        "backend.app.main._bind_print_file_analysis_context"
+      ],
+      "owner_policy": "C-D21 + C-D26: Call/callback locator into completion owner. This is not a direct library DELETE; the concrete owning function must finish terminal/reconcile sessions before separate counter/calibration cleanup. Context evidence distinguishes registration from calls."
+    },
+    {
+      "site": [
+        "main.py::_adopt_running_print",
+        "backend.app.main._default_queue_id_for_printer"
+      ],
+      "owner_policy": "C-D15 queue repair caller: existing queue owner and transaction delegate child detachment to detach_print_queue_refs before deletion; no raw companion bypass"
+    },
+    {
+      "site": [
+        "main.py::_adopt_running_print",
+        "backend.app.main.mark_queue_printing_for_printer"
+      ],
+      "owner_policy": "C-D15 queue repair caller: existing queue owner and transaction delegate child detachment to detach_print_queue_refs before deletion; no raw companion bypass"
+    },
+    {
+      "site": [
+        "main.py::_adopt_running_print",
+        "backend.app.services.print_execution.publish_start"
+      ],
+      "owner_policy": "C-D15 queue repair caller: existing queue owner and transaction delegate child detachment to detach_print_queue_refs before deletion; no raw companion bypass"
+    },
+    {
+      "site": [
+        "main.py::_application_lifespan",
+        "backend.app.main.on_print_complete"
+      ],
+      "owner_policy": "C-D21 + C-D26: Call/callback locator into completion owner. This is not a direct library DELETE; the concrete owning function must finish terminal/reconcile sessions before separate counter/calibration cleanup. Context evidence distinguishes registration from calls."
+    },
+    {
+      "site": [
+        "main.py::_application_lifespan",
+        "backend.app.main.on_print_running_observed"
+      ],
+      "owner_policy": "C-D21 + C-D26: Call/callback locator into completion owner. This is not a direct library DELETE; the concrete owning function must finish terminal/reconcile sessions before separate counter/calibration cleanup. Context evidence distinguishes registration from calls."
+    },
+    {
+      "site": [
+        "main.py::_application_lifespan",
+        "backend.app.main.on_print_start"
+      ],
+      "owner_policy": "C-D21 + C-D26: Call/callback locator into completion owner. This is not a direct library DELETE; the concrete owning function must finish terminal/reconcile sessions before separate counter/calibration cleanup. Context evidence distinguishes registration from calls."
+    },
+    {
+      "site": [
+        "main.py::_application_lifespan",
+        "backend.app.services.printer_queues.ensure_all_printer_queues"
+      ],
+      "owner_policy": "C-D15 queue repair caller: existing queue owner and transaction delegate child detachment to detach_print_queue_refs before deletion; no raw companion bypass"
+    },
+    {
+      "site": [
+        "main.py::_auto_clean_completed_item",
+        "backend.app.services.plate_hold.clean_up_finished_row"
+      ],
+      "owner_policy": "Outside C parent purge: main.py::_auto_clean_completed_item retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "main.py::_bind_print_file_analysis_context",
+        "backend.app.main.on_print_complete"
+      ],
+      "owner_policy": "C-D21 + C-D26: Call/callback locator into completion owner. This is not a direct library DELETE; the concrete owning function must finish terminal/reconcile sessions before separate counter/calibration cleanup. Context evidence distinguishes registration from calls."
+    },
+    {
+      "site": [
+        "main.py::_default_queue_id_for_printer",
+        "backend.app.services.printer_queues.ensure_printer_queue"
+      ],
+      "owner_policy": "C-D15 queue repair caller: existing queue owner and transaction delegate child detachment to detach_print_queue_refs before deletion; no raw companion bypass"
+    },
+    {
+      "site": [
+        "main.py::_on_print_complete_impl",
+        "backend.app.main._auto_clean_completed_item"
+      ],
+      "owner_policy": "C-D21 + C-D26: Terminal and calibration reconcile commit first. Counter and calibration cleanup each own a separate clean session; no terminal ORM/session reused."
+    },
+    {
+      "site": [
+        "main.py::_on_print_complete_impl",
+        "backend.app.main._replay_expired_pending_terminal"
+      ],
+      "owner_policy": "C-D21 + C-D26: Terminal and calibration reconcile commit first. Counter and calibration cleanup each own a separate clean session; no terminal ORM/session reused."
+    },
+    {
+      "site": [
+        "main.py::_on_print_start_impl",
+        "backend.app.main._bind_print_file_analysis_context"
+      ],
+      "owner_policy": "C-D21 + C-D26: Call/callback locator into completion owner. This is not a direct library DELETE; the concrete owning function must finish terminal/reconcile sessions before separate counter/calibration cleanup. Context evidence distinguishes registration from calls."
+    },
+    {
+      "site": [
+        "main.py::_on_print_start_impl",
+        "backend.app.main._default_queue_id_for_printer"
+      ],
+      "owner_policy": "C-D15 queue repair caller: existing queue owner and transaction delegate child detachment to detach_print_queue_refs before deletion; no raw companion bypass"
+    },
+    {
+      "site": [
+        "main.py::_on_print_start_impl",
+        "backend.app.main.mark_queue_printing_for_printer"
+      ],
+      "owner_policy": "C-D15 queue repair caller: existing queue owner and transaction delegate child detachment to detach_print_queue_refs before deletion; no raw companion bypass"
+    },
+    {
+      "site": [
+        "main.py::_on_print_start_impl",
+        "backend.app.services.plate_hold.answer_by_clearing"
+      ],
+      "owner_policy": "C-D21 + C-D26: Call/callback locator into completion owner. This is not a direct library DELETE; the concrete owning function must finish terminal/reconcile sessions before separate counter/calibration cleanup. Context evidence distinguishes registration from calls."
+    },
+    {
+      "site": [
+        "main.py::_on_print_start_impl",
+        "backend.app.services.print_execution.publish_start"
+      ],
+      "owner_policy": "C-D15 queue repair caller: existing queue owner and transaction delegate child detachment to detach_print_queue_refs before deletion; no raw companion bypass"
+    },
+    {
+      "site": [
+        "main.py::_recover_running_print",
+        "backend.app.main._adopt_running_print"
+      ],
+      "owner_policy": "Target running-print recovery retains existing publication ownership; renamed helper delegates reviewed terminal/queue transitions, no new parent purge."
+    },
+    {
+      "site": [
+        "main.py::_recover_running_print",
+        "backend.app.main._bind_print_file_analysis_context"
+      ],
+      "owner_policy": "Target running-print recovery retains existing publication ownership; renamed helper delegates reviewed terminal/queue transitions, no new parent purge."
+    },
+    {
+      "site": [
+        "main.py::_recover_running_print",
+        "backend.app.main.mark_queue_printing_for_printer"
+      ],
+      "owner_policy": "Target running-print recovery retains existing publication ownership; renamed helper delegates reviewed terminal/queue transitions, no new parent purge."
+    },
+    {
+      "site": [
+        "main.py::_recover_running_print",
+        "backend.app.services.plate_hold.answer_by_clearing"
+      ],
+      "owner_policy": "Target running-print recovery retains existing publication ownership; renamed helper delegates reviewed terminal/queue transitions, no new parent purge."
+    },
+    {
+      "site": [
+        "main.py::_recover_running_print",
+        "backend.app.services.print_execution.publish_start"
+      ],
+      "owner_policy": "Target running-print recovery retains existing publication ownership; renamed helper delegates reviewed terminal/queue transitions, no new parent purge."
+    },
+    {
+      "site": [
+        "main.py::_replay_expired_pending_terminal",
+        "backend.app.main.on_print_complete"
+      ],
+      "owner_policy": "C-D21 + C-D26: Call/callback locator into completion owner. This is not a direct library DELETE; the concrete owning function must finish terminal/reconcile sessions before separate counter/calibration cleanup. Context evidence distinguishes registration from calls."
+    },
+    {
+      "site": [
+        "main.py::lifespan",
+        "backend.app.main._application_lifespan"
+      ],
+      "owner_policy": "C-D21 + C-D26: Call/callback locator into completion owner. This is not a direct library DELETE; the concrete owning function must finish terminal/reconcile sessions before separate counter/calibration cleanup. Context evidence distinguishes registration from calls."
+    },
+    {
+      "site": [
+        "main.py::mark_queue_printing_for_printer",
+        "backend.app.services.print_claims.observe_claim"
+      ],
+      "owner_policy": "C-D15 queue repair caller: existing queue owner and transaction delegate child detachment to detach_print_queue_refs before deletion; no raw companion bypass"
+    },
+    {
+      "site": [
+        "main.py::on_print_complete",
+        "backend.app.main._on_print_complete_impl"
+      ],
+      "owner_policy": "C-D21 + C-D26: Call/callback locator into completion owner. This is not a direct library DELETE; the concrete owning function must finish terminal/reconcile sessions before separate counter/calibration cleanup. Context evidence distinguishes registration from calls."
+    },
+    {
+      "site": [
+        "main.py::on_print_complete",
+        "backend.app.services.queue_leftovers.retire_for_printer"
+      ],
+      "owner_policy": "C-D21 + C-D26: Call/callback locator into completion owner. This is not a direct library DELETE; the concrete owning function must finish terminal/reconcile sessions before separate counter/calibration cleanup. Context evidence distinguishes registration from calls."
+    },
+    {
+      "site": [
+        "main.py::on_print_running_observed",
+        "backend.app.main._recover_running_print"
+      ],
+      "owner_policy": "Target running-print observation delegates to its recovery helper; no direct parent deletion authority."
+    },
+    {
+      "site": [
+        "main.py::on_print_start",
+        "backend.app.main._bind_print_file_analysis_context"
+      ],
+      "owner_policy": "C-D21 + C-D26: Call/callback locator into completion owner. This is not a direct library DELETE; the concrete owning function must finish terminal/reconcile sessions before separate counter/calibration cleanup. Context evidence distinguishes registration from calls."
+    },
+    {
+      "site": [
+        "main.py::on_print_start",
+        "backend.app.main._on_print_start_impl"
+      ],
+      "owner_policy": "C-D21 + C-D26: Call/callback locator into completion owner. This is not a direct library DELETE; the concrete owning function must finish terminal/reconcile sessions before separate counter/calibration cleanup. Context evidence distinguishes registration from calls."
+    },
+    {
+      "site": [
+        "main.py::on_print_start",
+        "backend.app.main.mark_queue_printing_for_printer"
+      ],
+      "owner_policy": "C-D15 queue repair caller: existing queue owner and transaction delegate child detachment to detach_print_queue_refs before deletion; no raw companion bypass"
+    },
+    {
+      "site": [
+        "main.py::on_print_start",
+        "backend.app.services.print_execution.publish_start"
+      ],
+      "owner_policy": "C-D15 queue repair caller: existing queue owner and transaction delegate child detachment to detach_print_queue_refs before deletion; no raw companion bypass"
+    },
+    {
+      "site": [
+        "services/archive.py::ArchiveService._delete_archive_locked.remove",
+        "backend.app.services.archive.ArchiveService.delete_archive_rows"
+      ],
+      "owner_policy": "C-D01/C-I1: archive process/DB/row guards and physical keeps, final path reference guard, shared flush-only children, root commit, exact cleanup"
+    },
+    {
+      "site": [
+        "services/archive.py::ArchiveService.delete_archive_rows",
+        "backend.app.services.content_delete_rows.archive_rows"
+      ],
+      "owner_policy": "Archive deletion delegates to C shared guarded parent phase, including the sole media writer before deleting the parent."
+    },
+    {
+      "site": [
+        "services/archive_purge.py::ArchivePurgeService._scheduler_loop",
+        "backend.app.services.archive_purge.ArchivePurgeService._sweep"
+      ],
+      "owner_policy": "Outside C parent purge: services/archive_purge.py::ArchivePurgeService._scheduler_loop retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/archive_purge.py::ArchivePurgeService._sweep",
+        "backend.app.services.archive_purge.ArchivePurgeService.hard_delete_now"
+      ],
+      "owner_policy": "C-D02: Archive-only service owner, same shared archive phase and refusal policy; not the library primitive."
+    },
+    {
+      "site": [
+        "services/archive_purge.py::ArchivePurgeService.empty_trash",
+        "backend.app.services.archive_purge.ArchivePurgeService.hard_delete_now"
+      ],
+      "owner_policy": "C-D02: Archive-only service owner, same shared archive phase and refusal policy; not the library primitive."
+    },
+    {
+      "site": [
+        "services/archive_purge.py::ArchivePurgeService.start_scheduler",
+        "backend.app.services.archive_purge.ArchivePurgeService._scheduler_loop"
+      ],
+      "owner_policy": "Outside C parent purge: services/archive_purge.py::ArchivePurgeService.start_scheduler retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/assembly/job.py::_publish",
+        "backend.app.services.assembly.job._withdraw"
+      ],
+      "owner_policy": "C-D24: Publication async context exits before exception calls withdrawal; capture output proof before exposing row.files. No publish session lent to cleanup."
+    },
+    {
+      "site": [
+        "services/assembly/job.py::_run",
+        "backend.app.services.assembly.job._publish"
+      ],
+      "owner_policy": "C-D24 + C-D25: Assembly job owner invokes publication/previous cleanup; scalar plan/results, no deletion session passed across files."
+    },
+    {
+      "site": [
+        "services/assembly/job.py::_run",
+        "backend.app.services.assembly.job._trash_previous"
+      ],
+      "owner_policy": "C-D24 + C-D25: Assembly job owner invokes publication/previous cleanup; scalar plan/results, no deletion session passed across files."
+    },
+    {
+      "site": [
+        "services/assembly/job.py::run",
+        "backend.app.services.assembly.job._run"
+      ],
+      "owner_policy": "C-D24 + C-D25: Assembly job owner invokes publication/previous cleanup; scalar plan/results, no deletion session passed across files."
+    },
+    {
+      "site": [
+        "services/background_dispatch.py::BackgroundDispatchService._dispatcher_loop",
+        "backend.app.services.background_dispatch.BackgroundDispatchService._run_active_job"
+      ],
+      "owner_policy": "C-D23: Dispatch/callback chain enters the owning runner with a job, not a cleanup DB argument. Preserve dispatch lifetime proofs; cleanup moves to its explicit independent session."
+    },
+    {
+      "site": [
+        "services/background_dispatch.py::BackgroundDispatchService._process_job",
+        "backend.app.services.background_dispatch.BackgroundDispatchService._run_print_library_file"
+      ],
+      "owner_policy": "C-D23: Dispatch/callback chain enters the owning runner with a job, not a cleanup DB argument. Preserve dispatch lifetime proofs; cleanup moves to its explicit independent session."
+    },
+    {
+      "site": [
+        "services/background_dispatch.py::BackgroundDispatchService._process_job",
+        "backend.app.services.background_dispatch.BackgroundDispatchService._run_reprint_archive"
+      ],
+      "owner_policy": "C-D23: Dispatch/callback chain enters the owning runner with a job, not a cleanup DB argument. Preserve dispatch lifetime proofs; cleanup moves to its explicit independent session."
+    },
+    {
+      "site": [
+        "services/background_dispatch.py::BackgroundDispatchService._run_active_job",
+        "backend.app.services.background_dispatch.BackgroundDispatchService._process_job"
+      ],
+      "owner_policy": "C-D23: Dispatch/callback chain enters the owning runner with a job, not a cleanup DB argument. Preserve dispatch lifetime proofs; cleanup moves to its explicit independent session."
+    },
+    {
+      "site": [
+        "services/background_dispatch.py::BackgroundDispatchService._run_print_library_file",
+        "backend.app.services.order_auto_eject.dispatch_check"
+      ],
+      "owner_policy": "C-D23: Named _secondary callback currently captures dispatch db; C splits job routing commit from fresh whole-plan library cleanup. Accepted physical dispatch remains successful."
+    },
+    {
+      "site": [
+        "services/background_dispatch.py::BackgroundDispatchService._run_reprint_archive",
+        "backend.app.services.order_auto_eject.dispatch_check"
+      ],
+      "owner_policy": "C-D23: direct accepted identity; routing job-only commit closes before fresh library cleanup"
+    },
+    {
+      "site": [
+        "services/background_dispatch.py::BackgroundDispatchService.run_from_queue_item",
+        "backend.app.services.background_dispatch.BackgroundDispatchService._process_job"
+      ],
+      "owner_policy": "C-D23: Dispatch/callback chain enters the owning runner with a job, not a cleanup DB argument. Preserve dispatch lifetime proofs; cleanup moves to its explicit independent session."
+    },
+    {
+      "site": [
+        "services/background_dispatch.py::BackgroundDispatchService.start",
+        "backend.app.services.background_dispatch.BackgroundDispatchService._dispatcher_loop"
+      ],
+      "owner_policy": "C-D23: direct accepted identity; routing job-only commit closes before fresh library cleanup"
+    },
+    {
+      "site": [
+        "services/git_restore.py::GitRestoreService._apply",
+        "backend.app.services.git_restore.GitRestoreService._restore_archives"
+      ],
+      "owner_policy": "G02 guarded Git restore reads archive records and restores only under shared exclusive backup/restore ownership; archive_rows here is a record iterator, not C parent deletion."
+    },
+    {
+      "site": [
+        "services/git_restore.py::GitRestoreService._run_restore",
+        "backend.app.services.git_restore.GitRestoreService._apply"
+      ],
+      "owner_policy": "G02 guarded Git restore reads archive records and restores only under shared exclusive backup/restore ownership; archive_rows here is a record iterator, not C parent deletion."
+    },
+    {
+      "site": [
+        "services/git_restore.py::GitRestoreService._run_restore_owned",
+        "backend.app.services.git_restore.GitRestoreService._run_restore"
+      ],
+      "owner_policy": "G02 guarded Git restore reads archive records and restores only under shared exclusive backup/restore ownership; archive_rows here is a record iterator, not C parent deletion."
+    },
+    {
+      "site": [
+        "services/git_restore.py::GitRestoreService.preview",
+        "backend.app.services.git_restore.GitRestoreService._count_items"
+      ],
+      "owner_policy": "G02 guarded Git restore reads archive records and restores only under shared exclusive backup/restore ownership; archive_rows here is a record iterator, not C parent deletion."
+    },
+    {
+      "site": [
+        "services/git_restore.py::GitRestoreService.run_restore",
+        "backend.app.services.git_restore.GitRestoreService._run_restore_owned"
+      ],
+      "owner_policy": "G02 guarded Git restore reads archive records and restores only under shared exclusive backup/restore ownership; archive_rows here is a record iterator, not C parent deletion."
+    },
+    {
+      "site": [
+        "services/library_scan.py::run_scan",
+        "backend.app.services.library_scan.remove_vanished"
+      ],
+      "owner_policy": "C-D08: Scanner owns bounded remove_vanished chunks. Plan complete chunk before source/product/library phase; offline-share refusal retained."
+    },
+    {
+      "site": [
+        "services/library_scan.py::start_scan",
+        "backend.app.services.library_scan.run_scan"
+      ],
+      "owner_policy": "C-D08: Scanner owns bounded remove_vanished chunks. Plan complete chunk before source/product/library phase; offline-share refusal retained."
+    },
+    {
+      "site": [
+        "services/library_trash.py::LibraryTrashService._purge_retention_batch",
+        "backend.app.services.library_trash.LibraryTrashService.purge_rows"
+      ],
+      "owner_policy": "C-D07 retention root: complete batch plan, rollback before per-file fallback; each successful file owns its commit and cleanup, refusals are retained/reported"
+    },
+    {
+      "site": [
+        "services/library_trash.py::LibraryTrashService._scheduler_loop",
+        "backend.app.services.library_trash.LibraryTrashService._sweep"
+      ],
+      "owner_policy": "C-D07: Service/scheduler owner uses planned row/batch scope and common flush-only phase; hard delete cleanup only after root commit, no raw fallback."
+    },
+    {
+      "site": [
+        "services/library_trash.py::LibraryTrashService._sweep",
+        "backend.app.services.library_trash.LibraryTrashService._purge_retention_batch"
+      ],
+      "owner_policy": "C-D07 retention root: complete batch plan, rollback before per-file fallback; each successful file owns its commit and cleanup, refusals are retained/reported"
+    },
+    {
+      "site": [
+        "services/library_trash.py::LibraryTrashService.hard_delete_now",
+        "backend.app.services.library_trash.LibraryTrashService.purge_rows"
+      ],
+      "owner_policy": "C-D07: Service/scheduler owner uses planned row/batch scope and common flush-only phase; hard delete cleanup only after root commit, no raw fallback."
+    },
+    {
+      "site": [
+        "services/library_trash.py::LibraryTrashService.purge_rows",
+        "backend.app.services.content_delete_rows.library_rows"
+      ],
+      "owner_policy": "C-D07: explicit soft vs permanent phases; standalone complete plan or preowned compound root"
+    },
+    {
+      "site": [
+        "services/library_trash.py::LibraryTrashService.start_scheduler",
+        "backend.app.services.library_trash.LibraryTrashService._scheduler_loop"
+      ],
+      "owner_policy": "C-D07: Service/scheduler owner uses planned row/batch scope and common flush-only phase; hard delete cleanup only after root commit, no raw fallback."
+    },
+    {
+      "site": [
+        "services/library_trash.py::LibraryTrashService.trash_or_purge",
+        "backend.app.services.library_trash.LibraryTrashService.purge_rows"
+      ],
+      "owner_policy": "C-D07: Service/scheduler owner uses planned row/batch scope and common flush-only phase; hard delete cleanup only after root commit, no raw fallback."
+    },
+    {
+      "site": [
+        "services/order_auto_eject.py::dispatch_check",
+        "backend.app.services.plate_answers.answer_plate_run"
+      ],
+      "owner_policy": "Outside C parent purge: services/order_auto_eject.py::dispatch_check retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/order_resources.py::replan",
+        "backend.app.services.queue_counters.detach_print_queue_refs"
+      ],
+      "owner_policy": "C-D10..D16: existing product/order proposal plan and fresh revision; shared navigation cleanup, no blob unlink"
+    },
+    {
+      "site": [
+        "services/plate_answers.py::answer_plate_run",
+        "backend.app.services.plate_hold.answer_by_clearing"
+      ],
+      "owner_policy": "Outside C parent purge: services/plate_answers.py::answer_plate_run retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/plate_hold.py::answer_by_clearing",
+        "backend.app.services.queue_counters.detach_print_queue_refs"
+      ],
+      "owner_policy": "Outside C parent purge: services/plate_hold.py::answer_by_clearing retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/plate_hold.py::clean_up_finished_row",
+        "backend.app.services.queue_counters.detach_print_queue_refs"
+      ],
+      "owner_policy": "Outside C parent purge: services/plate_hold.py::clean_up_finished_row retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/print_claims.py::observe_claim",
+        "backend.app.services.printer_queues.ensure_printer_queue"
+      ],
+      "owner_policy": "C-D15 queue repair caller: existing queue owner and transaction delegate child detachment to detach_print_queue_refs before deletion; no raw companion bypass"
+    },
+    {
+      "site": [
+        "services/print_execution.py::publish_start",
+        "backend.app.services.print_claims.observe_claim"
+      ],
+      "owner_policy": "C-D15 queue repair caller: existing queue owner and transaction delegate child detachment to detach_print_queue_refs before deletion; no raw companion bypass"
+    },
+    {
+      "site": [
+        "services/print_reconciliation.py::_reconcile",
+        "backend.app.services.print_reconciliation._reconcile_complete_archive"
+      ],
+      "owner_policy": "Outside C parent purge: services/print_reconciliation.py::_reconcile retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/print_reconciliation.py::_reconcile_complete_archive",
+        "backend.app.services.plate_hold.clean_up_finished_row"
+      ],
+      "owner_policy": "Outside C parent purge: services/print_reconciliation.py::_reconcile_complete_archive retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/print_reconciliation.py::_resolve_pending_swaps",
+        "backend.app.services.print_reconciliation._swap_settle"
+      ],
+      "owner_policy": "Outside C parent purge: services/print_reconciliation.py::_resolve_pending_swaps retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/print_reconciliation.py::_resolve_pending_swaps.resolve",
+        "backend.app.services.print_reconciliation._swap_settle"
+      ],
+      "owner_policy": "Outside C parent purge: services/print_reconciliation.py::_resolve_pending_swaps.resolve retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/print_reconciliation.py::_swap_settle",
+        "backend.app.services.plate_hold.clean_up_finished_row"
+      ],
+      "owner_policy": "Outside C parent purge: services/print_reconciliation.py::_swap_settle retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/print_reconciliation.py::_sweep_printer_prints",
+        "backend.app.services.print_reconciliation._reconcile"
+      ],
+      "owner_policy": "Outside C parent purge: services/print_reconciliation.py::_sweep_printer_prints retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/print_reconciliation.py::_sweep_printer_prints",
+        "backend.app.services.print_reconciliation._resolve_pending_swaps"
+      ],
+      "owner_policy": "Outside C parent purge: services/print_reconciliation.py::_sweep_printer_prints retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/print_reconciliation.py::_sweep_printer_prints",
+        "backend.app.services.queue_leftovers.retire_for_printer"
+      ],
+      "owner_policy": "Outside C parent purge: services/print_reconciliation.py::_sweep_printer_prints retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/print_reconciliation.py::reconcile_printer_prints",
+        "backend.app.services.print_reconciliation._sweep_printer_prints"
+      ],
+      "owner_policy": "Outside C parent purge: services/print_reconciliation.py::reconcile_printer_prints retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/print_state_recovery_store.py::_apply_rows",
+        "backend.app.services.queue_counters.detach_print_queue_refs"
+      ],
+      "owner_policy": "C-D10..D16: physical recovery preview/apply proof and current lane; shared navigation before terminal row delete"
+    },
+    {
+      "site": [
+        "services/print_state_recovery_store.py::apply_preview",
+        "backend.app.services.print_state_recovery_store._apply_rows"
+      ],
+      "owner_policy": "C-D10..D16: physical recovery preview/apply proof and current lane; shared navigation before terminal row delete"
+    },
+    {
+      "site": [
+        "services/printer_manager.py::PrinterManager.connect_printer.on_first_status",
+        "backend.app.services.print_reconciliation.reconcile_printer_prints"
+      ],
+      "owner_policy": "Outside C parent purge: services/printer_manager.py::PrinterManager.connect_printer.on_first_status retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/printer_queues.py::_adopt_orphan",
+        "backend.app.services.printer_queues._detach_queue_children"
+      ],
+      "owner_policy": "C-D15 queue repair: detach_print_queue_refs precedes queue-row deletion in the existing owner transaction; verified companion removed, calibration/unproven navigation detached"
+    },
+    {
+      "site": [
+        "services/printer_queues.py::_detach_queue_children",
+        "backend.app.services.queue_counters.detach_print_queue_refs"
+      ],
+      "owner_policy": "C-D15 queue repair: detach_print_queue_refs precedes queue-row deletion in the existing owner transaction; verified companion removed, calibration/unproven navigation detached"
+    },
+    {
+      "site": [
+        "services/printer_queues.py::_rekey_queue",
+        "backend.app.services.printer_queues._detach_queue_children"
+      ],
+      "owner_policy": "C-D15 queue repair: detach_print_queue_refs precedes queue-row deletion in the existing owner transaction; verified companion removed, calibration/unproven navigation detached"
+    },
+    {
+      "site": [
+        "services/printer_queues.py::_rekey_queue",
+        "backend.app.services.printer_queues.ensure_printer_queue"
+      ],
+      "owner_policy": "C-D15 queue repair caller: existing queue owner and transaction delegate child detachment to detach_print_queue_refs before deletion; no raw companion bypass"
+    },
+    {
+      "site": [
+        "services/printer_queues.py::ensure_all_printer_queues",
+        "backend.app.services.printer_queues.ensure_printer_queue"
+      ],
+      "owner_policy": "C-D15 queue repair caller: existing queue owner and transaction delegate child detachment to detach_print_queue_refs before deletion; no raw companion bypass"
+    },
+    {
+      "site": [
+        "services/printer_queues.py::ensure_printer_queue",
+        "backend.app.services.printer_queues._adopt_orphan"
+      ],
+      "owner_policy": "C-D15 queue repair caller: existing queue owner and transaction delegate child detachment to detach_print_queue_refs before deletion; no raw companion bypass"
+    },
+    {
+      "site": [
+        "services/printer_queues.py::ensure_printer_queue",
+        "backend.app.services.printer_queues._rekey_queue"
+      ],
+      "owner_policy": "C-D15 queue repair caller: existing queue owner and transaction delegate child detachment to detach_print_queue_refs before deletion; no raw companion bypass"
+    },
+    {
+      "site": [
+        "services/queue_auto_transfer.py::apply",
+        "backend.app.services.queue_counters.detach_print_queue_refs"
+      ],
+      "owner_policy": "C-D10..D16: existing transfer actor/lane/incarnation plan; preserve new ancestor and detach old printer row"
+    },
+    {
+      "site": [
+        "services/queue_batch.py::claim_printer_for_direct_print.build",
+        "backend.app.services.printer_queues.ensure_printer_queue"
+      ],
+      "owner_policy": "C-D15 queue repair caller: existing queue owner and transaction delegate child detachment to detach_print_queue_refs before deletion; no raw companion bypass"
+    },
+    {
+      "site": [
+        "services/queue_leftovers.py::_retire_queue",
+        "backend.app.services.queue_counters.detach_print_queue_refs"
+      ],
+      "owner_policy": "C-D10..D16: terminal physical keep checks then addressed retirement; shared navigation detach"
+    },
+    {
+      "site": [
+        "services/queue_leftovers.py::retire",
+        "backend.app.services.queue_leftovers._retire_orphan"
+      ],
+      "owner_policy": "C-D10..D16: terminal physical keep checks then addressed retirement; shared navigation detach"
+    },
+    {
+      "site": [
+        "services/queue_leftovers.py::retire",
+        "backend.app.services.queue_leftovers._retire_queue"
+      ],
+      "owner_policy": "C-D10..D16: terminal physical keep checks then addressed retirement; shared navigation detach"
+    },
+    {
+      "site": [
+        "services/queue_leftovers.py::retire_for_printer",
+        "backend.app.services.queue_leftovers.retire"
+      ],
+      "owner_policy": "C-D10..D16: terminal physical keep checks then addressed retirement; shared navigation detach"
+    },
+    {
+      "site": [
+        "services/telegram_handlers/actions.py::cb_clear_plate",
+        "backend.app.services.plate_answers.answer_plate_run"
+      ],
+      "owner_policy": "Outside C parent purge: services/telegram_handlers/actions.py::cb_clear_plate retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/telegram_handlers/actions.py::cb_repeat_print",
+        "backend.app.services.plate_answers.answer_plate_run"
+      ],
+      "owner_policy": "Outside C parent purge: services/telegram_handlers/actions.py::cb_repeat_print retains its domain-owned transaction and policy; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "services/telegram_handlers/printer_add_scene.py::cb_confirm",
+        "backend.app.services.printer_queues.ensure_printer_queue"
+      ],
+      "owner_policy": "C-D15 queue repair caller: existing queue owner and transaction delegate child detachment to detach_print_queue_refs before deletion; no raw companion bypass"
+    },
+    {
+      "site": [
+        "services/user_content_delete.py::delete_content",
+        "backend.app.services.queue_counters.detach_print_queue_refs"
+      ],
+      "owner_policy": "C-I2: bounded whole-account plan, guards and keeps before mutation; one root commit"
+    }
+  ]
+}

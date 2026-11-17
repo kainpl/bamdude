@@ -869,6 +869,7 @@ class ArchiveService:
         applied_patches: list[str | dict] | None = None,
         subtask_id: str | None = None,
         library_file_id: int | None = None,
+        library_identity=None,
         swap_macro_events_pending: list[str] | None = None,
         selected_macro_ids: list[int] | None = None,
         prefer_filename_for_name: bool = False,
@@ -1250,6 +1251,15 @@ class ArchiveService:
                         owned_file.unlink(missing_ok=True)
                 archive_dir.rmdir()
             raise
+
+        if library_identity is not None:
+            from backend.app.core.database import take_write_lock
+            from backend.app.models.library import LibraryFile
+            from backend.app.services.library_delete_scope import lock_library
+
+            await take_write_lock(self.db, LibraryFile.__table__, library_identity.id)
+            current = (await lock_library(self.db, [library_identity.id])).get(library_identity.id)
+            library_file_id = current.id if library_identity.matches(current) else None
 
         # Create archive record
         archive = PrintArchive(
@@ -2237,171 +2247,104 @@ class ArchiveService:
 
         return {"materials": materials, "colors": colors, "tags": tags}
 
-    async def delete_archive(self, archive_id: int) -> bool:
+    async def delete_archive(self, archive_id: int, *, refuse_kept: bool = False) -> bool:
         """Hard-delete one archive under the shared archive-facts writer guard."""
         from backend.app.services.archive_write_scope import archive_write_scope
 
         async with archive_write_scope(self.db, archive_id):
-            deleted = await self._delete_archive_locked(archive_id)
-        if deleted:
-            _remove_id_owned_folders(archive_id)
+            deleted = await self._delete_archive_locked(archive_id, refuse_kept=refuse_kept)
         return deleted
 
-    async def _delete_archive_locked(self, archive_id: int) -> bool:
-        """Hard-delete an archive: its row, and its files on disk.
+    async def delete_archive_rows(self, archive):
+        """Flush-only seam for a caller that owns the complete deletion plan."""
+        from backend.app.services.content_delete_rows import archive_rows
 
-        ⚠️ **``include_trashed=True`` is the whole of this function working at
-        all.** Every trash-side caller hands it an archive that is *already*
-        soft-deleted — ``hard_delete_now`` says so in its own docstring — and
-        ``get_archive`` drops rows with ``deleted_at`` by default. So from
-        ``fb448f9d`` (v0.4.2) until this was noticed, it answered ``False`` and
-        did nothing: the retention sweeper removed rows through its own fallback
-        statement and leaked every file, and "Empty trash" removed nothing at
-        all. A hard delete is by definition about a row on its way out; refusing
-        the ones already on their way out was backwards.
-        """
-        archive = await self.get_archive(archive_id, include_trashed=True)
-        if not archive:
+        return await archive_rows(self.db, archive)
+
+    async def _delete_archive_locked(self, archive_id: int, *, refuse_kept: bool = False) -> bool:
+        from backend.app.services.archive_write_scope import archive_file_reference_scope, lock_prints
+
+        rows = await lock_prints(self.db, [archive_id])
+        archive = rows[0] if rows else None
+        if archive is None:
             return False
+        from backend.app.services.content_delete_keeps import archive_keep_reasons
 
-        # Archive rows are navigation/provenance after a queue item has a
-        # ready queue source of its own.  Hard deletion therefore only cancels
-        # legacy dependents and explicitly clears both queue tiers; SQLite does
-        # not enforce the model's ON DELETE SET NULL rule.
-        from backend.app.services import queue_source_release
-
-        await queue_source_release.source_purged(
-            self.db,
-            archive_ids=[archive_id],
-            reason=queue_source_release.REASON_ARCHIVE_DELETED,
+        reasons = await archive_keep_reasons(
+            self.db, archive, retired_printer_id=self.db.info.get("retired_printer_cleanup")
         )
+        if reasons:
+            if refuse_kept:
+                from fastapi import HTTPException
 
-        # Detach spool-usage history before removing the archive. The
-        # ``spool_usage_history.archive_id`` declares SET NULL on PostgreSQL;
-        # explicit detach is still needed where SQLite FK enforcement is off,
-        # and keeps this writer safe while an old PG schema awaits its repair.
-        # Done before every ``db.delete(archive)`` path below (incl. the early
-        # security returns) so the subsequent commit flushes both together.
-        from backend.app.models.spool_usage_history import SpoolUsageHistory
+                raise HTTPException(
+                    409,
+                    {
+                        "error": "archive_retained",
+                        "message": "This archive is retained by print work. Resolve it through the queue or recovery page, then retry.",
+                        "reasons": reasons,
+                    },
+                )
+            return False
+        stored = archive.file_path
 
-        await self.db.execute(
-            update(SpoolUsageHistory).where(SpoolUsageHistory.archive_id == archive_id).values(archive_id=None)
-        )
-        # The Spoolman inventory's rows the same way, through their one writer.
-        from backend.app.services import spoolman_usage_history
-
-        await spoolman_usage_history.detach_archive(self.db, archive_id)
-
-        # Usage-journal rows die with their archive. Explicit because the FK
-        # CASCADE fires on PostgreSQL only; placed beside the history detach so
-        # every ``db.delete(archive)`` path below flushes both together.
-        from backend.app.services.print_usage_journal import delete_for_archive
-
-        await delete_for_archive(self.db, archive_id)
-
-        # The registry of this archive's videos goes with it (m237). Explicit
-        # for the same reason: the CASCADE fires on PostgreSQL only, and a row
-        # left under this id would be read as the next archive's video source.
-        from backend.app.services import archive_media
-
-        await archive_media.forget_archives(self.db, [archive_id])
-
-        # Completion receipts are disposable run-bound acknowledgements.  The
-        # model declares CASCADE, but SQLite does not enforce it in every
-        # deployment, so remove them explicitly with the hard delete.
-        from sqlalchemy import delete
-
-        from backend.app.models.print_completion_receipt import PrintCompletionReceipt
-
-        await self.db.execute(delete(PrintCompletionReceipt).where(PrintCompletionReceipt.archive_id == archive_id))
-
-        # Free-stock movements go the OTHER way: the parts this print made are
-        # on a shelf and stay there (pass 8, §Invariants touched — "deleting an
-        # archive does not delete its movements"), so the link is cut and the
-        # rows are kept. ``ON DELETE SET NULL`` says the same thing and fires on
-        # PostgreSQL only; on SQLite the movements would keep an id naming
-        # nothing, which is both a dead link in the product's history and an
-        # idempotency key the next archive to take that rowid would trip over.
-        from backend.app.services.part_stock import detach_archive
-
-        await detach_archive(self.db, archive_id)
-
-        # Resolve the directory to delete BEFORE committing the DB change
-        dir_to_delete: Path | None = None
-
-        if archive.file_path and archive.file_path.strip():
-            file_path = settings.base_dir / archive.file_path
-            if file_path.exists():
-                archive_dir = file_path.parent
-
-                # Safety check 1: archive_dir must be inside archive_dir
-                try:
-                    archive_dir.resolve().relative_to(settings.archive_dir.resolve())
-                except ValueError:
-                    logger.error(
-                        f"SECURITY: Refusing to delete archive {archive_id} - "
-                        f"path {archive_dir} is outside archive directory {settings.archive_dir}"
+        async def remove():
+            shared = bool(stored) and bool(
+                await self.db.scalar(
+                    select(func.count(PrintArchive.id)).where(
+                        PrintArchive.file_path == stored, PrintArchive.id != archive_id
                     )
-                    await self.db.delete(archive)
-                    await self.db.commit()
-                    return True
-
-                # Safety check 2: archive_dir must be at least 2 levels deep. Every
-                # archive folder is (``<printer>/<dated folder>/``, ``no_source/<id>/``);
-                # one level up is a PRINTER's folder, holding every print it made, and
-                # a file_path that lost a component points there (upstream #2968 —
-                # the guard used to be ``< 1``, which let that through).
-                try:
-                    relative_path = archive_dir.resolve().relative_to(settings.archive_dir.resolve())
-                    if len(relative_path.parts) < 2:
-                        logger.error(
-                            f"SECURITY: Refusing to delete archive {archive_id} - "
-                            f"path {archive_dir} is not deep enough inside archive directory"
-                        )
-                        await self.db.delete(archive)
-                        await self.db.commit()
-                        return True
-                except ValueError:
-                    pass  # Already handled above
-
-                dir_to_delete = archive_dir
-        # An empty file_path is a normal archive — created at print start, or a
-        # job that never yields a 3MF — not an attack: the folders it owns by id
-        # go through ``_remove_id_owned_folders`` once the row is gone. It used
-        # to log an ERROR under a SECURITY banner on every such delete
-        # (upstream #2968).
-
-        from backend.app.services.archive_write_scope import archive_file_reference_scope
-
-        async def _delete_with_fresh_file_refcount() -> bool:
-            # This is the same scope an attach enters after it finds a donor.
-            # It closes the gap where delete counted one donor, attach adopted
-            # its path, then delete removed the sole physical directory.
-            shared_result = await self.db.execute(
-                select(func.count(PrintArchive.id)).where(
-                    PrintArchive.file_path == archive.file_path,
-                    PrintArchive.id != archive_id,
                 )
             )
-            shared = (shared_result.scalar() or 0) > 0
-            await self.db.delete(archive)
+            result = await self.delete_archive_rows(archive)
             await self.db.commit()
-            return shared
+            return result, shared
 
-        if archive.file_path:
-            async with archive_file_reference_scope(self.db, archive.file_path):
-                shared = await _delete_with_fresh_file_refcount()
+        if stored:
+            async with archive_file_reference_scope(self.db, stored):
+                removal, shared = await remove()
         else:
-            # No bytes are named, hence no attach donor can share this row.
-            await self.db.delete(archive)
-            await self.db.commit()
-            shared = False
-
-        # Only delete files AFTER the DB commit succeeds and no other archives reference them
-        if dir_to_delete and not shared:
-            shutil.rmtree(dir_to_delete, ignore_errors=True)
-
+            removal, shared = await remove()
+        await self.cleanup_archive_removal(removal, shared=shared)
         return True
+
+    async def cleanup_archive_removal(self, removal, *, shared=False):
+        """After root commit, while the caller still owns its archive process guard.
+
+        Reacquire database/file guards on a fresh read transaction: the delete's
+        transaction-scoped PG guards ended at commit. Never commit a caller's
+        pending work or unlink while its SQLite writer is held.
+        """
+        from contextlib import nullcontext
+
+        from sqlalchemy.ext.asyncio import async_sessionmaker
+
+        from backend.app.services.archive_write_scope import archive_db_guard, archive_file_reference_scope
+
+        factory = async_sessionmaker(self.db.bind, expire_on_commit=False)
+        async with factory() as check:
+            await archive_db_guard(check, removal.id)
+            stored = removal.file_path
+            async with archive_file_reference_scope(check, stored) if stored else nullcontext():
+                if await check.scalar(select(PrintArchive.id).where(PrintArchive.id == removal.id)) is not None:
+                    return
+                if stored and not shared:
+                    if (
+                        await check.scalar(select(PrintArchive.id).where(PrintArchive.file_path == stored).limit(1))
+                        is not None
+                    ):
+                        return
+                    archive_dir = (settings.base_dir / stored).parent
+                    try:
+                        relative = archive_dir.resolve().relative_to(settings.archive_dir.resolve())
+                    except (ValueError, OSError):
+                        logger.error("SECURITY: Refusing archive directory cleanup: archive=%s", removal.id)
+                        return
+                    if len(relative.parts) < 2:
+                        logger.error("SECURITY: Refusing shallow archive directory cleanup: archive=%s", removal.id)
+                        return
+                    shutil.rmtree(archive_dir, ignore_errors=True)
+                _remove_id_owned_folders(removal.id)
 
     async def attach_timelapse(
         self,

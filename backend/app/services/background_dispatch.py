@@ -59,7 +59,6 @@ from backend.app.services.filament_routing import RoutingDeferred
 from backend.app.services.gcode_patcher import GcodeInjectionSpec
 from backend.app.services.printer_files.factory import transport_for
 from backend.app.services.printer_manager import printer_manager
-from backend.app.services.product_sync import purge_file_product_links
 from backend.app.services.queue_source_descriptor import QueueSourceDescriptor
 from backend.app.services.source_io import SourceUnavailable, require_source_file, source_probe
 from backend.app.utils.failure_reasons import USER_CANCELLED, dispatch_reason_text
@@ -344,6 +343,8 @@ def _claim_change_detail(item, job) -> str | None:
     """The first reason this attempt no longer owns its row, or ``None`` while it still does."""
     if item is None:
         return "claim_missing"
+    if getattr(job, "claim_identity", None) is not None and item.recovery_identity != job.claim_identity:
+        return "claim_replaced"
     if item.status != "printing":
         return "claim_released"
     if item.started_at != job.claim_started_at:
@@ -1052,6 +1053,10 @@ class PrintDispatchJob:
     # all the way to the archive row the runner writes.
     project_line_id: int | None = None
     cleanup_library_after_dispatch: bool = False
+    # Captured by dispatch_print_library_file, before enqueueing or the runner.
+    # This private proof must never be reconstructed from a late id lookup.
+    library_identity: object | None = None
+    claim_identity: str | None = None
     # Link back to a ``print_queue.id`` when the dispatch was requested by
     # the scheduler for a queue item.  The runner updates the queue item's
     # ``archive_id`` once the archive row is created so the two FSMs stay
@@ -1684,6 +1689,13 @@ class BackgroundDispatchService:
         cleanup_library_after_dispatch: bool = False,
         authority=None,
     ) -> dict[str, Any]:
+        from backend.app.services.library_identity import LibraryIdentity
+
+        async with async_session() as db:
+            source = await db.scalar(LibraryFile.active().where(LibraryFile.id == file_id))
+            if source is None:
+                raise SourceUnavailable()
+            identity = LibraryIdentity.capture(source)
         return await self._dispatch(
             kind="print_library_file",
             source_id=file_id,
@@ -1697,6 +1709,7 @@ class BackgroundDispatchService:
             project_line_id=project_line_id,
             cleanup_library_after_dispatch=cleanup_library_after_dispatch,
             authority=authority,
+            library_identity=identity,
         )
 
     def cancel_dispatch_for_queue_item(self, queue_item_id: int) -> bool:
@@ -1819,6 +1832,7 @@ class BackgroundDispatchService:
         project_line_id: int | None = None,
         cleanup_library_after_dispatch: bool = False,
         authority=None,
+        library_identity=None,
     ) -> dict[str, Any]:
         # ⚠️ The source is copied into queue-sources BEFORE the printer is
         # claimed, and outside ``_lock`` (spec §5 steps 1-3). A copy can take
@@ -1841,6 +1855,10 @@ class BackgroundDispatchService:
         from backend.app.services.queue_source_capture import capture_staged, discard_staged
 
         async with async_session() as prep_db:
+            if library_identity is not None:
+                source = await prep_db.get(LibraryFile, source_id)
+                if not library_identity.matches(source):
+                    raise SourceUnavailable()
             capture_plan = await direct_print_capture_plan(prep_db, kind=kind, source_id=source_id)
             printer_row = await prep_db.get(Printer, printer_id)
             printer_swap_on = bool(printer_row is not None and printer_row.swap_mode_enabled)
@@ -1874,6 +1892,7 @@ class BackgroundDispatchService:
                 cleanup_library_after_dispatch=cleanup_library_after_dispatch,
                 staged=staged,
                 authority=authority,
+                library_identity=library_identity,
             )
         except BaseException:
             await discard_staged(staged)
@@ -1940,6 +1959,7 @@ class BackgroundDispatchService:
         cleanup_library_after_dispatch: bool,
         staged,
         authority=None,
+        library_identity=None,
     ) -> dict[str, Any]:
         """Re-check availability, take the claim, queue the job — the fast half.
 
@@ -2028,8 +2048,10 @@ class BackgroundDispatchService:
                 project_id=project_id,
                 project_line_id=project_line_id,
                 cleanup_library_after_dispatch=cleanup_library_after_dispatch,
+                library_identity=library_identity,
                 queue_item_id=claim_item_id,
                 claim_started_at=claim_item.started_at if claim_item is not None else None,
+                claim_identity=getattr(claim_item, "recovery_identity", None),
                 authority=authority,
                 # ⚠️ ``awaited_by_scheduler`` stays False: the dispatcher owns
                 # this item, and is therefore the one that must release it.
@@ -2461,6 +2483,8 @@ class BackgroundDispatchService:
             raise RoutingDeferred(
                 "dispatch_claim_changed", detail="claim_missing" if item is None else "claim_released"
             )
+        if job.claim_identity is not None and item.recovery_identity != job.claim_identity:
+            raise RoutingDeferred("dispatch_claim_changed", detail="claim_replaced")
         job.options["auto_eject"] = item.auto_eject
         job.options["auto_eject_settings"] = deepcopy(item.auto_eject_settings)
         job.claim_started_at = item.started_at
@@ -3731,6 +3755,8 @@ class BackgroundDispatchService:
             lib_file = (
                 await db.scalar(LibraryFile.active().where(LibraryFile.id == job.source_id)) if job.source_id else None
             )
+            if job.library_identity is not None and not job.library_identity.matches(lib_file):
+                lib_file = None
             if not lib_file and job.source is None:
                 raise SourceUnavailable()
 
@@ -3741,11 +3767,7 @@ class BackgroundDispatchService:
             library_filename = lib_file.filename if lib_file else source_display_filename(job.source)
             # Plain values for the transient-source cleanup after the print started: that
             # bookkeeping may run on a session a failed write before it rolled back.
-            library_row = (
-                (lib_file.id, bool(lib_file.is_external), lib_file.file_path, lib_file.thumbnail_path)
-                if lib_file
-                else None
-            )
+            library_identity = job.library_identity
             submission_id = _ensure_submission_id(job)
             remote_filename = derive_remote_filename(library_filename)
 
@@ -3849,6 +3871,7 @@ class BackgroundDispatchService:
                     source_content_hash=job.source.sha256 if job.source is not None else lib_file.file_hash,
                     applied_patches=applied_patches or None,
                     library_file_id=lib_file.id if lib_file else None,
+                    library_identity=job.library_identity,
                     # A captured source is stored under its hash; the archive keeps
                     # its copy under the name the folder around it already uses.
                     stored_filename=library_filename if job.source is not None else None,
@@ -4414,15 +4437,22 @@ class BackgroundDispatchService:
                 # ``lib_file is None`` means the row this dispatch was started
                 # from is already gone — there is nothing left to clean up, and
                 # the print ran from its own copy regardless.
-                if job.cleanup_library_after_dispatch and library_row is not None and not library_row[1]:
+                if job.cleanup_library_after_dispatch and library_identity is not None:
 
                     async def remove_transient_source():
-                        library_id, _external, library_path, library_thumbnail = library_row
+                        library_id = library_identity.id
+                        from backend.app.services.library_delete_cleanup import finish
+                        from backend.app.services.library_delete_scope import library_delete_scope
+                        from backend.app.services.library_trash import library_trash_service
+
+                        await self._end_own_transaction(db)
                         # A transient library source is removed after success. Its
                         # execution archive becomes the durable source for Repeat;
                         # keep semantic rules while recording the archive revision.
+                        from backend.app.models.print_queue import PrintQueueItem
+
+                        retained = None
                         if job.routing_guard and job.queue_item_id:
-                            from backend.app.models.print_queue import PrintQueueItem
                             from backend.app.services.filament_policy import serialize_policy
                             from backend.app.services.filament_requirements import PrintRequirementsCache
 
@@ -4430,58 +4460,48 @@ class BackgroundDispatchService:
                             if not archive_path.is_absolute():
                                 archive_path = (
                                     settings.base_dir / archive_path
-                                )  # SEC-PATH-OK: archive_print generated this persisted relative path.
+                                )  # SEC-PATH-OK: archive_print's own persisted path.
                             retained = await PrintRequirementsCache().read(archive_path, job.options["plate_id"])
-                            # FTP, preheat and MQTT acknowledgement all happened
-                            # before this cleanup branch.  The initial queue-item
-                            # read is still in this session's identity map, so
-                            # force a real read before touching the row again.
-                            queued = await db.get(PrintQueueItem, job.queue_item_id, populate_existing=True)
-                            if queued is not None and queued.started_at == job.claim_started_at:
-                                queued.filament_routing = serialize_policy(
-                                    job.routing_guard.policy,
-                                    archive_id=job.execution_archive_id,
-                                    requirements=retained,
-                                    plate_id=job.options["plate_id"],
-                                    printer_id=job.printer_id,
-                                    exact_model=job.routing_guard.exact_model,
-                                )
-                        cleanup_disk_paths = [
-                            Path(settings.base_dir) / library_path
-                        ]  # SEC-PATH-OK: the transient library row's own stored file path.
-                        if library_thumbnail:
-                            thumb_path = Path(library_thumbnail)
-                            if not thumb_path.is_absolute():
-                                thumb_path = (
-                                    Path(settings.base_dir) / library_thumbnail
-                                )  # SEC-PATH-OK: the transient library row's own stored thumbnail path.
-                            cleanup_disk_paths.append(thumb_path)
-                        # The ORM clears ``product_files`` for us, but nothing
-                        # clears ``product_plates`` — it has no cascade from the
-                        # library file on SQLite, where FK actions never fire.
-                        await purge_file_product_links(db, [library_id])
-                        # The transient file's photos, if anyone attached one (m233).
-                        from backend.app.services import library_file_photos
-
-                        await library_file_photos.forget_files(db, [library_id])
-                        from backend.app.services import library_import_meta
-
-                        await library_import_meta.forget_files(db, [library_id])
-                        transient = await db.get(LibraryFile, library_id)
-                        if transient is not None:
-                            await db.delete(transient)
+                        if job.queue_item_id:
+                            queued = await db.scalar(
+                                select(PrintQueueItem)
+                                .where(PrintQueueItem.id == job.queue_item_id)
+                                .with_for_update()
+                                .execution_options(populate_existing=True)
+                            )
+                            if _claim_change_detail(queued, job) is None:
+                                # Even a legacy raw deletion may have left this
+                                # accepted claim pointing at the reused integer.
+                                # Its UUID/start proof owns this detach, not B.
+                                if queued.library_file_id == library_id:
+                                    queued.library_file_id = None
+                                if retained is not None:
+                                    queued.filament_routing = serialize_policy(
+                                        job.routing_guard.policy,
+                                        archive_id=job.execution_archive_id,
+                                        requirements=retained,
+                                        plate_id=job.options["plate_id"],
+                                        printer_id=job.printer_id,
+                                        exact_model=job.routing_guard.exact_model,
+                                    )
+                        # This job-only bookkeeping transaction must finish before
+                        # a fresh owning session tries to take SQLite's writer.
                         await db.commit()
-
-                        for cleanup_path in cleanup_disk_paths:
-                            try:
-                                if cleanup_path.exists():
-                                    cleanup_path.unlink()
-                            except OSError as cleanup_err:
-                                logger.warning(
-                                    "Failed to delete transient library file %s: %s",
-                                    cleanup_path,
-                                    cleanup_err,
+                        await db.close()
+                        async with async_session() as cleanup_db:
+                            current = await cleanup_db.get(LibraryFile, library_id)
+                            if not library_identity.matches(current):
+                                logger.info(
+                                    "Dispatch %s: transient source incarnation changed; cleanup skipped", job.id
                                 )
+                                return
+                            if current.is_external:
+                                return
+                            async with library_delete_scope(cleanup_db, [library_identity]):
+                                current = await cleanup_db.get(LibraryFile, library_id, populate_existing=True)
+                                await library_trash_service.purge_rows(cleanup_db, current)
+                                await cleanup_db.commit()
+                            await finish(cleanup_db)
 
                     await self._secondary(db, job, "the transient library cleanup", remove_transient_source)
 

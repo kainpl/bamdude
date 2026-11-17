@@ -3805,6 +3805,7 @@ export default {
     passwordsDoNotMatch: 'Passwords do not match',
     // Auth disabled
     // User deletion
+    userAutoQueueCount: 'AutoQueue jobs: {{count}}',
     userHasCreated: 'This user has created:',
     userItemsQuestion: 'What would you like to do with these items?',
     deleteUserConfirm: 'Are you sure you want to delete this user?',
@@ -4238,6 +4239,7 @@ export default {
       userCreated: 'User created successfully',
       userUpdated: 'User updated successfully',
       userDeleted: 'User deleted successfully',
+      userDeletedOrderWork: 'User deleted. Removed print work from orders: {{orders}}. Replan any pending work you still need.',
       groupDeleted: 'Group deleted successfully',
       fillRequiredFields: 'Please fill in all required fields',
       passwordsDoNotMatch: 'Passwords do not match',

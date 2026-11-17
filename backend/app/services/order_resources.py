@@ -396,6 +396,9 @@ async def replan(db, project_id, request, access):
             raise refusal()
         # Existing reference cleanup, no blob unlink; sources remain until GC.
         await detach_print_queue_refs(db, [p.id for p in remove_printer])
+        from backend.app.services.queue_counters import detach_auto_queue_refs
+
+        await detach_auto_queue_refs(db, [p.id for p in remove_auto])
         for item in [*remove_printer, *remove_auto]:
             await db.delete(item)
         await db.flush()

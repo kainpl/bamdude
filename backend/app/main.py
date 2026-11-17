@@ -9325,7 +9325,10 @@ async def _on_print_complete_impl(
                 # Bump usage counters on the source library file so admins can
                 # sort by "last printed" and (eventually) auto-purge stale
                 # files — #1008.
-                await _bump_library_file_usage_if_completed(db, queue_item, queue_status)
+                from backend.app.services import library_usage
+
+                if queue_status == "completed":
+                    await library_usage.stage(db, bound_archive, queue_item.library_file_id)
 
                 # Update queue status and counters
                 from backend.app.services.queue_counters import (
@@ -9395,6 +9398,7 @@ async def _on_print_complete_impl(
                         bound_archive.extra_data = extra
                 await db.commit()
                 logger.info("Updated queue item %s status to %s", queue_item.id, queue_status)
+                await library_usage.finish(db)
                 if queue_status == "failed" and bound_archive is not None:
                     from backend.app.services.auto_queue_return import capture_candidate
 
@@ -9465,13 +9469,47 @@ async def _on_print_complete_impl(
 
                         _cali_lib_file = await db.get(_CaliLibFile, queue_item.library_file_id)
                         if _cali_lib_file is not None:
-                            await library_trash_service.hard_delete_now(db, _cali_lib_file)
-                            logger.info(
-                                "Calibration cleanup: removed library file %s (%s status=%s)",
-                                queue_item.library_file_id,
-                                queue_item.id,
-                                queue_status,
-                            )
+                            from sqlalchemy.ext.asyncio import async_sessionmaker
+
+                            from backend.app.services.library_delete_cleanup import finish
+                            from backend.app.services.library_delete_scope import library_delete_scope
+                            from backend.app.services.library_identity import LibraryIdentity
+
+                            cali_source = LibraryIdentity.capture(_cali_lib_file)
+                            factory = async_sessionmaker(db.bind, expire_on_commit=False)
+                            await db.commit()  # calibration reconciliation commits before cleanup
+                            await db.close()  # no old SQLite reader/writer may wait for itself
+                            cali_removed = False
+                            async with factory() as cleanup_db:
+                                current = await cleanup_db.get(_CaliLibFile, cali_source.id)
+                                if cali_source.matches(current):
+                                    async with library_delete_scope(cleanup_db, [cali_source]):
+                                        current = await cleanup_db.get(
+                                            _CaliLibFile, cali_source.id, populate_existing=True
+                                        )
+                                        # The terminal session may still cache the old
+                                        # numeric link after a concurrent purge. Read
+                                        # navigation afresh only after the library/job
+                                        # guards; a reused source id grants no right.
+                                        linked_job_id = await cleanup_db.scalar(
+                                            select(PrintQueueItem.id).where(
+                                                PrintQueueItem.id == queue_item.id,
+                                                PrintQueueItem.recovery_identity == queue_item.recovery_identity,
+                                                PrintQueueItem.library_file_id == cali_source.id,
+                                            )
+                                        )
+                                        if linked_job_id is not None:
+                                            await library_trash_service.purge_rows(cleanup_db, current)
+                                            await cleanup_db.commit()
+                                            cali_removed = True
+                                    await finish(cleanup_db)
+                            if cali_removed:
+                                logger.info(
+                                    "Calibration cleanup: removed library file %s (%s status=%s)",
+                                    queue_item.library_file_id,
+                                    queue_item.id,
+                                    queue_status,
+                                )
                     except Exception:
                         logger.exception(
                             "Failed to clean up calibration LibraryFile %s for queue_item %s",

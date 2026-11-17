@@ -1,123 +1,110 @@
-"""Real CLI lock, transition and claim; full schema phases have bounded stubs."""
+"""Real offline CLI ownership and claim precede every mutating schema phase."""
 
 import asyncio
-import json
 import os
 import subprocess
 import sys
-from pathlib import Path
 
 import pytest
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import NullPool
 
-from backend.app.core import (
-    database,
-    schema_repair,
-    schema_repair_cli as cli,
-    schema_repair_state as state,
-    schema_spoolman_retry as compatibility,
-)
+from backend.app.core import database, schema_repair, schema_repair_cli as cli, schema_repair_state as state
+
+# An unreleased audit plan deliberately retired by the final composition.
+RETIRED_MANIFEST = "fdf05bc2fce41028e6cc47b0aa4fb8833c1f4e7d5aae8957962b57372d58dbae"
 
 
-def transition_pair():
-    return json.loads(
-        (Path(__file__).parents[3] / "app/data/pg_schema_spoolman_manifest_transition_v1.json").read_text(
-            encoding="utf-8"
-        )
-    )
-
-
-def test_known_transition_targets_the_installed_full_plan():
-    database.import_all_models()
-    assert state.manifest_hash(database.Base.metadata) == transition_pair()["to"], (
-        "The final composition must explicitly retire this transition or regenerate it with an old-target proof."
-    )
-
-
-@pytest.mark.parametrize("old_manifest", [True, False], ids=["known-old", "already-current"])
-def test_real_cli_retry_transitions_under_lock_before_claim(tmp_path, monkeypatch, old_manifest):
+@pytest.mark.parametrize("old_manifest", [False, True], ids=["current", "retired-audit-plan"])
+def test_real_cli_retry_holds_owner_lock_and_claims_before_ddl(tmp_path, monkeypatch, old_manifest):
     from backend.app import migrations
 
     database.import_all_models()
-    pair = transition_pair()
     engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'repair.db'}", poolclass=NullPool)
-    events = []
+    events, probes = [], []
 
     async def seed():
         async with engine.begin() as conn:
             debt = await state.write_pending(conn, database.Base.metadata)
             debt["automatic_attempts_remaining"] = 0
             if old_manifest:
-                debt["manifest"] = pair["from"]
+                debt["manifest"] = RETIRED_MANIFEST
             await state.put_record(conn, state.DEBT, debt)
             return debt
 
     original_debt = asyncio.run(seed())
-    original_transition = compatibility.prepare_known_retry
     original_claim = schema_repair.claim
 
-    async def transition(conn, metadata):
-        # A second process must fail at the REAL installation owner.lock;
-        # it may not get as far as the read-only status DB operation.
-        probe = subprocess.run(
-            [sys.executable, "-m", "backend.app.cli", "schema_repair", "status"],
-            env={
-                **os.environ,
-                "BAMDUDE_IGNORE_DOTENV": "1",
-                "DATA_DIR": str(tmp_path),
-                "DATABASE_URL": str(engine.url),
-            },
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        assert probe.returncode == 2 and "Stop BamDude" in probe.stderr
-        assert events == []
-        changed = await original_transition(conn, metadata)
-        assert changed is old_manifest
-        current = await state.read_record(conn, state.DEBT)
-        assert current == {**original_debt, "manifest": pair["to"]}
-        events.append("transition")
-        return changed
-
     async def claim(*args, **kwargs):
-        assert events == ["transition"]
-        claimed = await original_claim(*args, **kwargs)
-        assert kwargs == {"automatic": False}
-        assert claimed["manifest"] == pair["to"] and claimed["automatic_attempts_remaining"] == 0
+        # A child with valid config must fail at owner.lock. Reaching status
+        # instead has a distinctive exit/marker, not an ambiguous error string.
+        probe_code = """
+from pathlib import Path
+from sqlalchemy import make_url
+from backend.app.core import schema_repair_cli as cli
+import os
+cli.configuration = lambda: (Path(os.environ['DATA_DIR']), make_url(os.environ['DATABASE_URL']))
+async def status(url):
+    print('STATUS_REACHED_DATABASE')
+    return 77
+cli.status = status
+raise SystemExit(cli.main(['status']))
+"""
+        probes.append(
+            subprocess.run(
+                [sys.executable, "-c", probe_code],
+                env={
+                    **os.environ,
+                    "BAMDUDE_IGNORE_DOTENV": "1",
+                    "DATA_DIR": str(tmp_path),
+                    "DATABASE_URL": str(engine.url),
+                },
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        )
+        assert events == []
         events.append("claim")
-        return claimed
+        return await original_claim(*args, **kwargs)
+
+    def create_tables(_conn):
+        assert events == ["claim"]
+        events.append("create_all")
 
     async def migrations_stub(*_args):
-        assert events == ["transition", "claim"]
+        assert events == ["claim", "create_all"]
         events.append("migrations")
 
     async def verified_phase_stub(_engine, _metadata, debt):
-        assert events == ["transition", "claim", "migrations"]
+        assert events == ["claim", "create_all", "migrations"]
         async with engine.begin() as conn:
             await state.finish_attempt(conn, debt, [])
         events.append("verified")
 
     async def residuals_stub(*_args):
-        assert events == ["transition", "claim", "migrations", "verified"]
+        assert events == ["claim", "create_all", "migrations", "verified"]
         events.append("residuals")
         return True
 
     monkeypatch.setattr(cli, "configuration", lambda: (tmp_path, engine.url))
     monkeypatch.setattr(database, "engine", engine)
-    monkeypatch.setattr(database.Base.metadata, "create_all", lambda _conn: None)
-    monkeypatch.setattr(compatibility, "prepare_known_retry", transition)
+    monkeypatch.setattr(database.Base.metadata, "create_all", create_tables)
     monkeypatch.setattr(schema_repair, "claim", claim)
     monkeypatch.setattr(migrations, "_run_pending", migrations_stub)
     monkeypatch.setattr(schema_repair, "run_claimed", verified_phase_stub)
     monkeypatch.setattr(schema_repair, "retry_residuals", residuals_stub)
-    assert cli.main(["retry"]) == 0
-    assert events == ["transition", "claim", "migrations", "verified", "residuals"]
+    result = cli.main(["retry"])
+    assert len(probes) == 1
+    assert probes[0].returncode == 2, (probes[0].stdout, probes[0].stderr)
+    assert "STATUS_REACHED_DATABASE" not in probes[0].stdout
+    assert "Stop BamDude" in probes[0].stderr
+    assert result == (2 if old_manifest else 0)
+    assert events == (["claim"] if old_manifest else ["claim", "create_all", "migrations", "verified", "residuals"])
 
     async def check():
         async with engine.connect() as conn:
-            assert await state.read_record(conn, state.DEBT) is None
+            assert await state.read_record(conn, state.DEBT) == (original_debt if old_manifest else None)
         await engine.dispose()
 
     asyncio.run(check())
