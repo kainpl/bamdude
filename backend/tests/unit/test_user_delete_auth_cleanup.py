@@ -15,6 +15,7 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from sqlalchemy.sql.dml import Delete
 
 # ⚠️ Imported for its side effect, not its name: ``Printer`` declares a
 # relationship to ``PrinterLocation`` by string, and SQLAlchemy cannot resolve
@@ -40,12 +41,14 @@ def _collect_deleted_models(db_mock: AsyncMock) -> list[type]:
         if not call.args:
             continue
         stmt = call.args[0]
+        if not isinstance(stmt, Delete):
+            continue
         try:
             desc = stmt.entity_description
         except AttributeError:
             continue
         if desc:
-            models.append(desc["entity"])
+            models.append(desc.get("table", stmt.table).name)
     return models
 
 
@@ -69,6 +72,7 @@ async def test_delete_user_clears_oidc_mfa_otp_token_rows(monkeypatch):
     user.session_generation = 0
 
     db = AsyncMock()
+    db.scalar = AsyncMock(return_value=user)
     # First db.execute → the SELECT for the user
     select_result = MagicMock()
     select_result.scalar_one_or_none = MagicMock(return_value=user)
@@ -79,6 +83,7 @@ async def test_delete_user_clears_oidc_mfa_otp_token_rows(monkeypatch):
     db.execute = AsyncMock(side_effect=[select_result] + [select_pq_result] + [MagicMock()] * 50)
     db.delete = AsyncMock()
     db.commit = AsyncMock()
+    db.scalars = AsyncMock(return_value=[])
 
     from backend.app.api.routes.users import delete_user
 
@@ -104,11 +109,11 @@ async def test_delete_user_clears_oidc_mfa_otp_token_rows(monkeypatch):
     issued_deletes = _collect_deleted_models(db)
     # APIKey (existing) + UserOIDCLink + UserTOTP + UserOTPCode +
     # LongLivedToken (new) must ALL be issued.
-    assert APIKey in issued_deletes, "APIKey cleanup must remain (regression guard)"
-    assert UserOIDCLink in issued_deletes, "OIDC link cleanup missing (#1285)"
-    assert UserTOTP in issued_deletes, "TOTP cleanup missing (#1285)"
-    assert UserOTPCode in issued_deletes, "OTP-code cleanup missing (#1285)"
-    assert LongLivedToken in issued_deletes, "long-lived token cleanup missing (#1285)"
+    assert APIKey.__tablename__ in issued_deletes, "APIKey cleanup must remain (regression guard)"
+    assert UserOIDCLink.__tablename__ in issued_deletes, "OIDC link cleanup missing (#1285)"
+    assert UserTOTP.__tablename__ in issued_deletes, "TOTP cleanup missing (#1285)"
+    assert UserOTPCode.__tablename__ in issued_deletes, "OTP-code cleanup missing (#1285)"
+    assert LongLivedToken.__tablename__ in issued_deletes, "long-lived token cleanup missing (#1285)"
     # Finally the user itself is deleted via db.delete(user)
-    db.delete.assert_awaited_once_with(user)
+    assert "users" in issued_deletes
     db.commit.assert_awaited()

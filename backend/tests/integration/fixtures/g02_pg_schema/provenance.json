@@ -1,0 +1,64 @@
+[
+  {
+    "name": "v040",
+    "producer_commit": "6b73d94bd862a3f6c26c7344bc5eef5ac1930720",
+    "max_version": 21,
+    "sha256": "8b3c097a336f83a61f350b90ba465949b0e5309637aa7a75c0baea1cec082149",
+    "compressed_sha256": "aa801033b39c5433df9e6c61a70c9da3a58f46aae726ba8d9c3e1f6ac5523a03",
+    "requirements_git_blob_sha256": "9585d197467d077df601058e1c8ffea74c03cbe5de9d33c5213e4b9d0a8c0154",
+    "dependencies_note": "Modern resolution of historical lower bounds; not a historical deployment lockfile.",
+    "producer_image_id": "sha256:3ff0b513c09b288494a049f348379a8b11546ef4e93f7f44975ad6485c300299",
+    "tag_object": "33ac067c9ad7342fb474e97d25058219b02f7567"
+  },
+  {
+    "name": "v042",
+    "producer_commit": "3f75f5b1655db2303b2b8ef352502b5023024b28",
+    "max_version": 41,
+    "sha256": "62b75b327eb9e8ccf5ba907faeea81c87c528313edba9179725aa46edc92d0ca",
+    "compressed_sha256": "815cc296584feab8cb831787d21725482edd001c34569a0c2d088c3c39249db6",
+    "requirements_git_blob_sha256": "9585d197467d077df601058e1c8ffea74c03cbe5de9d33c5213e4b9d0a8c0154",
+    "dependencies_note": "Modern resolution of historical lower bounds; not a historical deployment lockfile.",
+    "producer_image_id": "sha256:3ff0b513c09b288494a049f348379a8b11546ef4e93f7f44975ad6485c300299",
+    "tag_object": "27d78267f77073e1d7b238ab45d748e7ed6a682e"
+  },
+  {
+    "name": "v051",
+    "producer_commit": "d76f7dc6922c0835f19621838143031a3ee52c05",
+    "max_version": 114,
+    "sha256": "d79684b063eefb824947fd1f226ba35bf8c7bab42842eb09a4745e6d24289ffb",
+    "compressed_sha256": "3651281d7deca2b70a683f92cfad4b716e299d66dc03059b850fe3ce3743832e",
+    "requirements_git_blob_sha256": "ae4cf398d850b319bd6f1d6dae046efe00456cb1f201744f30f2627e5dd02e41",
+    "dependencies_note": "Modern resolution of historical lower bounds; not a historical deployment lockfile.",
+    "producer_image_id": "sha256:7a6893b5c6e9a64f9b1a45d778987aba89e09a8c26b0bbe5a6e4e9369c60a976"
+  },
+  {
+    "name": "v061",
+    "producer_commit": "9c299c6a844560ad4c86474476424304e816d948",
+    "max_version": 181,
+    "sha256": "b492b0629c35786d7c63c2dd19453dcce083d266cad04e0f4cad55fbf77dd788",
+    "compressed_sha256": "5afdb183dc174a330f3755b25aa480885cd86eefda0a21e4352eae2497cfb712",
+    "requirements_git_blob_sha256": "1a03b0623cd30705e8534ad9b2068ff218c449822596fb43a6bc9478d18daba4",
+    "dependencies_note": "Modern resolution of historical lower bounds; not a historical deployment lockfile.",
+    "producer_image_id": "sha256:8239bcee115021165913d2d7efb438cbb503eebf3389d8c9da5775357bbe6452"
+  },
+  {
+    "name": "pre075",
+    "producer_commit": "25155174dacd0f8b77e53d06a30af6cd3b816101",
+    "max_version": 74,
+    "sha256": "f0677a7872d4ec4c51ce6ad285059ea6ad2f86979b3999331e47aaa9f6ab1287",
+    "compressed_sha256": "41f8a39c15b441572fda1b3e2d4ad84981576e45b34fb7e03dfdb9bc1bee3d1d",
+    "requirements_git_blob_sha256": "4e099960107982bbd5bfc727f5ed959fb867bed1e3854207a9fbb9335ec95999",
+    "dependencies_note": "Modern resolution of historical lower bounds; not a historical deployment lockfile.",
+    "producer_image_id": "sha256:bcf5d57463a2e85771f4f7dcb697c32aa96b64e1012d75ad6f00b7de7a47f228"
+  },
+  {
+    "name": "pre144",
+    "producer_commit": "9c5006b29fc8ee48e02774ef31a52b3ed453183c",
+    "max_version": 143,
+    "sha256": "6de931a87d598a7d82d19da01d12363ca9d3a426d854930e1f8b8c5fac2743fa",
+    "compressed_sha256": "1d98e10bc0ba97a5b163009b6da375e50fa239d2a823e477c8810f9f5fb8ab27",
+    "requirements_git_blob_sha256": "ac9fa0bb583d30cb560e565339830a38f52694120209d107cd77df23b3827008",
+    "dependencies_note": "Modern resolution of historical lower bounds; not a historical deployment lockfile.",
+    "producer_image_id": "sha256:bf148bbf65c267ef59e4e5a62f47880b4340e9275f0b0cf97822d41b2474b353"
+  }
+]

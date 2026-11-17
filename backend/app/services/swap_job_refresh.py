@@ -461,6 +461,14 @@ async def refresh(
         refreshed: list[dict] = []
         touched_lanes: set[int] = set()
         async with queue_sources.storage_mutation(), async_session() as db, AsyncExitStack() as stack:
+            source = None
+
+            async def first(session):
+                nonlocal source
+                await _guard_actor(session, actor)
+                if source_kind != "archive":
+                    source = await _lock_source(session, source_kind, source_id)
+
             # The archive (an archive source), then the lanes: in process, then SQLite's writer or PostgreSQL's
             # guards in the same order (``claim_lanes``, spec r4 §4).
             await stack.enter_async_context(
@@ -468,14 +476,13 @@ async def refresh(
                     db,
                     lanes,
                     archive_id=source_id if source_kind == "archive" else None,
-                    before_db=lambda session: _guard_actor(session, actor),
+                    before_db=first,
                 )
             )
-            # The source and the job rows in the order each kind's other writers keep: an archive BEFORE the rows
-            # (archive -> queue: its hard delete, the terminal write, the change_table claim), a library row after
-            # them (queue -> library: the purge detaches the jobs, then deletes the file). Reversed, a hard delete
-            # of the source and this refresh deadlock on PostgreSQL (T9 final review, I1).
-            source = await _lock_source(db, source_kind, source_id) if source_kind == "archive" else None
+            # C's coordinated protocol replaces T9 I1: library BEFORE all job
+            # rows, like soft/hard deletion. Archive sources stay archive-first.
+            if source_kind == "archive":
+                source = await _lock_source(db, source_kind, source_id)
             rows = {}
             for job in picked:
                 model = _job_model(job.kind)
@@ -487,9 +494,6 @@ async def refresh(
                         .execution_options(populate_existing=True)
                     )
                 ).scalar_one_or_none()
-            if source_kind != "archive":
-                source = await _lock_source(db, source_kind, source_id)
-
             _source_gate(source_kind, source, actor, await _fresh_rights(db, source_kind, actor))
             # Every right read again on this writer session, after the wait: a key that lost its queue read, its
             # printer or itself while this request waited changes nothing (T9.7 R1).

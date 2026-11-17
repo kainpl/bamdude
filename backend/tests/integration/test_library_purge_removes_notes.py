@@ -15,6 +15,8 @@ from sqlalchemy import func, select
 from backend.app.models.library import LibraryFile
 from backend.app.models.library_file_note import LibraryFileNote
 from backend.app.models.user import User
+from backend.app.services.library_delete_scope import library_delete_scope
+from backend.app.services.library_identity import LibraryIdentity
 
 
 async def _file_with_notes(db, **fields) -> int:
@@ -92,8 +94,10 @@ async def test_purging_an_external_file_removes_the_notes(db_session):
     from backend.app.services.library_trash import library_trash_service
 
     file_id = await _file_with_notes(db_session, is_external=True)
-    trashed = await library_trash_service.trash_or_purge(db_session, await db_session.get(LibraryFile, file_id))
-    await db_session.commit()
+    file = await db_session.get(LibraryFile, file_id)
+    async with library_delete_scope(db_session, [LibraryIdentity.capture(file)]):
+        trashed = await library_trash_service.trash_or_purge(db_session, file)
+        await db_session.commit()
 
     assert trashed is False
     assert await _gone(db_session, file_id)

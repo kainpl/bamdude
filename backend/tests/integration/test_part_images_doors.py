@@ -10,6 +10,8 @@ Three kinds of doors, three ways to prove "never after a rollback":
 import pytest
 
 from backend.app.services import part_images
+from backend.app.services.library_delete_scope import library_delete_scope
+from backend.app.services.library_identity import LibraryIdentity
 from backend.app.services.library_trash import library_trash_service
 from backend.app.services.product_sync import purge_file_product_links, sync_product_for_file
 from backend.tests.fixtures.part_images import rendered_farm
@@ -101,11 +103,19 @@ SERVICE_DOORS = {
 async def test_a_service_door_in_the_callers_transaction(db_session, events, door, commits):
     farm = await rendered_farm(db_session)
     product_id = farm.product.id  # read now: a rollback expires every row
-    await SERVICE_DOORS[door](db_session, farm)
-    if commits:
-        await db_session.commit()
+    from contextlib import nullcontext
+
+    if door == "trash":
+        await db_session.commit()  # fixture publication precedes the owning plan
+        scope = library_delete_scope(db_session, [LibraryIdentity.capture(farm.file)])
     else:
-        await db_session.rollback()
+        scope = nullcontext()
+    async with scope:
+        await SERVICE_DOORS[door](db_session, farm)
+        if commits:
+            await db_session.commit()
+        else:
+            await db_session.rollback()
     await part_images.drain()
     assert (product_id in products_in(events)) is commits
 

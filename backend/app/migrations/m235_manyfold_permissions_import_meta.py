@@ -32,11 +32,15 @@ async def upgrade(conn):
     if not await table_exists(conn, "library_file_import_meta"):
         pk = "INTEGER PRIMARY KEY AUTOINCREMENT" if sqlite else "SERIAL PRIMARY KEY"
         ts = "DATETIME" if sqlite else "TIMESTAMP"
+        # An AS-IS PG import reaches this before create_all. Match the model's
+        # UNIQUE constraint as well as the historical additional index below.
+        # The existing SQLite DDL is unchanged.
+        file_unique = "" if sqlite else " UNIQUE"
         await conn.exec_driver_sql(
             f"""
             CREATE TABLE library_file_import_meta (
                 id {pk},
-                library_file_id INTEGER NOT NULL REFERENCES library_files(id) ON DELETE CASCADE,
+                library_file_id INTEGER NOT NULL{file_unique} REFERENCES library_files(id) ON DELETE CASCADE,
                 source_type VARCHAR(32) NOT NULL,
                 source_model_id VARCHAR(128) NOT NULL,
                 source_file_id VARCHAR(128),

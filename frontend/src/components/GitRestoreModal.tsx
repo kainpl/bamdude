@@ -344,6 +344,13 @@ export function GitRestoreModal({ onClose }: GitRestoreModalProps) {
             )}
 
             {/* Commit picker */}
+            <div role="note" className="flex items-start gap-2 p-3 rounded-lg bg-yellow-50 dark:bg-yellow-500/10 border border-yellow-300 dark:border-yellow-500/30 text-yellow-800 dark:text-yellow-200 text-sm">
+              <AlertTriangle className="w-4 h-4 mt-0.5 flex-shrink-0" />
+              <div>
+                <p>{t('backup.restoreFromGit.idleFarmWarning')}</p>
+                <p className="mt-1">{t('backup.restoreFromGit.vpDrainWarning')}</p>
+              </div>
+            </div>
             <div>
               <label htmlFor="restore-commit" className="block text-sm font-medium text-white mb-1">
                 {t('backup.restoreFromGit.commitLabel')}
@@ -504,13 +511,13 @@ export function GitRestoreModal({ onClose }: GitRestoreModalProps) {
         <ConfirmModal
           variant="danger"
           title={t('backup.restoreFromGit.confirmTitle')}
-          message={
+          message={`${t('backup.restoreFromGit.vpDrainWarning')} ${
             overwriteExisting
               ? t('backup.restoreFromGit.confirmMessageOverwrite')
               : warnKprofilesOverwrite
                 ? `${t('backup.restoreFromGit.confirmMessage')} ${t('backup.restoreFromGit.kprofilesOverwriteCaveat')}`
                 : t('backup.restoreFromGit.confirmMessage')
-          }
+          }`}
           confirmText={t('backup.restore')}
           isLoading={isRestoring}
           loadingText={t('backup.restoreFromGit.restoring')}

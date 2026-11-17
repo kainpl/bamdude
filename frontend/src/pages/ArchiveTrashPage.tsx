@@ -100,7 +100,19 @@ export function ArchiveTrashPage() {
   const emptyMutation = useMutation({
     mutationFn: () => api.emptyArchiveTrash(),
     onSuccess: (result) => {
-      showToast(t('archiveTrash.toast.emptied', { count: result.deleted }), 'success');
+      const retained = result.retained ?? [];
+      if (retained.length > 0) {
+        const reasons = [...new Set(retained.flatMap((item) => item.reasons.map((reason) =>
+          t(`archiveTrash.keep.${reason}`, { defaultValue: t('archiveTrash.keep.unknown') }),
+        )))];
+        showToast(t('archiveTrash.toast.emptiedWithRetained', {
+          deleted: result.deleted,
+          retained: retained.length,
+          reasons: reasons.length > 0 ? reasons.join('; ') : t('archiveTrash.keep.unknown'),
+        }), 'warning');
+      } else {
+        showToast(t('archiveTrash.toast.emptied', { count: result.deleted }), 'success');
+      }
       queryClient.invalidateQueries({ queryKey: ['archive-trash'] });
       queryClient.invalidateQueries({ queryKey: ['archive-trash-count'] });
     },

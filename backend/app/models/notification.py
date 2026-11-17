@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import JSON, Boolean, Column, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import JSON, Boolean, Column, DateTime, ForeignKey, Integer, String, Text, true
 from sqlalchemy.orm import relationship
 
 from backend.app.core.database import Base
@@ -132,7 +132,7 @@ class NotificationProvider(Base):
 
     # Whether this channel is sent camera frames at all (m239). A transport
     # option of the channel -- never an event toggle; NULL reads as on.
-    attach_photo = Column(Boolean, default=True)
+    attach_photo = Column(Boolean, default=True, server_default=true())
 
     # Daily digest (batch notifications into a single daily summary)
     daily_digest_enabled = Column(Boolean, default=False)

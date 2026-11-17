@@ -60,6 +60,7 @@ FORWARDED_ARG_INDEX = {"VariantError": 1, "_refusal": 2, "ConnectorRefusal": 2}
 
 FORWARDED_EXCEPTIONS = frozenset(
     {
+        "AdmissionClosed",
         # Plate-answer contention is forwarded by the existing StalePlateAnswer handler.
         "PlateAnswerBusy",
         "BambuCloudError",
@@ -106,7 +107,9 @@ FORWARDED_EXCEPTIONS = frozenset(
 
 # Safe domain error maps forwarded by code instead of a literal constructor
 # argument. Keep this explicit: arbitrary dictionaries are not API messages.
-FORWARDED_MESSAGE_MAPS = frozenset({"LDAP_ERROR_MESSAGES", "LABEL_GEOMETRY_MESSAGES", "MANYFOLD_MESSAGES"})
+FORWARDED_MESSAGE_MAPS = frozenset(
+    {"LDAP_ERROR_MESSAGES", "LABEL_GEOMETRY_MESSAGES", "MANYFOLD_MESSAGES", "USER_CONTENT_DELETE_MESSAGES"}
+)
 
 # Kinds the guard requires a translation for. ``value`` is optional (see module doc).
 REQUIRED_KINDS = frozenset({"http", "json", "forwarded"})
@@ -247,6 +250,10 @@ def scan(app_dir: Path = APP_DIR) -> dict[str, set[Site]]:
                     kind, expr = "json", _json_detail_expr(node)
                 elif name == "json_error":
                     kind, expr = "json", (node.args[1] if len(node.args) >= 2 else None)
+                elif name == "translate_sentence":
+                    # Explicitly translated success fragments and domain refusals
+                    # reach the wire too; sync --prune must preserve their keys.
+                    kind, expr = "forwarded", (node.args[0] if node.args else None)
                 else:
                     continue
             elif isinstance(node, ast.Raise) and isinstance(node.exc, ast.Call):

@@ -12,6 +12,7 @@ operator — see model docstring for the rationale.
 
 from sqlalchemy import text
 
+from backend.app.core.db_dialect import is_postgres
 from backend.app.migrations.helpers import table_exists
 
 version = 43
@@ -21,19 +22,23 @@ name = "print_options_preferences"
 async def upgrade(conn):
     if await table_exists(conn, "print_options_preferences"):
         return
+    # G02 B's narrow released-migration exception: only the missing-table PG
+    # arm changes. Rendered SQLite DDL, seeds and applied markers are unchanged.
+    pk = "SERIAL PRIMARY KEY" if is_postgres() else "INTEGER PRIMARY KEY AUTOINCREMENT"
+    ts = "TIMESTAMP" if is_postgres() else "DATETIME"
     # Plain CREATE TABLE — no ALTER, no data backfill. ``Base.metadata.create_all``
     # would also create this for fresh installs; the migration is here so
     # existing installs upgrading to 0.4.3 pick it up without needing to
     # re-run create_all manually.
     await conn.execute(
         text(
-            """
+            f"""
             CREATE TABLE print_options_preferences (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id {pk},
                 user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                 printer_model VARCHAR(64) NOT NULL,
                 options JSON NOT NULL,
-                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at {ts} NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 CONSTRAINT uq_print_options_pref_user_model UNIQUE (user_id, printer_model)
             )
             """

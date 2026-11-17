@@ -757,6 +757,9 @@ async def remove_reviewed_pending(db: AsyncSession, snapshot: Snapshot) -> None:
     ids = [item.id for item in snapshot.removable]
     if not ids:
         return
+    from backend.app.services.queue_counters import detach_auto_queue_refs
+
+    await detach_auto_queue_refs(db, ids)
     result = await db.execute(
         delete(AutoQueueItem).where(
             AutoQueueItem.id.in_(ids),

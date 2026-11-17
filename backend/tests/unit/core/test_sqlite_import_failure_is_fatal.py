@@ -24,7 +24,7 @@ class _Scalar:
 
 
 class _Engine:
-    """engine.begin() whose only query answers SELECT COUNT(*) FROM printers."""
+    """Unused target: no repair history, plus the existing printer count."""
 
     def __init__(self, printers: int):
         self._printers = printers
@@ -34,6 +34,9 @@ class _Engine:
         engine = self
 
         class Conn:
+            async def run_sync(self, _inspect):
+                return False  # This fake has no settings/repair-history table.
+
             async def execute(self, _clause):
                 return _Scalar(engine._printers)
 
@@ -42,14 +45,18 @@ class _Engine:
 
 @pytest.fixture
 def sqlite_file(tmp_path, monkeypatch):
+    import sqlite3
+    from contextlib import closing
+
     path = tmp_path / "bamdude.db"
-    path.write_bytes(b"not really sqlite, never opened by these tests")
+    # I2 now performs real source validation before calling the injected
+    # importer. Keep these tests on its success/failure, not corrupt input.
+    with closing(sqlite3.connect(path)) as source:
+        source.execute("CREATE TABLE _migrations(version INTEGER)")
+        source.execute("INSERT INTO _migrations VALUES(41)")
+        source.commit()
     monkeypatch.setattr(settings, "data_dir", tmp_path)
 
-    async def candidate(_data_dir):
-        return path
-
-    monkeypatch.setattr(db_portable, "_local_sqlite_candidate", candidate)
     return path
 
 
