@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any
 
 from sqlalchemy import select
@@ -48,6 +49,8 @@ async def _run_connection_for(printer) -> dict:
     from backend.app.services.printer_diagnostic import run_connection_diagnostic
 
     base = {"printer_id": printer.id, "printer_name": printer.name}
+    progress: dict[str, Any] = {}
+    started = time.monotonic()
     try:
         result = await asyncio.wait_for(
             run_connection_diagnostic(
@@ -55,12 +58,22 @@ async def _run_connection_for(printer) -> dict:
                 printer=printer,
                 serial_number=printer.serial_number,
                 access_code=printer.access_code,
+                progress=progress,
             ),
             timeout=_PER_DIAGNOSTIC_TIMEOUT_SECONDS,
         )
         return {**base, "result": _serialize(result)}
     except TimeoutError:
-        return {**base, "error": "timed_out"}
+        # Name the step that hung and keep the checks that finished before it:
+        # a bundle from a farm whose every printer overran said only
+        # "timed_out", once per printer, and nothing about why.
+        return {
+            **base,
+            "error": "timed_out",
+            "stalled_in": progress.get("stage"),
+            "elapsed_s": round(time.monotonic() - started, 1),
+            "checks": [_serialize(c) for c in progress.get("checks", [])],
+        }
     except Exception as e:
         # Log with traceback so the bundle generation isn't silent about
         # a broken probe, but never propagate.
