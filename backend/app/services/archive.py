@@ -2415,6 +2415,9 @@ class ArchiveService:
         origin: str = "upload",
         remote=None,
         expected_token: str | None = None,
+        authority=None,
+        permissions: tuple = (),
+        may_run=None,
     ) -> bool:
         """Attach a timelapse video to an archive, through the publication seam (``services/archive_media``).
 
@@ -2427,6 +2430,15 @@ class ArchiveService:
         (``archive_media.primary_token``) is the video the caller started from;
         a publication that finds another one is refused. Why a refusal happened
         is left in ``self.media_refusal``.
+
+        ⚠️ A caller that read or downloaded the bytes first captures identity,
+        epoch and token BEFORE that I/O and hands all three in; what is left
+        ``None`` is captured here, on entry — before the bytes are staged, which
+        is the latest moment that is still "before this attach's own I/O".
+        ``authority`` + ``permissions`` (a manual door) are asked again inside
+        the publication; a refusal there is the gate's own 401 / 403, raised.
+        ``may_run`` (the scan after a print) is asked again immediately before
+        the publication.
 
         The whole attach — staging the bytes included — is one operation the
         media runtime owns (G10 C4): refused while a restore holds admission,
@@ -2448,6 +2460,9 @@ class ArchiveService:
                     origin=origin,
                     remote=remote,
                     expected_token=expected_token,
+                    authority=authority,
+                    permissions=permissions,
+                    may_run=may_run,
                 ),
             )
         except MediaAdmissionClosed:
@@ -2465,6 +2480,9 @@ class ArchiveService:
         origin: str,
         remote,
         expected_token: str | None,
+        authority=None,
+        permissions: tuple = (),
+        may_run=None,
     ) -> bool:
         import asyncio
         import hashlib
@@ -2487,6 +2505,10 @@ class ArchiveService:
         if queue_sources.current_epoch() != epoch:
             self.media_refusal = archive_media.REFUSED_TARGET_GONE
             return False
+        if expected_token is None:
+            # Nothing was captured by the caller: this attach starts from what
+            # the archive shows now, before a byte of it is staged.
+            expected_token = await archive_media.primary_token(self.db, archive)
 
         # Where this archive's files live — the shared helper, never derived
         # from ``file_path`` by hand. A print whose 3MF could not be fetched
@@ -2542,6 +2564,9 @@ class ArchiveService:
             content_sha256=digest,
             size_bytes=len(timelapse_data),
             remote=remote,
+            authority=authority,
+            permissions=permissions,
+            may_run=may_run,
         )
         if not result.ok:
             self.media_refusal = result.refusal
@@ -2552,7 +2577,12 @@ class ArchiveService:
         if published.suffix.lower() != ".mp4":
             spawn_background_task(
                 _convert_timelapse_to_mp4(
-                    archive_id, published, expected_identity=expected_identity, expected_epoch=epoch
+                    archive_id,
+                    published,
+                    expected_identity=expected_identity,
+                    expected_epoch=epoch,
+                    # Exactly the publication made above, not "whatever the archive shows when ffmpeg starts".
+                    started_from=f"{result.revision}:{result.asset_uuid}",
                 ),
                 name=f"timelapse-convert-{archive_id}",
             )
@@ -2582,7 +2612,12 @@ def _remove_id_owned_folders(archive_id: int) -> None:
 
 
 async def _convert_timelapse_to_mp4(
-    archive_id: int, source_path: Path, *, expected_identity: str | None = None, expected_epoch: int | None = None
+    archive_id: int,
+    source_path: Path,
+    *,
+    expected_identity: str | None = None,
+    expected_epoch: int | None = None,
+    started_from: str | None = None,
 ) -> None:
     """Background task: convert non-MP4 timelapse (e.g. AVI from P1S) to MP4.
 
@@ -2596,7 +2631,11 @@ async def _convert_timelapse_to_mp4(
         await archive_media_runtime.own(
             f"convert:{archive_id}",
             _convert_timelapse_to_mp4_owned(
-                archive_id, source_path, expected_identity=expected_identity, expected_epoch=expected_epoch
+                archive_id,
+                source_path,
+                expected_identity=expected_identity,
+                expected_epoch=expected_epoch,
+                started_from=started_from,
             ),
         )
     except MediaAdmissionClosed:
@@ -2606,9 +2645,22 @@ async def _convert_timelapse_to_mp4(
 
 
 async def _convert_timelapse_to_mp4_owned(
-    archive_id: int, source_path: Path, *, expected_identity: str | None = None, expected_epoch: int | None = None
+    archive_id: int,
+    source_path: Path,
+    *,
+    expected_identity: str | None = None,
+    expected_epoch: int | None = None,
+    started_from: str | None = None,
 ) -> None:
     """The conversion itself.
+
+    ⚠️ It converts the video the archive SHOWS, and only that: on entry the
+    archive's pointer must name ``source_path`` (and, when the attach handed its
+    own publication in as ``started_from``, be that very publication). A
+    conversion queued for bytes that were replaced or removed meanwhile — the
+    old file can outlive its row, an open handle keeps it on disk — does not
+    start, and so can neither replace the newer video nor bring a removed one
+    back.
 
     Runs with low CPU priority (-threads 1, nice) so it doesn't starve
     other processes on resource-constrained devices like Raspberry Pi.
@@ -2642,8 +2694,23 @@ async def _convert_timelapse_to_mp4_owned(
         expected_identity = archive.recovery_identity
         # The video this conversion starts from. It runs for minutes; whatever
         # replaced or removed that video meanwhile wins, not the converter.
-        started_from = await archive_media.primary_token(db, archive)
+        shown_token = await archive_media.primary_token(db, archive)
+        shown_file = archive_media.contained(settings.base_dir, archive.timelapse_path)
+        if (
+            shown_file is None
+            or shown_file != source_path.resolve()
+            or (started_from is not None and started_from != shown_token)
+        ):
+            logger.info(
+                "Timelapse conversion for archive %s not started: %s is no longer the archive's video",
+                archive_id,
+                source_path.name,
+            )
+            return
+        started_from = shown_token
     expected_epoch = queue_sources.current_epoch() if expected_epoch is None else expected_epoch
+    if queue_sources.current_epoch() != expected_epoch:
+        return
     # ffmpeg writes to a staged name of its own; the seam gives it the real one.
     mp4_path = source_path.with_name(f".{uuid4().hex}.converting.mp4")
 
@@ -2719,10 +2786,9 @@ async def _convert_timelapse_to_mp4_owned(
                 result.refusal,
             )
             return
-        # The seam removed the source when it was the archive's video. A caller
-        # that converts a file the archive never showed still gets it cleaned up.
-        if source_path.exists():
-            source_path.unlink()
+        # The source was the archive's video (checked on entry and again by the
+        # seam's token), so the seam removed it after its commit — under its
+        # reference check, never by a second unlink here.
         try:
             from backend.app.core.websocket import ws_manager
 

@@ -295,6 +295,9 @@ class TestScanForTimelapseWithRetries:
         mock_printer.ip_address = "192.168.1.100"
         mock_printer.access_code = "12345678"
         mock_printer.model = "X1C"
+        # The scan claims the recording under the printer's immutable identity;
+        # a printer without one is claimable by nobody (G10 C).
+        mock_printer.connector_identity = "printer-identity"
 
         return mock_archive, mock_printer
 
@@ -540,6 +543,7 @@ class TestListTimelapseVideosAvi:
         mock_printer.ip_address = "192.168.1.100"
         mock_printer.access_code = "12345678"
         mock_printer.model = "P1S"
+        mock_printer.connector_identity = "printer-identity"
 
         mock_files = [
             {
@@ -568,6 +572,7 @@ class TestListTimelapseVideosAvi:
         mock_printer.ip_address = "192.168.1.100"
         mock_printer.access_code = "12345678"
         mock_printer.model = "P1S"
+        mock_printer.connector_identity = "printer-identity"
 
         mock_files = [
             {"name": "VIDEO.AVI", "is_directory": False, "size": 1000, "path": "/timelapse/VIDEO.AVI"},
@@ -596,6 +601,7 @@ class TestListTimelapseVideosAvi:
         mock_printer.ip_address = "192.168.1.100"
         mock_printer.access_code = "12345678"
         mock_printer.model = "P1S"
+        mock_printer.connector_identity = "printer-identity"
 
         baseline_files = []
         new_files = [
@@ -661,14 +667,32 @@ class TestConvertTimelapseToMp4:
         from sqlalchemy.ext.asyncio import async_sessionmaker
 
         from backend.app.core.config import settings
+        from backend.app.services import archive_media, queue_sources
         from backend.app.services.archive import _convert_timelapse_to_mp4
 
         printer = await printer_factory()
         archive = await archive_factory(printer.id, file_path="")
-        source = tmp_path / "video.avi"
-        source.write_bytes(b"avi")
-        output = source.with_suffix(".mp4")
+        archive_id, identity = archive.id, archive.recovery_identity
         monkeypatch.setattr(settings, "base_dir", tmp_path)
+        # The conversion converts the video the archive SHOWS (G10 C): the AVI is
+        # published first, as the attach publishes it.
+        staged_avi = tmp_path / ".upload.part"
+        staged_avi.write_bytes(b"avi")
+        published = await archive_media.publish_primary(
+            db_session,
+            archive_id,
+            staged=staged_avi,
+            directory=tmp_path,
+            filename="video.avi",
+            base_dir=tmp_path,
+            origin="upload",
+            expected_identity=identity,
+            expected_epoch=queue_sources.current_epoch(),
+            expected_token="none",
+        )
+        assert published.ok
+        source = tmp_path / "video.avi"
+        output = source.with_suffix(".mp4")
         monkeypatch.setattr(
             "backend.app.core.database.async_session", async_sessionmaker(test_engine, expire_on_commit=False)
         )
@@ -689,11 +713,12 @@ class TestConvertTimelapseToMp4:
 
         execute = AsyncMock(side_effect=run)
         monkeypatch.setattr("asyncio.create_subprocess_exec", execute)
-        await _convert_timelapse_to_mp4(archive.id, source, expected_identity=archive.recovery_identity)
+        await _convert_timelapse_to_mp4(archive_id, source, expected_identity=identity)
+        db_session.expire_all()
         await db_session.refresh(archive)
         assert source.exists() == bool(exit_code)
         assert output.exists() == (not exit_code)
-        assert archive.timelapse_path == (None if exit_code else "video.mp4")
+        assert archive.timelapse_path == ("video.avi" if exit_code else "video.mp4")
         assert "-threads" in execute.call_args.args
         assert staged[0] != output and staged[0].name.startswith(".")
         assert not staged[0].exists()  # published, or removed on failure: never left behind

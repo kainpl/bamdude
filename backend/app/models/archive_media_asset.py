@@ -24,6 +24,9 @@ from backend.app.core.database import Base
 ROLE_PRIMARY = "primary"  # the video ``timelapse_path`` points at; at most one per archive
 ROLE_VARIANT = "variant"  # another video of the same archive, kept beside it ("save as new")
 ROLE_RETIRED = "retired"  # replaced or removed; its file is waiting to be unlinked
+# A printer recording this archive downloaded, whose video has since been replaced: no local file
+# is implied, the row only keeps the claim (and the hash of the bytes that were downloaded).
+ROLE_RECEIPT = "receipt"
 
 ORIGIN_PRINTER = "printer"  # read off the printer's storage
 ORIGIN_UPLOAD = "upload"  # sent by an operator

@@ -48,6 +48,7 @@ _ID_KEYED = (
     ("backend.app.main", "_hms_last_seen"),
     ("backend.app.main", "_timelapse_baselines"),
     ("backend.app.main", "_untrusted_timelapse_baselines"),
+    ("backend.app.main", "_timelapse_baseline_owners"),
     ("backend.app.main", "_user_stopped_printers"),
     ("backend.app.main", "_inprint_frame_bank"),
     ("backend.app.main", "_inprint_frame_bank_ts"),

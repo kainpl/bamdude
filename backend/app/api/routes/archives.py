@@ -2057,6 +2057,7 @@ async def get_timelapse(
 @router.delete("/{archive_id}/timelapse")
 async def delete_timelapse(
     archive_id: int,
+    request: Request = None,
     db: AsyncSession = Depends(get_db),
     auth_result: tuple[User | None, bool] = Depends(
         require_ownership_permission(
@@ -2067,6 +2068,7 @@ async def delete_timelapse(
 ):
     """Remove the timelapse video from an archive."""
     user, can_modify_all = auth_result
+    authority = await _media_authority(request)
     result = await db.execute(select(PrintArchive).where(PrintArchive.id == archive_id))
     archive = _ensure_archive_visible(result.scalar_one_or_none(), user, can_modify_all)
 
@@ -2079,14 +2081,18 @@ async def delete_timelapse(
     from backend.app.services import archive_media, queue_sources
 
     identity = archive.recovery_identity
+    epoch = queue_sources.current_epoch()
     token = await archive_media.primary_token(db, archive)
     outcome = await archive_media.remove_primary(
         db,
         archive_id,
         base_dir=settings.base_dir,
         expected_identity=identity,
-        expected_epoch=queue_sources.current_epoch(),
+        expected_epoch=epoch,
         expected_token=token,
+        # Asked again inside the removal: the right the request was admitted with.
+        authority=authority,
+        permissions=((Permission.ARCHIVES_DELETE_ALL if can_modify_all else Permission.ARCHIVES_DELETE_OWN).value,),
     )
     if not outcome.ok:
         _refuse_media(outcome.refusal)
@@ -2127,6 +2133,24 @@ def _refuse_media(refusal: str | None) -> None:
             },
         )
     raise HTTPException(500, "Failed to attach timelapse")
+
+
+_MEDIA_WRITE = (Permission.ARCHIVES_UPDATE_ALL.value,)
+
+
+async def _media_authority(request: Request | None):
+    """The caller's frozen authority, captured before a video door's first long I/O (G10 C).
+
+    The publication seam asks the lifetime guard and the caller's rights again
+    with it, on its own session, immediately before it writes: an account
+    disabled, a session ended or a key retired while the video was being read
+    publishes nothing. ``None`` only for an in-process call that has no request.
+    """
+    if request is None:
+        return None
+    from backend.app.core.auth import capture_request_authority
+
+    return await capture_request_authority(request)
 
 
 async def _announce_media(archive_id: int) -> None:
@@ -2223,11 +2247,18 @@ def _refuse_when_the_printer_did_not_answer(printer) -> None:
 @router.post("/{archive_id}/timelapse/scan")
 async def scan_timelapse(
     archive_id: int,
+    request: Request = None,
     _: User | None = RequirePermission(Permission.ARCHIVES_UPDATE_ALL),
 ):
     """Scan printer for timelapse matching this archive and attach it."""
     from backend.app.core.database import async_session
     from backend.app.models.printer import Printer
+    from backend.app.services import archive_media, queue_sources
+
+    # Captured before the listing and the download: who asks, the storage
+    # epoch, and — below — the archive's incarnation and the video it shows.
+    authority = await _media_authority(request)
+    epoch = queue_sources.current_epoch()
 
     # Read the archive + printer in a short session and release the pooled DB
     # connection BEFORE the FTP scan/download below — a timelapse pull walks
@@ -2240,6 +2271,7 @@ async def scan_timelapse(
         if not archive:
             raise HTTPException(404, "Archive not found")
         archive_identity = archive.recovery_identity
+        started_from = await archive_media.primary_token(db, archive)
 
         if archive.timelapse_path:
             return {"status": "exists", "message": "Timelapse already attached"}
@@ -2390,8 +2422,12 @@ async def scan_timelapse(
             timelapse_data,
             matching_file["name"],
             expected_identity=archive_identity,
+            expected_epoch=epoch,
+            expected_token=started_from,
             origin="printer",
             remote=remote_source(printer, remote_path, matching_file),
+            authority=authority,
+            permissions=_MEDIA_WRITE,
         )
 
     if not success:
@@ -2411,11 +2447,17 @@ async def scan_timelapse(
 async def select_timelapse(
     archive_id: int,
     filename: str = Query(..., description="Timelapse filename to attach"),
+    request: Request = None,
     _: User | None = RequirePermission(Permission.ARCHIVES_UPDATE_ALL),
 ):
     """Manually select a timelapse from the printer to attach."""
     from backend.app.core.database import async_session
     from backend.app.models.printer import Printer
+    from backend.app.services import archive_media, queue_sources
+
+    # Captured before the listing and the download — see ``scan_timelapse``.
+    authority = await _media_authority(request)
+    epoch = queue_sources.current_epoch()
 
     # Read the archive + printer in a short session and release the pooled DB
     # connection BEFORE the FTP scan/download below (#2572); scalars stay
@@ -2425,6 +2467,7 @@ async def select_timelapse(
         if not archive:
             raise HTTPException(404, "Archive not found")
         archive_identity = archive.recovery_identity
+        started_from = await archive_media.primary_token(db, archive)
 
         if not archive.printer_id:
             raise HTTPException(400, "Archive has no associated printer")
@@ -2467,8 +2510,12 @@ async def select_timelapse(
             timelapse_data,
             filename,
             expected_identity=archive_identity,
+            expected_epoch=epoch,
+            expected_token=started_from,
             origin="printer",
             remote=remote_source(printer, remote_path, chosen),
+            authority=authority,
+            permissions=_MEDIA_WRITE,
         )
     if not success:
         _refuse_media(service.media_refusal)
@@ -2487,15 +2534,24 @@ async def select_timelapse(
 async def upload_timelapse(
     archive_id: int,
     file: UploadFile = File(...),
+    request: Request = None,
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.ARCHIVES_UPDATE_ALL),
 ):
     """Manually upload a timelapse video to an archive."""
+    from backend.app.services import archive_media, queue_sources
+
+    # Captured before the body is read: who asks, the storage epoch, the
+    # archive's incarnation and the video it shows. An upload that takes a
+    # minute to arrive does not win over what happened during that minute.
+    authority = await _media_authority(request)
+    epoch = queue_sources.current_epoch()
     service = ArchiveService(db)
     archive = await service.get_archive(archive_id)
     if not archive:
         raise HTTPException(404, "Archive not found")
     archive_identity = archive.recovery_identity
+    started_from = await archive_media.primary_token(db, archive)
 
     if not file.filename or not file.filename.endswith((".mp4", ".avi", ".mkv")):
         raise HTTPException(400, "File must be a video file (.mp4, .avi, .mkv)")
@@ -2503,7 +2559,15 @@ async def upload_timelapse(
     content = await file.read()
     safe_name = _safe_filename(file.filename)
     success = await service.attach_timelapse(
-        archive_id, content, safe_name, expected_identity=archive_identity, origin="upload"
+        archive_id,
+        content,
+        safe_name,
+        expected_identity=archive_identity,
+        expected_epoch=epoch,
+        expected_token=started_from,
+        origin="upload",
+        authority=authority,
+        permissions=_MEDIA_WRITE,
     )
 
     if not success:

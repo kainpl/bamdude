@@ -124,6 +124,14 @@ async def _refused():
     return DeleteResult.FAILED
 
 
+def _committed_copy():
+    """An archive holds a committed copy of ``b"video"`` from the path under test (G10 C2-3)."""
+    return patch(
+        "backend.app.services.timelapse_files._committed_copy_hashes",
+        new=AsyncMock(return_value={hashlib.sha256(b"video").hexdigest()}),
+    )
+
+
 class TestTheAnswerIsRead:
     async def test_a_copy_the_printer_did_not_delete_is_not_counted(self):
         from backend.app.services.printer_cleanup import remove_verified_copies
@@ -145,10 +153,13 @@ class TestTheAnswerIsRead:
 
         device = SimpleNamespace(id=1, name="X2D", model="X2D")
         for answer, expected in ((DeleteResult.FAILED, False), (DeleteResult.DELETED, True)):
-            transport = SimpleNamespace(delete=AsyncMock(return_value=answer))
+            transport = SimpleNamespace(
+                delete=AsyncMock(return_value=answer), read_bytes=AsyncMock(return_value=b"video")
+            )
             with (
                 patch("backend.app.api.routes.settings.get_setting", new=AsyncMock(return_value="true")),
                 patch("backend.app.services.printer_files.factory.transport_for", return_value=transport),
+                _committed_copy(),
             ):
                 assert await remove_recording_after_attach(device, "/timelapse/video.mp4") is expected
             assert transport.delete.await_args.kwargs["may_run"]() is True
@@ -168,8 +179,9 @@ class TestTheAnswerIsRead:
             patch("backend.app.api.routes.settings.get_setting", new=AsyncMock(return_value="true")),
             patch(
                 "backend.app.services.printer_files.factory.transport_for",
-                return_value=SimpleNamespace(delete=delete),
+                return_value=SimpleNamespace(delete=delete, read_bytes=AsyncMock(return_value=b"video")),
             ),
+            _committed_copy(),
         ):
             assert await remove_recording_after_attach(device, "/timelapse/video.mp4") is False
         assert seen == {"allowed": False}

@@ -34,6 +34,7 @@ class _Printer:
     ip_address = "127.0.0.1"
     access_code = "12345678"
     model = "P1S"
+    connector_identity = "printer-identity"
 
 
 @pytest.fixture(autouse=True)
@@ -162,7 +163,8 @@ async def test_a_baseline_off_an_answering_card_is_trusted():
     with patch("backend.app.main._list_timelapse_videos", side_effect=answered):
         await main._capture_timelapse_baseline_at_start(_Printer(), _Printer.id, MagicMock())
 
-    assert main._timelapse_baselines[_Printer.id] == {"old.mp4"}
+    # One recording on one medium: the storage and the path, not the bare name (G10 C3).
+    assert main._timelapse_baselines[_Printer.id] == {"external:/timelapse/old.mp4"}
     assert _Printer.id not in main._untrusted_timelapse_baselines
 
 

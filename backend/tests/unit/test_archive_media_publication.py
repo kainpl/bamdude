@@ -47,6 +47,9 @@ def _staged(base, data=b"video") -> object:
 async def _publish(db, base, archive, *, name="v.mp4", data=b"video", **over):
     directory = base / "archive" / "timelapse" / archive.recovery_identity
     directory.mkdir(parents=True, exist_ok=True)
+    if "expected_token" not in over:
+        # The seam has no default: a caller captures the video it starts from.
+        over["expected_token"] = await _token_of(db, archive)
     staged = _staged(base, data)
     result = await archive_media.publish_primary(
         db,

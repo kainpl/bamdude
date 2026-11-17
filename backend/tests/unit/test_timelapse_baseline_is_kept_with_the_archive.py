@@ -12,6 +12,17 @@ def _v(name: str) -> dict:
     return {"name": name, "is_directory": False, "size": 1, "path": f"/timelapse/{name}"}
 
 
+#: The address the mocked scan below expects: its archive, its printer, its storage epoch.
+ADDRESS = tb.Address("ID-1", "P-1", "E-1")
+
+
+def _kept(*names: str, trusted: bool = True, taken: str = tb.TAKEN_AT_START, address=ADDRESS) -> dict:
+    """A record as the capture stores it: one entry per recording, addressed."""
+    return {
+        tb.KEY: tb.record(set(names), trusted=trusted, taken=taken, entries=[_v(n) for n in names], address=address)
+    }
+
+
 class TestTheStoredRecord:
     def test_it_round_trips(self):
         stored = tb.record({"b.mp4", "a.mp4"}, trusted=True, taken=tb.TAKEN_AT_START)
@@ -55,7 +66,9 @@ class TestSaving:
     async def test_it_lands_in_the_archive_and_keeps_what_was_there(self, db_session, archive_factory, printer_factory):
         from backend.app.models.archive import PrintArchive
 
-        archive = await archive_factory((await printer_factory()).id, file_path="", extra_data={"other": 1})
+        archive = await archive_factory(
+            (await printer_factory()).id, file_path="", extra_data={"other": 1}, status="printing"
+        )
         archive_id, identity = archive.id, archive.recovery_identity
 
         assert await tb.save(db_session, archive_id, identity, tb.record({"a.mp4"}, trusted=True, taken="start"))
@@ -90,6 +103,7 @@ def _scan_env(videos, *, extra_data=None):
     session.__aenter__ = AsyncMock(return_value=session)
     session.__aexit__ = AsyncMock(return_value=False)
     session.execute = AsyncMock(return_value=MagicMock(scalar_one_or_none=MagicMock(return_value=printer)))
+    session.get = AsyncMock(return_value=printer)
     service = MagicMock()
     service.get_archive = AsyncMock(return_value=archive)
     service.attach_timelapse = AsyncMock(return_value=True)
@@ -109,6 +123,8 @@ async def _scan(videos, *, baseline=None, extra_data=None, may_run=None, trusted
         patch("backend.app.main.ArchiveService", return_value=service),
         patch("backend.app.main.read_timelapse_video", new=AsyncMock(return_value=b"video")) as read,
         patch("backend.app.main.remove_recording_after_attach", new=AsyncMock()) as remove,
+        patch("backend.app.services.timelapse_baseline.storage_epoch", new=AsyncMock(return_value="E-1")),
+        patch("backend.app.services.archive_media.primary_token", new=AsyncMock(return_value="none")),
     ):
         await main._scan_for_timelapse_with_retries(1, baseline, baseline_trusted=trusted, may_run=may_run)
     return SimpleNamespace(service=service, listing=listing, read=read, remove=remove)
@@ -118,15 +134,34 @@ class TestTheScanAfterARestart:
     """M10: memory lost the baseline; the archive did not."""
 
     async def test_the_archives_baseline_is_used(self):
-        kept = {tb.KEY: tb.record({"old.mp4"}, trusted=True, taken=tb.TAKEN_AT_START)}
-        ran = await _scan([_v("old.mp4"), _v("ours.mp4")], extra_data=kept)
+        ran = await _scan([_v("old.mp4"), _v("ours.mp4")], extra_data=_kept("old.mp4"))
         ran.service.attach_timelapse.assert_awaited_once()
         assert ran.service.attach_timelapse.await_args.args[2] == "ours.mp4"
 
+    @pytest.mark.parametrize(
+        "address",
+        [
+            tb.Address("ANOTHER-ARCHIVE", "P-1", "E-1"),  # an earlier archive that had this id
+            tb.Address("ID-1", "ANOTHER-PRINTER", "E-1"),  # the printer row was replaced
+            tb.Address("ID-1", "P-1", "BEFORE-THE-RESTORE"),  # the storage was restored since
+            None,  # a record from before the address existed
+        ],
+    )
+    async def test_a_record_of_another_address_is_no_boundary(self, address):
+        """C3-2: a list proves something only for the execution, printer and epoch it was taken in."""
+        ran = await _scan([_v("old.mp4"), _v("ours.mp4")], extra_data=_kept("old.mp4", address=address))
+        ran.service.attach_timelapse.assert_not_called()
+        ran.listing.assert_not_called()
+
+    async def test_the_same_name_on_another_medium_is_another_recording(self):
+        """``a.mp4`` on the card at the start does not make internal storage's ``a.mp4`` old."""
+        internal = {"name": "a.mp4", "is_directory": False, "size": 1, "path": "/userdata/media/timelapse/a.mp4"}
+        ran = await _scan([internal], extra_data=_kept("a.mp4"))
+        ran.service.attach_timelapse.assert_awaited_once()
+
     async def test_an_unread_baseline_stays_unread_across_the_restart(self):
         """The restart does not turn "the card did not answer" into "the card was empty"."""
-        kept = {tb.KEY: tb.record(set(), trusted=False, taken=tb.TAKEN_AT_START)}
-        ran = await _scan([_v("old.mp4")], extra_data=kept)
+        ran = await _scan([_v("old.mp4")], extra_data=_kept(trusted=False))
         ran.service.attach_timelapse.assert_not_called()
         ran.read.assert_not_called()
         ran.remove.assert_not_called()
@@ -139,13 +174,16 @@ class TestTheScanAfterARestart:
         ran.read.assert_not_called()
 
     async def test_a_late_baseline_makes_what_existed_then_not_new(self):
-        kept = {tb.KEY: tb.record({"old.mp4", "ours.mp4"}, trusted=True, taken=tb.TAKEN_LATE)}
-        ran = await _scan([_v("old.mp4"), _v("ours.mp4")], extra_data=kept)
+        ran = await _scan([_v("old.mp4"), _v("ours.mp4")], extra_data=_kept("old.mp4", "ours.mp4", taken=tb.TAKEN_LATE))
         ran.service.attach_timelapse.assert_not_called()
+        ran.listing.assert_awaited()  # the boundary was accepted; nothing was new
 
     async def test_the_baseline_in_memory_outranks_the_stored_one(self):
-        kept = {tb.KEY: tb.record(set(), trusted=False, taken=tb.TAKEN_LATE)}
-        ran = await _scan([_v("old.mp4"), _v("ours.mp4")], baseline={"old.mp4"}, extra_data=kept)
+        ran = await _scan(
+            [_v("old.mp4"), _v("ours.mp4")],
+            baseline={"old.mp4"},
+            extra_data=_kept(trusted=False, taken=tb.TAKEN_LATE),
+        )
         ran.service.attach_timelapse.assert_awaited_once()
 
 
