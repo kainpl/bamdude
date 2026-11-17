@@ -134,6 +134,19 @@ describe('ArchiveMediaDownloadModal', () => {
     expect(screen.getByText("You do not have access to this printer's files.")).toBeInTheDocument();
     fireEvent.click(screen.getByText('Lamp.mp4'));
     expect(screen.getByText('1 file selected')).toBeInTheDocument();
+    // One list could still be read, so the clock settings stay.
+    expect(screen.getByTestId('archive-media-clock')).toBeInTheDocument();
+  });
+
+  it('hides the clock settings when no list of the printer can be shown at all', async () => {
+    answer = sources({
+      printer_id: null,
+      timelapse: { status: 'no_printer', items: [] },
+      camera: { status: 'no_printer', items: [] },
+    });
+    await open();
+    expect(screen.queryByTestId('archive-media-clock')).not.toBeInTheDocument();
+    expect(screen.getAllByText('The printer of this archive is no longer configured.')).toHaveLength(2);
   });
 
   it('asks the server again only when the offset is applied, in minutes', async () => {

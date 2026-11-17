@@ -129,6 +129,9 @@ export function ArchiveMediaDownloadModal({ archiveId, archiveName, onClose }: A
     });
   }, [data, offered]);
 
+  const closed = (status: MediaSourceStatus) => status === 'no_printer' || status === 'forbidden';
+  const remoteClosed = data ? closed(data.timelapse.status) && closed(data.camera.status) : false;
+
   const click = (section: string, order: string[], key: string, shift: boolean) => {
     const next = clickSelection(selected, order, anchors[section] ?? null, key, shift);
     setSelected(next.selected);
@@ -218,12 +221,12 @@ export function ArchiveMediaDownloadModal({ archiveId, archiveName, onClose }: A
         }
       >
         {isLoading ? (
-          <div className="flex items-center justify-center gap-2 py-10 text-bambu-gray">
+          <div className="flex items-center justify-center gap-2 p-4 py-10 text-bambu-gray">
             <Loader2 className="w-5 h-5 animate-spin" />
             {t('archives.media.searching')}
           </div>
         ) : isError || !data ? (
-          <div className="py-10 text-center text-sm text-bambu-gray" data-testid="archive-media-error">
+          <div className="p-4 py-10 text-center text-sm text-bambu-gray" data-testid="archive-media-error">
             {t('archives.media.searchFailed')}
             <div className="mt-3">
               <Button variant="secondary" size="sm" onClick={() => void refetch()}>
@@ -233,10 +236,12 @@ export function ArchiveMediaDownloadModal({ archiveId, archiveName, onClose }: A
             </div>
           </div>
         ) : (
-          <div className="space-y-5">
+          <div className="space-y-5 p-4">
             <LocalSection data={data} selected={selected} onClick={click} onMany={setMany} />
 
-            <div className="rounded-lg border border-bambu-dark-tertiary p-3 text-sm">
+            {/* The clock settings only matter where the printer's files can be listed at all. */}
+            {!remoteClosed && (
+            <div className="rounded-lg border border-bambu-dark-tertiary p-3 text-sm" data-testid="archive-media-clock">
               <div className="flex flex-wrap items-end gap-4">
                 <label className="flex flex-col gap-1">
                   <span className="text-xs text-bambu-gray">{t('archives.media.offsetLabel')}</span>
@@ -288,6 +293,7 @@ export function ArchiveMediaDownloadModal({ archiveId, archiveName, onClose }: A
                 {data.window ? t('archives.media.windowHint') : t('archives.media.noWindow')}
               </p>
             </div>
+            )}
 
             <RemoteSection
               section="timelapse"
