@@ -9,7 +9,12 @@ from sqlalchemy.ext.asyncio import create_async_engine
 
 from backend.app.migrations import helpers, m235_manyfold_permissions_import_meta as migration
 from backend.app.models.library_file_import_meta import LibraryFileImportMeta
-from backend.tests.integration.test_postgres_scenarios import _async_url, _pg_url, _wipe
+from backend.tests.integration.test_postgres_scenarios import (
+    _async_url,
+    _pg_url,
+    _serialize_shared_postgres_target,  # noqa: F401 — shared scratch PG under xdist
+    _wipe,
+)
 
 pytestmark = [pytest.mark.integration, pytest.mark.postgres]
 
