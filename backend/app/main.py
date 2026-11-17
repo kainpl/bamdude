@@ -12670,6 +12670,15 @@ async def _application_lifespan(app: FastAPI):
         await start_part_render(Path(app_settings.base_dir), Path(app_settings.app_dir))
     except Exception:
         logging.getLogger(__name__).exception("Part render service unavailable at startup")
+    # What a killed process left of a streamed model import (its own old ``.part`` files only).
+    try:
+        from backend.app.services import model_import
+
+        swept = await asyncio.to_thread(model_import.sweep_stale_staging, create=False)
+        if swept:
+            logging.getLogger(__name__).info("Removed %d unfinished model import file(s)", swept)
+    except Exception:
+        logging.getLogger(__name__).exception("Model import staging sweep failed at startup")
 
     yield
 

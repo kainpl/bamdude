@@ -59,6 +59,8 @@ class SourceStatus(BaseModel):
     usable: bool
     #: The source's own address, for "open there" links. None when it has none to show.
     base_url: str | None = None
+    #: Streamed imports of the installation right now: ``{"active", "waiting", "limit"}``.
+    imports: dict[str, int] = {}
 
 
 class SourceModelSummary(BaseModel):
@@ -183,6 +185,7 @@ def make_source_router(provider: ModelProvider) -> APIRouter:
             configured=state.configured,
             usable=state.can_download,
             base_url=getattr(service, "_base", None) or None,
+            imports=model_import.import_load(),
         )
 
     @router.get("/models", response_model=SourceModelPage)

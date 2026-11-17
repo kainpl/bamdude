@@ -16,15 +16,33 @@ they are; each route maps them to its own HTTP answers.
 A provider that ``streams_downloads`` writes the file to a staging file outside
 library storage and the ingest door adopts it — the bytes are never held in
 memory. A provider that does not (MakerWorld) hands its bytes over as before.
+
+A streamed import is bounded (review MB-I4):
+
+* it is staged in ``DATA_DIR/model-imports/`` — the app's own disk, normally the
+  library's filesystem (adoption is then a rename), never the system temp
+  directory, which is RAM under systemd's ``PrivateTmp`` on a tmpfs ``/tmp``;
+* free space is asked for before the download starts and a disk that fills
+  later is the same refusal — 507 ``storage_full``;
+* at most ``MAX_CONCURRENT_IMPORTS`` stream at once in the installation; the
+  rest wait their turn for ``IMPORT_QUEUE_WAIT_SECONDS``, then 503
+  ``source_import_busy``;
+* every path removes its staging file, and what a killed process left is swept
+  at start-up: only ``model-import-*.part`` files of that directory, older
+  than any import can run.
 """
 
 from __future__ import annotations
 
 import asyncio
+import errno
 import logging
 import os
-import tempfile
-from collections.abc import Awaitable, Callable
+import shutil
+import time
+import uuid
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -45,6 +63,111 @@ from backend.app.services.model_providers.base import (
 )
 
 logger = logging.getLogger(__name__)
+
+STAGING_DIRNAME = "model-imports"
+STAGING_PREFIX = "model-import-"
+#: Streamed imports in flight per installation; the rest queue.
+MAX_CONCURRENT_IMPORTS = 2
+#: How long a queued import waits for its turn before it is refused (503).
+IMPORT_QUEUE_WAIT_SECONDS = 120.0
+#: Free space kept beyond the file's declared size (or asked for alone when it declares none).
+SPACE_RESERVE_BYTES = 64 * 1024 * 1024
+#: A staging file older than this belongs to no running import (a download may take 30 minutes).
+STALE_STAGING_SECONDS = 6 * 3600.0
+
+STORAGE_FULL = "The server has no space left for this file."
+IMPORTS_BUSY = "Other imports are still running. Try again in a few minutes."
+
+_slots: asyncio.Semaphore | None = None
+_slots_loop: asyncio.AbstractEventLoop | None = None
+_active = 0
+_waiting = 0
+
+
+def staging_dir() -> Path:
+    from backend.app.core.config import settings
+
+    path = Path(settings.base_dir) / STAGING_DIRNAME
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def new_staging_file() -> Path:
+    """A name for one import's bytes; the file itself is created by the download."""
+    return staging_dir() / f"{STAGING_PREFIX}{uuid.uuid4().hex}.part"
+
+
+def sweep_stale_staging(*, create: bool = True) -> int:
+    """Remove what a dead process left: our own old ``.part`` files, nothing else. Returns the count."""
+    from backend.app.core.config import settings
+
+    directory = staging_dir() if create else Path(settings.base_dir) / STAGING_DIRNAME
+    removed = 0
+    limit = time.time() - STALE_STAGING_SECONDS
+    try:
+        entries = list(os.scandir(directory))
+    except OSError:
+        return 0
+    for entry in entries:
+        try:
+            if (
+                entry.name.startswith(STAGING_PREFIX)
+                and entry.name.endswith(".part")
+                and entry.is_file(follow_symlinks=False)
+                and entry.stat(follow_symlinks=False).st_mtime < limit
+            ):
+                os.unlink(entry.path)
+                removed += 1
+        except OSError:
+            continue
+    return removed
+
+
+def storage_full() -> HTTPException:
+    return HTTPException(status_code=507, detail={"error": "storage_full", "message": STORAGE_FULL})
+
+
+def ensure_space(size: int | None) -> None:
+    """Refuse (507) unless the staging disk has room for ``size`` bytes and the reserve."""
+    try:
+        free = shutil.disk_usage(staging_dir()).free
+    except OSError:
+        return  # a filesystem that will not say: the write itself answers
+    if free < (size or 0) + SPACE_RESERVE_BYTES:
+        raise storage_full()
+
+
+def import_load() -> dict[str, int]:
+    """Streamed imports right now: running, waiting for a slot, and the limit."""
+    return {"active": _active, "waiting": _waiting, "limit": MAX_CONCURRENT_IMPORTS}
+
+
+@asynccontextmanager
+async def import_slot() -> AsyncIterator[None]:
+    """One of the installation's import slots, waited for at most ``IMPORT_QUEUE_WAIT_SECONDS``."""
+    global _slots, _slots_loop, _active, _waiting
+    loop = asyncio.get_running_loop()
+    if _slots is None or _slots_loop is not loop:
+        _slots, _slots_loop, _active, _waiting = asyncio.Semaphore(MAX_CONCURRENT_IMPORTS), loop, 0, 0
+    gate = _slots
+    _waiting += 1
+    try:
+        async with asyncio.timeout(IMPORT_QUEUE_WAIT_SECONDS):
+            await gate.acquire()
+    except TimeoutError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={"error": "source_import_busy", "message": IMPORTS_BUSY},
+            headers={"Retry-After": "60"},
+        ) from exc
+    finally:
+        _waiting -= 1
+    _active += 1
+    try:
+        yield
+    finally:
+        _active -= 1
+        gate.release()
 
 
 @dataclass
@@ -193,17 +316,21 @@ async def import_resource(
         "publication_check": publication_check,
     }
     if service.streams_downloads:
-        # Outside library storage: nothing is written there except by the ingest door itself.
-        handle, staged_name = tempfile.mkstemp(prefix="bamdude-model-import-", suffix=".part")
-        os.close(handle)
-        staged = Path(staged_name)
-        try:
-            await service.download_to(info, staged)
-            filename = filename_for(info)
-            validate_print_file_upload(filename, await asyncio.to_thread(_head, staged))
-            result = await save_3mf_bytes_to_library(db, content=None, staged=staged, filename=filename, **common)
-        finally:
-            await asyncio.to_thread(staged.unlink, True)
+        async with import_slot():
+            # Outside library storage: nothing is written there except by the ingest door itself.
+            await asyncio.to_thread(ensure_space, info.size)
+            staged = await asyncio.to_thread(new_staging_file)
+            try:
+                await service.download_to(info, staged)
+                filename = filename_for(info)
+                validate_print_file_upload(filename, await asyncio.to_thread(_head, staged))
+                result = await save_3mf_bytes_to_library(db, content=None, staged=staged, filename=filename, **common)
+            except OSError as exc:
+                if exc.errno == errno.ENOSPC:
+                    raise storage_full() from exc
+                raise
+            finally:
+                await asyncio.to_thread(staged.unlink, True)
     else:
         download = await service.download(info)
         result = await save_3mf_bytes_to_library(db, content=download.file_bytes, filename=filename_for(info), **common)

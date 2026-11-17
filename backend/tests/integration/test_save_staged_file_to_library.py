@@ -46,3 +46,30 @@ async def test_the_same_bytes_staged_again_are_deduplicated_like_any_other(db_se
     second.write_bytes(STL)
     again = await save_3mf_bytes_to_library(db_session, content=None, staged=second, filename="copy.stl")
     assert again.outcome == "deduped" and again.file.id == created.file.id
+
+
+def test_a_copy_that_fails_half_way_leaves_no_partial_library_file(tmp_path, monkeypatch):
+    """Review MB-I4: staging on another filesystem is copied — a full destination must leave nothing."""
+    import errno
+    import os
+    import shutil
+
+    from backend.app.api.routes import library
+
+    staged, target = tmp_path / "in.part", tmp_path / "library" / "uuid.stl"
+    target.parent.mkdir()
+    staged.write_bytes(STL)
+
+    def cross_device(_source, _destination):
+        raise OSError(errno.EXDEV, "Invalid cross-device link")
+
+    def fills(source, destination):
+        Path(destination).write_bytes(Path(source).read_bytes()[:10])
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    monkeypatch.setattr(os, "replace", cross_device)
+    monkeypatch.setattr(shutil, "copyfile", fills)
+    with pytest.raises(OSError) as caught:
+        library._adopt_staged(target, staged)
+    assert caught.value.errno == errno.ENOSPC
+    assert not target.exists()

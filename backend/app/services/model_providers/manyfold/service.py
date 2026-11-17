@@ -719,7 +719,7 @@ class ManyfoldService(ProviderService, BrowsableService):
         enriched = ProviderResourceRef(
             source_type=SOURCE_TYPE, external_id=file["model_id"], sub_id=file["id"], original_url=page
         )
-        return ProviderDownloadInfo(ref=enriched, url=page, suggested_filename=file["filename"])
+        return ProviderDownloadInfo(ref=enriched, url=page, suggested_filename=file["filename"], size=file["size"])
 
     async def download_to(self, info: ProviderDownloadInfo, destination: Path) -> int:
         # The path comes from the ids of ``info.ref`` again — ``info.url`` is never fetched.

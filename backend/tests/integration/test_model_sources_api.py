@@ -176,6 +176,7 @@ class TestCatalogue:
             "configured": False,
             "usable": False,
             "base_url": None,
+            "imports": {"active": 0, "waiting": 0, "limit": 2},
         }
         await connect(async_client)
         assert (await async_client.get(f"{API}/status")).json()["usable"] is True
@@ -417,3 +418,89 @@ class TestProvenance:
         assert upload.status_code == 200, upload.text
         details = (await async_client.get(f"/api/v1/library/files/{upload.json()['id']}")).json()
         assert details["import_origin"] is None
+
+
+class TestImportBounds:
+    """Review MB-I4: where the bytes are staged, how much disk and how many at once."""
+
+    def staging_files(self) -> list[Path]:
+        from backend.app.services import model_import
+
+        return sorted(model_import.staging_dir().iterdir())
+
+    async def test_the_download_is_staged_in_the_data_directory_and_nothing_is_left(self, async_client, fake):
+        await connect(async_client)
+        seen: list[Path] = []
+        real = manyfold.ManyfoldService.download_to
+
+        async def recorded(self, info, destination):
+            seen.append(Path(destination))
+            return await real(self, info, destination)
+
+        manyfold.ManyfoldService.download_to = recorded
+        try:
+            response = await async_client.post(f"{API}/import", json={"model_id": MODEL, "file_id": STL_FILE})
+        finally:
+            manyfold.ManyfoldService.download_to = real
+        assert response.status_code == 200, response.text
+        (staged,) = seen
+        assert staged.parent == Path(app_settings.base_dir) / "model-imports"
+        assert self.staging_files() == []
+
+    async def test_no_room_is_a_507_before_a_byte_is_asked_for(self, async_client, fake, db_session, monkeypatch):
+        import shutil
+        from collections import namedtuple
+
+        await connect(async_client)
+        usage = namedtuple("usage", "total used free")
+        monkeypatch.setattr(shutil, "disk_usage", lambda path: usage(10**9, 10**9, 4096))
+        response = await async_client.post(f"{API}/import", json={"model_id": MODEL, "file_id": STL_FILE})
+        assert response.status_code == 507, response.text
+        assert response.json()["detail"]["error"] == "storage_full"
+        assert not any("/raw/" in path for path in fake.paths())
+        assert (await db_session.execute(select(LibraryFile))).all() == []
+
+    async def test_a_disk_that_fills_during_the_download_is_a_507_and_leaves_no_partial_file(
+        self, async_client, fake, db_session
+    ):
+        import errno
+
+        await connect(async_client)
+        real = manyfold.ManyfoldService.download_to
+
+        async def fills(self, info, destination):
+            Path(destination).write_bytes(b"half a file")
+            raise OSError(errno.ENOSPC, "No space left on device")
+
+        manyfold.ManyfoldService.download_to = fills
+        try:
+            response = await async_client.post(f"{API}/import", json={"model_id": MODEL, "file_id": STL_FILE})
+        finally:
+            manyfold.ManyfoldService.download_to = real
+        assert response.status_code == 507, response.text
+        assert response.json()["detail"]["error"] == "storage_full"
+        assert self.staging_files() == []
+        assert (await db_session.execute(select(LibraryFile))).all() == []
+
+    async def test_a_refused_download_leaves_no_partial_file(self, async_client, fake):
+        await connect(async_client)
+        fake.storage_redirect, fake.storage_status = True, 403
+        response = await async_client.post(f"{API}/import", json={"model_id": MODEL, "file_id": STL_FILE})
+        assert response.status_code == 502, response.text
+        assert self.staging_files() == []
+
+    async def test_a_third_import_waits_then_answers_503(self, async_client, fake, db_session, monkeypatch):
+        from backend.app.services import model_import
+
+        await connect(async_client)
+        monkeypatch.setattr(model_import, "IMPORT_QUEUE_WAIT_SECONDS", 0.05)
+        async with model_import.import_slot(), model_import.import_slot():
+            status = (await async_client.get(f"{API}/status")).json()
+            assert status["imports"] == {"active": 2, "waiting": 0, "limit": 2}
+            response = await async_client.post(f"{API}/import", json={"model_id": MODEL, "file_id": STL_FILE})
+        assert response.status_code == 503, response.text
+        assert response.json()["detail"]["error"] == "source_import_busy"
+        assert not any("/raw/" in path for path in fake.paths())
+        assert (await db_session.execute(select(LibraryFile))).all() == []
+        again = await async_client.post(f"{API}/import", json={"model_id": MODEL, "file_id": STL_FILE})
+        assert again.status_code == 200, again.text

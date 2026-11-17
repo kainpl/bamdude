@@ -140,6 +140,8 @@ class ProviderDownloadInfo:
     ref: ProviderResourceRef
     url: str
     suggested_filename: str
+    #: The size the source declares, when it does (asked of the disk before a streamed download).
+    size: int | None = None
 
 
 @dataclass

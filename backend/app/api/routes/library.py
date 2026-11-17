@@ -644,12 +644,17 @@ def _adopt_staged(path: Path, staged: Path) -> int:
     The staging file lies outside library storage, so this — a worker thread's job, owned by
     ``upload_writes`` like every initial write — is the only moment the import touches it. A rename
     when both are on one filesystem, a copy otherwise; the staging file is gone either way.
+    A copy that fails half-way (a full disk) leaves no partial file at the library path.
     """
     size = staged.stat().st_size
     try:
         os.replace(staged, path)
     except OSError:
-        shutil.copyfile(staged, path)
+        try:
+            shutil.copyfile(staged, path)
+        except BaseException:
+            path.unlink(missing_ok=True)
+            raise
         staged.unlink(missing_ok=True)
     return size
 
