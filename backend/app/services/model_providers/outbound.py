@@ -57,6 +57,7 @@ import socket
 import ssl
 import threading
 from collections.abc import AsyncIterator, Mapping
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -195,9 +196,19 @@ def address_refusal(text: str, *, public_only: bool) -> str | None:
     return None
 
 
+#: Name resolution has threads of its own: a resolver that hangs on a slow authoritative server
+#: parks at most these, never the loop's shared pool that file work and hashing run on.
+_resolver = ThreadPoolExecutor(max_workers=4, thread_name_prefix="model-source-dns")
+DNS_DEADLINE_SECONDS = 10.0
+
+
 async def resolve_host(host: str, port: int) -> list[str]:
-    """Every address the system resolver gives for ``host`` (off the loop: the default executor)."""
-    infos = await asyncio.get_running_loop().getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    """Every address the system resolver gives for ``host``. ``OSError`` when it fails or takes too long."""
+    lookup = asyncio.get_running_loop().run_in_executor(
+        _resolver, lambda: socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    )
+    async with asyncio.timeout(DNS_DEADLINE_SECONDS):  # TimeoutError is an OSError
+        infos = await lookup
     return list(dict.fromkeys(info[4][0] for info in infos))
 
 
