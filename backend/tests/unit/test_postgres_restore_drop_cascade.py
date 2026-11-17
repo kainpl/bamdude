@@ -26,11 +26,13 @@ from backend.app.core.db_portable import import_sqlite_to_postgres
 
 
 def _make_minimal_sqlite(tmp_path: Path) -> Path:
-    """Build a tiny SQLite DB with one table so the import path runs through."""
+    """One user table plus supported migration history for the focused importer test."""
     src = tmp_path / "src.db"
     conn = sqlite3.connect(str(src))
     conn.execute("CREATE TABLE printers (id INTEGER PRIMARY KEY, name TEXT)")
     conn.execute("INSERT INTO printers (id, name) VALUES (1, 'p1')")
+    conn.execute("CREATE TABLE _migrations(version INTEGER)")
+    conn.execute("INSERT INTO _migrations VALUES(41)")
     conn.commit()
     conn.close()
     return src

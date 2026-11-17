@@ -7,6 +7,7 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     LargeBinary,
     String,
@@ -202,3 +203,7 @@ class UserOIDCLink(Base):
 
     def __repr__(self) -> str:
         return f"<UserOIDCLink user_id={self.user_id} provider_id={self.provider_id}>"
+
+
+# Canonical declarations also carry migration-owned indexes into portable DDL.
+Index("ix_oidc_providers_default_group_id", OIDCProvider.default_group_id)

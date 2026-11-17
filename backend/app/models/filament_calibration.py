@@ -21,7 +21,7 @@ different K values for the same material.
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text, func
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text, func, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from backend.app.core.database import Base
@@ -84,3 +84,16 @@ class FilamentCalibration(Base):
             "extruder_id",
         ),
     )
+
+
+Index(
+    "ux_filament_cali_active",
+    FilamentCalibration.printer_id,
+    FilamentCalibration.filament_id,
+    FilamentCalibration.nozzle_diameter,
+    FilamentCalibration.nozzle_volume_type,
+    FilamentCalibration.extruder_id,
+    unique=True,
+    sqlite_where=text("is_active = TRUE"),
+    postgresql_where=text("is_active = TRUE"),
+)

@@ -204,7 +204,7 @@ class Settings(BaseSettings):
     embedded_pg_port: int = _embedded_pg_port
     embedded_pg_data_dir: Path | None = _embedded_pg_paths(_data_dir)[0] if _embedded_db else None
     embedded_pg_password_file: Path | None = _embedded_pg_paths(_data_dir)[1] if _embedded_db else None
-    # max_connections of the bundled server; the pool (20 + 80) plus a margin.
+    # max_connections of the bundled server; the default pool (20 + 60) plus a margin.
     embedded_pg_max_connections: int = int(os.environ.get("EMBEDDED_PG_MAX_CONNECTIONS") or "120")
     # The bundled server is registered as its own OS service (the Windows
     # installer's BamDudePostgres, run by the SCM) rather than started as a child
@@ -219,16 +219,19 @@ class Settings(BaseSettings):
     )
 
     # Database connection-pool sizing. ``None`` = use the built-in, dialect-aware
-    # default (PostgreSQL: pool_size 20 + max_overflow 80 + pre-ping + recycle
+    # default (PostgreSQL: pool_size 20 + max_overflow 60 + pre-ping + recycle
     # 1800 + LIFO; SQLite: 20 + 200). Large PostgreSQL printer farms can raise
     # these via the DB_POOL_SIZE / DB_MAX_OVERFLOW / DB_POOL_TIMEOUT /
-    # DB_POOL_RECYCLE / DB_POOL_USE_LIFO env vars (issue #2572). Ensure PostgreSQL
+    # DB_POOL_RECYCLE / DB_POOL_USE_LIFO / DB_POOL_PRE_PING env vars. Ensure PostgreSQL
     # ``max_connections`` comfortably exceeds (pool_size + max_overflow) x workers.
     db_pool_size: int | None = None
     db_max_overflow: int | None = None
     db_pool_timeout: int | None = None
     db_pool_recycle: int | None = None
     db_pool_use_lifo: bool | None = None
+    # PG only: None keeps pre-ping enabled; False allows a stale connection's
+    # first use to fail rather than checking it at checkout. SQLite ignores it.
+    db_pool_pre_ping: bool | None = None
 
     # Explicit path to the ffmpeg executable, used for RTSP camera streaming on
     # the X1 / X2 / H2 / P2 series (the A1 / P1 chamber-image protocol needs no

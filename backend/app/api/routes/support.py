@@ -31,6 +31,7 @@ from backend.app.core.auth import RequestCredentials, RequirePermission, request
 from backend.app.core.config import APP_VERSION, settings
 from backend.app.core.database import async_session
 from backend.app.core.permissions import Permission
+from backend.app.core.process_resources import collect_fd_info
 from backend.app.core.sensitive_settings import is_sensitive_setting
 from backend.app.core.websocket import ws_manager
 from backend.app.models.archive import PrintArchive
@@ -720,11 +721,12 @@ def _collect_process_info() -> dict:
     share :func:`_collect_support_info`, which is the one place they do not
     diverge.
     """
-    out: dict = {}
+    out: dict = {"file_descriptors": collect_fd_info()}
     try:
         proc = psutil.Process()
     except Exception:
-        return {"available": False}
+        out["available"] = False
+        return out
 
     out["available"] = True
     try:

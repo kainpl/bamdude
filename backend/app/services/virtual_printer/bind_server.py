@@ -23,6 +23,8 @@ import ssl
 import struct
 from pathlib import Path
 
+from .lifecycle import TLS_CLOSE_GRACE, TLS_HANDSHAKE_TIMEOUT, Activities, Connections, close_writer
+
 logger = logging.getLogger(__name__)
 
 BIND_PORT_PLAIN = 3000
@@ -66,6 +68,9 @@ class BindServer:
         self._running = False
         # Set once at least one listening socket is bound (V6 readiness barrier).
         self.ready = asyncio.Event()
+        self.activities = Activities()
+        self.connections = Connections()
+        self._stop_task = None
 
     def _create_tls_context(self) -> ssl.SSLContext | None:
         """Create SSL context for the TLS bind port (3002)."""
@@ -86,7 +91,7 @@ class BindServer:
 
     async def start(self) -> None:
         """Start the bind server on ports 3000 (plain) and 3002 (TLS)."""
-        if self._running:
+        if self.activities.closed or self._running:
             return
 
         self._running = True
@@ -112,8 +117,17 @@ class BindServer:
                         self.bind_address,
                         port,
                         ssl=tls_ctx if use_tls else None,
+                        **(
+                            {"ssl_handshake_timeout": TLS_HANDSHAKE_TIMEOUT, "ssl_shutdown_timeout": TLS_CLOSE_GRACE}
+                            if use_tls
+                            else {}
+                        ),
                     )
                     self._servers.append(server)
+                    if self.activities.closed:
+                        server.close()
+                        await server.wait_closed()
+                        return
                     logger.info(
                         "Bind server listening on %s:%s (%s)",
                         self.bind_address,
@@ -144,21 +158,33 @@ class BindServer:
         finally:
             await self.stop()
 
-    async def stop(self) -> None:
-        """Stop the bind server."""
-        logger.info("Stopping bind server")
+    def close_admission(self):
+        self.activities.closing = True
         self._running = False
         self.ready.clear()
-
         for server in self._servers:
-            try:
-                server.close()
-                await server.wait_closed()
-            except OSError as e:
-                logger.debug("Error closing bind server: %s", e)
-        self._servers = []
+            server.close()
 
-    async def _handle_client(
+    async def stop(self):
+        if self._stop_task is None:
+            self.close_admission()
+            self._stop_task = asyncio.create_task(self._stop_owned())
+        await asyncio.shield(self._stop_task)
+
+    async def _stop_owned(self):
+        await self.connections.disconnect()
+        for server in self._servers:
+            await server.wait_closed()
+        self._servers.clear()
+
+    async def _handle_client(self, reader, writer):
+        with self.connections.track(writer):
+            if self.activities.closed:
+                await close_writer(writer)
+                return
+            await self._owned_handle_client(reader, writer)
+
+    async def _owned_handle_client(
         self,
         reader: asyncio.StreamReader,
         writer: asyncio.StreamWriter,
@@ -216,7 +242,7 @@ class BindServer:
         finally:
             try:
                 writer.close()
-                await writer.wait_closed()
+                await close_writer(writer)
             except OSError:
                 pass
             logger.debug("Bind server: client %s disconnected", client_id)

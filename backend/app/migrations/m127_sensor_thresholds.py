@@ -55,6 +55,7 @@ async def upgrade(conn):
     sqlite = is_sqlite()
     pk = "INTEGER PRIMARY KEY AUTOINCREMENT" if sqlite else "SERIAL PRIMARY KEY"
     ts = "DATETIME" if sqlite else "TIMESTAMP"
+    enabled_default = "1" if sqlite else "TRUE"
 
     if not await table_exists(conn, "smart_sensor_thresholds"):
         await conn.execute(
@@ -67,7 +68,7 @@ async def upgrade(conn):
                     min_value FLOAT,
                     max_value FLOAT,
                     deadband FLOAT NOT NULL DEFAULT 0,
-                    enabled BOOLEAN NOT NULL DEFAULT 1,
+                    enabled BOOLEAN NOT NULL DEFAULT {enabled_default},
                     state VARCHAR(8) NOT NULL DEFAULT 'ok',
                     state_since {ts},
                     notified_at {ts}

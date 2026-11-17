@@ -157,7 +157,17 @@ export function parseLabelWarnings(raw: string | null | undefined): string[] {
   return text.split(' | ').filter(Boolean);
 }
 
+export interface BackupRestoreResult {
+  success: boolean;
+  message: string;
+  code?: string;
+  receipt?: string;
+  duplicateGroups?: number;
+}
+
 export class ApiError extends Error {
+  calibrationReceipt?: string;
+  duplicateGroups?: number;
   printerId?: number;
   archiveId?: number;
   status: number;
@@ -723,6 +733,12 @@ async function handleErrorResponse(response: Response, __isRetry: boolean, signa
     ? seconds * 1000
     : retryAfter ? Math.max(0, Date.parse(retryAfter) - Date.now()) : undefined;
   const refusal = new ApiError(message, response.status, code, Number.isFinite(retryAfterMs) ? retryAfterMs : undefined);
+  if (code === 'calibration_restore_confirmation_required' && typeof error.detail?.receipt === 'string') {
+    refusal.calibrationReceipt = error.detail.receipt;
+    if (Number.isSafeInteger(error.detail.duplicate_groups) && error.detail.duplicate_groups > 0) {
+      refusal.duplicateGroups = error.detail.duplicate_groups;
+    }
+  }
   if (code === 'stale_execution_claim' && Number.isInteger(error.detail?.params?.archive) && error.detail.params.archive > 0) {
     refusal.archiveId = error.detail.params.archive;
   }
@@ -12155,7 +12171,7 @@ export const api = {
   getMQTTStatus: () => request<MQTTStatus>('/settings/mqtt/status'),
   resetSettings: () =>
     request<AppSettings>('/settings/reset', { method: 'POST' }),
-  exportBackup: async (): Promise<{ blob: Blob; filename: string }> => {
+  exportBackup: async (): Promise<{ blob: Blob; filename: string; residualObjects?: number }> => {
     // New simplified backup - complete database + all files
     const url = `${API_BASE}/settings/backup`;
     const headers: Record<string, string> = {};
@@ -12179,12 +12195,17 @@ export const api = {
     }
 
     const blob = await response.blob();
-    return { blob, filename };
+    const residualObjects = Number(response.headers.get('X-BamDude-Schema-Residual-Objects') || '0');
+    return { blob, filename, ...(Number.isSafeInteger(residualObjects) && residualObjects > 0 ? { residualObjects } : {}) };
   },
-  importBackup: async (file: File) => {
+  importBackup: async (file: File, calibrationReceipt?: string): Promise<BackupRestoreResult> => {
     // New simplified restore - replaces database + all directories
     const formData = new FormData();
     formData.append('file', file);
+    if (calibrationReceipt) {
+      formData.append('accept_calibration_residual', 'true');
+      formData.append('calibration_receipt', calibrationReceipt);
+    }
     const url = `${API_BASE}/settings/restore`;
     const headers: Record<string, string> = {};
     if (authToken) {
@@ -12199,10 +12220,16 @@ export const api = {
     if (!response.ok) {
       // A refusal is {detail: {error, message}} or {detail: "sentence"} — never the success shape.
       const detail = (body as { detail?: unknown }).detail;
-      const structured = detail && typeof detail === 'object' ? (detail as { error?: unknown; message?: unknown }) : null;
+      const structured = detail && typeof detail === 'object' ? (detail as { error?: unknown; message?: unknown; receipt?: unknown; duplicate_groups?: unknown }) : null;
       const message = structured && typeof structured.message === 'string' ? structured.message : typeof detail === 'string' ? detail : '';
       const code = structured && typeof structured.error === 'string' ? structured.error : undefined;
-      return { success: false, message, ...(code ? { code } : {}) } as { success: boolean; message: string; code?: string };
+      return {
+        success: false, message, ...(code ? { code } : {}),
+        ...(code === 'calibration_restore_confirmation_required' && typeof structured?.receipt === 'string'
+          && typeof structured.duplicate_groups === 'number' && Number.isSafeInteger(structured.duplicate_groups)
+          && structured.duplicate_groups > 0
+          ? { receipt: structured.receipt, duplicateGroups: structured.duplicate_groups } : {}),
+      };
     }
     return body as { success: boolean; message: string; code?: string };
   },
@@ -15456,10 +15483,12 @@ export const api = {
     }
     return response.blob();
   },
-  restoreLocalBackup: (filename: string) =>
+  restoreLocalBackup: (filename: string, calibrationReceipt?: string) =>
     request<{ success?: boolean; message?: string }>(
       `/local-backup/backups/${encodeURIComponent(filename)}/restore`,
-      { method: 'POST' }
+      { method: 'POST', ...(calibrationReceipt ? { body: JSON.stringify({
+        accept_calibration_residual: true, calibration_receipt: calibrationReceipt,
+      }) } : {}) }
     ),
   deleteLocalBackup: (filename: string) =>
     request<LocalBackupDeleteResponse>(
@@ -16674,6 +16703,8 @@ export interface VirtualPrinterProxyStatus {
 export interface VirtualPrinterStatus {
   enabled: boolean;
   running: boolean;
+  runtime_state?: 'running' | 'stopping' | 'stopped';
+  runtime_proven?: boolean;
   mode: VirtualPrinterMode;
   name: string;
   serial: string;
@@ -16801,6 +16832,8 @@ export interface VirtualPrinterConfig {
   position: number;
   status: {
     running: boolean;
+    runtime_state?: 'running' | 'stopping' | 'stopped';
+    runtime_proven?: boolean;
     pending_files: number;
     tailscale_disabled?: boolean;
     proxy?: VirtualPrinterProxyStatus;

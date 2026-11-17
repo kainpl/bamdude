@@ -2277,10 +2277,9 @@ class ArchiveService:
         )
 
         # Detach spool-usage history before removing the archive. The
-        # ``spool_usage_history.archive_id`` FK has no ``ON DELETE`` clause (the
-        # row must outlive the archive so the spool keeps its consumption record),
-        # so NULL it here: on SQLite this avoids a dangling reference, on
-        # PostgreSQL it avoids a foreign-key violation that would block the delete.
+        # ``spool_usage_history.archive_id`` declares SET NULL on PostgreSQL;
+        # explicit detach is still needed where SQLite FK enforcement is off,
+        # and keeps this writer safe while an old PG schema awaits its repair.
         # Done before every ``db.delete(archive)`` path below (incl. the early
         # security returns) so the subsequent commit flushes both together.
         from backend.app.models.spool_usage_history import SpoolUsageHistory

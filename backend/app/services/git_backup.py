@@ -106,6 +106,11 @@ class GitBackupService:
         logger.info("Starting Git backup scheduler")
         self._scheduler_task = asyncio.create_task(self._scheduler_loop())
 
+    def close_admission(self):
+        """Fence new exports synchronously without cancelling admitted work."""
+        self._closed = True
+        self._generation += 1
+
     def stop_scheduler(self):
         """Close admission. Restore/shutdown must also await the owned drain."""
         self._closed = True
@@ -305,6 +310,23 @@ class GitBackupService:
             return reason
 
     async def run_backup(self, config_id: int, trigger: str = "manual") -> dict:
+        from backend.app.services.backup_files import BackupBusyError, exclusive_operation
+        from backend.app.services.git_restore import git_restore_service
+
+        if git_restore_service.is_running:
+            return {
+                "success": False,
+                "message": "A restore is currently running; wait for it to finish before backing up",
+                "log_id": None,
+            }
+        try:
+            async with exclusive_operation():
+                return await self._run_backup_owned(config_id, trigger)
+        except BackupBusyError:
+            return {"success": False, "message": "A backup is already running", "log_id": None}
+
+    async def _run_backup_owned(self, config_id: int, trigger: str = "manual") -> dict:
+        """Run an admitted backup under the shared operation guard."""
         from types import SimpleNamespace
 
         from backend.app.services.git_backup_approval import (
@@ -474,8 +496,7 @@ class GitBackupService:
             self._backup_progress = None
 
     async def quiesce_for_restore(self, seconds=10):
-        self._closed = True
-        self._generation += 1
+        self.close_admission()
         scheduler = self._scheduler_task
         if scheduler is not None and scheduler not in self._tasks:
             scheduler.cancel()
@@ -722,7 +743,9 @@ class GitBackupService:
             CONFIG_GUARD_KEY,
             SOURCE_SETTING,
         }
-        settings_data = {s.key: s.value for s in settings if s.key not in sensitive_keys}
+        from backend.app.core.schema_repair_state import private_setting
+
+        settings_data = {s.key: s.value for s in settings if s.key not in sensitive_keys and not private_setting(s.key)}
 
         files["settings/app_settings.json"] = {
             "version": "1.0",
@@ -739,6 +762,7 @@ class GitBackupService:
         # nothing (G05 Р33). ``archived_at`` says which is which.
         result = await db.execute(select(Spool).order_by(Spool.id))
         spools = result.scalars().all()
+        printer_serials = dict((await db.execute(select(Printer.id, Printer.serial_number))).all())
 
         def stamp(value):
             return value.isoformat() if value else None
@@ -754,7 +778,10 @@ class GitBackupService:
                     "rgba": s.rgba,
                     "brand": s.brand,
                     "label_weight": s.label_weight,
+                    "core_weight": s.core_weight,
                     "weight_used": s.weight_used,
+                    "weight_used_baseline": s.weight_used_baseline,
+                    "weight_locked": s.weight_locked,
                     "slicer_filament": s.slicer_filament,
                     "slicer_filament_name": s.slicer_filament_name,
                     "nozzle_temp_min": s.nozzle_temp_min,
@@ -763,16 +790,14 @@ class GitBackupService:
                     "note": s.note,
                     "tag_uid": s.tag_uid,
                     "tray_uuid": s.tray_uuid,
+                    "data_origin": s.data_origin,
+                    "tag_type": s.tag_type,
+                    "archived_at": s.archived_at.isoformat() if s.archived_at else None,
+                    "last_used": s.last_used.isoformat() if s.last_used else None,
                     "created_at": s.created_at.isoformat() if s.created_at else None,
                     # What the restore has always read, and the operator's
                     # bookkeeping (upstream 71d4b2f70). ``location_id`` stays
                     # out — locations are not backed up; the text travels.
-                    "core_weight": s.core_weight,
-                    "weight_locked": bool(s.weight_locked),
-                    "weight_used_baseline": s.weight_used_baseline,
-                    "data_origin": s.data_origin,
-                    "tag_type": s.tag_type,
-                    "archived_at": stamp(s.archived_at),
                     "category": s.category,
                     "low_stock_threshold_pct": s.low_stock_threshold_pct,
                     "storage_location": s.storage_location,
@@ -809,10 +834,11 @@ class GitBackupService:
                     "id": h.id,
                     "spool_id": h.spool_id,
                     "printer_id": h.printer_id,
+                    "printer_serial": printer_serials.get(h.printer_id),
+                    "archive_id": h.archive_id,
                     "print_name": h.print_name,
                     # The archive's id INSIDE this backup: the restore resolves
                     # it through the archives it brought, never as a local id.
-                    "archive_id": h.archive_id,
                     "weight_used": h.weight_used,
                     "percent_used": h.percent_used,
                     "status": h.status,
@@ -863,13 +889,17 @@ class GitBackupService:
         # guess. One query for the map; archives outnumber users by orders of
         # magnitude.
         user_names = dict((await db.execute(select(User.id, User.username))).all())
+        printer_serials = dict((await db.execute(select(Printer.id, Printer.serial_number))).all())
 
         archives_data = []
         for a in archives:
             archives_data.append(
                 {
                     "id": a.id,
+                    "recovery_identity": a.recovery_identity,
                     "printer_id": a.printer_id,
+                    "printer_serial": printer_serials.get(a.printer_id),
+                    "project_id": a.project_id,  # Diagnostic only; restore never sets order links.
                     "filename": a.filename,
                     "file_size": a.file_size,
                     "print_name": a.print_name,
@@ -880,12 +910,19 @@ class GitBackupService:
                     "layer_height": a.layer_height,
                     "total_layers": a.total_layers,
                     "nozzle_diameter": a.nozzle_diameter,
+                    "bed_temperature": a.bed_temperature,
+                    "nozzle_temperature": a.nozzle_temperature,
                     "sliced_for_model": a.sliced_for_model,
                     "status": a.status,
+                    "failure_reason": a.failure_reason,
+                    "recovered_outcome_uncertain": bool(
+                        isinstance(a.extra_data, dict) and a.extra_data.get("recovered_outcome_uncertain")
+                    ),
                     "started_at": a.started_at.isoformat() if a.started_at else None,
                     "completed_at": a.completed_at.isoformat() if a.completed_at else None,
                     "makerworld_url": a.makerworld_url,
                     "designer": a.designer,
+                    "external_url": a.external_url,
                     "is_favorite": a.is_favorite,
                     "tags": a.tags,
                     "notes": a.notes,

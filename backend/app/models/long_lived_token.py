@@ -36,7 +36,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, func
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, func
 from sqlalchemy.orm import Mapped, mapped_column, validates
 
 from backend.app.core.database import Base
@@ -87,3 +87,7 @@ class LongLivedToken(Base):
     @validates("created_at", "last_used_at", "expires_at", "revoked_at", "retired_at")
     def _utc_datetime(self, _name, value):
         return value.astimezone(timezone.utc).replace(tzinfo=None) if value is not None and value.tzinfo else value
+
+
+# Canonical declarations also carry migration-owned indexes into portable DDL.
+Index("ix_long_lived_tokens_token_identity", LongLivedToken.token_identity, unique=True)

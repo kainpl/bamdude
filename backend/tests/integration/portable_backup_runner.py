@@ -143,6 +143,7 @@ async def report():
             await db.execute(text("SELECT id, version, name, applied_at FROM _migrations ORDER BY version"))
         ).all()
         return {
+            "printers": [list(r) for r in (await db.execute(text("SELECT id,name FROM printers ORDER BY id"))).all()],
             "plan_line_identity": line.plan_identity,
             "working_plan": [
                 plan.entries,
@@ -205,12 +206,28 @@ async def main(mode, path):
         # Export and restore on different external archive roots.
         settings.archive_dir = settings.base_dir.parent / (settings.base_dir.name + "-archives")
         await database.init_db()
-        if mode == "export":
+        if mode in ("export", "export-r5"):
             await seed()
+            if mode == "export-r5":
+                async with database.engine.begin() as conn:
+                    await conn.execute(text("ALTER TABLE printers ALTER COLUMN name DROP NOT NULL"))
+                    await conn.execute(text("UPDATE printers SET name=NULL WHERE id=41"))
             result = await report()
             output, _ = await create_backup_zip(path)
             result["zip"] = str(output)
             return result
+        if mode == "cycle":
+            from backend.app.core import schema_repair_state
+
+            pending = schema_repair_state.write_pending
+            tokens = []
+
+            async def observe_pending(*args, **kwargs):
+                debt = await pending(*args, **kwargs)
+                tokens.append(debt["id"])
+                return debt
+
+            schema_repair_state.write_pending = observe_pending
         for directory in directories(settings).values():
             directory.mkdir(parents=True, exist_ok=True)
             (directory / "old-only.bin").write_bytes(b"old")
@@ -255,6 +272,21 @@ async def main(mode, path):
         assert (settings.base_dir / ".install_id").read_bytes() == b"fixture-identity"
         with closing(sqlite3.connect(settings.base_dir / "zigbee/zigbee.db")) as db:
             assert db.execute("SELECT key FROM network").fetchone() == ("fixture-network-key",)
+        if mode == "cycle":
+            from backend.app.core.schema_conform_repair import verify
+            from backend.app.core.schema_repair_state import DEBT, read_record
+
+            result = await report()
+            await database.init_db()
+            assert await report() == result  # No seed or migration replay.
+            async with database.engine.begin() as conn:
+                assert await read_record(conn, DEBT) is None
+                proofs = await verify(conn, database.Base.metadata)
+                summary = [(p["object"], p["reason"], p["count"]) for p in proofs]
+                assert summary in ([], [("printers.column.name.nullable", "null_rows", 1)])
+            assert len(tokens) == 1
+            output, _ = await create_backup_zip(settings.base_dir.parent)
+            return {"report": result, "zip": str(output), "restore_id": tokens[0], "residuals": summary}
         return await exercise_restored_database()
     finally:
         await database.engine.dispose()
