@@ -19,7 +19,11 @@ from backend.app.api.routes import media_downloads as routes
 from backend.app.services import media_downloads
 from backend.app.services.media_downloads import media_download_runtime
 from backend.app.services.printer_files.listing import ListingAnswer
-from backend.tests.integration.test_media_download_jobs import FakeTransport, _until
+from backend.tests.integration.test_media_download_jobs import (  # noqa: F401 -- the fixture is autouse here too
+    FakeTransport,
+    _patient_authority,
+    _until,
+)
 from backend.tests.integration.test_workshop_library_rights import _jwt, _key, _user
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.integration]

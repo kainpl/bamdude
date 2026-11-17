@@ -24,6 +24,19 @@ from backend.tests.integration.test_workshop_library_rights import _jwt, _key, _
 pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
 
 
+@pytest.fixture(autouse=True)
+def _patient_authority(monkeypatch):
+    """A loaded machine is not a lost authority.
+
+    The coordinator gives each check one second and fails closed after it. Every session of a test
+    shares one connection, so a check cancelled by that deadline also closes the database under the
+    test. Retirement is tested here by a real revocation, never by the deadline.
+    """
+    from backend.app.services import live_authority
+
+    monkeypatch.setattr(live_authority, "CHECK_SECONDS", 30.0)
+
+
 class FakeTransport:
     """A printer's files as ``{path: bytes}``; a ``str`` value is the status that path answers with."""
 
