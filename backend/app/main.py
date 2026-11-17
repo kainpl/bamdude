@@ -1928,6 +1928,28 @@ async def _bump_library_file_usage_if_completed(db, item, queue_status: str) -> 
     await _bump_library_file_usage(db, item.library_file_id)
 
 
+def _take_expected_print(expected_keys: list[tuple[int, str]]) -> tuple[int | None, int | None]:
+    """Take a started print's expectation: its archive id and who queued it.
+
+    All three registries are emptied for every alias of the file name, together.
+    The creator used to be removed only on the path that sent the start
+    notification for a found archive; on any other path it stayed, the TTL sweep
+    could not see it (it walks the registration times, already gone), and a later
+    print of the same name was attributed to that user (upstream dad7fea37).
+    """
+    archive_id: int | None = None
+    creator: int | None = None
+    for key in expected_keys:
+        taken = _expected_prints.pop(key, None)
+        _expected_print_registered_at.pop(key, None)
+        taken_creator = _expected_print_creators.pop(key, None)
+        if archive_id is None and taken:
+            archive_id = taken
+        if creator is None:
+            creator = taken_creator
+    return archive_id, creator
+
+
 def mark_printer_stopped_by_user(printer_id: int, *, unless_idle: bool = False) -> None:
     """Mark that the active print on this printer was stopped by the user from the queue UI.
 
@@ -5307,18 +5329,9 @@ async def _on_print_start_impl(printer_id: int, data: dict):
         from backend.app.services.print_execution import decide_start
 
         decision = data.get("_execution_decision") or await decide_start(db, printer_id, data)
-        expected_archive_id = None
-        for key in expected_keys:
-            expected_archive_id = _expected_prints.pop(key, None)
-            _expected_print_registered_at.pop(key, None)
-            if not owns_start():
-                return
-            if expected_archive_id:
-                # Clean up other possible keys for this print
-                for other_key in expected_keys:
-                    _expected_prints.pop(other_key, None)
-                    _expected_print_registered_at.pop(other_key, None)
-                break
+        expected_archive_id, fallback_creator = _take_expected_print(expected_keys)
+        if not owns_start():
+            return
 
         if expected_archive_id != decision.current_id:
             expected_archive_id = None
@@ -5442,13 +5455,8 @@ async def _on_print_start_impl(printer_id: int, data: dict):
                 if not notification_sent and owns_start():
                     # Use archive's created_by_id; fall back to the creator registered via
                     # register_expected_print (handles library-file-based queue items where
-                    # the freshly-created archive has no created_by_id yet).
-                    # Pop ALL matching keys so no stale entries remain in the dict.
-                    fallback_creator = None
-                    for key in expected_keys:
-                        popped = _expected_print_creators.pop(key, None)
-                        if fallback_creator is None:
-                            fallback_creator = popped
+                    # the freshly-created archive has no created_by_id yet). It was
+                    # taken together with the expectation, by ``_take_expected_print``.
                     archive_data = {
                         "print_time_seconds": archive.print_time_seconds,
                         "created_by_id": archive.created_by_id or fallback_creator,
