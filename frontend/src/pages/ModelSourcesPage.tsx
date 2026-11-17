@@ -7,6 +7,7 @@ import { Globe, Library } from 'lucide-react';
 import { api } from '../api/client';
 import { LoadingBlock } from '../components/LoadingBlock';
 import { ManyfoldTab } from '../components/ManyfoldTab';
+import { MANYFOLD_TRANSPORT_UNAVAILABLE, manyfoldUnusableQuery } from '../components/manyfoldRefusal';
 import { useAuth } from '../contexts/AuthContext';
 import { MakerworldPage } from './MakerworldPage';
 
@@ -38,8 +39,17 @@ export function ModelSourcesPage() {
   // to "pending", and a tab that vanished for the length of every retry would unmount the very
   // component that is retrying.
   const statusFailed = manyfoldStatus.data === undefined && manyfoldStatus.errorUpdateCount > 0;
+  // A connection that is set up and cannot be used: the tab's own read of why (same key, one
+  // request). Switched off stays hidden; a failed safety check of the connection is said to
+  // everyone who could use Manyfold, on its tab.
+  const unusableReason = useQuery({
+    ...manyfoldUnusableQuery,
+    enabled: canViewManyfold && manyfoldStatus.data?.usable === false && manyfoldStatus.data.configured === true,
+  });
+  const transportGone = unusableReason.data === MANYFOLD_TRANSPORT_UNAVAILABLE;
   const showManyfold =
-    canViewManyfold && (manyfoldStatus.data?.usable === true || statusFailed || hasPermission('settings:update'));
+    canViewManyfold &&
+    (manyfoldStatus.data?.usable === true || transportGone || statusFailed || hasPermission('settings:update'));
 
   const tabs: { id: SourceTab; label: string; icon: typeof Globe }[] = [];
   if (hasPermission('makerworld:view')) tabs.push({ id: 'makerworld', label: t('modelSources.tabMakerworld'), icon: Globe });

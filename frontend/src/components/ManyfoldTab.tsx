@@ -13,7 +13,7 @@ import { Button } from './Button';
 import { Card, CardContent } from './Card';
 import { FolderTreeSelect } from './FolderTreeSelect';
 import { LoadingBlock } from './LoadingBlock';
-import { useManyfoldRefusal } from './manyfoldRefusal';
+import { MANYFOLD_TRANSPORT_UNAVAILABLE, manyfoldUnusableQuery, useManyfoldRefusal } from './manyfoldRefusal';
 
 const fileLabel = (file: ModelSourceFile) => file.filename || file.name;
 
@@ -125,13 +125,14 @@ function SummaryNote({ summary, onClose }: { summary: ManyfoldImportSummary; onC
 
 export function ManyfoldTab() {
   const { t } = useTranslation();
-  const { hasPermission } = useAuth();
+  const { isAdmin, hasPermission } = useAuth();
   const refusalText = useManyfoldRefusal();
   // The run belongs to the app, not to this tab: it goes on, and is found again, across navigation.
   const { progress, busy, summary, justImported, startFiles, startModels, cancel, dismissSummary } = useManyfoldImport();
   // An import adds a file to the library: the server asks for that right as well.
   const canImport = hasPermission('manyfold:import') && hasPermission('library:upload');
-  const canConnect = hasPermission('settings:update');
+  // The connection is an administrator's to change (the server refuses anyone else).
+  const canConnect = isAdmin && hasPermission('settings:update');
 
   // The place in the catalogue lives in the address (review MF-I3): the search words, the page
   // and the open model are query parameters beside the page's own `tab`. Back returns from a
@@ -163,6 +164,19 @@ export function ManyfoldTab() {
 
   const status = useQuery({ queryKey: ['manyfold-status'], queryFn: () => api.getManyfoldStatus() });
   const usable = status.data?.usable === true;
+  // The status says a connection that is set up cannot be used, not why. One read of the
+  // catalogue is refused with the reason's code: "switched off" is told from "the checked
+  // transport is gone" (which only a restart of BamDude cures).
+  const unusableReason = useQuery({
+    ...manyfoldUnusableQuery,
+    enabled: status.data !== undefined && !usable && status.data.configured === true,
+  });
+  // Every import slot of the installation was taken when the file in flight was sent.
+  const slots = status.data?.imports;
+  const slotsTaken =
+    typeof slots?.active === 'number' && typeof slots.limit === 'number' && slots.limit > 0 && slots.active >= slots.limit
+      ? slots.active
+      : null;
 
   const models = useQuery({
     queryKey: ['manyfold-models', query, page],
@@ -267,6 +281,18 @@ export function ManyfoldTab() {
   }
 
   if (!usable) {
+    if (unusableReason.isLoading) return <LoadingBlock label={t('common.loading')} />;
+    if (unusableReason.data === MANYFOLD_TRANSPORT_UNAVAILABLE) {
+      return (
+        <Card>
+          <CardContent className="py-8 flex flex-col items-center text-center gap-2">
+            <AlertCircle className="w-8 h-8 text-bambu-gray" />
+            <p className="text-white font-medium">{t('manyfold.unavailableTitle')}</p>
+            <p role="alert" className="text-sm text-bambu-gray">{t('manyfold.errors.manyfold_transport_unavailable')}</p>
+          </CardContent>
+        </Card>
+      );
+    }
     return (
       <Card>
         <CardContent className="py-8 flex flex-col items-center text-center gap-2">
@@ -296,6 +322,12 @@ export function ManyfoldTab() {
             total: progress.total,
           })}
         </p>
+        {progress.kind === 'importing' && !progress.cancelling && progress.waiting && (
+          <span role="status">{t('manyfold.waitingForSlot')}</span>
+        )}
+        {progress.kind === 'importing' && !progress.waiting && slotsTaken !== null && (
+          <span role="status">{t('manyfold.importQueued', { count: slotsTaken })}</span>
+        )}
         {progress.cancelling ? (
           <span role="status">{t('manyfold.cancelling')}</span>
         ) : (

@@ -12,7 +12,11 @@
  *   finished and counted (the request is not aborted — the server would go on
  *   with it anyway, and an aborted request would leave its outcome unknown).
  * - A refusal no other file can get past (Manyfold switched off, not connected,
- *   credentials refused, the connection changed) stops the run the same way.
+ *   credentials refused, the connection changed, the server's disk full, the checked
+ *   transport gone) stops the run the same way.
+ * - "Imports are busy" (every import slot of the installation taken for too long) is
+ *   not a failure at once: the run waits as long as the server asks and tries the file
+ *   again, a bounded number of times. Cancel ends the wait.
  * - A reload ends the run with the page. What it had done by then is kept in
  *   sessionStorage and told once after the reload; nothing is resumed.
  */
@@ -20,8 +24,8 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 
-import { api, type ModelSourceFile } from '../api/client';
-import { useManyfoldRefusal, manyfoldErrorCode } from '../components/manyfoldRefusal';
+import { api, ApiError, type ModelSourceFile } from '../api/client';
+import { MANYFOLD_TRANSPORT_UNAVAILABLE, useManyfoldRefusal, manyfoldErrorCode } from '../components/manyfoldRefusal';
 import { useToast } from './ToastContext';
 
 export interface ManyfoldImportJob {
@@ -63,6 +67,8 @@ export interface ManyfoldImportProgress {
   current: number;
   total: number;
   cancelling: boolean;
+  /** The server had no free import slot for this file: the run waits before it asks again. */
+  waiting: boolean;
 }
 
 export interface ManyfoldImportedMark {
@@ -99,7 +105,16 @@ const RUN_STOPPING_CODES: ReadonlySet<string> = new Set([
   'manyfold_not_configured',
   'manyfold_credentials',
   'source_connection_changed',
+  'storage_full',
+  MANYFOLD_TRANSPORT_UNAVAILABLE,
 ]);
+/** Every import slot of the installation stayed taken: worth asking again after a pause. */
+const BUSY_CODE = 'source_import_busy';
+/** Tries per file, the first one included. */
+const BUSY_TRIES = 3;
+/** The pause before the next try when the server names none (`Retry-After`), and the longest one honoured. */
+const BUSY_PAUSE_MS = 60_000;
+const BUSY_PAUSE_MAX_MS = 5 * 60_000;
 
 export const manyfoldMarkKey = (modelId: string, fileId: string) => `${modelId}:${fileId}`;
 const fileLabel = (file: ModelSourceFile) => file.filename || file.name;
@@ -159,17 +174,37 @@ export function ManyfoldImportProvider({ children }: { children: ReactNode }) {
   // The run's own facts. State is for showing; these decide.
   const running = useRef(false);
   const cancelled = useRef(false);
+  // Ends the pause the run is in (waiting for a free import slot), when it is in one.
+  const wake = useRef<(() => void) | null>(null);
 
   const showProgress = useCallback(
-    (kind: ManyfoldImportProgress['kind'], current: number, total: number) => {
-      setProgress({ kind, current, total, cancelling: cancelled.current });
+    (kind: ManyfoldImportProgress['kind'], current: number, total: number, waiting = false) => {
+      setProgress({ kind, current, total, cancelling: cancelled.current, waiting });
       showPersistentToast(
         TOAST_ID,
-        t(kind === 'reading' ? 'manyfold.toastReading' : 'manyfold.toastImporting', { current, total }),
+        t(
+          kind === 'reading' ? 'manyfold.toastReading' : waiting ? 'manyfold.toastWaiting' : 'manyfold.toastImporting',
+          { current, total },
+        ),
         'loading',
       );
     },
     [showPersistentToast, t],
+  );
+
+  /** A pause that Cancel cuts short. */
+  const pause = useCallback(
+    (ms: number) =>
+      new Promise<void>((resolve) => {
+        const done = () => {
+          window.clearTimeout(timer);
+          wake.current = null;
+          resolve();
+        };
+        const timer = window.setTimeout(done, ms);
+        wake.current = done;
+      }),
+    [],
   );
 
   const refreshLibrary = useCallback(() => {
@@ -205,9 +240,30 @@ export function ManyfoldImportProvider({ children }: { children: ReactNode }) {
           break;
         }
         showProgress('importing', index + 1, jobs.length);
+        // How many imports the installation runs as this file is sent: the tab says "queued" from it.
+        queryClient.invalidateQueries({ queryKey: ['manyfold-status'] });
         remember(index);
         try {
-          const done = await api.importManyfoldFile(job.modelId, job.file.id, folderId);
+          let done: Awaited<ReturnType<typeof api.importManyfoldFile>> | null = null;
+          for (let attempt = 1; done === null; attempt += 1) {
+            try {
+              done = await api.importManyfoldFile(job.modelId, job.file.id, folderId);
+            } catch (error) {
+              if (manyfoldErrorCode(error) !== BUSY_CODE || attempt >= BUSY_TRIES || cancelled.current) throw error;
+              // No free import slot: not a failure yet. Wait as long as the server asks, then ask again.
+              const asked = error instanceof ApiError ? error.retryAfterMs : undefined;
+              showProgress('importing', index + 1, jobs.length, true);
+              await pause(Math.min(asked ?? BUSY_PAUSE_MS, BUSY_PAUSE_MAX_MS));
+              if (cancelled.current) break;
+              showProgress('importing', index + 1, jobs.length);
+            }
+          }
+          if (done === null) {
+            // Cancelled while it waited for a slot: this file was never imported, nor did it fail.
+            result.stopped = 'cancelled';
+            result.skipped = jobs.length - index;
+            break;
+          }
           if (done.was_existing) result.existing += 1;
           else result.imported += 1;
           setJustImported((previous) =>
@@ -240,7 +296,7 @@ export function ManyfoldImportProvider({ children }: { children: ReactNode }) {
       }
       return result;
     },
-    [refusalText, showProgress, showToast, t],
+    [pause, queryClient, refusalText, showProgress, showToast, t],
   );
 
   const finish = useCallback(
@@ -333,6 +389,7 @@ export function ManyfoldImportProvider({ children }: { children: ReactNode }) {
     if (!running.current) return;
     cancelled.current = true;
     setProgress((previous) => (previous ? { ...previous, cancelling: true } : previous));
+    wake.current?.();
   }, []);
 
   const dismissSummary = useCallback(() => {

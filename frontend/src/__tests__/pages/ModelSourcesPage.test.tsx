@@ -22,7 +22,14 @@ function manyfold(usable: boolean, options: { statusDelay?: number; statusFails?
       requests.manyfoldStatus += 1;
       if (options.statusDelay) await delay(options.statusDelay);
       if (options.statusFails) return HttpResponse.json({ detail: 'Internal Server Error' }, { status: 500 });
-      return HttpResponse.json({ source: 'manyfold', name: 'Manyfold', configured: usable, usable, base_url: null });
+      return HttpResponse.json({
+        source: 'manyfold',
+        name: 'Manyfold',
+        configured: usable,
+        usable,
+        base_url: null,
+        imports: { active: 0, waiting: 0, limit: 2 },
+      });
     }),
     http.get('/api/v1/model-sources/manyfold/models', () =>
       HttpResponse.json({ total: 0, page: 1, pages: 1, has_next: false, has_previous: false, models: [] }),
@@ -198,5 +205,47 @@ describe('ModelSourcesPage', () => {
     expect(await screen.findByText('No models found.')).toBeInTheDocument();
     // MakerWorld was never mounted in the meantime: none of its requests were sent.
     expect(requests.makerworldStatus).toBe(0);
+  });
+
+  /** Set up, and the status says it cannot be used; the catalogue refuses with this code. */
+  function unusable(code: string, status: number) {
+    manyfold(true);
+    server.use(
+      http.get('/api/v1/model-sources/manyfold/status', () =>
+        HttpResponse.json({
+          source: 'manyfold',
+          name: 'Manyfold',
+          configured: true,
+          usable: false,
+          base_url: null,
+          imports: { active: 0, waiting: 0, limit: 2 },
+        }),
+      ),
+      http.get('/api/v1/model-sources/manyfold/models', () =>
+        HttpResponse.json({ detail: { error: code, message: 'refused' } }, { status }),
+      ),
+    );
+  }
+
+  it('keeps the Manyfold tab, and says why, when the safety check of its connection failed', async () => {
+    unusable('manyfold_transport_unavailable', 503);
+    asUser(['makerworld:view', 'manyfold:view']);
+    render(<ModelSourcesPage />);
+
+    fireEvent.click(await screen.findByRole('tab', { name: 'Manyfold' }));
+    expect(
+      await screen.findByText('The safety check of the Manyfold connection failed. Manyfold is switched off until BamDude restarts.'),
+    ).toBeInTheDocument();
+  });
+
+  it('hides a Manyfold that is switched off from a user who cannot connect it', async () => {
+    unusable('manyfold_disabled', 400);
+    asUser(['makerworld:view', 'manyfold:view']);
+    render(<ModelSourcesPage />);
+
+    expect(await screen.findByText('Import from MakerWorld')).toBeInTheDocument();
+    await waitFor(() => expect(requests.makerworldStatus).toBeGreaterThan(0));
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(screen.queryByRole('tab', { name: 'Manyfold' })).not.toBeInTheDocument();
   });
 });

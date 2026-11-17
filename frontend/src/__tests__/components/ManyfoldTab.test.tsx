@@ -786,4 +786,209 @@ describe('ManyfoldTab', () => {
     fireEvent.click(within(screen.getByText('b.stl').closest('li') as HTMLElement).getByRole('button', { name: 'Import' }));
     expect(await toasts.findByText('The file is larger than 1 GB.')).toBeInTheDocument();
   });
+
+  // ---- the server's final contract: import slots, storage, the transport ----
+
+  /** The status with these import slots taken. */
+  function slots(active: number, waiting = 0) {
+    server.use(
+      http.get(`${BASE}/status`, () =>
+        HttpResponse.json({
+          source: 'manyfold',
+          name: 'Manyfold',
+          configured: true,
+          usable: true,
+          base_url: 'http://manyfold.lan:3214',
+          imports: { active, waiting, limit: 2 },
+        }),
+      ),
+    );
+  }
+  const BUSY = { detail: { error: 'source_import_busy', message: 'Too many imports are running. Try again in a minute.' } };
+  const SERVER_WORDS = 'the words of the server';
+
+  it('a file refused because imports are busy waits for a free slot and is tried again', async () => {
+    connected();
+    let refusals = 0;
+    server.use(
+      http.post(`${BASE}/import`, async ({ request }) => {
+        const body = (await request.json()) as { model_id: string; file_id: string; folder_id: number | null };
+        importRequests.push(body);
+        if (body.file_id === 'a' && refusals === 0) {
+          refusals += 1;
+          return HttpResponse.json(BUSY, { status: 503, headers: { 'Retry-After': '1' } });
+        }
+        return HttpResponse.json({ library_file_id: 1, filename: `${body.file_id}.stl`, folder_id: 7, was_existing: false });
+      }),
+    );
+    render(<ManyfoldTab />);
+    fireEvent.click(await screen.findByText('Cable Clip'));
+    await screen.findByText('a.stl');
+    fireEvent.click(screen.getByRole('button', { name: 'Import all' }));
+
+    // Not a failure yet: the run says what it waits for, for as long as the server asked.
+    expect(await screen.findByText('Waiting for a free import slot…')).toBeInTheDocument();
+    expect(importRequests.map((request) => request.file_id)).toEqual(['a']);
+    expect(await screen.findByText('Imported: 2 · already in library: 0 · failed: 0', {}, { timeout: 4000 })).toBeInTheDocument();
+    expect(importRequests.map((request) => request.file_id)).toEqual(['a', 'a', 'b']);
+  });
+
+  it('gives a busy file three tries, then counts it as failed and goes on', async () => {
+    connected();
+    server.use(
+      http.post(`${BASE}/import`, async ({ request }) => {
+        importRequests.push((await request.json()) as { model_id: string; file_id: string; folder_id: number | null });
+        return HttpResponse.json(BUSY, { status: 503, headers: { 'Retry-After': '0' } });
+      }),
+    );
+    render(<ManyfoldTab />);
+    fireEvent.click(await screen.findByText('Cable Clip'));
+    await screen.findByText('a.stl');
+    fireEvent.click(screen.getByRole('button', { name: 'Import all' }));
+
+    expect(await screen.findByText('Imported: 0 · already in library: 0 · failed: 2')).toBeInTheDocument();
+    expect(importRequests.map((request) => request.file_id)).toEqual(['a', 'a', 'a', 'b', 'b', 'b']);
+    expect(screen.getAllByText(/Imports are busy right now\. Try again in a minute\./)).toHaveLength(2);
+  });
+
+  it('Cancel ends the wait for a free slot; the waiting file is not counted as failed', async () => {
+    connected();
+    server.use(
+      http.post(`${BASE}/import`, async ({ request }) => {
+        importRequests.push((await request.json()) as { model_id: string; file_id: string; folder_id: number | null });
+        return HttpResponse.json(BUSY, { status: 503, headers: { 'Retry-After': '60' } });
+      }),
+    );
+    render(<ManyfoldTab />);
+    fireEvent.click(await screen.findByText('Cable Clip'));
+    await screen.findByText('a.stl');
+    fireEvent.click(screen.getByRole('button', { name: 'Import all' }));
+    await screen.findByText('Waiting for a free import slot…');
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel import' }));
+
+    expect(await screen.findByText('Imported: 0 · already in library: 0 · failed: 0')).toBeInTheDocument();
+    expect(screen.getByText(/Stopped at your request\. Files not tried: 2\./)).toBeInTheDocument();
+    expect(importRequests).toHaveLength(1);
+  });
+
+  it('a full disk stops the run: no later file can succeed', async () => {
+    connected();
+    server.use(
+      http.post(`${BASE}/import`, async ({ request }) => {
+        importRequests.push((await request.json()) as { model_id: string; file_id: string; folder_id: number | null });
+        return HttpResponse.json({ detail: { error: 'storage_full', message: SERVER_WORDS } }, { status: 507 });
+      }),
+    );
+    render(<ManyfoldTab />);
+    fireEvent.click(await screen.findByText('Cable Clip'));
+    await screen.findByText('a.stl');
+    fireEvent.click(screen.getByRole('button', { name: 'Import all' }));
+
+    expect(
+      await screen.findByText(/The import stopped: The server has no space left for this file\. Files not tried: 1\./),
+    ).toBeInTheDocument();
+    expect(importRequests).toHaveLength(1);
+  });
+
+  it('says the file is queued while every import slot is taken', async () => {
+    connected();
+    slots(2, 1);
+    hold('a');
+    render(<ManyfoldTab />);
+    fireEvent.click(await screen.findByText('Cable Clip'));
+    await screen.findByText('a.stl');
+    fireEvent.click(screen.getByRole('button', { name: 'Import all' }));
+
+    expect(await screen.findByText('Queued — 2 imports are running')).toBeInTheDocument();
+    release();
+    await screen.findByText('Imported: 1 · already in library: 0 · failed: 1');
+  });
+
+  it('says nothing about a queue while a slot is free', async () => {
+    connected();
+    slots(1);
+    hold('a');
+    render(<ManyfoldTab />);
+    fireEvent.click(await screen.findByText('Cable Clip'));
+    await screen.findByText('a.stl');
+    fireEvent.click(screen.getByRole('button', { name: 'Import all' }));
+
+    expect(await screen.findByText('Importing 1/2')).toBeInTheDocument();
+    expect(screen.queryByText(/Queued/)).not.toBeInTheDocument();
+    release();
+    await screen.findByText('Imported: 1 · already in library: 0 · failed: 1');
+  });
+
+  /** Configured, and the status says it cannot be used. */
+  function unusable(code: string, status: number) {
+    connected();
+    server.use(
+      http.get(`${BASE}/status`, () =>
+        HttpResponse.json({
+          source: 'manyfold',
+          name: 'Manyfold',
+          configured: true,
+          usable: false,
+          base_url: 'http://manyfold.lan:3214',
+          imports: { active: 0, waiting: 0, limit: 2 },
+        }),
+      ),
+      http.get(`${BASE}/models`, () => HttpResponse.json({ detail: { error: code, message: SERVER_WORDS } }, { status })),
+    );
+  }
+
+  it('says the safety check of the connection failed when that is why Manyfold cannot be used', async () => {
+    unusable('manyfold_transport_unavailable', 503);
+    render(<ManyfoldTab />);
+
+    expect(
+      await screen.findByText('The safety check of the Manyfold connection failed. Manyfold is switched off until BamDude restarts.'),
+    ).toBeInTheDocument();
+    expect(screen.queryByText('Manyfold is not connected')).not.toBeInTheDocument();
+    // Nothing to browse and nothing to import.
+    expect(screen.queryByRole('search')).not.toBeInTheDocument();
+    expect(screen.queryByRole('checkbox')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Import/ })).not.toBeInTheDocument();
+  });
+
+  it('a Manyfold that is only switched off is still "not connected"', async () => {
+    unusable('manyfold_disabled', 400);
+    render(<ManyfoldTab />);
+
+    expect(await screen.findByText('Manyfold is not connected')).toBeInTheDocument();
+    expect(screen.queryByText(/safety check/)).not.toBeInTheDocument();
+  });
+
+  it('does not ask the catalogue why, when Manyfold was never set up', async () => {
+    connected(false);
+    render(<ManyfoldTab />);
+    await screen.findByText('Manyfold is not connected');
+    expect(listRequests).toHaveLength(0);
+  });
+
+  it('sends a user who is not an administrator to one, even with the right to change settings', async () => {
+    connected(false);
+    asUser(['manyfold:view', 'settings:read', 'settings:update']);
+    render(<ManyfoldTab />);
+
+    expect(await screen.findByText('Ask an administrator to connect your Manyfold library.')).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Connection settings' })).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ['manyfold_storage_refused', 502, 'The storage of the Manyfold library is on a private address or uses plain http. BamDude follows a storage redirect only to a public https address.'],
+    ['manyfold_incompatible', 502, 'Manyfold answered in a form BamDude does not understand. Its version may be too old or too new, or a proxy in front of it changes its answers.'],
+    ['manyfold_transport_unavailable', 503, 'The safety check of the Manyfold connection failed. Manyfold is switched off until BamDude restarts.'],
+    ['source_import_busy', 503, 'Imports are busy right now. Try again in a minute.'],
+    ['storage_full', 507, 'The server has no space left for this file.'],
+  ])('answers the refusal %s in our own sentence', async (code, status, sentence) => {
+    connected();
+    server.use(
+      http.get(`${BASE}/models`, () => HttpResponse.json({ detail: { error: code, message: SERVER_WORDS } }, { status })),
+    );
+    render(<ManyfoldTab />);
+
+    expect(await screen.findByText(sentence)).toBeInTheDocument();
+    expect(screen.queryByText(SERVER_WORDS)).not.toBeInTheDocument();
+  });
 });

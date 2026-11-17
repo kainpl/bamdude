@@ -30,7 +30,14 @@ vi.mock('../../pages/PrintersPage', () => ({ PrintersPage: () => <p>the printers
 function open(address: string) {
   server.use(
     http.get('/api/v1/model-sources/manyfold/status', () =>
-      HttpResponse.json({ source: 'manyfold', name: 'Manyfold', configured: true, usable: true, base_url: null }),
+      HttpResponse.json({
+        source: 'manyfold',
+        name: 'Manyfold',
+        configured: true,
+        usable: true,
+        base_url: null,
+        imports: { active: 0, waiting: 0, limit: 2 },
+      }),
     ),
     http.get('/api/v1/model-sources/manyfold/models', () =>
       HttpResponse.json({ total: 0, page: 1, pages: 1, has_next: false, has_previous: false, models: [] }),
