@@ -52,6 +52,7 @@ from backend.app.schemas.printer import (
     PlateAnswerIn,
     PrinterCreate,
     PrinterDiagnosticResult,
+    PrinterPlacementRequest,
     PrinterResponse,
     PrinterResponseWithSecret,
     PrinterStatus,
@@ -135,7 +136,12 @@ from backend.app.services.printer_manager import (
     vt_trays_for,
 )
 from backend.app.services.printer_status_context import current_archive_ids, printers_with_waiting_rows
-from backend.app.services.printer_tag_service import delete_links_for_printer, replace_links
+from backend.app.services.printer_tag_service import (
+    add_links,
+    delete_links_for_printer,
+    remove_links,
+    replace_links,
+)
 from backend.app.utils.fila_switch import extruder_slots_payload, inlet_bindings, switch_ready
 from backend.app.utils.http import build_content_disposition
 from backend.app.utils.model_compatibility import compatibility_matrix, effective_model_for_state, model_compatibility
@@ -651,6 +657,50 @@ async def update_printer(
             logger.warning("Cloud Link: could not refresh the publish set after parking printer %s: %s", printer_id, e)
 
     return printer
+
+
+@router.post("/placement")
+async def place_printers(
+    body: PrinterPlacementRequest,
+    _=RequirePermission(Permission.PRINTERS_UPDATE),
+    db: AsyncSession = Depends(get_db),
+):
+    """Give several printers a location and / or tags in one transaction.
+
+    All or none: a printer that is missing or archived, or a location or tag
+    that names nothing, refuses the whole request -- a loop of per-printer
+    edits left a farm half placed when one of them failed. A printer's other
+    tags stay; the place is touched only with ``set_location``.
+    """
+    printer_ids = sorted(set(body.printer_ids))
+    add_ids = sorted(set(body.add_tag_ids))
+    remove_ids = sorted(set(body.remove_tag_ids))
+    if not body.set_location and not add_ids and not remove_ids:
+        raise HTTPException(422, "Nothing to change: choose a location or a tag.")
+    if set(add_ids) & set(remove_ids):
+        raise HTTPException(422, "A tag cannot be both added and removed.")
+    if body.set_location:
+        await _require_known_location(db, body.location_id)
+    await _require_known_tags(db, [*add_ids, *remove_ids])
+
+    printers = (
+        (await db.execute(select(Printer).where(Printer.id.in_(printer_ids)).order_by(Printer.id).with_for_update()))
+        .scalars()
+        .all()
+    )
+    if len(printers) != len(printer_ids):
+        raise HTTPException(404, "Printer not found")
+    archived = [printer.name for printer in printers if printer.archived]
+    if archived:
+        raise HTTPException(409, f"Archived printers cannot be placed: {', '.join(archived)}.")
+
+    if body.set_location:
+        for printer in printers:
+            printer.location_id = body.location_id
+    await remove_links(db, printer_ids, remove_ids)
+    await add_links(db, printer_ids, add_ids)
+    await db.commit()
+    return {"updated": len(printers)}
 
 
 @router.post("/{printer_id}/mqtt-recording")

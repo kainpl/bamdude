@@ -10801,6 +10801,14 @@ export const api = {
   deletePrinterLocation: (id: number) =>
     request<{ deleted: number }>(`/printer-locations/${id}`, { method: 'DELETE' }),
   getPrinterTags: () => request<{ tags: PrinterTagListItem[] }>('/printer-tags'),
+  /** A location and / or tags for several printers at once; the server applies all or none. */
+  placePrinters: (body: {
+    printer_ids: number[];
+    set_location: boolean;
+    location_id: number | null;
+    add_tag_ids: number[];
+    remove_tag_ids: number[];
+  }) => request<{ updated: number }>('/printers/placement', { method: 'POST', body: JSON.stringify(body) }),
   createPrinterTag: (name: string, color: string | null = null) =>
     request<PrinterTag>('/printer-tags', { method: 'POST', body: JSON.stringify({ name, color }) }),
   /**

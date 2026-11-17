@@ -108,6 +108,7 @@ import { api, discoveryApi, firmwareApi, macrosApi, withMediaToken, DEFAULT_BACK
 import { AutoStockSpoolFields } from '../components/AutoStockSpoolFields';
 import { BulkPrinterToolbar, type BulkAction } from '../components/BulkPrinterToolbar';
 import { BulkPrinterActionDialog } from '../components/BulkPrinterActionDialog';
+import { BulkPrinterPlacementDialog } from '../components/BulkPrinterPlacementDialog';
 import { PauseChip } from '../components/PauseChip';
 import { formatDateOnly, formatETA, formatDuration, formatTimeOnly, parseUTCDate } from '../utils/date';
 import type { Printer, PrinterCreate, PrinterStatus, AirductFan, AMSUnit, DiscoveredPrinter, FirmwareUpdateInfo, FirmwareUploadStatus, LinkedSpoolInfo, SpoolAssignment, HMSError, Macro, InventorySpool, SmartPlug, PrinterDiagnosticResult, HeaterSensorKind, ScheduledDryingInput, DryingScheduleInput } from '../api/client';
@@ -9937,9 +9938,10 @@ export function PrintersPage() {
     setSelectedPrinterIds(new Set(printers.map(p => p.id)));
   }, [printers]);
 
-  const selectByLocation = useCallback((locationId: number) => {
+  const selectByLocation = useCallback((locationId: number | null) => {
     if (!printers) return;
-    setSelectedPrinterIds(new Set(printers.filter(p => p.location?.id === locationId).map(p => p.id)));
+    // `null` is the printers that stand nowhere -- the ones a bulk placement is usually for.
+    setSelectedPrinterIds(new Set(printers.filter(p => (p.location?.id ?? null) === locationId).map(p => p.id)));
   }, [printers]);
 
   const selectByState = useCallback((state: string) => {
@@ -9961,6 +9963,12 @@ export function PrintersPage() {
     }).map(p => p.id);
     setSelectedPrinterIds(new Set(ids));
   }, [printers, queryClient]);
+
+  // The same snapshot rule as the other bulk actions: the selection is frozen at the click.
+  const [placementSelection, setPlacementSelection] = useState<Printer[] | null>(null);
+  const handleBulkPlacement = useCallback(() => {
+    setPlacementSelection((printers ?? []).filter(p => selectedPrinterIds.has(p.id)).map(p => ({ ...p })));
+  }, [printers, selectedPrinterIds]);
 
   const handleBulkAction = useCallback((action: BulkAction) => {
     // Snapshot names and IDs at the click: background selection changes cannot
@@ -10814,6 +10822,9 @@ export function PrintersPage() {
           onClose={() => setBulkSelection(null)}
         />
       )}
+      {placementSelection && placementSelection.length > 0 && (
+        <BulkPrinterPlacementDialog printers={placementSelection} onClose={() => setPlacementSelection(null)} />
+      )}
       {/* Compact-card "expand into popup": re-mount the same PrinterCard
           with M-size sizing for the picked printer. The shell draws no
           header (``hideClose`` + no title): the card already shows the
@@ -10892,7 +10903,8 @@ export function PrintersPage() {
           onSelectByLocation={selectByLocation}
           onSelectByState={selectByState}
           onAction={handleBulkAction}
-          actionPending={bulkSelection !== null}
+          onPlacement={handleBulkPlacement}
+          actionPending={bulkSelection !== null || placementSelection !== null}
         />
       )}
     </div>
