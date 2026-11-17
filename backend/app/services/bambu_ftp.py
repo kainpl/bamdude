@@ -2138,6 +2138,52 @@ async def delete_file_async(
         return DeleteResult.FAILED
 
 
+async def delete_file_verified_async(
+    ip_address: str,
+    access_code: str,
+    remote_path: str,
+    socket_timeout: float | None = None,
+    printer_model: str | None = None,
+    timeout: float = 300.0,
+    *,
+    ready: Callable[[], bool],
+    verify: Callable[[bytes | None], bool],
+    may_run: Callable[[], bool] | None = None,
+) -> DeleteResult:
+    """Delete a file only as the very bytes the caller expects (G10 C): one session, one lane occupancy.
+
+    The file is read, ``verify`` is asked about what was read, ``may_run`` is asked, and only then the
+    DELE is sent — all in the same worker, so no other operation of ours on this printer comes between
+    the proof and the command. ``ready`` is asked before a connection is even opened. ``timeout`` bounds
+    the wait for the lane, not the read (see :func:`download_file_bytes_async`).
+    """
+
+    def target(worker: LaneWorker) -> DeleteResult:
+        if not ready():
+            return DeleteResult.FAILED
+        client = BambuFTPClient(ip_address, access_code, timeout=socket_timeout, printer_model=printer_model)
+        if not _session(worker, client):
+            return DeleteResult.FAILED
+        try:
+            data = client.download_file(remote_path)
+            if not verify(data) or (may_run is not None and not may_run()):
+                return DeleteResult.FAILED
+            return client.delete_file(remote_path)
+        finally:
+            _end_session(worker, client)
+
+    try:
+        return await _on_lane(ip_address, "delete", target, timeout=timeout)
+    except LaneTimeout:
+        logger.warning("Verified FTP delete exceeded its %ss wait for %s", timeout, ip_address)
+        return DeleteResult.FAILED
+    except LaneRefused as refused:
+        logger.warning("Verified FTP delete of %s not started (%s)", remote_path, refused.reason)
+        return DeleteResult.FAILED
+    except WorkerCancelled:
+        return DeleteResult.FAILED
+
+
 async def clear_sdcard_async(
     ip_address: str,
     access_code: str,

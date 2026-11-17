@@ -298,6 +298,36 @@ class TunnelTransport:
             logger.info("[%s] tunnel delete of %s not started (%s)", self._ip, path, refused.reason)
             return DeleteResult.FAILED
 
+    async def delete_verified(
+        self,
+        path: str,
+        *,
+        ready: Callable[[], bool],
+        verify: Callable[[bytes | None], bool],
+        may_run: Callable[[], bool] | None = None,
+    ) -> DeleteResult:
+        """Read, check and delete in one occupancy of the lane (see the protocol). ``FAILED`` unless proven."""
+
+        async def operation() -> DeleteResult:
+            if not ready():
+                return DeleteResult.FAILED
+            async with self._client() as client:
+                data = await client.download_file(path)
+                # No await between the last answer and the command.
+                if not verify(data) or (may_run is not None and not may_run()):
+                    return DeleteResult.FAILED
+                await client.delete_files([path])
+                return DeleteResult.DELETED
+
+        try:
+            return await self._on_lane("delete", operation)
+        except TunnelError as exc:
+            logger.info("[%s] verified tunnel delete refused for %s: %s", self._ip, path, exc)
+            return DeleteResult.FAILED
+        except LaneRefused as refused:
+            logger.info("[%s] verified tunnel delete of %s not started (%s)", self._ip, path, refused.reason)
+            return DeleteResult.FAILED
+
     async def upload(
         self,
         local_path: Path,

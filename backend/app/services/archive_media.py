@@ -42,6 +42,18 @@ that were downloaded, never the derived file's), so the recording cannot be
 attached to another archive meanwhile. Only the operator's own removal of the
 video, and the archive's deletion, release it.
 
+⚠️ **"No video" has a revision too.** A removal leaves a ``retired`` row — a
+tombstone carrying the next revision — so the token of an empty archive is
+``none:<highest revision>``: an upload that captured the empty state, and then
+slept through "a video was attached, and removed again", does not find the
+state it started from.
+
+⚠️ **A receipt is history, not a copy.** What may be deleted from a printer is
+decided by a LIVE copy — the primary row that claims the recording, shown by
+its archive, its file on disk — pinned for as long as the tidy-up runs
+(:func:`pin_live_copy`): replacing or removing that video revokes the pin, and
+a revoked pin deletes nothing from the printer.
+
 ⚠️ **A stored path authorises no unlink outside the data directory.** A pointer
 from an import or an old writer is resolved and contained before anything is
 removed; one that escapes is left alone and logged.
@@ -73,7 +85,13 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.models.archive_media_asset import ORIGIN_LEGACY, ROLE_PRIMARY, ROLE_RECEIPT, ArchiveMediaAsset
+from backend.app.models.archive_media_asset import (
+    ORIGIN_LEGACY,
+    ROLE_PRIMARY,
+    ROLE_RECEIPT,
+    ROLE_RETIRED,
+    ArchiveMediaAsset,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -180,16 +198,23 @@ def normalise_remote_path(path: str) -> str:
     return "/" + "/".join(parts)
 
 
-def _token(primary: ArchiveMediaAsset | None, pointer: str | None) -> str:
+#: The token of an archive that never had a video.
+NO_VIDEO = "none:0"
+
+
+def _token(primary: ArchiveMediaAsset | None, pointer: str | None, highest: int) -> str:
     """The state a caller compares: which video the archive shows, and which publication made it so.
 
     The pointer alone is not enough — a video removed and one of the same name
     attached again would look unchanged. A pointer no row describes yet (a
-    video from before the seam) is its own state, ``legacy``.
+    video from before the seam) is its own state, ``legacy``. And "no video" is
+    a state with a revision: ``highest`` is the highest revision the archive's
+    rows carry, kept up by the tombstone a removal leaves, so the emptiness
+    after "attached, then removed" is not the emptiness before it.
     """
     shown = (pointer or "").strip()
     if not shown:
-        return "none"
+        return f"none:{highest}"
     if primary is not None and primary.relative_path == shown:
         return f"{primary.revision}:{primary.asset_uuid}"
     return f"legacy:{shown}"
@@ -197,7 +222,35 @@ def _token(primary: ArchiveMediaAsset | None, pointer: str | None) -> str:
 
 async def primary_token(db: AsyncSession, archive) -> str:
     """Capture the archive's current video, to hand to a later publication as ``expected_token``."""
-    return _token(await primary_of(db, archive.id, archive.recovery_identity), archive.timelapse_path)
+    return _token(
+        await primary_of(db, archive.id, archive.recovery_identity),
+        archive.timelapse_path,
+        await _next_revision(db, archive) - 1,
+    )
+
+
+async def _tombstone(db: AsyncSession, archive, revision: int, relative_path: str | None) -> None:
+    """Leave the mark of a removal: one ``retired`` row per archive, carrying the removal's revision."""
+    await db.execute(
+        delete(ArchiveMediaAsset).where(
+            ArchiveMediaAsset.archive_id == archive.id,
+            ArchiveMediaAsset.archive_identity == archive.recovery_identity,
+            ArchiveMediaAsset.role == ROLE_RETIRED,
+        )
+    )
+    db.add(
+        ArchiveMediaAsset(
+            asset_uuid=str(uuid4()),
+            archive_id=archive.id,
+            archive_identity=archive.recovery_identity,
+            role=ROLE_RETIRED,
+            revision=revision,
+            relative_path=relative_path or "",
+            origin=ORIGIN_LEGACY,
+            created_at=_now(),
+        )
+    )
+    await db.flush()
 
 
 async def _reconcile(db: AsyncSession, archive, receipts: list | None = None) -> ArchiveMediaAsset | None:
@@ -218,10 +271,15 @@ async def _reconcile(db: AsyncSession, archive, receipts: list | None = None) ->
     shown = (archive.timelapse_path or "").strip()
     if primary is not None and primary.relative_path == shown:
         return primary
+    # Read before the stale row goes: a revision is never handed out twice.
+    revision = await _next_revision(db, archive)
     if primary is not None:
         # Stale: an old writer replaced or removed the video after this row was written.
         # What it claimed on a printer stays claimed (the receipt is written by the caller).
+        stale_path = primary.relative_path
         await _retire(db, primary, receipts)
+        if not shown:
+            await _tombstone(db, archive, revision, stale_path)
     if not shown:
         return None
     legacy = ArchiveMediaAsset(
@@ -229,7 +287,7 @@ async def _reconcile(db: AsyncSession, archive, receipts: list | None = None) ->
         archive_id=archive.id,
         archive_identity=archive.recovery_identity,
         role=ROLE_PRIMARY,
-        revision=await _next_revision(db, archive),
+        revision=revision,
         relative_path=shown,
         origin=ORIGIN_LEGACY,
         created_at=_now(),
@@ -325,6 +383,11 @@ async def _retire(db: AsyncSession, row: ArchiveMediaAsset, receipts: list | Non
                 "created_at": row.created_at,
             }
         )
+    for pin in _pins:
+        if pin.asset_uuid == row.asset_uuid:
+            # Before the commit, on purpose: a tidy-up must not delete from the
+            # printer on the strength of a copy that is being taken away.
+            pin.revoked = True
     await db.delete(row)
     await db.flush()
 
@@ -361,21 +424,77 @@ async def _drop_own_receipts(db: AsyncSession, archive, *, claim: tuple | None =
     await db.execute(statement)
 
 
-async def committed_copy_hashes(db: AsyncSession, printer_identity: str, storage: str, remote_path: str) -> set[str]:
-    """SHA-256 of every committed copy of one printer recording — primaries and receipts alike.
+@dataclass
+class CopyPin:
+    """A live local copy of one printer recording, held while the tidy-up decides about the original.
 
-    What the tidy-up compares the file on the printer with before it deletes it
-    (``timelapse_files.remove_recording_after_attach``).
+    ``holds()`` is synchronous on purpose: it is asked on the printer's file
+    lane — in a worker thread for FTP — immediately before the delete command.
     """
-    rows = await db.execute(
-        select(ArchiveMediaAsset.content_sha256).where(
-            ArchiveMediaAsset.remote_printer_identity == printer_identity,
-            ArchiveMediaAsset.remote_storage == storage,
-            ArchiveMediaAsset.remote_path == normalise_remote_path(remote_path),
-            ArchiveMediaAsset.content_sha256.is_not(None),
+
+    asset_uuid: str
+    relative_path: str
+    content_sha256: str
+    revoked: bool = False
+
+    def holds(self) -> bool:
+        return not self.revoked
+
+    def matches(self, data: bytes | None) -> bool:
+        """Whether ``data`` — the recording as it is on the printer NOW — is the very video this copy holds."""
+        import hashlib  # noqa: PLC0415
+
+        return bool(data) and self.holds() and hashlib.sha256(data).hexdigest() == self.content_sha256
+
+
+#: Pins of running tidy-ups. Process memory: this process is the only writer that can take the copy away.
+_pins: list[CopyPin] = []
+
+
+async def pin_live_copy(
+    db: AsyncSession, base_dir: Path, printer_identity: str, storage: str, remote_path: str
+) -> CopyPin | None:
+    """Pin the live copy of one printer recording, or ``None`` when no archive holds one.
+
+    Live means: a PRIMARY row claims the recording, its archive's pointer names
+    that row's file, and the file is on disk inside the data directory. A
+    receipt is history — the video made from the recording was replaced, and
+    its file may be gone — so it authorises nothing here.
+    """
+    from backend.app.models.archive import PrintArchive  # noqa: PLC0415
+
+    found = (
+        await db.execute(
+            select(ArchiveMediaAsset, PrintArchive.timelapse_path)
+            .join(PrintArchive, PrintArchive.id == ArchiveMediaAsset.archive_id)
+            .where(
+                ArchiveMediaAsset.role == ROLE_PRIMARY,
+                ArchiveMediaAsset.remote_printer_identity == printer_identity,
+                ArchiveMediaAsset.remote_storage == storage,
+                ArchiveMediaAsset.remote_path == normalise_remote_path(remote_path),
+                ArchiveMediaAsset.content_sha256.is_not(None),
+                PrintArchive.recovery_identity == ArchiveMediaAsset.archive_identity,
+            )
+            .limit(1)
         )
-    )
-    return {value for value in rows.scalars().all() if value}
+    ).first()
+    if found is None:
+        return None
+    row, pointer = found
+    if (pointer or "").strip() != row.relative_path:
+        return None
+    local = await asyncio.to_thread(contained, base_dir, row.relative_path)
+    if local is None or not await asyncio.to_thread(local.is_file):
+        return None
+    pin = CopyPin(row.asset_uuid, row.relative_path, row.content_sha256)
+    _pins.append(pin)
+    return pin
+
+
+def release_pin(pin: CopyPin | None) -> None:
+    """End a pin: the tidy-up it served is over."""
+    if pin is not None and pin in _pins:
+        _pins.remove(pin)
 
 
 def contained(base_dir: Path, relative_path: str | None) -> Path | None:
@@ -525,8 +644,7 @@ async def _publish_primary(
             if current is None:
                 await db.rollback()
                 return Publication(False, REFUSED_TARGET_GONE)
-            shown = await primary_of(db, current.id, current.recovery_identity)
-            if _token(shown, current.timelapse_path) != expected_token:
+            if await primary_token(db, current) != expected_token:
                 await db.rollback()
                 return Publication(False, REFUSED_SOURCE_CHANGED)
             if may_run is not None and not may_run():
@@ -625,15 +743,16 @@ async def _remove_primary(
         if current is None:
             await db.rollback()
             return Publication(False, REFUSED_TARGET_GONE)
-        if expected_token is not None:
-            shown = await primary_of(db, current.id, current.recovery_identity)
-            if _token(shown, current.timelapse_path) != expected_token:
-                await db.rollback()
-                return Publication(False, REFUSED_SOURCE_CHANGED)
+        if expected_token is not None and await primary_token(db, current) != expected_token:
+            await db.rollback()
+            return Publication(False, REFUSED_SOURCE_CHANGED)
         old = await _reconcile(db, current)
         removed = (current.timelapse_path or "").strip() or None
         if old is not None:
+            # The emptiness this leaves is a new state: its revision is kept by a tombstone.
+            revision = await _next_revision(db, current)
             await _retire(db, old)
+            await _tombstone(db, current, revision, removed)
         await _drop_own_receipts(db, current)
         if removed and await _still_shown_elsewhere(db, removed, current.id):
             removed = None
@@ -656,7 +775,9 @@ async def detach_primary_in(db: AsyncSession, archive) -> str | None:
     shown = (archive.timelapse_path or "").strip() or None
     primary = await primary_of(db, archive.id, archive.recovery_identity)
     if primary is not None:
+        revision = await _next_revision(db, archive)
         await _retire(db, primary, receipts)
+        await _tombstone(db, archive, revision, shown)
     # The earlier run's recording stays claimed by this archive.
     await _keep_receipts(db, receipts)
     archive.timelapse_path = None

@@ -178,7 +178,7 @@ class TestALatePublicationDoesNotWinByBeingLast:
     async def test_no_video_is_a_state_too(self, db_session, base):
         archive = await _archive(db_session)
         token = await _token_of(db_session, archive)
-        assert token == "none"
+        assert token == archive_media.NO_VIDEO
         await _publish(db_session, base, archive, data=b"somebody else")
         late, _ = await _publish(db_session, base, archive, data=b"mine", expected_token=token)
         assert late.refusal == archive_media.REFUSED_SOURCE_CHANGED
@@ -322,7 +322,7 @@ class TestRowsFromBeforeTheSeam:
 
         assert removed.ok
         assert await _pointer(db_session, archive.id) is None
-        assert await _rows(db_session, archive.id) == []
+        assert [row.role for row in await _rows(db_session, archive.id)] == ["retired"]  # the removal's mark
         assert not (base / "archive/old/newer.mp4").exists()
         # The stale row's file is not this archive's video any more; it is not touched and not brought back.
         assert (base / "archive/old/seeded.mp4").exists()
@@ -330,12 +330,14 @@ class TestRowsFromBeforeTheSeam:
     async def test_delete_after_the_seed_does_not_bring_the_video_back(self, db_session, base):
         """An old writer removed the video: the pointer is NULL and the seeded row is still there."""
         archive = await self._seeded(db_session, base, pointer=None, row_path="archive/old/seeded.mp4")
-        assert await _token_of(db_session, archive) == "none"
+        # The emptiness an old writer left has the stale row's revision, not the never-had-a-video one.
+        token = await _token_of(db_session, archive)
+        assert token.startswith("none:") and token != archive_media.NO_VIDEO
 
-        result, _ = await _publish(db_session, base, archive, name="new.mp4", expected_token="none")
+        result, _ = await _publish(db_session, base, archive, name="new.mp4", expected_token=token)
 
         assert result.ok
-        (row,) = await _rows(db_session, archive.id)
+        (row,) = [r for r in await _rows(db_session, archive.id) if r.role == "primary"]
         assert row.relative_path == result.relative_path
         assert await _pointer(db_session, archive.id) == result.relative_path
 
@@ -380,8 +382,40 @@ class TestRemoving:
         )
         assert result.ok
         assert await _pointer(db_session, archive.id) is None
-        assert await _rows(db_session, archive.id) == []
+        (mark,) = await _rows(db_session, archive.id)
+        assert (mark.role, mark.revision) == ("retired", published.revision + 1)
         assert not (base / published.relative_path).exists()
+
+    async def test_the_emptiness_after_a_removal_is_not_the_emptiness_before_it(self, db_session, base):
+        """C2-1: an upload that captured "no video" and slept through attach-then-remove is refused."""
+        archive = await _archive(db_session)
+        before = await _token_of(db_session, archive)
+        published, _ = await _publish(db_session, base, archive)
+        await archive_media.remove_primary(
+            db_session,
+            archive.id,
+            base_dir=base,
+            expected_identity=archive.recovery_identity,
+            expected_epoch=queue_sources.current_epoch(),
+        )
+        after = await _token_of(db_session, archive)
+        assert (before, after) == ("none:0", "none:2")
+
+        late, _ = await _publish(db_session, base, archive, name="late.mp4", expected_token=before)
+        assert (late.ok, late.refusal) == (False, archive_media.REFUSED_SOURCE_CHANGED)
+        assert await _pointer(db_session, archive.id) is None
+
+        fresh, _ = await _publish(db_session, base, archive, name="fresh.mp4")
+        assert fresh.ok and fresh.revision == 3, "revisions go on from the removal's, never back"
+        assert [row.role for row in await _rows(db_session, archive.id)] == ["retired", "primary"]
+
+    async def test_a_reprint_reset_marks_the_emptiness_too(self, db_session, base):
+        archive = await _archive(db_session)
+        await _publish(db_session, base, archive)
+        row = await _live(db_session, archive)
+        await archive_media.detach_primary_in(db_session, row)
+        await db_session.commit()
+        assert await _token_of(db_session, archive) == "none:2"
 
     async def test_a_file_another_archive_still_shows_is_kept(self, db_session, base):
         """A 3MF folder can be shared by content dedup; an old-layout video may sit in it."""

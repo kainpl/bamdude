@@ -688,7 +688,7 @@ class TestConvertTimelapseToMp4:
             origin="upload",
             expected_identity=identity,
             expected_epoch=queue_sources.current_epoch(),
-            expected_token="none",
+            expected_token="none:0",
         )
         assert published.ok
         source = tmp_path / "video.avi"
@@ -790,7 +790,8 @@ class TestDeleteTimelapse:
         assert result == {"status": "deleted"}
         db_session.expire_all()
         assert (await db_session.get(type(archive), archive_id)).timelapse_path is None
-        assert (await db_session.execute(select(ArchiveMediaAsset))).scalars().all() == []
+        # Only the removal's mark is left: the "no video" that follows has its own revision (G10 C).
+        assert [row.role for row in (await db_session.execute(select(ArchiveMediaAsset))).scalars()] == ["retired"]
         assert not timelapse_file.exists()
         announced.assert_awaited_once()
 

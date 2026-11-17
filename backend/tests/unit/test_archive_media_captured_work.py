@@ -339,7 +339,7 @@ class TestAClaimOutlivesTheVideoMadeFromIt:
             expected_identity=archive.recovery_identity,
             expected_epoch=queue_sources.current_epoch(),
         )
-        assert removed.ok and await _rows(db_session, archive.id) == []
+        assert removed.ok and [row.role for row in await _rows(db_session, archive.id)] == ["retired"]
 
         assert (await self._other_may_claim(db_session, base)).ok
 
@@ -373,11 +373,8 @@ class TestOnlyTheVeryBytesAreDeletedFromThePrinter:
         deleted = []
 
         class Transport:
-            async def read_bytes(self, path):
-                return files.get(path)
-
-            async def delete(self, path, *, may_run=None):
-                if not may_run():
+            async def delete_verified(self, path, *, ready, verify, may_run=None):
+                if not ready() or not verify(files.get(path)) or not may_run():
                     return DeleteResult.FAILED
                 deleted.append(files.pop(path))
                 return DeleteResult.DELETED
@@ -872,21 +869,162 @@ class TestAStoredBaselineIsAddressedAndNeverDestroyed:
         )
 
 
-async def test_the_registry_lookup_names_every_committed_copy(db_session, base):
-    from backend.app.services import timelapse_files
+class TestARecoveryThatWasOvertakenLeavesNothing:
+    """C3-2: the recovery's own proof reaches the capture — the archive AND memory."""
 
-    archive = await _archive(db_session)
-    await _publish(
-        db_session,
-        base,
-        archive,
-        origin="printer",
-        remote=RemoteSource("printer-identity", "external", "//timelapse//record.avi"),
-        content_sha256="downloaded",
-    )
-    await _publish(db_session, base, archive, name="mine.mp4", data=b"upload")  # the claim is a receipt now
-    device = SimpleNamespace(id=1, name="P", connector_identity="printer-identity")
+    async def test_a_list_read_for_a_run_that_was_reset_meanwhile_is_dropped(
+        self, db_session, monkeypatch, printer_factory
+    ):
+        from datetime import datetime
 
-    assert await timelapse_files._committed_copy_hashes(device, "/timelapse/record.avi") == {"downloaded"}
-    assert await timelapse_files._committed_copy_hashes(device, "/timelapse/other.avi") == set()
-    assert await _token_of(db_session, archive) != "none"
+        from backend.app import main
+        from backend.app.core import database
+        from backend.app.services import print_execution
+
+        device = await printer_factory()
+        archive = await _printing(
+            db_session, device.id, extra_data={tb.KEY: tb.record(set(), trusted=False, taken="start")}
+        )
+        monkeypatch.setattr(main, "async_session", database.async_session)
+        monkeypatch.setattr(main, "_timelapse_baselines", {})
+        monkeypatch.setattr(main, "_untrusted_timelapse_baselines", set())
+        monkeypatch.setattr(main, "_timelapse_baseline_owners", {})
+        run = {"generation": 41, "reset": False}
+        manager = main.printer_manager
+        monkeypatch.setattr(manager, "accepts_client_callback_generation", lambda *a: True)
+        monkeypatch.setattr(manager, "life_holds", lambda *a: True)
+        monkeypatch.setattr(
+            manager, "get_client", lambda *a: SimpleNamespace(journal_generation=lambda: run["generation"])
+        )
+        monkeypatch.setattr(manager, "get_status", lambda *a: SimpleNamespace(state="RUNNING"))
+        monkeypatch.setattr(manager, "is_awaiting_plate_clear", lambda *a: False)
+        monkeypatch.setattr(main, "_restore_usage_tracking_session", AsyncMock())
+        monkeypatch.setattr(main, "_seed_runout_detector_from_journal", AsyncMock())
+        live = SimpleNamespace(archive_id=archive.id, archive_identity=archive.recovery_identity, plate_index=1)
+        monkeypatch.setattr(main, "_live_archive_for_running_print", AsyncMock(return_value=live))
+        monkeypatch.setattr(
+            print_execution, "decide_start", AsyncMock(return_value=SimpleNamespace(current_id=archive.id, old=False))
+        )
+        monkeypatch.setattr(main, "mark_queue_printing_for_printer", AsyncMock(return_value=live))
+        monkeypatch.setattr(main, "_printer_reported_options", lambda *a: None)
+        monkeypatch.setattr(main, "_bind_print_file_analysis_context", lambda *a: None)
+        monkeypatch.setattr(main, "_last_listing_answered", lambda *a: True)
+        monkeypatch.setattr(main, "_last_listing_media", lambda *a: {"external": "answered"})
+
+        async def listing(*args, **kwargs):
+            # The list was asked for run 41; before it answers, a reprint resets the row — the same
+            # archive incarnation, still printing — and the run is 42.
+            async with database.async_session() as db:
+                row = await db.get(PrintArchive, archive.id)
+                tb.forget_in(row)
+                row.started_at = datetime(2026, 11, 17, 15, 0, 0)
+                await db.commit()
+            run.update(generation=42, reset=True)
+            return [{"name": "old-run.mp4", "path": "/timelapse/old-run.mp4"}], "/timelapse"
+
+        monkeypatch.setattr(main, "_list_timelapse_videos", listing)
+
+        await main._recover_running_print(device.id, {"_journal_generation": 41})
+
+        assert run["reset"], "the recovery must reach the listing"
+        assert await _stored(db_session, archive.id) is None
+        assert device.id not in main._timelapse_baselines
+        assert device.id not in main._timelapse_baseline_owners
+
+    async def test_a_list_the_archive_refused_does_not_stay_in_memory(self, db_session, monkeypatch, printer_factory):
+        """An unread list against a trusted kept one: the archive keeps its own, and memory takes neither."""
+        from backend.app import main
+        from backend.app.core import database
+
+        device = await printer_factory()
+        archive = await _printing(
+            db_session, device.id, extra_data={tb.KEY: tb.record({"previous.mp4"}, trusted=True, taken="start")}
+        )
+        monkeypatch.setattr(main, "async_session", database.async_session)
+        monkeypatch.setattr(main, "_timelapse_baselines", {})
+        monkeypatch.setattr(main, "_untrusted_timelapse_baselines", set())
+        monkeypatch.setattr(main, "_timelapse_baseline_owners", {})
+        monkeypatch.setattr(main, "_last_listing_answered", lambda pid: False)
+        monkeypatch.setattr(main, "_list_timelapse_videos", AsyncMock(return_value=([], "/timelapse")))
+
+        await main._capture_timelapse_baseline_at_start(
+            device,
+            device.id,
+            logging.getLogger(__name__),
+            archive_id=archive.id,
+            archive_identity=archive.recovery_identity,
+            taken="late",
+        )
+
+        assert device.id not in main._timelapse_baselines
+        assert device.id not in main._untrusted_timelapse_baselines
+
+
+class TestOnlyALiveCopyIsPinned:
+    """C2-3: a receipt is history; what authorises a delete on the printer is a copy that exists."""
+
+    async def _claimed(self, db_session, base):
+        archive = await _archive(db_session)
+        published, _ = await _publish(
+            db_session,
+            base,
+            archive,
+            origin="printer",
+            remote=RemoteSource("printer-identity", "external", "//timelapse//record.avi"),
+            content_sha256="downloaded",
+        )
+        return archive, published
+
+    async def _pin(self, db_session, base, path="/timelapse/record.avi", identity="printer-identity"):
+        return await archive_media.pin_live_copy(db_session, base, identity, "external", path)
+
+    async def test_the_shown_copy_is_pinned_and_the_pin_is_released(self, db_session, base):
+        _archive_row, published = await self._claimed(db_session, base)
+        pin = await self._pin(db_session, base)
+        assert (pin.asset_uuid, pin.relative_path, pin.content_sha256, pin.holds()) == (
+            published.asset_uuid,
+            published.relative_path,
+            "downloaded",
+            True,
+        )
+        archive_media.release_pin(pin)
+        assert archive_media._pins == []
+
+    async def test_another_path_or_printer_has_no_copy(self, db_session, base):
+        await self._claimed(db_session, base)
+        assert await self._pin(db_session, base, path="/timelapse/other.avi") is None
+        assert await self._pin(db_session, base, identity="another-printer") is None
+
+    async def test_a_receipt_is_no_copy(self, db_session, base):
+        archive, _ = await self._claimed(db_session, base)
+        await _publish(db_session, base, archive, name="mine.mp4", data=b"upload")  # the claim is a receipt now
+        assert await self._pin(db_session, base) is None
+
+    async def test_a_copy_whose_file_is_gone_is_no_copy(self, db_session, base):
+        _archive_row, published = await self._claimed(db_session, base)
+        (base / published.relative_path).unlink()
+        assert await self._pin(db_session, base) is None
+
+    @pytest.mark.parametrize("change", ["replace", "remove", "reprint"])
+    async def test_taking_the_video_away_revokes_the_pin(self, db_session, base, change):
+        archive, _ = await self._claimed(db_session, base)
+        pin = await self._pin(db_session, base)
+        try:
+            if change == "replace":
+                await _publish(db_session, base, archive, name="mine.mp4", data=b"upload")
+            elif change == "remove":
+                await archive_media.remove_primary(
+                    db_session,
+                    archive.id,
+                    base_dir=base,
+                    expected_identity=archive.recovery_identity,
+                    expected_epoch=queue_sources.current_epoch(),
+                )
+            else:
+                row = await db_session.get(PrintArchive, archive.id, populate_existing=True)
+                await archive_media.detach_primary_in(db_session, row)
+                await db_session.commit()
+            assert not pin.holds()
+            assert not pin.matches(b"anything")
+        finally:
+            archive_media.release_pin(pin)

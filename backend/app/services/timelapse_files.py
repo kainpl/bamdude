@@ -322,28 +322,30 @@ def remote_source(printer, remote_path: str, entry: dict | None = None):
     )
 
 
-async def _committed_copy_hashes(printer, remote_path: str) -> set[str]:
-    """SHA-256 of every copy of this recording an archive has durably committed (the registry's claims)."""
-    from backend.app.core.database import async_session
-    from backend.app.services import archive_media
-
-    identity = getattr(printer, "connector_identity", None)
-    if not isinstance(identity, str) or not identity:
-        return set()
-    async with async_session() as db:
-        return await archive_media.committed_copy_hashes(db, identity, recording_storage(remote_path), remote_path)
-
-
 async def remove_recording_after_attach(printer, remote_path: str, *, may_run=None) -> bool:
     """Delete a recording from the printer once BamDude has a copy of it.
 
-    ⚠️ **"A copy" means these bytes, proven, not this name** (G10 C). The
-    recording is read again and its SHA-256 must be one the registry holds as
-    committed for exactly this printer, medium and path. A printer that
-    recorded another video under the same name meanwhile, a registry without
-    such a row (a printer with no identity claims nothing), or a re-read that
-    fails — the file stays. The cost is a second read of the recording, paid
-    only by installs that switched the tidy-up on.
+    ⚠️ **"A copy" means these bytes, proven, on disk, now — not this name** (G10 C).
+    Three things must all hold at the moment of the command:
+
+    * an archive holds a LIVE copy — the primary row that claims this printer,
+      medium and path, shown by its archive, its file on disk. It is pinned
+      for the whole tidy-up (``archive_media.pin_live_copy``): replacing or
+      removing that video meanwhile revokes the pin, and a revoked pin
+      deletes nothing. A receipt left by a replaced video is history and
+      authorises nothing;
+    * the recording as it is on the printer NOW has that copy's SHA-256 — it
+      is read again and deleted in ONE occupancy of the printer's file lane
+      (``delete_verified``), so nothing of ours comes between the proof and
+      the command. A printer that recorded another video under the name
+      meanwhile keeps it;
+    * the file guard and the caller's own proof, asked last.
+
+    A transport that cannot read and delete in one occupancy deletes nothing.
+    The cost is a second read of the recording, paid only by installs that
+    switched the tidy-up on. What stays outside: another client of the printer
+    that replaces the file in the instant between that read and the command,
+    and a delete the firmware has already accepted.
 
     *may_run* — the caller's own proof that it still owns this printer's
     moment (the scan after a print: still the same run). It is asked with the
@@ -386,24 +388,34 @@ async def remove_recording_after_attach(printer, remote_path: str, *, may_run=No
         if may_run is not None and not may_run():
             return False
 
-        committed = await _committed_copy_hashes(printer, remote_path)
-        if not committed:
-            logger.info(
-                "[TIMELAPSE] %s stays on %s — no committed copy names it as its source", remote_path, printer.name
-            )
-            return False
-        transport = transport_for(printer, recording_storage(remote_path))
-        there_now = await transport.read_bytes(remote_path)
-        if not there_now or hashlib.sha256(there_now).hexdigest() not in committed:
-            logger.warning(
-                "[TIMELAPSE] %s on %s is not the recording BamDude copied — it stays on the printer",
+        from backend.app.core.config import settings as app_settings
+        from backend.app.services import archive_media
+
+        identity = getattr(printer, "connector_identity", None)
+        storage = recording_storage(remote_path)
+        pin = None
+        if isinstance(identity, str) and identity:
+            async with async_session() as db:
+                pin = await archive_media.pin_live_copy(db, app_settings.base_dir, identity, storage, remote_path)
+        try:
+            transport = transport_for(printer, storage)
+            verified_delete = getattr(transport, "delete_verified", None)
+            if verified_delete is None:
+                logger.info(
+                    "[TIMELAPSE] %s stays on %s — this transport cannot prove what it deletes",
+                    remote_path,
+                    printer.name,
+                )
+                return False
+            # Decided on the lane, after its wait: a place in the lane is no right to delete.
+            result = await verified_delete(
                 remote_path,
-                printer.name,
+                ready=lambda: pin is not None and pin.holds(),
+                verify=lambda data: pin is not None and pin.matches(data),
+                may_run=printer_file_guard.may_delete(printer.id, remote_path, also=may_run),
             )
-            return False
-        result = await transport.delete(
-            remote_path, may_run=printer_file_guard.may_delete(printer.id, remote_path, also=may_run)
-        )
+        finally:
+            archive_media.release_pin(pin)
     except Exception as exc:  # noqa: BLE001 — tidying up must not cost an archive
         logger.warning("[TIMELAPSE] Could not remove %s from %s: %s", remote_path, printer.name, exc)
         return False

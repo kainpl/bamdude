@@ -142,7 +142,7 @@ class TestTheWritersAreOwned:
             origin="upload",
             expected_identity="I",
             expected_epoch=0,
-            expected_token="none",
+            expected_token="none:0",
         )
         assert (result.ok, result.refusal) == (False, archive_media.REFUSED_RESTORING)
         assert not staged.exists()

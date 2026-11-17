@@ -182,7 +182,7 @@ async def test_reissued_archive_id_rejects_background_consumers(
                 origin="upload",
                 expected_identity=identity,
                 expected_epoch=queue_sources.current_epoch(),
-                expected_token="none",
+                expected_token="none:0",
             )
         assert published.ok
         source = tmp_path / "old-video.avi"

@@ -13,6 +13,7 @@ from pathlib import Path
 from backend.app.services.bambu_ftp import (
     DeleteResult,
     delete_file_async,
+    delete_file_verified_async,
     download_file_bytes_async,
     download_to_path_async,
     list_directory_async,
@@ -98,6 +99,18 @@ class FtpTransport:
 
     async def delete(self, path: str, *, may_run: Callable[[], bool] | None = None) -> DeleteResult:
         return await delete_file_async(self._ip, self._access_code, path, printer_model=self._model, may_run=may_run)
+
+    async def delete_verified(
+        self,
+        path: str,
+        *,
+        ready: Callable[[], bool],
+        verify: Callable[[bytes | None], bool],
+        may_run: Callable[[], bool] | None = None,
+    ) -> DeleteResult:
+        return await delete_file_verified_async(
+            self._ip, self._access_code, path, printer_model=self._model, ready=ready, verify=verify, may_run=may_run
+        )
 
     async def upload(
         self,

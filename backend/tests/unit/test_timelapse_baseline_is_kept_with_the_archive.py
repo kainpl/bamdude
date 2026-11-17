@@ -16,10 +16,17 @@ def _v(name: str) -> dict:
 ADDRESS = tb.Address("ID-1", "P-1", "E-1")
 
 
-def _kept(*names: str, trusted: bool = True, taken: str = tb.TAKEN_AT_START, address=ADDRESS) -> dict:
-    """A record as the capture stores it: one entry per recording, addressed."""
+BOTH_ANSWERED = {"external": "answered", "internal": "answered"}
+
+
+def _kept(
+    *names: str, trusted: bool = True, taken: str = tb.TAKEN_AT_START, address=ADDRESS, media=BOTH_ANSWERED
+) -> dict:
+    """A record as the capture stores it: one entry per recording, what each medium said, addressed."""
     return {
-        tb.KEY: tb.record(set(names), trusted=trusted, taken=taken, entries=[_v(n) for n in names], address=address)
+        tb.KEY: tb.record(
+            set(names), trusted=trusted, taken=taken, entries=[_v(n) for n in names], media=media, address=address
+        )
     }
 
 
@@ -124,7 +131,7 @@ async def _scan(videos, *, baseline=None, extra_data=None, may_run=None, trusted
         patch("backend.app.main.read_timelapse_video", new=AsyncMock(return_value=b"video")) as read,
         patch("backend.app.main.remove_recording_after_attach", new=AsyncMock()) as remove,
         patch("backend.app.services.timelapse_baseline.storage_epoch", new=AsyncMock(return_value="E-1")),
-        patch("backend.app.services.archive_media.primary_token", new=AsyncMock(return_value="none")),
+        patch("backend.app.services.archive_media.primary_token", new=AsyncMock(return_value="none:0")),
     ):
         await main._scan_for_timelapse_with_retries(1, baseline, baseline_trusted=trusted, may_run=may_run)
     return SimpleNamespace(service=service, listing=listing, read=read, remove=remove)
@@ -158,6 +165,16 @@ class TestTheScanAfterARestart:
         internal = {"name": "a.mp4", "is_directory": False, "size": 1, "path": "/userdata/media/timelapse/a.mp4"}
         ran = await _scan([internal], extra_data=_kept("a.mp4"))
         ran.service.attach_timelapse.assert_awaited_once()
+
+    @pytest.mark.parametrize("said", ["not_asked", "unavailable", None])
+    async def test_a_medium_the_boundary_never_saw_offers_no_candidate(self, said):
+        """C3-2: the listing stops at the card when the card has videos, so internal storage may never have
+        been asked. What is found there later is not known to be new."""
+        internal = {"name": "old.mp4", "is_directory": False, "size": 1, "path": "/userdata/media/timelapse/old.mp4"}
+        media = {"external": "answered"} | ({"internal": said} if said else {})
+        ran = await _scan([internal], extra_data=_kept("card.mp4", media=media))
+        ran.service.attach_timelapse.assert_not_called()
+        ran.read.assert_not_called()
 
     async def test_an_unread_baseline_stays_unread_across_the_restart(self):
         """The restart does not turn "the card did not answer" into "the card was empty"."""

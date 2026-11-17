@@ -235,13 +235,43 @@ class TestPickingThisPrintsRecording:
         assert picked["name"] == "a.mp4"
 
 
-#: An archive holds a committed copy of ``b"video"`` read from the path under test (G10 C):
-#: the registry lookup itself is exercised against a real database in
-#: ``test_archive_media_captured_work.py``.
-_COMMITTED = patch(
-    "backend.app.services.timelapse_files._committed_copy_hashes",
-    new=AsyncMock(return_value={hashlib.sha256(b"video").hexdigest()}),
-)
+class _Lane:
+    """A transport double: read, check and delete in ONE call — what a real transport does in one
+    occupancy of the printer's file lane (``delete_verified``)."""
+
+    def __init__(self, there=b"video", answer=None, raises=None):
+        from backend.app.services.bambu_ftp import DeleteResult
+
+        self.there, self.raises = there, raises
+        self.answer = DeleteResult.DELETED if answer is None else answer
+        self.failed = DeleteResult.FAILED
+        self.reads, self.deleted, self.allowed = 0, [], None
+
+    async def delete_verified(self, path, *, ready, verify, may_run=None):
+        if not ready():
+            return self.failed
+        self.reads += 1
+        if not verify(self.there):
+            return self.failed
+        self.allowed = may_run() if may_run is not None else True
+        if not self.allowed:
+            return self.failed
+        if self.raises is not None:
+            raise self.raises
+        self.deleted.append(path)
+        return self.answer
+
+
+def _live_copy(data=b"video"):
+    """An archive shows a live copy of ``data`` read from the path under test (G10 C): the registry
+    lookup itself runs against a real database in ``test_archive_media_captured_work.py``."""
+    from backend.app.services.archive_media import CopyPin
+
+    pin = None if data is None else CopyPin("asset", "archive/v.mp4", hashlib.sha256(data).hexdigest())
+    return patch("backend.app.services.archive_media.pin_live_copy", new=AsyncMock(return_value=pin))
+
+
+_DEVICE = {"id": 1, "name": "X2D", "model": "X2D", "connector_identity": "printer-identity"}
 
 
 class TestRemovingTheRecordingFromThePrinter:
@@ -252,102 +282,108 @@ class TestRemovingTheRecordingFromThePrinter:
     of bug that once let the auto-scan find a recording it could not fetch.
     """
 
+    async def _remove(self, lane, path="/timelapse/video.mp4", *, setting="true", copy=b"video", **kwargs):
+        with (
+            patch("backend.app.api.routes.settings.get_setting", new=AsyncMock(return_value=setting)),
+            patch("backend.app.services.printer_files.factory.transport_for", return_value=lane) as factory,
+            _live_copy(copy),
+            # The file guard is exercised with a real printer state in test_printer_file_delete_doors.py;
+            # here the caller's own proof still passes through it.
+            patch(
+                "backend.app.services.printer_file_guard.may_delete",
+                new=lambda _printer_id, _path, *, also=None, **_kw: also or (lambda: True),
+            ),
+        ):
+            removed = await remove_recording_after_attach(SimpleNamespace(**_DEVICE), path, **kwargs)
+        return removed, factory
+
     @pytest.mark.asyncio
     async def test_it_does_nothing_while_the_setting_is_off(self):
-        printer = SimpleNamespace(id=1, name="X2D", model="X2D")
-        with (
-            patch("backend.app.api.routes.settings.get_setting", new=AsyncMock(return_value=None)),
-            patch("backend.app.services.printer_files.factory.transport_for") as factory,
-        ):
-            removed = await remove_recording_after_attach(printer, "/timelapse/video.mp4")
-
+        lane = _Lane()
+        removed, factory = await self._remove(lane, setting=None)
         assert removed is False
         factory.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_an_internal_path_is_deleted_over_the_tunnel(self):
-        from backend.app.services.bambu_ftp import DeleteResult
-
-        printer = SimpleNamespace(id=1, name="X2D", model="X2D")
+        lane = _Lane()
+        removed, factory = await self._remove(lane, "/userdata/media/timelapse/video_2026-08-14_20-53-42_4.mp4")
         # The transport's answer is read (G10 B): only "deleted" is a removal.
-        transport = SimpleNamespace(
-            delete=AsyncMock(return_value=DeleteResult.DELETED), read_bytes=AsyncMock(return_value=b"video")
-        )
-        with (
-            patch("backend.app.api.routes.settings.get_setting", new=AsyncMock(return_value="true")),
-            patch("backend.app.services.printer_files.factory.transport_for", return_value=transport) as factory,
-            _COMMITTED,
-        ):
-            removed = await remove_recording_after_attach(
-                printer, "/userdata/media/timelapse/video_2026-08-14_20-53-42_4.mp4"
-            )
-
         assert removed is True
         assert factory.call_args[0][1] == "internal"
-        transport.delete.assert_awaited_once()
+        assert lane.deleted == ["/userdata/media/timelapse/video_2026-08-14_20-53-42_4.mp4"]
 
     @pytest.mark.asyncio
     async def test_a_card_path_is_deleted_over_ftp(self):
-        printer = SimpleNamespace(id=1, name="X2D", model="X2D")
-        transport = SimpleNamespace(delete=AsyncMock(), read_bytes=AsyncMock(return_value=b"video"))
-        with (
-            patch("backend.app.api.routes.settings.get_setting", new=AsyncMock(return_value="true")),
-            patch("backend.app.services.printer_files.factory.transport_for", return_value=transport) as factory,
-            _COMMITTED,
-        ):
-            await remove_recording_after_attach(printer, "/timelapse/video.mp4")
-
+        lane = _Lane()
+        _removed, factory = await self._remove(lane)
         assert factory.call_args[0][1] == "external"
-        transport.delete.assert_awaited_once()
+        assert lane.deleted == ["/timelapse/video.mp4"]
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
-        ("committed", "there_now"),
+        ("copy", "there_now"),
         [
-            (set(), b"video"),  # no archive holds a committed copy of this recording
-            ({hashlib.sha256(b"video").hexdigest()}, b"ANOTHER video under the same name"),
-            ({hashlib.sha256(b"video").hexdigest()}, None),  # the re-read failed
+            (None, b"video"),  # no archive shows a live copy of this recording
+            (b"video", b"ANOTHER video under the same name"),
+            (b"video", None),  # the read on the lane failed
         ],
     )
-    async def test_only_the_very_bytes_an_archive_holds_are_deleted(self, committed, there_now):
+    async def test_only_the_very_bytes_an_archive_holds_are_deleted(self, copy, there_now):
         """C2-3: a name is not a recording. Unknown or changed — the file stays on the printer."""
-        printer = SimpleNamespace(id=1, name="X2D", model="X2D")
-        transport = SimpleNamespace(delete=AsyncMock(), read_bytes=AsyncMock(return_value=there_now))
+        lane = _Lane(there=there_now)
+        removed, _ = await self._remove(lane, copy=copy)
+        assert removed is False and lane.deleted == []
+        assert lane.reads == (0 if copy is None else 1), "without a live copy the recording is not even read"
+
+    @pytest.mark.asyncio
+    async def test_a_copy_taken_away_while_the_tidy_up_waited_deletes_nothing(self):
+        """The pin is asked on the lane: a video replaced or removed during the wait revokes it."""
+        from backend.app.services.archive_media import CopyPin
+
+        pin = CopyPin("asset", "archive/v.mp4", hashlib.sha256(b"video").hexdigest())
+        lane = _Lane()
+        real = lane.delete_verified
+
+        async def after_the_wait(path, **kwargs):
+            pin.revoked = True  # what ``archive_media._retire`` does to the pins of a row it takes away
+            return await real(path, **kwargs)
+
+        lane.delete_verified = after_the_wait
         with (
             patch("backend.app.api.routes.settings.get_setting", new=AsyncMock(return_value="true")),
-            patch("backend.app.services.printer_files.factory.transport_for", return_value=transport),
-            patch("backend.app.services.timelapse_files._committed_copy_hashes", new=AsyncMock(return_value=committed)),
+            patch("backend.app.services.printer_files.factory.transport_for", return_value=lane),
+            patch("backend.app.services.archive_media.pin_live_copy", new=AsyncMock(return_value=pin)),
         ):
-            assert await remove_recording_after_attach(printer, "/timelapse/video.mp4") is False
-        transport.delete.assert_not_called()
+            assert await remove_recording_after_attach(SimpleNamespace(**_DEVICE), "/timelapse/video.mp4") is False
+        assert lane.deleted == [] and lane.reads == 0
+
+    @pytest.mark.asyncio
+    async def test_a_transport_that_cannot_prove_what_it_deletes_deletes_nothing(self):
+        plain = SimpleNamespace(delete=AsyncMock(), read_bytes=AsyncMock(return_value=b"video"))
+        removed, _ = await self._remove(plain)
+        assert removed is False
+        plain.delete.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_a_run_that_lost_the_printer_deletes_nothing(self):
-        printer = SimpleNamespace(id=1, name="X2D", model="X2D")
-        transport = SimpleNamespace(delete=AsyncMock(), read_bytes=AsyncMock(return_value=b"video"))
-        with (
-            patch("backend.app.api.routes.settings.get_setting", new=AsyncMock(return_value="true")),
-            patch("backend.app.services.printer_files.factory.transport_for", return_value=transport),
-            _COMMITTED,
-        ):
-            assert await remove_recording_after_attach(printer, "/timelapse/video.mp4", may_run=lambda: False) is False
-        transport.delete.assert_not_called()
-        transport.read_bytes.assert_not_called()
+        lane = _Lane()
+        removed, _ = await self._remove(lane, may_run=lambda: False)
+        assert removed is False and lane.deleted == [] and lane.reads == 0
 
     @pytest.mark.asyncio
     async def test_a_printer_that_refuses_costs_nobody_their_archive(self):
         """The archive is already written by the time this runs. Raising here
         would abandon a completed print over a housekeeping failure."""
-        printer = SimpleNamespace(id=1, name="X2D", model="X2D")
-        transport = SimpleNamespace(
-            delete=AsyncMock(side_effect=OSError("connection reset")), read_bytes=AsyncMock(return_value=b"video")
-        )
-        with (
-            patch("backend.app.api.routes.settings.get_setting", new=AsyncMock(return_value="true")),
-            patch("backend.app.services.printer_files.factory.transport_for", return_value=transport),
-            _COMMITTED,
-        ):
-            assert await remove_recording_after_attach(printer, "/timelapse/video.mp4") is False
+        removed, _ = await self._remove(_Lane(raises=OSError("connection reset")))
+        assert removed is False
+
+    @pytest.mark.asyncio
+    async def test_the_pin_ends_with_the_tidy_up(self):
+        from backend.app.services import archive_media
+
+        await self._remove(_Lane(raises=OSError("connection reset")))
+        assert archive_media._pins == []
 
 
 class TestFtpThatStopsAnswering:

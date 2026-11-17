@@ -23,7 +23,10 @@ record never outlives the execution it was taken for.
 ⚠️ **Recordings are told apart by medium and path, not by name.** The record
 keeps one entry per recording — storage, path, size, the listing's own time —
 and what each medium said (answered, unavailable, not asked). The same file
-name on the card and in internal storage is two recordings.
+name on the card and in internal storage is two recordings. And what a medium
+said decides about ITS recordings (:func:`media_of`): the listing stops at the
+card when the card has videos, so internal storage may never have been asked —
+a recording found there later is not known to be new, and the scan leaves it.
 
 Three rules decide whether the scan may attach anything by itself
 (:func:`automatic_attach_refusal`); where it may not, the operator's
@@ -171,6 +174,15 @@ def read(extra_data: dict | None, *, address: Address | None = None) -> tuple[se
     if address is not None and not _addressed_to(stored, address):
         return None
     return parsed
+
+
+def media_of(extra_data: dict | None) -> dict | None:
+    """What each medium said when the stored boundary was taken, or ``None`` for a record that does not say."""
+    stored = (extra_data or {}).get(KEY)
+    media = stored.get("media") if isinstance(stored, dict) else None
+    if not isinstance(media, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in media.items()):
+        return None
+    return dict(media)
 
 
 def automatic_attach_refusal(baseline: set[str] | None, trusted: bool) -> str | None:
