@@ -121,6 +121,11 @@ _USER_AGENT = f"BamDude/{APP_VERSION} (+https://github.com/kainpl/bamdude)"
 
 # iOS interruption levels bark-server accepts. Anything else is dropped from the
 # payload rather than forwarded — see ``_send_bark``.
+# How long a daily digest that could not be delivered keeps its events for the
+# next attempt. Two daily attempts; after that the events are dropped unsent
+# rather than arriving as news from another week.
+DIGEST_RETRY_HOURS = 48
+
 _BARK_INTERRUPTION_LEVELS = frozenset({"active", "timeSensitive", "critical", "passive"})
 
 
@@ -1387,10 +1392,15 @@ class NotificationService:
         extra_data: dict | None = None,
         variables: dict[str, Any] | None = None,
         chat_filter: Callable[[Any], bool] | None = None,
+        bypass_quiet_hours: bool = False,
     ) -> tuple[bool, str]:
-        """Send notification to a specific provider."""
+        """Send notification to a specific provider.
+
+        ``bypass_quiet_hours`` is the daily digest's: it is sent at the hour the
+        operator chose for it, and a "skipped" answer here reads as a delivery.
+        """
         # Check quiet hours (skip for Telegram - handled per-chat)
-        if provider.provider_type != "telegram" and self._is_in_quiet_hours(provider):
+        if not bypass_quiet_hours and provider.provider_type != "telegram" and self._is_in_quiet_hours(provider):
             logger.info("Skipping notification to %s - quiet hours active", provider.name)
             return True, "Skipped - quiet hours"
 
@@ -3520,6 +3530,21 @@ class NotificationService:
             )
             queue_entries = list(result.scalars().all())
 
+            # Events a failed digest kept past their retry window are dropped,
+            # unsent. ``created_at`` is naive UTC, as the model's default writes it.
+            now = datetime.now(timezone.utc).replace(tzinfo=None)
+            stale = [
+                e for e in queue_entries if e.created_at and now - e.created_at > timedelta(hours=DIGEST_RETRY_HOURS)
+            ]
+            if stale:
+                for entry in stale:
+                    await db.delete(entry)
+                await db.commit()
+                logger.info(
+                    "Dropped %s digest event(s) older than %s h for %s", len(stale), DIGEST_RETRY_HOURS, provider.name
+                )
+                queue_entries = [e for e in queue_entries if e not in stale]
+
             if not queue_entries:
                 logger.debug("No queued notifications for provider %s", provider.name)
                 return
@@ -3540,7 +3565,9 @@ class NotificationService:
                 event_label = event_type.replace("_", " ").title()
                 body_parts.append(f"== {event_label} ({len(entries)}) ==")
                 for entry in entries:
-                    time_str = entry.created_at.strftime("%H:%M")
+                    # An event a failed digest carried over says which day it is from.
+                    carried = entry.created_at.date() != now.date()
+                    time_str = entry.created_at.strftime("%d.%m %H:%M" if carried else "%H:%M")
                     printer_info = f"[{entry.printer_name}] " if entry.printer_name else ""
                     body_parts.append(f"  {time_str} {printer_info}{entry.title}")
                 body_parts.append("")
@@ -3555,7 +3582,7 @@ class NotificationService:
                 config = json.loads(provider.config) if isinstance(provider.config, str) else provider.config
                 success, error = await self._send_telegram_digest_to_chats(config, title, body, provider_id=provider.id)
             else:
-                success, error = await self._send_to_provider(provider, title, body, db)
+                success, error = await self._send_to_provider(provider, title, body, db, bypass_quiet_hours=True)
 
             # Log the digest
             await self._log_notification(
@@ -3568,9 +3595,11 @@ class NotificationService:
                 error_message=error if not success else None,
             )
 
-            # Clear the queue
-            for entry in queue_entries:
-                await db.delete(entry)
+            # The queue goes only with a delivered digest: a failed one keeps its
+            # events for the next attempt (dropped after DIGEST_RETRY_HOURS).
+            if success:
+                for entry in queue_entries:
+                    await db.delete(entry)
             await db.commit()
 
             if success:
