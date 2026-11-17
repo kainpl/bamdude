@@ -118,7 +118,14 @@ async def test_backfill_is_repeatable_and_does_not_replace_brand_colors(async_cl
     assert {e.hex_color.lower().lstrip("#"): e.color_name for e in entries[2:]} == expected
     assert all(e.is_default and e.material == "" for e in entries[2:])
     response = await async_client.get("/api/v1/inventory/colors/map")
-    assert response.json() == {"colors": {"f9dfb9": "Cream", "ffffff": "White", **expected}, "by_material": {}}
+    body = response.json()
+    assert body["colors"] == {"f9dfb9": "Cream", "ffffff": "White", **expected}
+    assert body["by_material"] == {}
+    # Only the two Bambu Lab rows feed the nearest-colour search; a Generic row never does.
+    assert body["bambu"] == [
+        {"hex": "f9dfb9", "name": "Cream", "material": "PETG HF"},
+        {"hex": "ffffff", "name": "White", "material": "PETG HF"},
+    ]
 
 
 @pytest.mark.parametrize("hex_color", ["#FFFDD0", "fffdd0", "#fFfDd0"])
