@@ -227,6 +227,11 @@ def _parse(url: str, label: str):
     return parsed, scheme, host, port or (443 if scheme == "https" else 80)
 
 
+def _wire_host(url: httpx.URL) -> str:
+    """The host the client connects and verifies for — its ASCII form, never the decoded display one."""
+    return url.raw_host.decode("ascii")
+
+
 def _same_host(host: str | None) -> str | None:
     try:
         return normalise_host(host, "host")
@@ -378,7 +383,7 @@ class _PinnedHTTP(httpx.AsyncBaseTransport):
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         pin = _PIN.get()
-        host = _same_host(request.url.host)
+        host = _same_host(_wire_host(request.url))
         port = request.url.port or (443 if request.url.scheme == "https" else 80)
         if pin is None or (host, port) != pin[:2]:
             raise httpx.ConnectError("No checked address for this request")
@@ -525,14 +530,27 @@ class PinnedOrigin:
         parsed, scheme, host, port = _parse(url, label)
         if parsed.query or parsed.fragment or "?" in url or "#" in url:
             raise ValueError(f"{label} must not contain a query or a fragment")
+        # What is saved must be what the HTTP client connects for: it parses the address again, by
+        # its own rules (IDNA 2008, no full-width digits, a trailing dot kept for SNI).
+        try:
+            wire = _wire_host(httpx.URL(url))
+        except (httpx.InvalidURL, ValueError, UnicodeError) as exc:
+            raise ValueError(f"{label} is not an address BamDude can connect to") from exc
+        if wire.rstrip(".") != host and not (_is_ip(host) and _same_host(wire) == host):
+            raise ValueError(f"{label} must write its host name in plain ASCII (punycode)")
         prefix = parsed.path.rstrip("/")
         if any(segment in ("", ".", "..") for segment in unquote(prefix).split("/")[1:]):
             raise ValueError(f"{label} has an invalid path")
-        return cls(scheme=scheme, host=host, port=port, prefix=prefix, base=url.rstrip("/"))
+        # The base every request is built from carries the ONE spelling of the host (no trailing dot,
+        # which would otherwise reach ``Host`` and the TLS server name).
+        authority = f"[{host}]" if ":" in host else host
+        if parsed.port is not None:
+            authority += f":{parsed.port}"
+        return cls(scheme=scheme, host=host, port=port, prefix=prefix, base=f"{scheme}://{authority}{prefix}")
 
     def owns(self, url: httpx.URL) -> bool:
         port = url.port or (443 if url.scheme == "https" else 80)
-        return (url.scheme, _same_host(url.host), port) == (self.scheme, self.host, self.port)
+        return (url.scheme, _same_host(_wire_host(url)), port) == (self.scheme, self.host, self.port)
 
 
 @dataclass
@@ -634,7 +652,7 @@ class GuardedTransport:
         await _require_pinning()
         client = await self._http()
         try:
-            host = normalise_host(url.host, "The address")
+            host = normalise_host(_wire_host(url), "The address")
         except ValueError as exc:
             raise OutboundRefused(str(exc), "address_refused") from exc
         port = url.port or (443 if url.scheme == "https" else 80)
@@ -678,7 +696,7 @@ class GuardedTransport:
             raise OutboundRefused("The server sent a redirect without a usable address", "bad_redirect") from exc
         if self.origin.owns(parsed):
             return "same_origin", target
-        same_host = _same_host(parsed.host) == self.origin.host
+        same_host = _same_host(_wire_host(parsed)) == self.origin.host
         if same_host and self.origin.scheme == "http" and parsed.scheme == "https":
             return "scheme_upgrade", target
         return "foreign", target

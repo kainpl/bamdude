@@ -521,3 +521,36 @@ class TestAddressesThatCarryAnotherAddress:
             await body_of(transport, "/models/m/raw/a.stl", bearer="tok", foreign_hop=True)
         assert caught.value.reason == "foreign_refused"
         assert net.urls() == [f"{BASE}/models/m/raw/a.stl"]
+
+
+class TestAnAddressTheClientCannotSendIsNotAdmitted:
+    """Review MB-M2: what is saved must be what the HTTP client will connect for — or saving fails."""
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "http://１２７.０.０.１/",  # full-width digits: a resolver's 127.0.0.1, unparsable to the client
+            "http://①②⑦.0.0.1/",
+            "http://straße.de/",  # IDNA 2003 says strasse.de, the client sends xn--strae-oqa.de
+        ],
+    )
+    def test_it_is_refused_with_a_sentence_for_the_form(self, url):
+        with pytest.raises(ValueError) as caught:
+            PinnedOrigin.admit(url, label="Manyfold URL")
+        assert str(caught.value).startswith("Manyfold URL ")
+
+    @pytest.mark.parametrize(
+        ("url", "host"),
+        [
+            ("http://Manyfold.LAN:3214", "manyfold.lan"),
+            ("http://xn--strae-oqa.de/", "xn--strae-oqa.de"),
+            ("http://[FD12:0::20]:3214", "fd12::20"),
+            ("http://192.168.1.20:3214/sub", "192.168.1.20"),
+            ("https://Manyfold.Example.COM./lib", "manyfold.example.com"),  # no dot reaches Host or SNI
+        ],
+    )
+    async def test_what_is_admitted_is_what_the_client_connects_for(self, url, host):
+        origin = PinnedOrigin.admit(url, label="Manyfold URL")
+        assert origin.host == host
+        sent = httpx.URL(f"{origin.base}/models")
+        assert sent.raw_host.decode() == origin.host
