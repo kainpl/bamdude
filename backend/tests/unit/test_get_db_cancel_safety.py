@@ -13,6 +13,11 @@ The fix:
   1. Catch `BaseException` so `CancelledError` triggers rollback.
   2. `asyncio.shield` rollback + close so the cleanup completes even when
      the await is cancelled by the same cancel scope.
+
+``get_db`` itself is no longer a generator: it enters ``_request_session`` on
+FastAPI's function-scope stack, so the transaction ends before the response is
+sent (see ``test_get_db_commits_before_the_response.py``). The commit / rollback /
+close contract lives in ``_request_session``, which is what these tests drive.
 """
 
 from __future__ import annotations
@@ -53,20 +58,17 @@ def fake_session_factory(monkeypatch):
 
 
 async def _consume_get_db(action):
-    """Drive ``get_db`` like FastAPI's dependency machinery does: enter the
-    async generator, run ``action(session)``, then advance to completion.
-    Returns the entered session."""
-    gen = database.get_db()
-    session = await gen.__anext__()
-    try:
+    """Drive the request's session scope like FastAPI's exit stack does: enter
+    it, run ``action(session)``, then leave it. Returns the entered session."""
+    async with database._request_session() as session:
         await action(session)
-    except StopAsyncIteration:
-        return session
-    try:
-        await gen.__anext__()
-    except StopAsyncIteration:
-        pass
     return session
+
+
+async def _leave_with(error):
+    """Enter the request's session scope and leave it with ``error`` raised inside."""
+    async with database._request_session():
+        raise error
 
 
 class TestCancelSafety:
@@ -89,10 +91,8 @@ class TestCancelSafety:
     async def test_rollback_on_regular_exception(self, fake_session_factory):
         session = fake_session_factory
 
-        gen = database.get_db()
-        await gen.__anext__()
         with pytest.raises(ValueError):
-            await gen.athrow(ValueError("route handler bug"))
+            await _leave_with(ValueError("route handler bug"))
 
         session.commit.assert_not_awaited()
         session.rollback.assert_awaited_once()
@@ -105,10 +105,8 @@ class TestCancelSafety:
         a BaseException, not an Exception."""
         session = fake_session_factory
 
-        gen = database.get_db()
-        await gen.__anext__()
         with pytest.raises(asyncio.CancelledError):
-            await gen.athrow(asyncio.CancelledError("client disconnected"))
+            await _leave_with(asyncio.CancelledError("client disconnected"))
 
         session.commit.assert_not_awaited()
         session.rollback.assert_awaited_once()
@@ -122,10 +120,8 @@ class TestCancelSafety:
         session = fake_session_factory
         session.rollback.side_effect = OSError("broken pipe during rollback")
 
-        gen = database.get_db()
-        await gen.__anext__()
         with pytest.raises(asyncio.CancelledError):
-            await gen.athrow(asyncio.CancelledError())
+            await _leave_with(asyncio.CancelledError())
 
         session.rollback.assert_awaited_once()
         session.close.assert_awaited_once()
@@ -152,10 +148,10 @@ class TestCancelSafety:
         rollback — ``asyncio.shield`` keeps it running. Verify the call path
         goes through ``shield`` so future refactors don't silently drop the
         protection."""
-        with patch.object(asyncio, "shield", wraps=asyncio.shield) as shield:
-            gen = database.get_db()
-            await gen.__anext__()
-            with pytest.raises(asyncio.CancelledError):
-                await gen.athrow(asyncio.CancelledError())
+        with (
+            patch.object(asyncio, "shield", wraps=asyncio.shield) as shield,
+            pytest.raises(asyncio.CancelledError),
+        ):
+            await _leave_with(asyncio.CancelledError())
 
         assert shield.call_count == 2

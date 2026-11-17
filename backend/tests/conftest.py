@@ -545,13 +545,18 @@ async def _build_client(test_engine, *, commit: bool) -> AsyncGenerator[AsyncCli
     the authenticated client, the engine disposal — is identical. Read the two
     fixtures below for which one a test wants.
     """
-    from backend.app.core.database import async_session, get_db
+    from contextlib import asynccontextmanager
+
+    from starlette.requests import HTTPConnection
+
+    from backend.app.core.database import async_session, enter_before_response, get_db
     from backend.app.main import app
 
     # Create a new session maker for the test engine
     test_async_session = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
 
-    async def override_get_db():
+    @asynccontextmanager
+    async def request_session():
         async with test_async_session() as session:
             if not commit:
                 yield session
@@ -565,6 +570,11 @@ async def _build_client(test_engine, *, commit: bool) -> AsyncGenerator[AsyncCli
             except BaseException:
                 await session.rollback()
                 raise
+
+    async def override_get_db(connection: HTTPConnection):
+        # Left before the response is sent, exactly as production's ``get_db`` is --
+        # an override that exits after it would hide that order from every test.
+        return await enter_before_response(connection, request_session())
 
     app.dependency_overrides[get_db] = override_get_db
 
