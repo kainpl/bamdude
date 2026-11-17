@@ -34,7 +34,10 @@ destination mode, **the configured origin**:
   https only, to PUBLIC addresses only (loopback, private, link-local,
   carrier-grade NAT, unique-local and metadata addresses are refused wherever
   the configured origin lives), and that answer may not redirect again.
-* Bodies are read through :meth:`GuardedAnswer.chunks` with a byte cap.
+* Bodies are read through :meth:`GuardedAnswer.chunks` with a byte cap counted on
+  the bytes of the WIRE: every request asks for ``Accept-Encoding: identity`` and
+  an answer that carries a ``Content-Encoding`` anyway is refused unread — nothing
+  is ever decompressed here.
 
 Provider code holds a :class:`GuardedTransport`, never an HTTP client of its
 own (``tests/unit/test_model_providers_fetch_only_through_the_guard.py``).
@@ -514,7 +517,10 @@ class GuardedAnswer:
             raise OutboundTooLarge(cap)
         size = 0
         try:
-            async for chunk in self._response.aiter_bytes():
+            # The bytes of the wire, never inflated: ``stream`` refused any content encoding.
+            # (A scripted client in tests hands over a response it has already read whole.)
+            scripted = self._response.is_stream_consumed
+            async for chunk in _one(self._response.content) if scripted else self._response.aiter_raw():
                 size += len(chunk)
                 if size > cap:
                     raise OutboundTooLarge(cap)
@@ -528,6 +534,10 @@ class GuardedAnswer:
             return json.loads(self.body)
         except ValueError:
             return None
+
+
+async def _one(data: bytes) -> AsyncIterator[bytes]:
+    yield data
 
 
 class GuardedTransport:
@@ -605,7 +615,7 @@ class GuardedTransport:
                 raise OutboundRefused(f"Refusing to connect: the host resolves to {refusal}", "address_refused")
         # Built directly, never through ``client.build_request``: no client default and no cookie
         # an earlier answer set is merged in.
-        sent = {"User-Agent": USER_AGENT, "Accept": "*/*", **(headers or {})}
+        sent = {"User-Agent": USER_AGENT, "Accept": "*/*", "Accept-Encoding": "identity", **(headers or {})}
         address = addresses[0].split("%", 1)[0]
         request = httpx.Request(method, url, headers=sent, data=data, extensions={"pinned_address": address})
         # The pin travels with THIS call (a context variable, read by the socket layer in the same
@@ -687,6 +697,11 @@ class GuardedTransport:
                     foreign, redirect = True, None
                     if response.status_code in REDIRECT_STATUSES:
                         raise OutboundRefused("File storage redirected again", "redirect_chain")
+            encoding = response.headers.get("Content-Encoding", "").strip().lower()
+            if redirect is None and encoding not in ("", "identity"):
+                # Asked for identity. Inflating would put the byte caps behind the decompressor
+                # (a 300 KB body is 300 MiB of zeros); the answer is refused unread instead.
+                raise OutboundRefused("The server compressed its answer although asked not to", "encoded")
             length = response.headers.get("Content-Length")
             yield GuardedAnswer(
                 status=response.status_code,

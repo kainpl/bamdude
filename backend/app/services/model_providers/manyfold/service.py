@@ -217,6 +217,12 @@ def _from_transport(exc: OutboundRefused) -> ManyfoldError:
         return ManyfoldUnavailable("The file is larger than BamDude accepts from Manyfold", "manyfold_too_large", 413)
     if exc.reason == "unreachable":
         return ManyfoldUnavailable(f"Could not reach Manyfold. {exc}", "manyfold_unreachable")
+    if exc.reason == "encoded":
+        return ManyfoldUnavailable(
+            "Manyfold sent a compressed answer although BamDude asked for a plain one. "
+            "Switch off response compression for BamDude on the proxy in front of Manyfold.",
+            "manyfold_incompatible",
+        )
     if exc.reason == "transport_disabled":
         return ManyfoldUnavailable(
             "Manyfold is unavailable: this BamDude installation cannot pin its connections to checked "
