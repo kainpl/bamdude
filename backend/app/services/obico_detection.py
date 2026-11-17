@@ -4,7 +4,7 @@ Polls a self-hosted Obico ML API with snapshots from each monitored printer
 while a print is running, smooths scores over time, and dispatches a configured
 action (notify / pause / pause_and_off) when a sustained failure is detected.
 
-See `obico_smoothing.py` for the per-print EWM + rolling-mean math.
+See `obico_smoothing.py` for the EWM + rolling-mean math (Obico's own).
 """
 
 import asyncio
@@ -24,6 +24,8 @@ from backend.app.core.database import async_session
 from backend.app.models.printer import Printer
 from backend.app.models.settings import Settings
 from backend.app.services.obico_smoothing import (
+    ESCALATING_FACTOR,
+    Baseline,
     PrintState,
     classify,
     score_from_detections,
@@ -31,6 +33,17 @@ from backend.app.services.obico_smoothing import (
 )
 
 logger = logging.getLogger(__name__)
+
+# A print in these states is over, or the next one is being prepared: the next
+# RUNNING one starts fresh. PAUSE -- and any state not listed -- keeps the print's
+# smoothing and what was already done about it, so a print we paused is not paused
+# again when the operator resumes it (upstream #3459). PREPARE / SLICING only come
+# before a print, and catch a reprint whose FINISH fell between two polls.
+_ENDED_STATES = ("FINISH", "FAILED", "IDLE", "PREPARE", "SLICING")
+_PAUSING_ACTIONS = ("pause", "pause_and_off")
+# A failure still suspected this long after the print's last notification is told
+# again -- a notification only, whatever the action: a pause is never repeated.
+REMIND_AFTER = 3 * 60 * 60.0
 
 HISTORY_MAX = 50
 HEALTH_TIMEOUT = 5.0
@@ -99,6 +112,24 @@ async def pop_frame(nonce: str) -> bytes | None:
     return data
 
 
+async def drop_printer_from_watch_list(db, printer_id: int) -> None:
+    """A deleted printer leaves the list of watched printers, in the deletion's transaction.
+
+    SQLite gives its id to the next printer added, which would otherwise be watched --
+    its frames sent to the ML API and its prints paused -- without anybody choosing that.
+    An emptied list stays ``[]`` (no printers), never empty text (every printer).
+    """
+    row = (await db.execute(select(Settings).where(Settings.key == "obico_enabled_printers"))).scalar_one_or_none()
+    if row is None or not row.value:
+        return
+    try:
+        ids = json.loads(row.value)
+    except json.JSONDecodeError:
+        return
+    if isinstance(ids, list) and any(item == printer_id for item in ids):
+        row.value = json.dumps([item for item in ids if item != printer_id])
+
+
 class ObicoDetectionService:
     """Singleton service that polls the ML API and acts on sustained failures."""
 
@@ -108,6 +139,16 @@ class ObicoDetectionService:
         self._states: dict[int, PrintState] = {}
         # printer_id -> task_name active when state was created (used to detect new prints)
         self._state_keys: dict[int, str] = {}
+        # printer_id -> what else identifies that print, each once known: the
+        # printer's job id and the execution archive of the bound run
+        self._print_ids: dict[int, dict[str, str]] = {}
+        # printer_id -> long-term mean of its frames, carried across its prints so
+        # what its camera always sees is baseline (upstream #3459). Memory only.
+        self._baselines: dict[int, Baseline] = {}
+        # printer_id -> whether the alert-level notification went out for this print
+        self._alerted: dict[int, bool] = {}
+        # printer_id -> when this print's last notification went out (monotonic)
+        self._notified_at: dict[int, float] = {}
         # printer_id -> last classification ("safe"/"warning"/"failure")
         self._last_class: dict[int, str] = {}
         # printer_id -> why the most recent poll produced no verdict; absent
@@ -115,7 +156,7 @@ class ObicoDetectionService:
         # whichever printer failed last (upstream #2952). A missing verdict is
         # not "safe": see get_per_printer.
         self._errors: dict[int, str] = {}
-        # printer_id -> whether an action has already been fired for the current print
+        # printer_id -> whether the configured action has already run for the current print
         self._action_fired: dict[int, bool] = {}
         # Global detection event log (most-recent-first)
         self._history: deque = deque(maxlen=HISTORY_MAX)
@@ -180,6 +221,7 @@ class ObicoDetectionService:
             "obico_action",
             "obico_poll_interval",
             "obico_enabled_printers",
+            "obico_snapshot_base_url",
             "external_url",
         ]
         async with async_session() as db:
@@ -222,6 +264,11 @@ class ObicoDetectionService:
             "poll_interval": int(rows.get("obico_poll_interval", "10")),
             "enabled_printers": enabled_printers,
             "external_url": (rows.get("external_url") or "").rstrip("/"),
+            # Where the ML API fetches the snapshot from: the address set for it,
+            # else the public External URL.
+            "snapshot_base_url": (
+                (rows.get("obico_snapshot_base_url") or "").strip() or (rows.get("external_url") or "").strip()
+            ).rstrip("/"),
         }
 
     # ---- main loop ----
@@ -236,6 +283,10 @@ class ObicoDetectionService:
                 obico_history.set_enabled(settings["save_detections"])
                 interval = max(5, settings.get("poll_interval", 10))
                 if not settings["enabled"] or not settings["ml_url"]:
+                    # Switched off: what was known about the prints is not carried
+                    # into the next time it is on -- "already acted" would mute it.
+                    for printer_id in list(self._states):
+                        self._end_print(printer_id)
                     await asyncio.sleep(interval)
                     continue
 
@@ -257,16 +308,14 @@ class ObicoDetectionService:
         camera_ready = camera_runtime_health()["state"] == "ready"
         for printer_id, status in list(statuses.items()):
             if settings["enabled_printers"] is not None and printer_id not in settings["enabled_printers"]:
+                self._end_print(printer_id)  # no longer watched
                 continue
             if not printer_manager.is_connected(printer_id):
                 continue
-            if not status or getattr(status, "state", None) != "RUNNING":
-                # Reset state when not printing so the next print starts fresh
-                self._states.pop(printer_id, None)
-                self._state_keys.pop(printer_id, None)
-                self._action_fired.pop(printer_id, None)
-                self._last_class.pop(printer_id, None)
-                self._errors.pop(printer_id, None)
+            print_state = getattr(status, "state", None) if status else None
+            if print_state != "RUNNING":
+                if print_state is None or print_state in _ENDED_STATES:
+                    self._end_print(printer_id)
                 continue
 
             if not camera_ready:
@@ -277,7 +326,56 @@ class ObicoDetectionService:
             if getattr(self, "_camera_worker_paused", False):
                 logger.info("Obico camera detection resumed: camera worker ready")
                 self._camera_worker_paused = False
-            await self._check_printer(printer_id, status, settings)
+            try:
+                await self._check_printer(printer_id, status, settings)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                # One printer's trouble is its own: the printers after it are still checked.
+                logger.exception("Obico check failed for printer %s", printer_id)
+                self._no_verdict(printer_id, f"Check failed for printer {printer_id}: {type(e).__name__}")
+
+    def _end_print(self, printer_id: int) -> None:
+        """Forget the print, keep the printer's baseline."""
+        for memory in (
+            self._states,
+            self._state_keys,
+            self._print_ids,
+            self._alerted,
+            self._notified_at,
+            self._action_fired,
+            self._last_class,
+            self._errors,
+        ):
+            memory.pop(printer_id, None)
+
+    @staticmethod
+    def _run_ids(status, run) -> dict[str, str]:
+        """What names this print besides its task name, as far as it is known now."""
+        ids = {}
+        subtask_id = getattr(status, "subtask_id", None)
+        if isinstance(subtask_id, (str, int)) and str(subtask_id) not in ("", "0"):
+            ids["job"] = str(subtask_id)
+        if run is not None:
+            ids["archive"] = run.archive_identity or f"id:{run.archive_id}"
+        return ids
+
+    def _is_new_print(self, printer_id: int, key: str, ids: dict[str, str]) -> bool:
+        """Another task name, another execution archive, or another job id.
+
+        A pause no longer ends a print's state, so a printer that went from one
+        print to the next while nobody saw it idle must be told apart some other
+        way. The archive is ours and one per physical print, so when both sides
+        name one it decides alone: the printer's job id can arrive late and
+        still carry the previous run's value. An id that is not known yet proves
+        nothing either way.
+        """
+        if self._state_keys.get(printer_id) != key:
+            return True
+        known = self._print_ids.get(printer_id, {})
+        if known.get("archive") and ids.get("archive"):
+            return known["archive"] != ids["archive"]
+        return bool(known.get("job") and ids.get("job") and known["job"] != ids["job"])
 
     async def _capture_frame(self, printer_id: int) -> CapturedFrame | None:
         """Capture one JPEG frame from the printer camera. Returns None on failure.
@@ -329,6 +427,9 @@ class ObicoDetectionService:
             )
             return None
 
+        if printer.external_camera_enabled and printer.external_camera_url and not printer.external_camera_type:
+            self._last_error = f"Printer {printer_id}: the external camera has no type set"
+            return None
         if printer.external_camera_enabled and printer.external_camera_url:
             result = await capture(
                 CameraCaptureRequest.external(
@@ -381,10 +482,16 @@ class ObicoDetectionService:
         observed_run = run if origin_is_proven(run) else None
         task_name = getattr(status, "task_name", None) or getattr(status, "subtask_name", "") or ""
         key = f"{task_name}"
-        if self._state_keys.get(printer_id) != key:
-            self._states[printer_id] = PrintState()
+        ids = self._run_ids(status, run)
+        if self._is_new_print(printer_id, key, ids):
+            self._states[printer_id] = PrintState(baseline=self._baselines.setdefault(printer_id, Baseline()))
             self._state_keys[printer_id] = key
+            self._print_ids.pop(printer_id, None)
+            self._alerted[printer_id] = False
+            self._notified_at.pop(printer_id, None)
             self._action_fired[printer_id] = False
+        if ids:
+            self._print_ids.setdefault(printer_id, {}).update(ids)
 
         # Capture locally first, then hand Obico a nonce URL that returns the
         # cached bytes instantly. Obico's ML API is GET-only (/p/?img=URL) with a
@@ -400,17 +507,17 @@ class ObicoDetectionService:
             captured = CapturedFrame(captured, "unknown", datetime.now(timezone.utc).isoformat())
         frame = captured.frame
 
-        external_url = settings.get("external_url") or ""
-        if not external_url:
+        snapshot_base_url = settings.get("snapshot_base_url") or settings.get("external_url") or ""
+        if not snapshot_base_url:
             self._no_verdict(
                 printer_id,
-                "external_url setting is empty — Obico's ML API needs a reachable URL to fetch the snapshot from. "
-                "Set Settings → General → External URL.",
+                "No address for the ML API to fetch the snapshot from — set Settings → Failure detection → "
+                "BamDude address for the ML API, or Settings → Network → External URL.",
             )
             return
 
         nonce = await stash_frame(frame)
-        snapshot_url = f"{external_url}/api/v1/obico/cached-frame/{nonce}"
+        snapshot_url = f"{snapshot_base_url}/api/v1/obico/cached-frame/{nonce}"
         ml_url = f"{settings['ml_url']}/p/"
         requested_at = datetime.now(timezone.utc).isoformat()
 
@@ -452,8 +559,10 @@ class ObicoDetectionService:
             # The printer was deleted while its frame was being judged: its state left with it
             # (``printer_deletion``), and a verdict written now would greet the next printer with the id.
             return
-        score = state.update(current_p)
-        verdict = classify(score, settings["sensitivity"])
+        reading = state.update(current_p)
+        # Below the printer's background is no detection at all.
+        score = max(0.0, reading.score)
+        verdict = classify(reading, settings["sensitivity"])
         self._last_class[printer_id] = verdict
         # A successful capture + ML call clears any transient error from previous
         # polls (typical case: cold-start RTSP timeout on first frame after startup,
@@ -478,10 +587,30 @@ class ObicoDetectionService:
                     }
                 )
 
-        action_requested = verdict == "failure" and not self._action_fired.get(printer_id)
-        if action_requested:
-            self._action_fired[printer_id] = True
-            await self._dispatch_action(printer_id, settings["action"], task_name, score, frame)
+        # As Obico itself does: the alert level is a notification, whatever the
+        # configured action; pausing (with or without power-off) waits for the
+        # pause level. Each happens once per print.
+        action = settings["action"]
+        dispatch = None
+        if verdict == "failure" and action in _PAUSING_ACTIONS and not self._action_fired.get(printer_id):
+            dispatch = action
+        elif verdict != "safe" and not self._alerted.get(printer_id):
+            dispatch = "notify"
+            if action not in _PAUSING_ACTIONS:
+                self._action_fired[printer_id] = True
+        action_requested = dispatch is not None
+        if (
+            dispatch is None
+            and verdict != "safe"
+            and time.monotonic() - self._notified_at.get(printer_id, time.monotonic()) >= REMIND_AFTER
+        ):
+            dispatch = "notify"  # a reminder: no new action, so the evidence record claims none
+        if dispatch:
+            self._notified_at[printer_id] = time.monotonic()  # before the await, so two polls cannot both send
+            self._alerted[printer_id] = True
+            if dispatch != "notify":
+                self._action_fired[printer_id] = True
+            await self._dispatch_action(printer_id, dispatch, task_name, score, frame)
 
         if (verdict != "safe" or detections) and settings.get("save_detections", False):
             # Recorder failure must never undo/suppress the inference action.
@@ -524,7 +653,7 @@ class ObicoDetectionService:
         from backend.app.services.obico_actions import execute_action
 
         logger.warning(
-            "Obico: failure detected on printer %s (task=%r score=%.3f) — action=%s",
+            "Obico: failure suspected on printer %s (task=%r score=%.3f) — action=%s",
             printer_id,
             task_name,
             score,
@@ -560,7 +689,7 @@ class ObicoDetectionService:
             result[pid] = {
                 "class": "error" if error else (self._last_class.get(pid) or "unknown"),
                 "frame_count": state.frame_count,
-                "score": round(state.ewm_mean, 4),
+                "score": round(max(0.0, state.last.score), 4),
                 "error": error,
             }
         return result
@@ -581,7 +710,8 @@ class ObicoDetectionService:
             "is_running": active and self._task is not None and not self._task.done(),
             "last_error": self._last_error,
             "per_printer": self.get_per_printer(),
-            "thresholds": {"low": low, "high": high},
+            # Pausing asks the same of the score divided by this factor.
+            "thresholds": {"low": low, "high": high, "pause": high * ESCALATING_FACTOR},
             "history": list(self._history),
         }
 

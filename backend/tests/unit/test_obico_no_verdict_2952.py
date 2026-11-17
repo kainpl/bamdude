@@ -71,7 +71,7 @@ async def test_each_no_verdict_exit_records_the_printer(monkeypatch):
 
     monkeypatch.setattr(service, "_capture_frame", a_frame)
     await service._check_printer(1, SimpleNamespace(task_name="job"), {"external_url": "", "ml_url": "http://m"})
-    assert "external_url" in service.get_per_printer()[1]["error"]
+    assert "External URL" in service.get_per_printer()[1]["error"]
 
 
 @pytest.mark.asyncio

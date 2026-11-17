@@ -411,12 +411,12 @@ class TestPollOneStateLifecycle:
         }
         status = MagicMock(state="RUNNING", task_name="job", subtask_name="")
 
-        # Seed state so the next frame crosses HIGH immediately
+        # Seed state so the next frame is failing: a quiet print, then a detection that stays
         from backend.app.services.obico_smoothing import PrintState
 
         seeded = PrintState()
-        for _ in range(WARMUP_FRAMES + 500):
-            seeded.update(1.0)
+        for value in [0.0] * 300 + [3.0] * 40:
+            seeded.update(value)
         svc._states[1] = seeded
         svc._state_keys[1] = "job"
         svc._action_fired[1] = False
@@ -600,7 +600,7 @@ class TestCheckPrinterUsesCachedFrameUrl:
 
         mock_client.get.assert_not_called()
         assert svc._last_error is not None
-        assert "external_url" in svc._last_error
+        assert "External URL" in svc._last_error
 
     @pytest.mark.asyncio
     async def test_successful_cycle_clears_previous_error(self):

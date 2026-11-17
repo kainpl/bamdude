@@ -26,6 +26,7 @@ export function FailureDetectionSettings() {
   const [enabled, setEnabled] = useState(false);
   const [saveDetections, setSaveDetections] = useState(false);
   const [mlUrl, setMlUrl] = useState('');
+  const [snapshotUrl, setSnapshotUrl] = useState('');
   const [mlToken, setMlToken] = useState('');
   const [tokenAction, setTokenAction] = useState<SecretAction>('keep');
   const [urlAction, setUrlAction] = useState<SecretAction>('keep');
@@ -61,6 +62,7 @@ export function FailureDetectionSettings() {
     setSaveDetections(settings.obico_save_detections ?? false);
     if (connectionVersion.current === savedConnectionVersion.current) {
       setMlUrl(settings.obico_ml_url ?? '');
+      setSnapshotUrl(settings.obico_snapshot_base_url ?? '');
       setMlToken('');
       setTokenAction('keep');
       setUrlAction('keep');
@@ -82,7 +84,7 @@ export function FailureDetectionSettings() {
   const connectionDraft = () => {
     const token = credentialDraft('obico_ml_token', mlToken, tokenAction, settings?.obico_ml_token_configured);
     const url = settings?.obico_ml_url_opaque ? credentialDraft('obico_ml_url', mlUrl, urlAction, true) : { obico_ml_url: mlUrl };
-    return { ...token, ...url, secret_actions: { ...token.secret_actions, ...('secret_actions' in url ? url.secret_actions : {}) } };
+    return { ...token, ...url, obico_snapshot_base_url: snapshotUrl.trim(), secret_actions: { ...token.secret_actions, ...('secret_actions' in url ? url.secret_actions : {}) } };
   };
 
   const saveMutation = useMutation({
@@ -109,6 +111,7 @@ export function FailureDetectionSettings() {
       if (connectionVersion.current === submitted.version) {
         savedConnectionVersion.current = submitted.version;
         setMlUrl(data.obico_ml_url ?? '');
+        setSnapshotUrl(data.obico_snapshot_base_url ?? '');
         setMlToken('');
         setTokenAction('keep');
         setUrlAction('keep');
@@ -120,7 +123,7 @@ export function FailureDetectionSettings() {
     onError: (error: Error) => showToast(error.message, 'error'),
   });
   const connectionChanged = initialized && !!settings && (settings.obico_ml_url !== mlUrl ||
-    mlToken !== '' || tokenAction !== 'keep' || urlAction !== 'keep');
+    (settings.obico_snapshot_base_url ?? '') !== snapshotUrl.trim() || mlToken !== '' || tokenAction !== 'keep' || urlAction !== 'keep');
 
   const hasUnsavedChanges =
     initialized &&
@@ -245,6 +248,22 @@ export function FailureDetectionSettings() {
             </div>
 
             <div>
+              <label htmlFor="fd-snapshot-url" className="block text-sm text-bambu-gray mb-1">
+                {t('failureDetection.snapshotUrl')}
+              </label>
+              <input
+                id="fd-snapshot-url"
+                type="text"
+                value={snapshotUrl}
+                onChange={(e) => editConnection(() => setSnapshotUrl(e.target.value))}
+                placeholder="http://bamdude:8000"
+                className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-white text-sm"
+                disabled={!canConfigure}
+              />
+              <p className="text-xs text-bambu-gray mt-1">{t('failureDetection.snapshotUrlHint')}</p>
+            </div>
+
+            <div>
               <label className="block text-sm text-bambu-gray mb-1">
                 {t('failureDetection.sensitivity')}
               </label>
@@ -275,6 +294,7 @@ export function FailureDetectionSettings() {
                 <option value="pause">{t('failureDetection.actionPause')}</option>
                 <option value="pause_and_off">{t('failureDetection.actionPauseOff')}</option>
               </Select>
+              <p className="text-xs text-bambu-gray mt-1">{t('failureDetection.actionHint')}</p>
             </div>
 
             <div>
@@ -364,6 +384,12 @@ export function FailureDetectionSettings() {
                     {status.thresholds.low.toFixed(2)} / {status.thresholds.high.toFixed(2)}
                   </span>
                 </div>
+                {status.thresholds.pause != null && (
+                  <div className="flex justify-between">
+                    <span className="text-bambu-gray">{t('failureDetection.pauseThreshold')}</span>
+                    <span className="text-white font-mono">{status.thresholds.pause.toFixed(2)}</span>
+                  </div>
+                )}
                 {status.last_error && (
                   <div className="flex items-start gap-2 text-red-700 dark:text-red-400">
                     <X className="w-4 h-4 mt-0.5 flex-shrink-0" />

@@ -226,6 +226,9 @@ class TestNoNewOutboundUrlEscapesAPolicy:
     EXEMPT = {
         # Our own externally-visible address, not a destination we fetch.
         "external_url",
+        # Our own address again, as the Obico ML API reaches it; handed to that
+        # server as the `img` parameter, never requested by us.
+        "obico_snapshot_base_url",
         # Published to AI clients; the server never fetches this address.
         # Its own canonical_endpoint validator enforces the MCP URL shape/TLS.
         "mcp_endpoint_url",

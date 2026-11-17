@@ -5159,6 +5159,8 @@ export interface AppSettings {
   obico_enabled: boolean;
   obico_save_detections?: boolean;
   obico_ml_url: string;
+  /** BamDude's own address as the ML API reaches it; empty = External URL. */
+  obico_snapshot_base_url?: string;
   obico_ml_token: string;
   obico_sensitivity: 'low' | 'medium' | 'high';
   obico_action: 'notify' | 'pause' | 'pause_and_off';
@@ -5224,7 +5226,8 @@ export interface ObicoStatus {
    * produced none (`error` says why, withheld without settings:read);
    * `unknown` — watched, no result yet (upstream #2952). */
   per_printer: Record<string, { class: string; frame_count: number; score: number; error?: string | null }>;
-  thresholds: { low: number; high: number };
+  /** `pause`: the score a pausing action waits for; `high` is the alert level. */
+  thresholds: { low: number; high: number; pause?: number };
   history: ObicoDetectionEvent[];
   enabled: boolean;
   ml_url: string;

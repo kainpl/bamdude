@@ -1172,6 +1172,10 @@ async def _delete_printer_rows(printer_id: int, printer: Printer, delete_archive
     from backend.app.services import spoolman_usage_history
 
     await spoolman_usage_history.detach_printer(db, printer_id)
+    # The list of printers failure detection watches names ids too, with no FK at all.
+    from backend.app.services.obico_detection import drop_printer_from_watch_list
+
+    await drop_printer_from_watch_list(db, printer_id)
     # JSON printer scopes have no FK action on either dialect. Remove this
     # lifetime before its integer id can name another printer. An emptied
     # list stays [] (no printers), never None (all printers).

@@ -94,6 +94,7 @@ ADMIN_SETTING_FIELDS = frozenset(
         "bambu_studio_api_url",
         "obico_enabled",
         "obico_ml_url",
+        "obico_snapshot_base_url",
         "obico_ml_token",
     }
 )
