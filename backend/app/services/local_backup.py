@@ -16,6 +16,7 @@ from sqlalchemy import select
 from backend.app.core.config import settings as app_settings
 from backend.app.core.database import async_session
 from backend.app.models.settings import Settings
+from backend.app.services.backup_files import BackupBusyError
 from backend.app.services.backup_path import classify_backup_dir_error, probe_backup_dir
 
 logger = logging.getLogger(__name__)
@@ -169,7 +170,10 @@ class LocalBackupService:
 
         if self._next_run <= now:
             logger.info("Running scheduled local backup")
-            await self.run_backup(settings)
+            result = await self.run_backup(settings)
+            if result.get("busy"):
+                # Keep the overdue slot; the service loop checks once per60s.
+                return
             self._next_run = self._calculate_next_run(settings["schedule"], settings["time"])
 
     def _calculate_next_run(self, schedule_type: str, time_str: str = "03:00") -> datetime:
@@ -268,6 +272,8 @@ class LocalBackupService:
             logger.info("Local backup created: %s", zip_path)
             return {"success": True, "message": "Backup created", "filename": filename}
 
+        except BackupBusyError:
+            return {"success": False, "message": "A backup or restore is already running", "busy": True}
         except Exception as e:
             self._last_backup_at = datetime.now(timezone.utc).isoformat()
             self._last_status = "failed"

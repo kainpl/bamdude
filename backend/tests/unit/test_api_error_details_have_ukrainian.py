@@ -40,6 +40,8 @@ def catalog() -> dict[str, str]:
 def test_the_scan_finds_the_sentences_it_is_meant_to(found):
     """Guards the guard: an extractor that matched nothing would pass every other test."""
     assert "Printer not found" in found
+    assert "Virtual printer cleanup could not be confirmed. Restart BamDude before restoring." in found
+    assert "Restored {} item(s) from {}" in found
     kinds = {site.kind for sites in found.values() for site in sites}
     assert {"http", "json", "forwarded", "value"} <= kinds
 

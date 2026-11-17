@@ -16,6 +16,7 @@ from sqlalchemy import (
     func,
     or_,
     select,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -80,7 +81,7 @@ class LibraryFolder(Base):
     )
     files: Mapped[list["LibraryFile"]] = relationship(
         back_populates="folder",
-        cascade="all, delete-orphan",
+        passive_deletes="all",
     )
     # Products this folder belongs to (spec 2026-09-02: files link to products, not projects).
     products: Mapped[list["Product"]] = relationship(
@@ -343,3 +344,12 @@ from backend.app.models.library_file_makerworld_meta import LibraryFileMakerworl
 from backend.app.models.library_file_note import LibraryFileNote  # noqa: E402, F401
 from backend.app.models.product import Product  # noqa: E402, F401
 from backend.app.models.user import User  # noqa: E402, F811
+
+# Migration-owned indexes must survive portable DDL as well.
+Index("ix_library_file_tags_tag_id", LibraryFileTag.tag_id)
+Index(
+    "ix_library_files_file_hash_active",
+    LibraryFile.file_hash,
+    sqlite_where=text("deleted_at IS NULL"),
+    postgresql_where=text("deleted_at IS NULL"),
+)

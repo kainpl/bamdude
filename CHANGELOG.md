@@ -27,6 +27,9 @@
 - **"Forgot password" says what it does** — it sends a link to set a new password, not a new password.
 - **Bug reports keep no e-mail address.** The address you give is sent with the report so the maintainers can answer; the copy stored on your server, which nothing used, is no longer kept and existing ones are cleared on upgrade.
 
+- **Deleting content keeps its history from attaching to the next file or print.** Archive parts and disposable children are removed explicitly on both databases, while material usage and stock history keep their facts with the removed reference detached. Library purges, including print-once dispatch and assembly cleanup, share one guarded deletion path; a delayed print-once job cannot link to or delete a different upload that reused the original id. Deleting a user with their content is now one bounded transaction, refuses active or physically retained work, and names affected orders so their removed pending work can be planned again. Accounts exceeding the documented limits must first remove content through its ordinary pages.
+- **Archive trash explains what it kept.** Emptying the bin reports the archives deleted and those still held by print work, with reasons; one held archive does not block the rest. Cleanup also rechecks that an archive is still in the bin after waiting for its lock, so an archive restored meanwhile keeps its video and other files. Putting a restored archive in trash again starts a new retention window. A restore that loses to permanent deletion reports a missing archive instead of a server error.
+
 - **A project saved under a `.gcode.3mf` name is no longer sent to the printer.** Direct print, the dispatcher and reprinting an archive accepted such a file by its name alone. Every print door now looks at the content: a file known to hold no sliced G-code is refused with "slice it first"; a file whose content cannot be read is judged by its name as before. A project on a network share that was sliced and saved over the same name prints without a rescan.
 - **Library rights: several ways to see or change what was not yours.** A file's notes could be read and written by anyone who knew its number, files in the trash included; they now follow the file. With "own files only" rights, folder counters, the duplicate badge and the duplicates panel counted and named other users' files. Linking an external (host) folder was open to anyone who may upload; it now needs the right to change settings, and API keys cannot do it. Moving a folder through the API into an external folder, out of one, into itself or to a parent that does not exist was accepted — on SQLite the folder then vanished from the tree; all are refused.
 - **A file renamed or moved on a network share stays the same library file.** A file renamed or moved inside an external folder, or whose directory was renamed, was taken by the next scan for a new file, and the old one vanished with its notes, tags and product links. The scan now recognises it — when exactly one missing file and one new path hold the same bytes — and keeps its notes, photos, tags, product links and queued jobs. Its plate-swap declaration is taken again from the new file name, so a declaration made by hand has to be repeated. A renamed or moved directory keeps its library folder too — with its link to products, so new files dropped into it still join them, and any Virtual Printer target pointing at it; an empty directory, or one that was split or merged, cannot be recognised and comes in as a new folder. An empty directory that is still on the share no longer loses its folder when a scan removes or moves some other file.
@@ -104,6 +107,50 @@
 - Settings → Printing → Auto-Queue offers automatic return of proven failed AutoQueue jobs, initially off. A logical job can return twice, at least two minutes after each failed attempt. Every physical print keeps its own archive and costs; the old failed row remains visible, cannot be retried or repeated, and still owns its plate/SWAP answer. The failed printer's pause/error state is not cleared. Routing ranks it last among current candidates without waiting for busy alternatives; if it receives the new attempt, that attempt waits for Resume and can be moved back to AutoQueue before starting. Automatic rebalance leaves returned work alone; explicit operator replanning remains available. Reconciliation-only failures after disconnect/restart do not create return proof. Already saved live settlement survives restart. Connector observations show the current AutoQueue job ahead of its old failed executions.
 
 
+- Fixed older SQLite backup recovery and offline retry when migrations need
+  model-created tables; PostgreSQL imports still preserve their AS-IS inputs.
+  Deferred data guards survive unrelated model changes, optional retry errors
+  retain their records without blocking startup, and repair logs identify the
+  failing stage without exposing data.
+
+- Portable restore now retains durable schema-repair ownership across process
+  restarts and restores the complete application index set. Known data
+  violations remain visible warnings with their rows preserved; existing
+  import foreign-key orphan handling is unchanged. Duplicate active
+  calibrations require an explicit, source-bound confirmation before restore
+  stops services. Technical repair failures keep the farm in maintenance;
+  offline `schema_repair status` and `retry` provide recovery without clearing
+  the debt by force. Recovery backups preserve these known residuals and
+  recheck them when restored.
+
+- SQLite-to-PostgreSQL import validates text against the actual destination
+  types before stopping services, including legacy column widths, NUL and
+  overlength trailing spaces. Identity, validation and import share one DB/WAL
+  snapshot; a changed original is not silently consumed. Fresh SQLite databases
+  avoid a redundant notification UNIQUE index, and an existing exact duplicate
+  is translated safely without changing the source or weakening uniqueness.
+
+- Historical PostgreSQL upgrades repair the observed schema gaps without
+  inventing timestamps or discarding usage history. PostgreSQL archive removal keeps
+  its filament-consumption rows and clears their archive link. Missing write
+  defaults, references, indexes and PostgreSQL search objects are repaired once;
+  unknown data remains reported for review. Search backfill errors stop startup
+  instead of being hidden. SQLite-file imports into PostgreSQL now require
+  BamDude v0.4.2 or newer; older sources need a SQLite upgrade on a copy first.
+  Ordinary SQLite upgrades retain their existing behavior. See the
+  [historical schema guide](docs/development/postgres-historical-schema.md).
+
+- SQLite now limits its default pool to 10 persistent plus 90 overflow connections,
+  bounding descriptors retained by WAL. Larger bursts wait for the pool timeout;
+  existing pool overrides remain available. Supported systems raise only the soft
+  descriptor limit before children start. Support bundles include path-free FD
+  counts, kinds and limits, including when the heap census is skipped.
+- The printer connection watchdog can rebuild a disconnected client that never
+  received a message, after the existing grace/cooldown and reachable-port checks.
+  This recovers paho clients with an unusable high-numbered wake-up socketpair.
+  Periodic TLS attempts during the grace are expected. MQTT relay and smart-plug
+  initial-failure recovery remains separate; see the process-resources guide.
+
 - Settings offers **Force color match by default**, off initially. New jobs queued from an order plan capture this choice, and a fresh print dialog starts with it selected when enabled. Operators can still change the dialog's checkbox. Saved jobs, copied routing choices, virtual-printer settings and explicit API choices retain their own policy; changing the setting does not rewrite them. A registered plan submission retains the choice it captured, including on retry.
 
 - **Assemble project in the File Library.** Select STL, OBJ or STEP models, press *Assemble project*, and BamDude lays them out densely — small parts go into the holes and hollows of larger ones, which the slicers' own auto-arrange does not do — and saves ready project 3MF files next to the sources. Give each model a number of copies or tick *Fill a plate* to get as many as one plate takes, on a plate of its own. Add several printers at once: each gets its own project, laid out for its bed and saved with the printer, process and filament presets you picked, so it opens in Bambu Studio or OrcaSlicer ready to slice; on a two-nozzle printer you choose which nozzle prints and the layout stays within its reach. The result can be one multi-plate file or a file per plate, and the summary shows a picture of every plate.
@@ -127,6 +174,34 @@
 - Browser sessions, API keys and camera/monitor tokens now belong to immutable accounts, preventing a recreated username or reused row id from inheriting access. Upgrading requires signing in again and replacing all legacy API keys and long-lived tokens, including ownerless keys. Settings and support show retirement counts; administrators receive an inbox notice after the server opens sign-in. Reissue only the scopes and printers each integration needs, then update its configured credential. See the [credential lifetime and replacement guide](docs/development/credential-lifetimes.md).
 
   Delayed imports, queue publications and cloud credential completions recheck their original authority before writing. Known-source library re-imports reuse an authorized record without rewriting incoming bytes. Personal inbox delivery stays limited to browser sessions; API-key and long-lived-token connections retain their own status access. Settings can remove retired camera/monitor records and ties each action to the selected record. Restore invalidates browser credentials and rotates the connector namespace in one transaction; an incomplete finalization keeps admission fenced until recovery, with the failed stage recorded without secret values. Notice failures do not block sign-in.
+
+- Reconnect reconciliation stops its completion cleanup if the printer was deleted during filament accounting. It no longer reads an expired archive after that race, and its analysis cleanup cannot release a newer print's context under reused printer and archive IDs.
+
+- Virtual printers detached when deleting a physical printer now show their saved configuration as unproven while an earlier upload delays the runtime update.
+
+- Deleting a virtual printer whose shutdown cannot be confirmed no longer blocks edits to other virtual printers. Its ID stays reserved, and restore explicitly requires restart. A saved VP shows its configuration as unproven while waiting behind another retirement. Routine slicer disconnects and malformed MQTT blocks no longer emit workflow tracebacks; unexpected errors still do.
+
+- A failed or interrupted virtual-printer upload no longer blocks later edits and restores. Completed sync failures do not prevent drain; a genuinely unproven cleanup still stops the other idle services and explicitly requires restart. Editing one VP leaves unrelated status badges alone. ZIP restore warns before disconnecting proxies and preserves interruption counts in both restore forms. Deleted VP uploads are removed after commit and proven retirement, before a replacement can reuse the directory.
+
+- Restore closes virtual-printer admission and waits for accepted local uploads and queue publication before replacing data. Timeout refuses restore without cancelling that work; retry joins the same owner. Idle FTP/MQTT clients, including pre-CONNECT and sleeping TLS peers, close before service joins, and ordinary VP edits keep the saved configuration visible as unproven until retirement finishes. Transparent proxies are explicitly disconnected and counted, so remote transfers may be interrupted. After Git restore, inspect pending jobs and their options before resuming: an accepted FTP-first upload can outlive a rejected slicer-options command, and resending can duplicate it. The idle-farm requirement remains because physical-print completion writers are outside this drain. Git and ZIP backup/restore now share the operation guard; a scheduled local backup that finds it busy keeps its due slot for a short retry instead of recording a failure and skipping the slot.
+
+- Git metadata restore follows the archive's execution UUID even after its file is renamed or patched. Older records use narrow, unambiguous legacy keys; conflicts are skipped with a diagnostic. Stale snapshots and active or uncertain local prints accept only operator notes, tags, favourites and external links. Order membership and local file references remain local.
+
+  Planning locks and usage-link verification read archive IDs in bounded, ascending batches, so repeat and add-only restores also work above the database's per-statement parameter limit. Distinct UUID records with exactly the same filename/start and no proven different printer remain conservatively conflicting, including when both came from the same backup.
+
+  Archive energy and its provenance restore together, preserving legacy measured values and missing energy. Spool history now reads the collector's own format, verifies print links after the archive commit and never debits live spool weight. Invalid fields, ambiguous identities and skipped legacy source-only records are reported. Run Git restore only with the farm idle and no uploads: a large SQLite category can block saving a print completion.
+
+- Git spool backups now preserve reset-counter anchors, last-used dates, core weight and lock state. Restoring older or damaged metadata keeps local fields when values are absent or invalid, preserves explicit zeros, and skips ambiguous spool identities, including shared backup tags and repeated tag matches to one local spool. Spools added together remain separate on restore even when their descriptions and creation timestamps match; tagged spools are matched first. An add-only restore does not duplicate an existing spool after its tag has been recycled. Restore notes count corrected fields only on restored rows and report spools reactivated by overwrite.
+
+- Recalculating archive filament costs uses only usage linked to that physical print. Unlinked usage with the same name no longer charges repeated prints or replaces a cost already priced from Spoolman; archives without linked pricing evidence use the configured filament estimate.
+
+- Smart-plug printer links and virtual-printer target links now validate an explicitly supplied zero ID instead of treating it as omitted. Missing targets are refused before saving, including the MQTT plug recheck after reconnecting its runtime. Existing handling of omitted fields, null values and explicit clear flags is preserved.
+
+- Inventory CSV imports preserve the UTC instant of last-used dates with timezone offsets. Portable backups and restores also use UTC when filling a missing required timestamp, instead of the host's local time; existing timestamps are unchanged.
+
+- PostgreSQL's connection check before pool checkout can be disabled with `DB_POOL_PRE_PING=false` and a restart. It remains enabled by default; disabling it may let the next request fail on a connection the server has closed. SQLite ignores this setting.
+
+- PostgreSQL's default connection pool now allows up to 80 connections per engine instead of 100, leaving room on a stock 100-connection server. Explicit pool settings and SQLite defaults are preserved; multiple workers and other database clients still share the server's connection budget.
 
 - A cancelled or failed job that the printer's plate prompt is waiting on can no longer be retried from the queue; answer on the printer card instead, where Repeat print runs it again. Before, that retry left the prompt unable to find its print: Clear plate and Repeat print were refused and the queue stood still, even after a restart. Where an earlier version left that state behind, Clear plate now names the queue job that blocks it, and Print state diagnostics can return that job to its finished state.
 

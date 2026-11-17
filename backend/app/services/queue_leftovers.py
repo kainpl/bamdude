@@ -250,6 +250,10 @@ async def _retire_orphan(auto_id: int, result: RetireResult) -> None:
             .where(AutoQueueItem.id == auto_id, _orphan_condition())
             .execution_options(synchronize_session=False)
         )
+        if deleted.rowcount:
+            from backend.app.services.queue_counters import detach_auto_queue_refs
+
+            await detach_auto_queue_refs(db, [auto_id])
         await db.commit()
         if deleted.rowcount:
             result.retired_autos.append(auto_id)

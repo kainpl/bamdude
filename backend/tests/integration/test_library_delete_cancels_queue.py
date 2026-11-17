@@ -56,8 +56,12 @@ async def test_trashing_a_file_cancels_the_jobs_queued_against_it(db_session, pr
     item = await _queued(db_session, file.id, printer.id)
     await db_session.commit()
 
-    await library_trash_service.trash_or_purge(db_session, file)
-    await db_session.commit()
+    from backend.app.services.library_delete_scope import library_delete_scope
+    from backend.app.services.library_identity import LibraryIdentity
+
+    async with library_delete_scope(db_session, [LibraryIdentity.capture(file)]):
+        await library_trash_service.trash_or_purge(db_session, file)
+        await db_session.commit()
 
     await db_session.refresh(item)
     assert item.status == "cancelled"
@@ -75,8 +79,12 @@ async def test_the_row_survives_so_the_operator_can_see_what_happened(db_session
     item_id = item.id
     await db_session.commit()
 
-    await library_trash_service.trash_or_purge(db_session, file)
-    await db_session.commit()
+    from backend.app.services.library_delete_scope import library_delete_scope
+    from backend.app.services.library_identity import LibraryIdentity
+
+    async with library_delete_scope(db_session, [LibraryIdentity.capture(file)]):
+        await library_trash_service.trash_or_purge(db_session, file)
+        await db_session.commit()
 
     db_session.expire_all()
     still_there = await db_session.execute(select(PrintQueueItem).where(PrintQueueItem.id == item_id))
@@ -93,8 +101,12 @@ async def test_a_printing_row_is_left_alone(db_session, printer_factory):
     item = await _queued(db_session, file.id, printer.id, status="printing")
     await db_session.commit()
 
-    await library_trash_service.trash_or_purge(db_session, file)
-    await db_session.commit()
+    from backend.app.services.library_delete_scope import library_delete_scope
+    from backend.app.services.library_identity import LibraryIdentity
+
+    async with library_delete_scope(db_session, [LibraryIdentity.capture(file)]):
+        await library_trash_service.trash_or_purge(db_session, file)
+        await db_session.commit()
 
     await db_session.refresh(item)
     assert item.status == "printing"
@@ -110,8 +122,12 @@ async def test_history_is_not_rewritten(db_session, printer_factory):
     item = await _queued(db_session, file.id, printer.id, status="completed")
     await db_session.commit()
 
-    await library_trash_service.trash_or_purge(db_session, file)
-    await db_session.commit()
+    from backend.app.services.library_delete_scope import library_delete_scope
+    from backend.app.services.library_identity import LibraryIdentity
+
+    async with library_delete_scope(db_session, [LibraryIdentity.capture(file)]):
+        await library_trash_service.trash_or_purge(db_session, file)
+        await db_session.commit()
 
     await db_session.refresh(item)
     assert item.status == "completed"

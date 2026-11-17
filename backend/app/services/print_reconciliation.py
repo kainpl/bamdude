@@ -393,8 +393,8 @@ async def _reconcile_complete_archive(
     second time. The caller commits.
     """
     from backend.app.core.database import take_write_lock
-    from backend.app.main import _TERMINAL_ACCEPTANCE_KEY, _bump_library_file_usage
-    from backend.app.services import swap_terminal
+    from backend.app.main import _TERMINAL_ACCEPTANCE_KEY
+    from backend.app.services import library_usage, swap_terminal
     from backend.app.services.archive_write_scope import locked_print
     from backend.app.services.print_file_analysis import (
         begin_historical_print_file_analysis_finishing,
@@ -558,7 +558,7 @@ async def _reconcile_complete_archive(
         archive.extra_data = extra
 
         if status == "completed":
-            await _bump_library_file_usage(db, archive.library_file_id)
+            await library_usage.stage(db, archive)
 
         owner_rows = list(
             (
@@ -576,6 +576,7 @@ async def _reconcile_complete_archive(
             if queue is not None:
                 queue.is_paused = True
             await db.commit()
+            await library_usage.finish(db)
             logger.warning(
                 "reconcile: duplicate execution claims archive=%s count=%s; owner effects deferred",
                 archive.id,
@@ -586,6 +587,7 @@ async def _reconcile_complete_archive(
         # Persist the archive and arm the existing gate BEFORE releasing the
         # queue claim, just as the live completion handler does.
         await db.commit()
+        await library_usage.finish(db)
         # The commit released the row's lock. Before the gate and the queue -- each a write of its own -- the
         # record and the row are proved again under a lock held anew: the ids may name another printer's run
         # by now (spec gh109-o1 r2 R6, Codex recheck R1-2). Never a process mutex under SQLite's writer.

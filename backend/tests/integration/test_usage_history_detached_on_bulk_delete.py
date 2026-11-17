@@ -92,8 +92,8 @@ async def test_deleting_a_user_with_their_items_unlinks_the_history_of_their_pri
 
 @pytest.mark.asyncio
 @pytest.mark.integration
-async def test_the_sweepers_leftover_delete_unlinks_the_history_too(db_session):
-    """The row ``delete_archive`` left behind is removed by a bulk statement."""
+async def test_the_sweeper_retains_and_reports_a_refused_archive_without_raw_fallback(db_session, caplog):
+    """A refused archive and its usage facts survive; no raw DELETE bypasses proof."""
     from backend.app.services.archive_purge import TRASH_RETENTION_KEY, archive_purge_service
 
     db_session.add(Settings(key=TRASH_RETENTION_KEY, value="7"))
@@ -108,9 +108,11 @@ async def test_the_sweepers_leftover_delete_unlinks_the_history_too(db_session):
     spoolman_row, builtin_row = await _links(db_session, *ids)
     assert (
         await db_session.execute(select(PrintArchive).where(PrintArchive.id == archive_id))
-    ).scalar_one_or_none() is None
-    assert spoolman_row.archive_id is None
-    assert builtin_row.archive_id is None
+    ).scalar_one_or_none() is not None
+    assert spoolman_row.archive_id == archive_id
+    assert builtin_row.archive_id == archive_id
+
+    assert "retained" in caplog.text.lower()
 
 
 @pytest.mark.asyncio

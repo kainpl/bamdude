@@ -14,7 +14,6 @@ from sqlalchemy import (
     Text,
     func,
     select,
-    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -34,14 +33,6 @@ class PrintArchive(Base):
         # An order's prints — the figures' loaders and the order's queue section
         # (spec workshop-order-queue); measured plan in m191.
         Index("ix_print_archives_project_created", "project_id", "created_at"),
-        # ⚠️ text(), not the mapped attributes: __table_args__ runs inside the
-        # class body, where the columns are not attributes yet. The doubled
-        # parentheses in m168's DDL are PostgreSQL's requirement for an
-        # expression index; SQLAlchemy emits its own here.
-        Index(
-            "ix_print_archives_effective_hash",
-            text("COALESCE(source_content_hash, content_hash)"),
-        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -263,3 +254,6 @@ class PrintArchive(Base):
 from backend.app.models.printer import Printer  # noqa: E402, F811
 from backend.app.models.project import Project  # noqa: E402, F811
 from backend.app.models.user import User  # noqa: E402, F811
+
+# Bound columns survive Table.to_metadata; unbound text() lost this index in portable export.
+Index("ix_print_archives_effective_hash", func.coalesce(PrintArchive.source_content_hash, PrintArchive.content_hash))

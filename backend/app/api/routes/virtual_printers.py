@@ -238,7 +238,7 @@ async def create_virtual_printer(
 
     # Validate proxy target printer exists
     target_printer = None
-    if body.target_printer_id:
+    if body.target_printer_id is not None:
         from backend.app.models.printer import Printer
 
         result = await db.execute(select(Printer).where(Printer.id == body.target_printer_id))
@@ -257,7 +257,7 @@ async def create_virtual_printer(
         effective_access_code = target_printer.access_code
 
     # Validate target folder exists (NULL is fine — means library root).
-    if body.target_folder_id:
+    if body.target_folder_id is not None:
         from backend.app.models.library import LibraryFolder
 
         result = await db.execute(select(LibraryFolder).where(LibraryFolder.id == body.target_folder_id))
@@ -341,9 +341,12 @@ async def get_ca_certificate(
     private key never leaves the backend.
     """
     from backend.app.services.virtual_printer import virtual_printer_manager
+    from backend.app.services.virtual_printer.lifecycle import AdmissionClosed
 
     try:
         return virtual_printer_manager.get_ca_certificate_info()
+    except AdmissionClosed as exc:
+        return json_error(409, str(exc))
     except Exception as e:
         logger.error("Failed to obtain virtual printer CA certificate: %s", e)
         return json_error(500, "Could not generate the CA certificate")
@@ -576,6 +579,7 @@ async def update_virtual_printer(
     logger.info("Updated virtual printer: %s (id=%d)", vp.name, vp.id)
 
     # Sync services
+    virtual_printer_manager.mark_config_pending(vp.id)
     try:
         await virtual_printer_manager.sync_from_db()
     except Exception as e:
@@ -606,28 +610,17 @@ async def delete_virtual_printer(
 
     vp_name = vp.name
 
-    # Stop instance if running
-    await virtual_printer_manager.remove_instance(vp_id)
-
-    # Delete from DB
-    await db.execute(sql_delete(VirtualPrinter).where(VirtualPrinter.id == vp_id))
-    await db.commit()
+    deletion = virtual_printer_manager.begin_delete(vp_id)
+    try:
+        await virtual_printer_manager.remove_instance(vp_id)
+        await db.execute(sql_delete(VirtualPrinter).where(VirtualPrinter.id == vp_id))
+        await db.commit()
+    except BaseException:
+        virtual_printer_manager.finish_delete(vp_id, deletion, committed=False)
+        raise
+    virtual_printer_manager.finish_delete(vp_id, deletion, committed=True)
 
     logger.info("Deleted virtual printer: %s (id=%d)", vp_name, vp_id)
-
-    # Remove the VP's on-disk upload dir (uploads/<vp_id>) — the DB row is gone
-    # so any leftover cache/temp files there are orphaned and would accumulate
-    # across create/delete churn. Done after the commit so a crash between only
-    # leaves orphan files (harmless, swept by prune scripts), never an orphan DB
-    # row (upstream Bambuddy v0.2.4.5).
-    try:
-        upload_dir = virtual_printer_manager._base_dir / "uploads" / str(vp_id)
-        if upload_dir.exists():
-            import shutil
-
-            shutil.rmtree(upload_dir, ignore_errors=True)
-    except Exception as e:
-        logger.error("Failed to remove upload dir for VP %d: %s", vp_id, e)
 
     # Resync remaining services
     try:
@@ -635,4 +628,7 @@ async def delete_virtual_printer(
     except Exception as e:
         logger.error("Failed to sync virtual printers after delete: %s", e)
 
-    return {"detail": "Deleted", "id": vp_id}
+    result = {"detail": "Deleted", "id": vp_id}
+    if virtual_printer_manager.has_owned_instance(vp_id):
+        result.update(runtime_state="stopping", runtime_proven=False)
+    return result

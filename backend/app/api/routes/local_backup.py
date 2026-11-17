@@ -3,8 +3,9 @@
 import asyncio
 import logging
 
-from fastapi import APIRouter, Path, Request
+from fastapi import APIRouter, Body, Path, Request
 from fastapi.responses import FileResponse, JSONResponse
+from pydantic import BaseModel
 
 from backend.app.core.auth import RequireAdmin, RequirePermission
 from backend.app.core.permissions import Permission
@@ -14,6 +15,11 @@ from backend.app.services.local_backup import local_backup_service
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/local-backup", tags=["local-backup"])
+
+
+class RestoreConfirmation(BaseModel):
+    accept_calibration_residual: bool = False
+    calibration_receipt: str | None = None
 
 
 @router.get("/status")
@@ -105,6 +111,7 @@ async def restore_backup(
     filename: str = Path(..., description="Backup filename to restore"),
     _: User | None = RequirePermission(Permission.SETTINGS_RESTORE),
     request: Request = None,
+    confirmation: RestoreConfirmation | None = Body(None),
 ):
     """Restore from a scheduled backup file on the server."""
     import io
@@ -123,7 +130,17 @@ async def restore_backup(
     upload = UploadFile(filename=filename, file=io.BytesIO(content))
 
     async with async_session() as db:
-        return await settings_restore_backup(file=upload, db=db, request=request)
+        return await settings_restore_backup(
+            file=upload,
+            db=db,
+            request=request,
+            accept_calibration_residual=confirmation.accept_calibration_residual
+            if isinstance(confirmation, RestoreConfirmation)
+            else False,
+            calibration_receipt=confirmation.calibration_receipt
+            if isinstance(confirmation, RestoreConfirmation)
+            else None,
+        )
 
 
 @router.delete("/backups/{filename}", dependencies=[RequireAdmin()])

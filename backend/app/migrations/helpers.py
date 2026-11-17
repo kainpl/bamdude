@@ -51,7 +51,7 @@ def _to_postgres_column_def(column_def: str) -> str:
     Migrations are written SQLite-first and are frozen once released, so the
     dialect gap has to be closed here rather than in the 100+ call sites.
 
-    Two translations:
+    Translations:
 
     * ``BOOLEAN ... DEFAULT 0|1`` → ``DEFAULT false|true``. SQLite stores
       booleans as integers and accepts the integer default; PostgreSQL rejects
@@ -62,10 +62,16 @@ def _to_postgres_column_def(column_def: str) -> str:
     * ``INTEGER PRIMARY KEY`` → ``SERIAL PRIMARY KEY`` (SQLite's implicit
       rowid alias has no PostgreSQL equivalent).
 
-    Only the default literal is rewritten; the column name, any CHECK and the
-    rest of the definition are left exactly as written.
+    * The declared type token ``DATETIME``/``BLOB`` becomes ``TIMESTAMP``/``BYTEA``.
+      Defaults, CHECK expressions and quoted text are not type tokens.
     """
     out = _BOOL_DEFAULT_RE.sub(lambda m: m.group(1) + ("true" if m.group(2) == "1" else "false"), column_def)
+    out = re.sub(
+        r"^(\s*\S+\s+)(DATETIME|BLOB)\b",
+        lambda m: m.group(1) + {"DATETIME": "TIMESTAMP", "BLOB": "BYTEA"}[m.group(2).upper()],
+        out,
+        flags=re.IGNORECASE,
+    )
     return out.replace("INTEGER PRIMARY KEY", "SERIAL PRIMARY KEY")
 
 

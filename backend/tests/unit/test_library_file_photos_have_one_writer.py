@@ -129,25 +129,19 @@ def test_every_purge_of_a_library_file_tells_the_writer():
             if "forget_files" not in calls:
                 forgetful.append(where)
     # The scan must be looking at something: these are the purges known today.
-    assert {
-        "services/library_trash.py::_sweep",
-        "services/library_trash.py::trash_or_purge",
-        "services/library_trash.py::hard_delete_now",
-        "services/library_scan.py::remove_vanished",
-        "api/routes/users.py::delete_user",
-    } <= set(purging), sorted(purging)
+    assert set(purging) == {"services/content_delete_rows.py::library_rows"}
     assert forgetful == []
 
 
 def test_a_deleted_user_is_detached_in_code():
     """``uploaded_by_id`` is ON DELETE SET NULL, which SQLite never applies."""
-    tree = ast.parse((APP / "api" / "routes" / "users.py").read_text(encoding="utf-8"))
+    tree = ast.parse((APP / "services" / "user_content_delete.py").read_text(encoding="utf-8"))
     delete_user = next(
-        node for node in ast.walk(tree) if isinstance(node, ast.AsyncFunctionDef) and node.name == "delete_user"
+        node for node in ast.walk(tree) if isinstance(node, ast.AsyncFunctionDef) and node.name == "detach_account_rows"
     )
     owners = {
-        ast.unparse(node.func.value)
+        ast.unparse(node.value)
         for node in ast.walk(delete_user)
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "detach_user"
+        if isinstance(node, ast.Attribute) and node.attr == "detach_user"
     }
     assert "library_file_photos" in owners

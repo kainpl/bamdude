@@ -958,6 +958,7 @@ async def _delete_printer(
     await _retire_camera_stream(printer_id)
     from backend.app.services.virtual_printer import virtual_printer_manager
 
+    virtual_printer_manager.mark_target_config_pending(printer_id)
     try:
         await virtual_printer_manager.sync_from_db()
     except Exception:
@@ -1011,14 +1012,27 @@ async def _delete_printer_rows(printer_id: int, printer: Printer, delete_archive
         # rows vanished, so the feature looked like it worked while every file
         # stayed on disk. If ``delete_archive`` ever stops removing a row, the
         # test asserting none are left has to be the thing that says so.
-        # ``Printer.archives`` still cascades on ``db.delete(printer)`` below,
-        # so a stuck row cannot make the printer undeletable.
+        # A refused archive stays: the printer has no hidden ORM cascade that
+        # could bypass the archive's child/stock/file-reference owner.
         archive_service = ArchiveService(db)
         archive_ids = (
             (await db.execute(select(PrintArchive.id).where(PrintArchive.printer_id == printer_id))).scalars().all()
         )
-        for archive_id in archive_ids:
-            await archive_service.delete_archive(archive_id)
+        # Only this already-retired printer's own physical work is exempt.
+        # Ordinary trash/user deletion can never obtain this shutdown context.
+        db.info["retired_printer_cleanup"] = printer_id
+        try:
+            for archive_id in archive_ids:
+                deleted = await archive_service.delete_archive(archive_id)
+                if not deleted and await db.get(PrintArchive, archive_id, populate_existing=True) is not None:
+                    raise HTTPException(
+                        409, "An archive could not be deleted; retry printer deletion after resolving it."
+                    )
+        finally:
+            db.info.pop("retired_printer_cleanup", None)
+        remaining = await db.scalar(select(PrintArchive.id).where(PrintArchive.printer_id == printer_id).limit(1))
+        if remaining is not None:
+            raise HTTPException(409, "Printer archives changed during deletion; retry the operation.")
     else:
         # Orphan the archives instead of deleting them
         from sqlalchemy import update

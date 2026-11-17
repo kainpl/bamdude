@@ -10,7 +10,10 @@ from backend.tests.integration.test_g01_e_backup_approval import (
     test_occurrences_episode_regrant_and_new_episode as assert_episode,
     test_old_completion_cannot_overwrite_reused_config_and_log_ids as assert_log_identity,
 )
-from backend.tests.integration.test_g01_e_backup_concurrency import exercise_concurrent_due
+from backend.tests.integration.test_g01_e_backup_concurrency import (
+    exercise_admission_races_below_guard,
+    exercise_concurrent_due,
+)
 from backend.tests.unit.test_g01_e_git_restore_actor import (
     actor_restore,  # noqa: F401
     test_current_actor_success_preserves_original_session_and_canonical_settings as assert_restore_success,
@@ -34,6 +37,10 @@ async def e_anchor(test_engine):
 
 async def test_concurrent_due_and_manual_on_postgres(backup):
     await exercise_concurrent_due(backup)
+
+
+async def test_admission_races_below_guard_on_postgres(backup):
+    await exercise_admission_races_below_guard(backup)
 
 
 async def test_episode_regrant_and_restart_on_postgres(backup):

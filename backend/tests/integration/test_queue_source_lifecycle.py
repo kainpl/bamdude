@@ -50,6 +50,8 @@ from backend.app.models.queue_source import (
     QueueSource,
 )
 from backend.app.services import queue_sources
+from backend.app.services.library_delete_scope import library_delete_scope
+from backend.app.services.library_identity import LibraryIdentity
 from backend.app.services.queue_source_descriptor import QueueSourceDescriptor, source_snapshot
 
 pytestmark = pytest.mark.integration
@@ -308,8 +310,9 @@ async def test_trashing_a_library_file_leaves_a_ready_job_alone(
     job = await a_job(db_session, queue_id=queue.id, blob=blob, library_file_id=file.id, position=7)
     await db_session.commit()
 
-    await library_trash_service.trash_or_purge(db_session, file)
-    await db_session.commit()
+    async with library_delete_scope(db_session, [LibraryIdentity.capture(file)]):
+        await library_trash_service.trash_or_purge(db_session, file)
+        await db_session.commit()
 
     job = await reread(db_session, job)
     assert job.status == "pending"
@@ -331,8 +334,9 @@ async def test_trashing_a_library_file_still_cancels_a_legacy_job(db_session, tm
     job = await a_job(db_session, queue_id=queue.id, library_file_id=file.id)
     await db_session.commit()
 
-    await library_trash_service.trash_or_purge(db_session, file)
-    await db_session.commit()
+    async with library_delete_scope(db_session, [LibraryIdentity.capture(file)]):
+        await library_trash_service.trash_or_purge(db_session, file)
+        await db_session.commit()
 
     job = await reread(db_session, job)
     assert job.status == "cancelled"
@@ -353,8 +357,9 @@ async def test_trashing_a_library_file_fails_a_legacy_auto_row(db_session, tmp_p
     row = await an_auto_job(db_session, library_file_id=file.id)
     await db_session.commit()
 
-    await library_trash_service.trash_or_purge(db_session, file)
-    await db_session.commit()
+    async with library_delete_scope(db_session, [LibraryIdentity.capture(file)]):
+        await library_trash_service.trash_or_purge(db_session, file)
+        await db_session.commit()
 
     row = await reread(db_session, row)
     assert row.status == "failed"
@@ -371,8 +376,9 @@ async def test_trashing_a_library_file_leaves_a_ready_auto_row_alone(
     row = await an_auto_job(db_session, blob=blob, library_file_id=file.id)
     await db_session.commit()
 
-    await library_trash_service.trash_or_purge(db_session, file)
-    await db_session.commit()
+    async with library_delete_scope(db_session, [LibraryIdentity.capture(file)]):
+        await library_trash_service.trash_or_purge(db_session, file)
+        await db_session.commit()
 
     row = await reread(db_session, row)
     assert row.status == "pending"
@@ -399,8 +405,9 @@ async def test_purging_an_external_file_no_longer_deletes_the_work(
     job = await a_job(db_session, queue_id=queue.id, blob=blob, library_file_id=file.id)
     await db_session.commit()
 
-    trashed = await library_trash_service.trash_or_purge(db_session, file)
-    await db_session.commit()
+    async with library_delete_scope(db_session, [LibraryIdentity.capture(file)]):
+        trashed = await library_trash_service.trash_or_purge(db_session, file)
+        await db_session.commit()
 
     assert trashed is False, "an external file is still purged, not trashed"
     job = await reread(db_session, job)
@@ -424,8 +431,9 @@ async def test_purging_an_external_file_cancels_a_legacy_job_instead_of_deleting
     job = await a_job(db_session, queue_id=queue.id, library_file_id=file.id)
     await db_session.commit()
 
-    await library_trash_service.trash_or_purge(db_session, file)
-    await db_session.commit()
+    async with library_delete_scope(db_session, [LibraryIdentity.capture(file)]):
+        await library_trash_service.trash_or_purge(db_session, file)
+        await db_session.commit()
 
     job = await reread(db_session, job)
     assert job is not None
@@ -649,7 +657,13 @@ async def test_deleting_a_queue_row_takes_its_router_half_with_it(
     queue = await a_queue(db_session, printer.id)
     blob = await a_ready_blob(sessions, tmp_path / "share" / "lamp.gcode.3mf")
     router = await an_auto_job(db_session, blob=blob, status="assigned")
-    job = await a_job(db_session, queue_id=queue.id, blob=blob, source_auto_item_id=router.id)
+    job = await a_job(
+        db_session,
+        queue_id=queue.id,
+        blob=blob,
+        source_auto_item_id=router.id,
+        source_auto_identity=router.recovery_identity,
+    )
     router.assigned_to_item_id = job.id
     await db_session.commit()
 
@@ -701,7 +715,13 @@ async def test_deleting_a_printer_frees_the_references_of_every_row_it_took(
     queue = await a_queue(db_session, printer.id)
     blob = await a_ready_blob(sessions, tmp_path / "share" / "lamp.gcode.3mf")
     router = await an_auto_job(db_session, blob=blob, status="assigned")
-    job = await a_job(db_session, queue_id=queue.id, blob=blob, source_auto_item_id=router.id)
+    job = await a_job(
+        db_session,
+        queue_id=queue.id,
+        blob=blob,
+        source_auto_item_id=router.id,
+        source_auto_identity=router.recovery_identity,
+    )
     router.assigned_to_item_id = job.id
     await db_session.commit()
 
@@ -1083,7 +1103,14 @@ async def test_an_assigned_auto_row_is_not_counted_twice(db_session, tmp_path, p
     blob = await a_ready_blob(sessions, tmp_path / "share" / "lamp.gcode.3mf")
     archive = await an_archive_with_its_own_bytes(db_session, printer.id)
     router = await an_auto_job(db_session, blob=blob, archive_id=archive.id, status="assigned")
-    twin = await a_job(db_session, queue_id=queue.id, blob=blob, archive_id=archive.id, source_auto_item_id=router.id)
+    twin = await a_job(
+        db_session,
+        queue_id=queue.id,
+        blob=blob,
+        archive_id=archive.id,
+        source_auto_item_id=router.id,
+        source_auto_identity=router.recovery_identity,
+    )
     router.assigned_to_item_id = twin.id
     await db_session.commit()
 
@@ -1134,8 +1161,9 @@ async def test_the_pre_flight_agrees_with_what_the_delete_then_does(db_session, 
     await db_session.commit()
 
     impact = await delete_impact(db_session, library_file_ids=[file.id])
-    await library_trash_service.trash_or_purge(db_session, file)
-    await db_session.commit()
+    async with library_delete_scope(db_session, [LibraryIdentity.capture(file)]):
+        await library_trash_service.trash_or_purge(db_session, file)
+        await db_session.commit()
 
     kept = await reread(db_session, kept)
     dying = await reread(db_session, dying)

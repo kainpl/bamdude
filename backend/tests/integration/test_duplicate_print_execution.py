@@ -128,7 +128,7 @@ async def test_reconcile_duplicate_owners_books_once_but_never_releases_one(
     await db_session.commit()
     booking, library, gate = AsyncMock(), AsyncMock(), AsyncMock()
     monkeypatch.setattr(usage_tracker, "on_print_complete", booking)
-    monkeypatch.setattr(main, "_bump_library_file_usage", library)
+    monkeypatch.setattr("backend.app.services.library_usage.increment", library)
     monkeypatch.setattr(printer_manager, "arm_awaiting_plate_clear", gate)
     report = []
     assert (
@@ -143,7 +143,8 @@ async def test_reconcile_duplicate_owners_books_once_but_never_releases_one(
         is None
     )
     booking.assert_awaited_once()
-    library.assert_awaited_once()
+    # These archives have no library source: the new writer is not invoked.
+    library.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -399,7 +400,7 @@ async def test_replayed_noncurrent_marker_never_books_and_closes_own_claims(
     await db_session.commit()
     forbidden = AsyncMock(side_effect=AssertionError("noncurrent execution booked"))
     monkeypatch.setattr(usage_tracker, "on_print_complete", forbidden)
-    monkeypatch.setattr(main, "_bump_library_file_usage", forbidden)
+    monkeypatch.setattr("backend.app.services.library_usage.increment", forbidden)
     assert await reconcile._reconcile(db_session, p.id, "FINISH", "b.3mf", "200") == []
     await db_session.refresh(a)
     await db_session.refresh(item)

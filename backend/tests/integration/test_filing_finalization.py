@@ -46,6 +46,7 @@ async def queued(committing_client, db_session, order_line, printer_with_queue, 
         "auto": auto.json()["id"],
         "row": printer_row.json()["id"],
         "order": project.id,
+        "order_name": project.name,
         "line": line.id,
     }
 
@@ -67,16 +68,27 @@ async def test_revoking_the_right_or_deactivating_the_creator_unlinks_nothing(db
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("delete_items", [False, True])
-async def test_deleting_the_creator_forgets_them_in_the_auto_queue_and_keeps_the_link(
+async def test_deleting_the_creator_keeps_filed_work_unless_content_deletion_is_requested(
     committing_client, db_session, queued, delete_items
 ):
     r = await committing_client.delete(
         f"/api/v1/users/{queued['planner']}", params={"delete_items": str(delete_items).lower()}
     )
-    assert r.status_code == 204, r.text
+    assert r.status_code == (200 if delete_items else 204), r.text
+    if delete_items:
+        assert r.json()["deleted"] is True
+        assert r.json()["affected_orders"] == [
+            {"id": queued["order"], "name": queued["order_name"], "prints": 0, "jobs": 2}
+        ]
+        assert r.json()["counts"] == {"archives": 0, "library_files": 0, "queue_items": 1, "auto_queue_items": 1}
     auto = await db_session.get(AutoQueueItem, queued["auto"], populate_existing=True)
-    assert auto.created_by_id is None
-    assert (auto.project_id, auto.project_line_id) == (queued["order"], queued["line"])
+    row = await db_session.get(PrintQueueItem, queued["row"], populate_existing=True)
+    if delete_items:
+        assert auto is None and row is None
+    else:
+        assert auto.created_by_id is None and row.created_by_id is None
+        assert (auto.project_id, auto.project_line_id) == (queued["order"], queued["line"])
+        assert (row.project_id, row.project_line_id) == (queued["order"], queued["line"])
 
 
 # The carriers of work already allowed — the scheduler, the auto-queue's distributor, the

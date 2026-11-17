@@ -138,7 +138,6 @@ from backend.app.services.product_sync import (
     apply_folder_products,
     inherit_folder_products,
     is_plan_eligible,
-    purge_folder_product_links,
     sync_product_for_file,
 )
 from backend.app.services.slice_output_check import (
@@ -1836,27 +1835,47 @@ async def delete_folder(
     delete an empty, non-external, non-linked folder — see
     :func:`_restricted_folder_delete_blocker` for what "empty" has to mean.
     """
-    result = await db.execute(select(LibraryFolder).where(LibraryFolder.id == folder_id))
-    folder = result.scalar_one_or_none()
+    from backend.app.services.library_delete_cleanup import finish
+    from backend.app.services.library_delete_scope import (
+        changed,
+        guard_delete_actor,
+        library_delete_scope,
+        selected_files,
+    )
 
-    if not folder:
-        raise HTTPException(status_code=404, detail="Folder not found")
+    proofs, folders = await selected_files(db, folder_ids=[folder_id])
+    try:
+        async with library_delete_scope(
+            db, proofs, first=lambda session: guard_delete_actor(session, auth_result), folder_proofs=folders
+        ):
+            fresh, fresh_folders = await selected_files(db, folder_ids=[folder_id])
+            if fresh != proofs or fresh_folders != folders:
+                raise changed()
+            result = await db.execute(select(LibraryFolder).where(LibraryFolder.id == folder_id))
+            folder = result.scalar_one_or_none()
 
-    _, can_modify_all = auth_result
-    if not can_modify_all:
-        blocker = await _restricted_folder_delete_blocker(db, folder)
-        if blocker:
-            raise HTTPException(status_code=403, detail=blocker)
+            if not folder:
+                raise HTTPException(status_code=404, detail="Folder not found")
 
-    await _trash_folder_contents(db, folder_id)
+            _, can_modify_all = auth_result
+            if not can_modify_all:
+                blocker = await _restricted_folder_delete_blocker(db, folder)
+                if blocker:
+                    raise HTTPException(status_code=403, detail=blocker)
 
-    # The folder row itself goes; folders have no trash of their own. Its files
-    # were detached above, so the CASCADE has nothing left to take.
-    await purge_folder_product_links(db, [folder.id])
-    await db.delete(folder)
-    await db.commit()
+            await _trash_folder_contents(db, folder_id)
 
-    return {"status": "success", "message": "Folder deleted"}
+            # The folder row itself goes; folders have no trash of their own. Its files
+            # were detached above, so the CASCADE has nothing left to take.
+            from backend.app.services.content_delete_rows import folder_rows
+
+            await folder_rows(db, [proof.id for proof in folders])
+            await db.delete(folder)
+            await db.commit()
+
+            return {"status": "success", "message": "Folder deleted"}
+    finally:
+        await finish(db)
 
 
 async def _trash_folder_contents(db: AsyncSession, folder_id: int) -> int:
@@ -6233,46 +6252,66 @@ async def delete_file(
     Queue items keep referencing the trashed row; printing items block
     the soft-delete so we never yank the file mid-job.
     """
-    user, can_modify_all = auth_result
+    from backend.app.services.library_delete_cleanup import finish
+    from backend.app.services.library_delete_scope import (
+        changed,
+        guard_delete_actor,
+        library_delete_scope,
+        selected_files,
+    )
 
-    # Use the active() filter so a row already in the trash returns 404 — the
-    # caller should be hitting the trash endpoints to manage it instead.
-    result = await db.execute(LibraryFile.active().where(LibraryFile.id == file_id))
-    file = result.scalar_one_or_none()
+    proofs, folders = await selected_files(db, file_ids=[file_id])
+    try:
+        async with library_delete_scope(
+            db, proofs, first=lambda session: guard_delete_actor(session, auth_result), folder_proofs=folders
+        ):
+            fresh, fresh_folders = await selected_files(db, file_ids=[file_id])
+            if fresh != proofs or fresh_folders != folders:
+                raise changed()
+            user, can_modify_all = auth_result
 
-    if not file:
-        raise HTTPException(status_code=404, detail="File not found")
+            # Use the active() filter so a row already in the trash returns 404 — the
+            # caller should be hitting the trash endpoints to manage it instead.
+            result = await db.execute(LibraryFile.active().where(LibraryFile.id == file_id))
+            file = result.scalar_one_or_none()
 
-    # Ownership check
-    if not can_modify_all:
-        if file.created_by_id != user.id:
-            raise HTTPException(status_code=403, detail="You can only delete your own files")
+            if not file:
+                raise HTTPException(status_code=404, detail="File not found")
 
-    # Block delete if any queue item referencing this file is currently
-    # printing — pulling the file out from under a live job is unsafe
-    # regardless of the trash bin (the file is still on disk but we'd
-    # break the audit trail).
-    queue_items_result = await db.execute(select(PrintQueueItem).where(PrintQueueItem.library_file_id == file.id))
-    queue_items = list(queue_items_result.scalars().all())
-    printing_blockers = [qi for qi in queue_items if qi.status == "printing"]
-    if printing_blockers:
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "error": "file_in_use",
-                "message": "Cannot delete file: a queue item is currently printing. Wait for or stop the print first.",
-                "queue_item_ids": [qi.id for qi in printing_blockers],
-            },
-        )
+            # Ownership check
+            if not can_modify_all:
+                if file.created_by_id != user.id:
+                    raise HTTPException(status_code=403, detail="You can only delete your own files")
 
-    # One definition of what deleting a file means, shared with the bulk and
-    # folder routes -- they used to disagree, and three of the four destroyed
-    # the file outright.
-    trashed = await library_trash_service.trash_or_purge(db, file)
-    await db.commit()
-    if trashed:
-        return {"status": "success", "message": "File moved to trash", "trashed": True}
-    return {"status": "success", "message": "File deleted", "trashed": False}
+            # Block delete if any queue item referencing this file is currently
+            # printing — pulling the file out from under a live job is unsafe
+            # regardless of the trash bin (the file is still on disk but we'd
+            # break the audit trail).
+            queue_items_result = await db.execute(
+                select(PrintQueueItem).where(PrintQueueItem.library_file_id == file.id)
+            )
+            queue_items = list(queue_items_result.scalars().all())
+            printing_blockers = [qi for qi in queue_items if qi.status == "printing"]
+            if printing_blockers:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "error": "file_in_use",
+                        "message": "Cannot delete file: a queue item is currently printing. Wait for or stop the print first.",
+                        "queue_item_ids": [qi.id for qi in printing_blockers],
+                    },
+                )
+
+            # One definition of what deleting a file means, shared with the bulk and
+            # folder routes -- they used to disagree, and three of the four destroyed
+            # the file outright.
+            trashed = await library_trash_service.trash_or_purge(db, file)
+            await db.commit()
+            if trashed:
+                return {"status": "success", "message": "File moved to trash", "trashed": True}
+            return {"status": "success", "message": "File deleted", "trashed": False}
+    finally:
+        await finish(db)
 
 
 # ============ File Content Endpoints ============
@@ -6723,58 +6762,81 @@ async def bulk_delete(
 
     Files not owned by the user are skipped (unless user has *_all permission).
     """
-    user, can_modify_all = auth_result
-    deleted_files = 0
-    deleted_folders = 0
-    skipped_files = 0
+    from backend.app.services.library_delete_cleanup import finish
+    from backend.app.services.library_delete_scope import (
+        changed,
+        guard_delete_actor,
+        library_delete_scope,
+        selected_files,
+    )
 
-    # Delete files first
-    for file_id in data.file_ids:
-        # active(): a row already in the trash is not deleted again. Managing
-        # it is what the trash endpoints are for.
-        result = await db.execute(LibraryFile.active().where(LibraryFile.id == file_id))
-        file = result.scalar_one_or_none()
-        if file:
-            # Ownership check
-            if not can_modify_all and file.created_by_id != user.id:
-                skipped_files += 1
-                continue
+    proofs, folders = await selected_files(db, file_ids=data.file_ids, folder_ids=data.folder_ids)
+    try:
+        async with library_delete_scope(
+            db, proofs, first=lambda session: guard_delete_actor(session, auth_result), folder_proofs=folders
+        ):
+            fresh, fresh_folders = await selected_files(db, file_ids=data.file_ids, folder_ids=data.folder_ids)
+            if fresh != proofs or fresh_folders != folders:
+                raise changed()
+            user, can_modify_all = auth_result
+            deleted_files = 0
+            deleted_folders = 0
+            skipped_files = 0
 
-            # Skip files that are currently being printed by a queue item —
-            # cascading the file delete now would orphan the live print row.
-            # See single-file delete_file for the full reasoning.
-            queue_items_result = await db.execute(
-                select(PrintQueueItem).where(PrintQueueItem.library_file_id == file.id)
+            # Delete files first
+            for file_id in data.file_ids:
+                # active(): a row already in the trash is not deleted again. Managing
+                # it is what the trash endpoints are for.
+                result = await db.execute(LibraryFile.active().where(LibraryFile.id == file_id))
+                file = result.scalar_one_or_none()
+                if file:
+                    # Ownership check
+                    if not can_modify_all and file.created_by_id != user.id:
+                        skipped_files += 1
+                        continue
+
+                    # Skip files that are currently being printed by a queue item —
+                    # cascading the file delete now would orphan the live print row.
+                    # See single-file delete_file for the full reasoning.
+                    queue_items_result = await db.execute(
+                        select(PrintQueueItem).where(PrintQueueItem.library_file_id == file.id)
+                    )
+                    queue_items = list(queue_items_result.scalars().all())
+                    if any(qi.status == "printing" for qi in queue_items):
+                        logger.info("bulk_delete: skipping file %s — queue item currently printing", file.id)
+                        skipped_files += 1
+                        continue
+
+                    await library_trash_service.trash_or_purge(db, file)
+                    deleted_files += 1
+
+            # Delete folders. Folders have no ownership tracking, so a user without
+            # *_all may only take empty, non-external, non-linked ones — the same rule
+            # as DELETE /folders/{id}, asked through the same function so the two doors
+            # cannot drift apart (#1781).
+            for folder_id in data.folder_ids:
+                result = await db.execute(select(LibraryFolder).where(LibraryFolder.id == folder_id))
+                folder = result.scalar_one_or_none()
+                if folder and not can_modify_all and await _restricted_folder_delete_blocker(db, folder):
+                    continue
+                if folder:
+                    # Same door, same answer as DELETE /folders/{id}: the files inside
+                    # go to the trash, detached so the CASCADE cannot take them.
+                    deleted_files += await _trash_folder_contents(db, folder_id)
+                    from backend.app.services.content_delete_rows import folder_rows
+
+                    _, removed_folders = await selected_files(db, folder_ids=[folder.id])
+                    await folder_rows(db, [proof.id for proof in removed_folders])
+                    await db.delete(folder)
+                    deleted_folders += 1
+
+            await db.commit()
+
+            return BulkDeleteResponse(
+                deleted_files=deleted_files, deleted_folders=deleted_folders, skipped_files=skipped_files
             )
-            queue_items = list(queue_items_result.scalars().all())
-            if any(qi.status == "printing" for qi in queue_items):
-                logger.info("bulk_delete: skipping file %s — queue item currently printing", file.id)
-                skipped_files += 1
-                continue
-
-            await library_trash_service.trash_or_purge(db, file)
-            deleted_files += 1
-
-    # Delete folders. Folders have no ownership tracking, so a user without
-    # *_all may only take empty, non-external, non-linked ones — the same rule
-    # as DELETE /folders/{id}, asked through the same function so the two doors
-    # cannot drift apart (#1781).
-    for folder_id in data.folder_ids:
-        result = await db.execute(select(LibraryFolder).where(LibraryFolder.id == folder_id))
-        folder = result.scalar_one_or_none()
-        if folder and not can_modify_all and await _restricted_folder_delete_blocker(db, folder):
-            continue
-        if folder:
-            # Same door, same answer as DELETE /folders/{id}: the files inside
-            # go to the trash, detached so the CASCADE cannot take them.
-            deleted_files += await _trash_folder_contents(db, folder_id)
-            await purge_folder_product_links(db, [folder.id])
-            await db.delete(folder)
-            deleted_folders += 1
-
-    await db.commit()
-
-    return BulkDeleteResponse(deleted_files=deleted_files, deleted_folders=deleted_folders, skipped_files=skipped_files)
+    finally:
+        await finish(db)
 
 
 # ============ Stats Endpoint ============
