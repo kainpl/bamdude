@@ -10707,6 +10707,22 @@ async def _on_print_complete_impl(
 _ams_history_task: asyncio.Task | None = None
 AMS_HISTORY_INTERVAL = 300  # Record every 5 minutes
 AMS_HISTORY_RETENTION_DAYS = 30  # Keep data for 30 days
+
+
+def _retention_days(raw, default: int) -> int:
+    """A stored retention as whole days, never less than one.
+
+    Zero or a negative number puts the cutoff at or after now, and the daily
+    sweep then deletes the whole history; a value that is not a number used to
+    stop the sweep with an error. Either reads as the default instead.
+    """
+    try:
+        days = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return default
+    return days if days >= 1 else default
+
+
 INBOX_RETENTION_DAYS = 30  # in-app inbox rows; spec: notification-center §4.4
 _ams_cleanup_counter = 0  # Track recordings to trigger periodic cleanup
 # (printer_id, ams_id) already reported as sending the drop index and no
@@ -11225,7 +11241,7 @@ async def record_ams_history():
 
                     result = await db.execute(select(Settings).where(Settings.key == "ams_history_retention_days"))
                     setting = result.scalar_one_or_none()
-                    retention_days = int(setting.value) if setting else AMS_HISTORY_RETENTION_DAYS
+                    retention_days = _retention_days(setting.value if setting else None, AMS_HISTORY_RETENTION_DAYS)
 
                     cutoff = datetime.utcnow() - timedelta(days=retention_days)
                     result = await db.execute(delete(AMSSensorHistory).where(AMSSensorHistory.recorded_at < cutoff))
@@ -11407,7 +11423,9 @@ async def record_printer_sensor_history():
                         select(Settings).where(Settings.key == "printer_sensor_history_retention_days")
                     )
                     setting = result.scalar_one_or_none()
-                    retention_days = int(setting.value) if setting else PRINTER_SENSOR_HISTORY_RETENTION_DAYS
+                    retention_days = _retention_days(
+                        setting.value if setting else None, PRINTER_SENSOR_HISTORY_RETENTION_DAYS
+                    )
 
                     cutoff = datetime.utcnow() - timedelta(days=retention_days)
                     cleanup = await db.execute(
