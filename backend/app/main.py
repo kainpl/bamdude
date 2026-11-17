@@ -554,13 +554,19 @@ _first_layer_notified: dict[int, bool] = {}
 _running_print_adoptions: dict[int, list[asyncio.Event]] = {}
 _RUN_ADOPTION_WAIT_SECONDS = 30.0
 
-# Track HMS errors that have been notified: {printer_id: set of error codes}
-# This prevents sending duplicate notifications for the same error
-_notified_hms_errors: dict[int, set[str]] = {}
-# Track when HMS errors were last seen: {printer_id: timestamp}
-# Used to debounce clearing - prevents flapping errors from re-triggering notifications
-_hms_last_seen: dict[int, float] = {}
-_HMS_CLEAR_GRACE_SECONDS = 30.0
+# HMS faults already announced, with when each was last seen:
+# {printer_id: {fault key: timestamp}}. Kept per FAULT, not per printer: one set
+# for the whole stack was forgotten only when the stack emptied, so a fault that
+# flickers beside one that stays was announced on every return (upstream #3226).
+# The window is long because measured gaps reach 64 s. In process memory on
+# purpose: a restart announces a standing fault again (owner, 2026-08-29).
+_notified_hms_errors: dict[int, dict[str, float]] = {}
+_HMS_CLEAR_GRACE_SECONDS = 600.0
+# The print state each printer was last seen in, and the faults recorded before
+# it last changed -- those are forgotten as soon as they are gone, without the
+# window (see ``_take_new_hms_fault_keys``).
+_hms_print_state: dict[int, str] = {}
+_hms_forget_when_gone: dict[int, set[str]] = {}
 
 # How long post-print housekeeping on the printer may take before it is
 # abandoned. Generous enough for a slow A1 over FTP, short enough that a
@@ -661,6 +667,78 @@ def _hms_short_code(attr: int, code: int | str) -> str:
         code_int = int(code or 0)
     attr_int = int(attr or 0)
     return f"{(attr_int >> 16) & 0xFFFF:04X}_{code_int & 0xFFFF:04X}"
+
+
+def _hms_notify_key(error) -> str:
+    """What identifies a fault for the announcement memory: its full code.
+
+    ``attr`` alone is unique for a ``print_error``, but for an ``hms[]`` fault it
+    is only the module and the part, so two faults on one part shared a key and
+    the second was never announced -- and a quiet one that came first silenced a
+    fatal one (upstream #2728).
+    """
+    full_code = getattr(error, "full_code", "") or ""
+    if full_code:
+        return full_code.upper()
+    return f"{int(error.attr or 0):08X}:{error.code}"
+
+
+def _take_new_hms_fault_keys(
+    printer_id: int, errors: list, print_state: str | None = None, *, now: float | None = None
+) -> set[str]:
+    """The faults on this printer not announced yet; records them as announced.
+
+    The memory is written before anything is sent, so two status callbacks
+    cannot announce one fault twice. A fault is forgotten once it has been gone
+    for ``_HMS_CLEAR_GRACE_SECONDS``: one that flickers is announced once, one
+    that returns much later is announced again.
+
+    When ``print_state`` changes (a print resumed, started, finished), every
+    fault recorded so far is forgotten the first time it is gone, without the
+    wait -- a runout fixed before resuming must be announced when it happens
+    again a minute later. Not only the faults gone at the change itself: the
+    frame that flips the state can still carry the old fault.
+    """
+    now = time.time() if now is None else now
+    current = {_hms_notify_key(e) for e in errors}
+    seen = _notified_hms_errors.setdefault(printer_id, {})
+    forget_when_gone = _hms_forget_when_gone.setdefault(printer_id, set())
+
+    if print_state:
+        print_state = print_state.upper()
+        if _hms_print_state.get(printer_id, print_state) != print_state:
+            forget_when_gone.update(seen)
+        _hms_print_state[printer_id] = print_state
+
+    for key, last_seen in list(seen.items()):
+        # A fault still on the stack has its time refreshed by every frame, so one
+        # past the window was absent that long -- whether or not a frame said so.
+        if now - last_seen >= _HMS_CLEAR_GRACE_SECONDS or (key not in current and key in forget_when_gone):
+            del seen[key]
+            forget_when_gone.discard(key)
+
+    new = current - seen.keys()
+    for key in current:
+        seen[key] = now
+    if not seen:
+        _notified_hms_errors.pop(printer_id, None)
+    if not forget_when_gone:
+        _hms_forget_when_gone.pop(printer_id, None)
+    return new
+
+
+def _hms_label(full_code: str | None, short_code: str) -> str:
+    """How a fault is named to a person.
+
+    An ``hms[]`` fault is named by its full code in the printer screen's four
+    groups: its short form drops the part and the level, so ``0500_0070`` read
+    as a code nobody could look up. A ``print_error`` keeps the short form, which
+    IS what the printer shows for it.
+    """
+    full_code = full_code or ""
+    if len(full_code) == 16:
+        return "-".join(full_code[i : i + 4] for i in range(0, 16, 4)).upper()
+    return short_code
 
 
 def derive_failure_reason(status: str, hms_errors: list[dict] | None) -> str | None:
@@ -1832,8 +1910,10 @@ def _format_hms_error_summary(hms_errors: list[dict], device: str = "") -> str |
             continue
         # ⚠️ The short code goes in WITHOUT its separator: that is how both
         # halves of Bambu's catalogue are keyed, and how hms_actions is called.
-        description = describe(device, str(err.get("full_code") or "") or None, short_code.replace("_", ""))
-        parts.append(f"[{short_code}] {description}" if description else f"[{short_code}]")
+        full_code = str(err.get("full_code") or "")
+        description = describe(device, full_code or None, short_code.replace("_", ""))
+        label = _hms_label(full_code, short_code)
+        parts.append(f"[{label}] {description}" if description else f"[{label}]")
     return "; ".join(parts) if parts else None
 
 
@@ -2688,16 +2768,9 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
     # Check for new HMS errors and send notifications
     current_hms_errors = getattr(state, "hms_errors", []) or []
     if current_hms_errors:
-        # Build set of current error codes (using attr for uniqueness)
-        current_error_codes = {f"{e.attr:08x}" for e in current_hms_errors}
-        previously_notified = _notified_hms_errors.get(printer_id, set())
-
-        # Find new errors that haven't been notified yet
-        new_error_codes = current_error_codes - previously_notified
-
-        # Update tracking immediately to prevent duplicate notifications from concurrent callbacks
-        _notified_hms_errors[printer_id] = current_error_codes
-        _hms_last_seen[printer_id] = time.time()
+        # Recorded before anything is sent, so a concurrent callback cannot
+        # announce the same fault twice.
+        new_error_codes = _take_new_hms_fault_keys(printer_id, current_hms_errors, state.state)
 
         if new_error_codes:
             # Get the actual new errors for the notification
@@ -2709,7 +2782,7 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
             new_errors = [
                 e
                 for e in current_hms_errors
-                if f"{e.attr:08x}" in new_error_codes and e.severity <= HMS_SEVERITY_NOTIFY_THRESHOLD
+                if _hms_notify_key(e) in new_error_codes and e.severity <= HMS_SEVERITY_NOTIFY_THRESHOLD
             ]
 
             try:
@@ -2775,7 +2848,7 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
                         description = describe(
                             hms_device, getattr(error, "full_code", None), short_code.replace("_", "")
                         )
-                        error_type = short_code
+                        error_type = _hms_label(getattr(error, "full_code", None), short_code)
                         # ⚠️ Not `description or short_code`. The title already
                         # carries the code, so falling back to it printed the
                         # same eight characters twice with the printer name
@@ -2821,15 +2894,10 @@ async def on_printer_status_change(printer_id: int, state: PrinterState):
                 logging.getLogger(__name__).warning(f"HMS error notification failed: {e}")
 
     else:
-        # No HMS errors - only clear tracking after a grace period to prevent
-        # flapping errors (brief hms:[] gaps) from re-triggering notifications.
-        # Some HMS codes (e.g. chamber temp regulation during PETG prints) toggle
-        # on/off every few seconds as conditions fluctuate around thresholds.
-        if printer_id in _notified_hms_errors:
-            last_seen = _hms_last_seen.get(printer_id, 0)
-            if time.time() - last_seen >= _HMS_CLEAR_GRACE_SECONDS:
-                _notified_hms_errors.pop(printer_id, None)
-                _hms_last_seen.pop(printer_id, None)
+        # Nothing to send, but faults gone long enough -- or gone across a print
+        # state change -- are forgotten. Some codes (chamber temperature
+        # regulation during a PETG print) toggle every few seconds.
+        _take_new_hms_fault_keys(printer_id, [], state.state)
 
     if not printer_manager.session_still_lives(printer_id):
         return
