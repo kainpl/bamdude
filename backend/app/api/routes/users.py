@@ -1,17 +1,19 @@
 import asyncio
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from backend.app.api.routes.settings import get_external_login_url
 from backend.app.core.auth import (
+    RequestCredentials,
     RequireAdmin,
     RequireAnyPermission,
     RequirePermission,
     get_current_user_optional,
     hash_password_async,
+    request_credentials,
     verify_password_async,
 )
 from backend.app.core.auth_lifetime import (
@@ -24,21 +26,12 @@ from backend.app.core.auth_lifetime import (
 from backend.app.core.auth_runtime import auth_runtime
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
-from backend.app.models.api_key import APIKey
 from backend.app.models.archive import PrintArchive
-from backend.app.models.auth_session import AuthSession
-from backend.app.models.auto_queue import AutoQueueItem
 from backend.app.models.group import Group
 from backend.app.models.library import LibraryFile
-from backend.app.models.long_lived_token import LongLivedToken
-from backend.app.models.oidc_provider import UserOIDCLink
 from backend.app.models.print_queue import PrintQueueItem
-from backend.app.models.project import Project
 from backend.app.models.settings import Settings
 from backend.app.models.user import User
-from backend.app.models.user_notification import UserNotification
-from backend.app.models.user_otp_code import UserOTPCode
-from backend.app.models.user_totp import UserTOTP
 from backend.app.schemas.auth import (
     ChangePasswordRequest,
     GroupBrief,
@@ -46,14 +39,6 @@ from backend.app.schemas.auth import (
     UserResponse,
     UserSlim,
     UserUpdate,
-)
-from backend.app.services import (
-    finished_stock,
-    order_journal,
-    part_stock,
-    spool_usage_service,
-    spoolman_usage_history,
-    stock_issues,
 )
 from backend.app.services.email_service import (
     create_welcome_email_from_template,
@@ -428,10 +413,15 @@ async def get_user_items_count(
     library_result = await db.execute(select(func.count(LibraryFile.id)).where(LibraryFile.created_by_id == user_id))
     library_files_count = library_result.scalar() or 0
 
+    from backend.app.models.auto_queue import AutoQueueItem
+
+    auto_count = await db.scalar(select(func.count(AutoQueueItem.id)).where(AutoQueueItem.created_by_id == user_id))
+
     return {
         "archives": archives_count,
         "queue_items": queue_items_count,
         "library_files": library_files_count,
+        "auto_queue_items": auto_count or 0,
     }
 
 
@@ -442,34 +432,40 @@ async def delete_user(
     _admin: User = RequireAdmin(),
     current_user: User | None = RequirePermission(Permission.USERS_DELETE),
     db: AsyncSession = Depends(get_db),
+    creds: RequestCredentials = Depends(request_credentials),
 ):
-    """Delete a user. Admin-only (privilege-escalation hardening).
+    """Delete a user; owned content uses a bounded atomic domain plan."""
+    from fastapi.responses import JSONResponse
 
-    If delete_items=True, all archives, queue items, and library files created by
-    this user will also be deleted. Otherwise, these items will become "ownerless"
-    (created_by_id set to NULL by the foreign key constraint).
-    """
-    result = await db.execute(select(User).where(User.id == user_id).options(selectinload(User.groups)))
-    user = result.scalar_one_or_none()
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found",
-        )
+    from backend.app.services.user_content_delete import delete_content, detach_account_rows
 
-    target_capture = capture_account(user)
-    proof = await guard_accounts(db, [_admin._auth_capture, target_capture], require_active=False)
+    user = await db.scalar(select(User).where(User.id == user_id).options(selectinload(User.groups)))
+    if user is None:
+        raise HTTPException(404, "User not found")
+    target = capture_account(user)
+    if delete_items:
+        result = await delete_content(db, target, _admin, current_user, creds, _check_delete_target)
+        return JSONResponse(result, status_code=200)
+    proof = await guard_accounts(db, [_admin._auth_capture, target], require_active=False)
     actor = await validate_captured(
         db, _admin._auth_capture, required_permissions=(Permission.USERS_DELETE.value,), proof=proof
     )
     if not actor.user.is_admin:
         raise HTTPException(403, "Administrator required")
-    await stage_end_sessions(db, target_capture, "account_deleted")
+    await _check_delete_target(db, user, current_user)
+    await stage_end_sessions(db, target, "account_deleted")
+    await detach_account_rows(db, target)
+    # The explicit user-edge policy already removed the association rows;
+    # a loaded groups collection must not DELETE those rows a second time.
+    await db.execute(delete(User).where(User.account_identity == target.account_identity))
+    await db.commit()
 
+
+async def _check_delete_target(db, user, current_user):
     # Prevent deleting the last admin
     if user.is_admin:
         # Count admins by role or Administrators group membership
-        admin_count_result = await db.execute(select(User).where(User.role == "admin", User.id != user_id))
+        admin_count_result = await db.execute(select(User).where(User.role == "admin", User.id != user.id))
         other_role_admins = admin_count_result.scalars().all()
 
         # Also check for users in Administrators group
@@ -477,7 +473,7 @@ async def delete_user(
             select(Group).where(Group.name == "Administrators").options(selectinload(Group.users))
         )
         admin_group = admin_group_result.scalar_one_or_none()
-        other_group_admins = [u for u in (admin_group.users if admin_group else []) if u.id != user_id and u.is_active]
+        other_group_admins = [u for u in (admin_group.users if admin_group else []) if u.id != user.id and u.is_active]
 
         # Combine unique admins
         all_other_admins = {u.id for u in other_role_admins} | {u.id for u in other_group_admins}
@@ -493,137 +489,6 @@ async def delete_user(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Cannot delete your own account",
         )
-
-    if delete_items:
-        # Delete all items created by this user.
-        #
-        # ⚠️ The stock ledger is cut loose FIRST. This is a bulk Core DELETE, so
-        # it never reaches ``ArchiveService.delete_archive`` and never runs its
-        # ``part_stock.detach_archive`` — and ``product_part_stock_movements``
-        # declares ON DELETE SET NULL, which only PostgreSQL applies (this
-        # codebase never sets ``PRAGMA foreign_keys = ON``). Left attached, the
-        # movements keep an ``archive_id`` naming nothing; on SQLite the next
-        # print to inherit that rowid then finds its credit already standing and
-        # is silently never counted into stock. The movements themselves stay:
-        # the parts are on a shelf whatever happened to the print history.
-        _doomed_archive_ids = (
-            (await db.execute(select(PrintArchive.id).where(PrintArchive.created_by_id == user_id))).scalars().all()
-        )
-        await part_stock.detach_archives(db, list(_doomed_archive_ids))
-        # Both usage histories keep their rows — a spool's consumption record —
-        # and lose the link: their ``archive_id`` has no ON DELETE at all, so
-        # PostgreSQL refused this delete and SQLite left the id to the next
-        # archive that takes it.
-        await spool_usage_service.detach_archives(db, list(_doomed_archive_ids))
-        await spoolman_usage_history.detach_archives(db, list(_doomed_archive_ids))
-        await db.execute(delete(PrintArchive).where(PrintArchive.created_by_id == user_id))
-        # Detach print_queue back-references before the bulk delete — SQLite
-        # foreign_keys=OFF means ON DELETE clauses won't fire on their own.
-        from backend.app.services.queue_counters import detach_print_queue_refs
-
-        _pq_ids = (
-            (await db.execute(select(PrintQueueItem.id).where(PrintQueueItem.created_by_id == user_id))).scalars().all()
-        )
-        await detach_print_queue_refs(db, list(_pq_ids))
-        await db.execute(delete(PrintQueueItem).where(PrintQueueItem.created_by_id == user_id))
-        # ⚠️ Unhook ANOTHER user's queue rows from the files about to go. The
-        # delete above only takes rows this user created; a colleague can have
-        # queued the same library file, and ``print_queue.library_file_id`` is
-        # ``ON DELETE SET NULL`` — which SQLite never applies, because
-        # foreign_keys is off. Without this their row is left pointing at a file
-        # that no longer exists. Must run BEFORE the files are deleted.
-        _doomed_files = select(LibraryFile.id).where(LibraryFile.created_by_id == user_id)
-        await db.execute(
-            update(PrintQueueItem).where(PrintQueueItem.library_file_id.in_(_doomed_files)).values(library_file_id=None)
-        )
-        # ⚠️ And the product links + plates. This is a Core DELETE, so it never
-        # goes near the ORM: not even the ``product_files`` secondary rows the
-        # ORM would have cleared for a ``db.delete(file)`` are removed, and
-        # ``product_plates`` has no ORM cascade from a library file at all.
-        # Both FKs say ON DELETE CASCADE, which PostgreSQL honours and SQLite
-        # ignores — so the ids are collected first and cleaned explicitly.
-        from backend.app.services.product_sync import purge_file_product_links
-
-        _doomed_file_ids = (
-            (await db.execute(select(LibraryFile.id).where(LibraryFile.created_by_id == user_id))).scalars().all()
-        )
-        await purge_file_product_links(db, list(_doomed_file_ids))
-        # And the photos attached to those files (m233): no cascade on SQLite.
-        from backend.app.services import library_file_photos
-
-        await library_file_photos.forget_files(db, list(_doomed_file_ids))
-        # And their notes: the bulk DELETE below goes past the ORM cascade, SQLite runs none.
-        from backend.app.services.library_trash import forget_file_notes
-
-        await forget_file_notes(db, list(_doomed_file_ids))
-        await db.execute(delete(LibraryFile).where(LibraryFile.created_by_id == user_id))
-    else:
-        # Explicitly set created_by_id to NULL for all items (ensures consistent behavior
-        # across different database backends, including SQLite without foreign key support)
-        await db.execute(update(PrintArchive).where(PrintArchive.created_by_id == user_id).values(created_by_id=None))
-        await db.execute(
-            update(PrintQueueItem).where(PrintQueueItem.created_by_id == user_id).values(created_by_id=None)
-        )
-        await db.execute(update(LibraryFile).where(LibraryFile.created_by_id == user_id).values(created_by_id=None))
-
-    # The auto-queue forgets its creator too, in both branches (WS-13 E13 Q-08): its rows
-    # outlive the person — the work under way stays filed under its order — and on SQLite
-    # (no FK actions) a later user given the same id would otherwise inherit them.
-    await db.execute(update(AutoQueueItem).where(AutoQueueItem.created_by_id == user_id).values(created_by_id=None))
-
-    # Cascade-delete the user's API keys. The model declares ON DELETE CASCADE
-    # on api_keys.user_id, but SQLite has PRAGMA foreign_keys=OFF by default
-    # so the FK isn't enforced — without this explicit DELETE the keys would
-    # outlive the user as silent orphans (still authenticated, no owner) and
-    # any can_access_cloud=True row would lose the cloud-token resolution
-    # path it depends on. Postgres would already cascade, but the explicit
-    # DELETE keeps the two backends behaviour-identical (#1182).
-    await db.execute(delete(APIKey).where(APIKey.user_id == user_id))
-
-    # Drop OIDC links, MFA state, and long-lived camera-stream tokens
-    # owned by this user. Same SQLite/FK pattern as APIKey above. Without
-    # these, deleting an SSO user on SQLite leaves:
-    #   - UserOIDCLink: the OIDC callback finds the orphan link, fails to
-    #     resolve the (now missing) user, and falls through to
-    #     "account_inactive" instead of triggering auto-create. The user
-    #     can't re-login via SSO until the orphan link is cleared.
-    #   - UserTOTP: MFA secrets persist in the DB after the owning user
-    #     is gone.
-    #   - UserOTPCode: pending email OTP codes linger.
-    #   - LongLivedToken: per-user camera-stream tokens whose secret_hash
-    #     is still valid — ``verify()`` would happily match them by
-    #     lookup_prefix even though the user is gone.
-    # Same fix upstream Bambuddy shipped in #1285 / commit 4d8dbc83.
-    await db.execute(delete(UserOIDCLink).where(UserOIDCLink.user_id == user_id))
-    await db.execute(delete(UserTOTP).where(UserTOTP.user_id == user_id))
-    await db.execute(delete(UserOTPCode).where(UserOTPCode.user_id == user_id))
-    await db.execute(delete(Settings).where(Settings.key == f"user_{user_id}_email_2fa_enabled"))
-    await db.execute(delete(LongLivedToken).where(LongLivedToken.user_id == user_id))
-    # The in-app inbox is one-to-many per user; SQLite never fires the CASCADE.
-    await db.execute(delete(UserNotification).where(UserNotification.user_id == user_id))
-    # Spec workshop-order-stage, rule 12: nothing keeps naming a deleted user by
-    # id — SQLite runs no SET NULL, and a later user could inherit the id.
-    # ``updated_at`` kept as it was: losing a responsible is not an edit of the
-    # order, and a Core UPDATE would otherwise fire its onupdate and reshuffle
-    # «recently updated» for every order the user held.
-    await db.execute(
-        update(Project)
-        .where(Project.responsible_id == user_id)
-        .values(responsible_id=None, updated_at=Project.updated_at)
-    )
-    await order_journal.detach_user(db, user_id)
-    # Both stock ledgers keep their rows and lose the performer (spec workshop-finished-goods, rule 12).
-    await part_stock.detach_user(db, user_id)
-    await finished_stock.detach_user(db, user_id)
-    await stock_issues.detach_user(db, user_id)
-    # Photos the user attached to library files stay, under their name snapshot (m233).
-    from backend.app.services import library_file_photos
-
-    await library_file_photos.detach_user(db, user_id)
-
-    await db.execute(delete(AuthSession).where(AuthSession.account_identity == target_capture.account_identity))
-    await db.delete(user)
-    await db.commit()
 
 
 @router.post("/me/change-password", response_model=dict)

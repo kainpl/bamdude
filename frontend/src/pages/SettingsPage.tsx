@@ -398,7 +398,7 @@ export function SettingsPage() {
   const [showEditUserModal, setShowEditUserModal] = useState(false);
   const [editingUserId, setEditingUserId] = useState<number | null>(null);
   const [deleteUserId, setDeleteUserId] = useState<number | null>(null);
-  const [deleteUserItemCounts, setDeleteUserItemCounts] = useState<{ archives: number; queue_items: number; library_files: number } | null>(null);
+  const [deleteUserItemCounts, setDeleteUserItemCounts] = useState<{ archives: number; queue_items: number; library_files: number; auto_queue_items: number } | null>(null);
   const [deleteUserLoading, setDeleteUserLoading] = useState(false);
   const [userFormData, setUserFormData] = useState<{
     username: string;
@@ -912,9 +912,11 @@ export function SettingsPage() {
 
   const deleteUserMutation = useMutation({
     mutationFn: ({ id, deleteItems }: { id: number; deleteItems: boolean }) => api.deleteUser(id, deleteItems),
-    onSuccess: () => {
+    onSuccess: (result) => {
       queryClient.invalidateQueries({ queryKey: ['users'] });
-      showToast(t('settings.toast.userDeleted'));
+      showToast(result?.affected_orders.length
+        ? t('settings.toast.userDeletedOrderWork', { orders: result.affected_orders.map(order => order.name).join(', ') })
+        : t('settings.toast.userDeleted'));
       setDeleteUserId(null);
       setDeleteUserItemCounts(null);
     },
@@ -942,7 +944,7 @@ export function SettingsPage() {
       setDeleteUserItemCounts(counts);
     } catch {
       // If we can't get counts, just proceed without showing item options
-      setDeleteUserItemCounts({ archives: 0, queue_items: 0, library_files: 0 });
+      setDeleteUserItemCounts({ archives: 0, queue_items: 0, library_files: 0, auto_queue_items: 0 });
     } finally {
       setDeleteUserLoading(false);
     }
@@ -7130,7 +7132,7 @@ export function SettingsPage() {
                                 </Button>
                               )}
                               {hasPermission('users:delete') && userItem.id !== user?.id && (
-                                <Button size="sm" variant="ghost" onClick={() => handleDeleteUserClick(userItem.id)}>
+                                <Button size="sm" variant="ghost" aria-label={`${t('settings.deleteUserTitle')}: ${userItem.username}`} onClick={() => handleDeleteUserClick(userItem.id)}>
                                   <Trash2 className="w-4 h-4" />
                                 </Button>
                               )}
@@ -7647,7 +7649,7 @@ export function SettingsPage() {
               <div className="flex items-center justify-center py-4">
                 <div className="animate-spin rounded-full h-6 w-6 border-2 border-bambu-green border-t-transparent" />
               </div>
-            ) : deleteUserItemCounts && (deleteUserItemCounts.archives + deleteUserItemCounts.queue_items + deleteUserItemCounts.library_files > 0) ? (
+            ) : deleteUserItemCounts && (deleteUserItemCounts.archives + deleteUserItemCounts.queue_items + deleteUserItemCounts.library_files + deleteUserItemCounts.auto_queue_items > 0) ? (
               <>
                 <p className="text-white">{t('settings.userHasCreated')}</p>
                 <ul className="list-disc list-inside text-bambu-gray space-y-1">
@@ -7661,6 +7663,7 @@ export function SettingsPage() {
                     <li>{deleteUserItemCounts.library_files} library file{deleteUserItemCounts.library_files !== 1 ? 's' : ''}</li>
                   )}
                 </ul>
+                {deleteUserItemCounts.auto_queue_items > 0 && <p className="text-bambu-gray text-sm">{t('settings.userAutoQueueCount', { count: deleteUserItemCounts.auto_queue_items })}</p>}
                 <p className="text-bambu-gray text-sm">{t('settings.userItemsQuestion')}</p>
                 <div className="flex flex-col gap-2">
                   <Button

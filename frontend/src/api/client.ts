@@ -10528,11 +10528,11 @@ export const api = {
       body: JSON.stringify(data),
     }),
   deleteUser: (id: number, deleteItems: boolean = false) =>
-    request<void>(`/users/${id}?delete_items=${deleteItems}`, {
+    request<{ deleted: true; counts: { archives: number; library_files: number; queue_items: number; auto_queue_items: number }; affected_orders: { id: number; name: string; prints: number; jobs: number }[] } | void>(`/users/${id}?delete_items=${deleteItems}`, {
       method: 'DELETE',
     }),
   getUserItemsCount: (id: number) =>
-    request<{ archives: number; queue_items: number; library_files: number }>(`/users/${id}/items-count`),
+    request<{ archives: number; queue_items: number; library_files: number; auto_queue_items: number }>(`/users/${id}/items-count`),
   changePassword: (currentPassword: string, newPassword: string) =>
     request<{ message: string }>('/users/me/change-password', {
       method: 'POST',

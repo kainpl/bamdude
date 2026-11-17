@@ -1,0 +1,858 @@
+{
+  "ams_sensor_history.printer_id": {
+    "table": "ams_sensor_history",
+    "column": "printer_id",
+    "nullable": false,
+    "target": "printers.id",
+    "ondelete": "CASCADE",
+    "policy": "Existing printer deletion owner after owned runtime shutdown: explicit per-table policy and assignments/history/VP cleanup; archives use the shared guarded archive path, never ORM cascade. Named edge: ams_sensor_history.printer_id"
+  },
+  "printer_tag_links.printer_id": {
+    "table": "printer_tag_links",
+    "column": "printer_id",
+    "nullable": false,
+    "target": "printers.id",
+    "ondelete": "CASCADE",
+    "policy": "Existing printer deletion owner after owned runtime shutdown: explicit per-table policy and assignments/history/VP cleanup; archives use the shared guarded archive path, never ORM cascade. Named edge: printer_tag_links.printer_id"
+  },
+  "printers.awaiting_plate_clear_archive_id": {
+    "table": "printers",
+    "column": "awaiting_plate_clear_archive_id",
+    "nullable": true,
+    "target": "print_archives.id",
+    "ondelete": "SET NULL",
+    "policy": "Refuse ordinary/user purge while this exact physical gate is retained; the printer owner may clear only its own retired state"
+  },
+  "print_archives.printer_id": {
+    "table": "print_archives",
+    "column": "printer_id",
+    "nullable": true,
+    "target": "printers.id",
+    "ondelete": null,
+    "policy": "Existing printer deletion owner after owned runtime shutdown: explicit per-table policy and assignments/history/VP cleanup; archives use the shared guarded archive path, never ORM cascade. Named edge: print_archives.printer_id"
+  },
+  "print_archives.project_id": {
+    "table": "print_archives",
+    "column": "project_id",
+    "nullable": true,
+    "target": "projects.id",
+    "ondelete": "SET NULL",
+    "policy": "Existing project deletion owner: active-work/C1 checks and guarded unfiling before removal; preserve stock/usage through their owners. This named edge is not a generic C cascade: print_archives.project_id"
+  },
+  "print_archives.library_file_id": {
+    "table": "print_archives",
+    "column": "library_file_id",
+    "nullable": true,
+    "target": "library_files.id",
+    "ondelete": "SET NULL",
+    "policy": "Explicit NULL through the shared library phase; retain the print"
+  },
+  "print_archives.created_by_id": {
+    "table": "print_archives",
+    "column": "created_by_id",
+    "nullable": true,
+    "target": "users.id",
+    "ondelete": "SET NULL",
+    "policy": "retain domain history/state; explicitly detach user reference in the same transaction"
+  },
+  "projects.responsible_id": {
+    "table": "projects",
+    "column": "responsible_id",
+    "nullable": true,
+    "target": "users.id",
+    "ondelete": "SET NULL",
+    "policy": "retain domain history/state; explicitly detach user reference in the same transaction"
+  },
+  "project_events.project_id": {
+    "table": "project_events",
+    "column": "project_id",
+    "nullable": false,
+    "target": "projects.id",
+    "ondelete": "CASCADE",
+    "policy": "Existing project deletion owner: active-work/C1 checks and guarded unfiling before removal; preserve stock/usage through their owners. This named edge is not a generic C cascade: project_events.project_id"
+  },
+  "project_events.user_id": {
+    "table": "project_events",
+    "column": "user_id",
+    "nullable": true,
+    "target": "users.id",
+    "ondelete": "SET NULL",
+    "policy": "retain domain history/state; explicitly detach user reference in the same transaction"
+  },
+  "print_queue.archive_id": {
+    "table": "print_queue",
+    "column": "archive_id",
+    "nullable": true,
+    "target": "print_archives.id",
+    "ondelete": "SET NULL",
+    "policy": "source_purged: detach mutable archive navigation, preserve ready captured work; cancel only unprintable pending work"
+  },
+  "print_queue.library_file_id": {
+    "table": "print_queue",
+    "column": "library_file_id",
+    "nullable": true,
+    "target": "library_files.id",
+    "ondelete": "SET NULL",
+    "policy": "source_purged: detach navigation, retain captured work/history and source incarnation"
+  },
+  "print_queue.project_id": {
+    "table": "print_queue",
+    "column": "project_id",
+    "nullable": true,
+    "target": "projects.id",
+    "ondelete": "SET NULL",
+    "policy": "Existing project deletion owner: active-work/C1 checks and guarded unfiling before removal; preserve stock/usage through their owners. This named edge is not a generic C cascade: print_queue.project_id"
+  },
+  "print_queue.created_by_id": {
+    "table": "print_queue",
+    "column": "created_by_id",
+    "nullable": true,
+    "target": "users.id",
+    "ondelete": "SET NULL",
+    "policy": "retain domain history/state; explicitly detach user reference in the same transaction"
+  },
+  "print_queue.source_auto_item_id": {
+    "table": "print_queue",
+    "column": "source_auto_item_id",
+    "nullable": true,
+    "target": "auto_queue_items.id",
+    "ondelete": "SET NULL",
+    "policy": "Shared queue owner NULLs mutable auto navigation; immutable source_auto_identity and return facts remain"
+  },
+  "library_folders.parent_id": {
+    "table": "library_folders",
+    "column": "parent_id",
+    "nullable": true,
+    "target": "library_folders.id",
+    "ondelete": "CASCADE",
+    "policy": "Only the selected, rechecked subtree; folder owner handles recursion/move and explicit children"
+  },
+  "library_folders.archive_id": {
+    "table": "library_folders",
+    "column": "archive_id",
+    "nullable": true,
+    "target": "print_archives.id",
+    "ondelete": "SET NULL",
+    "policy": "Explicit NULL; preserve the folder and every file"
+  },
+  "library_files.folder_id": {
+    "table": "library_files",
+    "column": "folder_id",
+    "nullable": true,
+    "target": "library_folders.id",
+    "ondelete": "CASCADE",
+    "policy": "Detach all trashed managed files before folder DELETE; selected external rows use the shared purge"
+  },
+  "library_files.created_by_id": {
+    "table": "library_files",
+    "column": "created_by_id",
+    "nullable": true,
+    "target": "users.id",
+    "ondelete": "SET NULL",
+    "policy": "retain domain history/state; explicitly detach user reference in the same transaction"
+  },
+  "library_file_tags.file_id": {
+    "table": "library_file_tags",
+    "column": "file_id",
+    "nullable": false,
+    "target": "library_files.id",
+    "ondelete": "CASCADE",
+    "policy": "Explicit DELETE of this disposable secondary relation"
+  },
+  "library_file_makerworld_meta.library_file_id": {
+    "table": "library_file_makerworld_meta",
+    "column": "library_file_id",
+    "nullable": false,
+    "target": "library_files.id",
+    "ondelete": "CASCADE",
+    "policy": "Explicit DELETE; exact owned covers staged for root-commit cleanup"
+  },
+  "library_file_notes.library_file_id": {
+    "table": "library_file_notes",
+    "column": "library_file_id",
+    "nullable": false,
+    "target": "library_files.id",
+    "ondelete": "CASCADE",
+    "policy": "Notes owner explicitly deletes notes; no reliance on FK or loaded ORM cascade"
+  },
+  "library_file_notes.user_id": {
+    "table": "library_file_notes",
+    "column": "user_id",
+    "nullable": true,
+    "target": "users.id",
+    "ondelete": "SET NULL",
+    "policy": "retain domain history/state; explicitly detach user reference in the same transaction"
+  },
+  "product_files.library_file_id": {
+    "table": "product_files",
+    "column": "library_file_id",
+    "nullable": false,
+    "target": "library_files.id",
+    "ondelete": "CASCADE",
+    "policy": "Product owner removes only addressed links under preplanned clean product gates"
+  },
+  "product_folders.library_folder_id": {
+    "table": "product_folders",
+    "column": "library_folder_id",
+    "nullable": false,
+    "target": "library_folders.id",
+    "ondelete": "CASCADE",
+    "policy": "Product owner removes selected folder pivots; follow_directories transfers/deduplicates instead of purging content"
+  },
+  "products.origin_file_id": {
+    "table": "products",
+    "column": "origin_file_id",
+    "nullable": true,
+    "target": "library_files.id",
+    "ondelete": null,
+    "policy": "Product owner explicitly NULLs origin; product/orders/stock remain"
+  },
+  "product_plates.library_file_id": {
+    "table": "product_plates",
+    "column": "library_file_id",
+    "nullable": false,
+    "target": "library_files.id",
+    "ondelete": "CASCADE",
+    "policy": "Product owner removes addressed plates and refreshes remaining product metadata under gates"
+  },
+  "product_facets.library_file_id": {
+    "table": "product_facets",
+    "column": "library_file_id",
+    "nullable": false,
+    "target": "library_files.id",
+    "ondelete": "CASCADE",
+    "policy": "Product owner removes addressed facets and refreshes remaining product metadata under gates"
+  },
+  "project_lines.project_id": {
+    "table": "project_lines",
+    "column": "project_id",
+    "nullable": false,
+    "target": "projects.id",
+    "ondelete": "CASCADE",
+    "policy": "Existing project deletion owner: active-work/C1 checks and guarded unfiling before removal; preserve stock/usage through their owners. This named edge is not a generic C cascade: project_lines.project_id"
+  },
+  "project_procurement.project_id": {
+    "table": "project_procurement",
+    "column": "project_id",
+    "nullable": false,
+    "target": "projects.id",
+    "ondelete": "CASCADE",
+    "policy": "Existing project deletion owner: active-work/C1 checks and guarded unfiling before removal; preserve stock/usage through their owners. This named edge is not a generic C cascade: project_procurement.project_id"
+  },
+  "printer_queues.printer_id": {
+    "table": "printer_queues",
+    "column": "printer_id",
+    "nullable": false,
+    "target": "printers.id",
+    "ondelete": "CASCADE",
+    "policy": "Existing printer deletion owner after owned runtime shutdown: explicit per-table policy and assignments/history/VP cleanup; archives use the shared guarded archive path, never ORM cascade. Named edge: printer_queues.printer_id"
+  },
+  "printer_maintenance.printer_id": {
+    "table": "printer_maintenance",
+    "column": "printer_id",
+    "nullable": false,
+    "target": "printers.id",
+    "ondelete": "CASCADE",
+    "policy": "Existing printer deletion owner after owned runtime shutdown: explicit per-table policy and assignments/history/VP cleanup; archives use the shared guarded archive path, never ORM cascade. Named edge: printer_maintenance.printer_id"
+  },
+  "maintenance_history.performed_by_user_id": {
+    "table": "maintenance_history",
+    "column": "performed_by_user_id",
+    "nullable": true,
+    "target": "users.id",
+    "ondelete": "SET NULL",
+    "policy": "retain domain history/state; explicitly detach user reference in the same transaction"
+  },
+  "telegram_chats.user_id": {
+    "table": "telegram_chats",
+    "column": "user_id",
+    "nullable": true,
+    "target": "users.id",
+    "ondelete": "SET NULL",
+    "policy": "retain domain history/state; explicitly detach user reference in the same transaction"
+  },
+  "printer_ha_sensors.printer_id": {
+    "table": "printer_ha_sensors",
+    "column": "printer_id",
+    "nullable": false,
+    "target": "printers.id",
+    "ondelete": "CASCADE",
+    "policy": "Existing printer deletion owner after owned runtime shutdown: explicit per-table policy and assignments/history/VP cleanup; archives use the shared guarded archive path, never ORM cascade. Named edge: printer_ha_sensors.printer_id"
+  },
+  "printer_sensor_history.printer_id": {
+    "table": "printer_sensor_history",
+    "column": "printer_id",
+    "nullable": false,
+    "target": "printers.id",
+    "ondelete": "CASCADE",
+    "policy": "Existing printer deletion owner after owned runtime shutdown: explicit per-table policy and assignments/history/VP cleanup; archives use the shared guarded archive path, never ORM cascade. Named edge: printer_sensor_history.printer_id"
+  },
+  "smart_plugs.printer_id": {
+    "table": "smart_plugs",
+    "column": "printer_id",
+    "nullable": true,
+    "target": "printers.id",
+    "ondelete": "SET NULL",
+    "policy": "Existing printer deletion owner after owned runtime shutdown: explicit per-table policy and assignments/history/VP cleanup; archives use the shared guarded archive path, never ORM cascade. Named edge: smart_plugs.printer_id"
+  },
+  "smart_sensors.printer_id": {
+    "table": "smart_sensors",
+    "column": "printer_id",
+    "nullable": true,
+    "target": "printers.id",
+    "ondelete": "SET NULL",
+    "policy": "Existing printer deletion owner after owned runtime shutdown: explicit per-table policy and assignments/history/VP cleanup; archives use the shared guarded archive path, never ORM cascade. Named edge: smart_sensors.printer_id"
+  },
+  "ams_setting_audit.printer_id": {
+    "table": "ams_setting_audit",
+    "column": "printer_id",
+    "nullable": false,
+    "target": "printers.id",
+    "ondelete": "CASCADE",
+    "policy": "Existing printer deletion owner after owned runtime shutdown: explicit per-table policy and assignments/history/VP cleanup; archives use the shared guarded archive path, never ORM cascade. Named edge: ams_setting_audit.printer_id"
+  },
+  "ams_setting_audit.user_id": {
+    "table": "ams_setting_audit",
+    "column": "user_id",
+    "nullable": true,
+    "target": "users.id",
+    "ondelete": "SET NULL",
+    "policy": "retain domain history/state; explicitly detach user reference in the same transaction"
+  },
+  "api_keys.user_id": {
+    "table": "api_keys",
+    "column": "user_id",
+    "nullable": true,
+    "target": "users.id",
+    "ondelete": "CASCADE",
+    "policy": "delete owned row; preferences must never become system defaults; recursively count/delete owned dependents"
+  },
+  "auth_sessions.user_id": {
+    "table": "auth_sessions",
+    "column": "user_id",
+    "nullable": false,
+    "target": "users.id",
+    "ondelete": "CASCADE",
+    "policy": "delete owned row; preferences must never become system defaults; recursively count/delete owned dependents"
+  },
+  "calibration_audit.printer_id": {
+    "table": "calibration_audit",
+    "column": "printer_id",
+    "nullable": false,
+    "target": "printers.id",
+    "ondelete": "CASCADE",
+    "policy": "Existing printer deletion owner after owned runtime shutdown: explicit per-table policy and assignments/history/VP cleanup; archives use the shared guarded archive path, never ORM cascade. Named edge: calibration_audit.printer_id"
+  },
+  "calibration_audit.user_id": {
+    "table": "calibration_audit",
+    "column": "user_id",
+    "nullable": true,
+    "target": "users.id",
+    "ondelete": "SET NULL",
+    "policy": "retain domain history/state; explicitly detach user reference in the same transaction"
+  },
+  "calibration_session.printer_id": {
+    "table": "calibration_session",
+    "column": "printer_id",
+    "nullable": false,
+    "target": "printers.id",
+    "ondelete": "CASCADE",
+    "policy": "Existing printer deletion owner after owned runtime shutdown: explicit per-table policy and assignments/history/VP cleanup; archives use the shared guarded archive path, never ORM cascade. Named edge: calibration_session.printer_id"
+  },
+  "calibration_session.user_id": {
+    "table": "calibration_session",
+    "column": "user_id",
+    "nullable": true,
+    "target": "users.id",
+    "ondelete": "SET NULL",
+    "policy": "retain domain history/state; explicitly detach user reference in the same transaction"
+  },
+  "calibration_session.print_queue_item_id": {
+    "table": "calibration_session",
+    "column": "print_queue_item_id",
+    "nullable": true,
+    "target": "print_queue.id",
+    "ondelete": "SET NULL",
+    "policy": "Shared queue owner explicitly NULLs navigation; calibration history remains"
+  },
+  "filament_calibration.printer_id": {
+    "table": "filament_calibration",
+    "column": "printer_id",
+    "nullable": false,
+    "target": "printers.id",
+    "ondelete": "CASCADE",
+    "policy": "Existing printer deletion owner after owned runtime shutdown: explicit per-table policy and assignments/history/VP cleanup; archives use the shared guarded archive path, never ORM cascade. Named edge: filament_calibration.printer_id"
+  },
+  "filament_calibration.calibrated_by_user_id": {
+    "table": "filament_calibration",
+    "column": "calibrated_by_user_id",
+    "nullable": true,
+    "target": "users.id",
+    "ondelete": "SET NULL",
+    "policy": "retain domain history/state; explicitly detach user reference in the same transaction"
+  },
+  "user_groups.user_id": {
+    "table": "user_groups",
+    "column": "user_id",
+    "nullable": false,
+    "target": "users.id",
+    "ondelete": "CASCADE",
+    "policy": "delete owned row; preferences must never become system defaults; recursively count/delete owned dependents"
+  },
+  "notification_digest_queue.printer_id": {
+    "table": "notification_digest_queue",
+    "column": "printer_id",
+    "nullable": true,
+    "target": "printers.id",
+    "ondelete": "SET NULL",
+    "policy": "Existing printer deletion owner after owned runtime shutdown: explicit per-table policy and assignments/history/VP cleanup; archives use the shared guarded archive path, never ORM cascade. Named edge: notification_digest_queue.printer_id"
+  },
+  "notification_logs.printer_id": {
+    "table": "notification_logs",
+    "column": "printer_id",
+    "nullable": true,
+    "target": "printers.id",
+    "ondelete": "SET NULL",
+    "policy": "Existing printer deletion owner after owned runtime shutdown: explicit per-table policy and assignments/history/VP cleanup; archives use the shared guarded archive path, never ORM cascade. Named edge: notification_logs.printer_id"
+  },
+  "obico_events.printer_id": {
+    "table": "obico_events",
+    "column": "printer_id",
+    "nullable": false,
+    "target": "printers.id",
+    "ondelete": "CASCADE",
+    "policy": "Existing printer deletion owner after owned runtime shutdown: explicit per-table policy and assignments/history/VP cleanup; archives use the shared guarded archive path, never ORM cascade. Named edge: obico_events.printer_id"
+  },
+  "order_working_plans.id": {
+    "table": "order_working_plans",
+    "column": "id",
+    "nullable": false,
+    "target": "projects.id",
+    "ondelete": "CASCADE",
+    "policy": "Existing project deletion owner: active-work/C1 checks and guarded unfiling before removal; preserve stock/usage through their owners. This named edge is not a generic C cascade: order_working_plans.id"
+  },
+  "print_completion_receipts.archive_id": {
+    "table": "print_completion_receipts",
+    "column": "archive_id",
+    "nullable": false,
+    "target": "print_archives.id",
+    "ondelete": "CASCADE",
+    "policy": "Delete the exact completion receipt with its legitimately removable archive"
+  },
+  "print_completion_receipts.assessment_actor_id": {
+    "table": "print_completion_receipts",
+    "column": "assessment_actor_id",
+    "nullable": true,
+    "target": "users.id",
+    "ondelete": "SET NULL",
+    "policy": "retain domain history/state; explicitly detach user reference in the same transaction"
+  },
+  "print_completion_receipts.plate_action_actor_id": {
+    "table": "print_completion_receipts",
+    "column": "plate_action_actor_id",
+    "nullable": true,
+    "target": "users.id",
+    "ondelete": "SET NULL",
+    "policy": "retain domain history/state; explicitly detach user reference in the same transaction"
+  },
+  "printer_setting_audit.printer_id": {
+    "table": "printer_setting_audit",
+    "column": "printer_id",
+    "nullable": false,
+    "target": "printers.id",
+    "ondelete": "CASCADE",
+    "policy": "Existing printer deletion owner after owned runtime shutdown: explicit per-table policy and assignments/history/VP cleanup; archives use the shared guarded archive path, never ORM cascade. Named edge: printer_setting_audit.printer_id"
+  },
+  "printer_setting_audit.user_id": {
+    "table": "printer_setting_audit",
+    "column": "user_id",
+    "nullable": true,
+    "target": "users.id",
+    "ondelete": "SET NULL",
+    "policy": "retain domain history/state; explicitly detach user reference in the same transaction"
+  },
+  "spool_assignment.printer_id": {
+    "table": "spool_assignment",
+    "column": "printer_id",
+    "nullable": false,
+    "target": "printers.id",
+    "ondelete": "CASCADE",
+    "policy": "Existing printer deletion owner after owned runtime shutdown: explicit per-table policy and assignments/history/VP cleanup; archives use the shared guarded archive path, never ORM cascade. Named edge: spool_assignment.printer_id"
+  },
+  "spool_k_profile.printer_id": {
+    "table": "spool_k_profile",
+    "column": "printer_id",
+    "nullable": false,
+    "target": "printers.id",
+    "ondelete": "CASCADE",
+    "policy": "Existing printer deletion owner after owned runtime shutdown: explicit per-table policy and assignments/history/VP cleanup; archives use the shared guarded archive path, never ORM cascade. Named edge: spool_k_profile.printer_id"
+  },
+  "spool_usage_history.printer_id": {
+    "table": "spool_usage_history",
+    "column": "printer_id",
+    "nullable": true,
+    "target": "printers.id",
+    "ondelete": "SET NULL",
+    "policy": "Existing printer deletion owner after owned runtime shutdown: explicit per-table policy and assignments/history/VP cleanup; archives use the shared guarded archive path, never ORM cascade. Named edge: spool_usage_history.printer_id"
+  },
+  "spool_usage_history.archive_id": {
+    "table": "spool_usage_history",
+    "column": "archive_id",
+    "nullable": true,
+    "target": "print_archives.id",
+    "ondelete": null,
+    "policy": "Spool usage owner explicitly NULLs this reference; preserve weights, cost and name snapshot"
+  },
+  "spoolman_usage_history.printer_id": {
+    "table": "spoolman_usage_history",
+    "column": "printer_id",
+    "nullable": true,
+    "target": "printers.id",
+    "ondelete": "SET NULL",
+    "policy": "Existing printer deletion owner after owned runtime shutdown: explicit per-table policy and assignments/history/VP cleanup; archives use the shared guarded archive path, never ORM cascade. Named edge: spoolman_usage_history.printer_id"
+  },
+  "spoolman_usage_history.archive_id": {
+    "table": "spoolman_usage_history",
+    "column": "archive_id",
+    "nullable": true,
+    "target": "print_archives.id",
+    "ondelete": null,
+    "policy": "Spoolman usage owner explicitly NULLs this reference; preserve landed charge and source/spool identity"
+  },
+  "user_email_preferences.user_id": {
+    "table": "user_email_preferences",
+    "column": "user_id",
+    "nullable": false,
+    "target": "users.id",
+    "ondelete": "CASCADE",
+    "policy": "delete owned row; preferences must never become system defaults; recursively count/delete owned dependents"
+  },
+  "active_print_sessions.printer_id": {
+    "table": "active_print_sessions",
+    "column": "printer_id",
+    "nullable": false,
+    "target": "printers.id",
+    "ondelete": "CASCADE",
+    "policy": "Existing printer deletion owner after owned runtime shutdown: explicit per-table policy and assignments/history/VP cleanup; archives use the shared guarded archive path, never ORM cascade. Named edge: active_print_sessions.printer_id"
+  },
+  "active_print_spoolman.printer_id": {
+    "table": "active_print_spoolman",
+    "column": "printer_id",
+    "nullable": false,
+    "target": "printers.id",
+    "ondelete": "CASCADE",
+    "policy": "Existing printer deletion owner after owned runtime shutdown: explicit per-table policy and assignments/history/VP cleanup; archives use the shared guarded archive path, never ORM cascade. Named edge: active_print_spoolman.printer_id"
+  },
+  "active_print_spoolman.archive_id": {
+    "table": "active_print_spoolman",
+    "column": "archive_id",
+    "nullable": false,
+    "target": "print_archives.id",
+    "ondelete": "CASCADE",
+    "policy": "Delete only this archive after physical keep checks or its own printer shutdown"
+  },
+  "print_archive_parts.archive_id": {
+    "table": "print_archive_parts",
+    "column": "archive_id",
+    "nullable": false,
+    "target": "print_archives.id",
+    "ondelete": "CASCADE",
+    "policy": "Explicit DELETE through the shared archive phase; no next archive inherits defects"
+  },
+  "auto_queue_items.archive_id": {
+    "table": "auto_queue_items",
+    "column": "archive_id",
+    "nullable": true,
+    "target": "print_archives.id",
+    "ondelete": "SET NULL",
+    "policy": "source_purged: detach mutable archive navigation, preserve ready captured work; fail only unprintable pending work"
+  },
+  "auto_queue_items.library_file_id": {
+    "table": "auto_queue_items",
+    "column": "library_file_id",
+    "nullable": true,
+    "target": "library_files.id",
+    "ondelete": "SET NULL",
+    "policy": "source_purged: detach navigation, retain captured work/history and source incarnation"
+  },
+  "auto_queue_items.project_id": {
+    "table": "auto_queue_items",
+    "column": "project_id",
+    "nullable": true,
+    "target": "projects.id",
+    "ondelete": "SET NULL",
+    "policy": "Existing project deletion owner: active-work/C1 checks and guarded unfiling before removal; preserve stock/usage through their owners. This named edge is not a generic C cascade: auto_queue_items.project_id"
+  },
+  "auto_queue_items.assigned_to_item_id": {
+    "table": "auto_queue_items",
+    "column": "assigned_to_item_id",
+    "nullable": true,
+    "target": "print_queue.id",
+    "ondelete": "SET NULL",
+    "policy": "Delete only a proven matching router incarnation; otherwise NULL navigation and preserve its work"
+  },
+  "auto_queue_items.created_by_id": {
+    "table": "auto_queue_items",
+    "column": "created_by_id",
+    "nullable": true,
+    "target": "users.id",
+    "ondelete": "SET NULL",
+    "policy": "retain domain history/state; explicitly detach user reference in the same transaction"
+  },
+  "cloud_link_printers.printer_id": {
+    "table": "cloud_link_printers",
+    "column": "printer_id",
+    "nullable": false,
+    "target": "printers.id",
+    "ondelete": "CASCADE",
+    "policy": "Existing printer deletion owner after owned runtime shutdown: explicit per-table policy and assignments/history/VP cleanup; archives use the shared guarded archive path, never ORM cascade. Named edge: cloud_link_printers.printer_id"
+  },
+  "stock_item_movements.project_id": {
+    "table": "stock_item_movements",
+    "column": "project_id",
+    "nullable": true,
+    "target": "projects.id",
+    "ondelete": "SET NULL",
+    "policy": "Existing project deletion owner: active-work/C1 checks and guarded unfiling before removal; preserve stock/usage through their owners. This named edge is not a generic C cascade: stock_item_movements.project_id"
+  },
+  "stock_item_movements.created_by": {
+    "table": "stock_item_movements",
+    "column": "created_by",
+    "nullable": true,
+    "target": "users.id",
+    "ondelete": "SET NULL",
+    "policy": "retain domain history/state; explicitly detach user reference in the same transaction"
+  },
+  "firmware_batch_runs.created_by_id": {
+    "table": "firmware_batch_runs",
+    "column": "created_by_id",
+    "nullable": true,
+    "target": "users.id",
+    "ondelete": null,
+    "policy": "retain nullable firmware history and explicitly detach creator; no new DDL or history deletion"
+  },
+  "firmware_batch_items.printer_id": {
+    "table": "firmware_batch_items",
+    "column": "printer_id",
+    "nullable": false,
+    "target": "printers.id",
+    "ondelete": null,
+    "policy": "Existing printer deletion owner after owned runtime shutdown: explicit per-table policy and assignments/history/VP cleanup; archives use the shared guarded archive path, never ORM cascade. Named edge: firmware_batch_items.printer_id"
+  },
+  "hms_muted_entries.printer_id": {
+    "table": "hms_muted_entries",
+    "column": "printer_id",
+    "nullable": false,
+    "target": "printers.id",
+    "ondelete": "CASCADE",
+    "policy": "Existing printer deletion owner after owned runtime shutdown: explicit per-table policy and assignments/history/VP cleanup; archives use the shared guarded archive path, never ORM cascade. Named edge: hms_muted_entries.printer_id"
+  },
+  "library_file_photos.library_file_id": {
+    "table": "library_file_photos",
+    "column": "library_file_id",
+    "nullable": false,
+    "target": "library_files.id",
+    "ondelete": "CASCADE",
+    "policy": "Photo owner forget_files in the same transaction; exact image paths only after root commit"
+  },
+  "library_file_photos.uploaded_by_id": {
+    "table": "library_file_photos",
+    "column": "uploaded_by_id",
+    "nullable": true,
+    "target": "users.id",
+    "ondelete": "SET NULL",
+    "policy": "library_file_photos.detach_user: retain photos and uploaded_by_name snapshot, detach uploaded_by_id; if file itself is purged, rows/bytes follow forget_files root-commit policy instead"
+  },
+  "library_scan_jobs.folder_id": {
+    "table": "library_scan_jobs",
+    "column": "folder_id",
+    "nullable": false,
+    "target": "library_folders.id",
+    "ondelete": "CASCADE",
+    "policy": "Refuse an active scan; explicitly delete disposable jobs of removed folders"
+  },
+  "long_lived_tokens.user_id": {
+    "table": "long_lived_tokens",
+    "column": "user_id",
+    "nullable": false,
+    "target": "users.id",
+    "ondelete": "CASCADE",
+    "policy": "delete owned row; preferences must never become system defaults; recursively count/delete owned dependents"
+  },
+  "user_oidc_links.user_id": {
+    "table": "user_oidc_links",
+    "column": "user_id",
+    "nullable": false,
+    "target": "users.id",
+    "ondelete": "CASCADE",
+    "policy": "delete owned row; preferences must never become system defaults; recursively count/delete owned dependents"
+  },
+  "product_part_stock_movements.archive_id": {
+    "table": "product_part_stock_movements",
+    "column": "archive_id",
+    "nullable": true,
+    "target": "print_archives.id",
+    "ondelete": "SET NULL",
+    "policy": "Stock owner explicitly NULLs archive reference; preserve physical ledger facts"
+  },
+  "product_part_stock_movements.created_by": {
+    "table": "product_part_stock_movements",
+    "column": "created_by",
+    "nullable": true,
+    "target": "users.id",
+    "ondelete": "SET NULL",
+    "policy": "retain domain history/state; explicitly detach user reference in the same transaction"
+  },
+  "print_options_preferences.user_id": {
+    "table": "print_options_preferences",
+    "column": "user_id",
+    "nullable": true,
+    "target": "users.id",
+    "ondelete": "CASCADE",
+    "policy": "delete owned row; preferences must never become system defaults; recursively count/delete owned dependents"
+  },
+  "print_usage_events.printer_id": {
+    "table": "print_usage_events",
+    "column": "printer_id",
+    "nullable": false,
+    "target": "printers.id",
+    "ondelete": "CASCADE",
+    "policy": "Existing printer deletion owner after owned runtime shutdown: explicit per-table policy and assignments/history/VP cleanup; archives use the shared guarded archive path, never ORM cascade. Named edge: print_usage_events.printer_id"
+  },
+  "print_usage_events.archive_id": {
+    "table": "print_usage_events",
+    "column": "archive_id",
+    "nullable": false,
+    "target": "print_archives.id",
+    "ondelete": "CASCADE",
+    "policy": "Delete only the legitimately removed archive usage journal through its owner"
+  },
+  "drying_schedules.printer_id": {
+    "table": "drying_schedules",
+    "column": "printer_id",
+    "nullable": false,
+    "target": "printers.id",
+    "ondelete": "CASCADE",
+    "policy": "Existing printer deletion owner after owned runtime shutdown: explicit per-table policy and assignments/history/VP cleanup; archives use the shared guarded archive path, never ORM cascade. Named edge: drying_schedules.printer_id"
+  },
+  "drying_schedules.created_by_id": {
+    "table": "drying_schedules",
+    "column": "created_by_id",
+    "nullable": true,
+    "target": "users.id",
+    "ondelete": "SET NULL",
+    "policy": "retain domain history/state; explicitly detach user reference in the same transaction"
+  },
+  "scheduled_dryings.printer_id": {
+    "table": "scheduled_dryings",
+    "column": "printer_id",
+    "nullable": false,
+    "target": "printers.id",
+    "ondelete": "CASCADE",
+    "policy": "Existing printer deletion owner after owned runtime shutdown: explicit per-table policy and assignments/history/VP cleanup; archives use the shared guarded archive path, never ORM cascade. Named edge: scheduled_dryings.printer_id"
+  },
+  "scheduled_dryings.created_by_id": {
+    "table": "scheduled_dryings",
+    "column": "created_by_id",
+    "nullable": true,
+    "target": "users.id",
+    "ondelete": "SET NULL",
+    "policy": "retain domain history/state; explicitly detach user reference in the same transaction"
+  },
+  "slicer_pipelines.created_by": {
+    "table": "slicer_pipelines",
+    "column": "created_by",
+    "nullable": true,
+    "target": "users.id",
+    "ondelete": "SET NULL",
+    "policy": "retain domain history/state; explicitly detach user reference in the same transaction"
+  },
+  "smart_sensor_bindings.printer_id": {
+    "table": "smart_sensor_bindings",
+    "column": "printer_id",
+    "nullable": true,
+    "target": "printers.id",
+    "ondelete": "CASCADE",
+    "policy": "Existing printer deletion owner after owned runtime shutdown: explicit per-table policy and assignments/history/VP cleanup; archives use the shared guarded archive path, never ORM cascade. Named edge: smart_sensor_bindings.printer_id"
+  },
+  "spoolman_k_profile.printer_id": {
+    "table": "spoolman_k_profile",
+    "column": "printer_id",
+    "nullable": false,
+    "target": "printers.id",
+    "ondelete": "CASCADE",
+    "policy": "Existing printer deletion owner after owned runtime shutdown: explicit per-table policy and assignments/history/VP cleanup; archives use the shared guarded archive path, never ORM cascade. Named edge: spoolman_k_profile.printer_id"
+  },
+  "spoolman_slot_assignments.printer_id": {
+    "table": "spoolman_slot_assignments",
+    "column": "printer_id",
+    "nullable": false,
+    "target": "printers.id",
+    "ondelete": "CASCADE",
+    "policy": "Existing printer deletion owner after owned runtime shutdown: explicit per-table policy and assignments/history/VP cleanup; archives use the shared guarded archive path, never ORM cascade. Named edge: spoolman_slot_assignments.printer_id"
+  },
+  "stock_issues.project_id": {
+    "table": "stock_issues",
+    "column": "project_id",
+    "nullable": true,
+    "target": "projects.id",
+    "ondelete": "SET NULL",
+    "policy": "Existing project deletion owner: active-work/C1 checks and guarded unfiling before removal; preserve stock/usage through their owners. This named edge is not a generic C cascade: stock_issues.project_id"
+  },
+  "stock_issues.created_by": {
+    "table": "stock_issues",
+    "column": "created_by",
+    "nullable": true,
+    "target": "users.id",
+    "ondelete": "SET NULL",
+    "policy": "retain domain history/state; explicitly detach user reference in the same transaction"
+  },
+  "user_filament_presets.owner_user_id": {
+    "table": "user_filament_presets",
+    "column": "owner_user_id",
+    "nullable": true,
+    "target": "users.id",
+    "ondelete": "CASCADE",
+    "policy": "delete owned row; preferences must never become system defaults; recursively count/delete owned dependents"
+  },
+  "user_notifications.user_id": {
+    "table": "user_notifications",
+    "column": "user_id",
+    "nullable": false,
+    "target": "users.id",
+    "ondelete": "CASCADE",
+    "policy": "delete owned row; preferences must never become system defaults; recursively count/delete owned dependents"
+  },
+  "user_otp_codes.user_id": {
+    "table": "user_otp_codes",
+    "column": "user_id",
+    "nullable": false,
+    "target": "users.id",
+    "ondelete": "CASCADE",
+    "policy": "delete owned row; preferences must never become system defaults; recursively count/delete owned dependents"
+  },
+  "user_totp.user_id": {
+    "table": "user_totp",
+    "column": "user_id",
+    "nullable": false,
+    "target": "users.id",
+    "ondelete": "CASCADE",
+    "policy": "delete owned row; preferences must never become system defaults; recursively count/delete owned dependents"
+  },
+  "virtual_printers.target_printer_id": {
+    "table": "virtual_printers",
+    "column": "target_printer_id",
+    "nullable": true,
+    "target": "printers.id",
+    "ondelete": "SET NULL",
+    "policy": "Existing printer deletion owner after owned runtime shutdown: explicit per-table policy and assignments/history/VP cleanup; archives use the shared guarded archive path, never ORM cascade. Named edge: virtual_printers.target_printer_id"
+  },
+  "virtual_printers.target_folder_id": {
+    "table": "virtual_printers",
+    "column": "target_folder_id",
+    "nullable": true,
+    "target": "library_folders.id",
+    "ondelete": "SET NULL",
+    "policy": "Explicit matching NULL and VP lifecycle sync after root commit; no id-owned disk sweep"
+  }
+}

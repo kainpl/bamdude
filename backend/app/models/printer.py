@@ -196,7 +196,7 @@ class Printer(Base):
     # Relationships
     archives: Mapped[list["PrintArchive"]] = relationship(
         back_populates="printer",
-        cascade="all, delete-orphan",
+        passive_deletes="all",
         foreign_keys="PrintArchive.printer_id",
     )
     smart_plugs: Mapped[list["SmartPlug"]] = relationship(back_populates="printer")

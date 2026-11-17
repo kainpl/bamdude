@@ -336,6 +336,9 @@ async def purge_file_product_links(db: AsyncSession, library_file_ids: Sequence[
     )
     await db.execute(delete(ProductPlate).where(ProductPlate.library_file_id.in_(ids)))
     await db.execute(delete(product_files).where(product_files.c.library_file_id.in_(ids)))
+    from backend.app.models.product import ProductFacet
+
+    await db.execute(delete(ProductFacet).where(ProductFacet.library_file_id.in_(ids)))
     await product_facets.refresh(db, affected)
     await part_renders.ensure_for_files(db, ids)  # the file is unlinked now, so this queues nothing (spec §9.1)
     part_images.mark_changed(db, affected)  # their plates are gone (spec part-thumbnails §12.3)

@@ -694,6 +694,9 @@ async def test_a_recovered_completion_bumps_the_library_counters(db_session):
 
     await _reconcile_complete_archive(db_session, archive, status="completed", uncertain=False)
 
+    # Display bookkeeping now commits through an independent post-terminal
+    # session; assert the durable row, not the terminal session's old object.
+    await db_session.refresh(lib)
     assert lib.print_count == 1
     assert lib.last_printed_at is not None
 

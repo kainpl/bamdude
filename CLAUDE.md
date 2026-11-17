@@ -86,6 +86,21 @@ Migration seeds name historical columns for reads and writes. For INSERT use a l
 
 ## Key Invariants
 
+**Content deletion has one guarded database phase and commit-owned cleanup.**
+Archive/library helpers in `content_delete_rows` only flush; callers own the
+whole plan, commit and exact disk cleanup. Library deletion plans all archive
+and lane process locks before SQLite's writer, then library rows, clean product
+gates, orders/positions/lines, prints and jobs in the shared ledger order.
+Source refresh uses that same library-before-job order. Completion commits its
+terminal fact before a fresh library-only counter transaction, which rereads
+the archive link after the library lock wait and takes no print/job lock.
+Transient dispatch captures library identity at admission; cleanup cannot gain
+authority by looking up a late numeric id. Assembly cleanup uses one fresh
+owning transaction per file. User-content deletion bounds all affected parents
+and children before its writer and refuses physical keep/C1 conditions before
+any removal. SQLite FK actions and ORM parent cascades are never substitutes
+for these policies. Vault: `40-invariants/inv-content-deletion-owns-plan-and-commit.md`.
+
 **Live delivery needs current authority and owned cleanup.** The live coordinator
 batches exact credential/account/target reads; admission rereads after accept,
 and short memory proofs guard every send. Mutation hints do not replace durable
