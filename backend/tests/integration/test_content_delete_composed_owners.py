@@ -19,12 +19,12 @@ from backend.tests.integration.test_content_delete_protocol import independent_f
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 
 
-def media(archive):
+def media(archive, role="primary"):
     return ArchiveMediaAsset(
         asset_uuid=str(uuid4()),
         archive_id=archive.id,
         archive_identity=archive.recovery_identity,
-        role="primary",
+        role=role,
         revision=1,
         relative_path="videos/old.mp4",
         origin="legacy",
@@ -64,14 +64,15 @@ async def test_user_bulk_root_removes_both_new_child_domains(async_client, db_se
 
 
 @pytest.mark.parametrize("commit", [False, True], ids=["rollback", "commit"])
-async def test_composed_child_rows_belong_to_the_parent_transaction(independent_factory, commit):
+@pytest.mark.parametrize("role", ["primary", "receipt"])
+async def test_composed_child_rows_belong_to_the_parent_transaction(independent_factory, commit, role):
     factory = independent_factory
     proof, archive_id, _identity = await source(factory)
     async with factory() as db:
         from backend.app.models.archive import PrintArchive
 
         archive = await db.get(PrintArchive, archive_id)
-        db.add(media(archive))
+        db.add(media(archive, role))
         await import_record(db, proof.id)
         await db.commit()
         file = await db.get(LibraryFile, proof.id)

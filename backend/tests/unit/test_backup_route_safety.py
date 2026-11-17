@@ -15,6 +15,14 @@ from fastapi import HTTPException, UploadFile
 from backend.app.api.routes import settings as route
 
 
+@pytest.fixture(autouse=True)
+def isolated_measurement_buffer(monkeypatch):
+    from backend.app.services import measurement_buffer as measurements
+
+    # Restore must really retire its buffer, without retiring later tests' owner.
+    monkeypatch.setattr(measurements, "measurement_buffer", measurements.MeasurementBuffer())
+
+
 def upload(tmp_path, *, damaged=False, migration_level=41):
     source = tmp_path / "source.db"
     if damaged:

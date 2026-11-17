@@ -25,6 +25,15 @@ from sqlalchemy import MetaData, Table
 from backend.app.core.db_portable import import_sqlite_to_postgres
 
 
+@pytest.fixture(autouse=True)
+def debt_writer(monkeypatch):
+    # This module tests the drop SQL, not the separately covered durable marker.
+    writer = AsyncMock()
+    monkeypatch.setattr("backend.app.core.schema_repair_state.write_pending", writer)
+    yield writer
+    writer.assert_awaited_once()
+
+
 def _make_minimal_sqlite(tmp_path: Path) -> Path:
     """One user table plus supported migration history for the focused importer test."""
     src = tmp_path / "src.db"

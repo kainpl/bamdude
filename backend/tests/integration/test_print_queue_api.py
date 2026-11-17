@@ -2026,7 +2026,7 @@ class TestAbortedStatusNormalisation:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_startup_fixup_converts_aborted_to_cancelled(self, queue_item_factory, db_session, caplog):
+    async def test_startup_fixup_converts_aborted_to_cancelled(self, queue_item_factory, db_session):
         """Verify the startup fixup converts existing 'aborted' rows to 'cancelled'."""
         from sqlalchemy import select
 

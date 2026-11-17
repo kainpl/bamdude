@@ -1,6 +1,6 @@
 """Trash candidates can be restored before their owning per-id delete starts."""
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 import pytest
@@ -128,6 +128,30 @@ async def test_retrashing_after_retention_scan_starts_a_new_window(db_session, i
         assert current.deleted_at.replace(tzinfo=None) >= observed[0].replace(tzinfo=None)
     # Explicit permanent deletion still bypasses the retention window.
     assert await real(archive_id) is True
+
+
+@pytest.mark.parametrize("aware", [False, True], ids=["naive-cutoff", "aware-cutoff"])
+async def test_retention_keeps_exact_cutoff_and_deletes_only_older_rows(db_session, independent_factory, aware):
+    stamp = datetime(2026, 1, 1, 12)
+    rows = [
+        PrintArchive(
+            filename="boundary.3mf",
+            file_path="",
+            file_size=0,
+            status="completed",
+            deleted_at=stamp - timedelta(microseconds=age),
+        )
+        for age in (0, 1)
+    ]
+    db_session.add_all(rows)
+    await db_session.commit()
+    boundary_id, expired_id = [row.id for row in rows]
+    cutoff = stamp.replace(tzinfo=timezone.utc) if aware else stamp
+    assert await ArchivePurgeService.hard_delete_now(boundary_id, retention_cutoff=cutoff) is False
+    assert await ArchivePurgeService.hard_delete_now(expired_id, retention_cutoff=cutoff) is True
+    async with independent_factory() as check:
+        assert await check.get(PrintArchive, boundary_id) is not None
+        assert await check.get(PrintArchive, expired_id) is None
 
 
 async def test_restore_losing_to_purge_returns_404_not_500(async_client, db_session, monkeypatch):

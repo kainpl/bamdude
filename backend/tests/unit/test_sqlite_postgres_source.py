@@ -73,20 +73,48 @@ async def test_direct_import_refuses_before_first_target_connection(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_startup_floor_precedes_create_all(monkeypatch, tmp_path):
+async def test_startup_claim_may_read_but_floor_refuses_before_any_ddl(monkeypatch, tmp_path):
+    from sqlalchemy import event
+    from sqlalchemy.ext.asyncio import create_async_engine
+
     from backend.app import migrations
-    from backend.app.core import db_portable
+    from backend.app.core import db_portable, schema_repair
     from backend.app.core.config import settings
+    from backend.app.core.database import import_all_models
+
+    import_all_models()
+    events = []
+    sql = []
+    real_claim = schema_repair.claim
+
+    async def claim(*args, **kwargs):
+        events.append("claim")
+        return await real_claim(*args, **kwargs)
 
     async def refuse(_engine):
+        events.append("floor")
         raise db_portable.SqliteImportError("unsupported source")
 
     monkeypatch.setattr(settings, "database_url", "postgresql+asyncpg://unused/unused")
+    monkeypatch.setattr(schema_repair, "claim", claim)
     monkeypatch.setattr(db_portable, "preflight_sqlite_to_pg", refuse)
-    engine = AsyncMock()
-    with pytest.raises(db_portable.SqliteImportError):
-        await migrations.run_all_migrations(engine, None)
-    assert engine.mock_calls == []
+    # The claim is dialect-neutral. A real empty local target records its reads
+    # and any accidental DDL, without requiring an external PostgreSQL server.
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'target.db'}")
+    event.listen(engine.sync_engine, "before_cursor_execute", lambda _c, _q, statement, *_: sql.append(statement))
+    try:
+        with pytest.raises(db_portable.SqliteImportError):
+            await migrations.run_all_migrations(engine, None)
+        assert events == ["claim", "floor"]
+        assert sql, "the real claim must inspect existing ownership"
+        assert not [
+            s
+            for s in sql
+            if s.lstrip().split(None, 1)[0].upper()
+            in {"CREATE", "ALTER", "DROP", "INSERT", "UPDATE", "DELETE", "REPLACE"}
+        ]
+    finally:
+        await engine.dispose()
 
 
 def test_copy_cleanup_after_error(tmp_path, monkeypatch):
