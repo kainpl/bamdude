@@ -160,6 +160,24 @@ def _sign_in_lock(key: tuple[str, str, str]) -> asyncio.Lock:
     return _token_locks[key]
 
 
+#: Refusals whose sentence is translated at the API boundary: ``scripts/api_error_catalog.py``
+#: reads this map (``FORWARDED_MESSAGE_MAPS``) and the guard test demands their Ukrainian.
+MANYFOLD_MESSAGES = {
+    "storage_not_public": (
+        "The Manyfold library's storage is on a private address or uses plain http. "
+        "BamDude follows a storage redirect only to a public https address."
+    ),
+    "compressed": (
+        "Manyfold sent a compressed answer although BamDude asked for a plain one. "
+        "Switch off response compression for BamDude on the proxy in front of Manyfold."
+    ),
+    "transport_unavailable": (
+        "Manyfold is unavailable: this BamDude installation cannot pin its connections to checked "
+        "addresses. Reinstall its Python packages from requirements.txt."
+    ),
+}
+
+
 class ManyfoldError(ProviderError):
     """A Manyfold failure. ``code`` names it for the frontend; ``status`` is what our API answers.
 
@@ -257,18 +275,13 @@ def _from_transport(exc: OutboundRefused) -> ManyfoldError:
     if exc.reason == "unreachable":
         return ManyfoldUnavailable(f"Could not reach Manyfold. {exc}", "manyfold_unreachable")
     if exc.reason == "encoded":
-        return ManyfoldUnavailable(
-            "Manyfold sent a compressed answer although BamDude asked for a plain one. "
-            "Switch off response compression for BamDude on the proxy in front of Manyfold.",
-            "manyfold_incompatible",
-        )
+        return ManyfoldUnavailable(MANYFOLD_MESSAGES["compressed"], "manyfold_incompatible")
     if exc.reason == "transport_disabled":
-        return ManyfoldUnavailable(
-            "Manyfold is unavailable: this BamDude installation cannot pin its connections to checked "
-            "addresses. Reinstall its Python packages from requirements.txt.",
-            "manyfold_transport_unavailable",
-            503,
-        )
+        return ManyfoldUnavailable(MANYFOLD_MESSAGES["transport_unavailable"], "manyfold_transport_unavailable", 503)
+    if exc.not_public:
+        # The rule stands (a storage redirect is followed only to a public https address); a
+        # library on LAN object storage is told exactly that.
+        return ManyfoldUnavailable(MANYFOLD_MESSAGES["storage_not_public"], "manyfold_storage_refused")
     if exc.reason in {"foreign_refused", "redirect_chain", "bad_redirect", "address_refused"}:
         return ManyfoldUnavailable(
             f"Manyfold keeps this file in storage BamDude will not fetch from. {exc}", "manyfold_storage_refused"

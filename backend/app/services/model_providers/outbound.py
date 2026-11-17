@@ -95,11 +95,15 @@ MAX_ADDRESSES_TRIED = 3
 
 
 class OutboundRefused(ProviderUnavailableError):
-    """The transport would not send, or could not complete, a request. ``reason`` is a closed code."""
+    """The transport would not send, or could not complete, a request. ``reason`` is a closed code.
 
-    def __init__(self, message: str, reason: str):
+    ``not_public`` marks the storage hop's one rule: its address is not public, or not https.
+    """
+
+    def __init__(self, message: str, reason: str, *, not_public: bool = False):
         super().__init__(message)
         self.reason = reason
+        self.not_public = not_public
 
 
 class OutboundTooLarge(OutboundRefused):
@@ -682,7 +686,9 @@ class GuardedTransport:
         for address in addresses:
             refusal = address_refusal(address, public_only=public_only)
             if refusal:
-                raise OutboundRefused(f"Refusing to connect: the host resolves to {refusal}", "address_refused")
+                raise OutboundRefused(
+                    f"Refusing to connect: the host resolves to {refusal}", "address_refused", not_public=public_only
+                )
         # Built directly, never through ``client.build_request``: no client default and no cookie
         # an earlier answer set is merged in.
         sent = {"User-Agent": USER_AGENT, "Accept": "*/*", "Accept-Encoding": "identity", **(headers or {})}
@@ -733,9 +739,13 @@ class GuardedTransport:
         except ValueError as exc:
             raise OutboundRefused(f"Refusing the redirect to file storage: {exc}", "foreign_refused") from exc
         if scheme != "https":
-            raise OutboundRefused("Refusing a redirect to file storage over plain http", "foreign_refused")
+            raise OutboundRefused(
+                "Refusing a redirect to file storage over plain http", "foreign_refused", not_public=True
+            )
         if _is_ip(host) and address_refusal(host, public_only=True):
-            raise OutboundRefused("Refusing a redirect to an address that is not public", "foreign_refused")
+            raise OutboundRefused(
+                "Refusing a redirect to an address that is not public", "foreign_refused", not_public=True
+            )
         url = httpx.URL(target)
         # A presigned address is signed over its exact bytes: send it only when the client keeps them.
         wire = f"{url.scheme}://{url.netloc.decode('ascii')}{url.raw_path.decode('ascii')}"
