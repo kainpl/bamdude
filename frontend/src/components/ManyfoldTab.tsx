@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
-import { Link } from 'react-router';
+import { Link, useSearchParams } from 'react-router';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { AlertCircle, ArrowLeft, Box, Check, ChevronLeft, ChevronRight, Download, ExternalLink, Loader2, Search, Settings } from 'lucide-react';
@@ -15,6 +15,14 @@ import { LoadingBlock } from './LoadingBlock';
 import { useManyfoldRefusal } from './manyfoldRefusal';
 
 const fileLabel = (file: ModelSourceFile) => file.filename || file.name;
+
+/** The route's own cap on the search words. */
+const SEARCH_MAX = 200;
+/** A page number out of an address: anything that is not a whole number above zero is page 1. */
+function pageFrom(raw: string | null): number {
+  if (!raw || !/^[0-9]{1,6}$/.test(raw)) return 1;
+  return Math.max(1, Number(raw));
+}
 
 /** A model's preview from our own proxy; a model without one shows a neutral tile. */
 function Preview({ modelId, name, className }: { modelId: string; name: string; className: string }) {
@@ -91,10 +99,29 @@ export function ManyfoldTab() {
   const canImport = hasPermission('manyfold:import');
   const canConnect = hasPermission('settings:update');
 
-  const [searchInput, setSearchInput] = useState('');
-  const [query, setQuery] = useState('');
-  const [page, setPage] = useState(1);
-  const [openModelId, setOpenModelId] = useState<string | null>(null);
+  // The place in the catalogue lives in the address (review MF-I3): the search words, the page
+  // and the open model are query parameters beside the page's own `tab`. Back returns from a
+  // model to the list it was opened from, a reload restores the view, a link can be shared.
+  // Every change of place is a history step (push); typing in the search box is not a place
+  // and touches nothing until the search is submitted.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const query = (searchParams.get('q') ?? '').trim().slice(0, SEARCH_MAX);
+  const page = pageFrom(searchParams.get('page'));
+  const openModelId = searchParams.get('model') || null;
+  const goTo = (place: { q?: string; page?: number; model?: string | null }) =>
+    setSearchParams((previous) => {
+      const next = new URLSearchParams(previous);
+      const put = (key: string, value: string | null) => (value ? next.set(key, value) : next.delete(key));
+      if (place.q !== undefined) put('q', place.q);
+      if (place.page !== undefined) put('page', place.page > 1 ? String(place.page) : null);
+      if (place.model !== undefined) put('model', place.model);
+      return next;
+    });
+  const [searchInput, setSearchInput] = useState(query);
+  // Back and forward move the address; the box shows the search that address names.
+  useEffect(() => {
+    setSearchInput(query);
+  }, [query]);
   const [folderId, setFolderId] = useState<number | null>(null);
   const [pickedFiles, setPickedFiles] = useState<Set<string>>(new Set());
   // Models ticked in the grid, with their names: the tick outlives the page that showed it.
@@ -218,7 +245,7 @@ export function ManyfoldTab() {
       <div className="space-y-4">
         <button
           type="button"
-          onClick={() => setOpenModelId(null)}
+          onClick={() => goTo({ model: null })}
           className="inline-flex items-center gap-2 text-sm text-bambu-gray hover:text-white"
         >
           <ArrowLeft className="w-4 h-4" />
@@ -380,8 +407,7 @@ export function ManyfoldTab() {
     });
   const submitSearch = (event: FormEvent) => {
     event.preventDefault();
-    setQuery(searchInput.trim());
-    setPage(1);
+    goTo({ q: searchInput.trim(), page: 1 });
   };
 
   return (
@@ -465,7 +491,7 @@ export function ManyfoldTab() {
                 className="absolute top-2 left-2 z-10"
               />
             )}
-            <button type="button" onClick={() => setOpenModelId(entry.id)} className="block w-full text-left">
+            <button type="button" onClick={() => goTo({ model: entry.id })} className="block w-full text-left">
               <Preview modelId={entry.id} name={entry.name} className="w-full aspect-square" />
               <span className="block p-2 text-sm text-white break-words">{entry.name}</span>
             </button>
@@ -475,7 +501,7 @@ export function ManyfoldTab() {
 
       {models.data && (models.data.has_previous || models.data.has_next) && (
         <nav className="flex items-center justify-center gap-3" aria-label={t('manyfold.pages')}>
-          <Button size="sm" variant="secondary" disabled={!models.data.has_previous} onClick={() => setPage(page - 1)}>
+          <Button size="sm" variant="secondary" disabled={!models.data.has_previous} onClick={() => goTo({ page: page - 1 })}>
             <ChevronLeft className="w-4 h-4" />
             {t('manyfold.previous')}
           </Button>
@@ -484,7 +510,7 @@ export function ManyfoldTab() {
               ? t('manyfold.pageOf', { page: models.data.page, pages: models.data.pages })
               : t('manyfold.page', { page: models.data.page })}
           </span>
-          <Button size="sm" variant="secondary" disabled={!models.data.has_next} onClick={() => setPage(page + 1)}>
+          <Button size="sm" variant="secondary" disabled={!models.data.has_next} onClick={() => goTo({ page: page + 1 })}>
             {t('manyfold.next')}
             <ChevronRight className="w-4 h-4" />
           </Button>

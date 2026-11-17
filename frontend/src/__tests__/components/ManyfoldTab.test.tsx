@@ -227,6 +227,61 @@ describe('ManyfoldTab', () => {
     expect(await screen.findByText('This Manyfold is too old. BamDude needs Manyfold 0.150 or newer.')).toBeInTheDocument();
   });
 
+  it('keeps the place in the catalogue in the address, so Back returns to it', async () => {
+    connected();
+    window.history.replaceState({}, '', '/model-sources?tab=manyfold');
+    render(<ManyfoldTab />);
+    await screen.findByText('Spool Holder');
+    const params = () => new URLSearchParams(window.location.search);
+
+    fireEvent.click(screen.getByRole('button', { name: /Next/ }));
+    await screen.findByText('Third');
+    expect(params().get('page')).toBe('2');
+    expect(params().get('tab')).toBe('manyfold'); // the tab's own parameter stays
+
+    // Typing is not a place: the address changes when the search is submitted.
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'clip' } });
+    expect(params().get('q')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+    await screen.findByText('Models: 1');
+    expect(params().get('q')).toBe('clip');
+    expect(params().get('page')).toBeNull(); // a new search starts at the first page
+
+    const before = window.history.length;
+    fireEvent.click(screen.getByText('Cable Clip'));
+    await screen.findByText('Jane Doe');
+    expect(params().get('model')).toBe('m1');
+    expect(window.history.length).toBe(before + 1); // opening a model is a step Back can undo
+
+    window.history.back();
+    // Back from the model: the same search, not the page before Model sources.
+    expect(await screen.findByText('Models: 1')).toBeInTheDocument();
+    expect(params().get('model')).toBeNull();
+    expect(params().get('q')).toBe('clip');
+    expect(screen.getByRole('searchbox')).toHaveValue('clip');
+
+    window.history.back();
+    // …and once more: page 2 of the unfiltered list, with the search box following the address.
+    expect(await screen.findByText('Third')).toBeInTheDocument();
+    expect(screen.getByRole('searchbox')).toHaveValue('');
+  });
+
+  it('opens the page, the search and the model an address names (a reload, a shared link)', async () => {
+    connected();
+    window.history.replaceState({}, '', '/model-sources?tab=manyfold&page=2');
+    const first = render(<ManyfoldTab />);
+    expect(await screen.findByText('Third')).toBeInTheDocument();
+    expect(listRequests[listRequests.length - 1].searchParams.get('page')).toBe('2');
+    first.unmount();
+
+    window.history.replaceState({}, '', '/model-sources?tab=manyfold&q=clip&model=m2');
+    render(<ManyfoldTab />);
+    expect(await screen.findByRole('heading', { name: 'Spool Holder' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Back to models' }));
+    expect(await screen.findByText('Models: 1')).toBeInTheDocument(); // the search the address named
+    expect(screen.getByRole('searchbox')).toHaveValue('clip');
+  });
+
   it('an import goes on when the tab is left, and shows its progress and outcome on return', async () => {
     connected();
     hold('b');
