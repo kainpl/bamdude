@@ -498,6 +498,22 @@ class TestFiles:
         assert caught.value.code == "manyfold_storage_refused"
         assert all(request.url.host == "manyfold.lan" for request in fake.requests)
 
+    async def test_storage_bamdude_cannot_reach_is_named_as_storage_not_as_manyfold(self, fake, tmp_path):
+        """Live check, 2026-11-17: a storage endpoint only Manyfold can resolve (a compose service
+        name) read as "Could not reach Manyfold"."""
+        from backend.app.i18n.api_errors import translate_sentence
+
+        fake._raw = lambda model_id, path, request: httpx.Response(
+            302, headers={"Location": "http://minio:9000/models/clip.stl?X-Amz-Signature=abc"}
+        )
+        service = service_for(fake)
+        file = await service.get_file(MODEL, "f1c2d3g4h5j6")
+        with pytest.raises(ManyfoldUnavailable) as caught:
+            await service.download_file(file, tmp_path / "out.stl")
+        assert caught.value.code == "manyfold_storage_unreachable"
+        assert "storage" in str(caught.value) and "reach Manyfold" not in str(caught.value)
+        assert translate_sentence(str(caught.value), "uk") != str(caught.value)
+
     async def test_another_storage_refusal_does_not_claim_a_private_address(self, fake, tmp_path):
         fake._raw = lambda model_id, path, request: httpx.Response(
             302, headers={"Location": "https://user:pw@bucket.s3.example.com/library/clip.stl"}

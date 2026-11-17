@@ -1,4 +1,5 @@
 {
+  "BamDude cannot reach the file storage Manyfold redirected to. The storage address must be reachable from the BamDude server, not only from Manyfold.": "BamDude не може звʼязатися зі сховищем файлів, до якого перенаправив Manyfold. Адреса сховища має бути досяжною із сервера BamDude, а не лише з Manyfold.",
   "'{}' already belongs to part '{}'": "«{}» уже належить деталі «{}»",
   "'{}' cannot be set for '{}' on this device.": "«{}» не можна задати для «{}» на цьому пристрої.",
   "'{}' has not been adopted — enable it before printing to it": "Пристрій «{}» ще не прийнято — увімкніть його, перш ніж друкувати на ньому",

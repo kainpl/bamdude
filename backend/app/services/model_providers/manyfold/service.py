@@ -163,6 +163,10 @@ def _sign_in_lock(key: tuple[str, str, str]) -> asyncio.Lock:
 #: Refusals whose sentence is translated at the API boundary: ``scripts/api_error_catalog.py``
 #: reads this map (``FORWARDED_MESSAGE_MAPS``) and the guard test demands their Ukrainian.
 MANYFOLD_MESSAGES = {
+    "storage_unreachable": (
+        "BamDude cannot reach the file storage Manyfold redirected to. "
+        "The storage address must be reachable from the BamDude server, not only from Manyfold."
+    ),
     "compressed": (
         "Manyfold sent a compressed answer although BamDude asked for a plain one. "
         "Switch off response compression for BamDude on the proxy in front of Manyfold."
@@ -270,6 +274,8 @@ def _from_transport(exc: OutboundRefused) -> ManyfoldError:
         return ManyfoldUnavailable("The file is larger than BamDude accepts from Manyfold", "manyfold_too_large", 413)
     if exc.reason == "unreachable":
         return ManyfoldUnavailable(f"Could not reach Manyfold. {exc}", "manyfold_unreachable")
+    if exc.reason == "storage_unreachable":
+        return ManyfoldUnavailable(MANYFOLD_MESSAGES["storage_unreachable"], "manyfold_storage_unreachable")
     if exc.reason == "encoded":
         return ManyfoldUnavailable(MANYFOLD_MESSAGES["compressed"], "manyfold_incompatible")
     if exc.reason == "transport_disabled":

@@ -977,6 +977,7 @@ describe('ManyfoldTab', () => {
 
   it.each([
     ['manyfold_storage_refused', 502, 'The file storage Manyfold redirected to has an address BamDude does not connect to.'],
+    ['manyfold_storage_unreachable', 502, 'BamDude cannot reach the file storage Manyfold redirected to. The storage address must be reachable from the BamDude server, not only from Manyfold.'],
     ['manyfold_incompatible', 502, 'Manyfold answered in a form BamDude does not understand. Its version may be too old or too new, or a proxy in front of it changes its answers.'],
     ['manyfold_transport_unavailable', 503, 'The safety check of the Manyfold connection failed. Manyfold is switched off until BamDude restarts.'],
     ['source_import_busy', 503, 'Imports are busy right now. Try again in a minute.'],

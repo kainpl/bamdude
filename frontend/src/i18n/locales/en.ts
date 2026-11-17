@@ -5675,6 +5675,7 @@ export default {
       manyfold_refused: 'BamDude could not ask Manyfold for that.',
       manyfold_storage_refused: 'The file storage Manyfold redirected to has an address BamDude does not connect to.',
       manyfold_storage_failed: 'The file storage behind Manyfold refused the download.',
+      manyfold_storage_unreachable: 'BamDude cannot reach the file storage Manyfold redirected to. The storage address must be reachable from the BamDude server, not only from Manyfold.',
       manyfold_failed: 'Manyfold answered with an error.',
       manyfold_transport_unavailable: 'The safety check of the Manyfold connection failed. Manyfold is switched off until BamDude restarts.',
       source_connection_changed: 'The Manyfold connection changed during the import. Try again.',
