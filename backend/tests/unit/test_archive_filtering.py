@@ -352,7 +352,7 @@ class TestScanForTimelapseWithRetries:
 
             from backend.app.main import _scan_for_timelapse_with_retries
 
-            await _scan_for_timelapse_with_retries(1)
+            await _scan_for_timelapse_with_retries(1, {"old_video.mp4"})
 
         # Should have attached the NEW file, not the old one
         mock_service.attach_timelapse.assert_called_once()
@@ -403,8 +403,8 @@ class TestScanForTimelapseWithRetries:
         mock_service.attach_timelapse.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_name_match_fallback(self):
-        """When no new file appears, should fall back to name matching."""
+    async def test_a_name_that_resembles_the_print_is_never_attached(self):
+        """No new file appeared: a video whose name contains the print's name stays where it is (G10 C3)."""
         mock_archive, mock_printer = self._make_mocks()
 
         baseline_files = [
@@ -443,12 +443,11 @@ class TestScanForTimelapseWithRetries:
 
             from backend.app.main import _scan_for_timelapse_with_retries
 
-            await _scan_for_timelapse_with_retries(1)
+            await _scan_for_timelapse_with_retries(1, {"old_video.mp4", "benchy_20240101.mp4"})
 
-        # Name-match fallback: "benchy" is in "benchy_20240101.mp4"
-        mock_service.attach_timelapse.assert_called_once()
-        attached_filename = mock_service.attach_timelapse.call_args[0][2]
-        assert attached_filename == "benchy_20240101.mp4"
+        # "benchy" is in "benchy_20240101.mp4" — an earlier print of the same model, not this one's video.
+        mock_service.attach_timelapse.assert_not_called()
+        mock_download.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_stops_when_archive_already_has_timelapse(self):
@@ -523,7 +522,7 @@ class TestScanForTimelapseWithRetries:
 
             from backend.app.main import _scan_for_timelapse_with_retries
 
-            await _scan_for_timelapse_with_retries(1)
+            await _scan_for_timelapse_with_retries(1, set())
 
         # Should have slept 4 times with delays [5, 10, 20, 30]
         assert mock_sleep.call_count == 4
@@ -646,7 +645,7 @@ class TestListTimelapseVideosAvi:
 
             from backend.app.main import _scan_for_timelapse_with_retries
 
-            await _scan_for_timelapse_with_retries(1)
+            await _scan_for_timelapse_with_retries(1, {f["name"] for f in baseline_files})
 
         mock_service.attach_timelapse.assert_called_once()
         attached_filename = mock_service.attach_timelapse.call_args[0][2]

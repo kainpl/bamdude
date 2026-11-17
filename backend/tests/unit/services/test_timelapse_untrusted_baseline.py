@@ -204,8 +204,17 @@ async def test_the_scan_leaves_several_candidates_alone_after_an_untrusted_basel
 
 
 @pytest.mark.asyncio
-async def test_the_scan_still_takes_a_single_candidate_after_an_untrusted_baseline():
-    service, _read, _remove = await _scan([_v("ours.mp4")], baseline_trusted=False)
+async def test_the_scan_takes_not_even_a_single_candidate_after_an_untrusted_baseline():
+    """GP4 (G10 C3): an unread card is not an empty card — one "new" video may be an old one."""
+    service, read, remove = await _scan([_v("ours.mp4")], baseline_trusted=False)
+    service.attach_timelapse.assert_not_called()
+    read.assert_not_called()
+    remove.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_the_scan_takes_the_new_recording_after_a_trusted_baseline():
+    service, _read, _remove = await _scan([_v("ours.mp4")], baseline_trusted=True)
     service.attach_timelapse.assert_awaited_once()
     assert service.attach_timelapse.await_args.args[2] == "ours.mp4"
 
@@ -220,4 +229,6 @@ def test_completion_takes_the_mark_with_the_baseline():
     assert main._pop_timelapse_baseline(_Printer.id) == (set(), False)
     assert _Printer.id not in main._timelapse_baselines
     assert _Printer.id not in main._untrusted_timelapse_baselines
-    assert main._pop_timelapse_baseline(_Printer.id) == (None, True), "no baseline: the scan takes its own"
+    assert main._pop_timelapse_baseline(_Printer.id) == (None, True), (
+        "no baseline in memory: the scan reads the archive's"
+    )
