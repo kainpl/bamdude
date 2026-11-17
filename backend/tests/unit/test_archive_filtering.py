@@ -669,7 +669,6 @@ class TestConvertTimelapseToMp4:
         source = tmp_path / "video.avi"
         source.write_bytes(b"avi")
         output = source.with_suffix(".mp4")
-        output.write_bytes(b"mp4")
         monkeypatch.setattr(settings, "base_dir", tmp_path)
         monkeypatch.setattr(
             "backend.app.core.database.async_session", async_sessionmaker(test_engine, expire_on_commit=False)
@@ -678,7 +677,18 @@ class TestConvertTimelapseToMp4:
         process = AsyncMock()
         process.communicate.return_value = (b"", b"failure" if exit_code else b"")
         process.returncode = exit_code
-        execute = AsyncMock(return_value=process)
+        staged = []
+
+        async def run(*args, **_kwargs):
+            # ffmpeg writes to the staged name it was given — never to the final one (G10 C).
+            from pathlib import Path
+
+            staged.append(Path(args[-1]))
+            if not exit_code:
+                staged[-1].write_bytes(b"mp4")
+            return process
+
+        execute = AsyncMock(side_effect=run)
         monkeypatch.setattr("asyncio.create_subprocess_exec", execute)
         await _convert_timelapse_to_mp4(archive.id, source, expected_identity=archive.recovery_identity)
         await db_session.refresh(archive)
@@ -686,6 +696,8 @@ class TestConvertTimelapseToMp4:
         assert output.exists() == (not exit_code)
         assert archive.timelapse_path == (None if exit_code else "video.mp4")
         assert "-threads" in execute.call_args.args
+        assert staged[0] != output and staged[0].name.startswith(".")
+        assert not staged[0].exists()  # published, or removed on failure: never left behind
 
     @pytest.mark.asyncio
     async def test_skips_when_no_ffmpeg(self, tmp_path, monkeypatch):
@@ -726,34 +738,37 @@ class TestDeleteTimelapse:
     """Test DELETE /archives/{id}/timelapse endpoint."""
 
     @pytest.mark.asyncio
-    async def test_delete_timelapse_removes_file_and_clears_db(self, tmp_path):
-        """Deleting a timelapse should remove the file and clear the DB path."""
-        from backend.app.api.routes.archives import delete_timelapse
+    async def test_delete_timelapse_removes_file_and_clears_db(
+        self, db_session, archive_factory, printer_factory, monkeypatch, tmp_path
+    ):
+        """Deleting a timelapse clears the pointer and its registry row, then removes the file (G10 C)."""
+        from sqlalchemy import select
+
+        from backend.app.api.routes import archives as routes
+        from backend.app.core.config import settings
+        from backend.app.models.archive_media_asset import ArchiveMediaAsset
 
         timelapse_dir = tmp_path / "archives" / "1"
         timelapse_dir.mkdir(parents=True)
         timelapse_file = timelapse_dir / "timelapse.mp4"
         timelapse_file.write_bytes(b"fake video data")
+        monkeypatch.setattr(settings, "base_dir", tmp_path)
+        announced = AsyncMock()
+        monkeypatch.setattr(routes.ws_manager, "send_archive_updated", announced)
 
-        mock_archive = MagicMock()
-        mock_archive.timelapse_path = "archives/1/timelapse.mp4"
-        mock_archive.deleted_at = None
+        printer = await printer_factory()
+        archive = await archive_factory(printer.id, file_path="", timelapse_path="archives/1/timelapse.mp4")
+        archive_id = archive.id
 
-        mock_db = AsyncMock()
-        mock_db.execute = AsyncMock()
-        mock_result = MagicMock()
-        mock_result.scalar_one_or_none.return_value = mock_archive
-        mock_db.execute.return_value = mock_result
-
-        with patch("backend.app.api.routes.archives.settings") as mock_settings:
-            mock_settings.base_dir = tmp_path
-            # auth_result=(None, True) → the auth-disabled / can_modify_all path.
-            result = await delete_timelapse(archive_id=1, db=mock_db, auth_result=(None, True))
+        # auth_result=(None, True) → the auth-disabled / can_modify_all path.
+        result = await routes.delete_timelapse(archive_id=archive_id, db=db_session, auth_result=(None, True))
 
         assert result == {"status": "deleted"}
-        assert mock_archive.timelapse_path is None
-        mock_db.commit.assert_awaited_once()
+        db_session.expire_all()
+        assert (await db_session.get(type(archive), archive_id)).timelapse_path is None
+        assert (await db_session.execute(select(ArchiveMediaAsset))).scalars().all() == []
         assert not timelapse_file.exists()
+        announced.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_delete_timelapse_404_when_no_timelapse(self):

@@ -165,6 +165,7 @@ from backend.app.services.timelapse_files import (
     list_timelapse_videos as _list_timelapse_videos,
     pick_new_recording as _pick_new_recording,
     read_timelapse_video,
+    remote_source,
     remove_recording_after_attach,
 )
 from backend.app.utils.ams_humidity import ams_humidity_percent
@@ -5282,7 +5283,11 @@ async def _on_print_start_impl(printer_id: int, data: dict):
                 # is left alone — accumulating one finish photo per run is fine.
                 stale_timelapse_relpath = archive.timelapse_path
                 if stale_timelapse_relpath:
-                    archive.timelapse_path = None
+                    # The registry row goes with the pointer, in this transaction —
+                    # the seam's writer, not a bare assignment (G10 C).
+                    from backend.app.services import archive_media
+
+                    await archive_media.detach_primary_in(db, archive)
                     try:
                         stale_path = app_settings.base_dir / stale_timelapse_relpath
                         if stale_path.is_file():
@@ -6240,6 +6245,9 @@ async def _scan_for_timelapse_with_retries(
                             file_name,
                             expected_identity=expected_identity,
                             expected_epoch=expected_epoch,
+                            origin="printer",
+                            # Claimed: a recording another archive already holds is refused.
+                            remote=remote_source(printer, remote_path, target),
                         )
                     if success:
                         logger.info("[TIMELAPSE] Successfully attached timelapse to archive %s", archive_id)
@@ -6298,6 +6306,8 @@ async def _scan_for_timelapse_with_retries(
                                 fname,
                                 expected_identity=expected_identity,
                                 expected_epoch=expected_epoch,
+                                origin="printer",
+                                remote=remote_source(printer, remote_path, f),
                             )
                         if success:
                             logger.info("[TIMELAPSE] Name-match fallback attached timelapse to archive %s", archive_id)
@@ -10579,16 +10589,26 @@ async def _on_print_complete_impl(
                     async with async_session() as db:
                         service = ArchiveService(db)
                         timelapse_data = await asyncio.to_thread(timelapse_path.read_bytes)
-                        await service.attach_timelapse(
+                        attached = await service.attach_timelapse(
                             archive_id,
                             timelapse_data,
                             "layer_timelapse.mp4",
                             expected_identity=terminal_archive_identity,
                             expected_epoch=completion_epoch,
+                            origin="layer",
                         )
                         # Clean up the temp file
                         await asyncio.to_thread(timelapse_path.unlink, missing_ok=True)
-                        logger.info("[LAYER-TL] Layer timelapse attached successfully")
+                        if attached:
+                            logger.info("[LAYER-TL] Layer timelapse attached successfully")
+                            # Open Archives pages learn of it, as they do for a printer's recording.
+                            await ws_manager.send_archive_updated({"id": archive_id, "timelapse_attached": True})
+                        else:
+                            logger.info(
+                                "[LAYER-TL] Layer timelapse was not attached to archive %s (%s)",
+                                archive_id,
+                                service.media_refusal,
+                            )
                 elif timelapse_path:
                     # Timelapse created but no archive - just clean up
                     await asyncio.to_thread(timelapse_path.unlink, missing_ok=True)

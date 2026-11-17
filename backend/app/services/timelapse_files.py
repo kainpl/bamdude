@@ -253,6 +253,32 @@ async def read_timelapse_video(printer, remote_path: str) -> bytes | None:
     return await transport_for(printer, storage).read_bytes(remote_path)
 
 
+def remote_source(printer, remote_path: str, entry: dict | None = None):
+    """The recording at ``remote_path`` as the publication seam claims it (``archive_media.RemoteSource``).
+
+    The printer is named by its immutable ``connector_identity`` — a numeric id
+    is handed to the next printer once this one is deleted — and the medium is
+    read off the path, exactly as :func:`read_timelapse_video` reads it. ``None``
+    for a printer without an identity: nothing is claimed then, rather than a
+    claim under a name that identifies nobody.
+    """
+    from backend.app.services.archive_media import RemoteSource
+
+    identity = getattr(printer, "connector_identity", None)
+    if not isinstance(identity, str) or not identity:
+        return None
+    entry = entry or {}
+    size = entry.get("size")
+    mtime = entry.get("mtime")
+    return RemoteSource(
+        printer_identity=identity,
+        storage="internal" if remote_path.startswith(INTERNAL_TIMELAPSE_ROOT) else "external",
+        path=remote_path,
+        size=size if isinstance(size, int) and not isinstance(size, bool) else None,
+        mtime_raw=str(mtime) if mtime is not None else None,
+    )
+
+
 async def remove_recording_after_attach(printer, remote_path: str) -> bool:
     """Delete a recording from the printer once BamDude has a copy of it.
 

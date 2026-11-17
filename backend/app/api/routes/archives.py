@@ -27,6 +27,7 @@ from backend.app.core.config import settings
 from backend.app.core.database import get_db
 from backend.app.core.db_dialect import is_postgres
 from backend.app.core.permissions import Permission
+from backend.app.core.websocket import ws_manager
 from backend.app.models.archive import PrintArchive
 from backend.app.models.archive_part import PrintArchivePart
 from backend.app.models.product import ProductPart
@@ -2072,16 +2073,60 @@ async def delete_timelapse(
     if not archive.timelapse_path:
         raise HTTPException(404, "No timelapse attached to this archive")
 
-    # Delete the file
-    timelapse_path = settings.base_dir / archive.timelapse_path
-    if timelapse_path.exists():
-        timelapse_path.unlink()
+    # Through the publication seam: the row and the pointer go in one
+    # transaction under the archive's write scope, and the file only after that
+    # commit — it used to be unlinked first, with no scope at all (G10 C).
+    from backend.app.services import archive_media, queue_sources
 
-    # Clear the path in database
-    archive.timelapse_path = None
-    await db.commit()
+    identity = archive.recovery_identity
+    token = await archive_media.primary_token(db, archive)
+    outcome = await archive_media.remove_primary(
+        db,
+        archive_id,
+        base_dir=settings.base_dir,
+        expected_identity=identity,
+        expected_epoch=queue_sources.current_epoch(),
+        expected_token=token,
+    )
+    if not outcome.ok:
+        _refuse_media(outcome.refusal)
+    await _announce_media(archive_id)
 
     return {"status": "deleted"}
+
+
+def _refuse_media(refusal: str | None) -> None:
+    """Answer a video publication the seam refused (``services/archive_media``): a code the client can read."""
+    if refusal == "source_claimed":
+        raise HTTPException(
+            409,
+            {
+                "error": "source_claimed",
+                "message": "This recording is already attached to another print and cannot be attached to this one",
+            },
+        )
+    if refusal == "source_changed":
+        raise HTTPException(
+            409,
+            {
+                "error": "source_changed",
+                "message": "The archive's video changed while this was being prepared — reload and try again",
+            },
+        )
+    if refusal == "target_gone":
+        raise HTTPException(
+            409,
+            {"error": "target_gone", "message": "The archive changed or was removed while this was being prepared"},
+        )
+    raise HTTPException(500, "Failed to attach timelapse")
+
+
+async def _announce_media(archive_id: int) -> None:
+    """Tell open Archives pages after the commit; a missed refresh never fails the request."""
+    try:
+        await ws_manager.send_archive_updated({"id": archive_id, "timelapse_attached": True})
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("archive_updated for archive %s was not sent: %s", archive_id, exc)
 
 
 _DEFAULT_TIMELAPSE_OFFSETS_HOURS: tuple[int, ...] = (0, 8, -8, 7, -7, 1, -1)
@@ -2328,15 +2373,24 @@ async def scan_timelapse(
         raise HTTPException(502, f"Could not read {matching_file['name']} from the printer")
 
     # Attach in a fresh short session (the read session was released before FTP).
+    from backend.app.services.timelapse_files import remote_source
+
     async with async_session() as db:
-        success = await ArchiveService(db).attach_timelapse(
-            archive_id, timelapse_data, matching_file["name"], expected_identity=archive_identity
+        service = ArchiveService(db)
+        success = await service.attach_timelapse(
+            archive_id,
+            timelapse_data,
+            matching_file["name"],
+            expected_identity=archive_identity,
+            origin="printer",
+            remote=remote_source(printer, remote_path, matching_file),
         )
 
     if not success:
-        raise HTTPException(500, "Failed to attach timelapse")
+        _refuse_media(service.media_refusal)
 
     await remove_recording_after_attach(printer, remote_path)
+    await _announce_media(archive_id)
 
     return {
         "status": "attached",
@@ -2396,14 +2450,23 @@ async def select_timelapse(
         raise HTTPException(502, f"Could not read {filename} from the printer")
 
     # Attach in a fresh short session (the read session was released before FTP).
+    from backend.app.services.timelapse_files import remote_source
+
     async with async_session() as db:
-        success = await ArchiveService(db).attach_timelapse(
-            archive_id, timelapse_data, filename, expected_identity=archive_identity
+        service = ArchiveService(db)
+        success = await service.attach_timelapse(
+            archive_id,
+            timelapse_data,
+            filename,
+            expected_identity=archive_identity,
+            origin="printer",
+            remote=remote_source(printer, remote_path, chosen),
         )
     if not success:
-        raise HTTPException(500, "Failed to attach timelapse")
+        _refuse_media(service.media_refusal)
 
     await remove_recording_after_attach(printer, remote_path)
+    await _announce_media(archive_id)
 
     return {
         "status": "attached",
@@ -2431,10 +2494,13 @@ async def upload_timelapse(
 
     content = await file.read()
     safe_name = _safe_filename(file.filename)
-    success = await service.attach_timelapse(archive_id, content, safe_name, expected_identity=archive_identity)
+    success = await service.attach_timelapse(
+        archive_id, content, safe_name, expected_identity=archive_identity, origin="upload"
+    )
 
     if not success:
-        raise HTTPException(500, "Failed to attach timelapse")
+        _refuse_media(service.media_refusal)
+    await _announce_media(archive_id)
 
     return {"status": "attached", "filename": safe_name}
 

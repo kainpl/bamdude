@@ -151,7 +151,8 @@ async def test_reissued_archive_id_rejects_background_consumers(
         original = asyncio.to_thread
 
         async def barrier(fn, *args, **kwargs):
-            if getattr(fn, "__name__", "") == "write_bytes":
+            # The attach stages its bytes in ``_stage`` (G10 C); the id is reused during that write.
+            if getattr(fn, "__name__", "") in {"write_bytes", "_stage"}:
                 await reuse()
             return await original(fn, *args, **kwargs)
 
