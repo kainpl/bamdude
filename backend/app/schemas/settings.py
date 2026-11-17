@@ -764,6 +764,13 @@ class AppSettings(BaseModel):
         default="",
         description="Self-hosted Obico ML API base URL (e.g., http://192.168.1.10:3333)",
     )
+    obico_snapshot_base_url: str = Field(
+        default="",
+        description=(
+            "BamDude's own address as the Obico ML API reaches it (a LAN address or a Docker service name); "
+            "empty uses the External URL"
+        ),
+    )
     obico_ml_token: str = Field(
         default="",
         description=(
@@ -1039,6 +1046,7 @@ class AppSettingsUpdate(BaseModel):
     obico_enabled: bool | None = None
     obico_save_detections: bool | None = None
     obico_ml_url: str | None = None
+    obico_snapshot_base_url: str | None = None
     obico_ml_token: str | None = None
     obico_sensitivity: str | None = None
     obico_action: str | None = None
@@ -1131,7 +1139,8 @@ class AppSettingsUpdate(BaseModel):
             parsed = json.loads(v)
         except json.JSONDecodeError:
             raise ValueError("obico_enabled_printers must be valid JSON or empty")
-        if not isinstance(parsed, list) or not all(isinstance(item, int) for item in parsed):
+        # ``type is int``: a JSON ``true`` is an int to isinstance, and reads as printer 1.
+        if not isinstance(parsed, list) or not all(type(item) is int and item > 0 for item in parsed):
             raise ValueError("obico_enabled_printers must be a JSON array of printer IDs (integers)")
         return v
 
@@ -1170,6 +1179,36 @@ class AppSettingsUpdate(BaseModel):
             if isinstance(value, int) and not isinstance(value, bool) and value >= 1:
                 kept[ident] = value
         return json.dumps({str(k): kept[k] for k in sorted(kept)})
+
+    @field_validator("obico_snapshot_base_url")
+    @classmethod
+    def validate_obico_snapshot_base_url(cls, v: str | None) -> str | None:
+        """A full http(s) address of BamDude itself, or empty to use the External URL.
+
+        The ML API fetches each snapshot from it, so a value without a scheme
+        ("bamdude:8000") would only fail later, mid-print, as a snapshot error.
+        It is our own address and nothing BamDude requests, so no destination
+        policy applies -- a private address or a Docker name is the point.
+        """
+        if v is None:
+            return v
+        candidate = v.strip().rstrip("/")
+        if not candidate:
+            return ""
+        error = "obico_snapshot_base_url must be a full http:// or https:// address of BamDude"
+        if any(ch.isspace() for ch in candidate):
+            raise ValueError(error)
+        try:
+            parsed = urlsplit(candidate)
+            hostname = parsed.hostname
+            _ = parsed.port  # raises on a port outside 0-65535
+        except ValueError:
+            raise ValueError(error) from None
+        if parsed.scheme not in ("http", "https") or not hostname:
+            raise ValueError(error)
+        if parsed.username or parsed.password or parsed.query or parsed.fragment:
+            raise ValueError("obico_snapshot_base_url must not contain credentials, query parameters or fragments")
+        return candidate
 
     @field_validator("obico_sensitivity")
     @classmethod

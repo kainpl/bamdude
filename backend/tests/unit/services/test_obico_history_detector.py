@@ -43,8 +43,8 @@ async def test_actual_http_inference_saves_nonce_input_and_never_changes_actions
     boxes = [["box", 0.1, [320, 180, 100, 80]]] if case in ("safe-box", "off", "deleted") else []
     if not low:
         state = PrintState()
-        for _ in range(WARMUP_FRAMES + 700):
-            state.update(1)
+        for value in [0] * 300 + [3] * 40:  # a quiet print, then a detection that stays
+            state.update(value)
         service._states[1] = state
         service._state_keys[1] = "same-name"
 

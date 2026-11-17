@@ -48,8 +48,13 @@ def _public_obico_error(message: str | None) -> str | None:
             )
         if re.fullmatch(r"Failed to capture snapshot for printer \d+|Printer \d+ not found", message):
             return message
-        if message.startswith("external_url setting is empty"):
-            return "External URL is empty. Set Settings → General → External URL so the ML API can fetch snapshots."
+        if message.startswith("No address for the ML API"):
+            return (
+                "No address for the ML API to fetch snapshots from. Set the BamDude address for the ML API in "
+                "Failure detection settings, or Settings → General → External URL."
+            )
+        if re.fullmatch(r"Check failed for printer \d+: \w+", message):
+            return message
         if message.startswith("Action dispatch failed:"):
             return "Failure detection could not dispatch the configured action."
     return "Obico failure detection is temporarily unavailable."
@@ -95,7 +100,7 @@ async def get_status(
         "sensitivity": settings["sensitivity"],
         "action": settings["action"],
         "poll_interval": settings["poll_interval"],
-        "external_url_configured": bool(settings["external_url"]),
+        "external_url_configured": bool(settings.get("snapshot_base_url") or settings["external_url"]),
         "save_detections": settings.get("save_detections", False),
         "storage": obico_history.status() if scope is None else None,
     }
