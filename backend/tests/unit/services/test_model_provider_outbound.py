@@ -52,6 +52,13 @@ def scripted_dns(monkeypatch):
     return asked
 
 
+class ElseStorage(dict):
+    """Routes where every address nobody scripted is file storage that answers."""
+
+    def get(self, key, default=None):
+        return super().get(key, httpx.Response(200, content=b"solid"))
+
+
 class Net:
     """A scripted network: ``routes`` maps a URL (without query) to a handler or a response."""
 
@@ -225,7 +232,7 @@ class TestRedirects:
         assert (answer.status, answer.redirect) == (301, "scheme_upgrade")
         assert len(net.seen) == 1
 
-    async def test_a_download_follows_one_hop_to_storage_without_the_token(self):
+    async def test_a_download_follows_the_hop_to_storage_without_the_token(self):
         storage = "https://bucket.s3.example.com/k/a%20b.stl"
         signed = f"{storage}?X-Amz-Signature=abc%2Fdef&X-Amz-Expires=900"
         net = Net({f"{BASE}/models/m/raw/a.stl": redirect(signed), storage: httpx.Response(200, content=b"solid")})
@@ -260,7 +267,6 @@ class TestRedirects:
             "https://metadata.google.internal/computeMetadata/v1/",
             "https://[fd00:ec2::254]/",
             "https://2852039166/",
-            "http://bucket.s3.example.com/a.stl",  # https -> http
             "https://user:pw@bucket.s3.example.com/a.stl",
             "ftp://bucket.s3.example.com/a.stl",
             "https://bucket.s3.example.com/a\\b",
@@ -278,19 +284,32 @@ class TestRedirects:
             await body_of(transport, "/models/m/raw/a.stl", bearer="tok", foreign_hop=True)
         assert net.urls() == [f"{BASE}/models/m/raw/a.stl"]
 
-    async def test_storage_may_not_redirect_again(self):
+    async def test_storage_may_redirect_on_and_nothing_after_the_origin_carries_the_token(self):
         storage = "https://bucket.s3.example.com/a.stl"
+        final = "http://elsewhere.example.com/a.stl"
         net = Net(
             {
                 f"{BASE}/models/m/raw/a.stl": redirect(storage),
-                storage: redirect("https://elsewhere.example.com/a.stl"),
+                storage: redirect(final),
+                final: httpx.Response(200, content=b"solid"),
             }
         )
+        transport = transport_for(net)
+        status, data, foreign = await body_of(transport, "/models/m/raw/a.stl", bearer="tok", foreign_hop=True)
+        assert (status, data, foreign) == (200, b"solid", True)
+        assert [("authorization" in request.headers) for request in net.seen] == [True, False, False]
+
+    async def test_a_chain_longer_than_the_limit_is_refused(self):
+        hop = "https://bucket.s3.example.com/hop{}"
+        routes = {f"{BASE}/models/m/raw/a.stl": redirect(hop.format(0))}
+        for number in range(outbound.MAX_STORAGE_HOPS + 1):
+            routes[hop.format(number)] = redirect(hop.format(number + 1))
+        net = Net(routes)
         transport = transport_for(net)
         with pytest.raises(OutboundRefused) as caught:
             await body_of(transport, "/models/m/raw/a.stl", bearer="tok", foreign_hop=True)
         assert caught.value.reason == "redirect_chain"
-        assert len(net.seen) == 2
+        assert len(net.seen) == 1 + outbound.MAX_STORAGE_HOPS
 
     async def test_a_same_origin_redirect_of_a_download_is_not_followed(self):
         net = Net({f"{BASE}/models/m/raw/a.stl": redirect(f"{BASE}/users/sign_in")})
@@ -383,56 +402,64 @@ class TestEveryConnectionGoesToACheckedAddress:
         assert net.seen[1].url.host == "bucket.s3.example.com"
 
 
-class TestTheStorageHopIsPublicOnly:
+class TestStorageFollowsTheOriginsOwnRules:
+    """Owner, 2026-11-17 (as upstream): BamDude is a LAN system first — storage beside Manyfold on a
+    private address, and over plain http, is fetched. What is dangerous in any topology is not."""
+
     @pytest.mark.parametrize(
         "location",
         [
             "https://127.0.0.1/a.stl",
-            "https://[::1]/a.stl",
-            "https://10.0.0.5/a.stl",
+            "http://[::1]:9000/a.stl",
+            "http://10.0.0.5:9000/a.stl",
             "https://192.168.1.21:9000/a.stl",
-            "https://172.16.0.1/a.stl",
+            "http://172.16.0.1/a.stl",
             "https://100.64.0.9/a.stl",
-            "https://[fd00::5]/a.stl",
+            "http://[fd00::5]/a.stl",
+            "http://localhost:9000/a.stl",
+            "https://inside.example.com/a.stl",
+            "http://loop.example.com/a.stl",
+            "https://cgnat.example.com/a.stl",
+            "https://ula.example.com/a.stl",
+            "https://mapped.example.com/a.stl",
+            "http://manyfold.lan:9000/a.stl",  # MinIO on the Manyfold box itself
+            "http://bucket.s3.example.com/a.stl",  # public, plain http
+        ],
+    )
+    async def test_storage_on_the_lan_or_over_plain_http_is_fetched_without_the_token(self, location):
+        net = Net(ElseStorage({f"{BASE}/models/m/raw/a.stl": redirect(location)}))
+        transport = transport_for(net)
+        status, data, foreign = await body_of(transport, "/models/m/raw/a.stl", bearer="tok", foreign_hop=True)
+        assert (status, data, foreign) == (200, b"solid", True)
+        origin, storage = net.seen
+        assert origin.headers["Authorization"] == "Bearer tok"
+        assert "authorization" not in storage.headers and "cookie" not in storage.headers
+
+    @pytest.mark.parametrize(
+        "location",
+        [
             "https://[fe80::1]/a.stl",
             "https://[fe80::1%25eth0]/a.stl",
-            "https://[::ffff:10.0.0.5]/a.stl",
             "https://[::ffff:169.254.169.254]/a.stl",
-            "https://[64:ff9b::a00:5]/a.stl",
-            "https://[2002:a00:5::1]/a.stl",
+            "http://169.254.169.254/latest/meta-data/",
             "https://0.0.0.0/a.stl",
             "https://224.0.0.1/a.stl",
             "https://169.254.43518/a.stl",
             "https://0251.0376.0251.0376/a.stl",
             "https://metadata.google.internal./a.stl",
-            "https://localhost/a.stl",
-            "https://inside.example.com/a.stl",
-            "https://loop.example.com/a.stl",
-            "https://cgnat.example.com/a.stl",
-            "https://ula.example.com/a.stl",
-            "https://mapped.example.com/a.stl",
             "https://rebind.example.com/a.stl",  # one public answer, one metadata answer
-            "https://imds.example.com/a.stl",
-            "https://manyfold.lan:9000/a.stl",  # the configured host on another port is a private address too
+            "http://imds.example.com/a.stl",
         ],
     )
-    async def test_a_redirect_to_an_address_that_is_not_public_is_never_requested(self, location):
-        net = Net({f"{BASE}/models/m/raw/a.stl": redirect(location)})
+    async def test_a_redirect_to_a_metadata_or_link_local_address_is_never_requested(self, location):
+        net = Net(ElseStorage({f"{BASE}/models/m/raw/a.stl": redirect(location)}))
         transport = transport_for(net)
         with pytest.raises(OutboundRefused):
             await body_of(transport, "/models/m/raw/a.stl", bearer="tok", foreign_hop=True)
         assert net.urls() == [f"{BASE}/models/m/raw/a.stl"]
 
-    async def test_plain_http_storage_is_refused_even_from_a_plain_http_base(self):
-        base = "http://192.168.1.20:3214"
-        net = Net({f"{base}/models/m/raw/a.stl": redirect("http://bucket.s3.example.com/a.stl")})
-        transport = transport_for(net, base)
-        with pytest.raises(OutboundRefused):
-            await body_of(transport, "/models/m/raw/a.stl", bearer="tok", foreign_hop=True)
-        assert len(net.seen) == 1
-
-    async def test_storage_may_not_send_us_back_to_the_configured_origin(self):
-        """A chain that mixes hops: origin -> storage -> origin. The second hop is not taken."""
+    async def test_a_way_back_to_the_configured_origin_is_taken_without_the_token(self):
+        """origin -> storage -> origin: the last request is storage's, so it carries nothing."""
         storage = "https://bucket.s3.example.com/a.stl"
         net = Net(
             {
@@ -442,10 +469,9 @@ class TestTheStorageHopIsPublicOnly:
             }
         )
         transport = transport_for(net)
-        with pytest.raises(OutboundRefused) as caught:
-            await body_of(transport, "/models/m/raw/a.stl", bearer="tok", foreign_hop=True)
-        assert caught.value.reason == "redirect_chain"
-        assert len(net.seen) == 2
+        _status, _data, foreign = await body_of(transport, "/models/m/raw/a.stl", bearer="tok", foreign_hop=True)
+        assert foreign is True and len(net.seen) == 3
+        assert "authorization" not in net.seen[2].headers
 
     async def test_a_same_origin_redirect_that_then_points_at_storage_is_not_followed_at_all(self):
         """origin -> origin -> storage: the first hop already stays unfollowed."""
@@ -478,25 +504,19 @@ class TestAddressesThatCarryAnotherAddress:
             "feff::1",
         ],
     )
-    def test_neither_policy_connects_to_it(self, address):
-        assert outbound.address_refusal(address, public_only=False) is not None
-        assert outbound.address_refusal(address, public_only=True) is not None
+    def test_it_is_never_connected(self, address):
+        assert outbound.address_refusal(address) is not None
 
     @pytest.mark.parametrize(
         "address", ["::127.0.0.1", "::7f00:1", "::10.0.0.5", "::ffff:0:127.0.0.1", "::8.8.8.8", "::ffff:0:8.8.8.8"]
     )
-    def test_an_embedded_address_is_judged_for_the_origin_and_never_public_storage(self, address):
-        # The configured origin may be loopback or private, embedded or not; storage is never translated.
-        assert outbound.address_refusal(address, public_only=False) is None
-        assert outbound.address_refusal(address, public_only=True) is not None
+    def test_an_embedded_address_is_judged_as_the_address_it_carries(self, address):
+        # Loopback or private, embedded or not, is allowed — for the origin and for storage alike.
+        assert outbound.address_refusal(address) is None
 
     @pytest.mark.parametrize("address", ["::1", "fd00::1", "2606:4700::1111", "::ffff:8.8.8.8", "8.8.8.8"])
     def test_ordinary_addresses_are_judged_as_before(self, address):
-        assert outbound.address_refusal(address, public_only=False) is None
-
-    @pytest.mark.parametrize("address", ["2606:4700::1111", "2001:4860:4860::8888", "::ffff:8.8.8.8", "8.8.8.8"])
-    def test_public_storage_is_still_public(self, address):
-        assert outbound.address_refusal(address, public_only=True) is None
+        assert outbound.address_refusal(address) is None
 
     @pytest.mark.parametrize(
         "url",
@@ -512,7 +532,7 @@ class TestAddressesThatCarryAnotherAddress:
             PinnedOrigin.admit(url, label="Manyfold URL")
 
     @pytest.mark.parametrize(
-        "location", ["https://[::127.0.0.1]/x", "https://[fec0::1]/x", "https://[::ffff:0:808:808]/x"]
+        "location", ["https://[::169.254.169.254]/x", "https://[fec0::1]/x", "https://[64:ff9b:1::a9fe:a9fe]/x"]
     )
     async def test_storage_at_such_an_address_is_refused_without_a_request(self, location):
         net = Net({f"{BASE}/models/m/raw/a.stl": redirect(location)})

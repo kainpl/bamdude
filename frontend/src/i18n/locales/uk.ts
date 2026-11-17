@@ -5709,7 +5709,7 @@ export default {
       manyfold_not_importable: 'Імпортувати можна лише файли 3MF, STL, STEP і OBJ.',
       manyfold_query_refused: 'Manyfold не зрозумів цей пошуковий запит. Спробуйте звичайні слова.',
       manyfold_refused: 'BamDude не зміг запитати це в Manyfold.',
-      manyfold_storage_refused: 'Сховище бібліотеки Manyfold розміщене на приватній адресі або працює через звичайний http. BamDude переходить за перенаправленням до сховища лише на публічну адресу з https.',
+      manyfold_storage_refused: 'Сховище файлів, до якого перенаправив Manyfold, має адресу, з якою BamDude не з’єднується.',
       manyfold_storage_failed: 'Сховище файлів за Manyfold відмовило в завантаженні.',
       manyfold_failed: 'Manyfold відповів помилкою.',
       source_connection_changed: 'Підключення Manyfold змінилося під час імпорту. Спробуйте ще раз.',

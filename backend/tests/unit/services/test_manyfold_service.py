@@ -455,33 +455,47 @@ class TestFiles:
         assert "authorization" not in storage.headers
 
     @pytest.mark.parametrize(
-        "location",
+        "storage",
         [
-            "https://10.0.0.5:9000/library/clip.stl",  # MinIO on the LAN, by address
-            "https://minio.lan/library/clip.stl",  # ... by a name that resolves to a private address
-            "http://bucket.s3.example.com/library/clip.stl",  # public, but plain http
-            "http://192.168.1.30:9000/library/clip.stl",
+            "https://10.0.0.5:9000",  # MinIO on the LAN, by address
+            "https://minio.lan",  # ... by a name that resolves to a private address
+            "http://bucket.s3.example.com",  # public, but plain http
+            "http://192.168.1.30:9000",
         ],
     )
-    async def test_storage_on_a_private_address_is_refused_in_so_many_words(
-        self, fake, tmp_path, monkeypatch, location
+    async def test_storage_on_the_lan_or_over_plain_http_is_fetched_without_the_token(
+        self, fake, tmp_path, monkeypatch, storage
     ):
-        """Review MB-M13: the rule stays (a storage redirect is followed only to public https);
-        the refusal says exactly that, and has its Ukrainian."""
-        from backend.app.i18n.api_errors import translate_sentence
-
+        """Owner, 2026-11-17 (as upstream): MinIO beside Manyfold is the normal home topology."""
         monkeypatch.setitem(DNS, "minio.lan", ["192.168.1.30"])
-        fake._raw = lambda model_id, path, request: httpx.Response(302, headers={"Location": location})
+        signed = f"{storage}/library/{MODEL}/clip.stl?X-Amz-Signature=abc%2Fdef&X-Amz-Expires=900"
+        fake._raw = lambda model_id, path, request: httpx.Response(302, headers={"Location": signed})
+        serve = fake.handle
+
+        def handle(request):
+            if request.url.host == "manyfold.lan":
+                return serve(request)
+            fake.requests.append(request)
+            return fake._storage(request)
+
+        fake.handle = handle
+        service = service_for(fake)
+        file = await service.get_file(MODEL, "f1c2d3g4h5j6")
+        target = tmp_path / "out.stl"
+        await service.download_file(file, target)
+        assert target.read_bytes() == STL
+        (fetched,) = [request for request in fake.requests if request.url.host != "manyfold.lan"]
+        assert "authorization" not in fetched.headers
+
+    async def test_a_redirect_to_a_metadata_address_is_a_refused_storage(self, fake, tmp_path):
+        fake._raw = lambda model_id, path, request: httpx.Response(
+            302, headers={"Location": "http://169.254.169.254/latest/meta-data/"}
+        )
         service = service_for(fake)
         file = await service.get_file(MODEL, "f1c2d3g4h5j6")
         with pytest.raises(ManyfoldUnavailable) as caught:
             await service.download_file(file, tmp_path / "out.stl")
         assert caught.value.code == "manyfold_storage_refused"
-        assert str(caught.value) == (
-            "The Manyfold library's storage is on a private address or uses plain http. "
-            "BamDude follows a storage redirect only to a public https address."
-        )
-        assert translate_sentence(str(caught.value), "uk") != str(caught.value)
         assert all(request.url.host == "manyfold.lan" for request in fake.requests)
 
     async def test_another_storage_refusal_does_not_claim_a_private_address(self, fake, tmp_path):

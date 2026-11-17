@@ -163,10 +163,6 @@ def _sign_in_lock(key: tuple[str, str, str]) -> asyncio.Lock:
 #: Refusals whose sentence is translated at the API boundary: ``scripts/api_error_catalog.py``
 #: reads this map (``FORWARDED_MESSAGE_MAPS``) and the guard test demands their Ukrainian.
 MANYFOLD_MESSAGES = {
-    "storage_not_public": (
-        "The Manyfold library's storage is on a private address or uses plain http. "
-        "BamDude follows a storage redirect only to a public https address."
-    ),
     "compressed": (
         "Manyfold sent a compressed answer although BamDude asked for a plain one. "
         "Switch off response compression for BamDude on the proxy in front of Manyfold."
@@ -278,10 +274,6 @@ def _from_transport(exc: OutboundRefused) -> ManyfoldError:
         return ManyfoldUnavailable(MANYFOLD_MESSAGES["compressed"], "manyfold_incompatible")
     if exc.reason == "transport_disabled":
         return ManyfoldUnavailable(MANYFOLD_MESSAGES["transport_unavailable"], "manyfold_transport_unavailable", 503)
-    if exc.not_public:
-        # The rule stands (a storage redirect is followed only to a public https address); a
-        # library on LAN object storage is told exactly that.
-        return ManyfoldUnavailable(MANYFOLD_MESSAGES["storage_not_public"], "manyfold_storage_refused")
     if exc.reason in {"foreign_refused", "redirect_chain", "bad_redirect", "address_refused"}:
         return ManyfoldUnavailable(
             f"Manyfold keeps this file in storage BamDude will not fetch from. {exc}", "manyfold_storage_refused"
@@ -716,7 +708,7 @@ class ManyfoldService(ProviderService, BrowsableService):
     # ---- bytes ---------------------------------------------------------
 
     async def _stream_to(self, path: str, sink: Callable[[bytes], Any], *, cap: int, params=None, what: str) -> int:
-        """GET ``path`` (one storage hop allowed) into ``sink``; returns the byte count."""
+        """GET ``path`` (the way to file storage allowed) into ``sink``; returns the byte count."""
         transport = self._ready()
         token: str | None = None
         for attempt in range(2):

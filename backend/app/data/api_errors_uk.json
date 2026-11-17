@@ -961,7 +961,6 @@
   "The BamDude skill package is unavailable": "Пакет skill BamDude недоступний",
   "The Filament Track Switch is not set up yet. Assign every AMS to an inlet on the printer": "Перемикач тракту філаменту ще не налаштовано. Призначте кожній AMS вхід на принтері",
   "The Manyfold address or client ID changed. Enter the client secret for it, or clear the stored secret.": "Адресу Manyfold або ідентифікатор клієнта змінено. Введіть секрет клієнта для них або очистьте збережений секрет.",
-  "The Manyfold library's storage is on a private address or uses plain http. BamDude follows a storage redirect only to a public https address.": "Сховище бібліотеки Manyfold розташоване за приватною адресою або працює через звичайний http. BamDude переходить за перенаправленням до сховища лише на публічну https-адресу.",
   "The Zigbee coordinator is not running, so no device can be bound yet.": "Координатор Zigbee не запущено, тому привʼязати пристрій поки що неможливо.",
   "The Zigbee coordinator is {}.": "Координатор Zigbee: {}.",
   "The air-duct mode cannot be changed while a print is running": "Режим повітроводу не можна змінити під час друку",

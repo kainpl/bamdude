@@ -29,11 +29,15 @@ destination mode, **the configured origin**:
   (``_prove_pinning``) — a failed proof switches the transport off until a
   restart (``transport_disabled``), it never falls back to an ordinary client.
 * No redirect is followed, with ONE exception a caller asks for by name
-  (``foreign_hop=True``, file bytes only): one hop to another origin — object
-  storage behind the source — sent without the token and without cookies,
-  https only, to PUBLIC addresses only (loopback, private, link-local,
-  carrier-grade NAT, unique-local and metadata addresses are refused wherever
-  the configured origin lives), and that answer may not redirect again.
+  (``foreign_hop=True``, file bytes only): the way to another origin — object
+  storage behind the source — sent without the token and without cookies, at
+  most ``MAX_STORAGE_HOPS`` redirects. Storage is judged by the SAME address
+  rules as the configured origin: http or https, loopback and private
+  addresses allowed (MinIO beside Manyfold on a home server is the normal
+  topology — BamDude is a LAN system first; owner, 2026-11-17, as upstream),
+  metadata / link-local / multicast refused, every resolved address checked
+  and pinned. Once a request has left the origin, nothing after it carries the
+  token — not even a redirect back to the origin.
 * Bodies are read through :meth:`GuardedAnswer.chunks` with a byte cap counted on
   the bytes of the WIRE: every request asks for ``Accept-Encoding: identity`` and
   an answer that carries a ``Content-Encoding`` anyway is refused unread — nothing
@@ -92,18 +96,16 @@ DEFAULT_TIMEOUT = httpx.Timeout(connect=10.0, read=60.0, write=30.0, pool=10.0)
 _JSON_CAP = 4 * 1024 * 1024
 #: How many of a name's (checked) addresses a connection is attempted to.
 MAX_ADDRESSES_TRIED = 3
+#: Redirects followed on the way to file storage (upstream follows five).
+MAX_STORAGE_HOPS = 5
 
 
 class OutboundRefused(ProviderUnavailableError):
-    """The transport would not send, or could not complete, a request. ``reason`` is a closed code.
+    """The transport would not send, or could not complete, a request. ``reason`` is a closed code."""
 
-    ``not_public`` marks the storage hop's one rule: its address is not public, or not https.
-    """
-
-    def __init__(self, message: str, reason: str, *, not_public: bool = False):
+    def __init__(self, message: str, reason: str):
         super().__init__(message)
         self.reason = reason
-        self.not_public = not_public
 
 
 class OutboundTooLarge(OutboundRefused):
@@ -160,16 +162,13 @@ def _is_ip(host: str) -> bool:
     return True
 
 
-def address_refusal(text: str, *, public_only: bool) -> str | None:
-    """Why a connection to this ADDRESS is refused, or None.
+def address_refusal(text: str) -> str | None:
+    """Why a connection to this ADDRESS is refused, or None — one rule for the origin and for storage.
 
-    Always: cloud metadata, link-local, multicast, unspecified, broadcast — also when carried inside
-    an IPv4-mapped, IPv4-compatible, SIIT, 6to4, NAT64 or Teredo address, each of which is unwrapped
-    and its IPv4 address judged. What cannot be judged is refused under both policies: local-use
-    NAT64 (the embedding is the operator's) and deprecated site-local (``is_global`` calls it
-    public). ``public_only`` (the storage hop) adds everything that is not a public address:
-    loopback, private, carrier-grade NAT, unique-local, reserved — and every translation prefix,
-    which no storage service lives behind.
+    Cloud metadata, link-local, multicast, unspecified, broadcast — also when carried inside an
+    IPv4-mapped, IPv4-compatible, SIIT, 6to4, NAT64 or Teredo address, each of which is unwrapped
+    and its IPv4 address judged. What cannot be judged is refused: local-use NAT64 (the embedding
+    is the operator's) and deprecated site-local. Loopback and private addresses are allowed.
     """
     try:
         address = unwrap_ipv4_mapped(ipaddress.ip_address(text.split("%", 1)[0]))
@@ -186,10 +185,7 @@ def address_refusal(text: str, *, public_only: bool) -> str | None:
             embedded.append(ipaddress.IPv4Address(int(address) & 0xFFFFFFFF))
         if address.teredo is not None:
             embedded += list(address.teredo)  # the relay's server and the client behind it
-        if embedded:
-            if public_only:
-                return "a translated address"
-            candidates += embedded
+        candidates += embedded
     for candidate in candidates:
         if candidate in CLOUD_METADATA_IPS:
             return "a cloud metadata address"
@@ -197,8 +193,6 @@ def address_refusal(text: str, *, public_only: bool) -> str | None:
             return "a link-local, multicast or unspecified address"
         if candidate == _BROADCAST:
             return "the broadcast address"
-        if public_only and not candidate.is_global:
-            return "not a public address"
     return None
 
 
@@ -238,7 +232,7 @@ def _parse(url: str, label: str):
     # The shared LAN-service rules (metadata names, numeric forms), asked of the normalised host.
     assert_safe_lan_service_url(f"{scheme}://{f'[{host}]' if ':' in host else host}/", label=label)
     if _is_ip(host):
-        refusal = address_refusal(host, public_only=False)
+        refusal = address_refusal(host)
         if refusal:
             raise ValueError(f"{label} must not point to {refusal}")
     return parsed, scheme, host, port or (443 if scheme == "https" else 80)
@@ -658,7 +652,7 @@ class GuardedTransport:
             raise OutboundRefused("Refusing a request path that could leave the configured address", "bad_path")
         return f"{self.origin.base}{path}"
 
-    async def _send(self, method: str, url: httpx.URL, *, headers=None, data=None, public_only=False):
+    async def _send(self, method: str, url: httpx.URL, *, headers=None, data=None):
         """Resolve, check EVERY address, connect to the checked one.
 
         The name is resolved here, once, and the socket is opened to an address that passed
@@ -684,11 +678,9 @@ class GuardedTransport:
             if not addresses:
                 raise OutboundRefused("The host name has no address", "unreachable")
         for address in addresses:
-            refusal = address_refusal(address, public_only=public_only)
+            refusal = address_refusal(address)
             if refusal:
-                raise OutboundRefused(
-                    f"Refusing to connect: the host resolves to {refusal}", "address_refused", not_public=public_only
-                )
+                raise OutboundRefused(f"Refusing to connect: the host resolves to {refusal}", "address_refused")
         # Built directly, never through ``client.build_request``: no client default and no cookie
         # an earlier answer set is merged in.
         sent = {"User-Agent": USER_AGENT, "Accept": "*/*", "Accept-Encoding": "identity", **(headers or {})}
@@ -730,22 +722,12 @@ class GuardedTransport:
         return "foreign", target
 
     def _admit_foreign(self, target: str) -> httpx.URL:
-        """The storage hop's address: https, no credentials, a host that may be public.
-
-        Whether it IS public is decided on the resolved addresses, in ``_send(public_only=True)``.
-        """
+        """A storage address: the configured origin's own rules (``_parse``) — http or https, no
+        credentials, a LAN or public host. Its resolved addresses are checked in ``_send``."""
         try:
-            _parsed, scheme, host, _port = _parse(target, "The storage address")
+            _parse(target, "The storage address")
         except ValueError as exc:
             raise OutboundRefused(f"Refusing the redirect to file storage: {exc}", "foreign_refused") from exc
-        if scheme != "https":
-            raise OutboundRefused(
-                "Refusing a redirect to file storage over plain http", "foreign_refused", not_public=True
-            )
-        if _is_ip(host) and address_refusal(host, public_only=True):
-            raise OutboundRefused(
-                "Refusing a redirect to an address that is not public", "foreign_refused", not_public=True
-            )
         url = httpx.URL(target)
         # A presigned address is signed over its exact bytes: send it only when the client keeps them.
         wire = f"{url.scheme}://{url.netloc.decode('ascii')}{url.raw_path.decode('ascii')}"
@@ -776,15 +758,21 @@ class GuardedTransport:
         response = await self._send(method, url, headers=headers, data=data)
         foreign = False
         redirect: str | None = None
+        hops = 0
         try:
-            if response.status_code in REDIRECT_STATUSES:
+            while response.status_code in REDIRECT_STATUSES:
                 redirect, target = self._classify(url, response.headers.get("Location"))
-                if redirect == "foreign" and foreign_hop and method == "GET":
-                    await response.aclose()
-                    response = await self._send("GET", self._admit_foreign(target), public_only=True)
-                    foreign, redirect = True, None
-                    if response.status_code in REDIRECT_STATUSES:
-                        raise OutboundRefused("File storage redirected again", "redirect_chain")
+                # A redirect that stays on the origin is the caller's to judge (a sign-in page);
+                # once the request has left for storage, every further one is storage's.
+                if not (foreign_hop and method == "GET" and (foreign or redirect == "foreign")):
+                    break
+                hops += 1
+                if hops > MAX_STORAGE_HOPS:
+                    raise OutboundRefused("File storage redirected too often", "redirect_chain")
+                await response.aclose()
+                url = self._admit_foreign(target)
+                response = await self._send("GET", url)  # no token, no cookies: its own headers
+                foreign, redirect = True, None
             encoding = response.headers.get("Content-Encoding", "").strip().lower()
             if redirect is None and encoding not in ("", "identity"):
                 # Asked for identity. Inflating would put the byte caps behind the decompressor

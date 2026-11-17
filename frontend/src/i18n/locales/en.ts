@@ -5673,7 +5673,7 @@ export default {
       manyfold_not_importable: 'Only 3MF, STL, STEP and OBJ files can be imported.',
       manyfold_query_refused: 'Manyfold did not understand this search. Try plain words.',
       manyfold_refused: 'BamDude could not ask Manyfold for that.',
-      manyfold_storage_refused: 'The storage of the Manyfold library is on a private address or uses plain http. BamDude follows a storage redirect only to a public https address.',
+      manyfold_storage_refused: 'The file storage Manyfold redirected to has an address BamDude does not connect to.',
       manyfold_storage_failed: 'The file storage behind Manyfold refused the download.',
       manyfold_failed: 'Manyfold answered with an error.',
       manyfold_transport_unavailable: 'The safety check of the Manyfold connection failed. Manyfold is switched off until BamDude restarts.',
