@@ -201,13 +201,23 @@ async def empty_archive_trash(
             raise HTTPException(status_code=403, detail="Authentication required")
         conditions.append(PrintArchive.created_by_id == user.id)
 
-    rows_result = await db.execute(select(PrintArchive.id).where(*conditions))
+    rows_result = await db.execute(select(PrintArchive.id).where(*conditions).order_by(PrintArchive.id))
     ids = [row[0] for row in rows_result.all()]
     deleted = 0
+    retained = []
     for archive_id in ids:
-        if await archive_purge_service.hard_delete_now(archive_id):
-            deleted += 1
-    return ArchiveEmptyTrashResponse(deleted=deleted)
+        try:
+            if await archive_purge_service.hard_delete_now(archive_id):
+                deleted += 1
+        except HTTPException as error:
+            if (
+                error.status_code != 409
+                or not isinstance(error.detail, dict)
+                or error.detail.get("error") != "archive_retained"
+            ):
+                raise
+            retained.append({"id": archive_id, "reasons": error.detail["reasons"]})
+    return ArchiveEmptyTrashResponse(deleted=deleted, retained=retained)
 
 
 # ===================== Trash retention settings (admin only) =====================

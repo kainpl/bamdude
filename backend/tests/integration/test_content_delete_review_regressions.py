@@ -134,9 +134,14 @@ async def test_trash_delete_reports_the_keep_instead_of_a_missing_archive(
     archive_id, item_id, lane_id = archive.id, item.id, lane.id
     route = f"/api/v1/archives/trash/{archive_id}" if endpoint == "single" else "/api/v1/archives/trash"
     response = await async_client.delete(route)
-    assert response.status_code == 409, response.text
-    assert response.json()["detail"]["error"] == "archive_retained"
-    assert ("live_job" if keep == "current_item" else keep) in response.json()["detail"]["reasons"]
+    reason = "live_job" if keep == "current_item" else keep
+    if endpoint == "single":
+        assert response.status_code == 409, response.text
+        assert response.json()["detail"]["error"] == "archive_retained"
+        assert reason in response.json()["detail"]["reasons"]
+    else:
+        assert response.status_code == 200, response.text
+        assert response.json() == {"deleted": 0, "retained": [{"id": archive_id, "reasons": [reason]}]}
     db_session.expire_all()
     assert await db_session.get(PrintArchive, archive_id) is not None
     assert await db_session.get(PrintQueueItem, item_id) is not None
@@ -174,6 +179,70 @@ async def test_an_old_sqlite_reader_ends_before_the_new_plan_observes_a_foreign_
         await db.rollback()
     async with factory() as db:
         assert (await db.get(LibraryFile, proof.id)).file_path == "changed.3mf"
+
+
+@pytest.mark.parametrize("retained_first", [True, False], ids=["retained-lower-id", "retained-higher-id"])
+@pytest.mark.parametrize("keep", ["plate_gate", "current_item"])
+async def test_empty_trash_reports_both_deleted_and_retained_in_either_id_order(
+    async_client, db_session, printer_factory, retained_first, keep
+):
+    printer = await printer_factory()
+    rows = [
+        PrintArchive(
+            filename=name,
+            file_path="",
+            file_size=0,
+            status="completed",
+            printer_id=printer.id,
+            deleted_at=datetime.now() - timedelta(days=30),
+        )
+        for name in ("first.3mf", "second.3mf")
+    ]
+    db_session.add_all(rows)
+    await db_session.flush()
+    held, free = rows if retained_first else rows[::-1]
+    lane = PrinterQueue(printer_id=printer.id, status="idle")
+    db_session.add(lane)
+    await db_session.flush()
+    job = PrintQueueItem(queue_id=lane.id, archive_id=held.id, status="completed")
+    db_session.add(job)
+    await db_session.flush()
+    if keep == "plate_gate":
+        printer.awaiting_plate_clear_archive_id = held.id
+    else:
+        lane.current_item_id = job.id
+    await db_session.commit()
+    held_id, free_id, job_id, lane_id = held.id, free.id, job.id, lane.id
+    response = await async_client.delete("/api/v1/archives/trash")
+    assert response.status_code == 200, response.text
+    assert response.json() == {
+        "deleted": 1,
+        "retained": [{"id": held_id, "reasons": ["plate_gate" if keep == "plate_gate" else "live_job"]}],
+    }
+    db_session.expire_all()
+    assert await db_session.get(PrintArchive, held_id) is not None
+    assert await db_session.get(PrintArchive, free_id) is None
+    assert await db_session.get(PrintQueueItem, job_id) is not None
+    if keep == "current_item":
+        assert (await db_session.get(PrinterQueue, lane_id)).current_item_id == job_id
+
+
+@pytest.mark.parametrize("status,detail", [(409, {"error": "other_failure"}), (503, "temporarily unavailable")])
+async def test_empty_trash_does_not_mask_an_unrelated_failure(async_client, db_session, monkeypatch, status, detail):
+    from backend.app.services.archive_purge import archive_purge_service
+
+    db_session.add(
+        PrintArchive(filename="other.3mf", file_path="", file_size=0, status="completed", deleted_at=datetime.now())
+    )
+    await db_session.commit()
+
+    async def fail(_archive_id):
+        raise HTTPException(status, detail)
+
+    monkeypatch.setattr(archive_purge_service, "hard_delete_now", fail)
+    response = await async_client.delete("/api/v1/archives/trash")
+    assert response.status_code == status, response.text
+    assert response.json()["detail"] == detail
 
 
 async def test_archive_cleanup_rechecks_a_reused_id_before_removing_its_owned_folders(independent_factory, monkeypatch):
