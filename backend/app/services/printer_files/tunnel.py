@@ -231,12 +231,20 @@ class TunnelTransport:
             handle = None
             completed = False
 
+            def local(exc: OSError) -> _Stop:
+                # What THIS disk refuses (full, unwritable) is not the printer's failure and
+                # not one file's: told apart here from the socket's ``OSError`` (G10 D, D4-R).
+                return _Stop(TRANSFER_INSUFFICIENT_STORAGE, f"local_{type(exc).__name__}")
+
             async def open_staging() -> None:
                 nonlocal handle
-                await asyncio.to_thread(volume.mkdir, parents=True, exist_ok=True)
-                # Assigned the moment the thread returns, even when a cancel came
-                # in the meantime: ``owned`` waits for this task to end.
-                handle = await asyncio.to_thread(open, destination, "wb")
+                try:
+                    await asyncio.to_thread(volume.mkdir, parents=True, exist_ok=True)
+                    # Assigned the moment the thread returns, even when a cancel came
+                    # in the meantime: ``owned`` waits for this task to end.
+                    handle = await asyncio.to_thread(open, destination, "wb")
+                except OSError as exc:
+                    raise local(exc) from exc
 
             try:
                 await owned(open_staging())
@@ -248,13 +256,19 @@ class TunnelTransport:
                         raise _Stop(TRANSFER_LIMIT_EXCEEDED, "byte_budget")
                     if reserve.due_before(received) and not reserve.fits(await free_space(), len(chunk)):
                         raise _Stop(TRANSFER_INSUFFICIENT_STORAGE, "reserve")
-                    await owned(asyncio.to_thread(handle.write, chunk))
+                    try:
+                        await owned(asyncio.to_thread(handle.write, chunk))
+                    except OSError as exc:
+                        raise local(exc) from exc
                     if progress is not None:
                         progress(received)
 
                 async with self._client() as client:
                     receipt = await client.download_into(path, sink)
-                await owned(asyncio.to_thread(_finish, handle))
+                try:
+                    await owned(asyncio.to_thread(_finish, handle))
+                except OSError as exc:
+                    raise local(exc) from exc
                 if reserve.due_final(received) and not reserve.fits(await free_space()):
                     raise _Stop(TRANSFER_INSUFFICIENT_STORAGE, "reserve")
                 completed = True

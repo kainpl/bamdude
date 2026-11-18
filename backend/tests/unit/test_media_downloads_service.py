@@ -720,3 +720,234 @@ class TestAuthorityDeadline:
         finally:
             await runtime.quiesce(2)
             await monitor.shutdown(2)
+
+
+@pytest.mark.asyncio
+class TestSlotsAreSpokenForOnce:
+    """Codex re-acceptance, D2-R: a free slot another account's job is about to take is not everybody's room."""
+
+    async def test_an_account_waits_with_at_most_its_own_bound(self, runtime, monkeypatch):
+        release = _held(runtime, monkeypatch)
+        assert (md.MAX_ACTIVE, md.MAX_WAITING_PER_USER) == (2, 2)  # the shipped bounds
+        try:
+            # All five arrive before any of them has a slot: the first two take both.
+            answers = await asyncio.gather(
+                *(_create(runtime, _capture(account)) for account in ("A", "A", "B", "B", "B")),
+                return_exceptions=True,
+            )
+            assert [type(a).__name__ for a in answers] == ["DownloadJob"] * 4 + ["DownloadRefused"]
+            assert answers[4].code == "download_user_limit" and answers[4].status == 429
+            await asyncio.sleep(0.05)
+            waiting = [j for j in runtime.jobs.values() if j.waiting and j.capture.account_identity == "B"]
+            assert len(waiting) == md.MAX_WAITING_PER_USER
+        finally:
+            release.set()
+            assert await runtime.quiesce(2)
+
+    async def test_a_free_slot_is_still_not_refused(self, runtime, monkeypatch):
+        release = _held(runtime, monkeypatch)
+        try:
+            # One account, four at once: two run, two wait, the fifth is over its bound.
+            answers = await asyncio.gather(*(_create(runtime) for _ in range(5)), return_exceptions=True)
+            assert [type(a).__name__ for a in answers] == ["DownloadJob"] * 4 + ["DownloadRefused"]
+        finally:
+            release.set()
+            assert await runtime.quiesce(2)
+
+    async def test_the_global_bound_counts_what_really_waits(self, runtime, monkeypatch):
+        monkeypatch.setattr(md, "MAX_WAITING", 2)
+        release = _held(runtime, monkeypatch)
+        try:
+            accounts = ("A", "B", "C", "D", "E")  # two run, two wait, the fifth finds the queue full
+            answers = await asyncio.gather(*(_create(runtime, _capture(a)) for a in accounts), return_exceptions=True)
+            assert [type(a).__name__ for a in answers] == ["DownloadJob"] * 4 + ["DownloadRefused"]
+            assert answers[4].code == "download_queue_full"
+        finally:
+            release.set()
+            assert await runtime.quiesce(2)
+
+
+def _old_failed_job(runtime, tmp_path):
+    directory = md._make_job_directory(tmp_path / "scratch", "one")
+    (directory / "partial.bin").write_bytes(b"sample")
+    job = md.DownloadJob("one", _scope(), (), (), False, "one", directory, 0, phase=md.PHASE_FAILED)
+    job.error = md.ERROR_CLEANUP
+    job.finished = time.monotonic() - md.TERMINAL_TTL_SECONDS - 5
+    runtime.jobs[job.job_id] = job
+    return job
+
+
+@pytest.mark.asyncio
+class TestCleanupDebt:
+    """Codex re-acceptance, D5-R: what is still on disk is still ours to answer for."""
+
+    async def test_the_janitor_does_not_forget_a_directory_it_could_not_remove(self, tmp_path):
+        from unittest.mock import AsyncMock
+
+        runtime = md.MediaDownloadRuntime()
+        job = _old_failed_job(runtime, tmp_path)
+        remove = runtime._remove
+        runtime._remove = AsyncMock(return_value=False)
+        await runtime.sweep()
+        assert job.job_id in runtime.jobs
+        assert await runtime.quiesce(0.05) is False
+        assert (job.directory / "partial.bin").exists()
+        # Once the disk lets go, the next sweep forgets it and a drain is proven.
+        runtime._remove = remove
+        runtime.closed = False
+        await runtime.sweep()
+        assert runtime.jobs == {} and not job.directory.exists()
+        assert await runtime.quiesce(1) is True
+
+    async def test_a_restore_answers_at_its_deadline_and_the_removal_goes_on(self, tmp_path):
+        runtime = md.MediaDownloadRuntime()
+        job = _old_failed_job(runtime, tmp_path)
+        entered, finish = asyncio.Event(), asyncio.Event()
+        remove = runtime._remove
+
+        async def slow(directory):
+            entered.set()
+            await finish.wait()
+            return await remove(directory)
+
+        runtime._remove = slow
+        started = time.monotonic()
+        assert await runtime.quiesce(0.05) is False
+        assert time.monotonic() - started < 0.5 and entered.is_set()
+        assert job.job_id in runtime.jobs and job.directory.exists()  # still owned, still being removed
+        # The removal that was begun is the one that finishes — no second one is started beside it.
+        entered.clear()
+        assert await runtime.quiesce(0.05) is False and not entered.is_set()
+        finish.set()
+        assert await runtime.quiesce(2) is True
+        assert runtime.jobs == {} and not job.directory.exists()
+
+    async def test_a_removal_that_failed_is_tried_again_by_the_next_drain(self, tmp_path):
+        runtime = md.MediaDownloadRuntime()
+        job = _old_failed_job(runtime, tmp_path)
+        answers = iter([False, True])
+        remove = runtime._remove
+
+        async def flaky(directory):
+            return next(answers) and await remove(directory)
+
+        runtime._remove = flaky
+        assert await runtime.quiesce(0.5) is False
+        assert await runtime.quiesce(0.5) is True
+        assert not job.directory.exists()
+
+
+@pytest.mark.asyncio
+class TestTheScratchRefuses:
+    """Codex re-acceptance, D4-R: this server's disk refusing is the job's failure on every transport."""
+
+    def _full(self, *_args, **_kwargs):
+        import errno
+
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    async def _job_with_second_source(self, tmp_path, fetch):
+        from types import SimpleNamespace
+
+        from backend.app.services.printer_files.base import TransferOutcome
+
+        runtime = md.MediaDownloadRuntime()
+        directory = md._make_job_directory(tmp_path, "demo")
+
+        async def good(path, **_kwargs):
+            path.write_bytes(b"item")
+            return TransferOutcome("completed", 4, "size_verified")
+
+        sources = (md.Source("one", good), md.Source("two", fetch))
+        job = md.DownloadJob(
+            "demo",
+            md.JobScope("printer", 1, SimpleNamespace()),
+            sources,
+            ("one", "two"),
+            True,
+            "result.zip",
+            directory,
+            0,
+            results=[{"name": s.name, "status": md.FILE_PENDING} for s in sources],
+        )
+        with pytest.raises(md._Fatal) as fatal:
+            await runtime._fetch_all(job, SimpleNamespace(deliverable=lambda: True))
+        return fatal.value.code
+
+    async def test_ftp_a_scratch_that_cannot_be_opened_ends_the_job(self, tmp_path, monkeypatch):
+        from types import SimpleNamespace
+
+        from backend.app.services import bambu_ftp
+        from backend.app.services.printer_files.base import TransferOutcome
+
+        monkeypatch.setattr(bambu_ftp, "open", self._full, raising=False)
+
+        async def fetch(destination, **_kwargs):
+            answer = bambu_ftp.BambuFTPClient.fetch_to_file(SimpleNamespace(_ftp=True), "/two", destination)
+            return TransferOutcome(*answer)
+
+        assert await self._job_with_second_source(tmp_path, fetch) == md.ERROR_STORAGE
+
+    async def test_ftp_a_write_the_disk_refuses_ends_the_job_and_a_dead_socket_does_not(self, tmp_path):
+        import errno
+        from types import SimpleNamespace
+
+        from backend.app.services import bambu_ftp
+
+        class Full:
+            def retrbinary(self, _command, write, blocksize=0):
+                write(b"x" * 10)
+
+        class Dead:
+            def retrbinary(self, _command, write, blocksize=0):
+                raise ConnectionResetError(errno.ECONNRESET, "reset")
+
+        client = SimpleNamespace(_ftp=Full(), get_file_size=lambda _path: 10)
+        destination = tmp_path / "raw" / "0.part"
+        real_open = open
+
+        class Refusing:
+            def __init__(self, handle):
+                self.handle = handle
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                self.handle.close()
+
+            def write(self, _chunk):
+                raise OSError(errno.ENOSPC, "No space left on device")
+
+            def __getattr__(self, name):
+                return getattr(self.handle, name)
+
+        bambu_ftp.open = lambda path, mode: Refusing(real_open(path, mode))
+        try:
+            status, _received, _check, reason = bambu_ftp.BambuFTPClient.fetch_to_file(client, "/a", destination)
+        finally:
+            del bambu_ftp.open
+        assert (status, reason) == ("insufficient_storage", "local_OSError")
+        assert not destination.exists()
+
+        client._ftp = Dead()
+        status, _received, _check, reason = bambu_ftp.BambuFTPClient.fetch_to_file(client, "/a", destination)
+        assert (status, reason) == ("unavailable", "ConnectionResetError")  # the printer's side: one file's failure
+
+    async def test_tunnel_a_scratch_that_cannot_be_opened_ends_the_job(self, tmp_path, monkeypatch):
+        from types import SimpleNamespace
+
+        from backend.app.services.printer_files import tunnel
+
+        monkeypatch.setattr(tunnel, "open", self._full, raising=False)
+        client = tunnel.TunnelTransport(SimpleNamespace(ip_address="127.0.0.1", access_code="test"))
+
+        async def lane(_name, operation, **_kwargs):
+            return await operation()
+
+        monkeypatch.setattr(client, "_on_lane", lane)
+
+        async def fetch(destination, **_kwargs):
+            return await client.download_to_file("/two", destination)
+
+        assert await self._job_with_second_source(tmp_path, fetch) == md.ERROR_STORAGE

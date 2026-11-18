@@ -787,3 +787,44 @@ class TestPromisedRead:
         await asyncio.wait_for(app(scope, receive, send), 30)
         assert pinned_while_reading and all(pinned_while_reading)
         assert not held.pinned() and held.leases == set()
+
+
+class TestListUnderUncertainAuthority:
+    """Codex re-acceptance, D1-R: "could not be read just now" is not "the job is gone"."""
+
+    @pytest.mark.parametrize("code", [403, 404, 503])
+    async def test_only_a_proven_refusal_hides_a_job(self, async_client, printer_files, monkeypatch, code):
+        from fastapi import HTTPException
+
+        from backend.app.api.routes import media_downloads as routes
+
+        printer_files.transport.files["/a.txt"] = b"a"
+        job = await _start(async_client, printer_files, ["/a.txt"])
+        await _until(async_client, f"{printer_files.base}/{job['job_id']}")
+
+        async def proof(*_args):
+            raise HTTPException(code, "decided by the test", headers={"Retry-After": "5"} if code == 503 else None)
+
+        monkeypatch.setattr(routes, "_prove_job", proof)
+        answer = await async_client.get(printer_files.base)
+        if code == 503:
+            assert (answer.status_code, answer.headers.get("retry-after")) == (503, "5"), answer.text
+        else:
+            assert answer.status_code == 200 and answer.json() == {"jobs": []}
+
+    async def test_the_coordinators_own_503_reaches_the_list(self, async_client, printer_files, monkeypatch):
+        # Not a stand-in for the proof: the coordinator itself cannot read authority.
+        from backend.app.services import live_authority as la
+
+        printer_files.transport.files["/a.txt"] = b"a"
+        job = await _start(async_client, printer_files, ["/a.txt"])
+        await _until(async_client, f"{printer_files.base}/{job['job_id']}")
+        monkeypatch.setattr(la, "CHECK_SECONDS", 0.2)
+
+        async def unreadable(_batch):
+            await asyncio.Event().wait()
+
+        monkeypatch.setattr(la.live_authority, "_read", unreadable)
+        answer = await async_client.get(printer_files.base)
+        assert answer.status_code == 503 and answer.headers.get("retry-after")
+        assert job["job_id"] in media_download_runtime.jobs  # nothing was dropped

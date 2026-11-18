@@ -957,10 +957,21 @@ class BambuFTPClient:
                 self.status = status
                 self.reason = reason
 
+        def local(exc: OSError) -> _Stop:
+            # ``OSError`` is also what a dead socket raises, and that is "the printer is
+            # unavailable" — one file's failure. What THIS disk refuses (it is full, the
+            # directory cannot be written) is not: no other file would fare better, so it is
+            # told apart here, where the two can still be told apart (G10 D review, D4-R).
+            return _Stop("insufficient_storage", f"local_{type(exc).__name__}")
+
         def transfer() -> tuple[str, int, str | None, str | None]:
             nonlocal received, created
-            volume.mkdir(parents=True, exist_ok=True)
-            with open(local_path, "wb") as handle:
+            try:
+                volume.mkdir(parents=True, exist_ok=True)
+                handle = open(local_path, "wb")  # noqa: SIM115 — entered as a context just below
+            except OSError as exc:
+                raise local(exc) from exc
+            with handle:
                 created = True
 
                 def write(chunk: bytes) -> None:
@@ -970,13 +981,19 @@ class BambuFTPClient:
                         raise _Stop("limit_exceeded", "byte_budget")
                     if reserve.due_before(received) and not reserve.fits(shutil.disk_usage(volume).free, len(chunk)):
                         raise _Stop("insufficient_storage", "reserve")
-                    handle.write(chunk)
+                    try:
+                        handle.write(chunk)
+                    except OSError as exc:
+                        raise local(exc) from exc
                     if progress is not None:
                         progress(received)
 
                 self._ftp.retrbinary(f"RETR {remote_path}", write, blocksize=_FETCH_BLOCK)
-                handle.flush()
-                os.fsync(handle.fileno())
+                try:
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                except OSError as exc:
+                    raise local(exc) from exc
             if reserve.due_final(received) and not reserve.fits(shutil.disk_usage(volume).free):
                 raise _Stop("insufficient_storage", "reserve")
             server_size = self.get_file_size(remote_path)

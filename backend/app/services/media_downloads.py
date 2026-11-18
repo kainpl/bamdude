@@ -326,6 +326,7 @@ class DownloadJob:
     stop: threading.Event = field(default_factory=threading.Event, repr=False)
     task: asyncio.Task | None = field(default=None, repr=False)
     entered: bool = False  # its task has taken its first step
+    removal: asyncio.Task | None = field(default=None, repr=False)  # the directory's removal, once begun
     done: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
     leases: set = field(default_factory=set, repr=False)
     timer: Any = field(default=None, repr=False)
@@ -543,6 +544,7 @@ class MediaDownloadRuntime:
         """Only lifespan startup reopens; every job of an earlier life is forgotten with its grants."""
         if any(job.task is not None and not job.task.done() for job in self.jobs.values()):
             raise RuntimeError("download jobs are still running")
+        # What an earlier life could not remove is on disk under its marker: startup's sweep takes it.
         self.jobs.clear()
         self.generation = secrets.token_hex(8)
         self.closed = False
@@ -581,17 +583,20 @@ class MediaDownloadRuntime:
         else:
             display = safe_name(filename or names[0], names[0])
         # A job reads ``queued`` from its admission until its task takes a slot — also when a
-        # slot is free. Only the jobs beyond the free slots are really waiting, so a burst of
-        # requests is not refused while nothing is running. A compatibility request's hidden
-        # job waits for the same slots and counts toward the same bounds, the user's included.
+        # slot is free, so a burst of requests is not refused while nothing is running. Each
+        # free slot is spoken for ONCE, by the queued jobs in the order they were admitted;
+        # everything behind them is really waiting, and so would this job be. A free slot that
+        # another account's job is about to take is not this account's room. A compatibility
+        # request's hidden job waits for the same slots and counts toward the same bounds.
         running = sum(1 for job in self.jobs.values() if job.phase in (PHASE_PREPARING, PHASE_CANCELLING))
         free = max(0, MAX_ACTIVE - running)
-        queued = [job for job in self.jobs.values() if job.waiting]
-        if len(queued) - free >= MAX_WAITING:
-            raise DownloadRefused(429, "download_queue_full", "Too many downloads are waiting", retry_after=30)
-        mine = [job for job in queued if same_user(job.capture, capture)]
-        if len(mine) - free >= MAX_WAITING_PER_USER:
-            raise DownloadRefused(429, "download_user_limit", "You already have downloads waiting", retry_after=30)
+        queued = [job for job in self.jobs.values() if job.waiting]  # registry order = admission order
+        if len(queued) >= free:  # no slot is left for this one: it would wait
+            waiting = queued[free:]
+            if len(waiting) >= MAX_WAITING:
+                raise DownloadRefused(429, "download_queue_full", "Too many downloads are waiting", retry_after=30)
+            if sum(1 for job in waiting if same_user(job.capture, capture)) >= MAX_WAITING_PER_USER:
+                raise DownloadRefused(429, "download_user_limit", "You already have downloads waiting", retry_after=30)
         root = self.scratch_root()
         job_id = uuid.uuid4().hex
         job = DownloadJob(
@@ -1005,9 +1010,11 @@ class MediaDownloadRuntime:
             elif job.phase == PHASE_EXPIRED and job.artifact is not None:
                 await self._discard(job, forget=job.forget)  # its last reader has gone
             elif now - (job.finished or job.created) >= TERMINAL_TTL_SECONDS:
-                # Its directory may be a leftover of a failed removal: try once more, then forget it.
-                await self._remove(job.directory)
-                self.jobs.pop(job.job_id, None)
+                # Its directory may be a leftover of a failed removal: try once more. A job is
+                # forgotten only with its directory — what is still on disk is still ours to
+                # answer for, to the next sweep and to a restore.
+                if await self._remove(job.directory):
+                    self.jobs.pop(job.job_id, None)
 
     # -- restore / shutdown ------------------------------------------------------------
 
@@ -1063,17 +1070,48 @@ class MediaDownloadRuntime:
                 logger.warning("[DOWNLOADS] a prepared download is still being read after %.0fs", seconds)
                 return False
             await asyncio.sleep(0.05)
-        debt = 0
-        for job in list(self.jobs.values()):
+        # Every directory goes, each removal a task of its own: the drain answers at its
+        # deadline, and a removal that is still on the disk then goes on under this owner —
+        # the next drain finds it finished, or still running, never forgotten.
+        for job in self.jobs.values():
             job.artifact = None
-            if await self._remove(job.directory):
+            if job.removal is None or (job.removal.done() and not self._removed(job)):
+                job.removal = asyncio.get_running_loop().create_task(
+                    self._remove(job.directory), name="media-download-remove"
+                )
+        removals = [job.removal for job in self.jobs.values()]
+        if removals:
+            # Never less than a moment: a deadline spent on the steps above must not turn a
+            # removal that takes milliseconds into a refused restore.
+            await asyncio.wait(removals, timeout=max(0.05, deadline - time.monotonic()))
+        debt = unfinished = 0
+        for job in list(self.jobs.values()):
+            if not job.removal.done():
+                unfinished += 1
+            elif self._removed(job):
                 self.jobs.pop(job.job_id, None)
             else:
                 debt += 1
-        if debt:
-            logger.warning("[DOWNLOADS] %d download director(ies) could not be removed", debt)
+        if unfinished or debt:
+            logger.warning(
+                "[DOWNLOADS] download directories not removed after %.0fs: %d still being removed, %d failed",
+                seconds,
+                unfinished,
+                debt,
+            )
             return False
         return True
+
+    @staticmethod
+    def _removed(job: DownloadJob) -> bool:
+        removal = job.removal
+        return bool(
+            removal is not None
+            and removal.done()
+            and not removal.cancelled()
+            and removal.exception() is None
+            and removal.result()
+        )
 
 
 media_download_runtime = MediaDownloadRuntime()

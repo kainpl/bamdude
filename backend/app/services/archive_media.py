@@ -330,10 +330,21 @@ async def _still_shown_elsewhere(db: AsyncSession, relative_path: str, archive_i
     return other.first() is not None
 
 
-def _free_name(directory: Path, filename: str) -> Path:
-    """A name in ``directory`` nothing uses: a publication never writes over a file somebody may be reading."""
+def _free_name(directory: Path, filename: str, shown: Path | None = None) -> Path:
+    """A name in ``directory`` nothing uses: a publication never writes over a file somebody may be reading.
+
+    Nor does it take the name the archive's pointer ALREADY holds (``shown``),
+    even when no file is there: the bytes take their name before the commit, so
+    for that moment — and for good, if the commit is rolled back — a reader of
+    the pointer would be handed the new bytes as the version it still shows
+    (G10 D review, D7-R). A name of its own means the pointer names either the
+    committed version's file or nothing.
+    """
     candidate = directory / filename
-    if not candidate.exists():
+    taken = shown is not None and os.path.normcase(os.path.normpath(candidate)) == os.path.normcase(
+        os.path.normpath(shown)
+    )
+    if not taken and not candidate.exists():
         return candidate
     stem, suffix = os.path.splitext(filename)
     return directory / f"{stem}.{uuid4().hex[:8]}{suffix}"
@@ -705,7 +716,8 @@ async def _publish_primary(
                 return Publication(False, REFUSED_RUN_CHANGED)
             old = await _reconcile(db, current, receipts)
             revision = await _next_revision(db, current)
-            target = await asyncio.to_thread(_free_name, directory, filename)
+            pointer = (current.timelapse_path or "").strip()
+            target = await asyncio.to_thread(_free_name, directory, filename, base_dir / pointer if pointer else None)
             relative = str(target.relative_to(base_dir))
             row = ArchiveMediaAsset(
                 asset_uuid=str(uuid4()),

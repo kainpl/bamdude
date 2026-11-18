@@ -222,7 +222,13 @@ async def _own_job(request: Request, job_id: str, kind: str, resource_id: int) -
 
 
 async def _own_jobs(request: Request, kind: str, resource_id: int) -> list[dict]:
-    """The caller's jobs in this scope whose requirements it still meets — the others are not shown."""
+    """The caller's jobs in this scope whose requirements it still meets.
+
+    A job is left out only on a PROVEN refusal (403, or the 404 of a target that
+    is gone). Authority that could not be read just now (503) is not a verdict:
+    the whole list answers 503 with its ``Retry-After``, because an empty list
+    would tell the operator that a download which is still there has vanished.
+    """
     verdicts: dict = {}
     shown = []
     for job in media_download_runtime.jobs_of(_capture(request), kind, resource_id):
@@ -231,7 +237,9 @@ async def _own_jobs(request: Request, kind: str, resource_id: int) -> list[dict]
             try:
                 await _prove_job(request, job)
                 verdicts[wanted] = True
-            except HTTPException:
+            except HTTPException as exc:
+                if exc.status_code not in (403, 404):
+                    raise
                 verdicts[wanted] = False
         if verdicts[wanted]:
             shown.append(job.status())
@@ -640,7 +648,11 @@ def _still_shown(archive_id: int, archive_identity, asset: str):
                     return False
                 return local_asset_id(await primary_token(db, archive)) == asset
         except Exception as exc:  # noqa: BLE001 — unreadable is not "still shown"
-            logger.warning("[DOWNLOADS] an archive's video could not be confirmed (%s)", type(exc).__name__)
+            # The file is left out either way; the log says this was not a proven replacement.
+            logger.warning(
+                "[DOWNLOADS] an archive's video could not be confirmed, left out as unconfirmed (%s)",
+                type(exc).__name__,
+            )
             return False
 
     return check
