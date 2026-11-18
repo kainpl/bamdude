@@ -830,6 +830,8 @@ async def bulk_update_queue_items(
 
         item_update = await routing_update(db, item, update_data)
         item_update.update(swap_updates[item.id])
+        if new_queue is not None and new_queue.printer_id is not None:
+            _drop_rack_pick_on_move(item, item_update, new_queue, printer_model)
         if isinstance(item_update.get("ams_mapping"), list):
             item_update["ams_mapping"] = json.dumps(item_update["ams_mapping"])
         for field, value in item_update.items():
@@ -849,6 +851,22 @@ async def bulk_update_queue_items(
         message=f"Updated {updated_count} items"
         + (f", skipped {skipped_count} non-pending/not-owned" if skipped_count else ""),
     )
+
+
+def _drop_rack_pick_on_move(item, changes: dict, new_queue, printer_model: str | None) -> None:
+    """A job that moves to another printer leaves its rack positions (H2C) behind.
+
+    ``nozzle_mapping`` on a nozzle-rack model names positions of the rack the job was sent to; on the
+    next printer the same number is another hotend, and the dispatcher sends a stored mapping as it
+    is. Cleared, the dispatcher assigns positions from the new printer's own rack. An edit that sets
+    the mapping itself is left alone.
+    """
+    from backend.app.utils.printer_models import is_nozzle_rack_model
+
+    if new_queue is None or new_queue.id == item.queue_id or "nozzle_mapping" in changes:
+        return
+    if item.nozzle_mapping and is_nozzle_rack_model(printer_model):
+        changes["nozzle_mapping"] = None
 
 
 # The only statuses the Issues section's «Delete all» may remove. A skipped
@@ -1245,9 +1263,15 @@ async def update_queue_item(
             )
 
     swap_columns = await _swap_update(db, item, update_data, new_queue)
+    moved_to_model = None
+    if new_queue is not None and new_queue.id != item.queue_id and new_queue.printer_id is not None:
+        moved_to_model = (
+            await db.execute(select(Printer.model).where(Printer.id == new_queue.printer_id))
+        ).scalar_one_or_none()
     update_data = await routing_update(db, item, update_data)
     update_data.pop("swap_macro_events", None)  # decided above, stored as its JSON
     update_data.update(swap_columns)
+    _drop_rack_pick_on_move(item, update_data, new_queue, moved_to_model)
 
     # Serialize ams_mapping to JSON for TEXT column storage
     if "ams_mapping" in update_data:
@@ -2234,9 +2258,18 @@ async def update_batch(
     swap_updates = {item.id: await _swap_update(db, item, update_data, None) for item in pending}
     update_data.pop("swap_macro_events", None)
 
+    batch_queue, batch_model = None, None
+    if update_data.get("queue_id") is not None:
+        batch_queue = await db.get(PrinterQueue, update_data["queue_id"])
+        if batch_queue is not None and batch_queue.printer_id is not None:
+            batch_model = (
+                await db.execute(select(Printer.model).where(Printer.id == batch_queue.printer_id))
+            ).scalar_one_or_none()
+
     for item in pending:
         item_update = await routing_update(db, item, update_data)
         item_update.update(swap_updates[item.id])
+        _drop_rack_pick_on_move(item, item_update, batch_queue, batch_model)
         if isinstance(item_update.get("ams_mapping"), list):
             item_update["ams_mapping"] = json.dumps(item_update["ams_mapping"])
         for field, value in item_update.items():

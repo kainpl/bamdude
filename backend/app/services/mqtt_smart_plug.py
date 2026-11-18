@@ -107,6 +107,7 @@ class MQTTSmartPlugService:
         username = settings.get("mqtt_username", "")
         password = settings.get("mqtt_password", "")
         use_tls = settings.get("mqtt_use_tls", False)
+        tls_verify = bool(settings.get("mqtt_tls_verify", False))
 
         if not broker:
             logger.warning("MQTT smart plug service: no broker configured")
@@ -120,6 +121,7 @@ class MQTTSmartPlugService:
             or self._username != username
             or self._password != password
             or self._use_tls != use_tls
+            or getattr(self, "_tls_verify", False) != tls_verify
         )
 
         self._broker = broker
@@ -127,6 +129,7 @@ class MQTTSmartPlugService:
         self._username = username
         self._password = password
         self._use_tls = use_tls
+        self._tls_verify = tls_verify
         self._configured = True
 
         # Disconnect and reconnect if settings changed
@@ -142,7 +145,6 @@ class MQTTSmartPlugService:
     async def _connect(self) -> bool:
         """Establish MQTT connection."""
         import asyncio
-        import ssl
 
         try:
             # Create client with callback API version 2
@@ -163,8 +165,9 @@ class MQTTSmartPlugService:
 
             # Configure TLS
             if self._use_tls:
-                self.client.tls_set(cert_reqs=ssl.CERT_NONE)
-                self.client.tls_insecure_set(True)
+                from backend.app.services.mqtt_relay import configure_broker_tls
+
+                configure_broker_tls(self.client, verify=getattr(self, "_tls_verify", False))
 
             # Connect with timeout
             try:

@@ -4231,6 +4231,8 @@ export default {
     enableHomeAssistant: 'Enable Home Assistant',
     enableMqtt: 'Enable MQTT',
     useTls: 'Use TLS',
+    mqttTlsVerify: "Verify the broker's certificate",
+    mqttTlsVerifyHint: "Off: the connection is encrypted, but any certificate is accepted — a broker with a self-signed certificate works. On: the certificate and the host name must be trusted by this system, or BamDude does not connect.",
     enableMetricsEndpoint: 'Enable Metrics Endpoint',
     availableMetrics: 'Available Metrics',
     editUser: 'Edit User',

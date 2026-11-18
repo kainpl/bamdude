@@ -730,7 +730,11 @@ class AutoQueueScheduler:
                     return True
                 try:
                     service = await smart_plug_manager.get_service_for_plug(plug, db)
-                    if not await service.turn_on(plug):
+                    if await service.turn_on(plug):
+                        from backend.app.services.mqtt_relay import mqtt_relay
+
+                        await mqtt_relay.on_smart_plug_switched(plug.id, True)
+                    else:
                         succeeded = False
                 except Exception:
                     succeeded = False
@@ -807,6 +811,10 @@ class AutoQueueScheduler:
             except ValueError as exc:
                 logger.info("Auto item %s: explicit print options do not fit target model %s", item.id, printer.model)
                 raise AutoPlacementConflict("incompatible_target") from exc
+            # What the operator chose in the slicer for THIS job (a Virtual Printer row, m243) outranks
+            # a saved profile, as it does on the printer-queue tier: slicer, then profile, then default.
+            if item.slicer_options:
+                options.update(item.slicer_options)
 
             # A queued row must retain the full calibration mode, unlike the
             # model-agnostic auto row which only has bool mirrors.

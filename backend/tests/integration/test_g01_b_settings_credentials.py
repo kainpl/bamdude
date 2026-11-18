@@ -523,15 +523,14 @@ async def test_obico_explicit_keep_clear_cannot_supply_null(field, key, action, 
     send.assert_not_called()
 
 
-async def test_global_vp_mode_switch_preserves_existing_safe_auto_disable(async_client, db_session, monkeypatch):
-    from backend.app.services.virtual_printer import virtual_printer_manager
-
+async def test_global_vp_mode_switch_is_refused_and_changes_nothing(async_client, db_session):
+    """The legacy route no longer writes mode or enabled at all (upstream G17), so the auto-disable
+    it once performed on a mode switch has nothing left to do: the stored pair stays as it was."""
     await seed(db_session, {"virtual_printer_enabled": True, "virtual_printer_mode": "proxy"})
-    monkeypatch.setattr(virtual_printer_manager, "configure", AsyncMock())
     response = await async_client.put("/api/v1/settings/virtual-printer", json={"mode": "file_manager"})
-    assert response.status_code == 200, response.text
-    assert response.json()["enabled"] is False
-    assert await settings.get_setting(db_session, "virtual_printer_enabled") == "false"
+    assert response.status_code == 400, response.text
+    assert await settings.get_setting(db_session, "virtual_printer_enabled") == "true"
+    assert await settings.get_setting(db_session, "virtual_printer_mode") == "proxy"
 
 
 @pytest.mark.parametrize("success", [True, False])

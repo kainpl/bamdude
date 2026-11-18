@@ -50,17 +50,60 @@ class TestTheCaptureIsGated:
         return inspect.getsource(vp_pkg.manager)
 
     def test_the_toggle_guards_the_capture(self) -> None:
-        assert "if self.save_ams_mapping and slicer_opts is not None:" in self._source()
+        source = self._source()
+        assert "if self.save_ams_mapping:" in source
+        assert "ams_mapping_json = _captured_ams_mapping(" in source
 
     def test_an_unresolved_mapping_is_never_stored(self) -> None:
         """All-[-1] is the slicer saying "I could not resolve this", not a pick.
         Stored, it would be read downstream as an explicit external-spool
         selection and print against an empty feed — the #2589 failure."""
-        source = self._source()
-        assert "isinstance(v, int) and v >= 0 for v in raw_ams_mapping" in source
+        capture = vp_pkg.manager._captured_ams_mapping
+
+        assert capture({"ams_mapping": [-1, -1]}, dual_nozzle=False, vp_name="t") is None
+        unmapped = [{"ams_id": 255, "slot_id": 255}] * 2
+        assert capture({"ams_mapping": [-1, -1], "ams_mapping2": unmapped}, dual_nozzle=True, vp_name="t") is None
+        assert capture(None, dual_nozzle=False, vp_name="t") is None
+        assert capture({"ams_mapping": "not json"}, dual_nozzle=False, vp_name="t") is None
+
+
+class TestTheExternalSpoolIsKept:
+    """The slicer writes the external spool as ``-1`` in the flat list and names it only in
+    ``ams_mapping2`` (upstream Bambuddy #3237). Read flat, that slot had no pin and the job was held
+    for a mapping review; a job fed only from the external spool was not captured at all."""
+
+    capture = staticmethod(vp_pkg.manager._captured_ams_mapping)
+
+    def test_one_filament_from_the_external_spool_keeps_its_pick(self) -> None:
+        opts = {
+            "ams_mapping": [-1, 3, 2],
+            "ams_mapping2": [{"ams_id": 255, "slot_id": 0}, {"ams_id": 0, "slot_id": 3}, {"ams_id": 0, "slot_id": 2}],
+        }
+
+        stored = self.capture(opts, dual_nozzle=False, vp_name="t")
+
+        assert json.loads(stored) == [254, 3, 2]
+        pins = choices_policy({"ams_mapping": stored, "use_ams": True, "manual_mapping": True}).physical_pins
+        assert sorted(pins) == [1, 2, 3], "every slot the plate uses is pinned, the external one included"
+
+    def test_a_job_fed_only_from_the_external_spool_is_a_pick(self) -> None:
+        opts = {"ams_mapping": [-1], "ams_mapping2": [{"ams_id": 255, "slot_id": 0}]}
+
+        assert json.loads(self.capture(opts, dual_nozzle=False, vp_name="t")) == [254]
+
+    def test_a_two_holder_printer_keeps_which_holder(self) -> None:
+        opts = {
+            "ams_mapping": [-1, -1],
+            "ams_mapping2": [{"ams_id": 254, "slot_id": 0}, {"ams_id": 255, "slot_id": 0}],
+        }
+
+        assert json.loads(self.capture(opts, dual_nozzle=True, vp_name="t")) == [254, 255]
+
+    def test_a_mapping_without_the_detail_is_stored_as_sent(self) -> None:
+        assert json.loads(self.capture({"ams_mapping": [0, -1, 2]}, dual_nozzle=False, vp_name="t")) == [0, -1, 2]
 
     def test_the_queue_item_carries_it(self) -> None:
-        assert "ams_mapping=ams_mapping_json," in self._source()
+        assert "ams_mapping=ams_mapping_json," in inspect.getsource(vp_pkg.manager)
 
 
 class TestTheCapturedMappingIsConsumedAsAPin:

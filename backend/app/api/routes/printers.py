@@ -616,6 +616,7 @@ async def update_printer(
     )
     from backend.app.api.routes.camera import camera_source_of
 
+    ip_changed = "ip_address" in update_data and update_data["ip_address"] != printer.ip_address
     camera_before = camera_source_of(printer)
     for field, value in update_data.items():
         setattr(printer, field, value)
@@ -645,6 +646,17 @@ async def update_printer(
         printer_manager.disconnect_printer(printer_id)
         if printer.is_active:
             await printer_manager.connect_printer(printer)
+
+    # A proxy Virtual Printer forwards to the address it was started with. The sync notices a new
+    # one and restarts that proxy, but nothing ran it on this edit: the proxy went on forwarding to
+    # the old address until some unrelated Virtual Printer change. Never fails the saved edit.
+    if ip_changed:
+        from backend.app.services.virtual_printer import virtual_printer_manager
+
+        try:
+            await virtual_printer_manager.sync_from_db()
+        except Exception:
+            logger.exception("Failed to sync virtual printers after the address of printer %s changed", printer_id)
 
     # Parking a printer (Maintenance Mode) takes it out of "available" exactly
     # as archiving does, and leaves a running Cloud Link publishing it for the

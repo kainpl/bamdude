@@ -5075,6 +5075,7 @@ export interface AppSettings {
   mqtt_password: string;
   mqtt_topic_prefix: string;
   mqtt_use_tls: boolean;
+  mqtt_tls_verify?: boolean;
   // External URL for notifications
   external_url: string;
   /** Host directory holding docker-compose.yml. ⚠️ Never read by BamDude —

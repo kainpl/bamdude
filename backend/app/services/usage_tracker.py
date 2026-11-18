@@ -851,6 +851,15 @@ async def _warn_if_low_stock(db: AsyncSession, spool: Spool, printer_id: int, gl
     printer_name = (
         await db.execute(select(Printer.name).where(Printer.id == printer_id))
     ).scalar_one_or_none() or "Unknown"
+    from backend.app.services.mqtt_relay import mqtt_relay
+
+    await mqtt_relay.on_filament_low(
+        printer_id,
+        _slot_label_from_global_tray(global_tray_id),
+        int(remaining_pct),
+        color=spool.color_name,
+        spool_id=spool.id,
+    )
     try:
         await notification_service.on_filament_low(
             printer_id=printer_id,

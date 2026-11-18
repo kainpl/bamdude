@@ -1602,11 +1602,11 @@ export function SettingsPage() {
     onError: (error: Error) => showToast(error.message, 'error'),
   });
 
-  const mqttConnectionFields = ['mqtt_enabled', 'mqtt_broker', 'mqtt_port', 'mqtt_use_tls', 'mqtt_username', 'mqtt_topic_prefix'] as const;
+  const mqttConnectionFields = ['mqtt_enabled', 'mqtt_broker', 'mqtt_port', 'mqtt_use_tls', 'mqtt_tls_verify', 'mqtt_username', 'mqtt_topic_prefix'] as const;
   const mqttConnectionChanged = !!localSettings && !!settings && (mqttConnectionFields.some(field => localSettings[field] !== settings[field]) ||
     !!localSettings.mqtt_password || !!secretActions.mqtt_password);
   const mqttNeedsReplacement = !!localSettings?.mqtt_password_configured && (secretActions.mqtt_password ?? 'keep') === 'keep' &&
-    ['mqtt_broker', 'mqtt_port', 'mqtt_use_tls', 'mqtt_username'].some(field => localSettings?.[field as keyof AppSettings] !== settings?.[field as keyof AppSettings]);
+    ['mqtt_broker', 'mqtt_port', 'mqtt_use_tls', 'mqtt_tls_verify', 'mqtt_username'].some(field => localSettings?.[field as keyof AppSettings] !== settings?.[field as keyof AppSettings]);
   const prometheusConnectionChanged = !!localSettings && !!settings && (localSettings.prometheus_enabled !== settings.prometheus_enabled ||
     !!localSettings.prometheus_token || !!secretActions.prometheus_token);
   const invalidReplacement = (field: 'mqtt_password' | 'prometheus_token') => secretActions[field] === 'replace' && !localSettings?.[field]?.trim();
@@ -1617,7 +1617,7 @@ export function SettingsPage() {
     if (kind === 'prometheus') return { prometheus_enabled: localSettings.prometheus_enabled,
       ...credentialDraft('prometheus_token', localSettings.prometheus_token, secretActions.prometheus_token, localSettings.prometheus_token_configured) };
     return { mqtt_enabled: localSettings.mqtt_enabled, mqtt_broker: localSettings.mqtt_broker, mqtt_port: localSettings.mqtt_port,
-      mqtt_use_tls: localSettings.mqtt_use_tls, mqtt_username: localSettings.mqtt_username, mqtt_topic_prefix: localSettings.mqtt_topic_prefix,
+      mqtt_use_tls: localSettings.mqtt_use_tls, mqtt_tls_verify: localSettings.mqtt_tls_verify ?? false, mqtt_username: localSettings.mqtt_username, mqtt_topic_prefix: localSettings.mqtt_topic_prefix,
       ...credentialDraft('mqtt_password', localSettings.mqtt_password, secretActions.mqtt_password, localSettings.mqtt_password_configured) };
   };
   const saveManualConnection = useMutation({
@@ -4518,6 +4518,20 @@ export function SettingsPage() {
                       <span className="text-white text-sm">{t('settings.useTls')}</span>
                     </div>
                   </div>
+                  {(localSettings.mqtt_use_tls ?? false) && (
+                    <div>
+                      <label className="flex items-center gap-3 cursor-pointer">
+                        <input disabled={!isAdmin || !hasPermission('settings:update')}
+                          type="checkbox"
+                          checked={localSettings.mqtt_tls_verify ?? false}
+                          onChange={(e) => updateSetting('mqtt_tls_verify', e.target.checked)}
+                          className="accent-bambu-green w-4 h-4"
+                        />
+                        <span className="text-white text-sm">{t('settings.mqttTlsVerify')}</span>
+                      </label>
+                      <p className="text-xs text-bambu-gray mt-1">{t('settings.mqttTlsVerifyHint')}</p>
+                    </div>
+                  )}
 
                   <div>
                     <label className="block text-sm text-bambu-gray mb-1">

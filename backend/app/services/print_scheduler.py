@@ -669,8 +669,13 @@ class PrintScheduler:
                             for extra_plug in auto_on_plugs[1:]:
                                 try:
                                     service = await smart_plug_manager.get_service_for_plug(extra_plug, db)
-                                    await service.turn_on(extra_plug) if farm_startup_guard.allowed() else False
-                                    logger.info("Also powered on plug '%s' for printer %s", extra_plug.name, printer_id)
+                                    if farm_startup_guard.allowed() and await service.turn_on(extra_plug):
+                                        from backend.app.services.mqtt_relay import mqtt_relay
+
+                                        await mqtt_relay.on_smart_plug_switched(extra_plug.id, True)
+                                        logger.info(
+                                            "Also powered on plug '%s' for printer %s", extra_plug.name, printer_id
+                                        )
                                 except Exception as e:
                                     logger.warning("Failed to power on extra plug '%s': %s", extra_plug.name, e)
                             printer_connected = True
@@ -2619,6 +2624,9 @@ class PrintScheduler:
             if not success:
                 logger.warning("Failed to turn on smart plug '%s'", plug.name)
                 return False
+            from backend.app.services.mqtt_relay import mqtt_relay
+
+            await mqtt_relay.on_smart_plug_switched(plug.id, True)
             logger.info("Powered on smart plug '%s' for printer %s", plug.name, printer_id)
 
         # Get printer from database for connection

@@ -20,6 +20,22 @@ from backend.app.utils.paho_teardown import retire_paho_client
 logger = logging.getLogger(__name__)
 
 
+def configure_broker_tls(client: mqtt.Client, *, verify: bool) -> None:
+    """TLS for a connection to the operator's own broker (the relay and the MQTT smart plugs).
+
+    Unverified by default: a local Mosquitto with a self-signed certificate is the ordinary home
+    setup, and it must keep working. With ``verify`` (Settings -> "Verify the broker's certificate")
+    the chain and the host name are checked against the system's trusted authorities, and a broker
+    that fails the check is not connected to.
+    """
+    if verify:
+        client.tls_set(cert_reqs=ssl.CERT_REQUIRED)
+        client.tls_insecure_set(False)
+    else:
+        client.tls_set(cert_reqs=ssl.CERT_NONE)
+        client.tls_insecure_set(True)
+
+
 class MQTTRelayService:
     """Publishes BamDude events to an external MQTT broker."""
 
@@ -62,6 +78,7 @@ class MQTTRelayService:
         password = settings.get("mqtt_password", "")
         self.topic_prefix = settings.get("mqtt_topic_prefix", "bamdude")
         use_tls = settings.get("mqtt_use_tls", False)
+        self._tls_verify = bool(settings.get("mqtt_tls_verify", False))
 
         if not broker:
             logger.warning("MQTT enabled but no broker configured")
@@ -118,14 +135,21 @@ class MQTTRelayService:
             self.client.on_connect = self._on_connect
             self.client.on_disconnect = self._on_disconnect
 
+            # The broker publishes this for us when the connection is lost without a clean
+            # disconnect (a crash, a cut cable): the retained service status must not stay "online".
+            self.client.will_set(
+                f"{self.topic_prefix}/status",
+                json.dumps({"status": "offline", "timestamp": datetime.now(timezone.utc).isoformat()}),
+                qos=1,
+                retain=True,
+            )
+
             # Configure authentication
             if username:
                 self.client.username_pw_set(username, password)
 
-            # Configure TLS (allow self-signed certs for testing)
             if use_tls:
-                self.client.tls_set(cert_reqs=ssl.CERT_NONE)
-                self.client.tls_insecure_set(True)  # Allow self-signed certs
+                configure_broker_tls(self.client, verify=getattr(self, "_tls_verify", False))
 
             # Run connect_async in thread pool with timeout to avoid blocking
             # on unreachable brokers (connect_async does synchronous socket creation)
@@ -498,6 +522,50 @@ class MQTTRelayService:
             },
         )
 
+    async def on_queue_jobs_added(self, item_ids: list[int]) -> None:
+        """Publish ``queue/job_added`` for committed printer-queue rows (see ``queue_job_relay``).
+
+        Each row is read here, after its commit: the file name is the archive's, else the library
+        file's. A row that is gone again by now is skipped. Never raises.
+        """
+        if not item_ids or not self.enabled or not self.connected:
+            return
+        try:
+            from sqlalchemy import select
+
+            from backend.app.core.database import async_session
+            from backend.app.models.archive import PrintArchive
+            from backend.app.models.library import LibraryFile
+            from backend.app.models.print_queue import PrintQueueItem
+            from backend.app.models.printer import Printer
+
+            async with async_session() as db:
+                rows = (
+                    await db.execute(
+                        select(
+                            PrintQueueItem.id,
+                            PrintQueueItem.queue_id,
+                            PrintArchive.filename,
+                            LibraryFile.filename,
+                            Printer.name,
+                        )
+                        .outerjoin(PrintArchive, PrintArchive.id == PrintQueueItem.archive_id)
+                        .outerjoin(LibraryFile, LibraryFile.id == PrintQueueItem.library_file_id)
+                        .outerjoin(Printer, Printer.id == PrintQueueItem.queue_id)
+                        .where(PrintQueueItem.id.in_(item_ids))
+                        .order_by(PrintQueueItem.id)
+                    )
+                ).all()
+            for job_id, printer_id, archive_name, library_name, printer_name in rows:
+                await self.on_queue_job_added(
+                    job_id=job_id,
+                    filename=archive_name or library_name or "",
+                    printer_id=printer_id,
+                    printer_name=printer_name,
+                )
+        except Exception as e:  # noqa: BLE001 -- the jobs are queued; announcing never undoes that
+            logger.debug("MQTT relay: queued jobs not published: %s", e)
+
     async def on_queue_job_started(
         self,
         job_id: int,
@@ -561,10 +629,15 @@ class MQTTRelayService:
         printer_id: int,
         printer_name: str,
         maintenance_type: str,
-        current_value: float,
-        threshold: float,
+        current_value: float | None,
+        threshold: float | None,
+        unit: str = "hours",
     ):
-        """Publish maintenance alert triggered event."""
+        """Publish maintenance alert triggered event.
+
+        ``current_value`` is what has passed since the item was last done and ``threshold`` its
+        interval, both in ``unit`` ("hours" of printing or calendar "days").
+        """
         if not self.enabled or not self.connected:
             return
 
@@ -576,9 +649,32 @@ class MQTTRelayService:
                 "maintenance_type": maintenance_type,
                 "current_value": current_value,
                 "threshold": threshold,
+                "unit": unit,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             },
         )
+
+    async def on_maintenance_items_due(self, printer_id: int, printer_name: str, items) -> None:
+        """One ``maintenance/alert`` per item of a maintenance overview that is due or close to it.
+
+        Every place that sends the maintenance-due notification calls this with the same items, so
+        the alert carries the figures the notification was decided on. Never raises.
+        """
+        if not self.enabled or not self.connected:
+            return
+        for item in items:
+            try:
+                in_days = (getattr(item, "interval_type", None) or "hours") == "days"
+                await self.on_maintenance_alert(
+                    printer_id=printer_id,
+                    printer_name=printer_name,
+                    maintenance_type=item.maintenance_type_name,
+                    current_value=item.days_since_maintenance if in_days else item.hours_since_maintenance,
+                    threshold=item.interval_hours,
+                    unit="days" if in_days else "hours",
+                )
+            except Exception as e:  # noqa: BLE001 -- a relay failure never costs the caller its work
+                logger.debug("MQTT relay: maintenance alert not published: %s", e)
 
     async def on_maintenance_reset(
         self,
@@ -646,9 +742,101 @@ class MQTTRelayService:
             },
         )
 
+    async def on_reconciled_prints(self, printer_id: int, archive_ids: list[int]) -> None:
+        """Publish the end of prints the start-up sweep closed (they ended while BamDude was down).
+
+        The live completion handler never ran for them, so without this a subscriber saw the print
+        start and never end. Same topics and fields as the live path. Never raises.
+        """
+        if not archive_ids or not self.enabled or not self.connected:
+            return
+        try:
+            from sqlalchemy import select
+
+            from backend.app.core.database import async_session
+            from backend.app.models.archive import PrintArchive
+            from backend.app.models.print_queue import PrintQueueItem
+            from backend.app.services.printer_manager import printer_manager
+
+            async with async_session() as db:
+                archives = (
+                    await db.execute(
+                        select(PrintArchive.id, PrintArchive.filename, PrintArchive.print_name, PrintArchive.status)
+                        .where(PrintArchive.id.in_(archive_ids))
+                        .order_by(PrintArchive.id)
+                    )
+                ).all()
+                jobs = (
+                    await db.execute(
+                        select(PrintQueueItem.id, PrintQueueItem.archive_id, PrintQueueItem.status).where(
+                            PrintQueueItem.archive_id.in_(archive_ids)
+                        )
+                    )
+                ).all()
+            info = printer_manager.get_printer(printer_id)
+            printer_name = info.name if info else "Unknown"
+            for archive_id, filename, print_name, status in archives:
+                if status == "printing":
+                    continue  # not closed after all
+                name = print_name or filename or ""
+                if info:
+                    await self.on_print_complete(
+                        printer_id, info.name, info.serial_number, filename or "", name, status
+                    )
+                await self.on_archive_updated(archive_id=archive_id, print_name=name, status=status)
+                for job_id, job_archive_id, job_status in jobs:
+                    if job_archive_id == archive_id and job_status != "printing":
+                        await self.on_queue_job_completed(
+                            job_id=job_id,
+                            filename=name,
+                            printer_id=printer_id,
+                            printer_name=printer_name,
+                            status=job_status,
+                        )
+        except Exception as e:  # noqa: BLE001 -- the connect path survives a relay failure
+            logger.debug("MQTT relay: reconciled prints not published: %s", e)
+
     # =========================================================================
     # Filament/Spoolman Events
     # =========================================================================
+
+    async def on_filament_low(
+        self,
+        printer_id: int,
+        slot: int | str,
+        remaining_percent: int,
+        color: str | None = None,
+        spool_id: int | None = None,
+    ) -> None:
+        """Publish ``printers/{serial}/filament/low`` when a loaded spool crosses its low mark.
+
+        Called by the producers of the low-filament notification, once per crossing, whether or not
+        any notification provider listens. A printer BamDude holds no record of is not published
+        (no serial for the topic). Never raises.
+        """
+        if not self.enabled or not self.connected:
+            return
+        try:
+            from backend.app.services.printer_manager import printer_manager
+
+            info = printer_manager.get_printer(printer_id)
+            if info is None:
+                return
+            self._publish(
+                f"{self.topic_prefix}/printers/{info.serial_number}/filament/low",
+                {
+                    "printer_id": printer_id,
+                    "printer_name": info.name,
+                    "printer_serial": info.serial_number,
+                    "slot": slot,
+                    "remaining_percent": remaining_percent,
+                    "color": color,
+                    "spool_id": spool_id,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                },
+            )
+        except Exception as e:  # noqa: BLE001 -- announcing never costs the caller its work
+            logger.debug("MQTT relay: filament low not published: %s", e)
 
     # =========================================================================
     # Smart Plug Events
@@ -680,15 +868,62 @@ class MQTTRelayService:
             },
         )
 
+    async def on_smart_plug_switched(self, plug_id: int, on: bool) -> None:
+        """Publish ``smart_plugs/on|off`` for a plug BamDude has just switched. Never raises.
+
+        The one call every place that switches a plug makes after the device accepted the command
+        -- the button, the schedule, the automation around a print, the queue waking a printer,
+        failure detection (``test_plug_switches_tell_the_relay.py`` fails a switch without it). The
+        plug is named by id and read here: two of the callers hold only a stand-in object without a
+        name. A Home Assistant script is not a plug and is not published.
+        """
+        if not self.enabled or not self.connected:
+            return
+        try:
+            from sqlalchemy import select
+
+            from backend.app.core.database import async_session
+            from backend.app.models.printer import Printer
+            from backend.app.models.smart_plug import SmartPlug
+
+            async with async_session() as db:
+                row = (
+                    await db.execute(
+                        select(
+                            SmartPlug.name,
+                            SmartPlug.plug_type,
+                            SmartPlug.ha_entity_id,
+                            SmartPlug.printer_id,
+                            Printer.name,
+                        )
+                        .outerjoin(Printer, Printer.id == SmartPlug.printer_id)
+                        .where(SmartPlug.id == plug_id)
+                    )
+                ).first()
+            if row is None:
+                return
+            plug_name, plug_type, entity_id, printer_id, printer_name = row
+            if plug_type == "homeassistant" and (entity_id or "").startswith("script."):
+                return
+            await self.on_smart_plug_state(
+                plug_id=plug_id,
+                plug_name=plug_name,
+                state="on" if on else "off",
+                printer_id=printer_id,
+                printer_name=printer_name,
+            )
+        except Exception as e:  # noqa: BLE001 -- the switch already happened; announcing never undoes it
+            logger.debug("MQTT relay: plug %s switch not published: %s", plug_id, e)
+
     async def on_smart_plug_energy(
         self,
         plug_id: int,
         plug_name: str,
-        power: float,
-        energy_today: float,
-        energy_total: float,
+        power: float | None,
+        energy_today: float | None,
+        energy_total: float | None,
     ):
-        """Publish smart plug energy update event."""
+        """Publish smart plug energy update event. A figure the plug does not report is ``null``."""
         if not self.enabled or not self.connected:
             return
 
@@ -707,3 +942,6 @@ class MQTTRelayService:
 
 # Global instance
 mqtt_relay = MQTTRelayService()
+
+# Registers the session hooks that publish ``queue/job_added`` for every committed queue row.
+from backend.app.services import queue_job_relay  # noqa: E402, F401
