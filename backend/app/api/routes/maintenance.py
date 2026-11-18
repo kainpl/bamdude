@@ -1021,6 +1021,13 @@ async def set_printer_hours(
 
         if items_needing_attention:
             await notification_service.on_maintenance_due(printer_id, printer.name, items_needing_attention, db)
+            from backend.app.services.mqtt_relay import mqtt_relay
+
+            await mqtt_relay.on_maintenance_items_due(
+                printer_id,
+                printer.name,
+                [i for i in overview.maintenance_items if i.enabled and (i.is_due or i.is_warning)],
+            )
             logger.info(
                 f"Sent maintenance notification for printer {printer_id}: "
                 f"{len(items_needing_attention)} items need attention"

@@ -10843,17 +10843,11 @@ async def _on_print_complete_impl(
                     logger.info("[MAINT-BG] Sent notification: %s items need attention", len(items_needing_attention))
 
                     # MQTT relay - publish maintenance alerts
-                    for item in items_needing_attention:
-                        try:
-                            await mqtt_relay.on_maintenance_alert(
-                                printer_id=printer_id,
-                                printer_name=printer_name,
-                                maintenance_type=item["name"],
-                                current_value=0,  # Not easily available here
-                                threshold=0,  # Not easily available here
-                            )
-                        except Exception:
-                            pass  # Don't fail if MQTT fails
+                    await mqtt_relay.on_maintenance_items_due(
+                        printer_id,
+                        printer_name,
+                        [i for i in overview.maintenance_items if i.enabled and (i.is_due or i.is_warning)],
+                    )
                 else:
                     logger.info("[MAINT-BG] Completed (no items need attention)")
         except Exception as e:

@@ -1786,7 +1786,15 @@ async def update_virtual_printer_settings(
     #   "file_manager" — save to library (review-style flow)
     #   "proxy"        — transparent TCP proxy to a real printer
     # m002 already migrated legacy ``immediate``/``review``/``queue`` rows.
-    if new_mode not in ("print_queue", "file_manager", "proxy"):
+    #
+    # The stored mode, enabled flag and target are judged -- and rewritten -- only by a request that
+    # speaks of them. A stored mode this route no longer accepts, or a stored proxy target whose
+    # printer was deleted since, used to refuse every request: one that only set
+    # ``archive_name_source`` too, the single setting here anything still reads.
+    speaks_of_mode = (
+        any(v is not None for v in (enabled, mode, target_printer_id, access_code)) or "access_code" in actions
+    )
+    if speaks_of_mode and new_mode not in ("print_queue", "file_manager", "proxy"):
         return json_error(400, "Mode must be 'print_queue', 'file_manager', or 'proxy'")
 
     # Validate model
@@ -1802,7 +1810,9 @@ async def update_virtual_printer_settings(
     # Mode-specific validation and printer lookup
     target_printer_ip = ""
     target_printer_serial = ""
-    if new_mode == "proxy":
+    if not speaks_of_mode:
+        pass
+    elif new_mode == "proxy":
         # Proxy mode requires target printer when enabling
         if new_enabled and not new_target_id:
             # If just switching to proxy mode (not explicitly enabling), auto-disable
@@ -1834,10 +1844,12 @@ async def update_virtual_printer_settings(
             return json_error(400, "Access code must be exactly 8 characters")
 
     # Save settings
-    await set_setting(db, "virtual_printer_enabled", "true" if new_enabled else "false")
+    if speaks_of_mode:
+        await set_setting(db, "virtual_printer_enabled", "true" if new_enabled else "false")
     if access_code is not None or "access_code" in actions:
         await set_setting(db, "virtual_printer_access_code", new_access_code)
-    await set_setting(db, "virtual_printer_mode", new_mode)
+    if speaks_of_mode:
+        await set_setting(db, "virtual_printer_mode", new_mode)
     if model is not None:
         await set_setting(db, "virtual_printer_model", model)
     if target_printer_id is not None:

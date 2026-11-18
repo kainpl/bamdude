@@ -184,8 +184,24 @@ async def cb_maintenance_done(callback: CallbackQuery, tg_chat: TelegramChat | N
 
         item.last_performed_at = datetime.now(timezone.utc)
         item.last_performed_hours = current_hours
+        reset_printer_id = item.printer_id
+        reset_type_name = item.maintenance_type.name if item.maintenance_type else ""
 
         await db.commit()
+
+    # The same event the web "done" button publishes.
+    try:
+        from backend.app.services.mqtt_relay import mqtt_relay
+        from backend.app.services.printer_manager import printer_manager
+
+        info = printer_manager.get_printer(reset_printer_id)
+        await mqtt_relay.on_maintenance_reset(
+            printer_id=reset_printer_id,
+            printer_name=info.name if info else f"Printer {reset_printer_id}",
+            maintenance_type=reset_type_name,
+        )
+    except Exception:
+        pass  # the item is already marked done
 
     await callback.answer(f"\u2705 {t(lang, NS, 'maintenance.done_ok')}")
 

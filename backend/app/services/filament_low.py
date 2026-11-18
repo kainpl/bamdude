@@ -168,6 +168,9 @@ async def check_printer(db: AsyncSession, printer_id: int) -> int:
             return 0
         printer_name = getattr(printer, "name", None) or f"Printer {printer_id}"
         for slot in low:
+            from backend.app.services.mqtt_relay import mqtt_relay
+
+            await mqtt_relay.on_filament_low(printer_id, slot.label, slot.percent, color=slot.color)
             await notification_service.on_filament_low(
                 printer_id, printer_name, slot.label, slot.percent, db, color=slot.color
             )

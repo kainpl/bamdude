@@ -59,8 +59,13 @@ async def _turn_off_linked_plugs(printer_id: int) -> None:
                 continue
             try:
                 service = await smart_plug_manager.get_service_for_plug(plug, db)
-                await service.turn_off(plug)
-                logger.info("Obico action: turned off plug %s for printer %s", plug.name, printer_id)
+                if await service.turn_off(plug):
+                    from backend.app.services.mqtt_relay import mqtt_relay
+
+                    await mqtt_relay.on_smart_plug_switched(plug.id, False)
+                    logger.info("Obico action: turned off plug %s for printer %s", plug.name, printer_id)
+                else:
+                    logger.warning("Obico action: plug %s for printer %s did not switch off", plug.name, printer_id)
             except Exception as e:
                 logger.error("Obico action: failed to turn off plug %s: %s", plug.name, e)
 

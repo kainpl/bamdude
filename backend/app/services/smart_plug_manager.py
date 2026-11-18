@@ -23,6 +23,26 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _reading(energy: dict, key: str) -> float | None:
+    """A figure of an energy reading for the relay: ``None`` when the plug does not report it.
+
+    A plug without a counter used to be published as 0 kWh, which a subscriber reads as a counter
+    that was reset.
+    """
+    value = energy.get(key)
+    try:
+        return None if value is None else float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+async def _switched(plug_id: int, on: bool) -> None:
+    """Tell the MQTT relay that this plug was switched (see ``on_smart_plug_switched``)."""
+    from backend.app.services.mqtt_relay import mqtt_relay
+
+    await mqtt_relay.on_smart_plug_switched(plug_id, on)
+
+
 class UnknownPlugTypeError(ValueError):
     """A plug type no driver claims.
 
@@ -258,9 +278,9 @@ class SmartPlugManager:
                     await mqtt_relay.on_smart_plug_energy(
                         plug_id=plug.id,
                         plug_name=plug.name,
-                        power=float(energy.get("power") or 0.0),
-                        energy_today=float(energy.get("today") or 0.0),
-                        energy_total=float(energy.get("total") or 0.0),
+                        power=_reading(energy, "power"),
+                        energy_today=_reading(energy, "today"),
+                        energy_total=_reading(energy, "total"),
                     )
                 except Exception:
                     pass  # A relay failure must not cost us the snapshot.
@@ -376,6 +396,7 @@ class SmartPlugManager:
                             plug.last_state = "ON"
                             plug.last_checked = datetime.now(timezone.utc)
                             self._last_schedule_check[(plug.id, "on")] = scheduled_minute
+                            await _switched(plug.id, True)
 
                 # Check if we should turn off
                 if plug.schedule_off_time == current_time:
@@ -387,6 +408,7 @@ class SmartPlugManager:
                             plug.last_state = "OFF"
                             plug.last_checked = datetime.now(timezone.utc)
                             self._last_schedule_check[(plug.id, "off")] = scheduled_minute
+                            await _switched(plug.id, False)
                             # Mark printer offline if linked — but only for the plug
                             # that feeds its mains, not an accessory (#2629).
                             if plug.printer_id and plug.controls_printer_power:
@@ -446,6 +468,7 @@ class SmartPlugManager:
                     plug.last_checked = datetime.now(timezone.utc)
                     plug.auto_off_executed = False
                     await db.commit()
+                    await _switched(plug.id, True)
             except Exception:
                 # A failed service or DB transaction must not suppress the
                 # other plugs linked to this printer. Rollback clears a failed
@@ -692,6 +715,7 @@ class SmartPlugManager:
 
             # Mark auto_off_executed in database and update printer status
             if success:
+                await _switched(plug_id, False)
                 if may_run is None:
                     await self._mark_auto_off_executed(plug_id)
                 else:
@@ -837,6 +861,7 @@ class SmartPlugManager:
 
                         # Mark auto_off_executed in database and update printer status
                         if success:
+                            await _switched(plug_id, False)
                             if may_run is None:
                                 await self._mark_auto_off_executed(plug_id)
                             else:
@@ -998,6 +1023,7 @@ class SmartPlugManager:
                         service = await self.get_service_for_plug(plug, db)
                         success = await service.turn_off(plug)
                         if success:
+                            await _switched(plug.id, False)
                             await self._mark_auto_off_executed(plug.id)
                             if plug.controls_printer_power:
                                 printer_manager.mark_printer_offline(plug.printer_id)

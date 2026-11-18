@@ -406,6 +406,11 @@ async def apply(item_id, actor, payload):
             db.add(ancestor)
         for field in _CARRY:
             setattr(ancestor, field, deepcopy(getattr(item, field)))
+        # Rack positions (H2C) were read off the printer the job leaves; the pool hands it to any.
+        from backend.app.utils.printer_models import is_nozzle_rack_model
+
+        if ancestor.nozzle_mapping and is_nozzle_rack_model(ancestor.target_model):
+            ancestor.nozzle_mapping = None
         ancestor.position = position
         ancestor.status = "pending"
         ancestor.manual_start = False

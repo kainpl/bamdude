@@ -730,7 +730,11 @@ class AutoQueueScheduler:
                     return True
                 try:
                     service = await smart_plug_manager.get_service_for_plug(plug, db)
-                    if not await service.turn_on(plug):
+                    if await service.turn_on(plug):
+                        from backend.app.services.mqtt_relay import mqtt_relay
+
+                        await mqtt_relay.on_smart_plug_switched(plug.id, True)
+                    else:
                         succeeded = False
                 except Exception:
                     succeeded = False

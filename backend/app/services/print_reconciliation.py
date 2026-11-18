@@ -1493,6 +1493,12 @@ async def _sweep_printer_prints(
     # watts, against a print measured in hundreds — and it is worth having,
     # because the alternative is an archive that reads as though the print
     # used no power at all.
+    # A print this sweep closed never reached the live completion handler: tell the relay here.
+    if recovered:
+        from backend.app.services.mqtt_relay import mqtt_relay
+
+        await mqtt_relay.on_reconciled_prints(printer_id, list(recovered))
+
     for archive_id in recovered:
         from backend.app.core.tasks import spawn_background_task
         from backend.app.main import _record_print_energy

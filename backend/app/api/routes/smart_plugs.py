@@ -1054,6 +1054,20 @@ async def control_smart_plug(
     if not success:
         raise HTTPException(503, "Failed to communicate with device")
 
+    # What a toggle left the plug in is the device's to say. Read once, for the stored state and the
+    # relay only: the automation below (scripts, the printer's offline mark) keeps reacting to an
+    # explicit on / off alone, as before.
+    toggled_state = None
+    if control.action == "toggle":
+        try:
+            toggled_state = (await service.get_status(plug) or {}).get("state")
+        except Exception:
+            toggled_state = None
+        if toggled_state not in ("ON", "OFF"):
+            toggled_state = None
+        else:
+            plug.last_state = toggled_state
+
     # Update last state and reset auto_off_executed when turning on
     if expected_state:
         plug.last_state = expected_state
@@ -1076,26 +1090,11 @@ async def control_smart_plug(
         await trigger_associated_scripts(plug.printer_id, expected_state, db)
 
     # MQTT relay - publish smart plug state change
-    if expected_state:
-        try:
-            from backend.app.services.mqtt_relay import mqtt_relay
+    switched_to = expected_state or toggled_state
+    if switched_to:
+        from backend.app.services.mqtt_relay import mqtt_relay
 
-            # Get printer name if linked
-            printer_name = None
-            if plug.printer_id:
-                result = await db.execute(select(Printer).where(Printer.id == plug.printer_id))
-                printer = result.scalar_one_or_none()
-                printer_name = printer.name if printer else None
-
-            await mqtt_relay.on_smart_plug_state(
-                plug_id=plug.id,
-                plug_name=plug.name,
-                state="on" if expected_state == "ON" else "off",
-                printer_id=plug.printer_id,
-                printer_name=printer_name,
-            )
-        except Exception:
-            pass  # Don't fail if MQTT fails
+        await mqtt_relay.on_smart_plug_switched(plug.id, switched_to == "ON")
 
     return {"success": True, "action": control.action}
 

@@ -181,6 +181,81 @@ def _resolve_print_option(
     return column_default
 
 
+_OFFSET_CALI_WIRE = {0: "off", 1: "on", 2: "auto"}
+
+
+def _slicer_offset_mode(slicer_opts: dict | None) -> str | None:
+    """The slicer's nozzle offset calibration choice, or None when it sent none.
+
+    BambuStudio sends ``nozzle_offset_cali`` on ``project_file`` as an int -- off 0, on 1, auto 2
+    (``schemas/calibration_mode.mode_to_int`` is the same table, written the other way).
+    """
+    if not slicer_opts or "nozzle_offset_cali" not in slicer_opts:
+        return None
+    raw = slicer_opts["nozzle_offset_cali"]
+    if isinstance(raw, bool):
+        return "on" if raw else "off"
+    if isinstance(raw, int):
+        return _OFFSET_CALI_WIRE.get(raw)
+    return None
+
+
+def _nozzle_offset_mode(slicer_opts: dict | None, system_opts: dict | None) -> str:
+    """Nozzle offset calibration for a slicer -> VP job: the slicer's choice, else the system
+    print options saved for the model, else what the column defaulted to before ("on").
+
+    No path set it at all, so every job a dual-nozzle printer received through a VP calibrated the
+    offset whatever the operator chose in the slicer or saved in the print options.
+    """
+    from backend.app.schemas.calibration_mode import normalize_mode
+
+    chosen = _slicer_offset_mode(slicer_opts)
+    if chosen is not None:
+        return chosen
+    if system_opts is not None and system_opts.get("nozzle_offset_cali") is not None:
+        return normalize_mode(system_opts["nozzle_offset_cali"])
+    return "on"
+
+
+def _captured_ams_mapping(slicer_opts: dict | None, *, dual_nozzle: bool, vp_name: str) -> str | None:
+    """The slicer's own AMS pick as the JSON a queue row stores, or None when it made none.
+
+    The slicer writes an external spool into the flat ``ams_mapping`` as ``-1`` -- the value it also
+    writes for "not mapped" -- and names the holder only in ``ams_mapping2``. Read flat, a job that
+    prints one filament from the external spool lost that slot's pick (the job was then held for a
+    mapping review), and a job fed ONLY from the external spool looked like "nothing resolved" and
+    was routed automatically, possibly to an AMS tray. The holder is put back first (254 / 255, the
+    values the rest of BamDude stores), for the printer that will print the job, and only then is
+    "every entry is -1" read as the slicer saying it resolved nothing.
+    """
+    import json
+
+    from backend.app.services.bambu_mqtt import resolve_external_spools_in_mapping
+
+    if slicer_opts is None:
+        return None
+    raw = slicer_opts.get("ams_mapping")
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except json.JSONDecodeError:
+            logger.warning("[VP %s] Slicer ams_mapping is unparseable JSON, dropping: %r", vp_name, raw)
+            return None
+    if not isinstance(raw, list):
+        return None
+    detail = slicer_opts.get("ams_mapping2")
+    if isinstance(detail, str):
+        try:
+            detail = json.loads(detail)
+        except json.JSONDecodeError:
+            detail = None
+    resolved = resolve_external_spools_in_mapping(raw, detail, dual_nozzle)
+    # Still all -1: the slicer resolved nothing. Stored, it would read as an explicit pick.
+    if not any(isinstance(v, int) and not isinstance(v, bool) and v >= 0 for v in resolved):
+        return None
+    return json.dumps(resolved)
+
+
 class VirtualPrinterInstance:
     """Per-printer state and file handling logic.
 
@@ -406,6 +481,43 @@ class VirtualPrinterInstance:
                 else:
                     self._mqtt.resolve_stale_prepare()
 
+    def keeps_slicer_nozzle_mapping(self, model: str | None, printer_id: int | None) -> bool:
+        """Whether the slicer's ``nozzle_mapping`` may travel with a job that prints on this printer.
+
+        On a nozzle-rack model (H2C) the array names rack POSITIONS, and the slicer read them off the
+        one printer this VP is bound to: on another H2C the same position holds another hotend, and
+        the dispatcher sends a captured mapping as it is. So it is kept only when the job goes to
+        that very printer. A VP without a target, the auto-queue tier (the distributor picks the
+        printer) and a fallback to another printer drop it and leave the positions to the
+        dispatcher's own rack assignment. On every other model the array names extruders, which are
+        the same on each printer of the model -- kept.
+        """
+        from backend.app.utils.printer_models import is_nozzle_rack_model
+
+        if not is_nozzle_rack_model(model):
+            return True
+        return self.target_printer_id is not None and printer_id == self.target_printer_id
+
+    def rename(self, name: str) -> None:
+        """Take a new display name without dropping a slicer or FTP session.
+
+        The discovery and bind services read their name on every answer, so the slicer shows the new
+        name on its next discovery pass; before this a rename reached nothing until the VP was
+        restarted.
+        """
+        if not name or name == self.name:
+            return
+        self.name = name
+        if self._bind is not None:
+            self._bind.name = name
+        if self._ssdp is not None:
+            self._ssdp.name = f"{name} (Proxy)" if self.is_proxy else name
+        if self._ssdp_proxy is not None:
+            self._ssdp_proxy.proxy_name = name
+        for service in (self._ftp, self._mqtt):
+            if service is not None and hasattr(service, "vp_name"):
+                service.vp_name = name
+
     async def on_print_command(self, filename: str, data: dict) -> None:
         """Handle print command from MQTT.
 
@@ -560,10 +672,18 @@ class VirtualPrinterInstance:
             from sqlalchemy import update
 
             for row in rows:
+                row_patch = dict(patch)
+                # The distributor picks the printer: rack positions never ride on this tier.
+                if "nozzle_mapping" in row_patch and not self.keeps_slicer_nozzle_mapping(
+                    getattr(row, "target_model", None), None
+                ):
+                    del row_patch["nozzle_mapping"]
+                if not row_patch:
+                    continue
                 await db.execute(
                     update(AutoQueueItem)
                     .where(AutoQueueItem.id == row.id, AutoQueueItem.status == "pending")
-                    .values(**patch)
+                    .values(**row_patch)
                 )
             if rows:
                 await db.commit()
@@ -636,6 +756,11 @@ class VirtualPrinterInstance:
             except (TypeError, ValueError):
                 pass
 
+        late_offset = _slicer_offset_mode(data)
+        if late_offset is not None:
+            patch["nozzle_offset_cali"] = late_offset == "on"
+            patch["nozzle_offset_cali_mode"] = late_offset
+
         raw = data.get("nozzle_mapping")
         if raw is not None:
             if isinstance(raw, str):
@@ -674,10 +799,16 @@ class VirtualPrinterInstance:
                     self._recent_queue_items.pop(stash_key, None)
                     return
                 from backend.app.services.filament_policy_write import routing_update
+                from backend.app.services.printer_manager import printer_manager
 
                 for iid in eligible_ids:
                     item = await db.get(PrintQueueItem, iid)
-                    changes = await routing_update(db, item, patch)
+                    item_patch = dict(patch)
+                    if "nozzle_mapping" in item_patch and not self.keeps_slicer_nozzle_mapping(
+                        printer_manager.effective_model_for(item.queue_id), item.queue_id
+                    ):
+                        del item_patch["nozzle_mapping"]
+                    changes = await routing_update(db, item, item_patch)
                     await db.execute(
                         update(PrintQueueItem)
                         .where(PrintQueueItem.id == iid, PrintQueueItem.status == "pending")
@@ -1093,6 +1224,7 @@ class VirtualPrinterInstance:
                 # use_ams has no system-preference field (the saved PrintModal
                 # toggles don't carry it) — slicer value or column default only.
                 use_ams = bool(slicer_opts["use_ams"]) if slicer_opts and "use_ams" in slicer_opts else True
+                nozzle_offset_mode = _nozzle_offset_mode(slicer_opts, system_opts)
                 # Recording medium, captured from the slicer's ``cfg`` bit 2 in
                 # ``on_print_command``. No system fallback and no default: NULL
                 # means nobody chose, and the dispatcher leaves the machine to
@@ -1125,29 +1257,20 @@ class VirtualPrinterInstance:
                 # prefer_lowest_filament, the AMS-Backup gate, the
                 # inventory-remain overrides and FTS routing have nothing left to
                 # decide for them. Off is today's behaviour, exactly.
+                from backend.app.services.printer_manager import printer_manager as _printers
+                from backend.app.utils.printer_models import is_dual_nozzle_model
+
+                # The printer the job will really print on -- which is not always this VP's target:
+                # ``_find_best_queue`` falls back to another printer when the target is unavailable.
+                chosen_model = _printers.effective_model_for(printer_id)
                 ams_mapping_json: str | None = None
-                if self.save_ams_mapping and slicer_opts is not None:
-                    raw_ams_mapping = slicer_opts.get("ams_mapping")
-                    if isinstance(raw_ams_mapping, str):
-                        try:
-                            raw_ams_mapping = json.loads(raw_ams_mapping)
-                        except json.JSONDecodeError:
-                            logger.warning(
-                                "[VP %s] Slicer ams_mapping is unparseable JSON, dropping: %r",
-                                self.name,
-                                raw_ams_mapping,
-                            )
-                            raw_ams_mapping = None
-                    # An all-[-1] mapping is the slicer saying "unresolved", not
-                    # a pick — storing it would be read downstream as an explicit
-                    # external-spool selection and print against an empty feed.
-                    if isinstance(raw_ams_mapping, list) and any(
-                        isinstance(v, int) and v >= 0 for v in raw_ams_mapping
-                    ):
-                        ams_mapping_json = json.dumps(raw_ams_mapping)
+                if self.save_ams_mapping:
+                    ams_mapping_json = _captured_ams_mapping(
+                        slicer_opts, dual_nozzle=is_dual_nozzle_model(chosen_model), vp_name=self.name
+                    )
 
                 nozzle_mapping_json: str | None = None
-                if slicer_opts is not None:
+                if slicer_opts is not None and self.keeps_slicer_nozzle_mapping(chosen_model, printer_id):
                     raw_nozzle_mapping = slicer_opts.get("nozzle_mapping")
                     if raw_nozzle_mapping is not None:
                         # BambuStudio's NetworkAgent embeds this as parsed JSON
@@ -1274,6 +1397,8 @@ class VirtualPrinterInstance:
                                 timelapse=timelapse,
                                 timelapse_storage=timelapse_storage,
                                 use_ams=use_ams,
+                                nozzle_offset_cali=nozzle_offset_mode == "on",
+                                nozzle_offset_cali_mode=nozzle_offset_mode,
                                 # Stamp the slicer's H2C rack nozzle pick on every plate
                                 # of a multi-plate Send All so each plate replays the
                                 # same pick (mirrors the #1697 / #1733 per-plate loop).
@@ -1472,7 +1597,12 @@ class VirtualPrinterInstance:
                     timelapse = _resolve_print_option(slicer_opts, system_opts, "timelapse", "timelapse", False)
                     use_ams = bool(slicer_opts["use_ams"]) if slicer_opts and "use_ams" in slicer_opts else True
                     timelapse_storage = (slicer_opts or {}).get("timelapse_storage")
-                    nozzle_mapping_json = self._parse_nozzle_mapping(slicer_opts)
+                    # No printer yet, so rack positions (H2C) never ride on this tier.
+                    nozzle_mapping_json = (
+                        self._parse_nozzle_mapping(slicer_opts)
+                        if self.keeps_slicer_nozzle_mapping(strict_requirements.model or sliced_model, None)
+                        else None
+                    )
 
                 # Serialise filament fields as JSON strings — the column is
                 # ``Text`` and the eligibility scheduler reads via
@@ -2397,6 +2527,9 @@ class VirtualPrinterManager:
             if not instance:
                 continue
 
+            # A new name is a hot update too: discovery answers with it from the next pass.
+            instance.rename(vp.name)
+
             # Advertised nozzle changes are hot updates, not reasons to drop
             # slicer/FTP sessions. Saved values remain inert while bound.
             instance.nozzle_diameter = vp.nozzle_diameter
@@ -2496,6 +2629,9 @@ class VirtualPrinterManager:
                         target_printer_ip=target_ip,
                         target_printer_serial=target_serial,
                         target_printer_id=vp.target_printer_id,
+                        # Unused by a proxy, and still compared by the change check above: left
+                        # out, a row that kept the folder of its earlier mode restarted on every sync.
+                        target_folder_id=vp.target_folder_id,
                         auto_dispatch=vp.auto_dispatch,
                         queue_force_color_match=vp.queue_force_color_match,
                         gcode_injection=vp.gcode_injection,
