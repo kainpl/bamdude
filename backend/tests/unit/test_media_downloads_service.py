@@ -1165,7 +1165,7 @@ class TestFtpClosesOverAFullDisk:
         assert (status, received, reason) == ("insufficient_storage", 17, "local_OSError")
         assert not destination.exists()
 
-    def test_a_dead_socket_stays_the_printers_failure_even_when_the_close_fails_too(self, monkeypatch, tmp_path):
+    def test_a_disk_that_refuses_the_close_outranks_the_socket_that_died_first(self, monkeypatch, tmp_path):
         import errno
 
         volume, buffered = self._refusing()
@@ -1179,8 +1179,22 @@ class TestFtpClosesOverAFullDisk:
             raise ConnectionResetError(errno.ECONNRESET, "reset by peer")
 
         (status, _received, _check, reason), destination = self._fetch(monkeypatch, tmp_path, opened, retrieve)
-        # The network failed first; the close's own error does not replace it either.
-        assert (status, reason) == ("unavailable", "ConnectionResetError")
+        # Codex r4, D4-R3: a proven disk failure ends the whole job; the socket's alone would cost
+        # one file and hand out a partial ZIP. The first error is kept in the reason.
+        assert (status, reason) == ("insufficient_storage", "local_OSError_after_ConnectionResetError")
+        assert not destination.exists()
+
+    def test_a_dead_socket_alone_is_still_the_printers_failure(self, monkeypatch, tmp_path):
+        import errno
+
+        def retrieve(_command, write, blocksize=0):
+            write(b"some bytes")
+            raise ConnectionResetError(errno.ECONNRESET, "reset by peer")
+
+        (status, received, _check, reason), destination = self._fetch(
+            monkeypatch, tmp_path, lambda path, mode: path.open(mode), retrieve
+        )
+        assert (status, received, reason) == ("unavailable", 10, "ConnectionResetError")
         assert not destination.exists()
 
     def test_a_close_that_fails_alone_is_the_disks_refusal(self, monkeypatch, tmp_path):
@@ -1210,4 +1224,217 @@ class TestFtpClosesOverAFullDisk:
             monkeypatch, tmp_path, lambda path, _mode: FailsOnClose(path), retrieve
         )
         assert (status, reason) == ("insufficient_storage", "local_OSError")
+        assert not destination.exists()
+
+
+@pytest.mark.asyncio
+class TestTheDiskOutranksTheSource:
+    """Codex r4, D4-R3: on every source, a disk that refuses the staging file ends the job — also when
+    the source itself had failed first; a source failure alone costs one file."""
+
+    @pytest.mark.parametrize("transport", ["ftp", "tunnel", "local"])
+    @pytest.mark.parametrize(
+        "source_fails, disk_fails", [(True, False), (False, True), (True, True)], ids=["source", "disk", "both"]
+    )
+    async def test_the_prepared_archive(self, tmp_path, monkeypatch, transport, source_fails, disk_fails):
+        import errno
+        import io
+        from contextlib import asynccontextmanager
+        from types import SimpleNamespace
+
+        from backend.app.services import bambu_ftp
+        from backend.app.services.printer_files import tunnel
+        from backend.app.services.printer_files.base import TransferOutcome
+
+        class FullVolume(io.RawIOBase):
+            refused = 0
+
+            def writable(self):
+                return True
+
+            def write(self, _data):
+                FullVolume.refused += 1
+                raise OSError(errno.ENOSPC, "No space left on device")
+
+        scratch = md._make_job_directory(tmp_path, "demo")
+
+        def staging(path, mode):
+            if not disk_fails:
+                return path.open(mode)
+            path.touch()
+            return io.BufferedWriter(FullVolume())  # a real buffer: the disk is first asked at the close
+
+        def receive(_command, write, blocksize=0):
+            write(b"buffered")
+            if source_fails:
+                raise ConnectionResetError(errno.ECONNRESET, "reset by peer")
+
+        class Client:
+            async def download_into(self, _path, sink):
+                await sink(b"buffered")
+                if source_fails:
+                    raise tunnel.TunnelProtocolError("short_read", "the source ended")
+                return SimpleNamespace(total=8, checksum="size_verified")
+
+        @asynccontextmanager
+        async def connection():
+            yield Client()
+
+        monkeypatch.setattr(bambu_ftp if transport == "ftp" else tunnel, "open", staging, raising=False)
+        tunnelled = tunnel.TunnelTransport(SimpleNamespace(ip_address="127.0.0.1", access_code="test"))
+        monkeypatch.setattr(tunnelled, "_client", connection)
+
+        async def on_lane(_name, operation, **_options):
+            return await operation()
+
+        monkeypatch.setattr(tunnelled, "_on_lane", on_lane)
+        peer = SimpleNamespace(_ftp=SimpleNamespace(retrbinary=receive), get_file_size=lambda _path: 8)
+
+        async def first(destination, **_options):
+            destination.write_bytes(b"valid")
+            return TransferOutcome("completed", 5, "size_verified")
+
+        async def second(destination, **_options):
+            if transport == "ftp":
+                return TransferOutcome(*bambu_ftp.BambuFTPClient.fetch_to_file(peer, "/clip", destination))
+            return await tunnelled.download_to_file("/clip", destination)
+
+        clip = md.Source("clip", second)
+        if transport == "local":
+            chosen = tmp_path / "local-video"
+            chosen.write_bytes(b"buffered")
+            real_open = Path.open
+
+            class Input(io.BytesIO):
+                def read(self, *args):
+                    if self.tell() and source_fails:
+                        raise OSError(errno.EIO, "input error")
+                    return super().read(*args)
+
+            def opening(path, mode="r", *args, **kwargs):
+                if path == chosen and mode == "rb":
+                    return Input(b"buffered")
+                if path.name == "0001.part" and mode == "wb" and disk_fails:
+                    path.touch()
+                    return io.BufferedWriter(FullVolume())
+                return real_open(path, mode, *args, **kwargs)
+
+            monkeypatch.setattr(Path, "open", opening)
+            clip = md.local_source(chosen, name="clip")
+
+        sources = (md.Source("first", first), clip)
+        job = md.DownloadJob(
+            "demo",
+            md.JobScope("printer", 1, SimpleNamespace()),
+            sources,
+            ("first", "clip"),
+            True,
+            "two.zip",
+            scratch,
+            0,
+            results=[{"name": s.name, "status": md.FILE_PENDING} for s in sources],
+        )
+        fatal = None
+        try:
+            await md.MediaDownloadRuntime()._fetch_all(job, SimpleNamespace(deliverable=lambda: True))
+        except md._Fatal as stopped:
+            fatal = stopped.code
+        if disk_fails:
+            assert FullVolume.refused >= 1
+            assert (fatal, job.artifact) == (md.ERROR_STORAGE, None), job.results
+        else:
+            # The source alone: that file is left out, the rest is a partial result.
+            assert fatal is None and job.artifact.is_file() and job.succeeded == 1
+            assert job.results[1]["status"] != md.FILE_DONE
+
+    async def test_the_tunnels_reason_names_both_failures(self, tmp_path, monkeypatch):
+        import errno
+        import io
+        from contextlib import asynccontextmanager
+        from types import SimpleNamespace
+
+        from backend.app.services.printer_files import tunnel
+
+        class FullVolume(io.RawIOBase):
+            def writable(self):
+                return True
+
+            def write(self, _data):
+                raise OSError(errno.ENOSPC, "No space left on device")
+
+        def staging(path, _mode):
+            path.touch()
+            return io.BufferedWriter(FullVolume())
+
+        class Client:
+            async def download_into(self, _path, sink):
+                await sink(b"buffered")
+                raise tunnel.TunnelProtocolError("short_read", "the source ended")
+
+        @asynccontextmanager
+        async def connection():
+            yield Client()
+
+        monkeypatch.setattr(tunnel, "open", staging, raising=False)
+        transport = tunnel.TunnelTransport(SimpleNamespace(ip_address="127.0.0.1", access_code="test"))
+        monkeypatch.setattr(transport, "_client", connection)
+
+        async def on_lane(_name, operation, **_options):
+            return await operation()
+
+        monkeypatch.setattr(transport, "_on_lane", on_lane)
+        destination = tmp_path / "0.part"
+        outcome = await transport.download_to_file("/clip", destination)
+        assert (outcome.status, outcome.received, outcome.reason) == (
+            "insufficient_storage",
+            8,
+            "local_OSError_after_TunnelProtocolError",
+        )
+        assert not destination.exists()
+
+    async def test_a_cancelled_tunnel_transfer_stays_cancelled_over_a_failing_close(self, tmp_path, monkeypatch):
+        import errno
+        import io
+        from contextlib import asynccontextmanager
+        from types import SimpleNamespace
+
+        from backend.app.services.printer_files import tunnel
+
+        class FullVolume(io.RawIOBase):
+            def writable(self):
+                return True
+
+            def write(self, _data):
+                raise OSError(errno.ENOSPC, "No space left on device")
+
+        def staging(path, _mode):
+            path.touch()
+            return io.BufferedWriter(FullVolume())
+
+        entered = asyncio.Event()
+
+        class Client:
+            async def download_into(self, _path, sink):
+                await sink(b"buffered")
+                entered.set()
+                await asyncio.Event().wait()
+
+        @asynccontextmanager
+        async def connection():
+            yield Client()
+
+        monkeypatch.setattr(tunnel, "open", staging, raising=False)
+        transport = tunnel.TunnelTransport(SimpleNamespace(ip_address="127.0.0.1", access_code="test"))
+        monkeypatch.setattr(transport, "_client", connection)
+
+        async def on_lane(_name, operation, **_options):
+            return await operation()
+
+        monkeypatch.setattr(transport, "_on_lane", on_lane)
+        destination = tmp_path / "0.part"
+        transfer = asyncio.create_task(transport.download_to_file("/clip", destination))
+        await asyncio.wait_for(entered.wait(), 3)
+        transfer.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await transfer  # a cancel is a cancel: the disk's refusal does not turn it into an answer
         assert not destination.exists()

@@ -958,23 +958,40 @@ class BambuFTPClient:
                 self.status = status
                 self.reason = reason
 
-        def local(exc: OSError) -> _Stop:
+        def local(exc: OSError, after: BaseException | None = None) -> _Stop:
             # ``OSError`` is also what a dead socket raises, and that is "the printer is
             # unavailable" — one file's failure. What THIS disk refuses (it is full, the
             # directory cannot be written) is not: no other file would fare better, so it is
             # told apart here, where the two can still be told apart (G10 D review, D4-R).
-            return _Stop("insufficient_storage", f"local_{type(exc).__name__}")
+            reason = f"local_{type(exc).__name__}"
+            if after is not None:
+                reason += f"_after_{type(after).__name__}"
+            return _Stop("insufficient_storage", reason)
 
         @contextlib.contextmanager
         def closing_staging(handle):
-            # A buffered file flushes again when it is closed. After a failure that second
-            # flush fails too, and as a bare ``OSError`` it would REPLACE the first error —
-            # a classified "this disk is full" became "the printer is unavailable", one file's
-            # failure, and the job handed out a partial ZIP (Codex r3, D4-R2). So a close that
-            # fails while something is already failing changes nothing, and a close that fails
-            # on its own is this disk's refusal like any other.
+            # A buffered file flushes again when it is closed, and that is where a full disk is
+            # often first heard of: a small last block sits in the buffer until then. So a close
+            # that fails is this disk's refusal WHATEVER else went wrong with the file — also when
+            # the printer's side had failed first. A proven disk failure ends the whole job; the
+            # source's failure alone would only cost this one file, and the job would hand out a
+            # partial ZIP from a disk that cannot hold it (Codex r3 D4-R2, r4 D4-R3). The first
+            # error stays in the chain and in the reason, for the log.
             try:
                 yield
+            except _Stop as first:
+                try:
+                    handle.close()
+                except OSError as exc:
+                    if first.status != "insufficient_storage":
+                        raise local(exc, after=first) from first
+                raise
+            except Exception as first:
+                try:
+                    handle.close()
+                except OSError as exc:
+                    raise local(exc, after=first) from first
+                raise
             except BaseException:
                 with contextlib.suppress(OSError):
                     handle.close()
