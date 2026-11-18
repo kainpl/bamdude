@@ -241,6 +241,8 @@ class TestZip:
             ("absent.txt", "not_readable"),
         }
 
+        by_header = await async_client.get(f"{printer_files.base}/{job['job_id']}/artifact")
+        assert by_header.status_code == 409 and by_header.json()["detail"]["error"] == "partial_not_confirmed"
         unconfirmed = await async_client.post(f"{printer_files.base}/{job['job_id']}/download-token", json={})
         assert unconfirmed.status_code == 409
         assert unconfirmed.json()["detail"]["error"] == "partial_not_confirmed"
@@ -273,6 +275,15 @@ class TestZip:
         # A fatal limit is not worked around by what did succeed.
         assert (failed["phase"], failed["error"], failed["size"]) == ("failed", "limit_exceeded", None)
         assert [c["budget"] for c in printer_files.transport.calls] == [10, 4]
+        assert _scratch_entries(printer_files) == []
+
+    async def test_a_last_file_over_the_budget_is_fatal_too(self, async_client, printer_files, monkeypatch):
+        # Nothing is asked for after it, so only the transfer's own answer can end the job.
+        monkeypatch.setattr(media_downloads, "BYTE_BUDGET", 10)
+        printer_files.transport.files.update({"/a.txt": b"123456", "/b.txt": b"123456"})
+        job = await _start(async_client, printer_files, ["/a.txt", "/b.txt"], as_zip=True)
+        failed = await _until(async_client, f"{printer_files.base}/{job['job_id']}")
+        assert (failed["phase"], failed["error"], failed["size"]) == ("failed", "limit_exceeded", None)
         assert _scratch_entries(printer_files) == []
 
     async def test_an_unavailable_printer_is_not_tried_for_every_file(self, async_client, printer_files):
