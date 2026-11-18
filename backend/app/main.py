@@ -12119,6 +12119,11 @@ async def stop_queue_source_collector() -> None:
 async def _application_lifespan(app: FastAPI):
     # Startup
     printer_manager._print_lifecycle_stopping = False
+    # Printers connect long before the analysis service starts (below): what asks for an analysis
+    # in between waits for it instead of meeting "unavailable".
+    from backend.app.services.analysis_runtime import expect_start as _expect_analysis_start
+
+    _expect_analysis_start()
     # Install Windows-only asyncio Proactor cleanup-RST filter (#1113) before
     # anything else can spawn tasks that might trip it. The filter is a no-op
     # on non-Windows hosts.
@@ -13345,6 +13350,10 @@ async def lifespan(app: FastAPI):
             if connector_runtime.restore_fenced:
                 raise RuntimeError("Authentication restore finalization is pending")
             open_cloud_admission()
+            # The poke made inside the application lifespan landed behind the closed door.
+            from backend.app.services.filament_preset_sync import request_sync_soon
+
+            request_sync_soon()
             # This only schedules the loop. Technical admission is marked after
             # ASGI startup.complete; notification readiness never gates startup.
             credential_rollout.start(lambda: farm_startup_guard.ready)

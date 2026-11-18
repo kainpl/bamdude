@@ -537,6 +537,35 @@ class AnalysisRuntime:
 
 
 runtime: AnalysisRuntime | None = None
+_start_expected = False
+_started_once = False
+
+
+def expect_start() -> None:
+    """The lifespan says, before printers connect, that it will start the service."""
+    global _start_expected, _started_once
+    _start_expected, _started_once = True, False
+
+
+def service_start_pending() -> bool:
+    """Whether the lifespan has announced the service and its first start has not finished yet.
+
+    Printers reconnect before the lifespan reaches the analysis service, so a request made then
+    has met no failure: the service is not there *yet*. After the first start has finished --
+    ready or failed -- an unavailable service is an ordinary failure again. A process that
+    announced no start (a test, a script) is never pending.
+    """
+    return _start_expected and not _started_once
+
+
+async def wait_for_first_start(timeout: float) -> bool:
+    """Wait, bounded, until the announced first start has finished; False when it has not."""
+    deadline = time.monotonic() + timeout
+    while service_start_pending():
+        if time.monotonic() >= deadline:
+            return False
+        await asyncio.sleep(0.02 if timeout < 1 else 0.25)
+    return True
 
 
 def get_analysis_health() -> dict:
@@ -544,13 +573,17 @@ def get_analysis_health() -> dict:
 
 
 async def start_analysis_runtime(base: Path):
-    global runtime
+    global runtime, _started_once
     runtime = AnalysisRuntime(base, get_local_worker_broker())
-    await runtime.start()
+    try:
+        await runtime.start()
+    finally:
+        _started_once = True
 
 
 async def stop_analysis_runtime():
-    global runtime
+    global runtime, _start_expected
+    _start_expected = False  # a stopping process waits for nothing
     if runtime:
         await runtime.stop()
         runtime = None

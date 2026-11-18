@@ -104,6 +104,8 @@ _ACTIVE_STATES = frozenset({"RUNNING", "PAUSE"})
 # limits — so a fixed 180 would call a job that is heating an orphan and close
 # it. ``_grace_seconds`` adds the stage's own worst case when it applies.
 _JUST_DISPATCHED_SECONDS = 180
+# How long a sweep made while the process starts waits for the analysis service's first start.
+_ANALYSIS_START_WAIT_SECONDS = 120.0
 
 
 async def _grace_seconds(db: AsyncSession, archive: PrintArchive) -> int:
@@ -1350,9 +1352,34 @@ async def reconcile_printer_prints(
     With a ``printer_life`` the whole sweep runs as that client session, so what it calls -- the plate gate
     among them -- refuses to act for a printer record deleted meanwhile (spec gh109-o1 r2 R6).
     """
+    from backend.app.services.analysis_runtime import service_start_pending, wait_for_first_start
     from backend.app.services.printer_manager import printer_manager
 
     with printer_manager.session_scope(printer_id, printer_life):
+        if service_start_pending():
+            # A print that ended while we were down is booked from its 3MF analysis, in the one
+            # attempt the close is allowed -- and printers reconnect before the lifespan starts
+            # that service. Closing now would complete the archive and charge no spool.
+            if not await wait_for_first_start(_ANALYSIS_START_WAIT_SECONDS):
+                logger.warning(
+                    "reconcile: the analysis service has not started after %ss; sweeping printer %d without it",
+                    _ANALYSIS_START_WAIT_SECONDS,
+                    printer_id,
+                )
+            # The status this sweep was called with is as old as the wait: read the printer again.
+            client = printer_manager.get_client(printer_id)
+            state = getattr(client, "state", None)
+            if state is None or not state.connected or not state.state:
+                # The sweep is a one-shot per client: hand it back, so this client's next full
+                # status -- or its replacement's first -- runs it.
+                if client is not None and hasattr(client, "_startup_reconcile_done"):
+                    client._startup_reconcile_done = False
+                logger.info("reconcile: printer %d dropped during start-up; its next status sweeps", printer_id)
+                return
+            live_state = state.state
+            live_file = state.gcode_file or ""
+            live_subtask_id = state.subtask_id or ""
+            live_subtask_name = state.subtask_name or ""
         await _sweep_printer_prints(
             printer_id, live_state, live_file, live_subtask_id, live_subtask_name, printer_life=printer_life
         )

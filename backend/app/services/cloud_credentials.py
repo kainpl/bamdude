@@ -33,6 +33,11 @@ def open_admission() -> None:
     _open, _epoch = True, uuid.uuid4().hex
 
 
+def admission_open() -> bool:
+    """Whether a snapshot may be taken now; a background loop asks before it starts work."""
+    return _open
+
+
 def changed() -> HTTPException:
     return HTTPException(409, {"code": "cloud_credentials_changed"})
 

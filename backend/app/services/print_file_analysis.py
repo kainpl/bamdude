@@ -35,6 +35,10 @@ logger = logging.getLogger(__name__)
 AnalysisState = Literal["waiting_source", "empty", "preparing", "ready", "unavailable"]
 LifecycleState = Literal["active", "finishing", "retired"]
 _RETRY_DELAYS_SECONDS = (5.0, 30.0, 120.0)
+# A request made before this process's analysis service has started asks again at this pace, for
+# at most this many times (two minutes), without spending a retry attempt.
+_SERVICE_START_POLL_SECONDS = 2.0
+_MAX_SERVICE_START_WAITS = 60
 _MAX_PENDING_CONTEXTS = 64
 _MAX_GCODE_BYTES = 256 * 1024 * 1024
 _MAX_LAYER_CHANNEL_ENTRIES = 1_000_000
@@ -107,6 +111,7 @@ class _Context:
     analysis: PrintFileAnalysis | None = None
     error: str | None = None
     failed_attempts: int = 0
+    service_waits: int = 0
     retry_at: float | None = None
     started_at: float | None = None
     worker: Literal["service", "thread"] | None = None
@@ -694,6 +699,22 @@ async def get_print_file_analysis(
         candidate = getattr(printer_manager, "_print_file_analysis_runner", None)
         runner = candidate if isinstance(candidate, FunctionType) else None
         use_process = getattr(printer_manager, "_uses_print_file_analysis_service", False) is True
+        if use_process and runner is None and context.service_waits < _MAX_SERVICE_START_WAITS:
+            from backend.app.services.analysis_runtime import service_start_pending
+
+            if service_start_pending():
+                # Not a failure: printers reconnect before the lifespan starts the service.
+                context.service_waits += 1
+                context.error = "analysis service is starting"
+                context.retry_at = time.monotonic() + _SERVICE_START_POLL_SECONDS
+                context.state = "unavailable"
+                if context.service_waits == 1:
+                    logger.info(
+                        "[3MF ANALYSIS] waiting for the analysis service to start printer_id=%s archive_id=%s",
+                        printer_id,
+                        archive_id,
+                    )
+                return None
         context.started_at = time.monotonic()
         context.worker = "service" if use_process else "thread"
         diagnostics.parses_started += 1

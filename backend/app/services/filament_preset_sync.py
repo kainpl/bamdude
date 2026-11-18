@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.models.user import User
 from backend.app.models.user_filament import UserFilamentFamily, UserFilamentPreset
+from backend.app.services import cloud_credentials
 from backend.app.utils import filament_catalog as catalog
 from backend.app.utils.slicer_strings import first_slicer_string
 
@@ -528,6 +529,11 @@ async def filament_preset_sync_loop() -> None:
         except TimeoutError:
             pass
         _sync_wakeup.clear()
+        if not cloud_credentials.admission_open():
+            # Start-up, a restore or shutdown: "not yet", not a failure. Start-up pokes the loop
+            # again once admission is open.
+            logger.debug("filament preset sync skipped: cloud credential admission is closed")
+            continue
         try:
             await _sync_all_connected()
         except asyncio.CancelledError:

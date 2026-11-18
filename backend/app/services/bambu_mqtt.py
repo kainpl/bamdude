@@ -2424,6 +2424,8 @@ class BambuMQTTClient:
         on_lights_report: Callable[[bool], None] | None = None,
         on_kprofile_tables_due: Callable[[list[str]], None] | None = None,
         on_spool_inserted: Callable[[dict], None] | None = None,
+        request_topic_refused_firmware: str | None = None,
+        on_request_topic_verdict: Callable[[str | None], None] | None = None,
     ):
         self.ip_address = ip_address
         self.serial_number = serial_number
@@ -2794,6 +2796,14 @@ class BambuMQTTClient:
         # Some printer MQTT brokers (e.g. P1S, A1) reject subscriptions to the request
         # topic by killing the TCP connection. We detect this and gracefully degrade.
         # Check class-level cache first so new client instances don't retry known-bad subscriptions.
+        # The verdict also survives a restart, on the printer's row, with the firmware it was reached
+        # on (``request_topic_refused_firmware``). The firmware is known only once a connection
+        # lives, so a stored refusal is trusted for the connect and confirmed -- or forgotten -- when
+        # the version report arrives (``_settle_request_topic_verdict``).
+        self._request_topic_stored_firmware: str | None = request_topic_refused_firmware or None
+        self.on_request_topic_verdict = on_request_topic_verdict
+        if self._request_topic_stored_firmware:
+            BambuMQTTClient._request_topic_cache.setdefault(self.serial_number, False)
         self._request_topic_supported: bool = BambuMQTTClient._request_topic_cache.get(self.serial_number, True)
         self._request_topic_sub_mid: int | None = None
         self._request_topic_sub_time: float = 0.0
@@ -3227,8 +3237,7 @@ class BambuMQTTClient:
                         "[%s] Failed to send request topic subscription",
                         self.serial_number,
                     )
-                    self._request_topic_supported = False
-                    BambuMQTTClient._request_topic_cache[self.serial_number] = False
+                    self._refuse_request_topic()
             # Request full status update (includes nozzle info in push_status response)
             self._request_push_all()
             # Request firmware version info
@@ -3251,6 +3260,46 @@ class BambuMQTTClient:
             logger.warning("[%s] MQTT connect refused: rc=%s", self.serial_number, rc)
             self.state.connected = False
 
+    def _refuse_request_topic(self) -> None:
+        """The printer refuses the request-topic subscription: stop asking, and remember it."""
+        self._request_topic_supported = False
+        BambuMQTTClient._request_topic_cache[self.serial_number] = False
+        self._settle_request_topic_verdict(self.state.firmware_version)
+
+    def _settle_request_topic_verdict(self, firmware: str | None) -> None:
+        """Bind the refusal to the firmware it was met on, once that firmware is known.
+
+        Called when the version report arrives and when a refusal is decided. A stored refusal of
+        another firmware is forgotten -- this process and the row -- so the next connect probes
+        again; a refusal met in this process is reported once with its firmware.
+        """
+        if not firmware:
+            return
+        stored = self._request_topic_stored_firmware
+        if stored and stored != firmware:
+            logger.info(
+                "[%s] Firmware changed (%s -> %s): the request topic will be probed again on the next connect",
+                self.serial_number,
+                stored,
+                firmware,
+            )
+            self._request_topic_stored_firmware = None
+            self._request_topic_supported = True
+            BambuMQTTClient._request_topic_cache.pop(self.serial_number, None)
+            BambuMQTTClient._request_topic_strikes.pop(self.serial_number, None)
+            self._report_request_topic_verdict(None)
+        elif not stored and BambuMQTTClient._request_topic_cache.get(self.serial_number) is False:
+            self._request_topic_stored_firmware = firmware
+            self._report_request_topic_verdict(firmware)
+
+    def _report_request_topic_verdict(self, firmware: str | None) -> None:
+        if self.on_request_topic_verdict is None:
+            return
+        try:
+            self.on_request_topic_verdict(firmware)
+        except Exception:  # noqa: BLE001 -- remembering a verdict never costs the connection
+            logger.exception("[%s] Could not report the request topic verdict", self.serial_number)
+
     def _on_subscribe(self, client, userdata, mid, reason_code_list, properties=None):
         """Handle SUBACK responses to detect request topic subscription rejection."""
         if mid == self._request_topic_sub_mid:
@@ -3263,8 +3312,7 @@ class BambuMQTTClient:
                         rc.value,
                         rc.getName(),
                     )
-                    self._request_topic_supported = False
-                    BambuMQTTClient._request_topic_cache[self.serial_number] = False
+                    self._refuse_request_topic()
                 else:
                     logger.info(
                         "[%s] Request topic subscription accepted. "
@@ -3342,8 +3390,7 @@ class BambuMQTTClient:
                     self.serial_number,
                     strikes,
                 )
-                self._request_topic_supported = False
-                BambuMQTTClient._request_topic_cache[self.serial_number] = False
+                self._refuse_request_topic()
             else:
                 logger.info(
                     "[%s] Disconnected shortly after request topic subscription (%s/%s). "
@@ -4103,6 +4150,7 @@ class BambuMQTTClient:
                     self.state.firmware_version = version
                     if old_version != version:
                         logger.info("[%s] Firmware version: %s", self.serial_number, version)
+                    self._settle_request_topic_verdict(version)
                     state_changed = True
                 break
 
@@ -5283,8 +5331,12 @@ class BambuMQTTClient:
         # Merge AMS data instead of replacing, to handle partial updates
         # During prints, the printer may only send updates for active AMS units
         # We need deep merging at the tray level to preserve fields like tray_sub_brands
-        existing_ams = self.state.raw_data.get("ams", [])
-        existing_by_id = {ams.get("id"): ams for ams in existing_ams if ams.get("id") is not None}
+        existing_ams = self.state.raw_data.get("ams")
+        if not isinstance(existing_ams, list):
+            existing_ams = []
+        existing_by_id = {
+            ams.get("id"): ams for ams in existing_ams if isinstance(ams, dict) and ams.get("id") is not None
+        }
 
         # Update existing units with new data, add new units
         for ams_unit in ams_list:
@@ -7756,6 +7808,11 @@ class BambuMQTTClient:
         # Restore preserved fields immediately after raw_data assignment
         if ams_data is not None:
             self.state.raw_data["ams"] = ams_data
+        elif not isinstance(self.state.raw_data.get("ams"), list):
+            # ``raw_data["ams"]`` is the merged unit list and only the AMS handler writes it. A frame
+            # the handler stored nothing for -- a partial first update after a connect -- must not
+            # leave its own ``ams`` dict here: every reader would walk the dict's keys as units.
+            self.state.raw_data.pop("ams", None)
         if vt_tray_data is not None:
             self.state.raw_data["vt_tray"] = vt_tray_data
         if ams_extruder_map_data is not None:

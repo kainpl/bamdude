@@ -516,3 +516,55 @@ async def test_completion_wrapper_releases_its_context_after_an_unexpected_error
 
     assert not manager._print_file_analysis_contexts
     assert not manager._print_file_analysis_finishing_contexts
+
+
+async def test_a_request_before_the_service_starts_spends_no_attempt(tmp_path, monkeypatch, caplog):
+    """Printers reconnect before the analysis service of this process starts: that is "not yet"."""
+    from backend.app.services import analysis_runtime, print_file_analysis
+
+    path = tmp_path / "job.3mf"
+    path.write_bytes(b"fixture")
+    manager = _Manager()
+    manager._uses_print_file_analysis_service = True
+    monkeypatch.setattr(analysis_runtime, "runtime", None)
+    monkeypatch.setattr(analysis_runtime, "_start_expected", True)
+    monkeypatch.setattr(analysis_runtime, "_started_once", False)
+    calls = []
+
+    async def analyze(path_arg, plate_id):
+        calls.append(path_arg)
+        return PrintFileAnalysis([], None, {})
+
+    monkeypatch.setattr(analysis_runtime, "analyze_3mf", analyze)
+
+    with caplog.at_level(logging.WARNING, logger=print_file_analysis.logger.name):
+        assert await get_print_file_analysis(manager, 7, 42, path, None) is None
+    context = manager._print_file_analysis_contexts[7]
+    assert calls == []
+    assert context.failed_attempts == 0
+    assert context.error is not None and context.retry_at is not None  # the early reader keeps asking
+    assert caplog.records == []
+
+    monkeypatch.setattr(analysis_runtime, "_started_once", True)
+    context.retry_at = 0.0
+    assert await get_print_file_analysis(manager, 7, 42, path, None) == PrintFileAnalysis([], None, {})
+    assert context.failed_attempts == 0
+
+
+async def test_the_wait_for_the_service_is_bounded(tmp_path, monkeypatch):
+    from backend.app.services import analysis_runtime, print_file_analysis
+
+    path = tmp_path / "job.3mf"
+    path.write_bytes(b"fixture")
+    manager = _Manager()
+    manager._uses_print_file_analysis_service = True
+    monkeypatch.setattr(analysis_runtime, "runtime", None)
+    monkeypatch.setattr(analysis_runtime, "_start_expected", True)
+    monkeypatch.setattr(analysis_runtime, "_started_once", False)
+
+    assert await get_print_file_analysis(manager, 7, 42, path, None) is None
+    context = manager._print_file_analysis_contexts[7]
+    context.service_waits = print_file_analysis._MAX_SERVICE_START_WAITS
+    context.retry_at = 0.0
+    assert await get_print_file_analysis(manager, 7, 42, path, None) is None
+    assert context.failed_attempts == 1  # the ordinary failure path from here on

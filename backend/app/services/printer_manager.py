@@ -11,7 +11,7 @@ from collections.abc import Callable
 from contextlib import contextmanager
 
 from pydantic import ValidationError
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.tasks import spawn_background_task
@@ -83,6 +83,33 @@ async def _sync_kprofiles_for_printer(printer_id: int) -> None:
             await db.commit()
     except Exception as e:  # noqa: BLE001
         logger.warning("Auto-sync/link of K-profiles for printer %s failed: %s", printer_id, e)
+
+
+async def store_request_topic_verdict(
+    db: AsyncSession, printer_id: int, serial_number: str, firmware: str | None
+) -> None:
+    """Write the firmware a printer refused the request-topic subscription on (``None``: forget it).
+
+    The only writer of ``printers.request_topic_refused_firmware``. The row is addressed by its id
+    AND its serial number: SQLite hands a deleted printer's id to the next one, and a verdict about
+    one machine must never land on another.
+    """
+    await db.execute(
+        update(Printer)
+        .where(Printer.id == printer_id, Printer.serial_number == serial_number)
+        .values(request_topic_refused_firmware=firmware)
+    )
+    await db.commit()
+
+
+async def _store_request_topic_verdict(printer_id: int, serial_number: str, firmware: str | None) -> None:
+    from backend.app.core.database import async_session
+
+    try:
+        async with async_session() as db:
+            await store_request_topic_verdict(db, printer_id, serial_number, firmware)
+    except Exception as e:  # noqa: BLE001 -- best effort: the next start probes once more
+        logger.warning("Could not store the request topic verdict of printer %s: %s", printer_id, e)
 
 
 async def _prime_kprofile_tables(printer_id: int, diameters: list[str]) -> int:
@@ -1344,6 +1371,7 @@ class PrinterManager:
             self.disconnect_printer(printer.id)
 
         printer_id = printer.id
+        printer_serial = printer.serial_number
         client_generation = self._client_generations.get(printer_id, 0) + 1
         self._client_generations[printer_id] = client_generation
 
@@ -1475,6 +1503,11 @@ class PrinterManager:
 
             self._schedule_for_client(printer_id, session_life, camera_light.note_light_report(printer_id, on))
 
+        def on_request_topic_verdict(firmware: str | None):
+            self._schedule_for_client(
+                printer_id, session_life, _store_request_topic_verdict(printer_id, printer_serial, firmware)
+            )
+
         def on_first_status(live_state: str, live_file: str, live_subtask_id: str = "", live_subtask_name: str = ""):
             # First full status after each fresh connect — run the reconcile
             # sweep so a print that finished while BamDude was stopped or
@@ -1520,6 +1553,8 @@ class PrinterManager:
             on_usage_event=on_usage_event,
             on_feed_event=on_feed_event,
             on_kprofile_tables_due=on_kprofile_tables_due,
+            request_topic_refused_firmware=getattr(printer, "request_topic_refused_firmware", None),
+            on_request_topic_verdict=on_request_topic_verdict,
         )
 
         # Carry print-tracking state across the client recreation so a
