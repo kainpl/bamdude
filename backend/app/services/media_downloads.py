@@ -516,8 +516,7 @@ class MediaDownloadRuntime:
         self.generation = secrets.token_hex(8)
         self.jobs: dict[str, DownloadJob] = {}
         self.root: Path | None = None
-        self._slots: asyncio.Semaphore | None = None
-        self._slots_loop: asyncio.AbstractEventLoop | None = None
+        self._turn_waiters: set[asyncio.Future] = set()
         self._sweeper: asyncio.Task | None = None
         self._discards: set[asyncio.Task] = set()
 
@@ -533,12 +532,43 @@ class MediaDownloadRuntime:
             self.root = Path(settings.base_dir) / SCRATCH_DIRNAME
         return self.root
 
-    def _semaphore(self) -> asyncio.Semaphore:
-        loop = asyncio.get_running_loop()
-        if self._slots is None or self._slots_loop is not loop:
-            self._slots = asyncio.Semaphore(MAX_ACTIVE)
-            self._slots_loop = loop
-        return self._slots
+    def _running(self) -> int:
+        return sum(1 for job in self.jobs.values() if job.phase in (PHASE_PREPARING, PHASE_CANCELLING))
+
+    def _its_turn(self, job: DownloadJob) -> bool:
+        """May ``job`` take a slot now? Only the EARLIEST admitted job that still waits may.
+
+        The order is the registry's — the order of admission — and it holds from
+        the count at admission to the slot itself. A job admitted later never
+        overtakes an earlier one, not even while the earlier one's directory is
+        still being made: the places counted at admission are the places taken
+        (Codex r3, D2-R2 — a semaphore is first-come only among the tasks that
+        have already reached it, which is after the disk step).
+        """
+        if self._running() >= MAX_ACTIVE:
+            return False
+        for other in self.jobs.values():
+            if other.waiting:
+                return other is job
+        return False
+
+    def _turns_moved(self) -> None:
+        """A slot or a place in the order changed: let the waiting tasks look again."""
+        waiters, self._turn_waiters = self._turn_waiters, set()
+        for waiter in waiters:
+            if not waiter.done():
+                waiter.set_result(None)
+
+    async def _wait_for_turn(self, job: DownloadJob) -> None:
+        while not self._its_turn(job):
+            if job.stop.is_set() or self.closed:
+                raise asyncio.CancelledError
+            waiter = asyncio.get_running_loop().create_future()
+            self._turn_waiters.add(waiter)
+            try:
+                await waiter
+            finally:
+                self._turn_waiters.discard(waiter)
 
     def reopen(self) -> None:
         """Only lifespan startup reopens; every job of an earlier life is forgotten with its grants."""
@@ -586,10 +616,11 @@ class MediaDownloadRuntime:
         # slot is free, so a burst of requests is not refused while nothing is running. Each
         # free slot is spoken for ONCE, by the queued jobs in the order they were admitted;
         # everything behind them is really waiting, and so would this job be. A free slot that
-        # another account's job is about to take is not this account's room. A compatibility
-        # request's hidden job waits for the same slots and counts toward the same bounds.
-        running = sum(1 for job in self.jobs.values() if job.phase in (PHASE_PREPARING, PHASE_CANCELLING))
-        free = max(0, MAX_ACTIVE - running)
+        # another account's job is about to take is not this account's room. That order is the
+        # one the slots are then given in (``_its_turn``), so what is counted here is what
+        # happens. A compatibility request's hidden job waits for the same slots and counts
+        # toward the same bounds.
+        free = max(0, MAX_ACTIVE - self._running())
         queued = [job for job in self.jobs.values() if job.waiting]  # registry order = admission order
         if len(queued) >= free:  # no slot is left for this one: it would wait
             waiting = queued[free:]
@@ -667,6 +698,7 @@ class MediaDownloadRuntime:
             job.phase = PHASE_FAILED
             job.error = ERROR_CLEANUP
             job.hidden = True
+        self._turns_moved()  # its place in the order is free
 
     def get(self, job_id: str, capture, kind: str, resource_id: int) -> DownloadJob | None:
         """The caller's own job in this scope. Somebody else's and a missing one are both ``None``."""
@@ -740,8 +772,25 @@ class MediaDownloadRuntime:
         if job.pinned():
             return  # the sweeper removes it when the last reader is done
         job.artifact = None
-        if await self._remove(job.directory) and job.forget:
+        if await asyncio.shield(self._removal(job)) and job.forget:
             self.jobs.pop(job.job_id, None)
+
+    def _removal(self, job: DownloadJob) -> asyncio.Task:
+        """THE removal of a finished job's directory: begun once, shared by everyone who needs it.
+
+        The janitor, a discard and a restore's drain all come here, so a second
+        removal is never started beside one that is still on the disk — and the
+        drain can see that one and wait for it (Codex r3, D5-R2: a drain that
+        cancelled the janitor started its own removal, which "succeeded" while
+        the first was still inside the file system). The task belongs to the
+        runtime: a caller awaits it shielded, so a cancelled caller leaves it
+        running and visible. A removal that failed is begun again.
+        """
+        if job.removal is None or (job.removal.done() and not self._removed(job)):
+            job.removal = asyncio.get_running_loop().create_task(
+                self._remove(job.directory), name="media-download-remove"
+            )
+        return job.removal
 
     async def _remove(self, directory: Path) -> bool:
         try:
@@ -785,10 +834,12 @@ class MediaDownloadRuntime:
             try:
                 if job.stop.is_set() or self.closed:
                     raise asyncio.CancelledError
-                async with self._semaphore():
-                    if job.stop.is_set() or self.closed:
-                        raise asyncio.CancelledError
-                    await self._prepare(job)
+                await self._wait_for_turn(job)
+                # The slot is taken in the same synchronous step that found it free.
+                job.phase = PHASE_PREPARING
+                job.started = time.monotonic()
+                self._turns_moved()  # the next in line may have a slot too
+                await self._prepare(job)
             except asyncio.CancelledError:
                 outcome = job.cancel_reason or ERROR_INTERRUPTED
             except _Fatal as fatal:
@@ -837,6 +888,7 @@ class MediaDownloadRuntime:
                 job.error = ERROR_CLEANUP
             logger.info("[DOWNLOADS] job %s ended: %s", job.job_id[:8], job.error or job.phase)
         job.done.set()
+        self._turns_moved()  # a slot, or a place in the order, is free
 
     async def _settled_remove(self, directory: Path) -> bool:
         """Remove a job's scratch through any number of cancels."""
@@ -861,8 +913,6 @@ class MediaDownloadRuntime:
         self.request_cancel(job, ERROR_INTERRUPTED if interrupted else ERROR_AUTHORITY)
 
     async def _prepare(self, job: DownloadJob) -> None:
-        job.phase = PHASE_PREPARING
-        job.started = time.monotonic()
         try:
             handle = live_authority.register(job.scope.descriptor)
         except HTTPException as exc:
@@ -1013,7 +1063,7 @@ class MediaDownloadRuntime:
                 # Its directory may be a leftover of a failed removal: try once more. A job is
                 # forgotten only with its directory — what is still on disk is still ours to
                 # answer for, to the next sweep and to a restore.
-                if await self._remove(job.directory):
+                if await asyncio.shield(self._removal(job)):
                     self.jobs.pop(job.job_id, None)
 
     # -- restore / shutdown ------------------------------------------------------------
@@ -1051,6 +1101,7 @@ class MediaDownloadRuntime:
         if running:
             await asyncio.wait(running, timeout=max(0.0, deadline - time.monotonic()))
         if self._sweeper is not None and not self._sweeper.done():
+            # Its removals are tasks of their own (``_removal``) and are met again below.
             self._sweeper.cancel()
         still = [job.job_id[:8] for job in self.jobs.values() if job.task is not None and not job.task.done()]
         if still:
@@ -1075,15 +1126,11 @@ class MediaDownloadRuntime:
         # the next drain finds it finished, or still running, never forgotten.
         for job in self.jobs.values():
             job.artifact = None
-            if job.removal is None or (job.removal.done() and not self._removed(job)):
-                job.removal = asyncio.get_running_loop().create_task(
-                    self._remove(job.directory), name="media-download-remove"
-                )
-        removals = [job.removal for job in self.jobs.values()]
+        removals = [self._removal(job) for job in self.jobs.values()]
         if removals:
-            # Never less than a moment: a deadline spent on the steps above must not turn a
-            # removal that takes milliseconds into a refused restore.
-            await asyncio.wait(removals, timeout=max(0.05, deadline - time.monotonic()))
+            # What is left of the ONE deadline, and nothing beyond it: once it is spent the
+            # answer is a refusal, and the removals go on under the runtime.
+            await asyncio.wait(removals, timeout=max(0.0, deadline - time.monotonic()))
         debt = unfinished = 0
         for job in list(self.jobs.values()):
             if not job.removal.done():

@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import ftplib  # nosec B402
 import functools
 import logging
@@ -964,14 +965,33 @@ class BambuFTPClient:
             # told apart here, where the two can still be told apart (G10 D review, D4-R).
             return _Stop("insufficient_storage", f"local_{type(exc).__name__}")
 
+        @contextlib.contextmanager
+        def closing_staging(handle):
+            # A buffered file flushes again when it is closed. After a failure that second
+            # flush fails too, and as a bare ``OSError`` it would REPLACE the first error —
+            # a classified "this disk is full" became "the printer is unavailable", one file's
+            # failure, and the job handed out a partial ZIP (Codex r3, D4-R2). So a close that
+            # fails while something is already failing changes nothing, and a close that fails
+            # on its own is this disk's refusal like any other.
+            try:
+                yield
+            except BaseException:
+                with contextlib.suppress(OSError):
+                    handle.close()
+                raise
+            try:
+                handle.close()
+            except OSError as exc:
+                raise local(exc) from exc
+
         def transfer() -> tuple[str, int, str | None, str | None]:
             nonlocal received, created
             try:
                 volume.mkdir(parents=True, exist_ok=True)
-                handle = open(local_path, "wb")  # noqa: SIM115 — entered as a context just below
+                handle = open(local_path, "wb")  # noqa: SIM115 — closed by ``closing_staging`` just below
             except OSError as exc:
                 raise local(exc) from exc
-            with handle:
+            with closing_staging(handle):
                 created = True
 
                 def write(chunk: bytes) -> None:

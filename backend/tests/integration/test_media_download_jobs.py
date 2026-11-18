@@ -721,7 +721,7 @@ class TestJobRequirements:
         from backend.app.services.live_authority import live_authority
 
         monkeypatch.setattr(media_downloads, "MAX_ACTIVE", 1)
-        media_download_runtime._slots = None
+
         await _user(db_session, "dl_waits", ["printers:files", "printers:read"])
         headers = await _jwt("dl_waits")
         printer_files.transport.files.update({"/hold.txt": b"h", "/a.txt": b"a"})

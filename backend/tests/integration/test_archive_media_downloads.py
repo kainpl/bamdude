@@ -413,7 +413,7 @@ class TestShownVideo:
     async def _waiting_local_job(self, async_client, archive_media, monkeypatch):
         """A job of the attached video that waits behind another one."""
         monkeypatch.setattr(media_downloads, "MAX_ACTIVE", 1)
-        media_download_runtime._slots = None
+
         archive_media.transport.files["/timelapse/hold.mp4"] = b"hold"
         archive_media.transport.block()
         remote = {"printer_id": archive_media.printer.id, "storage": "external", "path": "/timelapse/hold.mp4"}

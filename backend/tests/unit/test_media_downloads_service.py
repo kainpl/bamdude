@@ -951,3 +951,263 @@ class TestTheScratchRefuses:
             return await client.download_to_file("/two", destination)
 
         assert await self._job_with_second_source(tmp_path, fetch) == md.ERROR_STORAGE
+
+
+def _held_running(runtime, monkeypatch):
+    """Preparation waits on ``release``; ``full`` is set once every slot is taken."""
+    release, full = asyncio.Event(), asyncio.Event()
+
+    async def prepare(_job):
+        if runtime._running() == md.MAX_ACTIVE:
+            full.set()
+        await release.wait()
+
+    monkeypatch.setattr(runtime, "_prepare", prepare)
+    return release, full
+
+
+@pytest.mark.asyncio
+class TestTheOrderHoldsToTheSlot:
+    """Codex r3, D2-R2: the places counted at admission are the places taken, whoever's directory is ready first."""
+
+    @pytest.mark.parametrize("ready_first", ["A", "B"])
+    async def test_a_later_job_never_overtakes_an_earlier_one(self, runtime, monkeypatch, ready_first):
+        real_disk = md.disk
+        gates = {account: asyncio.Event() for account in "AB"}
+
+        async def disk(function, *args):
+            if function is md._make_job_directory:
+                await gates[runtime.jobs[args[-1]].capture.account_identity].wait()
+            return await real_disk(function, *args)
+
+        monkeypatch.setattr(md, "disk", disk)
+        release, full = _held_running(runtime, monkeypatch)
+        accounts = ["A", "A", "A", "A", "B", "B"]
+        requests = [asyncio.create_task(_create(runtime, _capture(account))) for account in accounts]
+        try:
+            await asyncio.sleep(0)
+            gates[ready_first].set()
+            await asyncio.sleep(0.1)  # the other account's directories are still being made
+            running = [j.capture.account_identity for j in runtime.jobs.values() if j.phase == md.PHASE_PREPARING]
+            assert running == (["A", "A"] if ready_first == "A" else [])  # B waits behind A's admissions
+            for gate in gates.values():
+                gate.set()
+            answers = await asyncio.gather(*requests, return_exceptions=True)
+            assert all(isinstance(a, md.DownloadJob) for a in answers), answers
+            await asyncio.wait_for(full.wait(), 3)
+            by_account = {
+                account: [j.phase for j in runtime.jobs.values() if j.capture.account_identity == account]
+                for account in "AB"
+            }
+            # The first two admitted hold the slots; nobody waits beyond the bound.
+            assert by_account == {
+                "A": [md.PHASE_PREPARING, md.PHASE_PREPARING, md.PHASE_QUEUED, md.PHASE_QUEUED],
+                "B": [md.PHASE_QUEUED, md.PHASE_QUEUED],
+            }
+        finally:
+            for gate in gates.values():
+                gate.set()
+            release.set()
+            await asyncio.gather(*requests, return_exceptions=True)
+            assert await runtime.quiesce(3)
+
+    async def test_a_place_given_back_lets_the_next_one_through(self, runtime, monkeypatch):
+        monkeypatch.setattr(md, "MAX_ACTIVE", 1)
+        make = md._make_job_directory
+        first_call = {"pending": True}
+        gate = threading.Event()
+
+        def flaky(root, job_id):
+            if first_call.pop("pending", False):
+                gate.wait(5)  # the head of the order is still on the disk…
+                raise OSError("the scratch refused")  # …and then is not admitted at all
+            return make(root, job_id)
+
+        monkeypatch.setattr(md, "_make_job_directory", flaky)
+        release, full = _held_running(runtime, monkeypatch)
+        try:
+            head = asyncio.create_task(_create(runtime))
+            await asyncio.sleep(0)
+            behind = await _create(runtime, _capture("other"))
+            await asyncio.sleep(0.05)
+            assert behind.phase == md.PHASE_QUEUED  # it does not overtake the admission in flight
+            gate.set()
+            with pytest.raises(md.DownloadRefused):
+                await head
+            await asyncio.wait_for(full.wait(), 3)
+            assert behind.phase == md.PHASE_PREPARING
+        finally:
+            gate.set()
+            release.set()
+            assert await runtime.quiesce(3)
+
+    async def test_a_cancelled_waiter_gives_its_place_to_the_one_behind(self, runtime, monkeypatch):
+        monkeypatch.setattr(md, "MAX_ACTIVE", 1)
+        release = asyncio.Event()
+        started = []
+
+        async def prepare(job):
+            started.append(job.capture.account_identity)
+            await release.wait()
+
+        monkeypatch.setattr(runtime, "_prepare", prepare)
+        try:
+            await _create(runtime, _capture("first"))
+            second = await _create(runtime, _capture("second"))
+            third = await _create(runtime, _capture("third"))
+            await asyncio.sleep(0.05)
+            runtime.request_cancel(second)
+            await asyncio.wait_for(runtime.wait(second), 2)
+            assert started == ["first"] and third.phase == md.PHASE_QUEUED
+            release.set()
+            await asyncio.sleep(0.05)
+            assert started == ["first", "third"]
+        finally:
+            release.set()
+            assert await runtime.quiesce(3)
+
+
+@pytest.mark.asyncio
+class TestOneRemovalPerDirectory:
+    """Codex r3, D5-R2: a drain does not start a second removal beside the janitor's, nor answer over it."""
+
+    async def test_a_drain_meets_the_janitors_removal_instead_of_starting_its_own(self, tmp_path, monkeypatch):
+        runtime = md.MediaDownloadRuntime()
+        job = _old_failed_job(runtime, tmp_path)
+        entered, resume = threading.Event(), threading.Event()
+        real = md._remove_job_directory
+        calls = []
+
+        def controlled(path):
+            calls.append(path)
+            if len(calls) == 1:
+                entered.set()
+                assert resume.wait(5)
+            real(path)
+
+        monkeypatch.setattr(md, "_remove_job_directory", controlled)
+        monkeypatch.setattr(md, "SWEEP_SECONDS", 0.005)
+        runtime._ensure_sweeper()
+        janitor = runtime._sweeper
+        try:
+            assert await asyncio.to_thread(entered.wait, 3)  # the janitor's removal is inside the file system
+            started = time.monotonic()
+            drained = await runtime.quiesce(0.09)
+            took = time.monotonic() - started
+            assert (drained, len(calls)) == (False, 1)
+            assert took < 0.3  # the one deadline, nothing added to it
+            assert job.job_id in runtime.jobs and job.directory.exists()
+        finally:
+            resume.set()
+            await asyncio.gather(janitor, return_exceptions=True)
+        assert await runtime.quiesce(2) is True
+        assert len(calls) == 1 and not job.directory.exists()
+
+    async def test_a_discard_and_a_drain_share_one_removal(self, tmp_path, monkeypatch):
+        runtime = md.MediaDownloadRuntime()
+        directory = md._make_job_directory(tmp_path / "jobs", "one")
+        job = md.DownloadJob("one", _scope(), (), (), False, "x", directory, 0, phase=md.PHASE_READY)
+        runtime.jobs[job.job_id] = job
+        calls = []
+        real = md._remove_job_directory
+
+        def counting(path):
+            calls.append(path)
+            real(path)
+
+        monkeypatch.setattr(md, "_remove_job_directory", counting)
+        runtime.discard_soon(job, forget=True)
+        assert await runtime.quiesce(2) is True
+        assert len(calls) == 1 and runtime.jobs == {}
+
+
+class TestFtpClosesOverAFullDisk:
+    """Codex r3, D4-R2: the second flush, at close, must not turn "this disk is full" into "the printer is unavailable"."""
+
+    def _refusing(self):
+        import errno
+        import io
+
+        class Volume(io.RawIOBase):
+            attempts = 0
+
+            def writable(self):
+                return True
+
+            def write(self, _chunk):
+                Volume.attempts += 1
+                raise OSError(errno.ENOSPC, "No space left on device")
+
+        return Volume, io.BufferedWriter
+
+    def _fetch(self, monkeypatch, tmp_path, opened, retrieve):
+        from types import SimpleNamespace
+
+        from backend.app.services import bambu_ftp
+
+        monkeypatch.setattr(bambu_ftp, "open", opened, raising=False)
+        peer = SimpleNamespace(_ftp=SimpleNamespace(retrbinary=retrieve), get_file_size=lambda _path: None)
+        destination = tmp_path / "scratch.part"
+        return bambu_ftp.BambuFTPClient.fetch_to_file(peer, "/clip", destination), destination
+
+    def test_a_buffer_that_fails_on_flush_and_again_on_close_is_the_disks_refusal(self, monkeypatch, tmp_path):
+        volume, buffered = self._refusing()
+
+        def opened(path, _mode):
+            path.touch()
+            return buffered(volume())
+
+        def retrieve(_command, write, blocksize=0):
+            write(b"small final block")  # stays in the buffer: the disk is first asked at the flush
+
+        (status, received, _check, reason), destination = self._fetch(monkeypatch, tmp_path, opened, retrieve)
+        assert volume.attempts >= 2  # the flush, and the close's own
+        assert (status, received, reason) == ("insufficient_storage", 17, "local_OSError")
+        assert not destination.exists()
+
+    def test_a_dead_socket_stays_the_printers_failure_even_when_the_close_fails_too(self, monkeypatch, tmp_path):
+        import errno
+
+        volume, buffered = self._refusing()
+
+        def opened(path, _mode):
+            path.touch()
+            return buffered(volume())
+
+        def retrieve(_command, write, blocksize=0):
+            write(b"some bytes")
+            raise ConnectionResetError(errno.ECONNRESET, "reset by peer")
+
+        (status, _received, _check, reason), destination = self._fetch(monkeypatch, tmp_path, opened, retrieve)
+        # The network failed first; the close's own error does not replace it either.
+        assert (status, reason) == ("unavailable", "ConnectionResetError")
+        assert not destination.exists()
+
+    def test_a_close_that_fails_alone_is_the_disks_refusal(self, monkeypatch, tmp_path):
+        import errno
+
+        class FailsOnClose:
+            def __init__(self, path):
+                self.handle = open(path, "wb")  # noqa: SIM115
+
+            def write(self, chunk):
+                return self.handle.write(chunk)
+
+            def flush(self):
+                self.handle.flush()
+
+            def fileno(self):
+                return self.handle.fileno()
+
+            def close(self):
+                self.handle.close()
+                raise OSError(errno.ENOSPC, "No space left on device")
+
+        def retrieve(_command, write, blocksize=0):
+            write(b"data")
+
+        (status, _received, _check, reason), destination = self._fetch(
+            monkeypatch, tmp_path, lambda path, _mode: FailsOnClose(path), retrieve
+        )
+        assert (status, reason) == ("insufficient_storage", "local_OSError")
+        assert not destination.exists()
