@@ -285,6 +285,7 @@
   "Dispatch note not found": "Накладну не знайдено",
   "Distance must be non-zero and <= 200 mm": "Відстань має бути ненульовою і <= 200 mm",
   "Download not found": "Завантаження не знайдено",
+  "This download takes its credentials from the request headers": "Це завантаження бере облікові дані лише із заголовків запиту",
   "Downloading files from MakerWorld requires a Bambu Cloud login": "Щоб завантажувати файли з MakerWorld, потрібно увійти в Bambu Cloud",
   "Downloads are stopped for a restore": "Завантаження зупинено на час відновлення",
   "Downloads have not stopped; retry restore after they finish": "Завантаження ще не зупинилися; повторіть відновлення, коли вони завершаться",

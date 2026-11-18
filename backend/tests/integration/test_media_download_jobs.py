@@ -627,3 +627,152 @@ class TestDelivery:
             if not task.done():
                 task.cancel()
             await asyncio.gather(task, return_exceptions=True)
+
+
+class TestJobRequirements:
+    """Codex review r1, D1: a job's own requirements stand on every one of its doors."""
+
+    def _doors(self, base, job_id):
+        return (
+            ("GET", f"{base}/{job_id}"),
+            ("DELETE", f"{base}/{job_id}"),
+            ("POST", f"{base}/{job_id}/download-token"),
+            ("GET", f"{base}/{job_id}/artifact"),
+        )
+
+    async def test_another_session_of_the_same_account_does_not_see_the_job(
+        self, async_client, printer_files, db_session
+    ):
+        await _user(db_session, "dl_two", ["printers:files", "printers:read"])
+        first, second = await _jwt("dl_two"), await _jwt("dl_two")
+        printer_files.transport.files["/a.txt"] = b"a"
+        base = printer_files.base
+        created = await async_client.post(base, json={"paths": ["/a.txt"]}, headers=first)
+        assert created.status_code == 202, created.text
+        job_id = created.json()["job_id"]
+        await _until(async_client, f"{base}/{job_id}", headers=first)
+        missing = await async_client.get(f"{base}/{'0' * 32}", headers=second)
+        for method, path in self._doors(base, job_id):
+            answer = await async_client.request(method, path, headers=second)
+            assert (answer.status_code, answer.json()) == (404, missing.json()), (method, path)
+        assert (await async_client.get(base, headers=second)).json() == {"jobs": []}
+        # The session that made it still has it.
+        assert [j["job_id"] for j in (await async_client.get(base, headers=first)).json()["jobs"]] == [job_id]
+        assert (await async_client.get(f"{base}/{job_id}/artifact", headers=first)).content == b"a"
+
+    async def test_a_printer_that_took_the_id_does_not_inherit_the_job(self, async_client, printer_files, db_session):
+        import uuid
+
+        from backend.app.models.printer import Printer
+        from backend.app.services.live_authority import live_authority
+
+        printer_files.transport.files["/a.txt"] = b"a"
+        base = printer_files.base
+        job = await _start(async_client, printer_files, ["/a.txt"])
+        await _until(async_client, f"{base}/{job['job_id']}")
+        url = await _grant_url(async_client, printer_files, job["job_id"])  # minted while it was still that printer
+
+        # SQLite hands a deleted printer's id to the next one: same number, another machine.
+        row = await db_session.get(Printer, printer_files.printer.id)
+        row.connector_identity = str(uuid.uuid4())
+        await db_session.commit()
+        live_authority.invalidate()
+
+        # The state doors answer as for a job that is gone — never 401, which the browser reads
+        # as "signed out"; the doors that send the file refuse before their headers.
+        for (method, path), expected in zip(self._doors(base, job["job_id"]), (404, 404, 404, 401), strict=True):
+            answer = await async_client.request(method, path)
+            assert answer.status_code == expected, (method, path, answer.text)
+            assert answer.content != b"a"
+        assert (await async_client.get(base)).json() == {"jobs": []}
+        native = await async_client.get(url, headers={"Authorization": ""})
+        assert native.status_code == 401
+        assert "download-failed.txt" in native.headers["content-disposition"]
+        assert native.content != b"a"
+
+    async def test_an_artifact_door_takes_its_credential_from_the_headers_only(self, async_client, printer_files):
+        printer_files.transport.files["/a.txt"] = b"a"
+        job = await _start(async_client, printer_files, ["/a.txt"])
+        await _until(async_client, f"{printer_files.base}/{job['job_id']}")
+        both = await async_client.get(f"{printer_files.base}/{job['job_id']}/artifact", params={"token": "anything"})
+        assert both.status_code == 400
+        assert (await async_client.get(f"{printer_files.base}/{job['job_id']}/artifact")).content == b"a"
+
+    async def test_a_right_lost_while_waiting_stops_the_job_at_its_first_check(
+        self, async_client, printer_files, db_session, monkeypatch
+    ):
+        # The coordinator retires a RUNNING handle when its caller's rights change. A job that is
+        # still waiting has no handle yet: what stops it is the first admission itself, which
+        # asks for the permission the job's descriptor names (Codex r1 on mutation M11).
+        from sqlalchemy import select
+
+        from backend.app.models.group import Group
+        from backend.app.services.live_authority import live_authority
+
+        monkeypatch.setattr(media_downloads, "MAX_ACTIVE", 1)
+        media_download_runtime._slots = None
+        await _user(db_session, "dl_waits", ["printers:files", "printers:read"])
+        headers = await _jwt("dl_waits")
+        printer_files.transport.files.update({"/hold.txt": b"h", "/a.txt": b"a"})
+        printer_files.transport.block()
+        await _start(async_client, printer_files, ["/hold.txt"])
+        await asyncio.wait_for(printer_files.transport.entered.wait(), 3)
+        created = await async_client.post(printer_files.base, json={"paths": ["/a.txt"]}, headers=headers)
+        assert created.status_code == 202, created.text
+        job = media_download_runtime.jobs[created.json()["job_id"]]
+        assert job.phase == "queued"
+
+        group = (await db_session.execute(select(Group).where(Group.name == "grp-dl_waits"))).scalar_one()
+        group.permissions = ["printers:read"]
+        await db_session.commit()
+        live_authority.invalidate()
+        printer_files.transport.worker_ended.set()
+        printer_files.transport.hold.set()
+        await asyncio.wait_for(job.done.wait(), 5)
+        assert (job.phase, job.error, job.artifact) == ("failed", "authority_lost", None)
+        assert [call["path"] for call in printer_files.transport.calls] == ["/hold.txt"]
+
+
+class TestPromisedRead:
+    """Codex review r1, D5: the promise is confirmed before the headers, on the real doors."""
+
+    async def test_a_promise_that_ran_out_is_refused_before_anything_is_sent(
+        self, async_client, printer_files, monkeypatch
+    ):
+        printer_files.transport.files["/a.txt"] = b"a"
+        job = await _start(async_client, printer_files, ["/a.txt"])
+        await _until(async_client, f"{printer_files.base}/{job['job_id']}")
+        url = await _grant_url(async_client, printer_files, job["job_id"])
+        # Every promise is already over when it is made: the janitor may have taken the file.
+        monkeypatch.setattr(media_downloads, "PENDING_READER_SECONDS", -1.0)
+        by_header = await async_client.get(f"{printer_files.base}/{job['job_id']}/artifact")
+        assert by_header.status_code == 404 and by_header.content != b"a"
+        native = await async_client.get(url, headers={"Authorization": ""})
+        assert native.status_code == 404 and "download-failed.txt" in native.headers["content-disposition"]
+        assert not media_download_runtime.jobs[job["job_id"]].pinned()
+
+    async def test_a_read_in_progress_holds_the_result_and_releases_it(self, async_client, printer_files):
+        from backend.app.main import app
+        from backend.tests.integration.test_g01_d_media_pipeline import _scope
+
+        job, url = await TestDelivery()._ready(async_client, printer_files, 4 * 1024 * 1024)
+        held = media_download_runtime.jobs[job["job_id"]]
+        scope = _scope(url, async_client)
+        scope["headers"] = [(k, v) for k, v in scope["headers"] if k != b"authorization"]
+        pinned_while_reading = []
+        asked = False
+
+        async def receive():
+            nonlocal asked
+            if not asked:
+                asked = True
+                return {"type": "http.request", "body": b"", "more_body": False}
+            await asyncio.Event().wait()
+
+        async def send(message):
+            if message["type"] == "http.response.body":
+                pinned_while_reading.append(any(lease.started for lease in held.leases))
+
+        await asyncio.wait_for(app(scope, receive, send), 30)
+        assert pinned_while_reading and all(pinned_while_reading)
+        assert not held.pinned() and held.leases == set()

@@ -31,6 +31,11 @@ A download is now a JOB:
 * **In memory, one process.** A restart forgets every job; what it left on disk
   is recognised by its marker file and removed at startup. A ready result is
   kept for an hour of idleness and while anybody is reading it.
+* **Admitted in one step.** The place in the queue is taken in the same
+  synchronous step that counted the places, before the first disk call, and
+  given back on every way out; the lifetime runs from that moment.
+* **Its creator's.** A job is found only by the very credential that made it
+  (this session, this key); the per-user bounds count the account.
 
 Fatal and per-file failures are different things. A byte budget, the disk
 reserve, lost authority, the time limit and a restore end the whole job — a
@@ -242,10 +247,11 @@ class JobScope:
 class ReaderLease:
     """One promised read of a job's artifact.
 
-    Taken when a download answer is built, started when its body opens the
-    file, released when the body's cleanup has closed it. A lease that was
-    never started lapses by itself, so an answer that never ran pins nothing
-    for ever.
+    Taken when a download answer is built, started before the answer's headers,
+    released when the body's cleanup has closed the file. A lease that was never
+    started lapses by itself, so an answer that never ran pins nothing for ever
+    — and a lapsed one cannot be started: once the promise ran out the janitor
+    may already have taken the file.
     """
 
     def __init__(self, runtime: MediaDownloadRuntime, job: DownloadJob, *, discard_after: bool = False):
@@ -256,8 +262,27 @@ class ReaderLease:
         self.discard_after = discard_after
         self.pending_until = time.monotonic() + PENDING_READER_SECONDS
 
-    def start(self) -> None:
+    def start(self) -> bool:
+        """Begin the promised read. False = the promise no longer stands, and nothing may be sent.
+
+        One synchronous step: the promise is still running, the runtime is open
+        and the job still shows this result — or the lease is given up.
+        """
+        if self.released:
+            return False
+        if self.started:
+            return True
+        job = self.job
+        if (
+            time.monotonic() >= self.pending_until
+            or self._runtime.closed
+            or job.phase != PHASE_READY
+            or job.artifact is None
+        ):
+            self.release()
+            return False
         self.started = True
+        return True
 
     def holds(self) -> bool:
         return not self.released and (self.started or time.monotonic() < self.pending_until)
@@ -300,6 +325,7 @@ class DownloadJob:
     cancel_reason: str | None = None
     stop: threading.Event = field(default_factory=threading.Event, repr=False)
     task: asyncio.Task | None = field(default=None, repr=False)
+    entered: bool = False  # its task has taken its first step
     done: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
     leases: set = field(default_factory=set, repr=False)
     timer: Any = field(default=None, repr=False)
@@ -376,9 +402,13 @@ def _make_job_directory(root: Path, job_id: str) -> Path:
     if root.is_symlink() or root.is_junction():
         raise OSError("the download scratch root is a link")
     directory = root / job_id
-    directory.mkdir()
-    (directory / MARKER).write_text(job_id, encoding="ascii")
-    (directory / "raw").mkdir()
+    directory.mkdir()  # never exist_ok: the directory is this call's own from here on
+    try:
+        (directory / MARKER).write_text(job_id, encoding="ascii")
+        (directory / "raw").mkdir()
+    except BaseException:
+        shutil.rmtree(directory, ignore_errors=True)
+        raise
     return directory
 
 
@@ -457,6 +487,26 @@ def _zip_add(archive: zipfile.ZipFile, raw: Path, arcname: str, stop: threading.
     return copied
 
 
+def same_user(a, b) -> bool:
+    """One account — what the per-user bounds count. A person's sessions and keys share them."""
+    return a.account_identity == b.account_identity
+
+
+def same_credential(a, b) -> bool:
+    """The very credential that made a job: this session, this key or this long-lived token.
+
+    Ownership, not quota: two browser sessions of one account are two callers,
+    and neither sees the other's jobs.
+    """
+    return (
+        a.kind == b.kind
+        and a.account_identity == b.account_identity
+        and a.sid == b.sid
+        and a.key_identity == b.key_identity
+        and a.token_identity == b.token_identity
+    )
+
+
 class MediaDownloadRuntime:
     """Admission, the registry and the workers of download jobs."""
 
@@ -519,38 +569,10 @@ class MediaDownloadRuntime:
         if len(sources) > 1:
             as_zip = True
         capture = scope.descriptor.capture
-        # A job reads ``queued`` from its creation until its task takes a slot — also when a
-        # slot is free. Only the jobs beyond the free slots are really waiting, so a burst of
-        # requests is not refused while nothing is running. A compatibility request's hidden
-        # job waits for the same slots and counts toward the same global bound.
-        running = sum(1 for job in self.jobs.values() if job.phase in (PHASE_PREPARING, PHASE_CANCELLING))
-        free = max(0, MAX_ACTIVE - running)
-        queued = [job for job in self.jobs.values() if job.waiting]
-        if len(queued) - free >= MAX_WAITING:
-            raise DownloadRefused(429, "download_queue_full", "Too many downloads are waiting", retry_after=30)
-        if not hidden:
-            mine = [job for job in queued if not job.hidden and self._same_caller(job.capture, capture)]
-            if len(mine) - free >= MAX_WAITING_PER_USER:
-                raise DownloadRefused(429, "download_user_limit", "You already have downloads waiting", retry_after=30)
         known = [s.advisory_size for s in sources if s.advisory_size and s.advisory_size > 0]
         need = sum(known) + (max(known) if as_zip and known else 0)
         if sum(known) > BYTE_BUDGET:
             raise DownloadRefused(413, ERROR_LIMIT, "The selection is larger than one download may be")
-        root = self.scratch_root()
-        job_id = uuid.uuid4().hex
-        try:
-            directory = await disk(_make_job_directory, root, job_id)
-            usage = await disk(shutil.disk_usage, directory)
-        except OSError as exc:
-            logger.warning("[DOWNLOADS] the scratch directory is not usable (%s)", type(exc).__name__)
-            raise DownloadRefused(507, ERROR_STORAGE, "The server cannot prepare a download now") from exc
-        promised = sum(job.unspent_reservation() for job in self.jobs.values())
-        if usage.free - promised - need < _base_reserve(usage):
-            await self._remove(directory)
-            raise DownloadRefused(507, ERROR_STORAGE, "Not enough free space on the server to prepare this download")
-        if self.closed:  # a restore began while the directory was made
-            await self._remove(directory)
-            raise DownloadRefused(503, "downloads_unavailable", "Downloads are stopped for a restore", retry_after=30)
         names = unique_names([safe_name(s.name, "file") for s in sources])
         if as_zip:
             display = safe_name(filename, "download.zip")
@@ -558,6 +580,20 @@ class MediaDownloadRuntime:
                 display += ".zip"
         else:
             display = safe_name(filename or names[0], names[0])
+        # A job reads ``queued`` from its admission until its task takes a slot — also when a
+        # slot is free. Only the jobs beyond the free slots are really waiting, so a burst of
+        # requests is not refused while nothing is running. A compatibility request's hidden
+        # job waits for the same slots and counts toward the same bounds, the user's included.
+        running = sum(1 for job in self.jobs.values() if job.phase in (PHASE_PREPARING, PHASE_CANCELLING))
+        free = max(0, MAX_ACTIVE - running)
+        queued = [job for job in self.jobs.values() if job.waiting]
+        if len(queued) - free >= MAX_WAITING:
+            raise DownloadRefused(429, "download_queue_full", "Too many downloads are waiting", retry_after=30)
+        mine = [job for job in queued if same_user(job.capture, capture)]
+        if len(mine) - free >= MAX_WAITING_PER_USER:
+            raise DownloadRefused(429, "download_user_limit", "You already have downloads waiting", retry_after=30)
+        root = self.scratch_root()
+        job_id = uuid.uuid4().hex
         job = DownloadJob(
             job_id=job_id,
             scope=scope,
@@ -565,14 +601,40 @@ class MediaDownloadRuntime:
             names=tuple(names),
             as_zip=as_zip,
             filename=display,
-            directory=directory,
+            directory=root / job_id,
             reserved=need,
             hidden=hidden,
             results=[{"name": n, "status": FILE_PENDING} for n in names],
         )
+        # The place is taken HERE, in the same synchronous step that counted the places:
+        # requests arriving together see each other, and nothing below this line can be
+        # overtaken. Until its task exists the job is an admission in flight — a restore
+        # waits for it, and every way out of the I/O below gives the place back.
         self.jobs[job_id] = job
+        loop = asyncio.get_running_loop()
+        # The lifetime is the job's, from now: time spent waiting for a slot is part of it.
+        job.timer = loop.call_later(JOB_LIFETIME_SECONDS, self.request_cancel, job, ERROR_TIME)
+        try:
+            try:
+                await disk(_make_job_directory, root, job_id)
+                usage = await disk(shutil.disk_usage, job.directory)
+            except OSError as exc:
+                logger.warning("[DOWNLOADS] the scratch directory is not usable (%s)", type(exc).__name__)
+                raise DownloadRefused(507, ERROR_STORAGE, "The server cannot prepare a download now") from exc
+            promised = sum(other.unspent_reservation() for other in self.jobs.values() if other is not job)
+            if usage.free - promised - need < _base_reserve(usage):
+                raise DownloadRefused(
+                    507, ERROR_STORAGE, "Not enough free space on the server to prepare this download"
+                )
+            if self.closed:  # a restore began while the directory was made
+                raise DownloadRefused(
+                    503, "downloads_unavailable", "Downloads are stopped for a restore", retry_after=30
+                )
+        except BaseException:
+            await self._abandon(job)
+            raise
         self._evict_ready(capture, keep=job)
-        job.task = asyncio.get_running_loop().create_task(self._run(job), name=f"media-download-{job_id[:8]}")
+        job.task = loop.create_task(self._run(job), name=f"media-download-{job_id[:8]}")
         self._ensure_sweeper()
         logger.info(
             "[DOWNLOADS] job %s created: %s %s, %d file(s), zip=%s",
@@ -584,9 +646,22 @@ class MediaDownloadRuntime:
         )
         return job
 
-    @staticmethod
-    def _same_caller(a, b) -> bool:
-        return a.account_identity == b.account_identity and a.key_identity == b.key_identity
+    async def _abandon(self, job: DownloadJob) -> None:
+        """An admission that did not become a job: give the place back and leave nothing on disk."""
+        if job.timer is not None:
+            job.timer.cancel()
+            job.timer = None
+        removed = await self._settled_remove(job.directory)
+        job.finished = job.touched = time.monotonic()
+        job.done.set()
+        if removed:
+            job.phase = PHASE_CANCELLED
+            self.jobs.pop(job.job_id, None)
+        else:
+            # The directory is still there: the job stays as a debt a restore must see.
+            job.phase = PHASE_FAILED
+            job.error = ERROR_CLEANUP
+            job.hidden = True
 
     def get(self, job_id: str, capture, kind: str, resource_id: int) -> DownloadJob | None:
         """The caller's own job in this scope. Somebody else's and a missing one are both ``None``."""
@@ -596,7 +671,7 @@ class MediaDownloadRuntime:
             or job.hidden
             or job.scope.kind != kind
             or job.scope.resource_id != resource_id
-            or not self._same_caller(job.capture, capture)
+            or not same_credential(job.capture, capture)
         ):
             return None
         return job
@@ -614,7 +689,7 @@ class MediaDownloadRuntime:
                 if not job.hidden
                 and job.scope.kind == kind
                 and job.scope.resource_id == resource_id
-                and self._same_caller(job.capture, capture)
+                and same_credential(job.capture, capture)
             ),
             key=lambda job: job.created,
         )
@@ -630,7 +705,11 @@ class MediaDownloadRuntime:
         job.stop.set()
         if job.phase == PHASE_PREPARING:
             job.phase = PHASE_CANCELLING
-        if job.task is not None and not job.task.done():
+        # A task cancelled before its first step never runs a line of its coroutine — no
+        # ``finally``, no terminal phase, a directory left behind and a waiter that waits for
+        # ever. Such a task is left to start: it sees the stop flag first and ends the job
+        # itself. (An admission still in flight has no task; its job ends the same way.)
+        if job.task is not None and job.entered and not job.task.done():
             job.task.cancel()
 
     def discard_soon(self, job: DownloadJob, *, forget: bool = False) -> None:
@@ -672,10 +751,7 @@ class MediaDownloadRuntime:
             (
                 job
                 for job in self.jobs.values()
-                if job.phase == PHASE_READY
-                and not job.hidden
-                and job is not keep
-                and self._same_caller(job.capture, capture)
+                if job.phase == PHASE_READY and not job.hidden and job is not keep and same_user(job.capture, capture)
             ),
             key=lambda job: job.touched,
         )
@@ -698,9 +774,12 @@ class MediaDownloadRuntime:
 
     async def _run(self, job: DownloadJob) -> None:
         """One job from the queue to its terminal phase. Never raises: the outcome is the job's state."""
+        job.entered = True  # from here a cancel reaches the ``finally`` below
         outcome: str | None = None
         try:
             try:
+                if job.stop.is_set() or self.closed:
+                    raise asyncio.CancelledError
                 async with self._semaphore():
                     if job.stop.is_set() or self.closed:
                         raise asyncio.CancelledError
@@ -764,20 +843,26 @@ class MediaDownloadRuntime:
                 continue
         return bool(task.result())
 
-    def _retired(self, job: DownloadJob) -> None:
+    def _retired(self, job: DownloadJob, code=None) -> None:
         # A restore closes live authority too; that is an interruption, not a revoked caller.
-        self.request_cancel(job, ERROR_INTERRUPTED if not live_authority.admitting or self.closed else ERROR_AUTHORITY)
+        interrupted = not live_authority.admitting or self.closed
+        # The job ends the same way for both, fail-closed; the log keeps them apart: 4401 / 4403
+        # is a refusal the coordinator proved, anything else is authority it could not read.
+        logger.info(
+            "[DOWNLOADS] job %s: authority retired (%s)",
+            job.job_id[:8],
+            "restore" if interrupted else "refused" if code in (4401, 4403) else "unreadable",
+        )
+        self.request_cancel(job, ERROR_INTERRUPTED if interrupted else ERROR_AUTHORITY)
 
     async def _prepare(self, job: DownloadJob) -> None:
-        loop = asyncio.get_running_loop()
         job.phase = PHASE_PREPARING
         job.started = time.monotonic()
-        job.timer = loop.call_later(JOB_LIFETIME_SECONDS, self.request_cancel, job, ERROR_TIME)
         try:
             handle = live_authority.register(job.scope.descriptor)
         except HTTPException as exc:
             raise _Fatal(ERROR_INTERRUPTED if self.closed or not live_authority.admitting else ERROR_AUTHORITY) from exc
-        handle.on_retire = lambda _code=None: self._retired(job)
+        handle.on_retire = lambda code=None: self._retired(job, code)
         try:
             try:
                 await live_authority.admit(handle)
@@ -817,6 +902,8 @@ class MediaDownloadRuntime:
                 def progress(count: int, _job=job) -> None:
                     _job.current_received = count
 
+                if budget_left <= 0:
+                    raise _Fatal(ERROR_LIMIT)  # nothing is left for the files still asked for
                 usage = await disk(shutil.disk_usage, job.directory)
                 reserve = self._reserve_for(job, usage)
                 outcome = await source.fetch(
@@ -827,6 +914,9 @@ class MediaDownloadRuntime:
                     stop=job.stop,
                 )
                 job.current_received = 0
+                # The budget is of bytes taken from the source — also the bytes of a file that
+                # then broke off and gave the result nothing.
+                budget_left -= max(0, outcome.received or 0)
                 if not outcome.completed:
                     if outcome.status == TRANSFER_LIMIT_EXCEEDED:
                         raise _Fatal(ERROR_LIMIT)
@@ -843,7 +933,6 @@ class MediaDownloadRuntime:
                 # Authority is asked again before the bytes become part of a result.
                 if not handle.deliverable():
                     raise _Fatal(ERROR_AUTHORITY)
-                budget_left -= outcome.received
                 if archive is not None:
                     try:
                         await disk(_zip_add, archive, destination, job.names[index], job.stop, reserve)
@@ -926,42 +1015,64 @@ class MediaDownloadRuntime:
         self.closed = True
 
     async def quiesce(self, seconds: float = 30.0) -> bool:
-        """Close admission, stop every job and prove the workers ended. False = one is still running.
+        """Close admission, stop every job, prove the workers ended and the scratch is gone.
+
+        False = something of ours is still running or still on disk, and the
+        caller (a restore) must refuse: an admission in flight, a worker, a
+        reader that has started, a removal that has not finished or did not
+        succeed. A job whose directory could not be removed stays in the
+        registry as that debt, so the next attempt tries again.
 
         Results already prepared are dropped with their directories: they
         belong to the storage that is being replaced, and their grants die with
         the generation.
         """
         self.close_admission()
+        deadline = time.monotonic() + seconds
+        # An admission in flight has its place but no task yet; it sees ``closed`` after its
+        # own disk step and gives the place back.
+        while any(job.task is None and job.phase == PHASE_QUEUED for job in self.jobs.values()):
+            if time.monotonic() >= deadline:
+                logger.warning("[DOWNLOADS] a download is still being admitted after %.0fs", seconds)
+                return False
+            await asyncio.sleep(0.02)
         running = []
         for job in list(self.jobs.values()):
             if job.task is not None and not job.task.done():
                 self.request_cancel(job, ERROR_INTERRUPTED)
                 running.append(job.task)
         if running:
-            await asyncio.wait(running, timeout=seconds)
+            await asyncio.wait(running, timeout=max(0.0, deadline - time.monotonic()))
         if self._sweeper is not None and not self._sweeper.done():
             self._sweeper.cancel()
-        if self._discards:
-            await asyncio.wait(tuple(self._discards), timeout=seconds)
         still = [job.job_id[:8] for job in self.jobs.values() if job.task is not None and not job.task.done()]
         if still:
             logger.warning("[DOWNLOADS] %d download job(s) still running after %.0fs", len(still), seconds)
             return False
+        if self._discards:
+            await asyncio.wait(tuple(self._discards), timeout=max(0.0, deadline - time.monotonic()))
+            if any(not task.done() for task in tuple(self._discards)):
+                logger.warning("[DOWNLOADS] a prepared download is still being removed after %.0fs", seconds)
+                return False
         self.generation = secrets.token_hex(8)
         for job in self.jobs.values():
             if job.phase == PHASE_READY:
-                job.phase = PHASE_EXPIRED  # no new reader
-        deadline = time.monotonic() + seconds
+                job.phase = PHASE_EXPIRED  # no new reader: a promised read that has not started is refused
         while any(lease.started and not lease.released for job in self.jobs.values() for lease in tuple(job.leases)):
             if time.monotonic() >= deadline:
                 logger.warning("[DOWNLOADS] a prepared download is still being read after %.0fs", seconds)
                 return False
             await asyncio.sleep(0.05)
+        debt = 0
         for job in list(self.jobs.values()):
             job.artifact = None
-            await self._remove(job.directory)
-        self.jobs.clear()
+            if await self._remove(job.directory):
+                self.jobs.pop(job.job_id, None)
+            else:
+                debt += 1
+        if debt:
+            logger.warning("[DOWNLOADS] %d download director(ies) could not be removed", debt)
+            return False
         return True
 
 
@@ -985,51 +1096,108 @@ def remote_source(transport, path: str, *, name: str | None = None, advisory_siz
     return Source(name or path.rsplit("/", 1)[-1], fetch, advisory_size, "printer")
 
 
-def _copy_local(source: Path, destination: Path, byte_budget: int, reserve: int, progress, stop: threading.Event):
+def file_identity(info: os.stat_result) -> tuple:
+    """Which file this is and which bytes it holds: a rewrite in place or a file put in its name differs."""
+    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns)
+
+
+class _SourceBroke(Exception):
+    def __init__(self, reason: str):
+        super().__init__(reason)
+        self.reason = reason
+
+
+def _copy_local(
+    source: Path, destination: Path, byte_budget: int, reserve: int, progress, stop: threading.Event, identity
+):
+    """Copy one file of this server into the job's scratch. Runs in a worker thread.
+
+    What goes wrong on the SOURCE's side is that file's own failure (an
+    outcome). What goes wrong on the scratch's side — it cannot be opened or
+    written, the disk is full — is the job's (raised: ``_Fatal`` or the
+    ``OSError`` itself), because no other file would fare better.
+    """
     from backend.app.services.printer_files.base import TRANSFER_COMPLETED, TRANSFER_NOT_READABLE
     from backend.app.services.printer_files.staging import ReserveSchedule
 
     copied = 0
     schedule = ReserveSchedule(reserve)
     try:
-        with source.open("rb") as reader, destination.open("wb") as writer:
-            while True:
-                if stop.is_set():
-                    raise _Stopped
-                chunk = reader.read(COPY_CHUNK)
-                if not chunk:
-                    break
-                copied += len(chunk)
-                if copied > byte_budget:
-                    raise _Fatal(ERROR_LIMIT)
-                if schedule.due_before(copied) and not schedule.fits(
-                    shutil.disk_usage(destination.parent).free, len(chunk)
-                ):
-                    raise _Fatal(ERROR_STORAGE)
-                writer.write(chunk)
-                if progress is not None:
-                    progress(copied)
+        reader = source.open("rb")
     except FileNotFoundError:
-        destination.unlink(missing_ok=True)
         return TransferOutcome(TRANSFER_NOT_READABLE, reason="missing")
+    except OSError as exc:
+        return TransferOutcome(TRANSFER_UNAVAILABLE, reason=type(exc).__name__)
+    try:
+        with reader:
+            # The descriptor is the file from here on; it must be the one that was chosen.
+            if identity is not None and file_identity(os.fstat(reader.fileno())) != identity:
+                return TransferOutcome(TRANSFER_NOT_READABLE, reason="replaced")
+            with destination.open("wb") as writer:
+                while True:
+                    if stop.is_set():
+                        raise _Stopped
+                    try:
+                        chunk = reader.read(COPY_CHUNK)
+                    except OSError as exc:
+                        raise _SourceBroke(type(exc).__name__) from exc
+                    if not chunk:
+                        break
+                    copied += len(chunk)
+                    if copied > byte_budget:
+                        raise _Fatal(ERROR_LIMIT)
+                    if schedule.due_before(copied) and not schedule.fits(
+                        shutil.disk_usage(destination.parent).free, len(chunk)
+                    ):
+                        raise _Fatal(ERROR_STORAGE)
+                    writer.write(chunk)
+                    if progress is not None:
+                        progress(copied)
+    except _SourceBroke as broke:
+        destination.unlink(missing_ok=True)
+        return TransferOutcome(TRANSFER_UNAVAILABLE, copied, reason=broke.reason)
     except BaseException:
         destination.unlink(missing_ok=True)
         raise
     return TransferOutcome(TRANSFER_COMPLETED, copied, "length_verified")
 
 
-def local_source(path: Path, *, name: str, advisory_size: int | None = None) -> Source:
-    """A file already on this server (an archive's attached video), copied into the job's scratch."""
+def local_source(
+    path: Path,
+    *,
+    name: str,
+    advisory_size: int | None = None,
+    identity: tuple | None = None,
+    still_shown: Callable[[], Awaitable[bool]] | None = None,
+) -> Source:
+    """A file already on this server (an archive's attached video), copied into the job's scratch.
+
+    A job may wait in the queue; the file chosen may be replaced or removed
+    meanwhile. ``identity`` (:func:`file_identity` of the file as it was
+    chosen) is compared with the descriptor the copy actually opened, and
+    ``still_shown`` — is this still the video its archive shows? — is asked
+    before the copy and again after it. Anything else is ``replaced``: the file
+    is left out, never a different video under the chosen one's name.
+    """
+    from backend.app.services.printer_files.base import TRANSFER_NOT_READABLE
 
     async def fetch(destination: Path, *, byte_budget, reserve_bytes, progress, stop) -> TransferOutcome:
+        if still_shown is not None and not await still_shown():
+            return TransferOutcome(TRANSFER_NOT_READABLE, reason="replaced")
         try:
-            return await disk(_copy_local, path, destination, byte_budget, reserve_bytes, progress, stop)
+            outcome = await disk(_copy_local, path, destination, byte_budget, reserve_bytes, progress, stop, identity)
         except _Stopped:
             return TransferOutcome(TRANSFER_CANCELLED, reason="cancelled")
         except _Fatal as fatal:
             status = TRANSFER_LIMIT_EXCEEDED if fatal.code == ERROR_LIMIT else TRANSFER_INSUFFICIENT_STORAGE
             return TransferOutcome(status, reason=fatal.code)
         except OSError as exc:
-            return TransferOutcome(TRANSFER_UNAVAILABLE, reason=type(exc).__name__)
+            # Only the scratch's side raises: a full or unwritable disk ends the whole job.
+            logger.warning("[DOWNLOADS] a local file could not be copied into the scratch (%s)", type(exc).__name__)
+            return TransferOutcome(TRANSFER_INSUFFICIENT_STORAGE, reason=type(exc).__name__)
+        if outcome.completed and still_shown is not None and not await still_shown():
+            await disk(destination.unlink, True)
+            return TransferOutcome(TRANSFER_NOT_READABLE, outcome.received, reason="replaced")
+        return outcome
 
     return Source(name, fetch, advisory_size, "local")

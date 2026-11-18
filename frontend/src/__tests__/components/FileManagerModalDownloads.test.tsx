@@ -62,6 +62,8 @@ describe('FileManagerModal downloads', () => {
   let existing: DownloadJob[];
   let minted: Array<{ accept_partial: boolean }>;
   let cancelled: number;
+  /** What a poll of a job the server will not show answers with. */
+  let refusal: number;
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -71,6 +73,7 @@ describe('FileManagerModal downloads', () => {
     existing = [];
     minted = [];
     cancelled = 0;
+    refusal = 404;
     server.use(
       http.get('/api/v1/printers/:id/files', () => HttpResponse.json(listing)),
       http.get('/api/v1/printers/:id/storage', () => HttpResponse.json({ used_bytes: 1, free_bytes: 1 })),
@@ -80,7 +83,7 @@ describe('FileManagerModal downloads', () => {
         return HttpResponse.json(current, { status: 202 });
       }),
       http.get('/api/v1/printers/:id/files/download-jobs/:job', () =>
-        current ? HttpResponse.json(current) : HttpResponse.json({ detail: 'Download not found' }, { status: 404 }),
+        current ? HttpResponse.json(current) : HttpResponse.json({ detail: 'refused' }, { status: refusal }),
       ),
       http.delete('/api/v1/printers/:id/files/download-jobs/:job', () => {
         cancelled += 1;
@@ -210,6 +213,17 @@ describe('FileManagerModal downloads', () => {
     );
     fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }));
     expect(screen.queryByTestId('download-job')).not.toBeInTheDocument();
+  });
+
+  it.each([404, 403])('stops following a job the server answers %i for', async (status) => {
+    // 404: expired, a restart, another session's. 403: the caller lost the right the job needs.
+    refusal = status;
+    const running = job({ phase: 'preparing' });
+    existing = [running];
+    current = null;
+    await open();
+    await waitFor(() => expect(screen.getByTestId('download-job')).toHaveAttribute('data-phase', 'expired'));
+    expect(startNativeDownload).not.toHaveBeenCalled();
   });
 
   it('picks up a download that was left running, without saving it by itself', async () => {

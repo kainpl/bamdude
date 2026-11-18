@@ -30,9 +30,19 @@ export function isTerminal(job: DownloadJob | null): boolean {
  * says its transfer has really stopped, so the phase shown here is the
  * server's, not a local guess.
  */
+/**
+ * The job is not this caller's to follow any more: the server no longer knows
+ * it (404 — expired, a restart, another session's), or the caller lost what the
+ * job needs (403 — the right to the printer it read). Neither changes by asking
+ * again, so polling stops.
+ */
+function isGone(error: unknown): boolean {
+  return error instanceof ApiError && (error.status === 404 || error.status === 403);
+}
+
 export function useDownloadJob(api: DownloadJobApi) {
   const [job, setJob] = useState<DownloadJob | null>(null);
-  /** The server no longer knows the job (expired, a restart). */
+  /** The job can no longer be followed (see `isGone`). */
   const [lost, setLost] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -57,7 +67,7 @@ export function useDownloadJob(api: DownloadJobApi) {
         if (!DOWNLOAD_JOB_TERMINAL.includes(next.phase)) timer = setTimeout(tick, delay);
       } catch (error) {
         if (stopped) return;
-        if (error instanceof ApiError && error.status === 404) {
+        if (isGone(error)) {
           setLost(true);
           return;
         }
@@ -81,7 +91,7 @@ export function useDownloadJob(api: DownloadJobApi) {
       const { url } = await apiRef.current.mint(jobId, acceptPartial);
       startNativeDownload(url);
     } catch (error) {
-      if (error instanceof ApiError && error.status === 404) setLost(true);
+      if (isGone(error)) setLost(true);
       else setSaveError(error instanceof Error ? error.message : String(error));
     } finally {
       setSaving(false);
@@ -111,7 +121,7 @@ export function useDownloadJob(api: DownloadJobApi) {
     try {
       setJob(await apiRef.current.cancel(jobId));
     } catch (error) {
-      if (error instanceof ApiError && error.status === 404) setLost(true);
+      if (isGone(error)) setLost(true);
     }
   }, [jobId]);
 

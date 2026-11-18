@@ -416,10 +416,12 @@ if app_settings.log_to_file:
     # lines carry the same trace ID column as the application logs they
     # correlate with.
     uvicorn_access_logger.addFilter(TraceIDFilter())
-    # The native download door carries a one-time grant in its path (G10 D).
-    from backend.app.core.logging_filters import DownloadGrantFilter  # noqa: E402
 
-    uvicorn_access_logger.addFilter(DownloadGrantFilter())
+# The native download door carries a one-time grant in its path (G10 D). Masked on the access
+# LOGGER whatever the configuration: a console-only install logs the same line.
+from backend.app.core.logging_filters import DownloadGrantFilter  # noqa: E402
+
+logging.getLogger("uvicorn.access").addFilter(DownloadGrantFilter())
 
 # HTTP wire logs contain opaque capability paths/headers that a generic
 # formatter cannot recognize, even in debug mode. Adapters retain safe

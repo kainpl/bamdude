@@ -15,7 +15,7 @@ from functools import wraps
 from typing import Any
 
 import anyio
-from fastapi import Depends, Request
+from fastapi import Depends, HTTPException, Request
 from fastapi.dependencies.utils import get_parameterless_sub_dependant
 from fastapi.routing import APIRoute, request_response
 from starlette.datastructures import MutableHeaders
@@ -210,15 +210,22 @@ class _MjpegBody(Response):
             await self.background()
 
 
+def _begin_read(lease) -> None:
+    """Start a promised read, or refuse before anything is sent."""
+    if lease is not None and not lease.start():
+        raise HTTPException(404, "Download not found")
+
+
 class WholeFileResponse(FileResponse):
     """A file that is only ever sent whole (G10 D, P1-6).
 
     A one-time download grant cannot honour a resume: the grant is spent by the
     first request. So ``Range`` / ``If-Range`` are removed before Starlette's
     range handling can see them — the answer is always a full 200 with
-    ``Accept-Ranges: none``. ``lease`` (optional) is told when the body opens
-    the file and when its cleanup has closed it, so the file's owner knows
-    exactly how long it is being read.
+    ``Accept-Ranges: none``. ``lease`` (optional) is asked BEFORE the headers
+    whether its promise still stands (``start()`` — a promise that ran out is
+    refused there, with nothing sent) and told when the cleanup has closed the
+    file, so the file's owner knows exactly how long it is being read.
     """
 
     whole_only = True
@@ -231,8 +238,7 @@ class WholeFileResponse(FileResponse):
     async def __call__(self, scope, receive, send):
         # Sent as it is only outside the live-media routes (a compatibility download);
         # on those routes the owned body below takes over and does the same.
-        if self.lease is not None:
-            self.lease.start()
+        _begin_read(self.lease)
         try:
             await super().__call__(_without_range(scope), receive, send)
         finally:
@@ -257,6 +263,8 @@ class _OwnedFileBody(FileResponse):
         self.lease = getattr(response, "lease", None)
 
     async def __call__(self, scope, receive, send):
+        # Before the headers: a promise that ran out is a refusal, not a cut-off body.
+        _begin_read(self.lease)
         await super().__call__(_without_range(scope) if self.whole_only else scope, receive, send)
 
     async def _io(self, function, *args):
@@ -271,8 +279,6 @@ class _OwnedFileBody(FileResponse):
 
     async def _open(self):
         if self.file is None:
-            if self.lease is not None:
-                self.lease.start()
 
             async def opening():
                 self.file = await asyncio.to_thread(open, self.path, "rb")

@@ -11,10 +11,19 @@ one of two doors, both behind the live-media final gate:
   that sends headers (an API key). The printer comes from the path and must be
   the job's; the centralized key gate checks it against the key's printer list.
 
-Every door asks the caller's CURRENT rights (the route gate), finds the job
-only as its own caller in its own scope — somebody else's and a missing job are
-the same 404 — and the body is sent under a live-authority handle, so a revoked
-session stops it mid-file. Both doors always answer the whole file (200,
+Every door asks the caller's CURRENT rights (the route gate) and finds the job
+only by the very credential that made it, in its own scope — somebody else's,
+another session's of the same account and a missing job are the same 404.
+
+A job carries the requirements it was made under (``JobScope.descriptor``): the
+permissions, the printer and its identity, the archive and its incarnation. A
+route gate knows only its own path — an archive's route asks for the archive,
+not for ``printers:files`` on the printer a recording came from. So EVERY door
+of a job puts the job's own requirements on the request's current credential
+(``_job_requirements``): status, list, cancel and mint prove them through the
+live coordinator before they answer (``_prove_job``), and both artifact doors
+send the body under them, so a caller who lost the right to the printer gets
+neither the file nor its state. Both doors always answer the whole file (200,
 ``Accept-Ranges: none``): a one-time grant cannot honour a resume.
 
 A failure on the native door before the headers is ``download-failed.txt`` with
@@ -24,7 +33,9 @@ a safe sentence, not JSON saved under the archive's name.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
+import stat
 import time
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
@@ -54,15 +65,17 @@ from backend.app.core.permissions import Permission
 from backend.app.i18n import current_language
 from backend.app.i18n.api_errors import translate_detail
 from backend.app.services import media_downloads
-from backend.app.services.live_authority import LiveDescriptor
+from backend.app.services.live_authority import LiveDescriptor, live_authority
 from backend.app.services.live_media import OwnedMediaResponse, WholeFileResponse
 from backend.app.services.media_downloads import (
     MAX_PATHS,
     DownloadJob,
     DownloadRefused,
     JobScope,
+    file_identity,
     media_download_runtime,
     remote_source,
+    same_credential,
 )
 from backend.app.utils.http import build_content_disposition
 
@@ -144,6 +157,97 @@ def _job_or_404(request: Request, job_id: str, kind: str, resource_id: int) -> D
     return job
 
 
+def _job_requirements(request: Request, job: DownloadJob) -> LiveDescriptor:
+    """The request's CURRENT credential under the requirements the job was made with.
+
+    The credential, its expiry and its key binding are this request's; what it
+    must hold — permissions, the printer and its identity, the resource and its
+    incarnation — is the job's. A route gate cannot supply that: it reads its
+    own path, and an archive's path names no printer.
+    """
+    current = getattr(request.state, "live_descriptor", None)
+    if current is None:
+        raise refused()
+    wanted = job.scope.descriptor
+    return replace(
+        current,
+        permissions=wanted.permissions,
+        any_permissions=wanted.any_permissions,
+        printer_id=wanted.printer_id,
+        printer_identity=wanted.printer_identity,
+        resource_kind=wanted.resource_kind,
+        resource_id=wanted.resource_id,
+        resource_stamp=wanted.resource_stamp,
+        resource_printer_scope=wanted.resource_printer_scope,
+    )
+
+
+def _bind_job(request: Request, job: DownloadJob) -> None:
+    """An artifact door: the body is admitted and sent under the job's own requirements."""
+    request.state.live_descriptor = _job_requirements(request, job)
+    # Nothing the route's path captured may loosen or replace them.
+    request.state.live_media_binding = {}
+
+
+async def _prove_job(request: Request, job: DownloadJob) -> None:
+    """A door that sends no file: prove the job's requirements now, through the coordinator's own read.
+
+    The same check the artifact's body passes before its headers — a fresh
+    durable read of the credential, the permissions, the printer's identity and
+    the archive's incarnation — so a job's state, its cancel and its one-time
+    URL are refused to a caller who no longer holds what the job needs: 403, or
+    503 when authority cannot be read.
+
+    The coordinator answers 401 both for a dead credential and for a target that
+    is no longer the one the job named (a printer or an archive that took the
+    id). This request's credential was accepted by the route's gate a moment
+    ago, and the browser treats a 401 from a JSON route as "signed out" — so
+    here that answer is the job's: it is gone, 404.
+    """
+    handle = live_authority.register(_job_requirements(request, job))
+    try:
+        await live_authority.admit(handle)
+    except HTTPException as exc:
+        if exc.status_code == 401:
+            raise HTTPException(404, _NOT_FOUND) from None
+        raise
+    finally:
+        live_authority.release(handle)
+
+
+async def _own_job(request: Request, job_id: str, kind: str, resource_id: int) -> DownloadJob:
+    job = _job_or_404(request, job_id, kind, resource_id)
+    await _prove_job(request, job)
+    return job
+
+
+async def _own_jobs(request: Request, kind: str, resource_id: int) -> list[dict]:
+    """The caller's jobs in this scope whose requirements it still meets — the others are not shown."""
+    verdicts: dict = {}
+    shown = []
+    for job in media_download_runtime.jobs_of(_capture(request), kind, resource_id):
+        wanted = _job_requirements(request, job)
+        if wanted not in verdicts:
+            try:
+                await _prove_job(request, job)
+                verdicts[wanted] = True
+            except HTTPException:
+                verdicts[wanted] = False
+        if verdicts[wanted]:
+            shown.append(job.status())
+    return shown
+
+
+def _headers_only(request: Request) -> None:
+    """An artifact door takes its credential from the headers and from nowhere else.
+
+    The media dependency behind it would also read ``?token=``; with a header
+    AND a token in one request the principal must not be a matter of order.
+    """
+    if "token" in request.query_params:
+        raise HTTPException(400, "This download takes its credentials from the request headers")
+
+
 def _media_type(job: DownloadJob) -> str:
     if job.as_zip:
         return "application/zip"
@@ -188,7 +292,7 @@ def _cancel_or_discard(job: DownloadJob) -> dict:
     return job.status()
 
 
-async def _mint(request: Request, job: DownloadJob, *, accept_partial: bool, permissions, printer_id) -> dict:
+async def _mint(request: Request, job: DownloadJob, *, accept_partial: bool) -> dict:
     if job.phase != media_downloads.PHASE_READY:
         raise HTTPException(409, {"error": "download_not_ready", "message": "The download is not ready"})
     if job.partial and not accept_partial:
@@ -199,11 +303,12 @@ async def _mint(request: Request, job: DownloadJob, *, accept_partial: bool, per
                 "message": "Some files could not be downloaded; confirm to take the rest",
             },
         )
+    wanted = job.scope.descriptor
     grant = await create_media_download_grant(
         authority=_capture(request),
         bound_to=f"{job.job_id}:{media_download_runtime.generation}",
-        required_permissions=permissions,
-        printer_id=printer_id,
+        required_permissions=wanted.permissions,
+        printer_id=wanted.printer_id,
     )
     job.touched = time.monotonic()
     return {
@@ -301,21 +406,21 @@ async def create_printer_download_job(
 @router.get("/printers/{printer_id}/files/download-jobs")
 async def list_printer_download_jobs(printer_id: int, request: Request, _=RequirePermission(Permission.PRINTERS_FILES)):
     """The caller's own jobs for this printer — what a reopened dialog picks up again."""
-    return {"jobs": [job.status() for job in media_download_runtime.jobs_of(_capture(request), "printer", printer_id)]}
+    return {"jobs": await _own_jobs(request, "printer", printer_id)}
 
 
 @router.get("/printers/{printer_id}/files/download-jobs/{job_id}")
 async def get_printer_download_job(
     printer_id: int, job_id: str, request: Request, _=RequirePermission(Permission.PRINTERS_FILES)
 ):
-    return _job_or_404(request, job_id, "printer", printer_id).status()
+    return (await _own_job(request, job_id, "printer", printer_id)).status()
 
 
 @router.delete("/printers/{printer_id}/files/download-jobs/{job_id}")
 async def cancel_printer_download_job(
     printer_id: int, job_id: str, request: Request, _=RequirePermission(Permission.PRINTERS_FILES)
 ):
-    return _cancel_or_discard(_job_or_404(request, job_id, "printer", printer_id))
+    return _cancel_or_discard(await _own_job(request, job_id, "printer", printer_id))
 
 
 @router.post("/printers/{printer_id}/files/download-jobs/{job_id}/download-token")
@@ -327,17 +432,11 @@ async def mint_printer_download_token(
     _=RequirePermission(Permission.PRINTERS_FILES),
 ):
     """A one-time URL for the browser to save the ready result. Browser sessions only."""
-    job = _job_or_404(request, job_id, "printer", printer_id)
-    return await _mint(
-        request,
-        job,
-        accept_partial=bool(body and body.accept_partial),
-        permissions=(Permission.PRINTERS_FILES.value,),
-        printer_id=printer_id,
-    )
+    job = await _own_job(request, job_id, "printer", printer_id)
+    return await _mint(request, job, accept_partial=bool(body and body.accept_partial))
 
 
-@router.get("/printers/{printer_id}/files/download-jobs/{job_id}/artifact")
+@router.get("/printers/{printer_id}/files/download-jobs/{job_id}/artifact", dependencies=[Depends(_headers_only)])
 async def get_printer_download_artifact(
     printer_id: int,
     job_id: str,
@@ -350,9 +449,13 @@ async def get_printer_download_artifact(
     The media-route dependency, like every other route behind the final delivery
     gate; its header path is the ordinary permission gate, key scopes and a
     key's printer list included. No pattern opens this path to a header-less
-    request, so a browser cannot use it with a query token.
+    request, and a request that also carries ``?token=`` is refused, so the
+    principal is the header's and nothing else's. The body is admitted under
+    the job's own requirements — this very printer, by its identity.
     """
-    return _artifact_response(_job_or_404(request, job_id, "printer", printer_id), accept_partial=accept_partial)
+    job = _job_or_404(request, job_id, "printer", printer_id)
+    _bind_job(request, job)
+    return _artifact_response(job, accept_partial=accept_partial)
 
 
 # -- the native door ---------------------------------------------------------------------
@@ -366,8 +469,8 @@ def _grant_requirements(bound_to: str | None, capture):
         job is None
         or generation != media_download_runtime.generation
         or job.phase != media_downloads.PHASE_READY
-        or job.capture.account_identity != capture.account_identity
-        or job.capture.key_identity is not None
+        or capture.kind != "session"
+        or not same_credential(job.capture, capture)
     ):
         raise HTTPException(404, _NOT_FOUND)
     descriptor = job.scope.descriptor
@@ -387,19 +490,7 @@ async def redeem_download_grant(
     if job is None or filename != job.filename:
         raise NativeDownloadFailure(404, _NOT_FOUND)
     # The download runs under the job's own requirements, on the session that minted the grant.
-    wanted = job.scope.descriptor
-    request.state.live_descriptor = replace(
-        request.state.live_descriptor,
-        permissions=wanted.permissions,
-        any_permissions=wanted.any_permissions,
-        printer_id=wanted.printer_id,
-        printer_identity=wanted.printer_identity,
-        resource_kind=wanted.resource_kind,
-        resource_id=wanted.resource_id,
-        resource_stamp=wanted.resource_stamp,
-        resource_printer_scope=wanted.resource_printer_scope,
-    )
-    request.state.live_media_binding = {}
+    _bind_job(request, job)
     try:
         # The partial result was confirmed when the grant was minted.
         response = _artifact_response(job, accept_partial=True)
@@ -478,32 +569,81 @@ async def _visible_archive(db, archive_id: int, auth_result):
     return _ensure_archive_visible(await ArchiveService(db).get_archive(archive_id), user, can_read_all)
 
 
+def local_asset_id(token: str) -> str:
+    """The chooser's name for "the video this archive shows now".
+
+    Derived from the seam's own token (``archive_media.primary_token``) — which
+    publication made the video, or that it is a video from before the registry
+    — so it names a VERSION: after a replace or a remove the old id opens
+    nothing. Hashed, because a legacy token spells a path on this server.
+    """
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()[:32]
+
+
 async def _local_videos(db, archive) -> list[dict]:
-    """The archive's attached video as the registry and the disk have it now: ``asset``, ``name``, ``size``, ``path``."""
-    from backend.app.services.archive_media import contained, primary_of
+    """The video the archive shows now: ``asset``, ``name``, ``size``, ``path``, ``identity``.
+
+    The archive's pointer is what it shows — the same thing its own video route
+    serves — whether or not a registry row describes it yet (a video from before
+    the registry has none). Read only: nothing is written and no stale row is
+    brought back; the seam reconciles the registry when it next writes.
+    """
+    from backend.app.services.archive_media import contained, primary_token
 
     pointer = (archive.timelapse_path or "").strip()
     if not pointer:
         return []
-    primary = await primary_of(db, archive.id, archive.recovery_identity)
-    found = []
-    for row in [primary] if primary is not None else []:
-        if row.relative_path != pointer:
-            continue
-        path = await asyncio.to_thread(contained, settings.base_dir, row.relative_path)
-        if path is None or not await asyncio.to_thread(path.is_file):
-            continue
-        size = (await asyncio.to_thread(path.stat)).st_size
-        suffix = path.suffix.lower() if path.suffix.lower() in (".mp4", ".avi", ".mkv") else ".mp4"
-        found.append(
-            {
-                "asset": row.asset_uuid,
-                "name": f"{archive.print_name or 'timelapse'}{suffix}",
-                "size": size,
-                "path": path,
-            }
-        )
-    return found
+    token = await primary_token(db, archive)
+
+    def look():
+        path = contained(settings.base_dir, pointer)
+        if path is None:
+            return None
+        try:
+            info = path.stat()
+        except OSError:
+            return None
+        return (path, info) if stat.S_ISREG(info.st_mode) else None
+
+    found = await asyncio.to_thread(look)
+    if found is None:
+        return []
+    path, info = found
+    suffix = path.suffix.lower() if path.suffix.lower() in (".mp4", ".avi", ".mkv") else ".mp4"
+    return [
+        {
+            "asset": local_asset_id(token),
+            "name": f"{archive.print_name or 'timelapse'}{suffix}",
+            "size": info.st_size,
+            "path": path,
+            "identity": file_identity(info),
+        }
+    ]
+
+
+def _still_shown(archive_id: int, archive_identity, asset: str):
+    """Is ``asset`` still the video that very archive shows? Asked when the copy starts and when it ends."""
+
+    async def check() -> bool:
+        from sqlalchemy import select
+
+        from backend.app.core import database
+        from backend.app.models.archive import PrintArchive
+        from backend.app.services.archive_media import primary_token
+
+        try:
+            async with database.async_session() as db:
+                archive = (
+                    await db.execute(select(PrintArchive).where(PrintArchive.id == archive_id))
+                ).scalar_one_or_none()
+                if archive is None or archive.recovery_identity != archive_identity:
+                    return False
+                return local_asset_id(await primary_token(db, archive)) == asset
+        except Exception as exc:  # noqa: BLE001 — unreadable is not "still shown"
+            logger.warning("[DOWNLOADS] an archive's video could not be confirmed (%s)", type(exc).__name__)
+            return False
+
+    return check
 
 
 async def _archive_printer(db, archive):
@@ -563,7 +703,16 @@ async def create_archive_download_job(
         video = local.get(asset)
         if video is None:
             raise HTTPException(404, "The video is no longer attached to this archive")
-        sources.append(media_downloads.local_source(video["path"], name=video["name"], advisory_size=video["size"]))
+        sources.append(
+            media_downloads.local_source(
+                video["path"],
+                name=video["name"],
+                advisory_size=video["size"],
+                # The job may wait; what it copies must be the file chosen here, still shown then.
+                identity=video["identity"],
+                still_shown=_still_shown(archive.id, archive.recovery_identity, asset),
+            )
+        )
     if body.remote:
         # A second gate, the canonical one: the caller's own right to read printer files.
         await creds.check(_FILES_GATE)
@@ -586,13 +735,20 @@ async def create_archive_download_job(
     return job.status()
 
 
-async def _archive_job(request: Request, archive_id: int, job_id: str, auth_result) -> DownloadJob:
-    """The caller's own job for an archive they may still see."""
+async def _archive_job(request: Request, archive_id: int, job_id: str, auth_result, *, prove: bool = True):
+    """The caller's own job for an archive they may still see, its own requirements proven.
+
+    ``prove=False`` only for the artifact door, whose body is admitted under the
+    same requirements before its headers.
+    """
     from backend.app.core import database
 
     async with database.async_session() as db:
         await _visible_archive(db, archive_id, auth_result)
-    return _job_or_404(request, job_id, "archive", archive_id)
+    job = _job_or_404(request, job_id, "archive", archive_id)
+    if prove:
+        await _prove_job(request, job)
+    return job
 
 
 @router.get("/archives/{archive_id}/media-download-jobs")
@@ -601,7 +757,7 @@ async def list_archive_download_jobs(archive_id: int, request: Request, auth_res
 
     async with database.async_session() as db:
         await _visible_archive(db, archive_id, auth_result)
-    return {"jobs": [job.status() for job in media_download_runtime.jobs_of(_capture(request), "archive", archive_id)]}
+    return {"jobs": await _own_jobs(request, "archive", archive_id)}
 
 
 @router.get("/archives/{archive_id}/media-download-jobs/{job_id}")
@@ -623,17 +779,10 @@ async def mint_archive_download_token(
     auth_result=_ARCHIVE_READ,
 ):
     job = await _archive_job(request, archive_id, job_id, auth_result)
-    descriptor = job.scope.descriptor
-    return await _mint(
-        request,
-        job,
-        accept_partial=bool(body and body.accept_partial),
-        permissions=descriptor.permissions,
-        printer_id=descriptor.printer_id,
-    )
+    return await _mint(request, job, accept_partial=bool(body and body.accept_partial))
 
 
-@router.get("/archives/{archive_id}/media-download-jobs/{job_id}/artifact")
+@router.get("/archives/{archive_id}/media-download-jobs/{job_id}/artifact", dependencies=[Depends(_headers_only)])
 async def get_archive_download_artifact(
     archive_id: int,
     job_id: str,
@@ -641,13 +790,17 @@ async def get_archive_download_artifact(
     accept_partial: bool = False,
     auth_result=_ARCHIVE_ARTIFACT_READ,
 ):
-    """The ready result for a client that sends headers. Always the whole file."""
-    job = await _archive_job(request, archive_id, job_id, auth_result)
-    # History is not narrowed by a key's printer list (as on the archive's own video route).
-    request.state.live_media_binding = {
-        **getattr(request.state, "live_media_binding", {}),
-        "resource_printer_scope": False,
-    }
+    """The ready result for a client that sends headers. Always the whole file.
+
+    This route's gate asks for the archive only. A job that read the archive's
+    PRINTER was made under more — ``printers:files`` on that very printer — and
+    the body is admitted under all of it (``_bind_job``): a caller who lost the
+    printer since gets no recording. A job of the attached video alone carries
+    the archive's rule and nothing of the printer's, so history stays readable
+    without the printer, a key's printer list included.
+    """
+    job = await _archive_job(request, archive_id, job_id, auth_result, prove=False)
+    _bind_job(request, job)
     return _artifact_response(job, accept_partial=accept_partial)
 
 
@@ -678,6 +831,11 @@ def time_overlap(mtime, quality, window, offset: timedelta | None) -> tuple[bool
     offset the answer is ``None`` — not a guess — and with it the comparison is
     made and marked ``assumed``. The offset is the dialog's own; it changes no
     setting and no automatic attach.
+
+    A ``date_only`` time (an older file: the listing gives its day, no hour) is
+    a whole day, and an offset does not tell which hour of it. So it can only
+    rule a file OUT — its day, shifted, does not touch the window — and a day
+    that does touch the window stays unknown, never a match.
     """
     stamp = _naive_utc(mtime) if isinstance(mtime, datetime) else None
     if stamp is None or window is None:
@@ -685,6 +843,11 @@ def time_overlap(mtime, quality, window, offset: timedelta | None) -> tuple[bool
     if quality == "exact":
         return window[0] <= stamp <= window[1], False
     if offset is None:
+        return None, False
+    if quality == "date_only":
+        day = stamp.replace(hour=0, minute=0, second=0, microsecond=0) - offset
+        if day + timedelta(days=1) <= window[0] or day > window[1]:
+            return False, True
         return None, False
     return window[0] <= stamp - offset <= window[1], True
 
@@ -748,8 +911,15 @@ async def _camera_source(printer, window, offset) -> dict:
     from backend.app.utils.printer_storage import EXTERNAL, SDCARD_NORMAL
 
     state = printer_manager.get_status(printer.id)
-    if state is not None and int(getattr(state, "sdcard_state", SDCARD_NORMAL) or 0) != SDCARD_NORMAL:
-        # The camera records to the card only; internal storage has no such catalogue we can read.
+    if (
+        state is not None
+        and getattr(state, "sdcard_state_seen", False)
+        and int(getattr(state, "sdcard_state", SDCARD_NORMAL) or 0) != SDCARD_NORMAL
+    ):
+        # The printer SAID it has no usable card. The camera records to the card only; internal
+        # storage has no such catalogue we can read. A state that has not reported the card yet
+        # (its default reads "none") says nothing: the card is asked, and the answer decides —
+        # no folder is ``empty``, a printer that does not answer is ``unavailable``.
         return {"status": "unsupported", "items": []}
     answer = await listing_coalescer.list(
         printer,
