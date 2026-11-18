@@ -79,6 +79,7 @@ import type { Archive, ArchiveListParams } from '../api/client';
 import { Card, CardContent } from '../components/Card';
 import { Button } from '../components/Button';
 import { Select } from '../components/Select';
+import { ArchiveMediaDownloadModal } from '../components/ArchiveMediaDownloadModal';
 import { Modal } from '../components/Modal';
 import { SwapHoldBadge } from '../components/SwapHoldBadge';
 import { isAnyModalOpen } from '../components/modalStack';
@@ -239,6 +240,7 @@ function ArchiveCard({
   const [showEdit, setShowEdit] = useState(false);
   const [showTimelapse, setShowTimelapse] = useState(false);
   const [showTimelapseSelect, setShowTimelapseSelect] = useState(false);
+  const [showMediaDownload, setShowMediaDownload] = useState(false);
   const [availableTimelapses, setAvailableTimelapses] = useState<Array<{ name: string; path: string; size: number; mtime: string | null }>>([]);
   const [showQRCode, setShowQRCode] = useState(false);
   const [showPhotos, setShowPhotos] = useState(false);
@@ -542,6 +544,12 @@ function ArchiveCard({
       icon: <Film className="w-4 h-4" />,
       onClick: () => setShowTimelapse(true),
       disabled: !archive.timelapse_path,
+    },
+    {
+      // The attached video and what the printer still holds; the dialog says which it could read.
+      label: t('archives.media.open'),
+      icon: <Download className="w-4 h-4" />,
+      onClick: () => setShowMediaDownload(true),
     },
     {
       label: t('archives.menu.scanForTimelapse'),
@@ -1475,6 +1483,14 @@ function ArchiveCard({
         />
       )}
 
+      {showMediaDownload && (
+        <ArchiveMediaDownloadModal
+          archiveId={archive.id}
+          archiveName={archive.print_name || archive.filename}
+          onClose={() => setShowMediaDownload(false)}
+        />
+      )}
+
       {/* Timelapse Selection Modal */}
       {showTimelapseSelect && availableTimelapses.length > 0 && (
         <Modal
@@ -1732,6 +1748,7 @@ function ArchiveListRow({
   const [showViewer, setShowViewer] = useState(false);
   const [showTimelapse, setShowTimelapse] = useState(false);
   const [showTimelapseSelect, setShowTimelapseSelect] = useState(false);
+  const [showMediaDownload, setShowMediaDownload] = useState(false);
   const [availableTimelapses, setAvailableTimelapses] = useState<Array<{ name: string; path: string; size: number; mtime: string | null }>>([]);
   const [showQRCode, setShowQRCode] = useState(false);
   const [showPhotos, setShowPhotos] = useState(false);
@@ -1989,6 +2006,12 @@ function ArchiveListRow({
       icon: <Film className="w-4 h-4" />,
       onClick: () => setShowTimelapse(true),
       disabled: !archive.timelapse_path,
+    },
+    {
+      // The attached video and what the printer still holds; the dialog says which it could read.
+      label: t('archives.media.open'),
+      icon: <Download className="w-4 h-4" />,
+      onClick: () => setShowMediaDownload(true),
     },
     {
       label: t('archives.menu.scanForTimelapse'),
@@ -2666,6 +2689,14 @@ function ArchiveListRow({
             queryClient.invalidateQueries({ queryKey: ['archives'] });
             setShowTimelapse(false);
           }}
+        />
+      )}
+
+      {showMediaDownload && (
+        <ArchiveMediaDownloadModal
+          archiveId={archive.id}
+          archiveName={archive.print_name || archive.filename}
+          onClose={() => setShowMediaDownload(false)}
         />
       )}
 

@@ -121,11 +121,15 @@ def log_slow_request(method: str, path: str, elapsed_ms: float, timing: RequestT
     threshold = _request_threshold_ms
     if not threshold or elapsed_ms < threshold:
         return False
+    from backend.app.core.logging_filters import mask_download_grants
+
     logger.warning(
         "slow request %.0fms %s %s (db %d queries, %.0fms) [%s]",
         elapsed_ms,
         method,
-        path,
+        # A native download's path is its one-time credential; masked here too, so the line
+        # is safe on any handler and not only behind our formatter.
+        mask_download_grants(path),
         timing.count,
         timing.total_ms,
         trace_id,

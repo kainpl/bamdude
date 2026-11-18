@@ -15,7 +15,7 @@ from functools import wraps
 from typing import Any
 
 import anyio
-from fastapi import Depends, Request
+from fastapi import Depends, HTTPException, Request
 from fastapi.dependencies.utils import get_parameterless_sub_dependant
 from fastapi.routing import APIRoute, request_response
 from starlette.datastructures import MutableHeaders
@@ -56,6 +56,11 @@ MEDIA_ROUTES = frozenset(
         "/product-parts/{part_id}/image",
         "/products/{product_id}/files/{library_file_id}/plates/{plate_index}/objects/{identify_id}/image",
         "/printers/{printer_id}/camera-cover",
+        # G10 D: a prepared download leaves through the same final gate as a picture —
+        # by a one-time grant (the browser's native download) or by the ordinary headers.
+        "/media-downloads/{grant}/{filename}",
+        "/printers/{printer_id}/files/download-jobs/{job_id}/artifact",
+        "/archives/{archive_id}/media-download-jobs/{job_id}/artifact",
         "/products/{product_id}/attachment-image/{filename}",
         "/products/{product_id}/cover-image",
         "/projects/{project_id}/cover-image",
@@ -206,6 +211,48 @@ class _MjpegBody(Response):
             await self.background()
 
 
+def _begin_read(lease) -> None:
+    """Start a promised read, or refuse before anything is sent."""
+    if lease is not None and not lease.start():
+        raise HTTPException(404, "Download not found")
+
+
+class WholeFileResponse(FileResponse):
+    """A file that is only ever sent whole (G10 D, P1-6).
+
+    A one-time download grant cannot honour a resume: the grant is spent by the
+    first request. So ``Range`` / ``If-Range`` are removed before Starlette's
+    range handling can see them — the answer is always a full 200 with
+    ``Accept-Ranges: none``. ``lease`` (optional) is asked BEFORE the headers
+    whether its promise still stands (``start()`` — a promise that ran out is
+    refused there, with nothing sent) and told when the cleanup has closed the
+    file, so the file's owner knows exactly how long it is being read.
+    """
+
+    whole_only = True
+
+    def __init__(self, *args, lease=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.headers["accept-ranges"] = "none"
+        self.lease = lease
+
+    async def __call__(self, scope, receive, send):
+        # Sent as it is only outside the live-media routes (a compatibility download);
+        # on those routes the owned body below takes over and does the same.
+        _begin_read(self.lease)
+        try:
+            await super().__call__(_without_range(scope), receive, send)
+        finally:
+            if self.lease is not None:
+                self.lease.release()
+
+
+def _without_range(scope):
+    scope = dict(scope)
+    scope["headers"] = [(k, v) for k, v in scope["headers"] if k.lower() not in (b"range", b"if-range")]
+    return scope
+
+
 class _OwnedFileBody(FileResponse):
     """Keep Starlette Range/header semantics; own actual file I/O and close."""
 
@@ -213,6 +260,13 @@ class _OwnedFileBody(FileResponse):
         self.__dict__.update(response.__dict__)
         self.file = None
         self.pending: set[asyncio.Task] = set()
+        self.whole_only = getattr(response, "whole_only", False)
+        self.lease = getattr(response, "lease", None)
+
+    async def __call__(self, scope, receive, send):
+        # Before the headers: a promise that ran out is a refusal, not a cut-off body.
+        _begin_read(self.lease)
+        await super().__call__(_without_range(scope) if self.whole_only else scope, receive, send)
 
     async def _io(self, function, *args):
         task = live_authority.own(asyncio.create_task(asyncio.to_thread(function, *args), name="live-media-file-io"))
@@ -242,6 +296,8 @@ class _OwnedFileBody(FileResponse):
         if self.file is not None:
             await self._io(self.file.close)
             self.file = None
+        if self.lease is not None:
+            self.lease.release()
 
     async def _handle_simple(self, send, send_header_only, send_pathsend):
         await send({"type": "http.response.start", "status": self.status_code, "headers": self.raw_headers})

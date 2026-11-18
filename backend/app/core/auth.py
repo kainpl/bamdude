@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import os
 import secrets
@@ -376,6 +377,140 @@ async def _media_token_authority(token):
         principal.capture,
         principal.auth_source,
     )
+
+
+# --- Download grants (G10 D, spec r4 §8.2) ---
+# A browser saves a prepared download natively — a navigation, which cannot
+# carry an Authorization header and must not pass through a JavaScript Blob. So
+# the page asks for a GRANT: one use, two minutes to START the download, bound
+# to one job of one runtime generation and to the session that asked.
+#
+# Unlike the other ephemeral tokens this one is stored as its SHA-256: the
+# secret travels in a URL (history, a proxy log), and a database copy must not
+# be enough to redeem it. It is therefore looked up by hash and never through
+# ``resolve_ephemeral_authority``. Redeeming deletes the row atomically; what
+# authorises the bytes afterwards is the captured parent session, re-read on the
+# live-authority lease while the download runs — not the spent secret.
+#
+# Browser sessions only (owner, GP2/OD-5): an API key reads the same artifact
+# through its own header-authenticated door and is refused here.
+MEDIA_DOWNLOAD_GRANT_SECONDS = 120
+
+
+def _grant_digest(raw: str) -> str:
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+async def create_media_download_grant(
+    *, authority: FrozenAuthority, bound_to: str, required_permissions=(), printer_id=None
+) -> str:
+    if authority.kind != "session":
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "A download link is issued to a browser session only")
+    async with _auth_database_errors(), async_session() as db:
+        proof = await guard_accounts(db, [authority])
+        principal = await validate_captured(
+            db, authority, required_permissions=required_permissions, printer_id=printer_id, proof=proof
+        )
+        raw = secrets.token_urlsafe(32)
+        now = utcnow()
+        db.add(
+            AuthEphemeralToken(
+                token=_grant_digest(raw),
+                token_type=TokenType.MEDIA_DOWNLOAD,
+                username=principal.user.username,
+                nonce=bound_to,
+                created_at=now,
+                expires_at=now + timedelta(seconds=MEDIA_DOWNLOAD_GRANT_SECONDS),
+                **binding(principal.capture),
+            )
+        )
+        await db.commit()
+        return raw
+
+
+async def redeem_media_download_grant(raw: str, requirements):
+    """Spend one grant. Returns ``(JWTAuthority, bound_to)`` or raises 401.
+
+    ``requirements(bound_to, capture)`` is asked BEFORE the grant is spent: it
+    returns ``(required_permissions, printer_id)`` for what the grant opens, or
+    raises — a grant for a job that is gone is refused without being consumed
+    by anything but its own expiry. The delete is the redemption: of two
+    requests with one grant, one gets the row.
+    """
+    digest = _grant_digest(raw or "")
+    async with _auth_database_errors(), async_session() as db:
+        auth_runtime.track_transaction(db)
+        row = (
+            await db.execute(
+                select(AuthEphemeralToken).where(
+                    AuthEphemeralToken.token == digest,
+                    AuthEphemeralToken.token_type == TokenType.MEDIA_DOWNLOAD,
+                    AuthEphemeralToken.expires_at > utcnow(),
+                )
+            )
+        ).scalar_one_or_none()
+        if row is None:
+            raise refused()
+        capture = capture_ephemeral(row)
+        if capture.kind != "session":
+            raise refused()
+        row_id, bound_to = row.id, row.nonce
+        required_permissions, printer_id = requirements(bound_to, capture)
+        proof = await guard_accounts(db, [capture])
+        principal = await validate_captured(
+            db, capture, required_permissions=required_permissions, printer_id=printer_id, proof=proof
+        )
+        result = await db.execute(
+            delete(AuthEphemeralToken)
+            .where(
+                AuthEphemeralToken.id == row_id,
+                AuthEphemeralToken.token == digest,
+                AuthEphemeralToken.token_type == TokenType.MEDIA_DOWNLOAD,
+                AuthEphemeralToken.expires_at > utcnow(),
+                AuthEphemeralToken.nonce == bound_to,
+                *binding_conditions(capture),
+            )
+            .returning(AuthEphemeralToken.id)
+        )
+        if result.scalar_one_or_none() is None:
+            raise refused()
+        await db.commit()
+        authority = JWTAuthority(
+            principal.user,
+            frozenset(principal.user.get_permissions()),
+            principal.user.is_admin,
+            principal.capture,
+            principal.auth_source,
+        )
+        return authority, bound_to
+
+
+def require_media_download_grant(requirements, failure=HTTPException):
+    """Route dependency of the native download door: spends the grant in the path, or refuses.
+
+    ``failure`` is the exception class a refusal is raised as — the door answers
+    a browser that is saving a file, and words its refusals for that. Returns
+    what the grant was bound to; the parent session it captured becomes the
+    request's live authority, so the body is sent under the session, not under
+    the spent secret.
+    """
+
+    async def grant_checker(request: Request, grant: str):
+        try:
+            authority, bound_to = await redeem_media_download_grant(grant, requirements)
+        except HTTPException as exc:
+            raise failure(exc.status_code, exc.detail, exc.headers) from None
+        remember_live_authority(request, authority)
+        return bound_to
+
+    return grant_checker
+
+
+async def purge_media_download_grants() -> None:
+    """Startup: no job survives a restart, so no grant does."""
+    async with async_session() as db:
+        await db.execute(delete(AuthEphemeralToken).where(AuthEphemeralToken.token_type == TokenType.MEDIA_DOWNLOAD))
+        await db.commit()
 
 
 # --- WebSocket connection tokens ---

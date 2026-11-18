@@ -417,6 +417,12 @@ if app_settings.log_to_file:
     # correlate with.
     uvicorn_access_logger.addFilter(TraceIDFilter())
 
+# The native download door carries a one-time grant in its path (G10 D). Masked on the access
+# LOGGER whatever the configuration: a console-only install logs the same line.
+from backend.app.core.logging_filters import DownloadGrantFilter  # noqa: E402
+
+logging.getLogger("uvicorn.access").addFilter(DownloadGrantFilter())
+
 # HTTP wire logs contain opaque capability paths/headers that a generic
 # formatter cannot recognize, even in debug mode. Adapters retain safe
 # destination/status diagnostics instead.
@@ -13052,6 +13058,21 @@ async def _application_lifespan(app: FastAPI):
     # And for folder scans, which a restore closes for the life of the process.
     if not library_scan.open_admission():
         logging.getLogger(__name__).error("Folder scans still running at startup; scans stay closed")
+    # Download jobs live in memory (G10 D): what an earlier run left on disk goes, with every
+    # grant it issued, before the first job of this one is admitted.
+    from backend.app.core.auth import purge_media_download_grants
+    from backend.app.services.media_downloads import clean_scratch, media_download_runtime
+
+    try:
+        media_download_runtime.reopen()
+        removed, kept = await asyncio.to_thread(clean_scratch, media_download_runtime.scratch_root())
+        if removed or kept:
+            logging.getLogger(__name__).info(
+                "Download scratch: %d leftover job directories removed, %d foreign entries left alone", removed, kept
+            )
+        await purge_media_download_grants()
+    except Exception:
+        logging.getLogger(__name__).exception("Download jobs could not be reset at startup")
     from backend.app.services.part_render_scheduler import start_part_render, stop_part_render
 
     try:
@@ -13245,6 +13266,9 @@ async def _application_lifespan(app: FastAPI):
     from backend.app.services.library_scan import cancel_running_scans
 
     cancel_running_scans()
+    # Download jobs stop their transfers before the printer file lanes are drained (G10 D).
+    if not await media_download_runtime.quiesce(10):
+        logging.getLogger(__name__).warning("Download jobs did not end before shutdown; admission stays closed")
     # Printer file workers own sessions until their threads end; a drain that is not
     # proven keeps admission closed and is logged, never treated as done (G10 A).
     if not await printer_file_runtime.quiesce(10):
@@ -13548,6 +13572,9 @@ PUBLIC_API_PATTERNS: tuple[re.Pattern[str], ...] = (
     # A notification's short-lived photo copy: anonymous, the unguessable file
     # name is the credential (utils/notification_photos).
     re.compile(r"^/api/v1/notifications/photos/[^/]+$"),
+    # A browser's native download of a prepared job (G10 D): a navigation carries no
+    # header. The first segment is a one-time grant, spent by the route's own dependency.
+    re.compile(r"^/api/v1/media-downloads/[A-Za-z0-9_-]+/[^/]+$"),
     # ``{image_path:path}`` — the ONLY reason a ``.+`` appears here, and it sits
     # behind the route's own fixed segment.
     re.compile(r"^/api/v1/archives/\d+/project-image/.+$"),
@@ -14121,6 +14148,10 @@ app.include_router(measurement_history.router, prefix=app_settings.api_prefix)
 # don't get swallowed by archives' `/archives/{archive_id}` catch-all.
 app.include_router(archive_purge.router, prefix=app_settings.api_prefix)
 app.include_router(archives.router, prefix=app_settings.api_prefix)
+from backend.app.api.routes import media_downloads as media_downloads_routes
+
+app.include_router(media_downloads_routes.router, prefix=app_settings.api_prefix)
+media_downloads_routes.install(app)
 app.include_router(statistics.router, prefix=app_settings.api_prefix)
 app.include_router(inventory.router, prefix=app_settings.api_prefix)
 app.include_router(filament_families_routes.router, prefix=app_settings.api_prefix)

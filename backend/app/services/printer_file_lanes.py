@@ -306,6 +306,7 @@ class PrinterFileRuntime:
         *,
         admission_timeout: float | None = None,
         timeout: float | None = None,
+        join_on_cancel: bool = False,
     ) -> T:
         """Hold ``key``, run one owned worker, return its result.
 
@@ -313,6 +314,11 @@ class PrinterFileRuntime:
         #2572 concern: a caller holding a DB connection must not wait for ever);
         ``timeout`` bounds the wait for the result. Neither ever frees the lane
         under a live thread.
+
+        ``join_on_cancel`` (G10 D): a cancelled caller still asks the worker to
+        stop, and then waits until its thread has really ended before the cancel
+        goes on — for a caller that must not report "cancelled", or remove the
+        worker's staging, while the thread may still be writing.
         """
         deadline = _deadline(admission_timeout)
         async with self.hold(key, deadline=deadline) as lane:
@@ -321,6 +327,10 @@ class PrinterFileRuntime:
                 return await self.wait(worker, timeout)
             except LaneTimeout:
                 worker.request_cancel("timeout")
+                raise
+            except asyncio.CancelledError:
+                if join_on_cancel:
+                    await _ended(worker.future)
                 raise
 
     def _thread_finished(self, worker: LaneWorker, outcome, elapsed: float) -> None:
@@ -352,9 +362,18 @@ class PrinterFileRuntime:
     # -- tunnel tasks --------------------------------------------------------------------
 
     async def run_task(
-        self, key: str, name: str, factory: Callable[[], Awaitable[T]], *, admission_timeout: float | None = None
+        self,
+        key: str,
+        name: str,
+        factory: Callable[[], Awaitable[T]],
+        *,
+        admission_timeout: float | None = None,
+        join_on_cancel: bool = False,
     ) -> T:
-        """Run one native-asyncio operation as a runtime-owned task on a held lane."""
+        """Run one native-asyncio operation as a runtime-owned task on a held lane.
+
+        ``join_on_cancel``: as in :meth:`call` — the cancel goes on only after the task has ended.
+        """
         deadline = _deadline(admission_timeout)
         async with self.hold(key, deadline=deadline) as lane:
             task = asyncio.get_running_loop().create_task(factory(), name=f"printer-file-{name}")
@@ -375,6 +394,8 @@ class PrinterFileRuntime:
                 return await asyncio.shield(task)
             except asyncio.CancelledError:
                 task.cancel()
+                if join_on_cancel:
+                    await _ended(task)
                 raise
 
 
@@ -392,6 +413,16 @@ async def _within(awaitable: Awaitable[T], deadline: float | None) -> T:
         raise TimeoutError
     async with asyncio.timeout(remaining):
         return await awaitable
+
+
+async def _ended(future: asyncio.Future) -> None:
+    """Wait until ``future`` is done, through any number of further cancels; its outcome is not raised."""
+    while not future.done():
+        try:
+            await asyncio.wait({future})
+        except asyncio.CancelledError:
+            continue
+    _retrieve(future)
 
 
 def _retrieve(future: asyncio.Future) -> None:

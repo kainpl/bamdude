@@ -153,6 +153,7 @@ class PrinterFileTransport(Protocol):
         byte_budget: int | None = None,
         reserve_bytes: int = 0,
         progress: Callable[[int], None] | None = None,
+        join_on_cancel: bool = False,
     ) -> TransferOutcome:
         """Stream one whole file to ``destination``, a path the caller owns.
 
@@ -160,6 +161,8 @@ class PrinterFileTransport(Protocol):
         one that would leave the destination volume with less free space;
         ``progress`` gets the byte count so far (it may be called from a worker
         thread). Nothing about the file is held in memory but one chunk.
+        ``join_on_cancel``: a cancelled caller resumes only once the transfer's
+        own worker has ended and its partial file is gone.
         """
         ...
 

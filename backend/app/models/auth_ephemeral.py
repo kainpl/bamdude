@@ -47,6 +47,9 @@ class TokenType(str, Enum):
     REVOKED_JTI = "revoked_jti"
     REFRESH = "refresh"  # m015 — sliding-session refresh token (rotated per /auth/refresh)
     MEDIA = "media"  # query-param token for <img>/<video> media routes, bound to the user who minted it (audit D9)
+    # One-time grant for a browser's native download of a prepared job (G10 D). The ``token`` column holds
+    # the SHA-256 of the secret, never the secret; ``nonce`` binds the job and the runtime generation.
+    MEDIA_DOWNLOAD = "media_download"
 
 
 class EventType(str, Enum):

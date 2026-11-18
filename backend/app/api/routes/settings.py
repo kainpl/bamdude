@@ -1457,6 +1457,13 @@ async def _restore_backup(
                     raise HTTPException(
                         409, "Obico readers and writers have not stopped; retry restore after they finish"
                     )
+                # Download jobs read printers and write the scratch volume (G10 D): admission
+                # closes, every job is stopped and its worker's end proven, and what was
+                # prepared is dropped -- it belongs to the storage being replaced.
+                from backend.app.services.media_downloads import media_download_runtime
+
+                if not await media_download_runtime.quiesce():
+                    raise HTTPException(409, "Downloads have not stopped; retry restore after they finish")
                 # Printer file transfers own sessions and local files until their threads end
                 # (G10 A): admission closes first, then every operation is asked to stop and
                 # its end is proven, or the restore is refused.

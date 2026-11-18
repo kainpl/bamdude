@@ -83,6 +83,8 @@ _GATE_DEPENDENCY: dict[str, tuple[str, ...]] = {
     # Two factories, one gate: a resource with an ownership rule takes the
     # ownership form, one without takes the permission form.
     "media-token": ("require_media_ownership_permission", "require_media_permission", "require_media_any_permission"),
+    # A one-time grant in the path, spent by the dependency itself (G10 D).
+    "download-grant": ("require_media_download_grant",),
 }
 #: Where each real factory is defined. A qualified name says what a closure is
 #: CALLED; a function with no check in it, named ``require_media_permission`` in
@@ -143,6 +145,10 @@ PUBLIC_ROUTES: dict[str, tuple[str, str]] = {
     # Anonymous by decision (owner, 2026-11-17): a notification links a camera
     # frame for services and people without a session. What is served is a copy
     # with an unguessable name that lives three days — never the archive's photo.
+    "/api/v1/media-downloads/{grant}/{filename}": (
+        "download-grant",
+        "a browser's native download of a prepared job: a navigation carries no header; the grant is one use",
+    ),
     "/api/v1/notifications/photos/{filename}": (
         "anonymous",
         "a notification's short-lived photo copy; the 192-bit file name is the credential",

@@ -24,6 +24,10 @@ import {
   Eraser,
 } from 'lucide-react';
 import { SelectionBox } from './SelectionBox';
+import { DownloadCloseChoice } from './downloads/DownloadCloseChoice';
+import { DownloadJobPanel } from './downloads/DownloadJobPanel';
+import { useDownloadJob, type DownloadJobApi } from './downloads/useDownloadJob';
+import { clickSelection } from '../utils/rangeSelection';
 import {
   api,
   withMediaToken,
@@ -326,7 +330,41 @@ export function FileManagerModal({ printerId, printerName, onClose }: FileManage
   const [searchQuery, setSearchQuery] = useState('');
   const [filesToDelete, setFilesToDelete] = useState<string[]>([]);
   const [sortBy, setSortBy] = useState<SortOption>('name-asc');
-  const [downloadProgress, setDownloadProgress] = useState<{ current: number; total: number } | null>(null);
+  // The last file clicked without Shift: where a Shift-click's range starts.
+  const [anchorPath, setAnchorPath] = useState<string | null>(null);
+  const [downloadStarting, setDownloadStarting] = useState(false);
+  const [closeChoice, setCloseChoice] = useState(false);
+  const downloadApi = useMemo<DownloadJobApi>(
+    () => ({
+      get: (jobId) => api.getPrinterDownloadJob(printerId, jobId),
+      cancel: (jobId) => api.cancelPrinterDownloadJob(printerId, jobId),
+      mint: (jobId, acceptPartial) => api.mintPrinterDownloadUrl(printerId, jobId, acceptPartial),
+    }),
+    [printerId],
+  );
+  const download = useDownloadJob(downloadApi);
+  const adoptDownload = download.adopt;
+  // A download started earlier goes on while this dialog is closed: pick it up again.
+  useEffect(() => {
+    let ignore = false;
+    api
+      .listPrinterDownloadJobs(printerId)
+      .then(({ jobs }) => {
+        if (ignore) return;
+        const current = [...jobs]
+          .reverse()
+          .find((job) => job.phase === 'queued' || job.phase === 'preparing' || job.phase === 'cancelling' || job.phase === 'ready');
+        if (current) adoptDownload(current);
+      })
+      .catch(() => {
+        // Nothing to pick up, or the server could not be asked: the dialog works without it.
+      });
+    return () => {
+      ignore = true;
+    };
+  }, [printerId, adoptDownload]);
+  const downloadPhase = download.lost ? null : (download.job?.phase ?? null);
+  const downloadActive = downloadPhase === 'queued' || downloadPhase === 'preparing' || downloadPhase === 'cancelling';
   const [viewerFile, setViewerFile] = useState<{ path: string; name: string } | null>(null);
   const [importDialogOpen, setImportDialogOpen] = useState(false);
   const [importFolderId, setImportFolderId] = useState<number | null>(null);
@@ -440,6 +478,52 @@ export function FileManagerModal({ printerId, printerName, onClose }: FileManage
     enabled: storage !== null,
   });
 
+  // The list as it is shown: filtered, directories first, then the chosen sort. Shift-click
+  // ranges, "select all" and the rows below all read this one order.
+  const visibleFiles = useMemo(() => {
+    const query = searchQuery.toLowerCase();
+    const time = (value?: string) => (value ? (parseUTCDate(value)?.getTime() ?? 0) : 0);
+    return [...(data?.files ?? [])]
+      .filter((file) => !query || file.name.toLowerCase().includes(query))
+      .sort((a, b) => {
+        // Directories always first
+        if (a.is_directory && !b.is_directory) return -1;
+        if (!a.is_directory && b.is_directory) return 1;
+        switch (sortBy) {
+          case 'name-desc':
+            return b.name.localeCompare(a.name);
+          case 'size-asc':
+            return a.size - b.size;
+          case 'size-desc':
+            return b.size - a.size;
+          case 'date-asc':
+            return time(a.mtime) - time(b.mtime);
+          case 'date-desc':
+            return time(b.mtime) - time(a.mtime);
+          default:
+            return a.name.localeCompare(b.name);
+        }
+      });
+  }, [data, searchQuery, sortBy]);
+  const visibleFilePaths = useMemo(
+    () => visibleFiles.filter((file) => !file.is_directory).map((file) => file.path),
+    [visibleFiles],
+  );
+
+  // Only a complete, current listing says what is on the printer. A slow or failed one —
+  // or the last good list shown in its place — proves nothing about a file being gone.
+  const listingAuthoritative =
+    !isError && data !== undefined && !data.stale && (data.status === undefined || data.status === 'complete');
+  useEffect(() => {
+    if (!listingAuthoritative || !data) return;
+    const present = new Set(data.files.filter((file) => !file.is_directory).map((file) => file.path));
+    setSelectedFiles((prev) => {
+      const kept = [...prev].filter((path) => present.has(path));
+      return kept.length === prev.size ? prev : new Set(kept);
+    });
+  }, [data, listingAuthoritative]);
+  const selectionStale = selectedFiles.size > 0 && !isLoading && !listingAuthoritative;
+
   const switchFileType = (next: PrinterFileType) => {
     if (next === fileType) return;
     setFileType(next);
@@ -548,77 +632,72 @@ export function FileManagerModal({ printerId, printerName, onClose }: FileManage
     setSelectedFiles(new Set());
   };
 
+  // A plain click toggles one file; Shift-click selects everything shown between the last
+  // plain click and this one. "Select all" and "Clear" below do the same without a keyboard.
   const toggleFileSelection = (path: string, e: React.MouseEvent) => {
     e.stopPropagation();
-    setSelectedFiles(prev => {
-      const next = new Set(prev);
-      if (next.has(path)) {
-        next.delete(path);
-      } else {
-        next.add(path);
-      }
-      return next;
-    });
+    const next = clickSelection(selectedFiles, visibleFilePaths, anchorPath, path, e.shiftKey);
+    setSelectedFiles(next.selected);
+    setAnchorPath(next.anchor);
   };
 
   const selectAllFiles = () => {
-    if (!data?.files) return;
-    const filePaths = data.files
-      .filter(f => !f.is_directory && (!searchQuery || f.name.toLowerCase().includes(searchQuery.toLowerCase())))
-      .map(f => f.path);
-    setSelectedFiles(new Set(filePaths));
+    setSelectedFiles(new Set(visibleFilePaths));
   };
 
   const deselectAllFiles = () => {
     setSelectedFiles(new Set());
   };
 
+  // A download is a job on the server: prepared on its disk, then saved by the browser
+  // itself. One file or many, nothing is read into this page.
   const handleDownload = async () => {
-    if (selectedFiles.size === 0) return;
-
-    const paths = Array.from(selectedFiles);
-
-    if (paths.length === 1) {
-      // Single file — drive ``downloadProgress`` so the button shows a
-      // spinner while the printer streams the file over FTP. Without
-      // awaiting here the click looked like a no-op for several seconds
-      // until the browser's save-as dialog popped, and the user could
-      // double-click and queue a second pull.
-      setDownloadProgress({ current: 0, total: 1 });
-      try {
-        await api.downloadPrinterFile(printerId, paths[0], storage ?? undefined);
-        setSelectedFiles(new Set());
-      } catch (error) {
-        console.error('Printer file download failed:', error);
-        showToast(
-          `Download failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
-          'error',
-        );
-      } finally {
-        setDownloadProgress(null);
-      }
+    if (selectedFiles.size === 0 || downloadStarting || downloadActive) return;
+    if (!listingAuthoritative) {
+      // The list on screen is not a current answer from the printer: ask again before acting on it.
+      showToast(t('printerFiles.selectionStale'), 'error');
+      void refetch();
       return;
     }
-
-    // Multiple files - download as ZIP
-    setDownloadProgress({ current: 0, total: paths.length });
+    const paths = Array.from(selectedFiles);
+    const sizes: Record<string, number> = {};
+    for (const file of data?.files ?? []) {
+      if (selectedFiles.has(file.path)) sizes[file.path] = file.size;
+    }
+    setDownloadStarting(true);
     try {
-      const blob = await api.downloadPrinterFilesAsZip(printerId, paths, storage ?? undefined);
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `${printerName.replace(/[^a-zA-Z0-9]/g, '_')}-files.zip`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-      showToast(`Downloaded ${paths.length} files as ZIP`);
+      const job = await api.createPrinterDownloadJob(printerId, {
+        paths,
+        storage: storage ?? undefined,
+        sizes,
+        as_zip: paths.length > 1,
+        filename: paths.length > 1 ? `${printerName}-files.zip` : undefined,
+      });
+      download.adopt(job, { autoSave: true });
       setSelectedFiles(new Set());
     } catch (error) {
-      showToast(`Download failed: ${error instanceof Error ? error.message : 'Unknown error'}`, 'error');
+      showToast(
+        t('printerFiles.toast.downloadFailed', { error: error instanceof Error ? error.message : String(error) }),
+        'error',
+      );
     } finally {
-      setDownloadProgress(null);
+      setDownloadStarting(false);
     }
+  };
+
+  const dismissDownload = () => {
+    const job = download.job;
+    if (job && job.phase === 'ready' && !download.lost) {
+      // Dropping a prepared result frees its space on the server.
+      void api.cancelPrinterDownloadJob(printerId, job.job_id).catch(() => {});
+    }
+    download.adopt(null);
+  };
+
+  // Closing the dialog is not a hidden cancel: with a download in progress the operator chooses.
+  const requestClose = () => {
+    if (downloadActive) setCloseChoice(true);
+    else onClose();
   };
 
   const handleDelete = () => {
@@ -642,7 +721,7 @@ export function FileManagerModal({ printerId, printerName, onClose }: FileManage
   return (
     <>
       <Modal
-        onClose={onClose}
+        onClose={requestClose}
         labelledBy={headingId}
         size="3xl"
         bodyClassName="flex flex-col"
@@ -771,6 +850,8 @@ export function FileManagerModal({ printerId, printerName, onClose }: FileManage
             size="sm"
             onClick={() => refetch()}
             disabled={isLoading}
+            title={t('printerFiles.refresh')}
+            aria-label={t('printerFiles.refresh')}
           >
             <RefreshCw className={`w-4 h-4 ${isLoading ? 'animate-spin' : ''}`} />
           </Button>
@@ -824,40 +905,7 @@ export function FileManagerModal({ printerId, printerName, onClose }: FileManage
                   </div>
                 )}
                 {/* Filter and sort: directories first, then files with selected sort */}
-                {[...data.files]
-                  .filter((file) =>
-                    !searchQuery || file.name.toLowerCase().includes(searchQuery.toLowerCase())
-                  )
-                  .sort((a, b) => {
-                    // Directories always first
-                    if (a.is_directory && !b.is_directory) return -1;
-                    if (!a.is_directory && b.is_directory) return 1;
-
-                    // Apply selected sort within same type
-                    switch (sortBy) {
-                      case 'name-asc':
-                        return a.name.localeCompare(b.name);
-                      case 'name-desc':
-                        return b.name.localeCompare(a.name);
-                      case 'size-asc':
-                        return a.size - b.size;
-                      case 'size-desc':
-                        return b.size - a.size;
-                      case 'date-asc': {
-                        const aTime = a.mtime ? parseUTCDate(a.mtime)?.getTime() ?? 0 : 0;
-                        const bTime = b.mtime ? parseUTCDate(b.mtime)?.getTime() ?? 0 : 0;
-                        return aTime - bTime;
-                      }
-                      case 'date-desc': {
-                        const aTime = a.mtime ? parseUTCDate(a.mtime)?.getTime() ?? 0 : 0;
-                        const bTime = b.mtime ? parseUTCDate(b.mtime)?.getTime() ?? 0 : 0;
-                        return bTime - aTime;
-                      }
-                      default:
-                        return a.name.localeCompare(b.name);
-                    }
-                  })
-                  .map((file) => {
+                {visibleFiles.map((file) => {
                     const FileIcon = getFileIcon(file.name, file.is_directory);
                     const isSelected = selectedFiles.has(file.path);
 
@@ -923,12 +971,24 @@ export function FileManagerModal({ printerId, printerName, onClose }: FileManage
             )}
           </div>
 
+        {download.job && (
+          <DownloadJobPanel
+            job={download.job}
+            lost={download.lost}
+            saving={download.saving}
+            saveError={download.saveError}
+            onCancel={() => void download.cancel()}
+            onSave={(acceptPartial) => void download.save(acceptPartial)}
+            onDismiss={dismissDownload}
+          />
+        )}
+
         {/* Action bar */}
         <div className="flex items-center justify-between p-4 border-t border-bambu-dark-tertiary bg-bambu-dark/50 flex-shrink-0">
           <div className="flex items-center gap-4">
             <div className="text-sm text-bambu-gray">
               {selectedFiles.size > 0
-                ? `${selectedFiles.size} selected`
+                ? `${selectedFiles.size} selected${selectionStale ? ` · ${t('printerFiles.selectionUnconfirmed')}` : ''}`
                 : searchQuery
                   ? `${data?.files?.filter(f => f.name.toLowerCase().includes(searchQuery.toLowerCase())).length || 0} of ${data?.files?.length || 0} items`
                   : `${data?.files?.length || 0} items`
@@ -978,21 +1038,12 @@ export function FileManagerModal({ printerId, printerName, onClose }: FileManage
           <div className="flex gap-2">
             <Button
               variant="secondary"
-              disabled={selectedFiles.size === 0 || downloadProgress !== null}
+              disabled={selectedFiles.size === 0 || downloadStarting || downloadActive}
               onClick={handleDownload}
             >
-              {downloadProgress ? (
-                <>
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                  {t('printerFiles.downloading')}
-                  {downloadProgress.total > 1 ? ` (${downloadProgress.total})` : ''}
-                </>
-              ) : (
-                <>
-                  <Download className="w-4 h-4" />
-                  Download{selectedFiles.size > 1 ? ` (${selectedFiles.size})` : ''}
-                </>
-              )}
+              {downloadStarting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
+              {t('printerFiles.download')}
+              {selectedFiles.size > 1 ? ` (${selectedFiles.size})` : ''}
             </Button>
             <Button
               variant="secondary"
@@ -1024,6 +1075,16 @@ export function FileManagerModal({ printerId, printerName, onClose }: FileManage
           </div>
         </div>
       </Modal>
+
+      {closeChoice && (
+        <DownloadCloseChoice
+          onStay={() => setCloseChoice(false)}
+          onKeep={onClose}
+          onCancelDownload={() => {
+            void download.cancel().finally(onClose);
+          }}
+        />
+      )}
 
       {/* Delete Confirmation Modal */}
       {filesToDelete.length > 0 && (

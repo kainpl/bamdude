@@ -85,6 +85,7 @@ class FtpTransport:
         byte_budget: int | None = None,
         reserve_bytes: int = 0,
         progress: Callable[[int], None] | None = None,
+        join_on_cancel: bool = False,
     ) -> TransferOutcome:
         return await download_to_path_async(
             self._ip,
@@ -95,6 +96,7 @@ class FtpTransport:
             byte_budget=byte_budget,
             reserve_bytes=reserve_bytes,
             progress=progress,
+            join_on_cancel=join_on_cancel,
         )
 
     async def delete(self, path: str, *, may_run: Callable[[], bool] | None = None) -> DeleteResult:

@@ -103,6 +103,10 @@ export const handlers = [
   // Spec procurement-stock-images R5: a `LivePartThumb` asks its picture apart. A test that does not
   // care gets no answer it could take as «no picture», so the view's own picture stays on screen.
   http.get('/api/v1/product-parts/images', () => HttpResponse.json({ detail: 'not mocked' }, { status: 503 })),
+  // G10 D: the file manager and the archive's video dialog ask whether a download of theirs is
+  // still running; a test that does not care sees none.
+  http.get('/api/v1/printers/:id/files/download-jobs', () => HttpResponse.json({ jobs: [] })),
+  http.get('/api/v1/archives/:id/media-download-jobs', () => HttpResponse.json({ jobs: [] })),
   // Scheduled drying: every printer card reads these two fleet-wide lists.
   http.get('/api/v1/scheduled-dryings', () => HttpResponse.json([])),
   http.get('/api/v1/drying-schedules', () => HttpResponse.json({ server_timezone: 'UTC', schedules: [] })),

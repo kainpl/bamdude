@@ -122,9 +122,9 @@ class TestPublishing:
         seen = {}
         real = archive_media._free_name
 
-        def spy(directory, filename):
+        def spy(*args):
             seen["during"] = live.read_bytes()  # the live file is untouched while the new one is placed
-            return real(directory, filename)
+            return real(*args)
 
         archive_media._free_name = spy
         try:
@@ -134,6 +134,67 @@ class TestPublishing:
         assert seen["during"] == b"old"
         assert second.relative_path != first.relative_path
         assert (base / second.relative_path).read_bytes() == b"new"
+
+
+class TestAPublicationTakesANameOfItsOwn:
+    """G10 D review, D7-R: the bytes take their name before the commit, so that name is never the pointer's."""
+
+    async def test_the_pointers_name_is_not_taken_even_when_its_file_is_gone(self, db_session, base):
+        archive = await _archive(db_session)
+        first, _ = await _publish(db_session, base, archive, name="v.mp4", data=b"old")
+        (base / first.relative_path).unlink()  # the pointer still names it; nothing is there
+        second, _ = await _publish(db_session, base, archive, name="v.mp4", data=b"new")
+        assert second.ok and second.relative_path != first.relative_path
+        assert (base / second.relative_path).read_bytes() == b"new"
+        assert not (base / first.relative_path).exists()
+
+    async def test_a_publication_that_is_rolled_back_leaves_the_pointers_name_empty(
+        self, db_session, base, monkeypatch
+    ):
+        archive = await _archive(db_session)
+        first, _ = await _publish(db_session, base, archive, name="v.mp4", data=b"old")
+        shown = base / first.relative_path
+        shown.unlink()
+        real = db_session.commit
+        calls = {"n": 0}
+        seen = {}
+
+        async def commit():
+            calls["n"] += 1
+            if calls["n"] == 2:  # the publication's own commit: the new bytes already have their name
+                seen["at_the_pointer"] = shown.exists()
+                raise RuntimeError("connection lost")
+            return await real()
+
+        monkeypatch.setattr(db_session, "commit", commit)
+        with pytest.raises(RuntimeError, match="connection lost"):
+            await _publish(db_session, base, archive, name="v.mp4", data=b"new")
+        monkeypatch.undo()
+        await db_session.rollback()
+        # A reader of the pointer never met the new bytes — not before the commit, not after its failure.
+        assert seen == {"at_the_pointer": False}
+        assert not shown.exists()
+        assert await _pointer(db_session, archive.id) == first.relative_path
+
+    def test_the_name_rule(self, tmp_path):
+        free = archive_media._free_name
+        assert free(tmp_path, "v.mp4") == tmp_path / "v.mp4"
+        assert free(tmp_path, "v.mp4", tmp_path / "other.mp4") == tmp_path / "v.mp4"
+        own = free(tmp_path, "v.mp4", tmp_path / "v.mp4")
+        assert own != tmp_path / "v.mp4" and own.parent == tmp_path and own.suffix == ".mp4"
+        # The same file under another spelling of its path is still the pointer's.
+        assert free(tmp_path, "v.mp4", tmp_path / "sub" / ".." / "v.mp4") != tmp_path / "v.mp4"
+        (tmp_path / "v.mp4").write_bytes(b"x")
+        assert free(tmp_path, "v.mp4") != tmp_path / "v.mp4"
+
+    async def test_a_pointer_that_leaves_the_data_directory_is_never_joined(self, db_session, base):
+        archive = await _archive(db_session)
+        live = await _live(db_session, archive)
+        live.timelapse_path = "../outside.mp4"  # an import or an old writer left it
+        await db_session.commit()
+        result, _ = await _publish(db_session, base, archive, name="v.mp4", data=b"new")
+        assert result.ok and (base / result.relative_path).read_bytes() == b"new"
+        assert not (base.parent / "outside.mp4").exists()
 
 
 class TestTheTargetMustStillBeTheSameArchive:

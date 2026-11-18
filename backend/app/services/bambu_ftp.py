@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import ftplib  # nosec B402
 import functools
 import logging
@@ -185,6 +186,7 @@ async def _on_lane(
     *,
     admission_timeout: float | None = None,
     timeout: float | None = None,
+    join_on_cancel: bool = False,
 ) -> T:
     """Run ``target`` as one owned FTP worker on the printer's lane.
 
@@ -192,7 +194,12 @@ async def _on_lane(
     ``timeout`` bounds the wait for the result. Neither frees the lane early.
     """
     return await printer_file_runtime.call(
-        ftp_key(ip_address), name, target, admission_timeout=admission_timeout, timeout=timeout
+        ftp_key(ip_address),
+        name,
+        target,
+        admission_timeout=admission_timeout,
+        timeout=timeout,
+        join_on_cancel=join_on_cancel,
     )
 
 
@@ -958,10 +965,57 @@ class BambuFTPClient:
                 self.status = status
                 self.reason = reason
 
+        def local(exc: OSError, after: BaseException | None = None) -> _Stop:
+            # ``OSError`` is also what a dead socket raises, and that is "the printer is
+            # unavailable" — one file's failure. What THIS disk refuses (it is full, the
+            # directory cannot be written) is not: no other file would fare better, so it is
+            # told apart here, where the two can still be told apart (G10 D review, D4-R).
+            reason = f"local_{type(exc).__name__}"
+            if after is not None:
+                reason += f"_after_{type(after).__name__}"
+            return _Stop("insufficient_storage", reason)
+
+        @contextlib.contextmanager
+        def closing_staging(handle):
+            # A buffered file flushes again when it is closed, and that is where a full disk is
+            # often first heard of: a small last block sits in the buffer until then. So a close
+            # that fails is this disk's refusal WHATEVER else went wrong with the file — also when
+            # the printer's side had failed first. A proven disk failure ends the whole job; the
+            # source's failure alone would only cost this one file, and the job would hand out a
+            # partial ZIP from a disk that cannot hold it (Codex r3 D4-R2, r4 D4-R3). The first
+            # error stays in the chain and in the reason, for the log.
+            try:
+                yield
+            except _Stop as first:
+                try:
+                    handle.close()
+                except OSError as exc:
+                    if first.status != "insufficient_storage":
+                        raise local(exc, after=first) from first
+                raise
+            except Exception as first:
+                try:
+                    handle.close()
+                except OSError as exc:
+                    raise local(exc, after=first) from first
+                raise
+            except BaseException:
+                with contextlib.suppress(OSError):
+                    handle.close()
+                raise
+            try:
+                handle.close()
+            except OSError as exc:
+                raise local(exc) from exc
+
         def transfer() -> tuple[str, int, str | None, str | None]:
             nonlocal received, created
-            volume.mkdir(parents=True, exist_ok=True)
-            with open(local_path, "wb") as handle:
+            try:
+                volume.mkdir(parents=True, exist_ok=True)
+                handle = open(local_path, "wb")  # noqa: SIM115 — closed by ``closing_staging`` just below
+            except OSError as exc:
+                raise local(exc) from exc
+            with closing_staging(handle):
                 created = True
 
                 def write(chunk: bytes) -> None:
@@ -971,13 +1025,19 @@ class BambuFTPClient:
                         raise _Stop("limit_exceeded", "byte_budget")
                     if reserve.due_before(received) and not reserve.fits(shutil.disk_usage(volume).free, len(chunk)):
                         raise _Stop("insufficient_storage", "reserve")
-                    handle.write(chunk)
+                    try:
+                        handle.write(chunk)
+                    except OSError as exc:
+                        raise local(exc) from exc
                     if progress is not None:
                         progress(received)
 
                 self._ftp.retrbinary(f"RETR {remote_path}", write, blocksize=_FETCH_BLOCK)
-                handle.flush()
-                os.fsync(handle.fileno())
+                try:
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                except OSError as exc:
+                    raise local(exc) from exc
             if reserve.due_final(received) and not reserve.fits(shutil.disk_usage(volume).free):
                 raise _Stop("insufficient_storage", "reserve")
             server_size = self.get_file_size(remote_path)
@@ -1985,13 +2045,15 @@ async def download_to_path_async(
     byte_budget: int | None = None,
     reserve_bytes: int = 0,
     progress: Callable[[int], None] | None = None,
+    join_on_cancel: bool = False,
 ):
     """Stream one file to ``local_path`` on the printer's FTP lane; a typed :class:`TransferOutcome`.
 
     No cap on a healthy transfer: a stall is the socket idle deadline
     (``socket_timeout``). ``admission_timeout`` bounds only the wait for the lane
     and a worker slot. A cancelled caller asks the worker to stop; the lane is
-    released when its thread has ended.
+    released when its thread has ended. With ``join_on_cancel`` the cancelled
+    caller is also held until then, so the partial file is gone when it resumes.
     """
     from backend.app.services.printer_files.base import TRANSFER_BUSY, TRANSFER_CANCELLED, TransferOutcome
 
@@ -2016,7 +2078,9 @@ async def download_to_path_async(
             _end_session(worker, client)
 
     try:
-        return await _on_lane(ip_address, "fetch", target, admission_timeout=admission_timeout)
+        return await _on_lane(
+            ip_address, "fetch", target, admission_timeout=admission_timeout, join_on_cancel=join_on_cancel
+        )
     except LaneRefused as refused:
         return TransferOutcome(TRANSFER_BUSY, reason=refused.reason)
     except WorkerCancelled as cancelled:

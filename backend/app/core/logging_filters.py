@@ -169,6 +169,21 @@ def _unescape_log_text(text: str) -> str:
     return decoded
 
 
+_DOWNLOAD_GRANT = re.compile(r"(/media-downloads/)[A-Za-z0-9_-]+")
+
+
+def mask_download_grants(text: str) -> str:
+    """Mask the one-time grant in a native-download path (G10 D): ``/media-downloads/<grant>/<name>``.
+
+    The path IS the credential there. Every line that can carry a request path —
+    the access line, the slow-request line, an error naming the URL — goes
+    through this, on every handler, whatever the logging configuration.
+    """
+    if "/media-downloads/" not in text:
+        return text
+    return _DOWNLOAD_GRANT.sub(lambda found: found.group(1) + "[grant]", text)
+
+
 def redact_log_credentials(text: str) -> str:
     """Remove credential shapes, including escaped/percent-encoded log text.
 
@@ -183,7 +198,7 @@ def redact_log_credentials(text: str) -> str:
         decoded = _unescape_log_text(candidate)
         if decoded == candidate:
             sanitized = redact_url_credentials(candidate) or ""
-            sanitized = _redact_entry_shapes(sanitized)
+            sanitized = mask_download_grants(_redact_entry_shapes(sanitized))
             return sanitized if sanitized != candidate else text
         candidate = decoded
     # Unusually deep escaped text must not escape the bounded decoder.
@@ -271,6 +286,25 @@ class CancelledPoolNoiseFilter(logging.Filter):
             exc = record.exc_info[1]
             if self._has_cancelled_in_chain(exc):
                 return False
+        return True
+
+
+class DownloadGrantFilter(logging.Filter):
+    """Mask the one-time grant in an access line of the native download door (G10 D).
+
+    ``GET /api/v1/media-downloads/<grant>/<name>`` carries its credential in the
+    path. Attached to the ``uvicorn.access`` LOGGER — always, with or without a
+    log file — so the record itself is masked before any handler, also one
+    somebody adds later with a formatter of their own. Our own formatter masks
+    the same shape in every other line (:func:`mask_download_grants`).
+    The grant is spent by the request that logged it; masking it keeps a
+    refused or unfinished attempt from leaving a usable one behind.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        args = record.args
+        if isinstance(args, tuple) and len(args) >= 3 and isinstance(args[2], str):
+            record.args = (*args[:2], mask_download_grants(args[2]), *args[3:])
         return True
 
 

@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import shutil
+import sys
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -69,15 +70,23 @@ def _finish(handle) -> None:
         handle.close()
 
 
-def _discard(handle, destination: Path) -> None:
-    """Close a failed download's file, then remove it — one step, so no cancel can fall between."""
+def _discard(handle, destination: Path) -> OSError | None:
+    """Close a failed download's file, then remove it — one step, so no cancel can fall between.
+
+    Returns the error the CLOSE raised, if any. A close that cannot flush still
+    releases the descriptor and the file goes next, so nothing is raised here —
+    but that error is this disk refusing the bytes, and the caller must not lose
+    it behind whatever failed first (G10 D review, D4-R3).
+    """
+    refused: OSError | None = None
     try:
         if not handle.closed:
             handle.close()
-    except OSError:
-        pass  # a close that cannot flush still releases the descriptor; the file goes next
+    except OSError as exc:
+        refused = exc
     finally:
         discard_staging(destination)
+    return refused
 
 
 async def _settle(awaitable):
@@ -119,8 +128,10 @@ class TunnelTransport:
             connector=self._connector,
         )
 
-    async def _on_lane(self, name: str, factory):
-        return await printer_file_runtime.run_task(tunnel_key(self._ip, self._port), name, factory)
+    async def _on_lane(self, name: str, factory, *, join_on_cancel: bool = False):
+        return await printer_file_runtime.run_task(
+            tunnel_key(self._ip, self._port), name, factory, join_on_cancel=join_on_cancel
+        )
 
     async def list_files(self, path: str, file_type: str = FILE_TYPE_MODEL) -> list[RemoteFile]:
         """``path`` is ignored: the internal catalogue is flat, not a tree.
@@ -198,6 +209,7 @@ class TunnelTransport:
         byte_budget: int | None = None,
         reserve_bytes: int = 0,
         progress: Callable[[int], None] | None = None,
+        join_on_cancel: bool = False,
     ) -> TransferOutcome:
         """Stream one whole file to ``destination``: each frame's body goes to disk as it comes.
 
@@ -228,12 +240,23 @@ class TunnelTransport:
             handle = None
             completed = False
 
+            def local(exc: OSError, after: BaseException | None = None) -> _Stop:
+                # What THIS disk refuses (full, unwritable) is not the printer's failure and
+                # not one file's: told apart here from the socket's ``OSError`` (G10 D, D4-R).
+                reason = f"local_{type(exc).__name__}"
+                if after is not None:
+                    reason += f"_after_{type(after).__name__}"
+                return _Stop(TRANSFER_INSUFFICIENT_STORAGE, reason)
+
             async def open_staging() -> None:
                 nonlocal handle
-                await asyncio.to_thread(volume.mkdir, parents=True, exist_ok=True)
-                # Assigned the moment the thread returns, even when a cancel came
-                # in the meantime: ``owned`` waits for this task to end.
-                handle = await asyncio.to_thread(open, destination, "wb")
+                try:
+                    await asyncio.to_thread(volume.mkdir, parents=True, exist_ok=True)
+                    # Assigned the moment the thread returns, even when a cancel came
+                    # in the meantime: ``owned`` waits for this task to end.
+                    handle = await asyncio.to_thread(open, destination, "wb")
+                except OSError as exc:
+                    raise local(exc) from exc
 
             try:
                 await owned(open_staging())
@@ -245,23 +268,40 @@ class TunnelTransport:
                         raise _Stop(TRANSFER_LIMIT_EXCEEDED, "byte_budget")
                     if reserve.due_before(received) and not reserve.fits(await free_space(), len(chunk)):
                         raise _Stop(TRANSFER_INSUFFICIENT_STORAGE, "reserve")
-                    await owned(asyncio.to_thread(handle.write, chunk))
+                    try:
+                        await owned(asyncio.to_thread(handle.write, chunk))
+                    except OSError as exc:
+                        raise local(exc) from exc
                     if progress is not None:
                         progress(received)
 
                 async with self._client() as client:
                     receipt = await client.download_into(path, sink)
-                await owned(asyncio.to_thread(_finish, handle))
+                try:
+                    await owned(asyncio.to_thread(_finish, handle))
+                except OSError as exc:
+                    raise local(exc) from exc
                 if reserve.due_final(received) and not reserve.fits(await free_space()):
                     raise _Stop(TRANSFER_INSUFFICIENT_STORAGE, "reserve")
                 completed = True
                 return TransferOutcome(TRANSFER_COMPLETED, receipt.total, receipt.checksum)
             finally:
                 if handle is not None and not completed:
-                    await _settle(asyncio.to_thread(_discard, handle, destination))
+                    first = sys.exc_info()[1]
+                    refused = await _settle(asyncio.to_thread(_discard, handle, destination))
+                    # The close is where a full disk is often first heard of (a small last block
+                    # waits in the buffer). It outranks whatever failed first on the printer's
+                    # side — a proven disk failure ends the whole job, a source failure alone
+                    # only this file — but never a cancel, and never a disk refusal already told.
+                    if (
+                        refused is not None
+                        and isinstance(first, Exception)
+                        and not (isinstance(first, _Stop) and first.status == TRANSFER_INSUFFICIENT_STORAGE)
+                    ):
+                        raise local(refused, after=first) from first
 
         try:
-            return await self._on_lane("fetch", operation)
+            return await self._on_lane("fetch", operation, join_on_cancel=join_on_cancel)
         except _Stop as stop:
             return TransferOutcome(stop.status, received, reason=stop.reason)
         except TunnelProtocolError as exc:

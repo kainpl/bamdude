@@ -143,7 +143,6 @@ from backend.app.services.printer_tag_service import (
     replace_links,
 )
 from backend.app.utils.fila_switch import extruder_slots_payload, inlet_bindings, switch_ready
-from backend.app.utils.http import build_content_disposition
 from backend.app.utils.model_compatibility import compatibility_matrix, effective_model_for_state, model_compatibility
 from backend.app.utils.printer_configs import is_bed_slinger
 from backend.app.utils.printer_models import normalize_model_name
@@ -2298,16 +2297,29 @@ _LISTING_WAIT_SECONDS = 20.0
 async def download_printer_file(
     printer_id: int,
     path: str,
+    request: Request,
     storage: str | None = None,
     _=RequirePermission(Permission.PRINTERS_FILES),
 ):
-    """Download a file from the printer."""
-    printer = await _load_printer_or_404(printer_id)
-    resolved = _resolve_storage(storage, printer.model, printer_manager.get_status(printer_id))
+    """Download a file from the printer in one request.
 
-    data = await transport_for(printer, resolved).read_bytes(path)
-    if data is None:
-        raise HTTPException(404, f"File not found: {path}")
+    Kept for clients that expect the file in the answer (G10 D): the file is
+    streamed to the server's disk and from there to the client, never held in
+    memory. The file manager itself uses the download jobs.
+    """
+    from pydantic import ValidationError
+
+    from backend.app.api.routes.media_downloads import (
+        NothingDownloaded,
+        PrinterDownloadRequest,
+        compat_download,
+        create_printer_job,
+    )
+
+    try:
+        body = PrinterDownloadRequest(paths=[path], storage=storage)
+    except ValidationError:
+        raise HTTPException(404, f"File not found: {path}") from None
 
     # Determine content type based on extension
     filename = path.split("/")[-1]
@@ -2326,11 +2338,11 @@ async def download_printer_file(
     }
     content_type = content_types.get(ext, "application/octet-stream")
 
-    return Response(
-        content=data,
-        media_type=content_type,
-        headers={"Content-Disposition": build_content_disposition(filename)},
-    )
+    job = await create_printer_job(request, printer_id, body, hidden=True)
+    try:
+        return await compat_download(job, media_type=content_type)
+    except NothingDownloaded:
+        raise HTTPException(404, f"File not found: {path}") from None
 
 
 @router.get("/{printer_id}/files/gcode")
@@ -2518,47 +2530,41 @@ def _plates_from_archive(printer_id: int, path: str, filename: str, archive: Pri
 @router.post("/{printer_id}/files/download-zip")
 async def download_printer_files_as_zip(
     printer_id: int,
-    request: dict,
+    payload: dict,
+    request: Request,
     _=RequirePermission(Permission.PRINTERS_FILES),
 ):
-    """Download multiple files from the printer as a ZIP archive."""
-    import io
+    """Download multiple files from the printer as a ZIP archive, in one request.
 
-    paths = request.get("paths", [])
+    Kept for clients that expect the archive in the answer (G10 D): it is built
+    on the server's disk, one file at a time, and streamed from there. A file
+    the printer would not give is left out, as before; ``X-Download-Failed``
+    says how many were. Every path comes from one storage — the one the
+    browser was showing.
+    """
+    from pydantic import ValidationError
+
+    from backend.app.api.routes.media_downloads import (
+        NothingDownloaded,
+        PrinterDownloadRequest,
+        compat_download,
+        create_printer_job,
+    )
+
+    paths = payload.get("paths", [])
     if not paths:
         raise HTTPException(400, "No files specified")
-
-    printer = await _load_printer_or_404(printer_id)
-    # Resolved once for the whole request: every path in one ZIP comes from the
-    # storage the browser was showing, and re-resolving per path would let a
-    # single archive silently mix two media.
-    resolved = _resolve_storage(request.get("storage"), printer.model, printer_manager.get_status(printer_id))
-    transport = transport_for(printer, resolved)
-
-    # Create ZIP in memory
-    zip_buffer = io.BytesIO()
-    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-        for path in paths:
-            try:
-                data = await transport.read_bytes(path)
-                if data:
-                    filename = path.split("/")[-1]
-                    zf.writestr(filename, data)
-            except Exception as e:
-                logging.warning("Failed to add %s to ZIP: %s", path, e)
-                continue
-
-    zip_buffer.seek(0)
-    zip_data = zip_buffer.read()
-
-    if len(zip_data) == 0:
-        raise HTTPException(404, "No files could be downloaded")
-
-    return Response(
-        content=zip_data,
-        media_type="application/zip",
-        headers={"Content-Disposition": 'attachment; filename="printer-files.zip"'},
-    )
+    try:
+        body = PrinterDownloadRequest(
+            paths=paths, storage=payload.get("storage"), as_zip=True, filename="printer-files.zip"
+        )
+    except ValidationError:
+        raise HTTPException(400, "Invalid file selection") from None
+    job = await create_printer_job(request, printer_id, body, hidden=True)
+    try:
+        return await compat_download(job, media_type="application/zip")
+    except NothingDownloaded:
+        raise HTTPException(404, "No files could be downloaded") from None
 
 
 @router.post("/{printer_id}/files/import-to-library")
