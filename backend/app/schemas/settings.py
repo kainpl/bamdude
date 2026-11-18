@@ -554,6 +554,10 @@ class AppSettings(BaseModel):
     mqtt_password: str = Field(default="", description="MQTT password for authentication (optional)")
     mqtt_topic_prefix: str = Field(default="bamdude", description="Topic prefix for all published messages")
     mqtt_use_tls: bool = Field(default=False, description="Use TLS/SSL encryption for MQTT connection")
+    mqtt_tls_verify: bool = Field(
+        default=False,
+        description="Check the broker's certificate and host name against the system's trusted authorities",
+    )
 
     # External URL for notifications
     # Where the compose file lives on the host, for the update instructions.
@@ -1004,6 +1008,7 @@ class AppSettingsUpdate(BaseModel):
     mqtt_password: str | None = None
     mqtt_topic_prefix: str | None = None
     mqtt_use_tls: bool | None = None
+    mqtt_tls_verify: bool | None = None
     external_url: str | None = None
     docker_compose_dir: str | None = None
     ha_enabled: bool | None = None

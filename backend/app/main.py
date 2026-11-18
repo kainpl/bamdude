@@ -12621,6 +12621,7 @@ async def _application_lifespan(app: FastAPI):
             "mqtt_password": await get_setting(db, "mqtt_password") or "",
             "mqtt_topic_prefix": await get_setting(db, "mqtt_topic_prefix") or "bamdude",
             "mqtt_use_tls": (await get_setting(db, "mqtt_use_tls") or "false") == "true",
+            "mqtt_tls_verify": (await get_setting(db, "mqtt_tls_verify") or "false") == "true",
         }
         await mqtt_relay.configure(mqtt_settings)
 

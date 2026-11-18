@@ -51,117 +51,46 @@ class TestVirtualPrinterSettingsAPI:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_update_mode_to_file_manager(self, async_client: AsyncClient):
-        """Verify mode can be set to file_manager (the default)."""
-        response = await async_client.put("/api/v1/settings/virtual-printer", json={"mode": "file_manager"})
+    @pytest.mark.parametrize(
+        "body",
+        [
+            {"mode": "file_manager"},
+            {"mode": "immediate"},
+            {"enabled": True},
+            {"enabled": False},
+            {"access_code": "12345678"},
+            {"model": "X1C"},
+            {"target_printer_id": 3},
+            {"remote_interface_ip": "192.168.1.10"},
+            {"secret_actions": {"access_code": "clear"}},
+            {"archive_name_source": "filename", "mode": "proxy"},
+        ],
+    )
+    async def test_settings_of_one_virtual_printer_are_refused_here(self, async_client: AsyncClient, body):
+        """This route once configured THE virtual printer; each one has its own route now.
 
-        assert response.status_code == 200
-        result = response.json()
-        assert result["mode"] == "file_manager"
-
-    @pytest.mark.asyncio
-    @pytest.mark.integration
-    async def test_update_mode_to_print_queue(self, async_client: AsyncClient):
-        """Verify mode can be set to print_queue."""
-        response = await async_client.put("/api/v1/settings/virtual-printer", json={"mode": "print_queue"})
-
-        assert response.status_code == 200
-        result = response.json()
-        assert result["mode"] == "print_queue"
-
-    @pytest.mark.asyncio
-    @pytest.mark.integration
-    async def test_update_mode_legacy_rejected(self, async_client: AsyncClient):
-        """Verify legacy 'immediate'/'review'/'queue' modes are rejected.
-
-        m002 already migrated existing rows away from those values; the
-        API now refuses to accept them on writes too.
+        It went on accepting these fields, stored them where nothing reads them and answered 200 as
+        if a virtual printer had changed (upstream Bambuddy b9b62f739). Refused, and nothing stored.
         """
-        for legacy in ("immediate", "review", "queue"):
-            response = await async_client.put("/api/v1/settings/virtual-printer", json={"mode": legacy})
-            assert response.status_code == 400, f"expected 400 for legacy mode={legacy}, got {response.status_code}"
+        before = (await async_client.get("/api/v1/settings/virtual-printer")).json()
 
-    @pytest.mark.asyncio
-    @pytest.mark.integration
-    async def test_update_access_code(self, async_client: AsyncClient):
-        """Verify access code can be set."""
-        response = await async_client.put("/api/v1/settings/virtual-printer", json={"access_code": "12345678"})
-
-        assert response.status_code == 200
-        result = response.json()
-        assert result["access_code_set"] is True
-
-    @pytest.mark.asyncio
-    @pytest.mark.integration
-    async def test_update_access_code_wrong_length(self, async_client: AsyncClient):
-        """Verify access code validation for length."""
-        response = await async_client.put("/api/v1/settings/virtual-printer", json={"access_code": "123"})
-
-        # Should fail validation
-        assert response.status_code == 400
-
-    @pytest.mark.asyncio
-    @pytest.mark.integration
-    async def test_enable_without_access_code(self, async_client: AsyncClient):
-        """Verify enabling fails without access code set."""
-        response = await async_client.put("/api/v1/settings/virtual-printer", json={"enabled": True})
+        response = await async_client.put("/api/v1/settings/virtual-printer", json=body)
 
         assert response.status_code == 400, response.text
-        current = await async_client.get("/api/v1/settings/virtual-printer")
-        assert current.json()["enabled"] is False
+        assert "Virtual Printers page" in response.json()["detail"]
+        after = (await async_client.get("/api/v1/settings/virtual-printer")).json()
+        assert {k: v for k, v in after.items() if k != "status"} == {k: v for k, v in before.items() if k != "status"}
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    async def test_enable_with_access_code(self, async_client: AsyncClient):
-        """Verify enabling succeeds when access code is set."""
-        # First set access code
-        saved = await async_client.put("/api/v1/settings/virtual-printer", json={"access_code": "12345678"})
-        assert saved.status_code == 200, saved.text
+    async def test_the_archive_name_source_is_still_set_here(self, async_client: AsyncClient):
+        response = await async_client.put("/api/v1/settings/virtual-printer", json={"archive_name_source": "filename"})
 
-        # Then enable (this will start the servers which may fail in test env)
-        # We mock the manager to avoid actually starting servers
-        with patch("backend.app.services.virtual_printer.virtual_printer_manager") as mock_manager:
-            mock_manager.configure = AsyncMock()
-            mock_manager.get_status = MagicMock(
-                return_value={
-                    "enabled": True,
-                    "running": True,
-                    "mode": "file_manager",
-                    "name": "BamDude",
-                    "serial": "00M09A391800001",
-                    "pending_files": 0,
-                }
-            )
+        assert response.status_code == 200, response.text
+        assert response.json()["archive_name_source"] == "filename"
 
-            response = await async_client.put("/api/v1/settings/virtual-printer", json={"enabled": True})
-
-            assert response.status_code == 200
-            assert mock_manager.configure.await_args.kwargs["enabled"] is True
-            assert mock_manager.configure.await_args.kwargs["access_code"] == "12345678"
-
-    @pytest.mark.asyncio
-    @pytest.mark.integration
-    async def test_disable_virtual_printer(self, async_client: AsyncClient):
-        """Verify virtual printer can be disabled."""
-        with patch("backend.app.services.virtual_printer.virtual_printer_manager") as mock_manager:
-            mock_manager.configure = AsyncMock()
-            mock_manager.get_status = MagicMock(
-                return_value={
-                    "enabled": False,
-                    "running": False,
-                    "mode": "file_manager",
-                    "name": "BamDude",
-                    "serial": "00M09A391800001",
-                    "pending_files": 0,
-                }
-            )
-
-            response = await async_client.put("/api/v1/settings/virtual-printer", json={"enabled": False})
-
-            assert response.status_code == 200
-            result = response.json()
-            assert result["enabled"] is False
-            assert mock_manager.configure.await_args.kwargs["enabled"] is False
+        bad = await async_client.put("/api/v1/settings/virtual-printer", json={"archive_name_source": "title"})
+        assert bad.status_code == 400
 
     @pytest.mark.asyncio
     @pytest.mark.integration

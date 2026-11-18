@@ -146,6 +146,7 @@ _MQTT_SETTING_KEYS = {
     "mqtt_password",
     "mqtt_topic_prefix",
     "mqtt_use_tls",
+    "mqtt_tls_verify",
 }
 
 # Keys that decide *who can reach the instance* rather than how it behaves. The

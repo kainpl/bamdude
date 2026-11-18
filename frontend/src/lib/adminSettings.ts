@@ -33,6 +33,7 @@ export const ADMIN_SETTING_FIELDS = new Set<string>([
   'mqtt_port',
   'mqtt_topic_prefix',
   'mqtt_use_tls',
+  'mqtt_tls_verify',
   'mqtt_username',
   'obico_enabled',
   'obico_ml_token',

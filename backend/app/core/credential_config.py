@@ -27,6 +27,7 @@ CREDENTIAL_SETTING_KEYS = frozenset(
         "mqtt_broker",
         "mqtt_port",
         "mqtt_use_tls",
+        "mqtt_tls_verify",
         "mqtt_username",
         "mqtt_password",
         "ha_url",

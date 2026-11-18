@@ -20,6 +20,22 @@ from backend.app.utils.paho_teardown import retire_paho_client
 logger = logging.getLogger(__name__)
 
 
+def configure_broker_tls(client: mqtt.Client, *, verify: bool) -> None:
+    """TLS for a connection to the operator's own broker (the relay and the MQTT smart plugs).
+
+    Unverified by default: a local Mosquitto with a self-signed certificate is the ordinary home
+    setup, and it must keep working. With ``verify`` (Settings -> "Verify the broker's certificate")
+    the chain and the host name are checked against the system's trusted authorities, and a broker
+    that fails the check is not connected to.
+    """
+    if verify:
+        client.tls_set(cert_reqs=ssl.CERT_REQUIRED)
+        client.tls_insecure_set(False)
+    else:
+        client.tls_set(cert_reqs=ssl.CERT_NONE)
+        client.tls_insecure_set(True)
+
+
 class MQTTRelayService:
     """Publishes BamDude events to an external MQTT broker."""
 
@@ -62,6 +78,7 @@ class MQTTRelayService:
         password = settings.get("mqtt_password", "")
         self.topic_prefix = settings.get("mqtt_topic_prefix", "bamdude")
         use_tls = settings.get("mqtt_use_tls", False)
+        self._tls_verify = bool(settings.get("mqtt_tls_verify", False))
 
         if not broker:
             logger.warning("MQTT enabled but no broker configured")
@@ -131,10 +148,8 @@ class MQTTRelayService:
             if username:
                 self.client.username_pw_set(username, password)
 
-            # Configure TLS (allow self-signed certs for testing)
             if use_tls:
-                self.client.tls_set(cert_reqs=ssl.CERT_NONE)
-                self.client.tls_insecure_set(True)  # Allow self-signed certs
+                configure_broker_tls(self.client, verify=getattr(self, "_tls_verify", False))
 
             # Run connect_async in thread pool with timeout to avoid blocking
             # on unreachable brokers (connect_async does synchronous socket creation)
@@ -506,6 +521,50 @@ class MQTTRelayService:
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             },
         )
+
+    async def on_queue_jobs_added(self, item_ids: list[int]) -> None:
+        """Publish ``queue/job_added`` for committed printer-queue rows (see ``queue_job_relay``).
+
+        Each row is read here, after its commit: the file name is the archive's, else the library
+        file's. A row that is gone again by now is skipped. Never raises.
+        """
+        if not item_ids or not self.enabled or not self.connected:
+            return
+        try:
+            from sqlalchemy import select
+
+            from backend.app.core.database import async_session
+            from backend.app.models.archive import PrintArchive
+            from backend.app.models.library import LibraryFile
+            from backend.app.models.print_queue import PrintQueueItem
+            from backend.app.models.printer import Printer
+
+            async with async_session() as db:
+                rows = (
+                    await db.execute(
+                        select(
+                            PrintQueueItem.id,
+                            PrintQueueItem.queue_id,
+                            PrintArchive.filename,
+                            LibraryFile.filename,
+                            Printer.name,
+                        )
+                        .outerjoin(PrintArchive, PrintArchive.id == PrintQueueItem.archive_id)
+                        .outerjoin(LibraryFile, LibraryFile.id == PrintQueueItem.library_file_id)
+                        .outerjoin(Printer, Printer.id == PrintQueueItem.queue_id)
+                        .where(PrintQueueItem.id.in_(item_ids))
+                        .order_by(PrintQueueItem.id)
+                    )
+                ).all()
+            for job_id, printer_id, archive_name, library_name, printer_name in rows:
+                await self.on_queue_job_added(
+                    job_id=job_id,
+                    filename=archive_name or library_name or "",
+                    printer_id=printer_id,
+                    printer_name=printer_name,
+                )
+        except Exception as e:  # noqa: BLE001 -- the jobs are queued; announcing never undoes that
+            logger.debug("MQTT relay: queued jobs not published: %s", e)
 
     async def on_queue_job_started(
         self,
@@ -883,3 +942,6 @@ class MQTTRelayService:
 
 # Global instance
 mqtt_relay = MQTTRelayService()
+
+# Registers the session hooks that publish ``queue/job_added`` for every committed queue row.
+from backend.app.services import queue_job_relay  # noqa: E402, F401

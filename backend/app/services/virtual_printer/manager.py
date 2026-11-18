@@ -200,6 +200,30 @@ def _slicer_offset_mode(slicer_opts: dict | None) -> str | None:
     return None
 
 
+def _slicer_choices(slicer_opts: dict | None) -> dict:
+    """What the slicer explicitly chose, under the queue row's option names (``auto_queue_items.slicer_options``).
+
+    Only what was sent: a field the slicer left out stays for the profile to decide.
+    """
+    choices: dict = {}
+    if not slicer_opts:
+        return choices
+    for wire, option in (
+        ("bed_leveling", "bed_levelling"),
+        ("flow_cali", "flow_cali"),
+        ("layer_inspect", "layer_inspect"),
+        ("timelapse", "timelapse"),
+    ):
+        if wire in slicer_opts:
+            choices[option] = _coerce_flag(slicer_opts[wire])
+    if slicer_opts.get("timelapse_storage"):
+        choices["timelapse_storage"] = slicer_opts["timelapse_storage"]
+    offset = _slicer_offset_mode(slicer_opts)
+    if offset is not None:
+        choices["nozzle_offset_cali"] = offset
+    return choices
+
+
 def _nozzle_offset_mode(slicer_opts: dict | None, system_opts: dict | None) -> str:
     """Nozzle offset calibration for a slicer -> VP job: the slicer's choice, else the system
     print options saved for the model, else what the column defaulted to before ("on").
@@ -657,7 +681,7 @@ class VirtualPrinterInstance:
             patch["nozzle_mapping"] = nozzle_mapping_json
         if "use_ams" in patch:
             patch["feed_policy"] = "auto" if patch["use_ams"] else "external_only"
-        if not patch:
+        if not patch and not _slicer_choices(data):
             return
 
         from sqlalchemy import select as sa_select
@@ -671,8 +695,11 @@ class VirtualPrinterInstance:
             rows = list(result.scalars().all())
             from sqlalchemy import update
 
+            late_choices = _slicer_choices(data)
             for row in rows:
                 row_patch = dict(patch)
+                if late_choices:
+                    row_patch["slicer_options"] = {**(getattr(row, "slicer_options", None) or {}), **late_choices}
                 # The distributor picks the printer: rack positions never ride on this tier.
                 if "nozzle_mapping" in row_patch and not self.keeps_slicer_nozzle_mapping(
                     getattr(row, "target_model", None), None
@@ -1650,6 +1677,8 @@ class VirtualPrinterInstance:
                         feed_policy="auto" if use_ams else "external_only",
                         force_color_match=self.queue_force_color_match,
                         nozzle_mapping=nozzle_mapping_json,
+                        # What the slicer itself chose; the assignment lays it over the profile (m243).
+                        slicer_options=_slicer_choices(slicer_opts) or None,
                         # Per-VP auto-print G-code injection opt-in (#1516). Copied
                         # onto the per-printer print_queue item when the scheduler
                         # promotes this router row. No-op unless snippets exist.

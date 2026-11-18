@@ -116,3 +116,39 @@ class TestRenameOnTheFly:
         instance = _vp(name="Old")
         instance.rename("")
         assert instance.name == "Old"
+
+
+class TestSlicerChoicesReachTheAutoQueueTier:
+    """A Virtual Printer job in AutoQueue mode has no printer yet; its options are decided when the
+    distributor hands it to one, from a saved profile. What the operator chose in the slicer was
+    stamped on columns that decision does not read (since the profiles moved there), so the job
+    printed with the defaults. ``slicer_options`` (m243) carries exactly what the slicer sent."""
+
+    def test_only_what_the_slicer_sent_is_recorded(self):
+        choices = vp_manager._slicer_choices({"timelapse": 1, "bed_leveling": False, "nozzle_offset_cali": 2})
+        assert choices == {"timelapse": True, "bed_levelling": False, "nozzle_offset_cali": "auto"}
+
+    def test_silence_records_nothing(self):
+        assert vp_manager._slicer_choices(None) == {}
+        assert vp_manager._slicer_choices({"file": "a.3mf", "ams_mapping": [0]}) == {}
+
+    def test_the_recording_medium_travels_when_chosen(self):
+        assert vp_manager._slicer_choices({"timelapse_storage": "internal"}) == {"timelapse_storage": "internal"}
+
+    def test_the_assignment_lays_them_over_the_profile(self):
+        import inspect
+
+        from backend.app.services import auto_queue_scheduler
+
+        source = inspect.getsource(auto_queue_scheduler.AutoQueueScheduler._assign)
+        composed = source.index("options = compose_options(")
+        laid_over = source.index("options.update(item.slicer_options)")
+        read = source.index('normalize_mode(options.get("nozzle_offset_cali"')
+        assert composed < laid_over < read
+
+    def test_the_column_exists_and_its_migration_adds_it(self):
+        from backend.app.migrations import m243_auto_queue_slicer_options as migration
+        from backend.app.models.auto_queue import AutoQueueItem
+
+        assert "slicer_options" in AutoQueueItem.__table__.c
+        assert migration.version == 243

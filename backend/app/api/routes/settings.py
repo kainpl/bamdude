@@ -59,6 +59,7 @@ ADMIN_SETTING_FIELDS = frozenset(
         "mqtt_password",
         "mqtt_topic_prefix",
         "mqtt_use_tls",
+        "mqtt_tls_verify",
         "ldap_enabled",
         "ldap_server_url",
         "ldap_bind_dn",
@@ -311,6 +312,7 @@ async def _load_settings(db: AsyncSession, *, effective_env: bool = True) -> App
                 "ftp_retry_enabled",
                 "mqtt_enabled",
                 "mqtt_use_tls",
+                "mqtt_tls_verify",
                 "ha_enabled",
                 "per_printer_mapping_expanded",
                 "prometheus_enabled",
@@ -432,6 +434,8 @@ async def resolve_settings_credentials(db: AsyncSession, changes: dict, actions:
             str(c.get("mqtt_broker") or "").strip().lower(),
             c.get("mqtt_port"),
             c.get("mqtt_use_tls"),
+            # Part of the destination: with the check off, a kept password could be sent to whoever answers.
+            bool(c.get("mqtt_tls_verify")),
             c.get("mqtt_username") or "",
         ),
         "ha_token": ha_scope,
@@ -592,6 +596,7 @@ async def update_settings(
         "mqtt_password",
         "mqtt_topic_prefix",
         "mqtt_use_tls",
+        "mqtt_tls_verify",
     }
     mqtt_updated = bool(mqtt_keys & set(update_data.keys()))
 
@@ -1723,161 +1728,34 @@ async def update_virtual_printer_settings(
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermission(Permission.SETTINGS_UPDATE),
 ):
-    """Update virtual printer settings and restart services if needed.
+    """Set the one installation-wide Virtual Printer setting: where an archive takes its name from.
 
-    For proxy mode with SSDP proxy (dual-homed setup):
-    - remote_interface_ip: IP of interface on slicer's network (LAN B)
-    - Local interface is auto-detected based on target printer IP
+    This route once configured THE virtual printer. Each virtual printer has had its own row and its
+    own route (``PUT /virtual-printers/{id}``) for a long time, and nothing reads the old keys any
+    more -- yet the route went on accepting ``enabled`` / ``access_code`` / ``mode`` / ``model`` /
+    ``target_printer_id`` / ``remote_interface_ip``, stored them and answered 200 as if a virtual
+    printer had changed. It now refuses them and says where they are set. The stored old values are
+    neither read nor judged here, so they cannot block the setting this route still owns.
     """
-    from sqlalchemy import select
-
-    from backend.app.models.printer import Printer
-    from backend.app.services.virtual_printer import (
-        DEFAULT_VIRTUAL_PRINTER_MODEL,
-        VIRTUAL_PRINTER_MODELS,
-        virtual_printer_manager,
-    )
-
     if "access_code" in request.query_params:
         raise HTTPException(422, "Credentials must be submitted in the JSON body")
-    enabled, access_code, mode, model = payload.enabled, payload.access_code, payload.mode, payload.model
-    target_printer_id, remote_interface_ip = payload.target_printer_id, payload.remote_interface_ip
+    named = payload.model_fields_set - {"archive_name_source"}
+    if named:
+        return json_error(
+            400,
+            "This setting belongs to each virtual printer now. Change it on the Virtual Printers page.",
+        )
+
     archive_name_source = payload.archive_name_source
-    changes = {
-        "virtual_printer_" + key: value
-        for key, value in payload.model_dump(exclude_unset=True).items()
-        if key != "secret_actions" and (value is not None or key == "access_code")
-    }
-    actions = payload.secret_actions or {}
-    if any(key != "access_code" for key in actions):
-        raise HTTPException(422, "Invalid secret action")
-    await lock_credential_config(db)
-    if (
-        mode is not None
-        and mode != "proxy"
-        and enabled is None
-        and access_code is None
-        and "access_code" not in actions
-        and not await get_setting(db, "virtual_printer_access_code")
-    ):
-        # Preserve the existing mode-switch auto-disable when no credential
-        # existed. An explicit credential clear must still refuse while on.
-        changes["virtual_printer_enabled"] = False
-    resolved = await resolve_settings_credentials(db, changes, {"virtual_printer_" + k: v for k, v in actions.items()})
-
-    # Get current values
-    current_enabled = await get_setting(db, "virtual_printer_enabled") == "true"
-    current_mode = await get_setting(db, "virtual_printer_mode") or "file_manager"
-    current_model = await get_setting(db, "virtual_printer_model") or DEFAULT_VIRTUAL_PRINTER_MODEL
-    current_target_id_str = await get_setting(db, "virtual_printer_target_printer_id")
-    current_target_id = int(current_target_id_str) if current_target_id_str else None
-    current_remote_iface = await get_setting(db, "virtual_printer_remote_interface_ip") or ""
-
-    # Apply updates
-    new_enabled = enabled if enabled is not None else current_enabled
-    new_access_code = resolved["virtual_printer_access_code"]
-    new_mode = mode if mode is not None else current_mode
-    new_model = model if model is not None else current_model
-    new_target_id = target_printer_id if target_printer_id is not None else current_target_id
-    new_remote_iface = remote_interface_ip if remote_interface_ip is not None else current_remote_iface
-
-    # Validate mode. Three supported modes:
-    #   "print_queue"  — archive + push to a printer queue
-    #   "file_manager" — save to library (review-style flow)
-    #   "proxy"        — transparent TCP proxy to a real printer
-    # m002 already migrated legacy ``immediate``/``review``/``queue`` rows.
-    #
-    # The stored mode, enabled flag and target are judged -- and rewritten -- only by a request that
-    # speaks of them. A stored mode this route no longer accepts, or a stored proxy target whose
-    # printer was deleted since, used to refuse every request: one that only set
-    # ``archive_name_source`` too, the single setting here anything still reads.
-    speaks_of_mode = (
-        any(v is not None for v in (enabled, mode, target_printer_id, access_code)) or "access_code" in actions
-    )
-    if speaks_of_mode and new_mode not in ("print_queue", "file_manager", "proxy"):
-        return json_error(400, "Mode must be 'print_queue', 'file_manager', or 'proxy'")
-
-    # Validate model
-    if model is not None and model not in VIRTUAL_PRINTER_MODELS:
-        return json_error(400, f"Invalid model. Must be one of: {', '.join(VIRTUAL_PRINTER_MODELS.keys())}")
-
     # Validate archive_name_source (B.14 / #1152): only two values are
     # meaningful — anything else would silently fall back to 'metadata' on
     # the read side and confuse the user about whether their toggle stuck.
     if archive_name_source is not None and archive_name_source not in ("metadata", "filename"):
         return json_error(400, "archive_name_source must be 'metadata' or 'filename'")
-
-    # Mode-specific validation and printer lookup
-    target_printer_ip = ""
-    target_printer_serial = ""
-    if not speaks_of_mode:
-        pass
-    elif new_mode == "proxy":
-        # Proxy mode requires target printer when enabling
-        if new_enabled and not new_target_id:
-            # If just switching to proxy mode (not explicitly enabling), auto-disable
-            if enabled is None:
-                new_enabled = False
-            else:
-                return json_error(400, "Target printer is required for proxy mode")
-
-        # Look up printer IP and serial if we have a target
-        if new_target_id:
-            result = await db.execute(select(Printer).where(Printer.id == new_target_id))
-            printer = result.scalar_one_or_none()
-            if not printer:
-                return json_error(400, f"Printer with ID {new_target_id} not found")
-            target_printer_ip = printer.ip_address
-            target_printer_serial = printer.serial_number
-        # Access code not required for proxy mode
-    else:
-        # Non-proxy modes require access code when enabling
-        if new_enabled and not new_access_code:
-            # If just switching modes (not explicitly enabling), auto-disable
-            if enabled is None:
-                new_enabled = False
-            else:
-                return json_error(400, "Access code is required when enabling virtual printer")
-
-        # Validate access code length (Bambu Studio requires exactly 8 characters)
-        if access_code is not None and access_code and len(access_code) != 8:
-            return json_error(400, "Access code must be exactly 8 characters")
-
-    # Save settings
-    if speaks_of_mode:
-        await set_setting(db, "virtual_printer_enabled", "true" if new_enabled else "false")
-    if access_code is not None or "access_code" in actions:
-        await set_setting(db, "virtual_printer_access_code", new_access_code)
-    if speaks_of_mode:
-        await set_setting(db, "virtual_printer_mode", new_mode)
-    if model is not None:
-        await set_setting(db, "virtual_printer_model", model)
-    if target_printer_id is not None:
-        await set_setting(db, "virtual_printer_target_printer_id", str(target_printer_id))
-    if remote_interface_ip is not None:
-        await set_setting(db, "virtual_printer_remote_interface_ip", remote_interface_ip)
     if archive_name_source is not None:
         await set_setting(db, "virtual_printer_archive_name_source", archive_name_source)
-    await db.commit()
-    db.expire_all()
-
-    # Reconfigure virtual printer
-    try:
-        await virtual_printer_manager.configure(
-            enabled=new_enabled,
-            access_code=new_access_code,
-            mode=new_mode,
-            model=new_model,
-            target_printer_ip=target_printer_ip,
-            target_printer_serial=target_printer_serial,
-            remote_interface_ip=new_remote_iface,
-        )
-    except ValueError as e:
-        logger.warning("Virtual printer configuration validation error: %s", e)
-        return json_error(400, "Invalid virtual printer configuration. Check the provided values.")
-    except Exception as e:
-        logger.error("Failed to configure virtual printer: %s", e, exc_info=True)
-        return json_error(500, "Failed to configure virtual printer. Check server logs for details.")
+        await db.commit()
+        db.expire_all()
 
     return await get_virtual_printer_settings(db)
 

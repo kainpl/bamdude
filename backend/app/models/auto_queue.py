@@ -53,6 +53,9 @@ class AutoQueueItem(Base):
     # Immutable order choices copied at creation. Promotion/rebalance picks the
     # sliced model's entry; NULL retains the existing operator-profile path.
     order_print_options: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # What the slicer explicitly chose for a Virtual Printer job (m243), under the queue row's option
+    # names. Laid over the composed profile at assignment; NULL for every job not sent by a slicer.
+    slicer_options: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     # Only the guarded failed-return publication advances these. A manual
     # never-started transfer keeps this logical job's count and dispatch proof.
     failed_return_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
