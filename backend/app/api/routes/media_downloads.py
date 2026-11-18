@@ -629,6 +629,65 @@ async def _local_videos(db, archive) -> list[dict]:
     ]
 
 
+async def variant_videos(db, archive) -> list[dict]:
+    """The videos the editor saved BESIDE the one the archive shows (G10 E): same shape as :func:`_local_videos`.
+
+    A variant is named by its registry row's ``asset_uuid``. A row whose file is
+    gone or whose stored path leaves the data directory is not offered.
+    """
+    from backend.app.services.archive_media import contained, variants_of
+
+    rows = await variants_of(db, archive.id, archive.recovery_identity)
+
+    def look(relative_path: str):
+        path = contained(settings.base_dir, relative_path)
+        if path is None:
+            return None
+        try:
+            info = path.stat()
+        except OSError:
+            return None
+        return (path, info) if stat.S_ISREG(info.st_mode) else None
+
+    videos = []
+    for number, row in enumerate(rows, start=1):
+        found = await asyncio.to_thread(look, row.relative_path)
+        if found is None:
+            continue
+        path, info = found
+        videos.append(
+            {
+                "asset": row.asset_uuid,
+                "name": f"{archive.print_name or 'timelapse'} (edit {number}){path.suffix.lower() or '.mp4'}",
+                "size": info.st_size,
+                "path": path,
+                "identity": file_identity(info),
+                "variant": True,
+            }
+        )
+    return videos
+
+
+def _still_saved(archive_id: int, archive_identity, asset: str):
+    """Is the saved video ``asset`` still that very archive's? The variant's counterpart of :func:`_still_shown`."""
+
+    async def check() -> bool:
+        from backend.app.core import database
+        from backend.app.services.archive_media import variants_of
+
+        try:
+            async with database.async_session() as db:
+                return any(row.asset_uuid == asset for row in await variants_of(db, archive_id, archive_identity))
+        except Exception as exc:  # noqa: BLE001 — unreadable is not "still saved"
+            logger.warning(
+                "[DOWNLOADS] an archive's saved video could not be confirmed, left out as unconfirmed (%s)",
+                type(exc).__name__,
+            )
+            return False
+
+    return check
+
+
 def _still_shown(archive_id: int, archive_identity, asset: str):
     """Is ``asset`` still the video that very archive shows? Asked when the copy starts and when it ends."""
 
@@ -708,7 +767,9 @@ async def create_archive_download_job(
 
     async with database.async_session() as db:
         archive = await _visible_archive(db, archive_id, auth_result)
-        local = {video["asset"]: video for video in await _local_videos(db, archive)}
+        local = {
+            video["asset"]: video for video in [*await _local_videos(db, archive), *await variant_videos(db, archive)]
+        }
         printer = await _archive_printer(db, archive) if body.remote else None
     sources = []
     for asset in body.assets:
@@ -722,7 +783,9 @@ async def create_archive_download_job(
                 advisory_size=video["size"],
                 # The job may wait; what it copies must be the file chosen here, still shown then.
                 identity=video["identity"],
-                still_shown=_still_shown(archive.id, archive.recovery_identity, asset),
+                still_shown=(_still_saved if video.get("variant") else _still_shown)(
+                    archive.id, archive.recovery_identity, asset
+                ),
             )
         )
     if body.remote:
@@ -980,7 +1043,7 @@ async def list_archive_media_sources(
 
     async with database.async_session() as db:
         archive = await _visible_archive(db, archive_id, auth_result)
-        local = await _local_videos(db, archive)
+        local = [*await _local_videos(db, archive), *await variant_videos(db, archive)]
         printer = await _archive_printer(db, archive)
     margin = timedelta(minutes=margin_minutes)
     offset = None if offset_minutes is None else timedelta(minutes=offset_minutes)
@@ -993,7 +1056,10 @@ async def list_archive_media_sources(
         "offset_minutes": offset_minutes,
         "local": {
             "status": "ok" if local else "empty",
-            "items": [{"asset": v["asset"], "name": v["name"], "size": v["size"]} for v in local],
+            "items": [
+                {"asset": v["asset"], "name": v["name"], "size": v["size"], "variant": bool(v.get("variant"))}
+                for v in local
+            ],
         },
         "printer_id": None,
     }

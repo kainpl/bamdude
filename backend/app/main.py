@@ -13073,6 +13073,22 @@ async def _application_lifespan(app: FastAPI):
         await purge_media_download_grants()
     except Exception:
         logging.getLogger(__name__).exception("Download jobs could not be reset at startup")
+    # Edit jobs live in memory too (G10 E): the scratch of an earlier run goes, with the staged
+    # output each directory named.
+    from backend.app.services import timelapse_editor
+    from backend.app.services.timelapse_editor import timelapse_edit_runtime
+
+    try:
+        timelapse_edit_runtime.reopen()
+        removed, kept = await asyncio.to_thread(
+            timelapse_editor.clean_scratch, timelapse_edit_runtime.scratch_root(), app_settings.base_dir
+        )
+        if removed or kept:
+            logging.getLogger(__name__).info(
+                "Edit scratch: %d leftover job directories removed, %d foreign entries left alone", removed, kept
+            )
+    except Exception:
+        logging.getLogger(__name__).exception("Timelapse edit jobs could not be reset at startup")
     from backend.app.services.part_render_scheduler import start_part_render, stop_part_render
 
     try:
@@ -13275,6 +13291,9 @@ async def _application_lifespan(app: FastAPI):
         logging.getLogger(__name__).warning(
             "Printer file operations did not end before shutdown; admission stays closed"
         )
+    # Edit jobs stop their encoders before the seam they publish through is drained (G10 E).
+    if not await timelapse_edit_runtime.quiesce(15):
+        logging.getLogger(__name__).warning("Timelapse edits did not end before shutdown; admission stays closed")
     # Archive video work is waited for, bounded; an unproven end is logged, never treated as done.
     if not await archive_media_runtime.quiesce(10):
         logging.getLogger(__name__).warning(
@@ -14151,6 +14170,9 @@ app.include_router(archives.router, prefix=app_settings.api_prefix)
 from backend.app.api.routes import media_downloads as media_downloads_routes
 
 app.include_router(media_downloads_routes.router, prefix=app_settings.api_prefix)
+from backend.app.api.routes import timelapse_edits as timelapse_edits_routes  # noqa: E402
+
+app.include_router(timelapse_edits_routes.router, prefix=app_settings.api_prefix)
 media_downloads_routes.install(app)
 app.include_router(statistics.router, prefix=app_settings.api_prefix)
 app.include_router(inventory.router, prefix=app_settings.api_prefix)

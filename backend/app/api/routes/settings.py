@@ -1471,6 +1471,13 @@ async def _restore_backup(
 
                 if not await printer_file_runtime.quiesce():
                     raise HTTPException(409, "Printer file transfers have not stopped; retry restore after they finish")
+                # An edit's encoder writes beside the archive's video and publishes through the
+                # seam below (G10 E): admission closes, every job is stopped, and the end of
+                # each encoder is PROVEN -- an unreaped ffmpeg refuses the restore.
+                from backend.app.services.timelapse_editor import timelapse_edit_runtime
+
+                if not await timelapse_edit_runtime.quiesce():
+                    raise HTTPException(409, "Video edits have not stopped; retry restore after they finish")
                 # Attaching, converting or removing an archive's video writes the files and
                 # rows this restore replaces (G10 C4): admission closes, and every such
                 # operation is waited for to its real end, or the restore is refused.

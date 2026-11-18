@@ -1371,6 +1371,28 @@ export interface ArchiveLocalVideo {
   asset: string;
   name: string;
   size: number;
+  /** A video the editor saved beside the one the archive shows. */
+  variant?: boolean;
+}
+
+export type TimelapseEditPhase =
+  | 'queued'
+  | 'encoding'
+  | 'publishing'
+  | 'cancelling'
+  | 'done'
+  | 'failed'
+  | 'cancelled';
+export const TIMELAPSE_EDIT_TERMINAL: TimelapseEditPhase[] = ['done', 'failed', 'cancelled'];
+/** One background edit of an archive's video. `progress` reaches 1 only when the result is published. */
+export interface TimelapseEditJob {
+  job_id: string;
+  phase: TimelapseEditPhase;
+  progress: number;
+  /** A code, never a sentence. */
+  error: string | null;
+  save_mode: 'replace' | 'new';
+  result: { asset_uuid: string | null; save_mode: 'replace' | 'new' } | null;
 }
 export interface ArchiveRemoteVideo {
   printer_id: number;
@@ -11927,45 +11949,46 @@ export const api = {
       thumbnails: string[];
       timestamps: number[];
     }>(`/archives/${archiveId}/timelapse/thumbnails?count=${count}`),
-  processTimelapse: async (
+  /**
+   * Start an edit of the archive's video. Answers at once with a job to follow.
+   * The numbers travel in the query string; the music, when there is one, is the
+   * request body itself — the server reads it as it arrives and caps it.
+   */
+  startTimelapseEdit: (
     archiveId: number,
     params: {
       trimStart?: number;
       trimEnd?: number;
       speed?: number;
       saveMode: 'replace' | 'new';
-      outputFilename?: string;
+      audioVolume?: number;
+      mute?: boolean;
     },
-    audioFile?: File
-  ): Promise<{ status: string; output_path: string | null; message: string }> => {
-    const formData = new FormData();
-    formData.append('trim_start', String(params.trimStart ?? 0));
-    if (params.trimEnd !== undefined) {
-      formData.append('trim_end', String(params.trimEnd));
-    }
-    formData.append('speed', String(params.speed ?? 1));
-    formData.append('save_mode', params.saveMode);
-    if (params.outputFilename) {
-      formData.append('output_filename', params.outputFilename);
-    }
-    if (audioFile) {
-      formData.append('audio', audioFile);
-    }
-    const headers: Record<string, string> = {};
-    if (authToken) {
-      headers['Authorization'] = `Bearer ${authToken}`;
-    }
-    const response = await fetch(`${API_BASE}/archives/${archiveId}/timelapse/process`, {
+    audioFile?: File,
+  ) => {
+    const query = new URLSearchParams();
+    query.set('trim_start', String(params.trimStart ?? 0));
+    if (params.trimEnd !== undefined) query.set('trim_end', String(params.trimEnd));
+    query.set('speed', String(params.speed ?? 1));
+    query.set('save_mode', params.saveMode);
+    query.set('audio_volume', String(params.audioVolume ?? 1));
+    query.set('mute', params.mute ? 'true' : 'false');
+    if (audioFile) query.set('audio_name', audioFile.name);
+    return request<TimelapseEditJob>(`/archives/${archiveId}/timelapse/process?${query.toString()}`, {
       method: 'POST',
-      headers,
-      body: formData,
+      ...(audioFile ? { body: audioFile, headers: { 'Content-Type': 'application/octet-stream' } } : {}),
     });
-    if (!response.ok) {
-      const error = await response.json().catch(() => ({}));
-      throw new Error(error.detail || `HTTP ${response.status}`);
-    }
-    return response.json();
   },
+  listTimelapseEditJobs: (archiveId: number) =>
+    request<{ jobs: TimelapseEditJob[] }>(`/archives/${archiveId}/timelapse/edit-jobs`),
+  getTimelapseEditJob: (archiveId: number, jobId: string) =>
+    request<TimelapseEditJob>(`/archives/${archiveId}/timelapse/edit-jobs/${jobId}`),
+  cancelTimelapseEditJob: (archiveId: number, jobId: string) =>
+    request<TimelapseEditJob>(`/archives/${archiveId}/timelapse/edit-jobs/${jobId}`, { method: 'DELETE' }),
+  deleteTimelapseVariant: (archiveId: number, asset: string) =>
+    request<{ status: string }>(`/archives/${archiveId}/timelapse/variants/${encodeURIComponent(asset)}`, {
+      method: 'DELETE',
+    }),
   // Photos: behind the media token like the archive's other pictures. A
   // notification's {finish_photo_url} no longer points here — it leads to a
   // short-lived copy of its own.
