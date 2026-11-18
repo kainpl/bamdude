@@ -341,8 +341,10 @@ def _free_name(directory: Path, filename: str, shown: Path | None = None) -> Pat
     committed version's file or nothing.
     """
     candidate = directory / filename
-    taken = shown is not None and os.path.normcase(os.path.normpath(candidate)) == os.path.normcase(
-        os.path.normpath(shown)
+    # Compared as the file system sees them: ``shown`` comes resolved from ``contained``, and the
+    # data directory may itself be reached through a link or a short name.
+    taken = shown is not None and os.path.normcase(os.path.realpath(candidate)) == os.path.normcase(
+        os.path.realpath(shown)
     )
     if not taken and not candidate.exists():
         return candidate
@@ -716,8 +718,10 @@ async def _publish_primary(
                 return Publication(False, REFUSED_RUN_CHANGED)
             old = await _reconcile(db, current, receipts)
             revision = await _next_revision(db, current)
-            pointer = (current.timelapse_path or "").strip()
-            target = await asyncio.to_thread(_free_name, directory, filename, base_dir / pointer if pointer else None)
+            # The pointer is stored text: it is joined only through ``contained``. One that leads
+            # out of the data directory names no file a publication here could take.
+            shown = await asyncio.to_thread(contained, base_dir, (current.timelapse_path or "").strip())
+            target = await asyncio.to_thread(_free_name, directory, filename, shown)
             relative = str(target.relative_to(base_dir))
             row = ArchiveMediaAsset(
                 asset_uuid=str(uuid4()),

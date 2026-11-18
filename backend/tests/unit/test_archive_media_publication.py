@@ -187,6 +187,15 @@ class TestAPublicationTakesANameOfItsOwn:
         (tmp_path / "v.mp4").write_bytes(b"x")
         assert free(tmp_path, "v.mp4") != tmp_path / "v.mp4"
 
+    async def test_a_pointer_that_leaves_the_data_directory_is_never_joined(self, db_session, base):
+        archive = await _archive(db_session)
+        live = await _live(db_session, archive)
+        live.timelapse_path = "../outside.mp4"  # an import or an old writer left it
+        await db_session.commit()
+        result, _ = await _publish(db_session, base, archive, name="v.mp4", data=b"new")
+        assert result.ok and (base / result.relative_path).read_bytes() == b"new"
+        assert not (base.parent / "outside.mp4").exists()
+
 
 class TestTheTargetMustStillBeTheSameArchive:
     @pytest.mark.parametrize("case", ["identity", "epoch", "noncurrent", "gone"])

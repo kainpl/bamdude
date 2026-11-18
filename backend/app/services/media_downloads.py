@@ -529,7 +529,7 @@ class MediaDownloadRuntime:
         if self.root is None:
             from backend.app.core.config import settings
 
-            self.root = Path(settings.base_dir) / SCRATCH_DIRNAME
+            self.root = Path(settings.base_dir) / SCRATCH_DIRNAME  # SEC-PATH-OK: a module constant under DATA_DIR
         return self.root
 
     def _running(self) -> int:
