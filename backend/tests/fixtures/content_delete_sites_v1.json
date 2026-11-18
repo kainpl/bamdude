@@ -1058,6 +1058,22 @@
     },
     {
       "site": [
+        "core/auth.py::purge_media_download_grants",
+        "sqlalchemy.delete",
+        "backend.app.models.auth_ephemeral.AuthEphemeralToken"
+      ],
+      "owner_policy": "G10 D download grant: core/auth.py::purge_media_download_grants removes only short-lived AuthEphemeralToken rows of the media-download grant kind (every such grant at startup, when no download job survives the process); a credential row, never a content parent, in its own transaction; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
+        "core/auth.py::redeem_media_download_grant",
+        "sqlalchemy.delete",
+        "backend.app.models.auth_ephemeral.AuthEphemeralToken"
+      ],
+      "owner_policy": "G10 D download grant: core/auth.py::redeem_media_download_grant removes only short-lived AuthEphemeralToken rows of the media-download grant kind (the one grant being redeemed: the delete is the redemption); a credential row, never a content parent, in its own transaction; any new or changed locator requires adjudication"
+    },
+    {
+      "site": [
         "core/auth.py::resolve_ephemeral_authority",
         "sqlalchemy.delete",
         "backend.app.models.auth_ephemeral.AuthEphemeralToken"
