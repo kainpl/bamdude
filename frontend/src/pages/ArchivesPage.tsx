@@ -769,6 +769,7 @@ function ArchiveCard({
                 : api.getArchiveThumbnail(archive.id)
             }
             alt={archive.print_name || archive.filename}
+            loading="lazy"
             className="w-full h-full object-contain"
           />
         ) : (
@@ -2215,6 +2216,7 @@ function ArchiveListRow({
               <img
                 src={api.getArchiveThumbnail(archive.id)}
                 alt=""
+                loading="lazy"
                 className="w-10 h-10 object-contain rounded"
               />
               {/* Hover preview — popup's top-left corner anchors at the
@@ -2225,6 +2227,7 @@ function ArchiveListRow({
                   <img
                     src={api.getArchiveThumbnail(archive.id)}
                     alt={archive.print_name || archive.filename}
+                    loading="lazy"
                     className="w-full h-full object-contain"
                   />
                 </div>

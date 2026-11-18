@@ -117,7 +117,9 @@ describe('per-part defective entry', () => {
     render(<EditArchiveModal archive={baseArchive} onClose={mockOnClose} />);
 
     const lid = screen.getByTestId('part-defective-1') as HTMLInputElement;
+    // The typed number stands while the field is edited and is capped when it is left.
     fireEvent.change(lid, { target: { value: '99' } });
+    fireEvent.blur(lid);
     expect(lid.value).toBe('2');
     // summary line shows 2 (lid, clamped) + 1 (base.stl, untouched) = 3
     expect(screen.getByTestId('parts-defective-total').textContent).toContain('3');

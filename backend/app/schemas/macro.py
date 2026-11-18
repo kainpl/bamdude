@@ -5,6 +5,8 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field, field_validator
 
+from backend.app.schemas.not_null import IgnoresNullForRequiredColumns
+
 
 class MacroResponse(BaseModel):
     """Response schema for a macro."""
@@ -58,8 +60,10 @@ class MacroCreate(BaseModel):
     enabled: bool = True
 
 
-class MacroUpdate(BaseModel):
+class MacroUpdate(IgnoresNullForRequiredColumns):
     """Update schema for a macro."""
+
+    __orm_table__ = "macros"
 
     name: str | None = Field(default=None, max_length=100)
     description: str | None = None

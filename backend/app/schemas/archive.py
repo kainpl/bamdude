@@ -5,6 +5,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from backend.app.schemas.calibration_mode import CalibrationMode
 from backend.app.schemas.filament_routing import FilamentRoutingChoices
+from backend.app.schemas.not_null import IgnoresNullForRequiredColumns
 from backend.app.schemas.timelapse import TimelapseStorage
 
 # One entry of ``applied_patches``: a plain identifier ("mesh_mode_fast_check_off") or a descriptor object
@@ -62,7 +63,10 @@ class ArchiveBase(BaseModel):
 ArchiveStatus = Literal["printing", "completed", "failed", "aborted", "cancelled", "stopped"]
 
 
-class ArchiveUpdate(ArchiveBase):
+class ArchiveUpdate(IgnoresNullForRequiredColumns, ArchiveBase):
+    __orm_table__ = "print_archives"
+    __keeps_null__ = frozenset({"status"})  # refused below: a print always has a status
+
     # Bounded where it is written, not on the base the responses share: it feeds
     # order totals, and a negative would subtract from them (upstream 30e530a8).
     # 0 is legal; a ruined plate is still recorded as defects here.

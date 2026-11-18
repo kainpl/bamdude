@@ -206,7 +206,9 @@ describe('LineEditDialog · moved from the table cells', () => {
     open(lid);
     const box = (await screen.findByLabelText('From stock — part kits')) as HTMLInputElement;
     await waitFor(() => expect(box).toHaveAttribute('max', '1'));
+    // The field settles on its ceiling when it is left — before Save can read the draft.
     fireEvent.change(box, { target: { value: '9' } });
+    fireEvent.blur(box);
     expect(box.value).toBe('1');
     save();
     await waitFor(() => expect(patch).toHaveBeenCalledWith(1, 11, { from_stock_units: 1 }));
@@ -220,6 +222,7 @@ describe('LineEditDialog · moved from the table cells', () => {
     const box = (await screen.findByLabelText('From stock — part kits')) as HTMLInputElement;
     await waitFor(() => expect(box).toHaveAttribute('max', '2'));
     fireEvent.change(box, { target: { value: '7' } });
+    fireEvent.blur(box);
     expect(box.value).toBe('2');
     save();
     await waitFor(() => expect(onClose).toHaveBeenCalled());
@@ -345,6 +348,7 @@ describe('LineEditDialog · a line whose stock has moved', () => {
     open(moved);
     const box = await screen.findByLabelText('From stock — part kits');
     fireEvent.change(box, { target: { value: '5' } });
+    fireEvent.blur(box);
     expect(box).toHaveValue(1);
     fireEvent.change(box, { target: { value: '0' } });
     save();

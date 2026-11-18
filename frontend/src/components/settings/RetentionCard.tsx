@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { NumberInput } from '../NumberInput';
 import { useTranslation } from 'react-i18next';
 
 interface Props {
@@ -47,14 +48,13 @@ export function RetentionCard({ values, onSave, saving }: Props) {
             <label className="text-sm text-bambu-gray" htmlFor={field.key}>
               {t(field.labelKey)}
             </label>
-            <input
+            <NumberInput
               id={field.key}
-              type="number"
               min={1}
               max={365}
               className="w-24 px-2 py-1 bg-bambu-dark border border-bambu-dark-tertiary rounded text-white text-right"
               value={draft[field.key] ?? DEFAULT_DAYS}
-              onChange={(e) => setDraft({ ...draft, [field.key]: Number(e.target.value) })}
+              onChange={(v) => setDraft({ ...draft, [field.key]: v })}
             />
           </div>
         ))}

@@ -333,6 +333,12 @@ jobs:
         working-directory: frontend
         run: npm run i18n:check
 
+      # A file nothing imports, a dependency nothing uses, an import of a package
+      # that is not listed (frontend/knip.jsonc names the deliberate entry points).
+      - name: Unused files and dependencies (knip)
+        working-directory: frontend
+        run: npm run check:knip
+
   frontend-security:
     name: Frontend Security
     runs-on: ubuntu-latest

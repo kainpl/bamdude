@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { NumberInput } from '../NumberInput';
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { AlertTriangle, CheckCircle2, Cog, LayoutGrid, Loader2, Minus, Plus, Trash2, XCircle } from 'lucide-react';
@@ -233,14 +234,14 @@ function PartEditor({ part, index, onChange }: { part: PartRow; index: number; o
           >
             <Minus className="w-3 h-3" />
           </button>
-          <input
-            type="number"
+          <NumberInput
             min={1}
             max={MAX_COPIES}
             className={`${INPUT} w-20 text-center disabled:opacity-40`}
-            value={part.fill ? '' : part.quantity}
+            value={part.fill ? null : part.quantity}
             disabled={part.fill}
-            onChange={(event) => onChange({ ...part, quantity: clamp(Number(event.target.value)) })}
+            onChange={(v) => onChange({ ...part, quantity: clamp(v) })}
+            fallback={1}
             aria-label={t('fileManager.assemble.quantityOf', { name: part.name })}
           />
           <button

@@ -174,17 +174,41 @@ async def get_printer_sensor_readings(
     """
     if not in_key_scope(request, printer_id):
         raise HTTPException(403, "API key does not have access to this printer")
+    return (await _card_readings(db, {printer_id})).get(printer_id, [])
+
+
+@router.get("/readings/batch", response_model=dict[int, list[PrinterHASensorReading]])
+async def get_sensor_readings_batch(
+    request: Request,
+    ids: list[int] = Query(min_length=1, max_length=100),
+    db: AsyncSession = Depends(get_db),
+    _: User | None = _READ,
+):
+    """Card-visible sensor readings of several printers in one answer.
+
+    A page of printer cards asks once per tick instead of once per card. A printer with no
+    card sensor answers an empty list; one outside an API key's list is left out.
+    """
+    wanted = {pid for pid in ids if in_key_scope(request, pid)}
+    readings = await _card_readings(db, wanted)
+    return {pid: readings.get(pid, []) for pid in sorted(wanted)}
+
+
+async def _card_readings(db: AsyncSession, printer_ids: set[int]) -> dict[int, list[PrinterHASensorReading]]:
+    by_printer: dict[int, list[PrinterHASensorReading]] = {}
+    if not printer_ids:
+        return by_printer
     result = await db.execute(
         select(PrinterHASensor)
         .where(
-            PrinterHASensor.printer_id == printer_id,
+            PrinterHASensor.printer_id.in_(printer_ids),
             PrinterHASensor.show_on_printer_card.is_(True),
         )
         .order_by(PrinterHASensor.sort_order, PrinterHASensor.id)
     )
 
-    readings = []
     for sensor in result.scalars().all():
+        readings = by_printer.setdefault(sensor.printer_id, [])
         cached = ha_sensor_manager.get_reading(sensor.id)
         readings.append(
             PrinterHASensorReading(
@@ -202,7 +226,7 @@ async def get_printer_sensor_readings(
                 last_changed=sensor.last_changed,
             )
         )
-    return readings
+    return by_printer
 
 
 @router.post("/", response_model=PrinterHASensorResponse)

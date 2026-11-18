@@ -58,7 +58,7 @@ describe('the plug row on a printer card', () => {
       http.get('/api/v1/printers/', () => HttpResponse.json([PRINTER])),
       http.get('/api/v1/printers/:id/status', () => HttpResponse.json(STATUS)),
       http.get('/api/v1/queue/', () => HttpResponse.json([])),
-      http.get('/api/v1/smart-plugs/by-printer/1', () => HttpResponse.json(PLUG)),
+      http.get('/api/v1/smart-plugs/by-printer/batch', () => HttpResponse.json({ '1': { main: PLUG, scripts: [] } })),
       http.get('/api/v1/smart-plugs/4/status', () =>
         HttpResponse.json({ state: 'ON', reachable: true, energy: { power: 72 } }),
       ),

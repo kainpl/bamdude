@@ -1332,6 +1332,7 @@ function FileCard({ file, isSelected, onSelect, onOpenArchives, onDelete, onDown
           <img
             src={thumbUrl}
             alt={plate ? t('fileManager.plateOf', { index: plate.index, count: slices.length }) : file.filename}
+            loading="lazy"
             className="w-full h-full object-contain"
           />
         ) : (
@@ -4191,6 +4192,7 @@ export function FileManagerPage() {
                             <img
                               src={api.getLibraryFileThumbnailUrl(file.id, thumbnailVersions[file.id])}
                               alt=""
+                              loading="lazy"
                               className="w-full h-full object-contain"
                             />
                           ) : (
@@ -4216,6 +4218,7 @@ export function FileManagerPage() {
                               <img
                                 src={api.getLibraryFileThumbnailUrl(file.id, thumbnailVersions[file.id])}
                                 alt={file.filename}
+                                loading="lazy"
                                 className="w-full h-full object-contain"
                               />
                             </div>

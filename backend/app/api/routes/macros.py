@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.core.auth import RequirePermission
+from backend.app.core.auth import RequireAnyPermission, RequirePermission
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.models.macro import Macro
@@ -66,9 +66,13 @@ async def list_macros(
     swap_mode: bool | None = Query(None, description="Filter by swap_mode_only"),
     event: str | None = Query(None, description="Filter by event"),
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.SETTINGS_READ),
+    _: User | None = RequireAnyPermission(Permission.SETTINGS_READ, Permission.PRINTERS_READ),
 ):
-    """List all macros with optional filters."""
+    """List all macros with optional filters.
+
+    Read by the print dialog and the printer menu, so a printer reader may list them: under
+    ``settings:read`` alone a custom group without it silently lost both.
+    """
     query = select(Macro).order_by(Macro.event, Macro.name)
 
     if swap_mode is not None:
@@ -93,7 +97,7 @@ async def list_macros(
 async def get_macro(
     macro_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.SETTINGS_READ),
+    _: User | None = RequireAnyPermission(Permission.SETTINGS_READ, Permission.PRINTERS_READ),
 ):
     """Get a single macro."""
     result = await db.execute(select(Macro).where(Macro.id == macro_id))

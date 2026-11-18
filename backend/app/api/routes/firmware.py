@@ -7,11 +7,12 @@ Also provides endpoints for uploading firmware to printers via SD card.
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.core.api_key_scope import in_key_scope
 from backend.app.core.auth import RequirePermission
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
@@ -151,6 +152,24 @@ async def check_firmware_updates(
     return FirmwareUpdatesResponse(updates=updates, updates_available=updates_available)
 
 
+@router.get("/updates/batch", response_model=dict[int, FirmwareUpdateInfo])
+async def check_printers_firmware(
+    request: Request,
+    ids: list[int] = Query(min_length=1, max_length=100),
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.FIRMWARE_READ),
+):
+    """The printer cards' automatic check for several printers in one answer.
+
+    Each value is what the single-printer route answers, the "Check printer firmware" setting
+    included. A missing printer, or one outside an API key's list, is left out.
+    """
+    wanted = {pid for pid in ids if in_key_scope(request, pid)}
+    printers = (await db.scalars(select(Printer).where(Printer.id.in_(wanted)))).all() if wanted else []
+    enabled = await _automatic_checks_enabled(db)
+    return {printer.id: await _card_update_info(printer, enabled) for printer in printers}
+
+
 @router.get("/updates/{printer_id}", response_model=FirmwareUpdateInfo)
 async def check_printer_firmware(
     printer_id: int,
@@ -160,14 +179,18 @@ async def check_printer_firmware(
     """
     Check for firmware update for a specific printer.
     """
-    firmware_service = get_firmware_service()
-
     # Get printer from database
     result = await db.execute(select(Printer).where(Printer.id == printer_id))
     printer = result.scalar_one_or_none()
 
     if not printer:
         raise HTTPException(status_code=404, detail="Printer not found")
+
+    return await _card_update_info(printer, await _automatic_checks_enabled(db))
+
+
+async def _card_update_info(printer: Printer, automatic_checks_enabled: bool) -> FirmwareUpdateInfo:
+    firmware_service = get_firmware_service()
 
     # Get current firmware version from MQTT state
     current_version = None
@@ -181,7 +204,7 @@ async def check_printer_firmware(
     # off it contacts nobody -- enforced here and not only in the UI, which
     # asks before its settings have loaded. The Firmware page and an upload are
     # an operator's explicit request and are not gated by the setting.
-    if not await _automatic_checks_enabled(db):
+    if not automatic_checks_enabled:
         return FirmwareUpdateInfo(
             printer_id=printer.id,
             printer_name=printer.name,

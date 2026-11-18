@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { NumberInput } from './NumberInput';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { api, type PrintStateAction, type PrintStateIssue, type PrintStateAudit } from '../api/client';
@@ -141,9 +142,9 @@ export function PrintStateIssuesPanel({ search = window.location.search }: { sea
       </div>
       <p className="text-sm text-bambu-gray">{t('printStateRecovery.description')}</p>
       <label className="flex flex-wrap items-center gap-2 text-sm">{t('printStateRecovery.printerFilter')}
-        <input type="number" min={1} value={printer ?? ''} placeholder={t('printStateRecovery.allPrinters')}
+        <NumberInput min={1} integer allowEmpty value={printer} placeholder={t('printStateRecovery.allPrinters')}
           className="bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1 w-28"
-          onChange={e => { setPrinter(Number(e.target.value) || undefined); setTarget(undefined); setInvalidAddress(false); setCursor(undefined); setHistory(null); setSelection(null); }} />
+          onChange={v => { setPrinter(v ?? undefined); setTarget(undefined); setInvalidAddress(false); setCursor(undefined); setHistory(null); setSelection(null); }} />
       </label>
       {invalidAddress && <p role="alert">{t('printStateRecovery.invalidAddress')}</p>}
       {!invalidAddress && query.isPending && <p role="status">{t('common.loading')}</p>}

@@ -2,6 +2,9 @@ import { StrictMode, Suspense, lazy } from 'react'
 import { createRoot } from 'react-dom/client'
 import './index.css'
 import i18n from './i18n'
+import { installStaleBuildReload } from './utils/staleBuildReload'
+
+installStaleBuildReload()
 
 // Select the standalone shell BEFORE importing/mounting app providers. In
 // particular, token TVs must not start settings, camera or auth requests.

@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { NumberInput } from '../NumberInput';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 
@@ -214,9 +215,10 @@ export function SensorFormModal({ sensor, initialDevice, onClose }: Props) {
                 </label>
                 <label className="flex items-center gap-1">
                   {t('settings.zigbee.sensors.bindingOrder')}
-                  <input type="number" className="w-14 rounded bg-bambu-dark-secondary p-1"
+                  <NumberInput className="w-14 rounded bg-bambu-dark-secondary p-1"
                     value={draft.sort_order ?? item.sort_order}
-                    onChange={(e) => change({ sort_order: Number(e.target.value) || 0 })} />
+                    onChange={(v) => change({ sort_order: v })}
+                    fallback={0} />
                 </label>
               </div>
               <div className="flex gap-3">

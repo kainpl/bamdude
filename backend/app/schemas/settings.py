@@ -448,6 +448,10 @@ class AppSettings(BaseModel):
         default=True,
         description="Slot frees when bed reaches target temp (±1°C). When off, frees immediately after start.",
     )
+    stagger_strict_for_direct_dispatch: bool = Field(
+        default=False,
+        description="A direct print over the stagger cap is refused instead of waiting for a slot",
+    )
     # ETA forecast allowances (vault 60-specs/farm-forecast-v2-spec §7). Read only
     # by ``services/farm_forecast.load_snapshot``; the queue never reads them.
     forecast_upload_seconds: int = Field(
@@ -968,6 +972,7 @@ class AppSettingsUpdate(BaseModel):
     stagger_concurrent: int | None = None
     stagger_interval_minutes: int | None = None
     stagger_wait_for_bed: bool | None = None
+    stagger_strict_for_direct_dispatch: bool | None = None
     forecast_upload_seconds: int | None = Field(default=None, ge=0, le=3600)
     forecast_operator_absence_enabled: bool | None = None
     forecast_operator_absence_start: str | None = Field(default=None, pattern=OPERATOR_TIME_PATTERN)

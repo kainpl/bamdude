@@ -15,6 +15,7 @@ from backend.app.models.stock_issue import WAYBILL_MAX
 from backend.app.schemas.archive import PaginationMeta
 from backend.app.schemas.customer import CustomerResponse
 from backend.app.schemas.farm_forecast import EstimateReasonOut
+from backend.app.schemas.not_null import IgnoresNullForRequiredColumns
 from backend.app.schemas.part_image import PartImageRef
 from backend.app.schemas.product import PartSourceOut, ProductListItem, ProductPartVariantOut
 from backend.app.schemas.project import LineConfigurationOut, ProjectListResponse
@@ -302,8 +303,10 @@ class DispatchNoteOut(StockIssueRow):
     lines: list[DispatchNoteLine]
 
 
-class StockIssueUpdate(BaseModel):
+class StockIssueUpdate(IgnoresNullForRequiredColumns):
     """The two things an issue may change afterwards."""
+
+    __orm_table__ = "stock_issues"
 
     waybill: str | None = Field(default=None, max_length=WAYBILL_MAX)
     note: str | None = Field(default=None, max_length=2000)

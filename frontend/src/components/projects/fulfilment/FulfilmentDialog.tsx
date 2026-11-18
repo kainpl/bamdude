@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useId, useRef, useState } from 'react';
+import { NumberInput } from '../../NumberInput';
 import { useMutation, useQueryClient, type UseQueryResult } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { api, WAYBILL_MAX } from '../../../api/client';
@@ -513,13 +514,13 @@ function NumberCell({
   if (max === 0) return <span className="text-bambu-gray">—</span>;
   return (
     <div className="flex items-center gap-2 whitespace-nowrap">
-      <input
-        type="number"
+      <NumberInput
         min={0}
         max={max}
         value={value}
         disabled={disabled}
-        onChange={(e) => onChange(Number(e.target.value))}
+        onChange={onChange}
+        fallback={0}
         aria-label={label}
         className={NUMBER_CLS}
       />

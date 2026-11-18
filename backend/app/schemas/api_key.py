@@ -2,6 +2,8 @@ from datetime import datetime
 
 from pydantic import BaseModel
 
+from backend.app.schemas.not_null import IgnoresNullForRequiredColumns
+
 
 class APIKeyCreate(BaseModel):
     """Schema for creating a new API key."""
@@ -28,12 +30,14 @@ class APIKeyCreate(BaseModel):
     expires_at: datetime | None = None
 
 
-class APIKeyUpdate(BaseModel):
+class APIKeyUpdate(IgnoresNullForRequiredColumns):
     """Schema for updating an API key.
 
     Omitted printer_ids keeps the current scope. Explicit null deliberately
     permits all printers; [] permits none. Only a key manager may request it.
     """
+
+    __orm_table__ = "api_keys"
 
     name: str | None = None
     can_queue: bool | None = None

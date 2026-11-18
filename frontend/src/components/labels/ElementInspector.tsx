@@ -6,6 +6,7 @@
  * millimetre somebody wants rather than the one they could hit.
  */
 import { useTranslation } from 'react-i18next';
+import { NumberInput } from '../NumberInput';
 import { useQuery } from '@tanstack/react-query';
 import { Trash2 } from 'lucide-react';
 import { api, type LabelPlaceholder, type LabelSwatchShape, type LabelTemplateElement } from '../../api/client';
@@ -42,11 +43,6 @@ export function ElementInspector({
 
   const patch = (fields: Partial<LabelTemplateElement>) =>
     onChange({ ...element, ...fields } as LabelTemplateElement);
-
-  const number = (value: string, fallback: number) => {
-    const parsed = Number(value.replace(',', '.'));
-    return Number.isFinite(parsed) ? parsed : fallback;
-  };
 
   const insertPlaceholder = (key: string) => {
     // Appended rather than replacing: a line is a sentence of fields, and
@@ -102,17 +98,12 @@ export function ElementInspector({
         {(['x_mm', 'y_mm', 'w_mm', 'h_mm'] as const).map((field) => (
           <label key={field} className="block">
             <span className="text-xs text-bambu-gray">{t(`labelEditor.${field}`)}</span>
-            <input
-              type="number"
+            <NumberInput
               step="0.5"
+              min={field === 'w_mm' || field === 'h_mm' ? MIN_SIDE_MM : 0}
+              max={field === 'x_mm' || field === 'w_mm' ? widthMm : heightMm}
               value={element[field]}
-              onChange={(e) => {
-                const raw = number(e.target.value, element[field]);
-                const limit =
-                  field === 'x_mm' || field === 'w_mm' ? widthMm : heightMm;
-                const floor = field === 'w_mm' || field === 'h_mm' ? MIN_SIDE_MM : 0;
-                patch({ [field]: roundMm(Math.min(Math.max(raw, floor), limit)) });
-              }}
+              onChange={(v) => patch({ [field]: roundMm(v) })}
               className="w-full mt-1 px-1.5 py-1 text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded"
             />
           </label>
@@ -124,11 +115,11 @@ export function ElementInspector({
           <div className="grid grid-cols-2 gap-2">
             <label className="block">
               <span className="text-xs text-bambu-gray">{t('labelEditor.sizeMm')}</span>
-              <input
-                type="number"
+              <NumberInput
                 step="0.5"
+                min={0.5}
                 value={element.size_mm}
-                onChange={(e) => patch({ size_mm: roundMm(Math.max(0.5, number(e.target.value, element.size_mm))) })}
+                onChange={(v) => patch({ size_mm: roundMm(v) })}
                 className="w-full mt-1 px-1.5 py-1 text-sm bg-bambu-dark border border-bambu-dark-tertiary rounded"
               />
             </label>

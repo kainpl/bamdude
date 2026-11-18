@@ -700,6 +700,9 @@ _MEASURED_SORTS: dict[str, tuple[object, str]] = {
 }
 
 
+_DUPLICATE_SCOPE_LIMIT = 500
+
+
 class ArchiveService:
     """Service for archiving print jobs."""
 
@@ -716,8 +719,14 @@ class ArchiveService:
                 sha256.update(chunk)
         return sha256.hexdigest()
 
-    async def get_duplicate_hashes_and_names(self) -> tuple[set[str], set[tuple[str, str]]]:
+    async def get_duplicate_hashes_and_names(
+        self, among: set[str] | None = None
+    ) -> tuple[set[str], set[tuple[str, str]]]:
         """Get all effective hashes and (print name, hash) pairs that appear more than once.
+
+        ``among`` narrows the question to those effective hashes (a page of the list); an empty
+        set asks nothing. Past ``_DUPLICATE_SCOPE_LIMIT`` hashes the whole table is asked, as
+        before -- an IN list that long costs more than the scan it avoids.
 
         Uses ``COALESCE(source_content_hash, content_hash)`` as the effective
         hash so BamDude-patched archives collapse against their original
@@ -729,12 +738,15 @@ class ArchiveService:
         from sqlalchemy import func
 
         effective_hash = func.coalesce(PrintArchive.source_content_hash, PrintArchive.content_hash)
+        if among is not None and not among:
+            return set(), set()
+        scope = [effective_hash.in_(among)] if among is not None and len(among) <= _DUPLICATE_SCOPE_LIMIT else []
 
         # Trashed archives are excluded — a duplicate badge against a trashed
         # sibling is misleading; those rows are slated for hard-delete.
         result = await self.db.execute(
             select(effective_hash)
-            .where(PrintArchive.content_hash.isnot(None), PrintArchive.deleted_at.is_(None))
+            .where(PrintArchive.content_hash.isnot(None), PrintArchive.deleted_at.is_(None), *scope)
             .group_by(effective_hash)
             .having(func.count(PrintArchive.id) > 1)
         )
@@ -748,6 +760,7 @@ class ArchiveService:
                 PrintArchive.print_name.isnot(None),
                 PrintArchive.content_hash.isnot(None),
                 PrintArchive.deleted_at.is_(None),
+                *scope,
             )
             .group_by(func.lower(PrintArchive.print_name), effective_hash)
             .having(func.count(PrintArchive.id) > 1)

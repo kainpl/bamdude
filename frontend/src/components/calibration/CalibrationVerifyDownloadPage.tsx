@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { NumberInput } from '../NumberInput';
 import { useTranslation } from 'react-i18next';
 import { useQuery } from '@tanstack/react-query';
 
@@ -444,51 +445,51 @@ export function CalibrationVerifyDownloadPage({ printerId, caliMode, onBack, onD
           <div className="grid grid-cols-2 gap-2">
             <label className="block">
               <span className="text-xs text-bambu-gray">{t('filamentCali.verifyDownload.startK')}</span>
-              <input
-                type="number"
+              <NumberInput
                 step="0.001"
                 value={start}
-                onChange={(e) => setStart(parseFloat(e.target.value) || 0)}
+                onChange={(v) => setStart(v)}
+                fallback={0}
                 className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
               />
             </label>
             <label className="block">
               <span className="text-xs text-bambu-gray">{t('filamentCali.verifyDownload.endK')}</span>
-              <input
-                type="number"
+              <NumberInput
                 step="0.001"
                 value={end}
-                onChange={(e) => setEnd(parseFloat(e.target.value) || 0)}
+                onChange={(v) => setEnd(v)}
+                fallback={0}
                 className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
               />
             </label>
             <label className="block">
               <span className="text-xs text-bambu-gray">{t('filamentCali.verifyDownload.stepK')}</span>
-              <input
-                type="number"
+              <NumberInput
                 step="0.001"
                 value={step}
-                onChange={(e) => setStep(parseFloat(e.target.value) || 0)}
+                onChange={(v) => setStep(v)}
+                fallback={0}
                 className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
               />
             </label>
             <label className="block">
               <span className="text-xs text-bambu-gray">{t('filamentCali.verifyDownload.layerHeight')}</span>
-              <input
-                type="number"
+              <NumberInput
                 step="0.05"
                 value={layerHeight}
-                onChange={(e) => setLayerHeight(parseFloat(e.target.value) || 0.2)}
+                onChange={(v) => setLayerHeight(v)}
+                fallback={0.2}
                 className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
               />
             </label>
             <label className="block col-span-2">
               <span className="text-xs text-bambu-gray">{t('filamentCali.verifyDownload.nozzleDia')}</span>
-              <input
-                type="number"
+              <NumberInput
                 step="0.1"
                 value={nozzleDiameter}
-                onChange={(e) => setNozzleDiameter(parseFloat(e.target.value) || 0.4)}
+                onChange={(v) => setNozzleDiameter(v)}
+                fallback={0.4}
                 className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
               />
             </label>
@@ -504,41 +505,41 @@ export function CalibrationVerifyDownloadPage({ printerId, caliMode, onBack, onD
           <div className="grid grid-cols-2 gap-2">
             <label className="block">
               <span className="text-xs text-bambu-gray">{t('filamentCali.verifyDownload.startVol')}</span>
-              <input
-                type="number"
+              <NumberInput
                 step="0.5"
                 value={volStart}
-                onChange={(e) => setVolStart(parseFloat(e.target.value) || 0)}
+                onChange={(v) => setVolStart(v)}
+                fallback={0}
                 className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
               />
             </label>
             <label className="block">
               <span className="text-xs text-bambu-gray">{t('filamentCali.verifyDownload.endVol')}</span>
-              <input
-                type="number"
+              <NumberInput
                 step="0.5"
                 value={volEnd}
-                onChange={(e) => setVolEnd(parseFloat(e.target.value) || 0)}
+                onChange={(v) => setVolEnd(v)}
+                fallback={0}
                 className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
               />
             </label>
             <label className="block">
               <span className="text-xs text-bambu-gray">{t('filamentCali.verifyDownload.stepVol')}</span>
-              <input
-                type="number"
+              <NumberInput
                 step="0.1"
                 value={volStep}
-                onChange={(e) => setVolStep(parseFloat(e.target.value) || 0)}
+                onChange={(v) => setVolStep(v)}
+                fallback={0}
                 className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
               />
             </label>
             <label className="block">
               <span className="text-xs text-bambu-gray">{t('filamentCali.verifyDownload.nozzleDia')}</span>
-              <input
-                type="number"
+              <NumberInput
                 step="0.1"
                 value={nozzleDiameter}
-                onChange={(e) => setNozzleDiameter(parseFloat(e.target.value) || 0.4)}
+                onChange={(v) => setNozzleDiameter(v)}
+                fallback={0.4}
                 className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
               />
             </label>
@@ -554,31 +555,31 @@ export function CalibrationVerifyDownloadPage({ printerId, caliMode, onBack, onD
           <div className="grid grid-cols-3 gap-2">
             <label className="block">
               <span className="text-xs text-bambu-gray">{t('filamentCali.verifyDownload.startSpeed')}</span>
-              <input
-                type="number"
+              <NumberInput
                 step="5"
                 value={vfaStart}
-                onChange={(e) => setVfaStart(parseFloat(e.target.value) || 0)}
+                onChange={(v) => setVfaStart(v)}
+                fallback={0}
                 className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
               />
             </label>
             <label className="block">
               <span className="text-xs text-bambu-gray">{t('filamentCali.verifyDownload.endSpeed')}</span>
-              <input
-                type="number"
+              <NumberInput
                 step="5"
                 value={vfaEnd}
-                onChange={(e) => setVfaEnd(parseFloat(e.target.value) || 0)}
+                onChange={(v) => setVfaEnd(v)}
+                fallback={0}
                 className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
               />
             </label>
             <label className="block">
               <span className="text-xs text-bambu-gray">{t('filamentCali.verifyDownload.stepSpeed')}</span>
-              <input
-                type="number"
+              <NumberInput
                 step="1"
                 value={vfaStep}
-                onChange={(e) => setVfaStep(parseFloat(e.target.value) || 0)}
+                onChange={(v) => setVfaStep(v)}
+                fallback={0}
                 className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
               />
             </label>
@@ -594,21 +595,21 @@ export function CalibrationVerifyDownloadPage({ printerId, caliMode, onBack, onD
           <div className="grid grid-cols-2 gap-2">
             <label className="block">
               <span className="text-xs text-bambu-gray">{t('filamentCali.verifyDownload.startTemp')}</span>
-              <input
-                type="number"
+              <NumberInput
                 step="5"
                 value={tempStart}
-                onChange={(e) => setTempStart(parseFloat(e.target.value) || 0)}
+                onChange={(v) => setTempStart(v)}
+                fallback={0}
                 className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
               />
             </label>
             <label className="block">
               <span className="text-xs text-bambu-gray">{t('filamentCali.verifyDownload.endTemp')}</span>
-              <input
-                type="number"
+              <NumberInput
                 step="5"
                 value={tempEnd}
-                onChange={(e) => setTempEnd(parseFloat(e.target.value) || 0)}
+                onChange={(v) => setTempEnd(v)}
+                fallback={0}
                 className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
               />
             </label>
@@ -625,31 +626,31 @@ export function CalibrationVerifyDownloadPage({ printerId, caliMode, onBack, onD
           <div className="grid grid-cols-3 gap-2">
             <label className="block">
               <span className="text-xs text-bambu-gray">{t('filamentCali.verifyDownload.startLength')}</span>
-              <input
-                type="number"
+              <NumberInput
                 step="0.1"
                 value={retractStart}
-                onChange={(e) => setRetractStart(parseFloat(e.target.value) || 0)}
+                onChange={(v) => setRetractStart(v)}
+                fallback={0}
                 className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
               />
             </label>
             <label className="block">
               <span className="text-xs text-bambu-gray">{t('filamentCali.verifyDownload.endLength')}</span>
-              <input
-                type="number"
+              <NumberInput
                 step="0.1"
                 value={retractEnd}
-                onChange={(e) => setRetractEnd(parseFloat(e.target.value) || 0)}
+                onChange={(v) => setRetractEnd(v)}
+                fallback={0}
                 className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
               />
             </label>
             <label className="block">
               <span className="text-xs text-bambu-gray">{t('filamentCali.verifyDownload.stepLength')}</span>
-              <input
-                type="number"
+              <NumberInput
                 step="0.05"
                 value={retractStep}
-                onChange={(e) => setRetractStep(parseFloat(e.target.value) || 0)}
+                onChange={(v) => setRetractStep(v)}
+                fallback={0}
                 className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
               />
             </label>
@@ -716,41 +717,41 @@ export function CalibrationVerifyDownloadPage({ printerId, caliMode, onBack, onD
           <div className="grid grid-cols-2 gap-2">
             <label className="block">
               <span className="text-xs text-bambu-gray">{t('filamentCali.verifyDownload.startK')}</span>
-              <input
-                type="number"
+              <NumberInput
                 step="0.001"
                 value={start}
-                onChange={(e) => setStart(parseFloat(e.target.value) || 0)}
+                onChange={(v) => setStart(v)}
+                fallback={0}
                 className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
               />
             </label>
             <label className="block">
               <span className="text-xs text-bambu-gray">{t('filamentCali.verifyDownload.endK')}</span>
-              <input
-                type="number"
+              <NumberInput
                 step="0.001"
                 value={end}
-                onChange={(e) => setEnd(parseFloat(e.target.value) || 0)}
+                onChange={(v) => setEnd(v)}
+                fallback={0}
                 className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
               />
             </label>
             <label className="block">
               <span className="text-xs text-bambu-gray">{t('filamentCali.verifyDownload.stepK')}</span>
-              <input
-                type="number"
+              <NumberInput
                 step="0.001"
                 value={step}
-                onChange={(e) => setStep(parseFloat(e.target.value) || 0)}
+                onChange={(v) => setStep(v)}
+                fallback={0}
                 className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
               />
             </label>
             <label className="block">
               <span className="text-xs text-bambu-gray">{t('filamentCali.verifyDownload.nozzleDia')}</span>
-              <input
-                type="number"
+              <NumberInput
                 step="0.1"
                 value={nozzleDiameter}
-                onChange={(e) => setNozzleDiameter(parseFloat(e.target.value) || 0.4)}
+                onChange={(v) => setNozzleDiameter(v)}
+                fallback={0.4}
                 className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
               />
             </label>
@@ -766,41 +767,41 @@ export function CalibrationVerifyDownloadPage({ printerId, caliMode, onBack, onD
           <div className="grid grid-cols-2 gap-2">
             <label className="block">
               <span className="text-xs text-bambu-gray">{t('filamentCali.verifyDownload.startK')}</span>
-              <input
-                type="number"
+              <NumberInput
                 step="0.001"
                 value={paLineStart}
-                onChange={(e) => setPaLineStart(parseFloat(e.target.value) || 0)}
+                onChange={(v) => setPaLineStart(v)}
+                fallback={0}
                 className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
               />
             </label>
             <label className="block">
               <span className="text-xs text-bambu-gray">{t('filamentCali.verifyDownload.endK')}</span>
-              <input
-                type="number"
+              <NumberInput
                 step="0.001"
                 value={paLineEnd}
-                onChange={(e) => setPaLineEnd(parseFloat(e.target.value) || 0)}
+                onChange={(v) => setPaLineEnd(v)}
+                fallback={0}
                 className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
               />
             </label>
             <label className="block">
               <span className="text-xs text-bambu-gray">{t('filamentCali.verifyDownload.stepK')}</span>
-              <input
-                type="number"
+              <NumberInput
                 step="0.001"
                 value={paLineStep}
-                onChange={(e) => setPaLineStep(parseFloat(e.target.value) || 0)}
+                onChange={(v) => setPaLineStep(v)}
+                fallback={0}
                 className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
               />
             </label>
             <label className="block">
               <span className="text-xs text-bambu-gray">{t('filamentCali.verifyDownload.nozzleDia')}</span>
-              <input
-                type="number"
+              <NumberInput
                 step="0.1"
                 value={nozzleDiameter}
-                onChange={(e) => setNozzleDiameter(parseFloat(e.target.value) || 0.4)}
+                onChange={(v) => setNozzleDiameter(v)}
+                fallback={0.4}
                 className="accent-bambu-green w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
               />
             </label>

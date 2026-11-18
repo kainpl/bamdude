@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { NumberInput } from './NumberInput';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { AlertTriangle, Loader2, Trash2 } from 'lucide-react';
@@ -91,16 +92,14 @@ export function PurgeArchivesModal({ onClose }: PurgeArchivesModalProps) {
             {t('archivePurge.ageLabel')}
           </label>
           <div className="flex items-center gap-3">
-            <input
+            <NumberInput
               id="archive-cleanup-days"
-              type="number"
               min={1}
               max={3650}
-              value={days ?? ''}
-              onChange={(e) => {
-                const v = parseInt(e.target.value || '0', 10);
-                setDays(Number.isFinite(v) && v >= 1 ? Math.min(3650, v) : null);
-              }}
+              value={days}
+              onChange={setDays}
+              integer
+              allowEmpty
               className="w-24 px-2 py-1 bg-bambu-dark border border-bambu-dark-tertiary rounded text-sm text-white focus:border-bambu-green focus:outline-none"
             />
             <span className="text-sm text-bambu-gray">{t('archivePurge.days')}</span>

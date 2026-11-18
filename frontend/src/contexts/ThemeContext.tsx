@@ -7,6 +7,8 @@ type DarkBackground = 'neutral' | 'warm' | 'cool' | 'oled' | 'slate' | 'forest';
 type LightBackground = 'neutral' | 'warm' | 'cool';
 type ThemeAccent = 'green' | 'teal' | 'blue' | 'orange' | 'purple' | 'red';
 
+export type TabDisplay = 'percentage' | 'time';
+
 interface ThemeContextType {
   mode: ThemeMode;
   resolvedMode: 'light' | 'dark';
@@ -21,6 +23,9 @@ interface ThemeContextType {
   // Show the soonest-finishing print's percentage in the browser tab title
   // (and a progress-ring favicon). Per-browser, off by default.
   progressInTitle: boolean;
+  // What the tab title shows of that print: its percentage, or the time it has left.
+  // The tab icon is the progress ring either way. Per-browser, like the switch above.
+  tabDisplay: TabDisplay;
   // Actions
   toggleMode: () => void;
   setMode: (mode: ThemeMode) => void;
@@ -31,6 +36,7 @@ interface ThemeContextType {
   setLightBackground: (background: LightBackground) => void;
   setLightAccent: (accent: ThemeAccent) => void;
   setProgressInTitle: (enabled: boolean) => void;
+  setTabDisplay: (display: TabDisplay) => void;
 }
 
 const ThemeContext = createContext<ThemeContextType | undefined>(undefined);
@@ -84,6 +90,9 @@ export function ThemeProvider({ children, syncServer = true }: { children: React
   const [progressInTitle, setProgressInTitleState] = useState<boolean>(() => {
     return localStorage.getItem('progress-in-title') === 'true';
   });
+  const [tabDisplay, setTabDisplayState] = useState<TabDisplay>(() =>
+    localStorage.getItem('tab-display') === 'time' ? 'time' : 'percentage',
+  );
 
   const [lightAccent, setLightAccentState] = useState<ThemeAccent>(() => {
     return (localStorage.getItem('light-accent') as ThemeAccent) || 'green';
@@ -198,6 +207,10 @@ export function ThemeProvider({ children, syncServer = true }: { children: React
     setProgressInTitleState(enabled);
     localStorage.setItem('progress-in-title', String(enabled));
   };
+  const setTabDisplay = (display: TabDisplay) => {
+    setTabDisplayState(display);
+    localStorage.setItem('tab-display', display);
+  };
 
   return (
     <ThemeContext.Provider value={{
@@ -205,11 +218,11 @@ export function ThemeProvider({ children, syncServer = true }: { children: React
       resolvedMode,
       darkStyle, darkBackground, darkAccent,
       lightStyle, lightBackground, lightAccent,
-      progressInTitle,
+      progressInTitle, tabDisplay,
       toggleMode, setMode,
       setDarkStyle, setDarkBackground, setDarkAccent,
       setLightStyle, setLightBackground, setLightAccent,
-      setProgressInTitle,
+      setProgressInTitle, setTabDisplay,
     }}>
       {children}
     </ThemeContext.Provider>

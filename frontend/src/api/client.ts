@@ -15,6 +15,7 @@ import type { MonitorSnapshot, MonitorView } from '../features/monitor/types';
 import type { PrintOptions as PrintDialogOptions } from '../components/PrintModal/types';
 import { isMonitorKioskLocation } from '../features/monitor/location';
 import { createPrinterStatusBatcher } from './printerStatusBatch';
+import { createIdBatcher } from '../utils/idBatch';
 import { farmRead, farmReadBudget } from './farmReadBudget';
 
 export type PrintStateAction =
@@ -10591,6 +10592,45 @@ const printerStatusReads = createPrinterStatusBatcher(
 // Only tracks outstanding reads; never stores a second status cache.
 export const recordLivePrinterStatus = printerStatusReads.update;
 
+// What every printer card reads by its own id: one request per tick for the page instead of
+// one per card (`utils/idBatch.ts`). Each card keeps its own query and cache entry.
+const idsQuery = (ids: number[]) => ids.map(id => `ids=${id}`).join('&');
+
+/** The newest archive of a printer, as the card's "last print" line shows it. */
+export interface LastPrint {
+  id: number;
+  print_name: string | null;
+  filename: string;
+  status: string;
+  completed_at: string | null;
+}
+
+interface PrinterCardPlugs {
+  main: SmartPlug | null;
+  scripts: SmartPlug[];
+}
+
+const lastPrintReads = createIdBatcher<LastPrint | null>(
+  ids => request<Record<string, LastPrint>>(`/archives/last-by-printer?${idsQuery(ids)}`),
+  () => null,
+);
+const amsLabelReads = createIdBatcher<Record<number, string>>(
+  ids => request<Record<string, Record<number, string>>>(`/printers/ams-labels/batch?${idsQuery(ids)}`),
+  () => ({}),
+);
+const cardPlugReads = createIdBatcher<PrinterCardPlugs>(
+  ids => request<Record<string, PrinterCardPlugs>>(`/smart-plugs/by-printer/batch?${idsQuery(ids)}`),
+  () => ({ main: null, scripts: [] }),
+);
+const haSensorReadingReads = createIdBatcher<PrinterHASensorReading[]>(
+  ids => request<Record<string, PrinterHASensorReading[]>>(`/ha-sensors/readings/batch?${idsQuery(ids)}`),
+  () => [],
+);
+const firmwareUpdateReads = createIdBatcher<FirmwareUpdateInfo>(
+  ids => request<Record<string, FirmwareUpdateInfo>>(`/firmware/updates/batch?${idsQuery(ids)}`),
+  () => new ApiError('Printer not found', 404),
+);
+
 /** Serialise inbox filters ONCE, for every route that takes them (list,
  *  read-all, clear). Only what is set travels: an empty value must not reach
  *  the server as a bare `?printer_id=`, and the three routes must agree or a
@@ -12591,8 +12631,8 @@ export const api = {
   getSmartPlugs: () => request<SmartPlug[]>('/smart-plugs/'),
   getMeterIncidents: () => request<MeterIncident[]>('/smart-plugs/meter-incidents'),
   getSmartPlug: (id: number) => request<SmartPlug>(`/smart-plugs/${id}`),
-  getSmartPlugByPrinter: (printerId: number) => request<SmartPlug | null>(`/smart-plugs/by-printer/${printerId}`),
-  getScriptPlugsByPrinter: (printerId: number) => request<SmartPlug[]>(`/smart-plugs/by-printer/${printerId}/scripts`),
+  getSmartPlugByPrinter: (printerId: number) => cardPlugReads(printerId).then(plugs => plugs.main),
+  getScriptPlugsByPrinter: (printerId: number) => cardPlugReads(printerId).then(plugs => plugs.scripts),
   createSmartPlug: (data: SmartPlugCreate) =>
     request<SmartPlug>('/smart-plugs/', {
       method: 'POST',
@@ -12761,8 +12801,7 @@ export const api = {
   // Home Assistant sensors bound to a printer (#1148, #448)
   getHASensors: (printerId?: number) =>
     request<PrinterHASensor[]>(`/ha-sensors/${printerId ? `?printer_id=${printerId}` : ''}`),
-  getHASensorReadings: (printerId: number) =>
-    request<PrinterHASensorReading[]>(`/ha-sensors/by-printer/${printerId}/readings`),
+  getHASensorReadings: (printerId: number) => haSensorReadingReads(printerId),
   getHASensorManagementReadings: () =>
     request<HASensorManagementBatch<PrinterHASensorManagementReading>>('/ha-sensors/management/readings'),
   getHASensorHistory: (sensorId: number, hours = 24) =>
@@ -13099,8 +13138,9 @@ export const api = {
   // Slot Preset Mappings
 
   // AMS Labels (user-defined friendly names)
-  getAmsLabels: (printerId: number) =>
-    request<Record<number, string>>(`/printers/${printerId}/ams-labels`),
+  getAmsLabels: (printerId: number) => amsLabelReads(printerId),
+  /** The printer's newest archive, or null when it has none the caller may see. */
+  getLastPrint: (printerId: number) => lastPrintReads(printerId),
   saveAmsLabel: (printerId: number, amsId: number, label: string, amsSerial = '') =>
     request<{ ams_id: number; label: string }>(
       `/printers/${printerId}/ams-labels/${amsId}`,
@@ -17073,8 +17113,7 @@ export const firmwareApi = {
   checkUpdates: () =>
     request<{ updates: FirmwareUpdateInfo[]; updates_available: number }>('/firmware/updates'),
 
-  checkPrinterUpdate: (printerId: number) =>
-    request<FirmwareUpdateInfo>(`/firmware/updates/${printerId}`),
+  checkPrinterUpdate: (printerId: number) => firmwareUpdateReads(printerId),
 
   prepareUpload: (printerId: number, version?: string) =>
     request<FirmwareUploadPrepare>(

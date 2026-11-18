@@ -1334,6 +1334,21 @@ async def get_printer_status(
     return await _build_printer_status(printer, db)
 
 
+@router.get("/ams-labels/batch")
+async def get_ams_labels_batch(
+    ids: list[int] = Query(min_length=1, max_length=100),
+    _=RequirePermission(Permission.PRINTERS_READ),
+    db: AsyncSession = Depends(get_db),
+    request: Request = None,
+) -> dict[int, dict[int, str]]:
+    """The AMS labels of several printers in one answer, for a page of printer cards.
+
+    Each value is exactly what the single-printer route answers. A printer outside an API
+    key's list is left out.
+    """
+    return {pid: await _ams_labels_for(pid, db) for pid in sorted({p for p in ids if in_key_scope(request, p)})}
+
+
 @router.get("/status/batch", response_model=dict[int, PrinterStatus])
 async def get_printer_status_batch(
     ids: list[int] = Query(min_length=1, max_length=100),
@@ -3440,6 +3455,10 @@ async def get_ams_labels(
     serial-to-ams_id mapping from the live printer state so the response is still
     keyed by ams_id for UI compatibility.
     """
+    return await _ams_labels_for(printer_id, db)
+
+
+async def _ams_labels_for(printer_id: int, db: AsyncSession) -> dict[int, str]:
     # Build serial -> ams_id map from live printer state
     serial_to_ams_id: dict[str, int] = {}
     state = printer_manager.get_status(printer_id)

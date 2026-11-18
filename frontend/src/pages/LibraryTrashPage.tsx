@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { NumberInput } from '../components/NumberInput';
 import { Link, useNavigate } from 'react-router';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
@@ -264,15 +265,14 @@ export function LibraryTrashPage() {
           <label htmlFor="retention-days" className="text-sm font-medium text-white">
             {t('libraryTrash.retentionLabel')}
           </label>
-          <input
+          <NumberInput
             id="retention-days"
-            type="number"
             min={1}
             max={365}
             value={retentionDraft ?? settingsQuery.data.retention_days}
-            onChange={(e) =>
-              setRetentionDraft(Math.max(1, Math.min(365, parseInt(e.target.value || '0', 10) || 0)))
-            }
+            onChange={(v) => setRetentionDraft(v)}
+            integer
+            fallback={0}
             className="w-20 rounded border border-bambu-dark-tertiary bg-bambu-dark text-sm px-2 py-1 text-white"
           />
           <span className="text-sm text-bambu-gray">{t('libraryTrash.days')}</span>

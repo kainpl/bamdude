@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { NumberInput } from './NumberInput';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Battery, Droplets, RotateCcw, Save, Settings2, Thermometer } from 'lucide-react';
@@ -414,14 +415,13 @@ export function LocationSensorOptionsModal({ onClose }: Props) {
             <label className="block text-sm text-white" htmlFor="location-sensor-poll-interval">
               {t('locationHaSensors.options.pollInterval')}
             </label>
-            <input
+            <NumberInput
               id="location-sensor-poll-interval"
-              type="number"
               min={MIN_POLL_INTERVAL}
               step="1"
               value={pollInterval}
-              onChange={(e) => updatePollInterval(Number(e.target.value))}
-              onBlur={() => updatePollInterval(Math.max(MIN_POLL_INTERVAL, pollInterval || DEFAULT_POLL_INTERVAL))}
+              onChange={updatePollInterval}
+              fallback={DEFAULT_POLL_INTERVAL}
               className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white"
             />
             <p className="text-xs text-bambu-gray">{t('locationHaSensors.options.pollIntervalHint')}</p>

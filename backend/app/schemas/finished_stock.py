@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 
 from backend.app.models.stock_issue import WAYBILL_MAX
 from backend.app.schemas.archive import PaginationMeta
+from backend.app.schemas.not_null import IgnoresNullForRequiredColumns
 from backend.app.schemas.part_image import PartImageRef
 from backend.app.schemas.project import MAX_QTY, LineConfigurationOut, RecipientIn
 
@@ -170,7 +171,9 @@ class StockAssembleIn(BaseModel):
     note: str | None = Field(default=None, max_length=500)
 
 
-class StockItemParamsIn(BaseModel):
+class StockItemParamsIn(IgnoresNullForRequiredColumns):
+    __orm_table__ = "stock_items"
+
     location: str | None = Field(default=None, max_length=64)
     min_qty: int | None = Field(default=None, le=MAX_QTY)
 

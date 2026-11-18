@@ -11549,7 +11549,12 @@ async def record_ams_history():
                             select(Settings).where(Settings.key == "usage_events_retention_hours")
                         )
                         setting = result.scalar_one_or_none()
-                        retention_hours = int(setting.value) if setting else 72
+                        # A stored 0 (a restore, a row written past the settings door) would
+                        # prune every finished print's journal; the door's own floor is 1.
+                        try:
+                            retention_hours = max(1, int(setting.value)) if setting else 72
+                        except (TypeError, ValueError):
+                            retention_hours = 72
                         await prune_finished(db, retention_hours)
                     except Exception as e:
                         logger.warning("Usage-journal retention sweep failed: %s", e)
@@ -13859,9 +13864,14 @@ async def auth_middleware(request, call_next):
                     content={"detail": "User not found or inactive"},
                     headers={"WWW-Authenticate": "Bearer"},
                 )
+            # A revoked session, an older generation, a token that names no session. The
+            # browser reads this text as "try the refresh cookie, and sign out when that is
+            # refused too"; under "Invalid token" (which it does not know, and which the
+            # Bambu Cloud routes use for THEIR credential) a tab whose session had been ended
+            # stayed signed in on stale data until its access token ran out.
             return JSONResponse(
                 status_code=401,
-                content={"detail": "Invalid token"},
+                content={"detail": "Could not validate credentials"},
                 headers={"WWW-Authenticate": "Bearer"},
             )
         except HTTPException as exc:
@@ -14248,9 +14258,13 @@ app.include_router(telegram.router, prefix=app_settings.api_prefix)
 
 # Serve static files (React build)
 if app_settings.static_dir.exists() and any(app_settings.static_dir.iterdir()):
+    # Compressed and cache-marked on THIS mount only (core/static_assets.py): an app-wide
+    # compression middleware would also wrap the camera streams and sit inside the media gate.
+    from backend.app.core.static_assets import AssetStaticFiles
+
     app.mount(
         "/assets",
-        StaticFiles(directory=app_settings.static_dir / "assets"),
+        AssetStaticFiles(directory=app_settings.static_dir / "assets"),
         name="assets",
     )
     if (app_settings.static_dir / "img").exists():

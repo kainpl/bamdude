@@ -8,6 +8,8 @@ import re
 
 from pydantic import BaseModel, Field, field_validator
 
+from backend.app.schemas.not_null import IgnoresNullForRequiredColumns
+
 _HEX_COLOUR = re.compile(r"^#[0-9a-f]{6}$")
 
 
@@ -34,8 +36,10 @@ class PrinterTagCreate(BaseModel):
         return value
 
 
-class PrinterTagUpdate(PrinterTagCreate):
+class PrinterTagUpdate(IgnoresNullForRequiredColumns, PrinterTagCreate):
     """Name and colour. ``color`` absent keeps the current one; ``color: null`` clears it (the route reads ``model_fields_set``)."""
+
+    __orm_table__ = "printer_tags"
 
 
 class PrinterTagOut(BaseModel):

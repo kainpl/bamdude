@@ -9,10 +9,13 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field, model_validator
 
+from backend.app.schemas.not_null import IgnoresNullForRequiredColumns
 from backend.app.schemas.printer_location import PrinterLocationOut, reject_legacy_key
 
 
-class SensorBindingIn(BaseModel):
+class SensorBindingIn(IgnoresNullForRequiredColumns):
+    __orm_table__ = "smart_sensor_bindings"
+
     printer_id: int | None = None
     printer_location_id: int | None = None
     storage_location_id: int | None = None
@@ -53,7 +56,9 @@ class SmartSensorCreate(BaseModel):
         return self
 
 
-class SmartSensorUpdate(BaseModel):
+class SmartSensorUpdate(IgnoresNullForRequiredColumns):
+    __orm_table__ = "smart_sensors"
+
     name: str | None = Field(default=None, min_length=1, max_length=100)
     location_id: int | None = None
     printer_id: int | None = None

@@ -5,6 +5,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from backend.app.schemas.not_null import IgnoresNullForRequiredColumns
 from backend.app.schemas.printer_location import PrinterLocationOut
 from backend.app.schemas.printer_tag import PrinterTagOut
 from backend.app.services.queue_status import QueueState
@@ -51,8 +52,10 @@ class PrinterQueueResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
-class PrinterQueueUpdate(BaseModel):
+class PrinterQueueUpdate(IgnoresNullForRequiredColumns):
     """Update schema for a printer queue (pause/resume)."""
+
+    __orm_table__ = "printer_queues"
 
     status: str | None = None  # idle, paused
     is_paused: bool | None = None  # operator queue pause — allowed in any status

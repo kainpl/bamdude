@@ -4,6 +4,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from backend.app.schemas.archive import PaginationMeta
+from backend.app.schemas.not_null import IgnoresNullForRequiredColumns
 
 
 def naive_utc(value: datetime | None) -> datetime | None:
@@ -97,7 +98,9 @@ class SpoolBulkCreate(BaseModel):
     auto_increment_lot: bool = False
 
 
-class SpoolUpdate(BaseModel):
+class SpoolUpdate(IgnoresNullForRequiredColumns):
+    __orm_table__ = "spool"
+
     material: str | None = None
     subtype: str | None = None
     color_name: str | None = None

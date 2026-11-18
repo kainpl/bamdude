@@ -6,6 +6,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
+from backend.app.schemas.not_null import IgnoresNullForRequiredColumns
+
 
 class ProviderType(StrEnum):
     """Supported notification provider types."""
@@ -152,8 +154,10 @@ class NotificationProviderCreate(NotificationProviderBase):
     pass
 
 
-class NotificationProviderUpdate(BaseModel):
+class NotificationProviderUpdate(IgnoresNullForRequiredColumns):
     """Schema for updating a notification provider (all fields optional)."""
+
+    __orm_table__ = "notification_providers"
 
     name: str | None = Field(default=None, min_length=1, max_length=100)
     provider_type: ProviderType | None = None

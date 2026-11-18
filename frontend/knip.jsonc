@@ -1,0 +1,16 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  // Files nothing imports but something loads:
+  //  - the browser loads the service worker by URL (public/sw-register.js);
+  //  - scripts/build-part-render.mjs bundles the part-render entry for Node;
+  //  - the Workshop fixture page is opened by its own index.html for layout measurements.
+  "entry": ["public/sw.js", "src/part-render/entry.ts", "src/__tests__/fixtures/workshop/main.tsx"],
+  "ignore": [
+    // Tools run by hand or by another script (node scripts/...), not part of the app.
+    "scripts/**",
+    // Types the sibling vendor .js; TypeScript reads it for that import.
+    "src/lib/vendor/toolpathRenderer.d.ts"
+  ],
+  // Unused exports and types are left out: most are only used in their own file.
+  "include": ["files", "dependencies", "devDependencies", "unlisted", "unresolved", "binaries"]
+}

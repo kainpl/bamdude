@@ -1,4 +1,5 @@
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
+import { NumberInput } from '../NumberInput';
 import { AlertCircle, AlertTriangle, Calendar, Loader2, Pencil, Printer } from 'lucide-react';
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -3266,15 +3267,12 @@ export function PrintModal({
                     disabled={quantity <= 1}
                     className="w-8 h-8 rounded bg-bambu-dark border border-bambu-dark-tertiary text-white hover:border-bambu-green disabled:opacity-40"
                   >−</button>
-                  <input
-                    type="number"
+                  <NumberInput
                     min={1}
                     max={999}
                     value={quantity}
-                    onChange={(e) => {
-                      const v = parseInt(e.target.value, 10);
-                      if (Number.isFinite(v)) { setQuantity(Math.min(999, Math.max(1, v))); setPlateQuantities({}); }
-                    }}
+                    onChange={(v) => { setQuantity(v); setPlateQuantities({}); }}
+                    integer
                     aria-label={t('printModal.quantity')}
                     className="w-14 text-center bg-bambu-dark border border-bambu-dark-tertiary rounded text-white py-1"
                   />

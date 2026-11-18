@@ -62,7 +62,7 @@ describe('closing the panel mid-recording', () => {
     await user.click(screen.getAllByRole('button').find((b) => b.querySelector('.lucide-x'))!);
     await waitFor(() => expect(reproduceStep()).not.toBeInTheDocument());
 
-    // Closing is not cancelling: only Stop & Submit brings the log level down.
+    // Closing is not cancelling: only the Stop button brings the log level down.
     expect(stopCalls).toBe(0);
     // The disc says a recording is live, and clicking it gets back to it.
     expect(disc().className).toContain('bg-amber-500');
@@ -71,11 +71,85 @@ describe('closing the panel mid-recording', () => {
     await user.click(disc());
     expect(reproduceStep()).toBeInTheDocument();
 
-    await user.click(screen.getByRole('button', { name: 'Stop & Submit' }));
+    // Stopping sends nothing (upstream #3363): the report waits for its own click.
+    await user.click(screen.getByRole('button', { name: 'Stop Logging' }));
+    await waitFor(() => expect(screen.getByText('Nothing has been sent yet')).toBeInTheDocument());
+    expect(stopCalls).toBe(1);
+    expect(submitted).toBeNull();
+    expect(screen.getByText('1 log line collected')).toBeInTheDocument();
+
+    // Closing and reopening keeps the review and what was written.
+    await user.click(screen.getAllByRole('button').find((b) => b.querySelector('.lucide-x'))!);
+    await user.click(disc());
+    expect(screen.getByText('Nothing has been sent yet')).toBeInTheDocument();
+    expect(screen.getByText('Queue page freezes')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Send report' }));
     await waitFor(() => expect(submitted).not.toBeNull());
     expect(submitted!.description).toBe('Queue page freezes');
     expect(stopCalls).toBe(1);
     expect(localStorage.getItem(SESSION_KEY)).toBeNull();
+  });
+});
+
+describe('a stopped recording', () => {
+  const record = async (user: ReturnType<typeof userEvent.setup>) => {
+    render(<BugReportBubble />);
+    await user.click(disc());
+    await user.type(screen.getByPlaceholderText(/what went wrong/i), 'Card flickers');
+    await user.click(screen.getByRole('button', { name: 'Start Debug Logging' }));
+    await waitFor(() => expect(reproduceStep()).toBeInTheDocument());
+    await user.click(screen.getByRole('button', { name: 'Stop Logging' }));
+    await waitFor(() => expect(screen.getByText('Nothing has been sent yet')).toBeInTheDocument());
+  };
+
+  it('is discarded without sending anything', async () => {
+    const user = userEvent.setup();
+    let submits = 0;
+    server.use(
+      http.post('*/bug-report/start-logging', () => HttpResponse.json({ started: true, was_debug: false })),
+      http.post('*/bug-report/stop-logging', () => HttpResponse.json({ logs: 'a\nb' })),
+      http.post('*/bug-report/submit', () => {
+        submits += 1;
+        return HttpResponse.json({ success: true, message: 'ok' });
+      }),
+    );
+
+    await record(user);
+    await user.click(screen.getByRole('button', { name: 'Discard' }));
+
+    expect(screen.getByRole('button', { name: 'Start Debug Logging' })).toBeInTheDocument();
+    expect(screen.getByPlaceholderText(/what went wrong/i)).toHaveValue('');
+    expect(submits).toBe(0);
+  });
+
+  it('keeps its logs when the send fails, and sends them on the second try', async () => {
+    const user = userEvent.setup();
+    const sent: Array<{ debug_logs?: string }> = [];
+    server.use(
+      http.post('*/bug-report/start-logging', () => HttpResponse.json({ started: true, was_debug: false })),
+      http.post('*/bug-report/stop-logging', () => HttpResponse.json({ logs: 'a\nb' })),
+      http.post('*/bug-report/submit', async ({ request }) => {
+        sent.push((await request.json()) as { debug_logs?: string });
+        return sent.length === 1
+          ? HttpResponse.json({ success: false, message: 'relay is down' })
+          : HttpResponse.json({ success: true, message: 'ok', issue_number: 9 });
+      }),
+    );
+
+    await record(user);
+    await user.click(screen.getByRole('button', { name: 'Send report' }));
+    await waitFor(() => expect(screen.getByText('relay is down')).toBeInTheDocument());
+
+    // Reopening the panel on the failure does not reset it to an empty form.
+    await user.click(screen.getAllByRole('button').find((b) => b.querySelector('.lucide-x'))!);
+    await user.click(disc());
+    await user.click(screen.getByRole('button', { name: 'Back to the report' }));
+    expect(screen.getByText('2 log lines collected')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Send report' }));
+    await waitFor(() => expect(sent).toHaveLength(2));
+    expect(sent[1].debug_logs).toBe('a\nb');
   });
 });
 

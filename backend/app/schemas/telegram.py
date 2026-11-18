@@ -4,6 +4,8 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field
 
+from backend.app.schemas.not_null import IgnoresNullForRequiredColumns
+
 
 class TelegramChatCreate(BaseModel):
     """Create a new Telegram chat."""
@@ -34,8 +36,10 @@ class TelegramChatCreate(BaseModel):
     )
 
 
-class TelegramChatUpdate(BaseModel):
+class TelegramChatUpdate(IgnoresNullForRequiredColumns):
     """Update a Telegram chat."""
+
+    __orm_table__ = "telegram_chats"
 
     label: str | None = None
     group_id: int | None = None

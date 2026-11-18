@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { NumberInput } from '../NumberInput';
 import { useTranslation } from 'react-i18next';
 
 import type { CalibrationSessionOut, ManualResultIn } from '../../api/client';
@@ -45,13 +46,14 @@ function PATowerSave({ onSave, onBack, isSubmitting }: Omit<Props, 'session'>) {
 
       <label className="block">
         <span className="text-xs text-bambu-gray">{t('filamentCali.paTowerSave.measuredHeight')}</span>
-        <input
-          type="number"
+        <NumberInput
           min={0}
           max={PA_TOWER_RANGE.maxHeightMm}
           step={1}
           value={heightMm}
-          onChange={(e) => setHeightMm(parseInt(e.target.value, 10) || 0)}
+          onChange={(v) => setHeightMm(v)}
+          integer
+          fallback={0}
           className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
         />
       </label>
@@ -105,12 +107,11 @@ function PAManualKInput({ onSave, onBack, isSubmitting }: Omit<Props, 'session'>
 
       <label className="block">
         <span className="text-xs text-bambu-gray">{t('filamentCali.manualSave.computedK')}</span>
-        <input
-          type="number"
+        <NumberInput
           min={0}
           step={0.0001}
-          value={k}
-          onChange={(e) => setK(parseFloat(e.target.value))}
+          value={Number.isFinite(k) ? k : null}
+          onChange={setK}
           className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
         />
       </label>

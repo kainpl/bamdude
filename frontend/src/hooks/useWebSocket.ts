@@ -406,7 +406,13 @@ export function useWebSocket() {
       // unmounted — both would just respawn the /auth/ws-token loop. A 4401 is
       // terminal (needs a fresh login, which remounts us); every other close
       // code is treated as a network drop and gets bounded backoff.
-      if (disposedRef.current || event.code === WS_CLOSE_UNAUTHORIZED || event.code === WS_CLOSE_FORBIDDEN) {
+      if (disposedRef.current) return;
+      if (event.code === WS_CLOSE_UNAUTHORIZED || event.code === WS_CLOSE_FORBIDDEN) {
+        // The server closed the socket on an auth decision. Ask once over REST whether the
+        // session still stands: an ended one answers 401, which the client turns into the
+        // sign-in page at once, instead of a tab that looks signed in on stale data until
+        // some page happens to poll. A session that stands stays on REST polling, as above.
+        void api.getCurrentUser().catch(() => { /* the 401 path has already signed the tab out */ });
         return;
       }
 

@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { NumberInput } from '../NumberInput';
 import { useTranslation } from 'react-i18next';
 import { useQuery } from '@tanstack/react-query';
 import { CheckCircle2, AlertTriangle, XCircle } from 'lucide-react';
@@ -117,13 +118,12 @@ export function CalibrationAutoSavePage({ session, onSubmit, isSubmitting }: Pro
               <div className="accent-bambu-green grid grid-cols-2 gap-2 text-sm">
                 <label>
                   <span className="text-xs text-bambu-gray">{t('filamentCali.autoSave.flowRatio')}</span>
-                  <input
-                    type="number"
+                  <NumberInput
                     step="0.001"
                     value={e.flow_ratio}
-                    onChange={(ev) =>
-                      patch(r.tray_id, { flow_ratio: parseFloat(ev.target.value) || 0 })
+                    onChange={(v) => patch(r.tray_id, { flow_ratio: v })
                     }
+                    fallback={0}
                     className="w-full bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded px-2 py-1 text-white font-mono"
                   />
                 </label>
@@ -132,25 +132,23 @@ export function CalibrationAutoSavePage({ session, onSubmit, isSubmitting }: Pro
               <div className="grid grid-cols-2 gap-2 text-sm">
                 <label>
                   <span className="text-xs text-bambu-gray">K</span>
-                  <input
-                    type="number"
+                  <NumberInput
                     step="0.0001"
                     value={e.k_value}
-                    onChange={(ev) =>
-                      patch(r.tray_id, { k_value: parseFloat(ev.target.value) || 0 })
+                    onChange={(v) => patch(r.tray_id, { k_value: v })
                     }
+                    fallback={0}
                     className="w-full bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded px-2 py-1 text-white font-mono"
                   />
                 </label>
                 <label>
                   <span className="text-xs text-bambu-gray">N</span>
-                  <input
-                    type="number"
+                  <NumberInput
                     step="0.01"
                     value={e.n_coef}
-                    onChange={(ev) =>
-                      patch(r.tray_id, { n_coef: parseFloat(ev.target.value) || 0 })
+                    onChange={(v) => patch(r.tray_id, { n_coef: v })
                     }
+                    fallback={0}
                     className="w-full bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded px-2 py-1 text-white font-mono"
                   />
                 </label>
