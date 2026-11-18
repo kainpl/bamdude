@@ -48,6 +48,8 @@ REMIND_AFTER = 3 * 60 * 60.0
 HISTORY_MAX = 50
 HEALTH_TIMEOUT = 5.0
 DETECTION_TIMEOUT = 30.0
+# How often a loop started before the web server serves asks whether it does now.
+_SERVING_POLL_SECONDS = 1.0
 SNAPSHOT_CAPTURE_TIMEOUT = 20  # seconds — we control this, not Obico
 FRAME_CACHE_TTL = 30.0  # seconds — Obico usually fetches within 1s of receiving the URL
 
@@ -165,9 +167,16 @@ class ObicoDetectionService:
 
     # ---- lifecycle ----
 
-    async def start(self):
+    async def start(self, serving=None):
+        """Start the loop. ``serving`` answers whether the web server takes requests now.
+
+        The ML API fetches each frame from us by URL, and the lifespan starts this loop before the
+        server accepts a request: a poll made then is refused by the ML API. With ``serving`` the
+        loop waits; without it (a test, a script) it polls at once.
+        """
         if self._task is not None:
             return
+        self._serving = serving
         logger.info("Starting Obico detection service")
         self._task = asyncio.create_task(self._loop())
 
@@ -277,6 +286,10 @@ class ObicoDetectionService:
         """Poll active printers while enabled. Adjusts interval from settings each cycle."""
         while True:
             try:
+                serving = getattr(self, "_serving", None)
+                if serving is not None and not serving():
+                    await asyncio.sleep(_SERVING_POLL_SECONDS)
+                    continue
                 settings = await self._load_settings()
                 from backend.app.services.obico_history import obico_history
 

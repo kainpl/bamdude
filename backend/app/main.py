@@ -12971,7 +12971,8 @@ async def _application_lifespan(app: FastAPI):
             await obico_history.start()
         except Exception:
             logging.getLogger(__name__).exception("Failed to start Obico evidence recorder; detection will continue")
-        await obico_detection_service.start()
+        # The ML API fetches frames from this server: no poll before it serves requests.
+        await obico_detection_service.start(serving=lambda: farm_startup_guard.ready)
     except Exception as e:
         logging.getLogger(__name__).warning("Failed to start Obico detection service: %s", e)
 
