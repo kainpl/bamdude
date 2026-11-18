@@ -23,6 +23,7 @@ import { api } from '../api/client';
 import { useToast } from '../contexts/ToastContext';
 import { formatMediaTime } from '../utils/date';
 import { useTimelapseEditJob } from './timelapse/useTimelapseEditJob';
+import { TIMELAPSE_EDITOR_VIDEO_CLASS } from './timelapse/videoBox';
 
 interface TimelapseEditorModalProps {
   archiveId: number;
@@ -332,7 +333,8 @@ export function TimelapseEditorModal({
             <video
               ref={videoRef}
               src={timelapseSrc}
-              className="w-full rounded-lg bg-black"
+              className={TIMELAPSE_EDITOR_VIDEO_CLASS}
+              data-testid="timelapse-editor-video"
               onClick={togglePlay}
               muted={!!audioUrl || audioMuted}
             />
@@ -484,12 +486,12 @@ export function TimelapseEditorModal({
                 {t('timelapseEditor.speedOutput', { speed, duration: formatMediaTime(outputDuration) })}
               </span>
             </div>
-            <div className="flex gap-1">
+            <div className="flex flex-wrap gap-1">
               {SPEED_OPTIONS.map((s) => (
                 <button
                   key={s}
                   onClick={() => setSpeed(s)}
-                  className={`flex-1 px-2 py-2 text-sm rounded transition-colors ${
+                  className={`flex-1 min-w-12 px-2 py-2 text-sm rounded transition-colors ${
                     speed === s
                       ? 'bg-bambu-green text-white'
                       : 'bg-bambu-dark text-bambu-gray hover:bg-bambu-dark-tertiary'

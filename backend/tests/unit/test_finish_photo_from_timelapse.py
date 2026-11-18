@@ -42,7 +42,13 @@ async def _fake_session(archive):
 def fake_archive():
     """Mutable archive stand-in. Tests flip `.timelapse_path` to simulate
     the timelapse-attach task writing to the DB."""
-    return SimpleNamespace(id=42, timelapse_path=None, recovery_identity="archive-42")
+    return SimpleNamespace(
+        id=42,
+        timelapse_path=None,
+        recovery_identity="archive-42",
+        # Where its photos go is read off the row at the moment of the write (G10 G).
+        file_path="archive/1/print/print.gcode.3mf",
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -104,7 +110,7 @@ async def test_extracts_frame_when_timelapse_lands(tmp_path: Path, patched_sessi
     assert result is not None
     assert result.startswith("finish_")
     assert result.endswith(".jpg")
-    assert (tmp_path / "archive_dir" / "photos" / result).exists()
+    assert (tmp_path / "archive" / "1" / "print" / "photos" / result).exists()
 
 
 async def test_returns_none_when_extraction_fails(tmp_path: Path, patched_session, monkeypatch):
@@ -172,3 +178,87 @@ async def test_polls_until_file_appears(tmp_path: Path, patched_session, monkeyp
 
     assert result is not None
     assert result.startswith("finish_")
+
+
+def _landed(tmp_path: Path, monkeypatch, archive) -> Path:
+    """A timelapse that is already on disk, and an extraction that always succeeds."""
+    monkeypatch.setattr(main_module.app_settings, "base_dir", tmp_path)
+    monkeypatch.setattr(main_module, "_FINISH_PHOTO_TIMELAPSE_POLL_INTERVAL_SECONDS", 0.0)
+    video = tmp_path / "archive" / "1" / "print" / "timelapse.mp4"
+    video.parent.mkdir(parents=True, exist_ok=True)
+    video.write_bytes(b"x" * 100)
+    archive.timelapse_path = "archive/1/print/timelapse.mp4"
+    return tmp_path / "archive" / "1" / "print" / "photos"
+
+
+async def _extract(src, dst):
+    dst.write_bytes(b"\xff\xd8" + b"\x00" * 50)
+    return True
+
+
+async def test_a_superseded_terminal_does_not_even_wait(tmp_path: Path, patched_session, monkeypatch):
+    """G10 G: the printer went on to another print — its finish photo is not this helper's to take."""
+    photos = _landed(tmp_path, monkeypatch, patched_session)
+    with patch("backend.app.services.camera.extract_video_last_frame", new=_extract):
+        result = await _capture_finish_photo_from_timelapse(archive_id=42, may_run=lambda: False)
+    assert result is None
+    assert not photos.exists() or not list(photos.iterdir())
+
+
+async def test_a_run_that_changes_during_the_extraction_leaves_no_file(tmp_path: Path, patched_session, monkeypatch):
+    photos = _landed(tmp_path, monkeypatch, patched_session)
+    current = {"value": True}
+
+    async def extract_and_lose_the_run(src, dst):
+        await _extract(src, dst)
+        current["value"] = False  # the next print started while ffmpeg worked
+        return True
+
+    with patch("backend.app.services.camera.extract_video_last_frame", new=extract_and_lose_the_run):
+        result = await _capture_finish_photo_from_timelapse(archive_id=42, may_run=lambda: current["value"])
+    assert result is None
+    assert list(photos.iterdir()) == []  # extracted, refused, and removed by the helper itself
+
+
+async def test_an_archive_that_became_another_during_the_extraction_leaves_no_file(
+    tmp_path: Path, patched_session, monkeypatch
+):
+    photos = _landed(tmp_path, monkeypatch, patched_session)
+
+    async def extract_and_reuse_the_id(src, dst):
+        await _extract(src, dst)
+        patched_session.recovery_identity = "another-archive-with-this-id"
+        return True
+
+    with patch("backend.app.services.camera.extract_video_last_frame", new=extract_and_reuse_the_id):
+        result = await _capture_finish_photo_from_timelapse(archive_id=42, expected_identity="archive-42")
+    assert result is None
+    assert list(photos.iterdir()) == []
+
+
+async def test_a_pointer_that_leaves_the_data_directory_is_never_read(tmp_path: Path, patched_session, monkeypatch):
+    data = tmp_path / "data"
+    data.mkdir()
+    monkeypatch.setattr(main_module.app_settings, "base_dir", data)
+    outside = tmp_path / "outside.mp4"
+    outside.write_bytes(b"x" * 100)
+    patched_session.timelapse_path = "../outside.mp4"
+    called = []
+
+    async def extract(src, dst):
+        called.append(src)
+        return True
+
+    with patch("backend.app.services.camera.extract_video_last_frame", new=extract):
+        result = await _capture_finish_photo_from_timelapse(archive_id=42)
+    assert result is None and called == []
+
+
+async def test_the_photo_goes_to_the_folder_the_archive_has_at_the_write(tmp_path: Path, patched_session, monkeypatch):
+    """A 3MF attached while the video was awaited moved the archive's folder."""
+    _landed(tmp_path, monkeypatch, patched_session)
+    patched_session.file_path = "archive/1/moved/print.gcode.3mf"
+    with patch("backend.app.services.camera.extract_video_last_frame", new=_extract):
+        result = await _capture_finish_photo_from_timelapse(archive_id=42)
+    assert result is not None
+    assert (tmp_path / "archive" / "1" / "moved" / "photos" / result).is_file()

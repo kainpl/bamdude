@@ -2685,10 +2685,13 @@ async def upload_photo(
     if not file.filename or not file.filename.lower().endswith((".jpg", ".jpeg", ".png", ".webp")):
         raise HTTPException(400, "File must be an image (.jpg, .jpeg, .png, .webp)")
 
+    from backend.app.services.archive_write_scope import archive_write_scope, load_active_archive_for_write
+
+    identity = archive.recovery_identity
     # Written to the archive's CURRENT folder. ``parents``: an archive with no
     # 3MF may have no folder yet, and this can be the first file it gets.
     photos_dir = photos_dir_for(archive)
-    photos_dir.mkdir(parents=True, exist_ok=True)
+    await asyncio.to_thread(photos_dir.mkdir, parents=True, exist_ok=True)
 
     # Generate unique filename
     import uuid
@@ -2701,17 +2704,31 @@ async def upload_photo(
 
     # Save file
     content = await file.read()
-    photo_path.write_bytes(content)
+    await asyncio.to_thread(photo_path.write_bytes, content)
 
-    # Update archive photos list (create new list to trigger SQLAlchemy change detection)
-    photos = list(archive.photos or [])
-    photos.append(photo_filename)
-    archive.photos = photos
+    # The list is read again and changed under the archive's write scope (G10 G): the finish
+    # photo of a print that has just ended is appended under the same scope, and two appends
+    # of a list read earlier would lose one. The read transaction above ends first — SQLite's
+    # writer is taken before the authoritative read.
+    attached = False
+    try:
+        await db.commit()
+        async with archive_write_scope(db, archive_id):
+            current = await load_active_archive_for_write(db, archive_id)
+            if current is not None and current.recovery_identity == identity:
+                # A new list, so SQLAlchemy sees the change.
+                current.photos = [*(current.photos or []), photo_filename]
+                await db.commit()
+                photos = list(current.photos)
+                attached = True
+    finally:
+        if not attached:
+            # Not attached — refused, or the commit failed: the file is this request's own.
+            await asyncio.shield(asyncio.to_thread(photo_path.unlink, missing_ok=True))
+    if not attached:
+        raise HTTPException(404, "Archive not found")
 
-    await db.commit()
-    await db.refresh(archive)
-
-    return {"status": "uploaded", "filename": photo_filename, "photos": archive.photos}
+    return {"status": "uploaded", "filename": photo_filename, "photos": photos}
 
 
 @router.get("/{archive_id}/photos/{filename}")
@@ -2778,22 +2795,35 @@ async def delete_photo(
     if not archive.photos or filename not in archive.photos:
         raise HTTPException(404, "Photo not found")
 
-    # Delete file. The membership check above already limits ``filename`` to a
-    # UUID-generated name in ``archive.photos``; safe_join_under is
-    # defence-in-depth so a future change that drops the membership gate can't
-    # reintroduce a traversal-delete. Found wherever it was written — see
-    # get_photo.
+    from backend.app.services.archive_write_scope import archive_write_scope, load_active_archive_for_write
+
+    identity = archive.recovery_identity
+    # The membership check above already limits ``filename`` to a UUID-generated
+    # name in ``archive.photos``; safe_join_under is defence-in-depth so a future
+    # change that drops the membership gate can't reintroduce a traversal-delete.
+    # Found wherever it was written — see get_photo.
     photo_path = find_photo(archive, filename, http=True)
-    if photo_path is not None:
-        photo_path.unlink()
 
-    # Update archive photos list
-    photos = [p for p in archive.photos if p != filename]
-    archive.photos = photos if photos else None
-
+    # The row first, under the archive's write scope, and the file only AFTER the commit
+    # (G10 G): it used to be unlinked before, so a commit that failed left a photo the
+    # archive still listed and could no longer show.
     await db.commit()
+    async with archive_write_scope(db, archive_id):
+        current = await load_active_archive_for_write(db, archive_id)
+        if current is None or current.recovery_identity != identity or filename not in (current.photos or []):
+            raise HTTPException(404, "Photo not found")
+        photos = [p for p in current.photos if p != filename]
+        current.photos = photos if photos else None
+        await db.commit()
+        remaining = current.photos
+    if photo_path is not None:
+        try:
+            await asyncio.to_thread(photo_path.unlink, missing_ok=True)
+        except OSError as exc:
+            # The archive no longer lists it; the prune script removes what is left.
+            logger.warning("Photo %s of archive %s could not be removed: %s", filename, archive_id, exc)
 
-    return {"status": "deleted", "photos": archive.photos}
+    return {"status": "deleted", "photos": remaining}
 
 
 # ============================================
