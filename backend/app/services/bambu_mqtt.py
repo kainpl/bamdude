@@ -2596,6 +2596,9 @@ class BambuMQTTClient:
         self._layer_frame_observation = None
         self._pending_start_state = None
         self._pending_start_id = None
+        # The firmware's "the task was canceled" echo was seen during this print (see
+        # ``_HMS_USER_ACTION_CODES``): a person cancelled it on the printer or in a slicer.
+        self._cancel_echo_seen = False
         self._pending_start_total: int | None = None
         self._pending_start_total_blocked = False
         self._retired_run_id = None
@@ -2883,6 +2886,7 @@ class BambuMQTTClient:
         self._runout_watch = dict(prior._runout_watch)
         self._previous_gcode_file = prior._previous_gcode_file
         self._was_running = prior._was_running
+        self._cancel_echo_seen = prior._cancel_echo_seen
         self._completion_triggered = prior._completion_triggered
         self._timelapse_during_print = prior._timelapse_during_print
         # #1721: carry the one-shot finish-photo guard across the swap so a
@@ -7173,6 +7177,7 @@ class BambuMQTTClient:
                         # already suppresses 0500_400E for the same reason.
                         short_code = f"{(attr >> 16) & 0xFFFF:04X}_{code & 0xFFFF:04X}"
                         if short_code in _HMS_USER_ACTION_CODES:
+                            self._cancel_echo_seen = True
                             continue
                         # Catalog has both 8-char keys (base class) and 16-char keys
                         # (specific variants). The full 16-char identifier preserves the
@@ -7227,6 +7232,9 @@ class BambuMQTTClient:
                 _busy_noise = _pe_short == _DEVICE_BUSY_CODE and self.state.state in _ACTIVE_PRINT_STATES
             if not _busy_noise:
                 self.state.hms_errors = [e for e in self.state.hms_errors if len(e.full_code or "") != 8]
+                # The register moved: an earlier cancel echo no longer stands (set again below when
+                # this value is one).
+                self._cancel_echo_seen = False
             if print_error and print_error != 0:
                 # Extract components: MMMMEEEE -> MMMM_EEEE
                 module = (print_error >> 16) & 0xFFFF  # High 16 bits (e.g., 0x0500)
@@ -7252,7 +7260,9 @@ class BambuMQTTClient:
                     # 0500_400E) and they must not surface as faults on the
                     # printer card.
                     if short_code in _HMS_USER_ACTION_CODES:
-                        pass  # cancel echo — silently drop
+                        # Not a fault -- but it IS the printer saying a person cancelled the print,
+                        # and the completion below reads it as that.
+                        self._cancel_echo_seen = True
                     elif short_code == _DEVICE_BUSY_CODE and self.state.state in _ACTIVE_PRINT_STATES:
                         self._clear_device_busy(print_error)
                     else:
@@ -7898,6 +7908,7 @@ class BambuMQTTClient:
             # Reset completion tracking for new print
             self._was_running = True
             self._completion_triggered = False
+            self._cancel_echo_seen = False
             # Runout detector memory is per-print: a spool that ran out last
             # print may legitimately run out again this one.
             self._runout_fired.clear()
@@ -8062,6 +8073,14 @@ class BambuMQTTClient:
                 status = "failed"
             else:
                 status = "aborted"
+            # A print cancelled on the printer's screen ends in FAILED like a real failure, with the
+            # firmware's cancel echo beside it (hardware capture, A1 mini 01.08.01.00: ``print_error``
+            # 0x0300400C in the very frame that says RUNNING -> FAILED). The outcome stays ``failed`` --
+            # the job belongs among the problem jobs, where the operator finds it (owner, 2026-11-18) --
+            # and this only says WHY, so the archive does not read as an unexplained failure. With a
+            # real fault on the printer the print did fail: a firmware abort carries the same echo.
+            cancelled_on_printer = bool(status == "failed" and self._cancel_echo_seen and not self.state.hms_errors)
+            self._cancel_echo_seen = False
             logger.info(
                 f"[{self.serial_number}] PRINT COMPLETE detected - state: {self.state.state}, "
                 f"status: {status}, file: {self._previous_gcode_file or current_file}, "
@@ -8121,6 +8140,7 @@ class BambuMQTTClient:
                     "subtask_id": self.state.subtask_id,
                     "raw_data": data,
                     "timelapse_was_active": timelapse_was_active,
+                    "cancelled_on_printer": cancelled_on_printer,
                     "hms_errors": hms_errors_data,
                     "ams_mapping": self._captured_ams_mapping,
                     # Last valid progress/layer before firmware reset (for partial usage tracking)

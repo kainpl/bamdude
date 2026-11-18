@@ -131,12 +131,18 @@ def effects_pending(archive: dict | None, *, intents: bool = True) -> bool:
 _SETTLED_EFFECT_STAGES = frozenset({"finished", "skipped", "failed", "scheduled"})
 
 
-def runtime_effect_debt(extra, archive_identity=None) -> list[str]:
+def runtime_effect_debt(extra, archive_identity=None, *, intents: bool = True) -> list[str]:
     """What a finished run's archive still owes, read strictly (spec r3 R7.5, R7a).
 
     Unlike :func:`effects_pending` it understands the swap claim: ``finished`` is settled, any other stage is
     debt, and a stage it cannot read is unreadable -- never "nothing owed". Another completion effect is
     settled only at a stage that ended it; in flight, uncertain or an unknown stage vetoes.
+
+    ``intents=False`` is for a run that never reached its completion (the operator's close of a stopped
+    print): there the pending swap-macro list is only what dispatch ASKED for after the print -- it is written
+    at dispatch and removed by the completion handler, so it stands on every such run of a swap-mode printer
+    and says nothing about a swap that is owed. A list this reader cannot read still vetoes, and so does every
+    claim (``owed`` / ``attempted`` / ``failed``): a claim is a fact about a command, not a request.
     """
     if extra is None:
         return []
@@ -151,7 +157,7 @@ def runtime_effect_debt(extra, archive_identity=None) -> list[str]:
         pending = extra["swap_macro_events_pending"]
         if not isinstance(pending, list):
             debt.add("effects_unreadable")
-        elif pending:
+        elif pending and intents:
             debt.add("swap_debt")
     if "bamdude_terminal_effects" in extra:
         effects = extra["bamdude_terminal_effects"]
@@ -510,7 +516,10 @@ def _interrupted_print(f: RecoveryFacts) -> dict | None:
         reasons.add("execution_unproven")
 
     extra = a.get("extra_data")
-    reasons.update(runtime_effect_debt(extra, a.get("recovery_identity")))
+    # The list dispatch wrote of the macros to run AFTER this print is no debt of a print that never completed:
+    # counted, it left every stopped print of a swap-mode printer without this close (the queue then stayed
+    # blocked until a restart). The close drops the list; a swap CLAIM still vetoes.
+    reasons.update(runtime_effect_debt(extra, a.get("recovery_identity"), intents=False))
     if isinstance(extra, dict) and (
         extra.get("recovered_outcome_uncertain") or extra.get("terminal_effects_uncertain")
     ):
@@ -928,14 +937,22 @@ def plan_action(
         unknown = operator_outcome == "unknown"
         code = NO_STATUS_UPDATE if unknown else OTHER
         status = "cancelled" if unknown else "failed"
+        # The swap macros asked for after this print go with it: the close runs no completion effect and the
+        # run is not a completed one, so nothing would ever take the list off -- and left standing it reads as
+        # an owed swap to the context release and the reconciliation. The record keeps what was dropped.
+        kept = dict(a.get("extra_data") or {})
+        dropped = kept.pop("swap_macro_events_pending", None)
+        record = {"outcome": operator_outcome, "archive_identity": a["recovery_identity"]}
+        if dropped:
+            record["swap_macros_not_run"] = list(dropped)
         plan["archive"] = {
             "close": True,
             "status": status,
             "failure_reason": code,
             "error_message": None,
             "extra_data": {
-                **(a.get("extra_data") or {}),
-                "operator_interrupted_print": {"outcome": operator_outcome, "archive_identity": a["recovery_identity"]},
+                **kept,
+                "operator_interrupted_print": record,
                 **({"recovered_outcome_uncertain": True} if unknown else {}),
             },
         }

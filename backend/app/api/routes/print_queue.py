@@ -1491,12 +1491,46 @@ async def stop_queue_item(
     # "print failed" notification). The row is cancelled whether or not the
     # printer could be reached, so the mark stands either way.
     from backend.app.services.print_control import stop_print_by_user
+    from backend.app.services.print_run_binding import current_print_run
+
+    # Read before the send: is this row's print the one the printer is running under our binding?
+    run = current_print_run(printer_manager, printer_id)
+    is_the_bound_run = bool(
+        item.archive_id is not None
+        and run is not None
+        and run.archive_id == item.archive_id
+        and run.queue_item_id in (None, item.id)
+    )
 
     stop_sent = stop_print_by_user(printer_id, mark_when_unsent=True, unless_idle=False)
     if not stop_sent:
         logger.warning("stop_print returned False for printer %s - printer may not be connected", printer_id)
 
-    # Update queue item status regardless - if printer is off, print is already stopped
+    if stop_sent and is_the_bound_run:
+        # ⚠️ The printer's own report ends this print, not this route. The completion handler accepts a bound
+        # run's terminal only while its queue row is still ``printing`` -- it closes the row, the archive and
+        # the queue in one transaction and books the filament. Cancelling the row here, a few seconds ahead
+        # of that report, left the handler with no row to accept: the archive stayed ``printing`` for good,
+        # the run stayed bound in memory and the printer took no further job until a restart (0.7.3). The
+        # user-stopped mark above makes that report read as ``cancelled``, and the handler pauses the queue.
+        # A printer that never reports the stop keeps the row ``printing`` -- which is then the truth, and
+        # Print state diagnostics closes it.
+        logger.info(
+            "Stop sent for printing queue item %s (archive %s); the printer's report closes it",
+            item_id,
+            item.archive_id,
+        )
+        if auto_off_after:
+            from backend.app.services.smart_plug_manager import smart_plug_manager
+
+            try:
+                await smart_plug_manager.schedule_off_after_queue_job(printer_id, db)
+            except Exception as e:
+                logger.warning("Auto-off: Failed to schedule power-off for printer %s: %s", printer_id, e)
+        return {"message": "Print stopped"}
+
+    # No bound run to report it (the job was still being sent or heated, or the printer could not be
+    # reached): the row is closed here.
     item.status = "cancelled"
     item.completed_at = datetime.now(timezone.utc)
     item.error_message = "Stopped by user" if stop_sent else "Stopped by user (printer was offline)"

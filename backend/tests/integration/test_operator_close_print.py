@@ -63,6 +63,74 @@ async def test_operator_close_http_preserves_history_and_gate(
     assert pending.status == "pending"
 
 
+async def _preview_close(async_client, printer, item):
+    return await async_client.post(
+        f"/api/v1/system/printers/{printer.id}/print-state/preview",
+        json={
+            "kind": "item",
+            "target_id": item.id,
+            "action": "close_interrupted_print",
+            "confirmed_idle": True,
+            "operator_outcome": "interrupted",
+        },
+    )
+
+
+async def test_a_stopped_print_of_a_swap_printer_can_be_closed(
+    async_client, db_session, printer_factory, archive_factory, telemetry, monkeypatch
+):
+    """The macros dispatch asked for AFTER the print are no debt of a print that never completed.
+
+    The list is written at dispatch and removed by the completion handler, so it stood on every stopped print
+    of a swap-mode printer and vetoed the only close the operator has: the queue stayed blocked until a restart.
+    """
+    (printer, queue, archive, item, pending), tick = await prepare_stuck_print(
+        db_session, printer_factory, archive_factory, monkeypatch
+    )
+    archive.extra_data = {**(archive.extra_data or {}), "swap_macro_events_pending": ["swap_mode_change_table"]}
+    await db_session.commit()
+    await async_client.get("/api/v1/system/print-state-issues")
+    tick[0] += 11
+
+    preview = await _preview_close(async_client, printer, item)
+    assert preview.status_code == 200, preview.text
+    applied = await async_client.post(
+        f"/api/v1/system/printers/{printer.id}/print-state/apply",
+        json={"preview_token": preview.json()["preview_token"], "confirmed": True},
+    )
+    assert applied.status_code == 200, applied.text
+
+    for row in (queue, archive, item):
+        await db_session.refresh(row)
+    assert archive.status == item.status == "failed"
+    assert "swap_macro_events_pending" not in archive.extra_data
+    assert archive.extra_data["operator_interrupted_print"]["swap_macros_not_run"] == ["swap_mode_change_table"]
+    assert queue.is_paused and queue.current_item_id is None
+
+
+@pytest.mark.parametrize("stage", ["owed", "attempted", "failed"])
+async def test_a_swap_claim_still_refuses_the_close(
+    async_client, db_session, printer_factory, archive_factory, telemetry, monkeypatch, stage
+):
+    """A claim is a fact about a command that was owed or sent, not a request: it keeps its veto."""
+    (printer, _queue, archive, item, _pending), tick = await prepare_stuck_print(
+        db_session, printer_factory, archive_factory, monkeypatch
+    )
+    archive.extra_data = {
+        **(archive.extra_data or {}),
+        "bamdude_terminal_effects": {"swap_change_table": {"stage": stage}},
+    }
+    await db_session.commit()
+    await async_client.get("/api/v1/system/print-state-issues")
+    tick[0] += 11
+
+    preview = await _preview_close(async_client, printer, item)
+
+    assert preview.status_code == 409, preview.text
+    await db_session.refresh(archive)
+    assert archive.status == "printing"
+
+
 async def test_cancelled_request_does_not_detach_operator_close(
     db_session, test_engine, printer_factory, archive_factory, telemetry, monkeypatch
 ):

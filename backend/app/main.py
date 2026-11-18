@@ -755,17 +755,24 @@ def _hms_label(full_code: str | None, short_code: str) -> str:
     return short_code
 
 
-def derive_failure_reason(status: str, hms_errors: list[dict] | None) -> str | None:
+def derive_failure_reason(
+    status: str, hms_errors: list[dict] | None, *, cancelled_on_printer: bool = False
+) -> str | None:
     """Derive the failure_reason KEY for an archived print (see utils/failure_reasons).
 
     Returns "userCancelled" for cancelled/aborted prints; for failed prints,
     returns the first matching reason from _HMS_FAILURE_REASONS, or None when
     no HMS code matches (don't guess — null is honest).
+
+    ``cancelled_on_printer``: the firmware said a person cancelled this print on the printer
+    (``bambu_mqtt``'s cancel echo, no fault beside it). The print stays ``failed``; this is its reason.
     """
     if status in ("aborted", "cancelled"):
         return USER_CANCELLED
     if status != "failed":
         return None
+    if cancelled_on_printer:
+        return USER_CANCELLED
     for err in hms_errors or []:
         short_code = _hms_short_code(err.get("attr", 0), err.get("code", 0))
         if short_code in _HMS_FAILURE_REASONS:
@@ -9603,7 +9610,12 @@ async def _on_print_complete_impl(
                     # A physical failure keeps the printer's own cause, ``other`` when it
                     # gave none — never a dispatch class (post-rebuild D-R6).
                     queue_item.error_code = (
-                        derive_failure_reason(queue_status, data.get("hms_errors", [])) or FAILURE_OTHER
+                        derive_failure_reason(
+                            queue_status,
+                            data.get("hms_errors", []),
+                            cancelled_on_printer=bool(data.get("cancelled_on_printer")),
+                        )
+                        or FAILURE_OTHER
                     )
                 if _swap_hold_text:
                     # After the status: changing it clears an older reason (the model's validator).
@@ -9680,7 +9692,12 @@ async def _on_print_complete_impl(
                     bound_archive.completed_at = terminal_at
                     if queue_status == "failed" and not bound_archive.failure_reason:
                         bound_archive.failure_reason = (
-                            derive_failure_reason(queue_status, data.get("hms_errors", [])) or FAILURE_OTHER
+                            derive_failure_reason(
+                                queue_status,
+                                data.get("hms_errors", []),
+                                cancelled_on_printer=bool(data.get("cancelled_on_printer")),
+                            )
+                            or FAILURE_OTHER
                         )
                     if queue_item.error_message and not bound_archive.error_message:
                         bound_archive.error_message = queue_item.error_message
@@ -10228,7 +10245,9 @@ async def _on_print_complete_impl(
             hms_errors = data.get("hms_errors", []) if status == "failed" else None
             if hms_errors:
                 logger.info("[ARCHIVE] HMS errors at failure: %s", hms_errors)
-            failure_reason = derive_failure_reason(status, hms_errors)
+            failure_reason = derive_failure_reason(
+                status, hms_errors, cancelled_on_printer=bool(data.get("cancelled_on_printer"))
+            )
             if failure_reason:
                 logger.info("[ARCHIVE] failure_reason=%r (status=%s)", failure_reason, status)
             elif status == "failed" and hms_errors:
