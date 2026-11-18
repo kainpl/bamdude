@@ -494,6 +494,27 @@ def _archive_media_admission_bootstrap():
 
 
 @pytest.fixture(autouse=True)
+def _media_work_admission_bootstrap():
+    """Every test starts with layer recording and video edits admitted, as lifespan startup leaves them.
+
+    The same lesson as the fixtures around this one (G10 E, F): a restore test
+    closes both for good, as production does until the restart, and a later test
+    in the same process then captured no frame, or was refused an edit. The
+    edit runtime reopens the way lifespan does — with a job still running it
+    stays closed.
+    """
+    from backend.app.services import layer_timelapse
+    from backend.app.services.timelapse_editor import timelapse_edit_runtime
+
+    layer_timelapse.reopen()
+    if timelapse_edit_runtime.closed:
+        try:
+            timelapse_edit_runtime.reopen()
+        except RuntimeError:
+            pass
+
+
+@pytest.fixture(autouse=True)
 def _folder_scan_admission_bootstrap():
     """Every test starts with folder scans admitted, as lifespan startup leaves them.
 
