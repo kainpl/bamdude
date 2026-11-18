@@ -216,7 +216,7 @@ def _hang(monkeypatch, *, progress: bool = True):
 
 
 def _no_leftovers(box) -> None:
-    assert not list(box.root.rglob("*.editing.mp4"))
+    assert not list(box.root.rglob("*.editing.mp4")) and not list(box.root.rglob("output.mp4"))
     scratch = box.root / "timelapse-edits"
     assert not scratch.exists() or not list(scratch.iterdir())
 
@@ -520,6 +520,45 @@ class TestLateResults:
         _no_leftovers(edit)
 
 
+class TestWhereTheEncoderWrites:
+    async def test_the_half_encoded_file_stays_out_of_the_archive_tree(self, async_client, edit, monkeypatch):
+        """On one volume the encoder writes in the job's own directory: a backup never meets it."""
+        _hang(monkeypatch)
+        job = await _start(async_client, edit, save_mode="replace")
+        url = f"{edit.base}/edit-jobs/{job['job_id']}"
+        await _until(async_client, url, phases=("encoding",))
+        own = timelapse_edit_runtime.jobs[job["job_id"]]
+        assert own.staged == edit.root / "timelapse-edits" / job["job_id"] / "output.mp4"
+        assert edit.root / "archive" not in own.staged.parents
+        await async_client.delete(url)
+        assert (await _until(async_client, url))["phase"] == "cancelled"
+        _no_leftovers(edit)
+
+    async def test_on_another_volume_it_writes_beside_the_video_and_names_the_file(
+        self, async_client, edit, db_session, monkeypatch
+    ):
+        """The archive on a volume of its own: the rename needs the staged file there."""
+        noted: dict = {}
+        beside = lambda job: job.source.with_name(timelapse_editor.staged_name(job.job_id))  # noqa: E731
+        monkeypatch.setattr(timelapse_editor, "_staging_place", beside)
+        real = timelapse_edit_runtime._publish
+
+        async def looking(job):
+            note = job.directory / timelapse_editor.OUTPUT_NOTE
+            noted["note"] = note.read_text(encoding="utf-8")
+            noted["staged"] = job.staged
+            return await real(job)
+
+        monkeypatch.setattr(timelapse_edit_runtime, "_publish", looking)
+        done = await _finish(async_client, edit, save_mode="replace")
+        assert done["phase"] == "done", done
+        assert noted["staged"].parent == edit.file.parent
+        # What a crash would have left is named, relative to the data directory, for the next startup.
+        assert (edit.root / noted["note"]) == noted["staged"]
+        assert (edit.root / await _pointer(db_session, edit)).is_file()
+        _no_leftovers(edit)
+
+
 class TestRestoreAndRestart:
     async def test_a_restore_stops_the_encoder_and_refuses_new_edits(self, async_client, edit, db_session, monkeypatch):
         _hang(monkeypatch)
@@ -549,8 +588,8 @@ class TestRestoreAndRestart:
             assert await timelapse_edit_runtime.quiesce(3) is False  # a restore asking now is refused
             own = timelapse_edit_runtime.jobs[job["job_id"]]
             assert (own.phase, own.error) == ("failed", "process_unreaped")
-            # Its scratch directory still names the output: nothing of a possibly-live writer was touched.
-            assert (edit.root / "timelapse-edits" / job["job_id"] / timelapse_editor.OUTPUT_NOTE).is_file()
+            # Its scratch directory is still there: nothing of a possibly-live writer was touched.
+            assert (edit.root / "timelapse-edits" / job["job_id"] / timelapse_editor.MARKER).is_file()
         finally:
             for process in spared:
                 process.kill()

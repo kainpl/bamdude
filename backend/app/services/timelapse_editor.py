@@ -38,6 +38,9 @@ An edit is now a JOB:
 
 The music an edit uploads is streamed into the job's own scratch directory
 (``DATA_DIR/timelapse-edits/<job>/``), capped, and probed before the encode.
+The encoder writes there too whenever that directory shares a volume with the
+video — the scratch tree is outside every backup — and beside the video only
+when the archive lives on another volume.
 """
 
 from __future__ import annotations
@@ -308,6 +311,22 @@ def clean_scratch(root: Path, base_dir: Path) -> tuple[int, int]:
     return removed, kept
 
 
+def _staging_place(job: EditJob) -> Path:
+    """Where the encoder writes: the job's own directory when it shares a volume with the video.
+
+    The publication gives the file its name with a rename, so the staged file
+    must be on the video's volume. Normally that is the data volume, and then
+    the half-encoded file stays OUT of the archive tree — a backup taken during
+    an hour-long encode does not meet a file that changes under it. Only when
+    the archive lives on another volume is the file staged beside the video.
+    """
+    try:
+        same_volume = os.stat(job.directory).st_dev == os.stat(job.source.parent).st_dev
+    except OSError:
+        same_volume = False
+    return job.directory / "output.mp4" if same_volume else job.source.with_name(staged_name(job.job_id))
+
+
 def _sha256(path: Path) -> tuple[str, int]:
     digest = hashlib.sha256()
     size = 0
@@ -519,10 +538,12 @@ class TimelapseEditRuntime:
         from backend.app.core.config import settings
 
         job.phase = PHASE_ENCODING
-        staged = job.source.with_name(staged_name(job.job_id))
-        relative = os.path.relpath(staged, settings.base_dir)
-        # Named in the job's directory BEFORE the encoder may create it: startup removes what a crash leaves.
-        await asyncio.to_thread((job.directory / OUTPUT_NOTE).write_text, relative, "utf-8")
+        staged = await asyncio.to_thread(_staging_place, job)
+        if staged.parent != job.directory:
+            # Beside the video: named in the job's directory BEFORE the encoder may create it, so
+            # startup removes what a crash leaves.
+            relative = os.path.relpath(staged, settings.base_dir)
+            await asyncio.to_thread((job.directory / OUTPUT_NOTE).write_text, relative, "utf-8")
         job.staged = staged
         processor = TimelapseProcessor(job.source)
         command = processor.edit_command(
