@@ -244,10 +244,10 @@ class FarmStartupGuard:
 
     def hold(self, reason):
         with self._mutex:
-            if not self.active:
-                return
             if reason == "restore":
                 self.restart_required = True
+            if not self.active:
+                return
             state = deepcopy(self.state)
             # A new restore is a new review boundary, even when another hold
             # already exists. A dialog opened before it cannot release it.
@@ -360,6 +360,10 @@ class FarmReadyMiddleware:
         async def ready_send(message):
             await send(message)
             if message["type"] == "lifespan.startup.complete":
+                from backend.app.core import schema_repair_maintenance
+
+                if schema_repair_maintenance.active:
+                    return
                 farm_startup_guard.mark_ready()
                 from backend.app.core.auth_runtime import auth_runtime
 

@@ -1,0 +1,20 @@
+[
+  {
+    "name": "retry043",
+    "sha256": "8d6b0a6ac17ef2cc3feae91618de87d7716dae318afe1ff535810699362e7ede",
+    "max_version": 42,
+    "format": "pg_restore --no-owner --no-privileges -f - of actual failed PG dump"
+  },
+  {
+    "name": "retry071",
+    "sha256": "40c9e84f4d6baa953818643597884841a63287c3fd9ac4c947fddcdbd99afe5e",
+    "max_version": 70,
+    "format": "pg_restore --no-owner --no-privileges -f - of actual failed PG dump"
+  },
+  {
+    "name": "retry221",
+    "sha256": "992835c4e4eaa8cca468bff52aea35e88537a799a5c397e55d0b85886bf041bc",
+    "max_version": 220,
+    "format": "pg_restore --no-owner --no-privileges -f - of actual failed PG dump"
+  }
+]

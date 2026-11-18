@@ -21,6 +21,16 @@ import uuid
 from collections.abc import Callable
 from pathlib import Path
 
+from .lifecycle import (
+    TLS_CLOSE_GRACE,
+    TLS_HANDSHAKE_TIMEOUT,
+    Activities,
+    Connections,
+    Teardown,
+    VPDrainRefused,
+    close_writer,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -147,6 +157,7 @@ class TLSProxy:
         self.target_port = target_port
         self.server_cert_path = server_cert_path
         self.server_key_path = server_key_path
+        self.ready = asyncio.Event()
         self.on_connect = on_connect
         self.on_disconnect = on_disconnect
         self.bind_address = bind_address
@@ -171,6 +182,9 @@ class TLSProxy:
         self._active_connections: dict[str, tuple[asyncio.Task, asyncio.Task]] = {}
         self._server_ssl_context: ssl.SSLContext | None = None
         self._client_ssl_context: ssl.SSLContext | None = None
+        self.activities = Activities()
+        self.connections = Connections()
+        self._stop_task = None
 
     @staticmethod
     def _ip_to_le_int_bytes(ip: str) -> bytes:
@@ -215,7 +229,7 @@ class TLSProxy:
 
     async def start(self) -> None:
         """Start the TLS proxy server."""
-        if self._running:
+        if self.activities.closed or self._running:
             return
 
         logger.info(
@@ -235,8 +249,15 @@ class TLSProxy:
                 self.bind_address,
                 self.listen_port,
                 ssl=self._server_ssl_context,
+                ssl_handshake_timeout=TLS_HANDSHAKE_TIMEOUT,
+                ssl_shutdown_timeout=TLS_CLOSE_GRACE,
             )
 
+            if self.activities.closed:
+                self.close_admission()
+                await self._server.wait_closed()
+                return
+            self.ready.set()
             logger.info("%s TLS proxy listening on port %s", self.name, self.listen_port)
 
             async with self._server:
@@ -265,32 +286,38 @@ class TLSProxy:
         finally:
             await self.stop()
 
-    async def stop(self) -> None:
-        """Stop the TLS proxy server."""
-        logger.info("Stopping %s proxy", self.name)
+    def close_admission(self):
+        self.activities.closing = True
         self._running = False
-
-        # Cancel all active connection tasks
-        for client_id, (task1, task2) in list(self._active_connections.items()):
-            task1.cancel()
-            task2.cancel()
-            if self.on_disconnect:
-                try:
-                    self.on_disconnect(client_id)
-                except Exception:
-                    pass  # Ignore disconnect callback errors during shutdown
-
-        self._active_connections.clear()
-
+        self.ready.clear()
         if self._server:
-            try:
-                self._server.close()
-                await self._server.wait_closed()
-            except OSError as e:
-                logger.debug("Error closing %s proxy server: %s", self.name, e)
+            self._server.close()
+
+    async def stop(self):
+        if self._stop_task is None:
+            self.close_admission()
+            self._stop_task = asyncio.create_task(self._stop_owned())
+        await asyncio.shield(self._stop_task)
+
+    async def _stop_owned(self):
+        pumps = [t for pair in self._active_connections.values() for t in pair]
+        for task in pumps:
+            task.cancel()
+        await self.connections.disconnect()
+        await asyncio.gather(*pumps, return_exceptions=True)
+        self._active_connections.clear()
+        if self._server:
+            await self._server.wait_closed()
             self._server = None
 
-    async def _handle_client(
+    async def _handle_client(self, client_reader, client_writer):
+        with self.connections.track(client_writer):
+            if self.activities.closed:
+                await close_writer(client_writer)
+                return
+            await self._owned_handle_client(client_reader, client_writer)
+
+    async def _owned_handle_client(
         self,
         client_reader: asyncio.StreamReader,
         client_writer: asyncio.StreamWriter,
@@ -314,6 +341,7 @@ class TLSProxy:
                     self.target_host,
                     self.target_port,
                     ssl=self._client_ssl_context,
+                    ssl_shutdown_timeout=TLS_CLOSE_GRACE,
                 ),
                 timeout=10.0,
             )
@@ -321,19 +349,19 @@ class TLSProxy:
         except TimeoutError:
             logger.error("%s proxy: timeout connecting to %s:%s", self.name, self.target_host, self.target_port)
             client_writer.close()
-            await client_writer.wait_closed()
+            await close_writer(client_writer)
             return
         except ssl.SSLError as e:
             logger.error(
                 "%s proxy: SSL error connecting to %s:%s: %s", self.name, self.target_host, self.target_port, e
             )
             client_writer.close()
-            await client_writer.wait_closed()
+            await close_writer(client_writer)
             return
         except OSError as e:
             logger.error("%s proxy: failed to connect to %s:%s: %s", self.name, self.target_host, self.target_port, e)
             client_writer.close()
-            await client_writer.wait_closed()
+            await close_writer(client_writer)
             return
 
         # Create bidirectional forwarding tasks
@@ -367,12 +395,15 @@ class TLSProxy:
             logger.debug("%s proxy connection error: %s", self.name, e)
         finally:
             # Clean up
+            for task in (client_to_printer, printer_to_client):
+                task.cancel()
+            await asyncio.gather(client_to_printer, printer_to_client, return_exceptions=True)
             self._active_connections.pop(client_id, None)
 
             for writer in [client_writer, printer_writer]:
                 try:
                     writer.close()
-                    await writer.wait_closed()
+                    await close_writer(writer)
                 except OSError:
                     pass  # Best-effort connection cleanup; peer may have disconnected
 
@@ -633,10 +664,13 @@ class TCPProxy:
         self._running = False
         self._active_connections: dict[str, tuple[asyncio.Task, asyncio.Task]] = {}
         self.ready = asyncio.Event()
+        self.activities = Activities()
+        self.connections = Connections()
+        self._stop_task = None
 
     async def start(self) -> None:
         """Start the TCP proxy server."""
-        if self._running:
+        if self.activities.closed or self._running:
             return
 
         logger.info(
@@ -658,6 +692,10 @@ class TCPProxy:
             )
 
             logger.info("%s TCP proxy listening on port %s", self.name, self.listen_port)
+            if self.activities.closed:
+                self.close_admission()
+                await self._server.wait_closed()
+                return
             self.ready.set()
 
             async with self._server:
@@ -675,32 +713,38 @@ class TCPProxy:
         finally:
             await self.stop()
 
-    async def stop(self) -> None:
-        """Stop the TCP proxy server."""
-        logger.info("Stopping %s proxy", self.name)
+    def close_admission(self):
+        self.activities.closing = True
         self._running = False
         self.ready.clear()
-
-        for client_id, (task1, task2) in list(self._active_connections.items()):
-            task1.cancel()
-            task2.cancel()
-            if self.on_disconnect:
-                try:
-                    self.on_disconnect(client_id)
-                except Exception:
-                    pass
-
-        self._active_connections.clear()
-
         if self._server:
-            try:
-                self._server.close()
-                await self._server.wait_closed()
-            except OSError as e:
-                logger.debug("Error closing %s proxy server: %s", self.name, e)
+            self._server.close()
+
+    async def stop(self):
+        if self._stop_task is None:
+            self.close_admission()
+            self._stop_task = asyncio.create_task(self._stop_owned())
+        await asyncio.shield(self._stop_task)
+
+    async def _stop_owned(self):
+        pumps = [t for pair in self._active_connections.values() for t in pair]
+        for task in pumps:
+            task.cancel()
+        await self.connections.disconnect()
+        await asyncio.gather(*pumps, return_exceptions=True)
+        self._active_connections.clear()
+        if self._server:
+            await self._server.wait_closed()
             self._server = None
 
-    async def _handle_client(
+    async def _handle_client(self, client_reader, client_writer):
+        with self.connections.track(client_writer):
+            if self.activities.closed:
+                await close_writer(client_writer)
+                return
+            await self._owned_handle_client(client_reader, client_writer)
+
+    async def _owned_handle_client(
         self,
         client_reader: asyncio.StreamReader,
         client_writer: asyncio.StreamWriter,
@@ -726,12 +770,12 @@ class TCPProxy:
         except TimeoutError:
             logger.error("%s proxy: timeout connecting to %s:%s", self.name, self.target_host, self.target_port)
             client_writer.close()
-            await client_writer.wait_closed()
+            await close_writer(client_writer)
             return
         except OSError as e:
             logger.error("%s proxy: failed to connect to %s:%s: %s", self.name, self.target_host, self.target_port, e)
             client_writer.close()
-            await client_writer.wait_closed()
+            await close_writer(client_writer)
             return
 
         client_to_printer = asyncio.create_task(
@@ -760,12 +804,15 @@ class TCPProxy:
         except Exception as e:
             logger.debug("%s proxy connection error: %s", self.name, e)
         finally:
+            for task in (client_to_printer, printer_to_client):
+                task.cancel()
+            await asyncio.gather(client_to_printer, printer_to_client, return_exceptions=True)
             self._active_connections.pop(client_id, None)
 
             for writer in [client_writer, printer_writer]:
                 try:
                     writer.close()
-                    await writer.wait_closed()
+                    await close_writer(writer)
                 except OSError:
                     pass
 
@@ -865,10 +912,19 @@ class SlicerProxyManager:
         self._rtsp_proxy: TCPProxy | None = None
         self._worker_camera_lease: str | None = None
         self._aux_proxies: list[TCPProxy] = []
+        self._ftp_data_proxies: list[TCPProxy] = []
         self._bind_proxies: list[TCPProxy] = []
         self._bind_server = None
         self._probe_servers: list[asyncio.Server] = []
         self._tasks: list[asyncio.Task] = []
+        self.activities = Activities()
+        self.connections = Connections()
+        self._camera_task = None
+        self._setup_done = asyncio.Event()
+        self._starting = False
+        self.cuts = {}
+        self.camera_leases_released = 0
+        self._stop_task = None
 
     # FTP passive data port range - Bambu printers typically use ports in
     # this range for EPSV/PASV data connections. We pre-listen on all of
@@ -886,214 +942,229 @@ class SlicerProxyManager:
         Only MQTT is TLS-terminated because we must decrypt the payload to
         rewrite the printer's real IP with the proxy's bind IP.
         """
-        logger.info("Starting slicer proxy to %s (transparent mode)", self.target_host)
+        if self.activities.closed:
+            return
+        self._starting = True
+        try:
+            logger.info("Starting slicer proxy to %s (transparent mode)", self.target_host)
 
-        # Detect iptables port redirect for FTP
-        ftp_listen_port = self.LOCAL_FTP_PORT
-        redirect_target = detect_port_redirect(self.LOCAL_FTP_PORT)
-        if redirect_target:
-            logger.info(
-                "Detected iptables redirect: port %d → %d. FTP proxy will listen on %d.",
-                self.LOCAL_FTP_PORT,
-                redirect_target,
-                redirect_target,
-            )
-            ftp_listen_port = redirect_target
+            # Detect iptables port redirect for FTP
+            ftp_listen_port = self.LOCAL_FTP_PORT
+            redirect_target = detect_port_redirect(self.LOCAL_FTP_PORT)
+            if redirect_target:
+                logger.info(
+                    "Detected iptables redirect: port %d → %d. FTP proxy will listen on %d.",
+                    self.LOCAL_FTP_PORT,
+                    redirect_target,
+                    redirect_target,
+                )
+                ftp_listen_port = redirect_target
 
-        # FTP control - raw TCP pass-through (end-to-end TLS with printer)
-        self._ftp_proxy = TCPProxy(
-            name="FTP",
-            listen_port=ftp_listen_port,
-            target_host=self.target_host,
-            target_port=self.PRINTER_FTP_PORT,
-            on_connect=lambda cid: self._log_activity("FTP", f"connected: {cid}"),
-            on_disconnect=lambda cid: self._log_activity("FTP", f"disconnected: {cid}"),
-            bind_address=self.bind_address,
-        )
-
-        # FTP data ports - pre-listen on the entire passive port range.
-        # Since FTP control is encrypted end-to-end, we can't read EPSV
-        # responses to know which port the printer chose. Instead, we
-        # listen on every port in the range and forward to the same port
-        # on the printer. The slicer connects to bind_ip:PORT (from EPSV)
-        # and we transparently relay to printer_ip:PORT.
-        self._ftp_data_proxies: list[TCPProxy] = []
-        for port in range(self.FTP_DATA_PORT_MIN, self.FTP_DATA_PORT_MAX + 1):
-            dp = TCPProxy(
-                name=f"FTP-Data-{port}",
-                listen_port=port,
+            # FTP control - raw TCP pass-through (end-to-end TLS with printer)
+            self._ftp_proxy = TCPProxy(
+                name="FTP",
+                listen_port=ftp_listen_port,
                 target_host=self.target_host,
-                target_port=port,
+                target_port=self.PRINTER_FTP_PORT,
+                on_connect=lambda cid: self._log_activity("FTP", f"connected: {cid}"),
+                on_disconnect=lambda cid: self._log_activity("FTP", f"disconnected: {cid}"),
                 bind_address=self.bind_address,
             )
-            self._ftp_data_proxies.append(dp)
 
-        # MQTT - TLS-terminating proxy (must decrypt to rewrite IP addresses)
-        self._mqtt_proxy = TLSProxy(
-            name="MQTT",
-            listen_port=self.LOCAL_MQTT_PORT,
-            target_host=self.target_host,
-            target_port=self.PRINTER_MQTT_PORT,
-            server_cert_path=self.cert_path,
-            server_key_path=self.key_path,
-            on_connect=lambda cid: self._log_activity("MQTT", f"connected: {cid}"),
-            on_disconnect=lambda cid: self._log_activity("MQTT", f"disconnected: {cid}"),
-            bind_address=self.bind_address,
-            rewrite_ip=(self.target_host, self.bind_address) if self.bind_address != "0.0.0.0" else None,  # nosec B104
-        )
-
-        # Port 6000 is a chamber camera on known A1/P1 targets, but the
-        # non-camera file tunnel on X2D. An unknown target is never guessed.
-        from backend.app.services.camera import get_camera_port
-        from backend.app.utils.printer_configs import load_printer_config
-
-        known_target = load_printer_config(self.target_model, self.target_firmware) is not None
-        camera_port = get_camera_port(self.target_model) if known_target else None
-        if camera_port != self.PRINTER_FILE_TRANSFER_PORT:
-            self._file_transfer_proxy = TCPProxy(
-                name="FileTransfer",
-                listen_port=self.PRINTER_FILE_TRANSFER_PORT,
-                target_host=self.target_host,
-                target_port=self.PRINTER_FILE_TRANSFER_PORT,
-                on_connect=lambda cid: self._log_activity("FileTransfer", f"connected: {cid}"),
-                on_disconnect=lambda cid: self._log_activity("FileTransfer", f"disconnected: {cid}"),
-                bind_address=self.bind_address,
-            )
-        if camera_port is not None:
-            await self.reconcile_camera_proxy()
-
-        # Auxiliary ports (2024-2026) - raw TCP pass-through for undocumented
-        # proprietary services. Required by BambuStudio/OrcaSlicer for some
-        # models (A1, P1S). Silently ignored if the printer doesn't listen.
-        for aux_port in self.PRINTER_AUX_PORTS:
-            self._aux_proxies.append(
-                TCPProxy(
-                    name=f"Aux-{aux_port}",
-                    listen_port=aux_port,
+            # FTP data ports - pre-listen on the entire passive port range.
+            # Since FTP control is encrypted end-to-end, we can't read EPSV
+            # responses to know which port the printer chose. Instead, we
+            # listen on every port in the range and forward to the same port
+            # on the printer. The slicer connects to bind_ip:PORT (from EPSV)
+            # and we transparently relay to printer_ip:PORT.
+            self._ftp_data_proxies: list[TCPProxy] = []
+            for port in range(self.FTP_DATA_PORT_MIN, self.FTP_DATA_PORT_MAX + 1):
+                dp = TCPProxy(
+                    name=f"FTP-Data-{port}",
+                    listen_port=port,
                     target_host=self.target_host,
-                    target_port=aux_port,
-                    on_connect=lambda cid, p=aux_port: self._log_activity(f"Aux-{p}", f"connected: {cid}"),
-                    on_disconnect=lambda cid, p=aux_port: self._log_activity(f"Aux-{p}", f"disconnected: {cid}"),
+                    target_port=port,
                     bind_address=self.bind_address,
                 )
-            )
+                self._ftp_data_proxies.append(dp)
 
-        # Bind/auth - respond with VP identity instead of proxying to printer.
-        # The detect response contains the printer name, serial, model, and
-        # bind status. Proxying it would leak the real printer's identity and
-        # cause the slicer to treat it as a different device.
-        if self.bind_identity:
-            from backend.app.services.virtual_printer.bind_server import BindServer
-
-            self._bind_server = BindServer(
-                serial=self.bind_identity["serial"],
-                model=self.bind_identity["model"],
-                name=self.bind_identity["name"],
-                version=self.bind_identity.get("version", "01.00.00.00"),
+            # MQTT - TLS-terminating proxy (must decrypt to rewrite IP addresses)
+            self._mqtt_proxy = TLSProxy(
+                name="MQTT",
+                listen_port=self.LOCAL_MQTT_PORT,
+                target_host=self.target_host,
+                target_port=self.PRINTER_MQTT_PORT,
+                server_cert_path=self.cert_path,
+                server_key_path=self.key_path,
+                on_connect=lambda cid: self._log_activity("MQTT", f"connected: {cid}"),
+                on_disconnect=lambda cid: self._log_activity("MQTT", f"disconnected: {cid}"),
                 bind_address=self.bind_address,
-                cert_path=self.cert_path,
-                key_path=self.key_path,
+                rewrite_ip=(self.target_host, self.bind_address) if self.bind_address != "0.0.0.0" else None,  # nosec B104
             )
-        else:
-            # Fallback: proxy bind requests to the real printer
-            for bind_port in self.PRINTER_BIND_PORTS:
-                if bind_port == 3002:
-                    proxy = TLSProxy(
-                        name="Bind-TLS",
-                        listen_port=bind_port,
+
+            # Port 6000 is a chamber camera on known A1/P1 targets, but the
+            # non-camera file tunnel on X2D. An unknown target is never guessed.
+            from backend.app.services.camera import get_camera_port
+            from backend.app.utils.printer_configs import load_printer_config
+
+            known_target = load_printer_config(self.target_model, self.target_firmware) is not None
+            camera_port = get_camera_port(self.target_model) if known_target else None
+            if camera_port != self.PRINTER_FILE_TRANSFER_PORT:
+                self._file_transfer_proxy = TCPProxy(
+                    name="FileTransfer",
+                    listen_port=self.PRINTER_FILE_TRANSFER_PORT,
+                    target_host=self.target_host,
+                    target_port=self.PRINTER_FILE_TRANSFER_PORT,
+                    on_connect=lambda cid: self._log_activity("FileTransfer", f"connected: {cid}"),
+                    on_disconnect=lambda cid: self._log_activity("FileTransfer", f"disconnected: {cid}"),
+                    bind_address=self.bind_address,
+                )
+            if camera_port is not None:
+                await self.reconcile_camera_proxy()
+                if self.activities.closed:
+                    return
+
+            # Auxiliary ports (2024-2026) - raw TCP pass-through for undocumented
+            # proprietary services. Required by BambuStudio/OrcaSlicer for some
+            # models (A1, P1S). Silently ignored if the printer doesn't listen.
+            for aux_port in self.PRINTER_AUX_PORTS:
+                self._aux_proxies.append(
+                    TCPProxy(
+                        name=f"Aux-{aux_port}",
+                        listen_port=aux_port,
                         target_host=self.target_host,
-                        target_port=bind_port,
-                        server_cert_path=self.cert_path,
-                        server_key_path=self.key_path,
-                        on_connect=lambda cid: self._log_activity("Bind", f"connected: {cid}"),
-                        on_disconnect=lambda cid: self._log_activity("Bind", f"disconnected: {cid}"),
+                        target_port=aux_port,
+                        on_connect=lambda cid, p=aux_port: self._log_activity(f"Aux-{p}", f"connected: {cid}"),
+                        on_disconnect=lambda cid, p=aux_port: self._log_activity(f"Aux-{p}", f"disconnected: {cid}"),
                         bind_address=self.bind_address,
                     )
-                else:
-                    proxy = TCPProxy(
-                        name="Bind",
-                        listen_port=bind_port,
-                        target_host=self.target_host,
-                        target_port=bind_port,
-                        on_connect=lambda cid: self._log_activity("Bind", f"connected: {cid}"),
-                        on_disconnect=lambda cid: self._log_activity("Bind", f"disconnected: {cid}"),
-                        bind_address=self.bind_address,
-                    )
-                self._bind_proxies.append(proxy)
+                )
 
-        # Start as background tasks
-        async def run_with_logging(proxy: TLSProxy | TCPProxy) -> None:
-            try:
-                await proxy.start()
-            except Exception as e:
-                logger.error("Slicer proxy %s failed: %s", proxy.name, e)
+            # Bind/auth - respond with VP identity instead of proxying to printer.
+            # The detect response contains the printer name, serial, model, and
+            # bind status. Proxying it would leak the real printer's identity and
+            # cause the slicer to treat it as a different device.
+            if self.bind_identity:
+                from backend.app.services.virtual_printer.bind_server import BindServer
 
-        self._tasks = [
-            asyncio.create_task(
-                run_with_logging(self._ftp_proxy),
-                name="slicer_proxy_ftp",
-            ),
-            asyncio.create_task(
-                run_with_logging(self._mqtt_proxy),
-                name="slicer_proxy_mqtt",
-            ),
-        ]
-        if self._file_transfer_proxy is not None:
-            self._tasks.append(
-                asyncio.create_task(run_with_logging(self._file_transfer_proxy), name="slicer_proxy_file_transfer")
-            )
-        for ap in self._aux_proxies:
-            self._tasks.append(
-                asyncio.create_task(
-                    run_with_logging(ap),
-                    name=f"slicer_proxy_aux_{ap.listen_port}",
+                self._bind_server = BindServer(
+                    serial=self.bind_identity["serial"],
+                    model=self.bind_identity["model"],
+                    name=self.bind_identity["name"],
+                    version=self.bind_identity.get("version", "01.00.00.00"),
+                    bind_address=self.bind_address,
+                    cert_path=self.cert_path,
+                    key_path=self.key_path,
                 )
-            )
-        if self._bind_server:
-            self._tasks.append(
-                asyncio.create_task(
-                    run_with_logging(self._bind_server),
-                    name="slicer_proxy_bind_server",
-                )
-            )
-        for bp in self._bind_proxies:
-            self._tasks.append(
-                asyncio.create_task(
-                    run_with_logging(bp),
-                    name=f"slicer_proxy_bind_{bp.listen_port}",
-                )
-            )
-        # FTP data port proxies (50000-50100)
-        for dp in self._ftp_data_proxies:
-            self._tasks.append(
-                asyncio.create_task(
-                    run_with_logging(dp),
-                    name=f"slicer_proxy_ftp_data_{dp.listen_port}",
-                )
-            )
+            else:
+                # Fallback: proxy bind requests to the real printer
+                for bind_port in self.PRINTER_BIND_PORTS:
+                    if bind_port == 3002:
+                        proxy = TLSProxy(
+                            name="Bind-TLS",
+                            listen_port=bind_port,
+                            target_host=self.target_host,
+                            target_port=bind_port,
+                            server_cert_path=self.cert_path,
+                            server_key_path=self.key_path,
+                            on_connect=lambda cid: self._log_activity("Bind", f"connected: {cid}"),
+                            on_disconnect=lambda cid: self._log_activity("Bind", f"disconnected: {cid}"),
+                            bind_address=self.bind_address,
+                        )
+                    else:
+                        proxy = TCPProxy(
+                            name="Bind",
+                            listen_port=bind_port,
+                            target_host=self.target_host,
+                            target_port=bind_port,
+                            on_connect=lambda cid: self._log_activity("Bind", f"connected: {cid}"),
+                            on_disconnect=lambda cid: self._log_activity("Bind", f"disconnected: {cid}"),
+                            bind_address=self.bind_address,
+                        )
+                    self._bind_proxies.append(proxy)
 
-        # Diagnostic probe: listen on common un-proxied ports to detect
-        # if the slicer tries to reach a service we don't handle.
-        if self.bind_address and self.bind_address != "0.0.0.0":  # nosec B104
-            for probe_port in (21, 80, 443):
+            # Start as background tasks
+            async def run_with_logging(proxy: TLSProxy | TCPProxy) -> None:
                 try:
-                    srv = await asyncio.start_server(
-                        lambda r, w, p=probe_port: self._probe_handler(r, w, p),
-                        self.bind_address,
-                        probe_port,
-                    )
-                    self._probe_servers.append(srv)
-                except OSError:
-                    pass  # Port in use or no permission - skip
-            if self._probe_servers:
-                probed = [s.sockets[0].getsockname()[1] for s in self._probe_servers if s.sockets]
-                logger.info("Proxy diagnostic: probing un-proxied ports %s on %s", probed, self.bind_address)
+                    proxy.activities = self.activities
+                    if self.activities.closed:
+                        return
+                    await proxy.start()
+                except Exception as e:
+                    logger.error("Slicer proxy %s failed: %s", proxy.name, e)
 
-        logger.info(
-            "Slicer proxy started for %s (transparent TCP + MQTT TLS, %d FTP data ports)",
-            self.target_host,
-            len(self._ftp_data_proxies),
-        )
+            self._tasks = [
+                asyncio.create_task(
+                    run_with_logging(self._ftp_proxy),
+                    name="slicer_proxy_ftp",
+                ),
+                asyncio.create_task(
+                    run_with_logging(self._mqtt_proxy),
+                    name="slicer_proxy_mqtt",
+                ),
+            ]
+            if self._file_transfer_proxy is not None:
+                self._tasks.append(
+                    asyncio.create_task(run_with_logging(self._file_transfer_proxy), name="slicer_proxy_file_transfer")
+                )
+            for ap in self._aux_proxies:
+                self._tasks.append(
+                    asyncio.create_task(
+                        run_with_logging(ap),
+                        name=f"slicer_proxy_aux_{ap.listen_port}",
+                    )
+                )
+            if self._bind_server:
+                self._tasks.append(
+                    asyncio.create_task(
+                        run_with_logging(self._bind_server),
+                        name="slicer_proxy_bind_server",
+                    )
+                )
+            for bp in self._bind_proxies:
+                self._tasks.append(
+                    asyncio.create_task(
+                        run_with_logging(bp),
+                        name=f"slicer_proxy_bind_{bp.listen_port}",
+                    )
+                )
+            # FTP data port proxies (50000-50100)
+            for dp in self._ftp_data_proxies:
+                self._tasks.append(
+                    asyncio.create_task(
+                        run_with_logging(dp),
+                        name=f"slicer_proxy_ftp_data_{dp.listen_port}",
+                    )
+                )
+
+            # Diagnostic probe: listen on common un-proxied ports to detect
+            # if the slicer tries to reach a service we don't handle.
+            if self.bind_address and self.bind_address != "0.0.0.0":  # nosec B104
+                for probe_port in (21, 80, 443):
+                    try:
+                        srv = await asyncio.start_server(
+                            lambda r, w, p=probe_port: self._probe_handler(r, w, p),
+                            self.bind_address,
+                            probe_port,
+                        )
+                        self._probe_servers.append(srv)
+                        if self.activities.closed:
+                            srv.close()
+                            return
+                    except OSError:
+                        pass  # Port in use or no permission - skip
+                if self._probe_servers:
+                    probed = [s.sockets[0].getsockname()[1] for s in self._probe_servers if s.sockets]
+                    logger.info("Proxy diagnostic: probing un-proxied ports %s on %s", probed, self.bind_address)
+
+            logger.info(
+                "Slicer proxy started for %s (transparent TCP + MQTT TLS, %d FTP data ports)",
+                self.target_host,
+                len(self._ftp_data_proxies),
+            )
+
+        finally:
+            self._setup_done.set()
 
         # Wait for tasks to complete (they run until cancelled)
         # This keeps the start() coroutine alive so the parent task doesn't complete
@@ -1102,8 +1173,17 @@ class SlicerProxyManager:
         except asyncio.CancelledError:
             logger.debug("Slicer proxy start cancelled")
 
-    async def reconcile_camera_proxy(self) -> None:
+    async def reconcile_camera_proxy(self):
+        if self.activities.closed:
+            return
+        if self._camera_task is None or self._camera_task.done():
+            self._camera_task = asyncio.create_task(self._reconcile_camera_owned())
+        await asyncio.shield(self._camera_task)
+
+    async def _reconcile_camera_owned(self) -> None:
         """Rebind only the camera lease for the current target configuration."""
+        if self.activities.closed:
+            return
         from backend.app.services.camera import get_camera_port
         from backend.app.services.camera_runtime import WorkerCameraRuntime, get_camera_runtime
         from backend.app.utils.printer_configs import load_printer_config
@@ -1130,75 +1210,96 @@ class SlicerProxyManager:
             )
         except Exception as exc:
             logger.warning("Proxy camera worker unavailable: %s", type(exc).__name__)
+            if self.activities.closed:
+                raise
 
-    async def stop(self) -> None:
-        """Stop all proxies."""
-        logger.info("Stopping slicer proxy")
+    def interruptions(self):
+        result = {"probe": self.connections.cuts}
+        for attr, category in (
+            ("_ftp_proxy", "ftp"),
+            ("_mqtt_proxy", "mqtt"),
+            ("_file_transfer_proxy", "file_transfer"),
+            ("_rtsp_proxy", "camera"),
+            ("_bind_server", "bind"),
+        ):
+            child = getattr(self, attr)
+            if child:
+                result[category] = result.get(category, 0) + child.connections.cuts
+        for attr, category in (("_aux_proxies", "aux"), ("_bind_proxies", "bind"), ("_ftp_data_proxies", "ftp_data")):
+            result[category] = result.get(category, 0) + sum(c.connections.cuts for c in getattr(self, attr))
+        return result
 
-        # Stop proxies
-        if self._ftp_proxy:
-            await self._ftp_proxy.stop()
-            self._ftp_proxy = None
+    def close_admission(self):
+        self.activities.closing = True
+        for attr in ("_ftp_proxy", "_mqtt_proxy", "_file_transfer_proxy", "_rtsp_proxy", "_bind_server"):
+            child = getattr(self, attr)
+            if child:
+                child.close_admission()
+        for child in [*self._aux_proxies, *self._bind_proxies, *self._ftp_data_proxies]:
+            child.close_admission()
+        for server in self._probe_servers:
+            server.close()
 
-        if self._mqtt_proxy:
-            await self._mqtt_proxy.stop()
-            self._mqtt_proxy = None
+    async def stop(self):
+        if self._stop_task is None:
+            self.close_admission()
+            self._stop_task = asyncio.create_task(self._stop_owned())
+        await asyncio.shield(self._stop_task)
 
-        if self._file_transfer_proxy:
-            await self._file_transfer_proxy.stop()
-            self._file_transfer_proxy = None
+    async def _stop_owned(self):
+        if self._starting:
+            await self._setup_done.wait()
+        cleanup = Teardown()
+        if self._camera_task is not None:
+            await cleanup.run(self._camera_task)
+        self.close_admission()
+        children = []
+        for attr, category in (
+            ("_ftp_proxy", "ftp"),
+            ("_mqtt_proxy", "mqtt"),
+            ("_file_transfer_proxy", "file_transfer"),
+            ("_rtsp_proxy", "camera"),
+            ("_bind_server", "bind"),
+        ):
+            child = getattr(self, attr)
+            if child:
+                children.append((child, category))
+        for attr, category in (("_aux_proxies", "aux"), ("_bind_proxies", "bind"), ("_ftp_data_proxies", "ftp_data")):
+            children.extend((child, category) for child in getattr(self, attr))
+        for child, _ in children:
+            await cleanup.run(child.stop())
+        for child, category in children:
+            self.cuts[category] = self.cuts.get(category, 0) + child.connections.cuts
+        await cleanup.run(self.connections.disconnect())
+        self.cuts["probe"] = self.connections.cuts
+        for server in self._probe_servers:
+            await cleanup.run(server.wait_closed())
+        await cleanup.run(self._stop_worker_camera())
+        for task in self._tasks:
+            task.cancel()
+        await asyncio.gather(*self._tasks, return_exceptions=True)
+        self._tasks.clear()
+        cleanup.finish()
 
-        if self._rtsp_proxy:
-            await self._rtsp_proxy.stop()
-            self._rtsp_proxy = None
+    async def _stop_worker_camera(self):
         if self._worker_camera_lease:
             from backend.app.services.camera_runtime import WorkerCameraRuntime, get_camera_runtime
 
             runtime = get_camera_runtime()
-            if isinstance(runtime, WorkerCameraRuntime):
-                try:
-                    await runtime.stop_raw_proxy(self._worker_camera_lease)
-                except Exception:
-                    logger.warning("Proxy camera lease already unavailable")
+            if not isinstance(runtime, WorkerCameraRuntime):
+                raise VPDrainRefused("camera_owner_missing")
+            await runtime.stop_raw_proxy(self._worker_camera_lease)
             self._worker_camera_lease = None
+            self.camera_leases_released += 1
 
-        for ap in self._aux_proxies:
-            await ap.stop()
-        self._aux_proxies = []
+    async def _probe_handler(self, reader, writer, port):
+        with self.connections.track(writer):
+            if self.activities.closed:
+                await close_writer(writer)
+                return
+            await self._owned_probe_handler(reader, writer, port)
 
-        if self._bind_server:
-            await self._bind_server.stop()
-            self._bind_server = None
-
-        for bp in self._bind_proxies:
-            await bp.stop()
-        self._bind_proxies = []
-
-        for dp in self._ftp_data_proxies:
-            await dp.stop()
-        self._ftp_data_proxies = []
-
-        for srv in self._probe_servers:
-            srv.close()
-        self._probe_servers = []
-
-        # Cancel tasks
-        for task in self._tasks:
-            task.cancel()
-
-        if self._tasks:
-            try:
-                await asyncio.wait_for(
-                    asyncio.gather(*self._tasks, return_exceptions=True),
-                    timeout=2.0,
-                )
-            except TimeoutError:
-                logger.debug("Some proxy tasks didn't stop in time")
-
-        self._tasks = []
-        logger.info("Slicer proxy stopped")
-
-    async def _probe_handler(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter, port: int) -> None:
+    async def _owned_probe_handler(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter, port: int) -> None:
         """Log unexpected connections on un-proxied ports for diagnostics."""
         peername = writer.get_extra_info("peername")
         client = f"{peername[0]}:{peername[1]}" if peername else "unknown"
@@ -1209,7 +1310,7 @@ class SlicerProxyManager:
         )
         writer.close()
         try:
-            await writer.wait_closed()
+            await close_writer(writer)
         except OSError:
             pass
 

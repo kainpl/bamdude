@@ -1366,6 +1366,9 @@ async def _apply_rows(session_factory, payload, actor, actor_label, recheck):
                 item.waiting_reason = None
                 item.error_code = row_class(item.status, archive.failure_reason if archive is not None else None)
             if plan["delete_item"]:
+                from backend.app.services.queue_counters import detach_print_queue_refs
+
+                await detach_print_queue_refs(db, [item.id])
                 await db.delete(item)
             if plan["queue"] and not plan["archive"].get("close") and "settlement" not in plan:
                 q = queues[key[0]]

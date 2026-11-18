@@ -335,6 +335,10 @@ and use the same command on development hosts and in CI.
 - **PostgreSQL scenarios** run only with `TEST_POSTGRES_URL` set and **wipe every
   table in that database's public schema**. Point them at a throwaway database.
   CI runs them against a fresh container on every push.
+- The addressed historical-schema gate is `-k g02_historical` in that same
+  module. It also wipes public functions and sequences; use only a disposable
+  database. Fixture provenance, exact drift rules and upgrade boundaries are
+  documented in [historical PostgreSQL upgrades](docs/development/postgres-historical-schema.md).
 - Tests run with a per-test timeout on CI (`--timeout=60`); a hanging test is a
   failing test.
 

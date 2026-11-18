@@ -182,6 +182,23 @@ async def set_queue_idle(db: AsyncSession, queue_id: int, *, expected_item_id: i
     )
 
 
+async def companion_auto_ids(db: AsyncSession, item_ids: list[int]) -> list[int]:
+    """Only the router incarnation stamped on this dispatched row is its companion."""
+    from backend.app.models.auto_queue import AutoQueueItem
+
+    return list(
+        await db.scalars(
+            select(AutoQueueItem.id)
+            .join(
+                PrintQueueItem,
+                (PrintQueueItem.source_auto_item_id == AutoQueueItem.id)
+                & (PrintQueueItem.source_auto_identity == AutoQueueItem.recovery_identity),
+            )
+            .where(PrintQueueItem.id.in_(item_ids), PrintQueueItem.source_auto_identity.is_not(None))
+        )
+    )
+
+
 async def detach_print_queue_refs(db: AsyncSession, item_ids: list[int]) -> None:
     """Clean up rows referencing ``print_queue`` items about to be deleted.
 
@@ -203,23 +220,28 @@ async def detach_print_queue_refs(db: AsyncSession, item_ids: list[int]) -> None
     from backend.app.models.auto_queue import AutoQueueItem
     from backend.app.models.calibration_session import CalibrationSession
 
-    auto_ids = (
-        (
-            await db.execute(
-                select(PrintQueueItem.source_auto_item_id).where(
-                    PrintQueueItem.id.in_(item_ids),
-                    PrintQueueItem.source_auto_item_id.is_not(None),
-                )
-            )
-        )
-        .scalars()
-        .all()
-    )
+    auto_ids = await companion_auto_ids(db, item_ids)
     if auto_ids:
+        await detach_auto_queue_refs(db, auto_ids)
         await db.execute(delete(AutoQueueItem).where(AutoQueueItem.id.in_(auto_ids)))
+    # Other or unproven router rows retain their work/bytes. Only their
+    # navigation to the removed printer row is cut (SQLite runs no SET NULL).
+    await db.execute(
+        update(AutoQueueItem).where(AutoQueueItem.assigned_to_item_id.in_(item_ids)).values(assigned_to_item_id=None)
+    )
 
     await db.execute(
         update(CalibrationSession)
         .where(CalibrationSession.print_queue_item_id.in_(item_ids))
         .values(print_queue_item_id=None)
     )
+
+
+async def detach_auto_queue_refs(db: AsyncSession, item_ids: list[int]) -> None:
+    """Cut only mutable navigation; the dispatched incarnation remains history."""
+    if item_ids:
+        await db.execute(
+            update(PrintQueueItem)
+            .where(PrintQueueItem.source_auto_item_id.in_(item_ids))
+            .values(source_auto_item_id=None)
+        )

@@ -61,7 +61,9 @@ class TestDegradesRatherThanFails:
         # produce a bundle on exactly those hosts would be the worst possible
         # trade: the bundle is the reporting mechanism.
         with patch.object(support_routes.psutil, "Process", side_effect=OSError("denied")):
-            assert support_routes._collect_process_info() == {"available": False}
+            info = support_routes._collect_process_info()
+        assert info["available"] is False
+        assert "file_descriptors" in info
 
     def test_one_unavailable_metric_does_not_take_the_others_with_it(self):
         proc = MagicMock()
@@ -155,3 +157,39 @@ def test_the_issue_pack_shares_the_collector_it_is_wired_into():
     from backend.app.api.routes.bug_report import _collect_support_info as pack_collector
 
     assert pack_collector is support_routes._collect_support_info
+
+
+def test_fd_collection_precedes_process_failure_and_high_rss_exit():
+    sentinel = {
+        "count": 9,
+        "kinds": {"other_regular": 1},
+        "soft_limit": 1024,
+        "hard_limit": 4096,
+        "kinds_truncated": False,
+    }
+    events = []
+
+    def collect():
+        events.append("fd")
+        return sentinel
+
+    def denied():
+        events.append("process")
+        raise OSError("denied")
+
+    with (
+        patch.object(support_routes, "collect_fd_info", collect),
+        patch.object(support_routes.psutil, "Process", denied),
+    ):
+        assert support_routes._collect_process_info()["file_descriptors"] is sentinel
+    assert events == ["fd", "process"]
+    proc = MagicMock()
+    proc.memory_info.return_value = MagicMock(rss=support_routes._GC_CENSUS_RSS_LIMIT + 1, vms=0)
+    proc.children.return_value = []
+    with (
+        patch.object(support_routes, "collect_fd_info", collect),
+        patch.object(support_routes.psutil, "Process", return_value=proc),
+        patch.object(support_routes.gc, "get_objects", side_effect=AssertionError("GC census not requested")),
+    ):
+        info = support_routes._collect_process_info()
+    assert info["file_descriptors"] is sentinel and "skipped" in info["gc_census"]

@@ -87,7 +87,7 @@ _waiting = 0
 def staging_dir() -> Path:
     from backend.app.core.config import settings
 
-    path = Path(settings.base_dir) / STAGING_DIRNAME
+    path = Path(settings.base_dir) / STAGING_DIRNAME  # SEC-PATH-OK: base and staging name are app-owned.
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -101,7 +101,9 @@ def sweep_stale_staging(*, create: bool = True) -> int:
     """Remove what a dead process left: our own old ``.part`` files, nothing else. Returns the count."""
     from backend.app.core.config import settings
 
-    directory = staging_dir() if create else Path(settings.base_dir) / STAGING_DIRNAME
+    directory = (
+        staging_dir() if create else Path(settings.base_dir) / STAGING_DIRNAME
+    )  # SEC-PATH-OK: no user path component, only the app-owned staging root.
     removed = 0
     limit = time.time() - STALE_STAGING_SECONDS
     try:
@@ -345,7 +347,6 @@ async def import_resource(
         "created_by_id": created_by_id,
         "source_type": provider.source_type,
         "source_url": source_url,
-        "authority": authority,
         "credential_snapshots": credential_snapshots,
         "publication_check": publication_check,
     }
@@ -360,7 +361,7 @@ async def import_resource(
                     filename = filename_for(info)
                     validate_print_file_upload(filename, await asyncio.to_thread(_head, staged))
                     result = await save_3mf_bytes_to_library(
-                        db, content=None, staged=staged, filename=filename, **common
+                        db, content=None, staged=staged, filename=filename, authority=authority, **common
                     )
                 except OSError as exc:
                     if exc.errno == errno.ENOSPC:
@@ -368,7 +369,9 @@ async def import_resource(
                     raise
     else:
         download = await service.download(info)
-        result = await save_3mf_bytes_to_library(db, content=download.file_bytes, filename=filename_for(info), **common)
+        result = await save_3mf_bytes_to_library(
+            db, content=download.file_bytes, filename=filename_for(info), authority=authority, **common
+        )
     # ⚠️ ``result.file`` may be a row this import did not create — either the
     # same source_url was imported before, or another row already holds these
     # exact bytes. Both mean the work that follows a new file was already done.

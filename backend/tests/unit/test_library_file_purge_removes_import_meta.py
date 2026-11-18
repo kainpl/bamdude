@@ -40,13 +40,9 @@ def test_every_purge_forgets_the_import_record():
             purging.append(where)
             if "library_import_meta.forget_files" not in calls:
                 forgetful.append(where)
-    assert {
-        "services/library_trash.py::_sweep",
-        "services/library_trash.py::trash_or_purge",
-        "services/library_trash.py::hard_delete_now",
-        "services/library_scan.py::remove_vanished",
-        "api/routes/users.py::delete_user",
-    } <= set(purging), sorted(purging)
+    # All C deletion doors now delegate to this flush-only parent seam. C11
+    # inventories the callers; the metadata writer remains the sole writer.
+    assert set(purging) == {"services/content_delete_rows.py::library_rows"}, sorted(purging)
     assert forgetful == []
 
 

@@ -1,0 +1,23 @@
+[
+  {
+    "object": "spoolman_usage_history.column.weight_used.default",
+    "fresh_present": true,
+    "actual_present": true,
+    "fresh": null,
+    "actual": ["numeric", "0"]
+  },
+  {
+    "object": "spoolman_usage_history.column.percent_used.default",
+    "fresh_present": true,
+    "actual_present": true,
+    "fresh": null,
+    "actual": ["numeric", "0"]
+  },
+  {
+    "object": "spoolman_usage_history.column.status.default",
+    "fresh_present": true,
+    "actual_present": true,
+    "fresh": null,
+    "actual": ["sql", "'completed'::character varying"]
+  }
+]

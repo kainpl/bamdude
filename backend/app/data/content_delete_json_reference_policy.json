@@ -1,0 +1,337 @@
+{
+  "printers.plate_detection_polygon": {
+    "table": "printers",
+    "column": "plate_detection_polygon",
+    "policy": "Explicit opaque content/protocol/settings/history carrier: C does not interpret arbitrary JSON numbers as local parent ids. Row deletion follows its existing owner; any new known local-ID path requires a specific policy/test, not this opaque classification."
+  },
+  "printers.ams_policies": {
+    "table": "printers",
+    "column": "ams_policies",
+    "policy": "Explicit opaque content/protocol/settings/history carrier: C does not interpret arbitrary JSON numbers as local parent ids. Row deletion follows its existing owner; any new known local-ID path requires a specific policy/test, not this opaque classification."
+  },
+  "print_archives.extra_data": {
+    "table": "print_archives",
+    "column": "extra_data",
+    "policy": "Existing domain-owned immutable or addressed execution/source/audit carrier: preserve proofs/snapshots; never infer live ownership or apply integer-based cleanup; C edits only through its named existing owner and journals name snapshots"
+  },
+  "print_archives.photos": {
+    "table": "print_archives",
+    "column": "photos",
+    "policy": "Explicit opaque content/protocol/settings/history carrier: C does not interpret arbitrary JSON numbers as local parent ids. Row deletion follows its existing owner; any new known local-ID path requires a specific policy/test, not this opaque classification."
+  },
+  "print_archives.swap_source_declaration": {
+    "table": "print_archives",
+    "column": "swap_source_declaration",
+    "policy": "Known local source/job identity carrier: preserve its declaration/execution/audit owner and identity proof. C uses existing source_purged/source_trashed/lifetime helpers; no arbitrary integer rewrite or new lookup by reused id."
+  },
+  "projects.printer_resources": {
+    "table": "projects",
+    "column": "printer_resources",
+    "policy": "Known local-ID path printer_ids: explicit exclusion from C mutation, owned by order_resources configured eligibility policy. Preserve None/[] semantics; C claims no new scope-lifetime/ID-reuse repair."
+  },
+  "projects.auto_eject_settings": {
+    "table": "projects",
+    "column": "auto_eject_settings",
+    "policy": "Explicit opaque content/protocol/settings/history carrier: C does not interpret arbitrary JSON numbers as local parent ids. Row deletion follows its existing owner; any new known local-ID path requires a specific policy/test, not this opaque classification."
+  },
+  "projects.order_print_options": {
+    "table": "projects",
+    "column": "order_print_options",
+    "policy": "Explicit opaque content/protocol/settings/history carrier: C does not interpret arbitrary JSON numbers as local parent ids. Row deletion follows its existing owner; any new known local-ID path requires a specific policy/test, not this opaque classification."
+  },
+  "projects.attachments": {
+    "table": "projects",
+    "column": "attachments",
+    "policy": "Explicit opaque content/protocol/settings/history carrier: C does not interpret arbitrary JSON numbers as local parent ids. Row deletion follows its existing owner; any new known local-ID path requires a specific policy/test, not this opaque classification."
+  },
+  "project_events.payload": {
+    "table": "project_events",
+    "column": "payload",
+    "policy": "Existing domain-owned immutable or addressed execution/source/audit carrier: preserve proofs/snapshots; never infer live ownership or apply integer-based cleanup; C edits only through its named existing owner and journals name snapshots"
+  },
+  "print_queue.auto_eject_settings": {
+    "table": "print_queue",
+    "column": "auto_eject_settings",
+    "policy": "Explicit opaque content/protocol/settings/history carrier: C does not interpret arbitrary JSON numbers as local parent ids. Row deletion follows its existing owner; any new known local-ID path requires a specific policy/test, not this opaque classification."
+  },
+  "print_queue.source_snapshot": {
+    "table": "print_queue",
+    "column": "source_snapshot",
+    "policy": "Known local source/job identity carrier: preserve its declaration/execution/audit owner and identity proof. C uses existing source_purged/source_trashed/lifetime helpers; no arbitrary integer rewrite or new lookup by reused id."
+  },
+  "library_files.file_tags": {
+    "table": "library_files",
+    "column": "file_tags",
+    "policy": "Explicit opaque content/protocol/settings/history carrier: C does not interpret arbitrary JSON numbers as local parent ids. Row deletion follows its existing owner; any new known local-ID path requires a specific policy/test, not this opaque classification."
+  },
+  "library_files.file_metadata": {
+    "table": "library_files",
+    "column": "file_metadata",
+    "policy": "Explicit opaque content/protocol/settings/history carrier: C does not interpret arbitrary JSON numbers as local parent ids. Row deletion follows its existing owner; any new known local-ID path requires a specific policy/test, not this opaque classification."
+  },
+  "library_files.swap_source_declaration": {
+    "table": "library_files",
+    "column": "swap_source_declaration",
+    "policy": "Known local source/job identity carrier: preserve its declaration/execution/audit owner and identity proof. C uses existing source_purged/source_trashed/lifetime helpers; no arbitrary integer rewrite or new lookup by reused id."
+  },
+  "library_file_makerworld_meta.compatible_models": {
+    "table": "library_file_makerworld_meta",
+    "column": "compatible_models",
+    "policy": "Explicit opaque content/protocol/settings/history carrier: C does not interpret arbitrary JSON numbers as local parent ids. Row deletion follows its existing owner; any new known local-ID path requires a specific policy/test, not this opaque classification."
+  },
+  "library_file_makerworld_meta.materials": {
+    "table": "library_file_makerworld_meta",
+    "column": "materials",
+    "policy": "Explicit opaque content/protocol/settings/history carrier: C does not interpret arbitrary JSON numbers as local parent ids. Row deletion follows its existing owner; any new known local-ID path requires a specific policy/test, not this opaque classification."
+  },
+  "library_file_makerworld_meta.raw_payload": {
+    "table": "library_file_makerworld_meta",
+    "column": "raw_payload",
+    "policy": "Explicit opaque content/protocol/settings/history carrier: C does not interpret arbitrary JSON numbers as local parent ids. Row deletion follows its existing owner; any new known local-ID path requires a specific policy/test, not this opaque classification."
+  },
+  "products.attachments": {
+    "table": "products",
+    "column": "attachments",
+    "policy": "Explicit opaque content/protocol/settings/history carrier: C does not interpret arbitrary JSON numbers as local parent ids. Row deletion follows its existing owner; any new known local-ID path requires a specific policy/test, not this opaque classification."
+  },
+  "product_parts.aliases": {
+    "table": "product_parts",
+    "column": "aliases",
+    "policy": "Explicit opaque content/protocol/settings/history carrier: C does not interpret arbitrary JSON numbers as local parent ids. Row deletion follows its existing owner; any new known local-ID path requires a specific policy/test, not this opaque classification."
+  },
+  "project_lines.extra_percentages": {
+    "table": "project_lines",
+    "column": "extra_percentages",
+    "policy": "Explicit opaque content/protocol/settings/history carrier: C does not interpret arbitrary JSON numbers as local parent ids. Row deletion follows its existing owner; any new known local-ID path requires a specific policy/test, not this opaque classification."
+  },
+  "project_lines.part_count_adjustments": {
+    "table": "project_lines",
+    "column": "part_count_adjustments",
+    "policy": "Explicit opaque content/protocol/settings/history carrier: C does not interpret arbitrary JSON numbers as local parent ids. Row deletion follows its existing owner; any new known local-ID path requires a specific policy/test, not this opaque classification."
+  },
+  "users.inbox_events": {
+    "table": "users",
+    "column": "inbox_events",
+    "policy": "Explicit opaque content/protocol/settings/history carrier: C does not interpret arbitrary JSON numbers as local parent ids. Row deletion follows its existing owner; any new known local-ID path requires a specific policy/test, not this opaque classification."
+  },
+  "telegram_chats.notify_events": {
+    "table": "telegram_chats",
+    "column": "notify_events",
+    "policy": "Explicit opaque content/protocol/settings/history carrier: C does not interpret arbitrary JSON numbers as local parent ids. Row deletion follows its existing owner; any new known local-ID path requires a specific policy/test, not this opaque classification."
+  },
+  "telegram_chats.printer_ids": {
+    "table": "telegram_chats",
+    "column": "printer_ids",
+    "policy": "Explicitly outside C mutation scope: configured recipient/bot authority is owned by its credential/subscription lifecycle. Preserve NULL/[] semantics; C claims no ID-reuse repair here and must not broaden recipients. Separate scope-lifetime follow-up if review proves a defect."
+  },
+  "api_keys.printer_ids": {
+    "table": "api_keys",
+    "column": "printer_ids",
+    "policy": "C in-scope verify-equivalent: existing printer deletion prunes the deleted id under key ownership/row lock; empty list stays [], never NULL/all"
+  },
+  "auto_queue_returns.source_basis": {
+    "table": "auto_queue_returns",
+    "column": "source_basis",
+    "policy": "Existing domain-owned immutable or addressed execution/source/audit carrier: preserve proofs/snapshots; never infer live ownership or apply integer-based cleanup; C edits only through its named existing owner and journals name snapshots"
+  },
+  "auto_queue_returns.dispatch_evidence": {
+    "table": "auto_queue_returns",
+    "column": "dispatch_evidence",
+    "policy": "Existing domain-owned immutable or addressed execution/source/audit carrier: preserve proofs/snapshots; never infer live ownership or apply integer-based cleanup; C edits only through its named existing owner and journals name snapshots"
+  },
+  "groups.permissions": {
+    "table": "groups",
+    "column": "permissions",
+    "policy": "Explicit opaque content/protocol/settings/history carrier: C does not interpret arbitrary JSON numbers as local parent ids. Row deletion follows its existing owner; any new known local-ID path requires a specific policy/test, not this opaque classification."
+  },
+  "notification_providers.subscribed_events": {
+    "table": "notification_providers",
+    "column": "subscribed_events",
+    "policy": "Explicit opaque content/protocol/settings/history carrier: C does not interpret arbitrary JSON numbers as local parent ids. Row deletion follows its existing owner; any new known local-ID path requires a specific policy/test, not this opaque classification."
+  },
+  "notification_providers.printer_ids": {
+    "table": "notification_providers",
+    "column": "printer_ids",
+    "policy": "Explicitly outside C mutation scope: configured recipient/bot authority is owned by its credential/subscription lifecycle. Preserve NULL/[] semantics; C claims no ID-reuse repair here and must not broaden recipients. Separate scope-lifetime follow-up if review proves a defect."
+  },
+  "obico_events.facts": {
+    "table": "obico_events",
+    "column": "facts",
+    "policy": "Explicit opaque content/protocol/settings/history carrier: C does not interpret arbitrary JSON numbers as local parent ids. Row deletion follows its existing owner; any new known local-ID path requires a specific policy/test, not this opaque classification."
+  },
+  "obico_events.raw_boxes": {
+    "table": "obico_events",
+    "column": "raw_boxes",
+    "policy": "Explicit opaque content/protocol/settings/history carrier: C does not interpret arbitrary JSON numbers as local parent ids. Row deletion follows its existing owner; any new known local-ID path requires a specific policy/test, not this opaque classification."
+  },
+  "order_working_plans.entries": {
+    "table": "order_working_plans",
+    "column": "entries",
+    "policy": "Explicit opaque content/protocol/settings/history carrier: C does not interpret arbitrary JSON numbers as local parent ids. Row deletion follows its existing owner; any new known local-ID path requires a specific policy/test, not this opaque classification."
+  },
+  "order_working_plans.facts": {
+    "table": "order_working_plans",
+    "column": "facts",
+    "policy": "Explicit opaque content/protocol/settings/history carrier: C does not interpret arbitrary JSON numbers as local parent ids. Row deletion follows its existing owner; any new known local-ID path requires a specific policy/test, not this opaque classification."
+  },
+  "order_working_plans.saved_entries": {
+    "table": "order_working_plans",
+    "column": "saved_entries",
+    "policy": "Explicit opaque content/protocol/settings/history carrier: C does not interpret arbitrary JSON numbers as local parent ids. Row deletion follows its existing owner; any new known local-ID path requires a specific policy/test, not this opaque classification."
+  },
+  "order_working_plans.saved_facts": {
+    "table": "order_working_plans",
+    "column": "saved_facts",
+    "policy": "Explicit opaque content/protocol/settings/history carrier: C does not interpret arbitrary JSON numbers as local parent ids. Row deletion follows its existing owner; any new known local-ID path requires a specific policy/test, not this opaque classification."
+  },
+  "order_plan_submissions.request": {
+    "table": "order_plan_submissions",
+    "column": "request",
+    "policy": "Explicit opaque content/protocol/settings/history carrier: C does not interpret arbitrary JSON numbers as local parent ids. Row deletion follows its existing owner; any new known local-ID path requires a specific policy/test, not this opaque classification."
+  },
+  "order_plan_receipts.outcome": {
+    "table": "order_plan_receipts",
+    "column": "outcome",
+    "policy": "Explicit opaque content/protocol/settings/history carrier: C does not interpret arbitrary JSON numbers as local parent ids. Row deletion follows its existing owner; any new known local-ID path requires a specific policy/test, not this opaque classification."
+  },
+  "print_completion_receipts.assessment": {
+    "table": "print_completion_receipts",
+    "column": "assessment",
+    "policy": "Explicit opaque content/protocol/settings/history carrier: C does not interpret arbitrary JSON numbers as local parent ids. Row deletion follows its existing owner; any new known local-ID path requires a specific policy/test, not this opaque classification."
+  },
+  "print_state_recovery_actions.result": {
+    "table": "print_state_recovery_actions",
+    "column": "result",
+    "policy": "Existing domain-owned immutable or addressed execution/source/audit carrier: preserve proofs/snapshots; never infer live ownership or apply integer-based cleanup; C edits only through its named existing owner and journals name snapshots"
+  },
+  "active_print_sessions.ams_mapping": {
+    "table": "active_print_sessions",
+    "column": "ams_mapping",
+    "policy": "Explicit opaque content/protocol/settings/history carrier: C does not interpret arbitrary JSON numbers as local parent ids. Row deletion follows its existing owner; any new known local-ID path requires a specific policy/test, not this opaque classification."
+  },
+  "active_print_sessions.spool_assignments": {
+    "table": "active_print_sessions",
+    "column": "spool_assignments",
+    "policy": "Known local spool assignments: current live spool accounting owner, outside C navigation cleanup; active execution deletion refuses. Preserve grams/source identities/history; never integer-prune assignments."
+  },
+  "active_print_sessions.tray_remain_start": {
+    "table": "active_print_sessions",
+    "column": "tray_remain_start",
+    "policy": "Explicit opaque content/protocol/settings/history carrier: C does not interpret arbitrary JSON numbers as local parent ids. Row deletion follows its existing owner; any new known local-ID path requires a specific policy/test, not this opaque classification."
+  },
+  "active_print_sessions.tray_change_log": {
+    "table": "active_print_sessions",
+    "column": "tray_change_log",
+    "policy": "Explicit opaque content/protocol/settings/history carrier: C does not interpret arbitrary JSON numbers as local parent ids. Row deletion follows its existing owner; any new known local-ID path requires a specific policy/test, not this opaque classification."
+  },
+  "active_print_spoolman.filament_usage": {
+    "table": "active_print_spoolman",
+    "column": "filament_usage",
+    "policy": "Explicit opaque content/protocol/settings/history carrier: C does not interpret arbitrary JSON numbers as local parent ids. Row deletion follows its existing owner; any new known local-ID path requires a specific policy/test, not this opaque classification."
+  },
+  "active_print_spoolman.ams_trays": {
+    "table": "active_print_spoolman",
+    "column": "ams_trays",
+    "policy": "Explicit opaque content/protocol/settings/history carrier: C does not interpret arbitrary JSON numbers as local parent ids. Row deletion follows its existing owner; any new known local-ID path requires a specific policy/test, not this opaque classification."
+  },
+  "active_print_spoolman.slot_to_tray": {
+    "table": "active_print_spoolman",
+    "column": "slot_to_tray",
+    "policy": "Explicit opaque content/protocol/settings/history carrier: C does not interpret arbitrary JSON numbers as local parent ids. Row deletion follows its existing owner; any new known local-ID path requires a specific policy/test, not this opaque classification."
+  },
+  "active_print_spoolman.layer_usage": {
+    "table": "active_print_spoolman",
+    "column": "layer_usage",
+    "policy": "Explicit opaque content/protocol/settings/history carrier: C does not interpret arbitrary JSON numbers as local parent ids. Row deletion follows its existing owner; any new known local-ID path requires a specific policy/test, not this opaque classification."
+  },
+  "active_print_spoolman.filament_properties": {
+    "table": "active_print_spoolman",
+    "column": "filament_properties",
+    "policy": "Explicit opaque content/protocol/settings/history carrier: C does not interpret arbitrary JSON numbers as local parent ids. Row deletion follows its existing owner; any new known local-ID path requires a specific policy/test, not this opaque classification."
+  },
+  "active_print_spoolman.tray_remain_start": {
+    "table": "active_print_spoolman",
+    "column": "tray_remain_start",
+    "policy": "Explicit opaque content/protocol/settings/history carrier: C does not interpret arbitrary JSON numbers as local parent ids. Row deletion follows its existing owner; any new known local-ID path requires a specific policy/test, not this opaque classification."
+  },
+  "print_archive_parts.identify_ids": {
+    "table": "print_archive_parts",
+    "column": "identify_ids",
+    "policy": "Explicit opaque content/protocol/settings/history carrier: C does not interpret arbitrary JSON numbers as local parent ids. Row deletion follows its existing owner; any new known local-ID path requires a specific policy/test, not this opaque classification."
+  },
+  "auto_queue_items.order_print_options": {
+    "table": "auto_queue_items",
+    "column": "order_print_options",
+    "policy": "Explicit opaque content/protocol/settings/history carrier: C does not interpret arbitrary JSON numbers as local parent ids. Row deletion follows its existing owner; any new known local-ID path requires a specific policy/test, not this opaque classification."
+  },
+  "auto_queue_items.failed_return_proof": {
+    "table": "auto_queue_items",
+    "column": "failed_return_proof",
+    "policy": "Explicit opaque content/protocol/settings/history carrier: C does not interpret arbitrary JSON numbers as local parent ids. Row deletion follows its existing owner; any new known local-ID path requires a specific policy/test, not this opaque classification."
+  },
+  "auto_queue_items.auto_eject_settings": {
+    "table": "auto_queue_items",
+    "column": "auto_eject_settings",
+    "policy": "Explicit opaque content/protocol/settings/history carrier: C does not interpret arbitrary JSON numbers as local parent ids. Row deletion follows its existing owner; any new known local-ID path requires a specific policy/test, not this opaque classification."
+  },
+  "auto_queue_items.source_snapshot": {
+    "table": "auto_queue_items",
+    "column": "source_snapshot",
+    "policy": "Known local source/job identity carrier: preserve its declaration/execution/audit owner and identity proof. C uses existing source_purged/source_trashed/lifetime helpers; no arbitrary integer rewrite or new lookup by reused id."
+  },
+  "connector_submissions.manifest": {
+    "table": "connector_submissions",
+    "column": "manifest",
+    "policy": "Existing domain-owned immutable or addressed execution/source/audit carrier: preserve proofs/snapshots; never infer live ownership or apply integer-based cleanup; C edits only through its named existing owner and journals name snapshots"
+  },
+  "connector_submission_entries.published_receipt": {
+    "table": "connector_submission_entries",
+    "column": "published_receipt",
+    "policy": "Explicit opaque content/protocol/settings/history carrier: C does not interpret arbitrary JSON numbers as local parent ids. Row deletion follows its existing owner; any new known local-ID path requires a specific policy/test, not this opaque classification."
+  },
+  "label_templates.elements": {
+    "table": "label_templates",
+    "column": "elements",
+    "policy": "Explicit opaque content/protocol/settings/history carrier: C does not interpret arbitrary JSON numbers as local parent ids. Row deletion follows its existing owner; any new known local-ID path requires a specific policy/test, not this opaque classification."
+  },
+  "plate_render_objects.tools": {
+    "table": "plate_render_objects",
+    "column": "tools",
+    "policy": "Explicit opaque content/protocol/settings/history carrier: C does not interpret arbitrary JSON numbers as local parent ids. Row deletion follows its existing owner; any new known local-ID path requires a specific policy/test, not this opaque classification."
+  },
+  "print_options_preferences.options": {
+    "table": "print_options_preferences",
+    "column": "options",
+    "policy": "Explicit opaque content/protocol/settings/history carrier: C does not interpret arbitrary JSON numbers as local parent ids. Row deletion follows its existing owner; any new known local-ID path requires a specific policy/test, not this opaque classification."
+  },
+  "smart_plug_meter_incidents.evidence": {
+    "table": "smart_plug_meter_incidents",
+    "column": "evidence",
+    "policy": "Explicit opaque content/protocol/settings/history carrier: C does not interpret arbitrary JSON numbers as local parent ids. Row deletion follows its existing owner; any new known local-ID path requires a specific policy/test, not this opaque classification."
+  },
+  "stock_issues.supplier": {
+    "table": "stock_issues",
+    "column": "supplier",
+    "policy": "Explicit opaque content/protocol/settings/history carrier: C does not interpret arbitrary JSON numbers as local parent ids. Row deletion follows its existing owner; any new known local-ID path requires a specific policy/test, not this opaque classification."
+  },
+  "stock_issue_lines.configuration": {
+    "table": "stock_issue_lines",
+    "column": "configuration",
+    "policy": "Explicit opaque content/protocol/settings/history carrier: C does not interpret arbitrary JSON numbers as local parent ids. Row deletion follows its existing owner; any new known local-ID path requires a specific policy/test, not this opaque classification."
+  },
+  "swap_source_declaration_audit.jobs": {
+    "table": "swap_source_declaration_audit",
+    "column": "jobs",
+    "policy": "Known local source/job identity carrier: preserve its declaration/execution/audit owner and identity proof. C uses existing source_purged/source_trashed/lifetime helpers; no arbitrary integer rewrite or new lookup by reused id."
+  },
+  "user_notifications.extra_data": {
+    "table": "user_notifications",
+    "column": "extra_data",
+    "policy": "Explicit opaque content/protocol/settings/history carrier: C does not interpret arbitrary JSON numbers as local parent ids. Row deletion follows its existing owner; any new known local-ID path requires a specific policy/test, not this opaque classification."
+  },
+  "zigbee_devices.reporting": {
+    "table": "zigbee_devices",
+    "column": "reporting",
+    "policy": "Explicit opaque content/protocol/settings/history carrier: C does not interpret arbitrary JSON numbers as local parent ids. Row deletion follows its existing owner; any new known local-ID path requires a specific policy/test, not this opaque classification."
+  }
+}

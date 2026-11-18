@@ -2671,6 +2671,7 @@ class BambuMQTTClient:
         # The routing code of the last ``start_print`` that published nothing (None after one that did).
         self.last_start_refusal: str | None = None
         self._last_message_time: float = 0.0  # Track when we last received a message
+        self._connect_started_at: float | None = None
         # Count of report-topic messages received since the last (re)connect.
         # Lets check_staleness() distinguish "printer never sent a status
         # report" (typically a wrong / mis-cased serial) from a normal quiet
@@ -9221,6 +9222,7 @@ class BambuMQTTClient:
         # connections, and a reason left over from a failure two attempts ago
         # would be read back as the reason for the current one.
         self._last_connect_error = None
+        self._connect_started_at = time.time()
         try:
             self._client.connect_async(self.ip_address, self.MQTT_PORT, keepalive=30)
             self._client.loop_start()

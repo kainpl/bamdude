@@ -15,7 +15,7 @@ only the rows that came back `valid`.
 import csv
 import io
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 
 from pydantic import BaseModel, ValidationError
 from sqlalchemy import select
@@ -218,7 +218,7 @@ def _normalize_rgba(value: str) -> str | None:
 
 
 def _parse_datetime(value: str) -> datetime | None:
-    """Parse an ISO-8601 timestamp, or None if it isn't valid.
+    """Parse an ISO-8601 timestamp as naive UTC, or None if it isn't valid.
 
     Accepts what `datetime.isoformat()` produces (what export writes) plus a
     trailing 'Z' for UTC, which `fromisoformat` rejects before Python 3.11.
@@ -229,8 +229,11 @@ def _parse_datetime(value: str) -> datetime | None:
     if raw.endswith("Z"):
         raw = raw[:-1] + "+00:00"
     try:
-        return datetime.fromisoformat(raw)
-    except ValueError:
+        parsed = datetime.fromisoformat(raw)
+        if parsed.tzinfo is not None:
+            parsed = parsed.astimezone(timezone.utc).replace(tzinfo=None)
+        return parsed
+    except (ValueError, OverflowError):
         return None
 
 

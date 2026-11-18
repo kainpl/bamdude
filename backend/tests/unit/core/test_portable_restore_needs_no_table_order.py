@@ -67,6 +67,8 @@ async def test_importing_a_file_does_not_sort(tmp_path, monkeypatch):
     await sync_source.dispose()
     with sqlite3.connect(source) as raw:
         raw.execute("INSERT INTO settings (key, value) VALUES ('probe', '1')")
+        raw.execute("CREATE TABLE _migrations(version INTEGER)")
+        raw.execute("INSERT INTO _migrations VALUES(41)")
 
     monkeypatch.setattr("backend.app.core.db_dialect.is_postgres", lambda: False)
     target = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'target.db'}")

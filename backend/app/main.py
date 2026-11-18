@@ -110,7 +110,7 @@ from backend.app.api.routes import (
 )
 from backend.app.api.routes.maintenance import _get_printer_maintenance_internal, ensure_default_types
 from backend.app.api.routes.support import init_debug_logging
-from backend.app.core import process_gc, query_timing
+from backend.app.core import process_gc, process_resources, query_timing
 from backend.app.core.config import APP_VERSION, settings as app_settings
 from backend.app.core.database import async_session, engine, init_db
 from backend.app.core.tasks import spawn_background_task
@@ -9617,7 +9617,10 @@ async def _on_print_complete_impl(
                 # Bump usage counters on the source library file so admins can
                 # sort by "last printed" and (eventually) auto-purge stale
                 # files — #1008.
-                await _bump_library_file_usage_if_completed(db, queue_item, queue_status)
+                from backend.app.services import library_usage
+
+                if queue_status == "completed":
+                    await library_usage.stage(db, bound_archive, queue_item.library_file_id)
 
                 # Update queue status and counters
                 from backend.app.services.queue_counters import (
@@ -9687,6 +9690,7 @@ async def _on_print_complete_impl(
                         bound_archive.extra_data = extra
                 await db.commit()
                 logger.info("Updated queue item %s status to %s", queue_item.id, queue_status)
+                await library_usage.finish(db)
                 if queue_status == "failed" and bound_archive is not None:
                     from backend.app.services.auto_queue_return import capture_candidate
 
@@ -9757,13 +9761,47 @@ async def _on_print_complete_impl(
 
                         _cali_lib_file = await db.get(_CaliLibFile, queue_item.library_file_id)
                         if _cali_lib_file is not None:
-                            await library_trash_service.hard_delete_now(db, _cali_lib_file)
-                            logger.info(
-                                "Calibration cleanup: removed library file %s (%s status=%s)",
-                                queue_item.library_file_id,
-                                queue_item.id,
-                                queue_status,
-                            )
+                            from sqlalchemy.ext.asyncio import async_sessionmaker
+
+                            from backend.app.services.library_delete_cleanup import finish
+                            from backend.app.services.library_delete_scope import library_delete_scope
+                            from backend.app.services.library_identity import LibraryIdentity
+
+                            cali_source = LibraryIdentity.capture(_cali_lib_file)
+                            factory = async_sessionmaker(db.bind, expire_on_commit=False)
+                            await db.commit()  # calibration reconciliation commits before cleanup
+                            await db.close()  # no old SQLite reader/writer may wait for itself
+                            cali_removed = False
+                            async with factory() as cleanup_db:
+                                current = await cleanup_db.get(_CaliLibFile, cali_source.id)
+                                if cali_source.matches(current):
+                                    async with library_delete_scope(cleanup_db, [cali_source]):
+                                        current = await cleanup_db.get(
+                                            _CaliLibFile, cali_source.id, populate_existing=True
+                                        )
+                                        # The terminal session may still cache the old
+                                        # numeric link after a concurrent purge. Read
+                                        # navigation afresh only after the library/job
+                                        # guards; a reused source id grants no right.
+                                        linked_job_id = await cleanup_db.scalar(
+                                            select(PrintQueueItem.id).where(
+                                                PrintQueueItem.id == queue_item.id,
+                                                PrintQueueItem.recovery_identity == queue_item.recovery_identity,
+                                                PrintQueueItem.library_file_id == cali_source.id,
+                                            )
+                                        )
+                                        if linked_job_id is not None:
+                                            await library_trash_service.purge_rows(cleanup_db, current)
+                                            await cleanup_db.commit()
+                                            cali_removed = True
+                                    await finish(cleanup_db)
+                            if cali_removed:
+                                logger.info(
+                                    "Calibration cleanup: removed library file %s (%s status=%s)",
+                                    queue_item.library_file_id,
+                                    queue_item.id,
+                                    queue_status,
+                                )
                     except Exception:
                         logger.exception(
                             "Failed to clean up calibration LibraryFile %s for queue_item %s",
@@ -13275,6 +13313,7 @@ async def _application_lifespan(app: FastAPI):
         await _embedded_pg.stop()
 
 
+from backend.app.core.schema_repair_state import SchemaRepairPending
 from backend.app.services.farm_startup_guard import FarmReadyMiddleware, FarmStartupRefused, farm_startup_guard
 
 
@@ -13283,6 +13322,7 @@ async def lifespan(app: FastAPI):
     # ⚠️ First, before the farm guard, the database or any manager: the start-up heap is frozen
     # once per process, and a server that has started must never be (core/process_gc.py).
     process_gc.prepare_startup_heap()
+    process_resources.raise_nofile_limit()
     _protect_uvicorn_log_handlers()
     farm_startup_guard.start(Path(app_settings.data_dir))
     from backend.app.core.auth_runtime import auth_runtime
@@ -13325,6 +13365,26 @@ async def lifespan(app: FastAPI):
                 await connector_runtime.shutdown()
                 await mcp_runtime.shutdown()
                 farm_startup_guard.close_admission()
+    except SchemaRepairPending as exc:
+        from backend.app.core import schema_repair_maintenance
+
+        auth_runtime.close_admission()
+        close_cloud_admission()
+        farm_startup_guard.close_admission()
+        schema_repair_maintenance.active = True
+        logging.getLogger(__name__).warning("Schema repair maintenance: %s", exc.reason)
+        try:
+            yield
+        finally:
+            schema_repair_maintenance.active = False
+            from backend.app.core.database import engine
+
+            await engine.dispose()
+            if app_settings.embedded_postgres:
+                from backend.app.services import embedded_postgres as _embedded_pg
+
+                await _embedded_pg.stop()
+            farm_startup_guard.finish(clean=False)
     except BaseException:
         auth_runtime.close_admission()
         close_cloud_admission()
@@ -14283,6 +14343,10 @@ from backend.app.services.live_media import LiveMediaDeliveryMiddleware, install
 
 install_live_media_routes(app)
 app.add_middleware(LiveMediaDeliveryMiddleware)
+
+from backend.app.core.schema_repair_maintenance import SchemaRepairMaintenanceMiddleware
+
+app.add_middleware(SchemaRepairMaintenanceMiddleware)
 
 
 @app.get("/{full_path:path}")

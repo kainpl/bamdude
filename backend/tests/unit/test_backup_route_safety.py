@@ -15,13 +15,29 @@ from fastapi import HTTPException, UploadFile
 from backend.app.api.routes import settings as route
 
 
-def upload(tmp_path, *, damaged=False):
+@pytest.fixture(autouse=True)
+def isolated_measurement_buffer(monkeypatch):
+    from backend.app.services import measurement_buffer as measurements
+
+    # Restore must really retire its buffer, without retiring later tests' owner.
+    monkeypatch.setattr(measurements, "measurement_buffer", measurements.MeasurementBuffer())
+
+
+def upload(tmp_path, *, damaged=False, migration_level=41):
     source = tmp_path / "source.db"
     if damaged:
         source.write_bytes(b"corrupt")
     else:
         with closing(sqlite3.connect(source)) as db:
-            db.executescript("CREATE TABLE printers(id INTEGER PRIMARY KEY); CREATE TABLE settings(key TEXT);")
+            db.executescript(
+                "CREATE TABLE printers(id INTEGER PRIMARY KEY); CREATE TABLE settings(key TEXT,value TEXT);"
+            )
+            # A deliberately minimal supported-level fixture: imports are
+            # injected below. Real historical schema lives in the G02 fixtures.
+            if migration_level is not None:
+                db.execute("CREATE TABLE _migrations(version INTEGER)")
+                db.execute("INSERT INTO _migrations VALUES (?)", (migration_level,))
+                db.commit()
     payload = io.BytesIO()
     with zipfile.ZipFile(payload, "w") as archive:
         archive.write(source, "bamdude.db")
@@ -32,6 +48,50 @@ def upload(tmp_path, *, damaged=False):
         archive.writestr("icons/", b"")
     payload.seek(0)
     return UploadFile(file=payload, filename="backup.zip")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("level", [21, None])
+async def test_unsupported_pg_source_refuses_before_drains_and_file_work(tmp_path, monkeypatch, level):
+    from backend.app.services.backup_files import FileRestore
+
+    monkeypatch.setattr("backend.app.core.db_dialect.is_sqlite", lambda: False)
+    prepare = Mock()
+    drain = AsyncMock()
+    monkeypatch.setattr(FileRestore, "prepare", prepare)
+    monkeypatch.setattr(route, "_quiesce_part_render", drain)
+    db = AsyncMock()
+    with pytest.raises(HTTPException) as caught:
+        await route.restore_backup(file=upload(tmp_path, migration_level=level), db=db, _=None)
+    assert caught.value.status_code == 400
+    assert caught.value.detail["error"] == "sqlite_source_below_supported_level"
+    assert "COPY" in caught.value.detail["message"]
+    prepare.assert_not_called()
+    drain.assert_not_awaited()
+    db.close.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_source_copy_failure_is_a_clear_400_before_drain(tmp_path, monkeypatch):
+    from backend.app.core import sqlite_import_source
+    from backend.app.services.backup_files import FileRestore
+
+    monkeypatch.setattr("backend.app.core.db_dialect.is_sqlite", lambda: False)
+    prepare = Mock()
+    drain = AsyncMock()
+    monkeypatch.setattr(FileRestore, "prepare", prepare)
+    monkeypatch.setattr(route, "_quiesce_part_render", drain)
+    monkeypatch.setattr(sqlite_import_source.shutil, "copyfile", Mock(side_effect=OSError(28, "private-temp-path")))
+    db = AsyncMock()
+    with pytest.raises(HTTPException) as caught:
+        await route.restore_backup(file=upload(tmp_path), db=db, _=None)
+    assert caught.value.status_code == 400
+    assert caught.value.detail["error"] == "sqlite_source_read_failed"
+    assert "temporary directory" in caught.value.detail["message"]
+    assert "private-temp-path" not in caught.value.detail["message"]
+    prepare.assert_not_called()
+    drain.assert_not_awaited()
+    db.close.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -65,7 +125,7 @@ async def test_obico_drain_refusal_precedes_any_live_database_or_file_swap(tmp_p
 async def test_corrupt_backup_is_rejected_before_service_or_database_changes(tmp_path, monkeypatch):
     stop = AsyncMock()
     monkeypatch.setattr(
-        "backend.app.services.virtual_printer.virtual_printer_manager", SimpleNamespace(is_enabled=True, configure=stop)
+        "backend.app.services.virtual_printer.virtual_printer_manager", SimpleNamespace(drain_for_restore=stop)
     )
     close = AsyncMock()
     monkeypatch.setattr("backend.app.core.database.close_all_connections", close)
@@ -74,6 +134,54 @@ async def test_corrupt_backup_is_rejected_before_service_or_database_changes(tmp
     assert caught.value.status_code == 400
     stop.assert_not_awaited()
     close.assert_not_awaited()
+
+
+async def test_part_render_refusal_keeps_vps_retired_until_restart(tmp_path, monkeypatch):
+    from backend.app.core.auth_runtime import auth_runtime
+    from backend.app.services import library_scan, part_render_scheduler, virtual_printer
+    from backend.app.services.backup_files import FileRestore
+    from backend.app.services.credential_rollout import credential_rollout
+    from backend.app.services.farm_startup_guard import farm_startup_guard
+    from backend.app.services.git_backup import git_backup_service
+    from backend.app.services.slice_dispatch import slice_dispatch
+    from backend.app.services.virtual_printer.manager import VirtualPrinterInstance, VirtualPrinterManager
+
+    manager = VirtualPrinterManager()
+    vp = VirtualPrinterInstance(
+        vp_id=7,
+        name="Owned",
+        mode="file_manager",
+        model="N2S",
+        access_code="12345678",
+        serial_suffix="12345678",
+        base_dir=tmp_path,
+    )
+    manager._instances[vp.id] = vp
+    monkeypatch.setattr(virtual_printer, "virtual_printer_manager", manager)
+    monkeypatch.setattr(farm_startup_guard, "active", False)
+    for owner in (git_backup_service, slice_dispatch, library_scan, credential_rollout, auth_runtime):
+        monkeypatch.setattr(owner, "quiesce_for_restore", AsyncMock(return_value=True))
+    render_stop = AsyncMock(return_value=False)
+    monkeypatch.setattr(part_render_scheduler, "stop_part_render_scheduler", render_stop)
+    prepare, apply = Mock(), Mock()
+    monkeypatch.setattr(FileRestore, "prepare", prepare)
+    monkeypatch.setattr(FileRestore, "apply", apply)
+
+    with pytest.raises(HTTPException) as refused:
+        await route.restore_backup(file=upload(tmp_path), db=AsyncMock(), _=None)
+
+    assert refused.value.status_code == 409
+    render_stop.assert_awaited_once_with("restore")
+    assert farm_startup_guard.restart_required
+    assert manager._drain_task.done() and not manager._instances
+    assert vp.activities.closed
+    prepare.assert_not_called()
+    apply.assert_not_called()
+    sync = AsyncMock()
+    monkeypatch.setattr(manager, "_sync_from_db_locked", sync)
+    manager.set_session_factory(Mock(name="session_factory"))
+    await manager.sync_from_db()
+    sync.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -96,7 +204,12 @@ async def test_failed_database_swap_restores_previous_key_and_keeps_identity(tmp
     monkeypatch.setattr(route.app_settings, "archive_dir", live / "custom-archive")
     monkeypatch.setattr("backend.app.core.db_dialect.is_sqlite", lambda: False)
     monkeypatch.setattr(
-        "backend.app.services.virtual_printer.virtual_printer_manager", SimpleNamespace(is_enabled=False)
+        "backend.app.services.virtual_printer.virtual_printer_manager",
+        SimpleNamespace(
+            drain_for_restore=AsyncMock(
+                return_value={"proxy_connections_cut": {}, "camera_leases_released": 0, "uploads_without_options": 0}
+            )
+        ),
     )
     monkeypatch.setattr("backend.app.services.print_scheduler.scheduler", SimpleNamespace(stop=Mock()))
     stop_plug_scheduler = AsyncMock()
@@ -112,7 +225,8 @@ async def test_failed_database_swap_restores_previous_key_and_keeps_identity(tmp
     )
     monkeypatch.setattr("backend.app.core.database.close_all_connections", AsyncMock())
 
-    async def failed_import(*args):
+    async def failed_import(*args, acceptance=None):
+        assert acceptance is None
         assert key.read_bytes() == b"backup-key"
         assert (live / "custom-archive/restored.3mf").read_bytes() == b"restored-model"
         assert not (live / "icons/old.png").exists()
