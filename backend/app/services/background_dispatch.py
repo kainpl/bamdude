@@ -1735,6 +1735,12 @@ class BackgroundDispatchService:
         async with self._lock:
             # Check active jobs first
             active_state = self._active_jobs.get(job_id)
+            if active_state is not None and _published(active_state.job):
+                # The dispatch is over: the command has gone and what follows is a print, which is
+                # stopped from the printer's card (owner, 2026-11-18). Nothing past the send reads
+                # a cancel, so taking one here only showed «Cancelling» over a print that started.
+                logger.info("Cancel refused for dispatch job %s: its start command was sent", job_id)
+                return {"cancelled": False, "reason": "start_sent"}
             if active_state is not None:
                 logger.info("Cancel requested for active dispatch job %s", job_id)
                 self._cancel_requested_job_ids.add(job_id)
@@ -2380,6 +2386,8 @@ class BackgroundDispatchService:
                     "printer_id": active.job.printer_id,
                     "printer_name": active.job.printer_name,
                     "message": active.message,
+                    # Cancel belongs to the dispatch; once the start command has gone it is a print.
+                    "cancellable": not _published(active.job),
                     "upload_bytes": active.upload_bytes,
                     "phase": active.phase,
                     "upload_total_bytes": active.upload_total_bytes,
@@ -3337,6 +3345,10 @@ class BackgroundDispatchService:
                 # From here on only the printer's answer decides the attempt; every
                 # write below is bookkeeping (D-R4).
                 await self._record_phase(db, job, dispatch_phase.SENT)
+                # Tells the window the dispatch is over, so it takes its Cancel button away.
+                await self._set_active_message(
+                    job, f"Start command sent to {printer_name}; waiting for the printer...", phase="sent"
+                )
                 # The row keeps the mapping the printer was actually sent.
                 await self._secondary(db, job, "the dispatched mapping", lambda: _record_dispatched_mapping(job))
 
@@ -4336,6 +4348,10 @@ class BackgroundDispatchService:
                 # From here on only the printer's answer decides the attempt; every
                 # write below is bookkeeping (D-R4).
                 await self._record_phase(db, job, dispatch_phase.SENT)
+                # Tells the window the dispatch is over, so it takes its Cancel button away.
+                await self._set_active_message(
+                    job, f"Start command sent to {printer_name}; waiting for the printer...", phase="sent"
+                )
                 # The row keeps the mapping the printer was actually sent.
                 await self._secondary(db, job, "the dispatched mapping", lambda: _record_dispatched_mapping(job))
 

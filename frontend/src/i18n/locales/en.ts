@@ -2494,6 +2494,7 @@ export default {
     cancelDispatchJob: 'Cancel dispatch job',
     cancel: 'Cancel',
     cancelling: 'Cancelling…',
+    stopFromPrinter: 'Command sent — stop the print from the printer card',
     awaitingPrinter: 'Awaiting printer…',
     status: {
       dispatched: 'Dispatched',
