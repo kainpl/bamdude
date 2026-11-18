@@ -31,7 +31,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core import database
-from backend.app.core.auth import RequireCameraStreamToken, RequirePermission
+from backend.app.core.auth import RequireAnyPermission, RequireCameraStreamToken, RequirePermission
 from backend.app.core.credential_config import lock_credential_config
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
@@ -191,9 +191,13 @@ def _drop_snapshot_url_that_is_the_stream(camera: Camera) -> bool:
 @router.get("/", response_model=list[CameraOut])
 async def list_cameras(
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.SETTINGS_READ),
+    _: User | None = RequireAnyPermission(Permission.SETTINGS_READ, Permission.CAMERA_VIEW),
 ):
-    """Every camera, with source presence and a safe host instead of credentials."""
+    """Every camera, with source presence and a safe host instead of credentials.
+
+    A camera viewer may list them (the answer carries no credential): the camera wall, the
+    printers page and a location's cameras read this list.
+    """
     rows = (await db.execute(select(Camera).order_by(Camera.name))).scalars().all()
     return [_out(camera) for camera in rows]
 

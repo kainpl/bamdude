@@ -718,7 +718,9 @@ describe('PrinterQueueWidget - Clear Plate', () => {
 
       await user.click(toggle);
       const lid = (await screen.findByTestId('part-defective-21')) as HTMLInputElement;
+      // An emptied counter settles on 0 when the field is left.
       await user.clear(lid);
+      await user.tab();
 
       await waitFor(() => expect(toggle).toHaveTextContent('Defects in this print'));
       expect(toggle).not.toHaveTextContent('Defects in this print: 1');

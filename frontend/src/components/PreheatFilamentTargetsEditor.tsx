@@ -1,4 +1,5 @@
 import { useTranslation } from 'react-i18next';
+import { NumberInput } from './NumberInput';
 import {
   DEFAULT_PREHEAT_FILAMENT_TARGETS,
   PREHEAT_FILAMENT_ORDER,
@@ -43,13 +44,14 @@ export function PreheatFilamentTargetsEditor({ value, onChange, disabled = false
               {label}
             </span>
             <div className="flex items-center gap-1">
-              <input
-                type="number"
+              <NumberInput
                 min={0}
                 max={MAX_CHAMBER_TEMP_C}
                 step={1}
                 value={current}
-                onChange={(e) => updateOne(key, parseInt(e.target.value, 10) || 0)}
+                onChange={(v) => updateOne(key, v)}
+                integer
+                fallback={0}
                 disabled={disabled}
                 className="w-16 px-2 py-1 bg-bambu-dark border border-bambu-dark-tertiary rounded text-white text-xs text-right focus:outline-none focus:border-bambu-green disabled:opacity-50"
               />

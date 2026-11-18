@@ -11,7 +11,12 @@ import { Collapsible } from './Collapsible';
  *  carries no name, and the bug-report panel lists affected printers by name. */
 type DiagnosticEntry = { name: string; result: PrinterDiagnosticResult };
 
-type ViewState = 'form' | 'logging' | 'stopping' | 'submitting' | 'success' | 'error';
+/**
+ * `review` sits between stopping the recording and sending the report (upstream #3363): Stop used
+ * to send at once, and so did the five-minute cap, with nobody clicking anything. A report goes to
+ * a public issue tracker, so it leaves only on its own explicit click.
+ */
+type ViewState = 'form' | 'logging' | 'stopping' | 'review' | 'submitting' | 'success' | 'error';
 
 const REPORT_STATUS_STYLES: Record<string, string> = {
   submitted: 'bg-bambu-dark-tertiary text-bambu-gray',
@@ -165,6 +170,11 @@ export function BugReportBubble({ showTrigger = true, open, onOpenChange, onLogg
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [startedAt, setStartedAt] = useState<number | null>(null);
   const [wasDebug, setWasDebug] = useState(false);
+  // The logs a stopped recording returned, held until the report is sent or discarded. Kept in
+  // memory only (size, and they are the user's to send): a reload loses the review.
+  const [heldLogs, setHeldLogs] = useState<string | null>(null);
+  const heldLogsRef = useRef(heldLogs);
+  heldLogsRef.current = heldLogs;
   const [reportsOpen, setReportsOpen] = useState(false);
   // Lazy: the list (and the relay status sync behind it) is fetched only
   // when the reporter actually expands "My reports".
@@ -243,10 +253,13 @@ export function BugReportBubble({ showTrigger = true, open, onOpenChange, onLogg
   // form reappearing for one of them would be a nasty little inconsistency.
   //
   // A run in progress is the exception (upstream #2847): the only thing that
-  // stops debug logging is Stop & Submit on the step this reset would discard.
+  // stops debug logging is the Stop button on the step this reset would discard.
+  // So is a stopped run waiting to be sent, and a failed send that still holds
+  // its logs: reopening the panel must not throw the recording away.
   useEffect(() => {
     if (!isOpen) return;
-    if (['logging', 'stopping', 'submitting'].includes(viewStateRef.current)) return;
+    if (['logging', 'stopping', 'review', 'submitting'].includes(viewStateRef.current)) return;
+    if (viewStateRef.current === 'error' && heldLogsRef.current !== null) return;
     setViewState('form');
     setDescription('');
     setEmail('');
@@ -377,8 +390,8 @@ export function BugReportBubble({ showTrigger = true, open, onOpenChange, onLogg
   };
 
   const handleStopLogging = async () => {
-    // The cap can fire while the panel is closed, and stopping submits: show
-    // the panel so that happens in front of the user, not behind them.
+    // The cap can fire while the panel is closed: show the panel, so the user
+    // finds the review waiting instead of a recording that silently ended.
     setIsOpen(true);
     // Over from here whichever way it goes — including a failed stop, where the
     // debug-logging banner surfaces a level that did not come back down.
@@ -387,7 +400,9 @@ export function BugReportBubble({ showTrigger = true, open, onOpenChange, onLogg
     setViewState('stopping');
     try {
       const stopResult = await bugReportApi.stopLogging(wasDebug);
-      await handleSubmitReport(stopResult.logs);
+      // Stopping sends nothing. The logs wait for the user's own Submit.
+      setHeldLogs(stopResult.logs ?? '');
+      setViewState('review');
     } catch (err) {
       setErrorMessage(err instanceof Error ? err.message : t('bugReport.unexpectedError'));
       setViewState('error');
@@ -395,7 +410,17 @@ export function BugReportBubble({ showTrigger = true, open, onOpenChange, onLogg
   };
   handleStopLoggingRef.current = handleStopLogging;
 
-  const handleSubmitReport = async (debugLogs: string) => {
+  const handleDiscard = () => {
+    setHeldLogs(null);
+    setDescription('');
+    setEmail('');
+    setScreenshot(null);
+    setErrorMessage('');
+    setViewState('form');
+  };
+
+  const handleSubmitReport = async () => {
+    const debugLogs = heldLogs ?? '';
     setViewState('submitting');
     try {
       const result = await bugReportApi.submit({
@@ -406,6 +431,7 @@ export function BugReportBubble({ showTrigger = true, open, onOpenChange, onLogg
         debug_logs: debugLogs || undefined,
       });
       if (result.success) {
+        setHeldLogs(null);
         setIssueUrl(result.issue_url || null);
         setIssueNumber(result.issue_number || null);
         setViewState('success');
@@ -734,13 +760,62 @@ export function BugReportBubble({ showTrigger = true, open, onOpenChange, onLogg
                     <p className="text-xs text-bambu-gray-dark mt-2">{t('bugReport.closeKeepsRecording')}</p>
                   </div>
 
-                  {/* Stop & Submit button */}
+                  {/* Stop button — ends the recording, sends nothing */}
                   <div className="flex justify-center">
                     <button
                       onClick={handleStopLogging}
                       className="px-4 py-2.5 text-sm font-medium text-white bg-red-500 hover:bg-red-600 rounded-lg transition-colors"
                     >
-                      {t('bugReport.stopAndSubmit')}
+                      {t('bugReport.stopLogging')}
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {viewState === 'review' && (
+                <div className="py-2 space-y-4">
+                  <div className="space-y-3 px-2">
+                    <div className="flex items-center gap-3">
+                      <CheckCircle2 className="w-5 h-5 text-status-ok flex-shrink-0" />
+                      <span className="text-sm text-status-ok">{t('bugReport.stepEnableLogging')}</span>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <CheckCircle2 className="w-5 h-5 text-status-ok flex-shrink-0" />
+                      <span className="text-sm text-status-ok">{t('bugReport.stepRecorded')}</span>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <span className="relative flex h-5 w-5 flex-shrink-0 items-center justify-center">
+                        <span className="relative inline-flex rounded-full h-3 w-3 bg-bambu-green"></span>
+                      </span>
+                      <span className="text-sm font-medium text-bambu-green">{t('bugReport.stepStopLogging')}</span>
+                    </div>
+                  </div>
+
+                  <div className="rounded-lg bg-bambu-dark border border-bambu-dark-tertiary p-3 space-y-2">
+                    <p className="text-sm font-medium text-white">{t('bugReport.reviewTitle')}</p>
+                    <p className="text-xs text-bambu-gray">{t('bugReport.reviewBody')}</p>
+                    <p className="text-xs text-bambu-gray-light whitespace-pre-wrap break-words max-h-24 overflow-y-auto">
+                      {description}
+                    </p>
+                    <p className="text-xs text-bambu-gray-dark">
+                      {t('bugReport.reviewLogLines', {
+                        count: heldLogs ? heldLogs.split('\n').filter((line) => line.trim()).length : 0,
+                      })}
+                    </p>
+                  </div>
+
+                  <div className="flex justify-end gap-2">
+                    <button
+                      onClick={handleDiscard}
+                      className="px-4 py-2 text-sm font-medium text-bambu-gray hover:text-white bg-bambu-dark-tertiary hover:bg-bambu-dark rounded-lg transition-colors"
+                    >
+                      {t('bugReport.discard')}
+                    </button>
+                    <button
+                      onClick={handleSubmitReport}
+                      className="px-4 py-2 text-sm font-medium text-white bg-red-500 hover:bg-red-600 rounded-lg transition-colors"
+                    >
+                      {t('bugReport.submitReport')}
                     </button>
                   </div>
                 </div>
@@ -798,11 +873,14 @@ export function BugReportBubble({ showTrigger = true, open, onOpenChange, onLogg
                   <p className="text-lg font-semibold text-white">{t('bugReport.submitFailed')}</p>
                   <p className="text-sm text-bambu-gray text-center">{errorMessage}</p>
                   <div className="flex gap-2 mt-4">
+                    {/* A failed send keeps the recording: back to the review, where it
+                        can be sent again. Without held logs (a failed start or stop)
+                        there is nothing to resend, so back to the form. */}
                     <button
-                      onClick={() => setViewState('form')}
+                      onClick={() => setViewState(heldLogs !== null ? 'review' : 'form')}
                       className="px-4 py-2 text-sm font-medium text-white bg-red-500 hover:bg-red-600 rounded-lg transition-colors"
                     >
-                      {t('bugReport.submit')}
+                      {heldLogs !== null ? t('bugReport.backToReview') : t('bugReport.submit')}
                     </button>
                     <button
                       onClick={handleClose}

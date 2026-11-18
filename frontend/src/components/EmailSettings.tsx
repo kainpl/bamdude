@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { NumberInput } from './NumberInput';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Mail, Send, Lock, Unlock, AlertTriangle, CheckCircle, Loader2 } from 'lucide-react';
@@ -328,10 +329,12 @@ function EmailSettingsContent() {
                   <label className="block text-sm font-medium text-white mb-2">
                     {t('settings.email.smtpPort') || 'SMTP Port'}
                   </label>
-                  <input
-                    type="number"
+                  <NumberInput
                     value={smtpSettings.smtp_port}
-                    onChange={(e) => handlePortChange(parseInt(e.target.value) || 587)}
+                    onChange={handlePortChange}
+                    min={1}
+                    integer
+                    fallback={587}
                     placeholder="587"
                     className={inputClasses}
                   />

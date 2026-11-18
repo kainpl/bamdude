@@ -10,6 +10,7 @@
  * copy-to-clipboard modal. Listings only ever show metadata.
  */
 import { useEffect, useMemo, useState } from 'react';
+import { NumberInput } from '../NumberInput';
 import { useTranslation } from 'react-i18next';
 import { Copy, Plus, Trash2, AlertTriangle } from 'lucide-react';
 import { api, type LongLivedToken } from '../../api/client';
@@ -112,19 +113,16 @@ function CreateTokenForm({ onCreated }: CreateTokenFormProps) {
           {canCreateMonitor && <option value="monitor">{t('monitor.tokenScope')}</option>}
         </Select>
         {scope === 'monitor' && <p className="text-sm text-bambu-gray md:col-span-4 md:order-last">{t('monitor.tokenDescription')}</p>}
-        <input
-          type="number"
+        <NumberInput
+          // Clamped client-side too (on blur) — backend will also enforce, but a
+          // clear hard cap in the input matches the policy and avoids confusing
+          // 400s on submit.
           min={1}
           max={MAX_LIFETIME_DAYS}
           required
           value={days}
-          onChange={(e) => {
-            const next = Number(e.target.value);
-            // Clamp client-side too — backend will also enforce, but a clear
-            // hard cap in the input matches the policy and avoids confusing
-            // 400s on submit.
-            setDays(Math.min(Math.max(next, 1), MAX_LIFETIME_DAYS));
-          }}
+          onChange={setDays}
+          fallback={1}
           className="px-3 py-2 bg-bambu-dark rounded-md text-white border border-bambu-dark-tertiary focus:border-bambu-green focus:outline-none"
           aria-label={t('cameraTokens.create.daysLabel')}
         />

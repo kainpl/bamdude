@@ -1,4 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { NumberInput } from './NumberInput';
 import { useTranslation } from 'react-i18next';
 import { Loader2, Trash2 } from 'lucide-react';
 import { useState } from 'react';
@@ -83,16 +84,13 @@ export function ArchiveCleanupSettingsBlock({ enabled, days, onChangeEnabled, on
               {t('settings.archiveCleanup.daysLabel')}
             </label>
             <div className="flex items-center gap-2">
-              <input
-                type="number"
+              <NumberInput
                 min={1}
                 max={3650}
                 step={1}
                 value={days}
-                onChange={(e) => {
-                  const v = parseInt(e.target.value, 10);
-                  if (Number.isFinite(v) && v >= 1) onChangeDays(v);
-                }}
+                onChange={onChangeDays}
+                integer
                 className="w-24 px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
               />
               <span className="text-bambu-gray">{t('settings.archiveCleanup.daysUnit')}</span>

@@ -7,6 +7,8 @@ short of it rather than at the type's limit.
 
 from pydantic import BaseModel, Field
 
+from backend.app.schemas.not_null import IgnoresNullForRequiredColumns
+
 
 class TargetSettings(BaseModel):
     """One quantity's reporting parameters. Every field optional: a request that
@@ -19,7 +21,9 @@ class TargetSettings(BaseModel):
     reportable_change: float | None = Field(default=None, ge=0)
 
 
-class DeviceSettingsUpdate(BaseModel):
+class DeviceSettingsUpdate(IgnoresNullForRequiredColumns):
+    __orm_table__ = "zigbee_devices"
+
     reporting: dict[str, TargetSettings] | None = None
     # A floor of 5 s and a ceiling of an hour: below that the radio is spent on
     # one device, above it the poll stops being a safety net at all.

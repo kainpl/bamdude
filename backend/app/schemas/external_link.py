@@ -2,6 +2,8 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field, field_validator
 
+from backend.app.schemas.not_null import IgnoresNullForRequiredColumns
+
 VALID_NAV_GROUPS = ("operations", "workshop", "resources", "care", "system", "external")
 
 
@@ -40,8 +42,10 @@ class ExternalLinkCreate(ExternalLinkBase):
     pass
 
 
-class ExternalLinkUpdate(BaseModel):
+class ExternalLinkUpdate(IgnoresNullForRequiredColumns):
     """Schema for updating an external link (all fields optional)."""
+
+    __orm_table__ = "external_links"
 
     name: str | None = Field(default=None, min_length=1, max_length=50)
     url: str | None = Field(default=None, min_length=1, max_length=500)

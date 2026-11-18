@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field, PlainSerializer, model_validator
 
 from backend.app.schemas.calibration_mode import CalibrationMode
 from backend.app.schemas.filament_routing import FilamentRoutingChoices
+from backend.app.schemas.not_null import IgnoresNullForRequiredColumns
 from backend.app.schemas.order_auto_eject import AutoEjectSelection, AutoEjectSettings
 from backend.app.schemas.timelapse import TimelapseStorage
 from backend.app.services.queue_source_descriptor import SourceStorageState
@@ -136,7 +137,9 @@ class QueueCopySourceProfile(BaseModel):
     is_multi_plate: bool = False
 
 
-class PrintQueueItemUpdate(FilamentRoutingChoices):
+class PrintQueueItemUpdate(IgnoresNullForRequiredColumns, FilamentRoutingChoices):
+    __orm_table__ = "print_queue"
+
     queue_id: int | None = None  # Move to different printer's queue
     position: int | None = None
     scheduled_time: datetime | None = None
@@ -405,8 +408,10 @@ class PrintQueueBatchCreate(BaseModel):
     item_ids: list[int]
 
 
-class PrintQueueBulkUpdate(FilamentRoutingChoices):
+class PrintQueueBulkUpdate(IgnoresNullForRequiredColumns, FilamentRoutingChoices):
     """Bulk update multiple queue items with the same values."""
+
+    __orm_table__ = "print_queue"
 
     ams_mapping: list[int] | None = None
 

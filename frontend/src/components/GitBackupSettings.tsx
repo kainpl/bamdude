@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { NumberInput } from './NumberInput';
 import { restoreFailureText } from '../utils/restoreFailure';
 
 import { GitRestoreModal } from './GitRestoreModal';
@@ -1245,14 +1246,14 @@ function GitBackupSettingsContent() {
 
                   <label className="text-sm">
                     <span className="block text-bambu-gray mb-1">{t('backup.scheduledLocalBackup.retention')}</span>
-                    <input
-                      type="number"
+                    <NumberInput
                       min={1}
                       max={100}
+                      integer
+                      fallback={1}
                       value={localBackupStatus?.retention ?? 5}
                       disabled={!canUpdateSettings}
-                      onChange={async (e) => {
-                        const v = Math.max(1, Math.min(100, parseInt(e.target.value, 10) || 1));
+                      onCommit={async (v) => {
                         try {
                           await api.updateSettings({ local_backup_retention: v });
                           refetchLocalStatus();

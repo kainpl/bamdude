@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { NumberInput } from '../NumberInput';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { api } from '../../api/client';
@@ -520,20 +521,20 @@ function KitsField({
   const kitsRoom = Math.max(0, draft.quantity - draft.fromFinished);
   return (
     <WorkshopField label={t('orders.lineEdit.fromKits')} htmlFor={`line-${line.id}-from-stock`} hint={hint}>
-      <input
+      <NumberInput
         id={`line-${line.id}-from-stock`}
-        type="number"
         min={0}
         max={Math.min(pool, kitsRoom)}
         value={draft.fromStock}
         aria-describedby={`line-${line.id}-from-stock-hint`}
         // ⚠️ **The DRAFT is clamped, not the display** (finding I2): while the ceiling was
         // applied only to `value`, the box showed 2 and the draft held the 7 that was
-        // typed — the save sent 7 and the server clamped it back. `changedFields` still
-        // sends the field only when it MOVED.
-        onChange={(e) =>
-          setDraft({ ...draft, fromStock: Math.min(Math.max(0, Number(e.target.value) || 0), kitsRoom, pool) })
-        }
+        // typed — the save sent 7 and the server clamped it back. The field reports only
+        // a number inside its bounds and settles an out-of-range one on blur, so the draft
+        // never holds more than the ceiling. `changedFields` still sends the field only
+        // when it MOVED.
+        onChange={(v) => setDraft({ ...draft, fromStock: v })}
+        fallback={0}
         className={FIELD_CLASS}
       />
     </WorkshopField>
@@ -553,14 +554,14 @@ function MovedKits({ line, draft, setDraft }: { line: ProjectLine; draft: Draft;
       htmlFor={`line-${line.id}-from-stock`}
       hint={t('orders.lines.movedKitsDown')}
     >
-      <input
+      <NumberInput
         id={`line-${line.id}-from-stock`}
-        type="number"
         min={0}
         max={live}
         value={draft.fromStock}
         aria-describedby={`line-${line.id}-from-stock-hint`}
-        onChange={(e) => setDraft({ ...draft, fromStock: Math.min(Math.max(0, Number(e.target.value) || 0), live) })}
+        onChange={(v) => setDraft({ ...draft, fromStock: v })}
+        fallback={0}
         className={FIELD_CLASS}
       />
     </WorkshopField>

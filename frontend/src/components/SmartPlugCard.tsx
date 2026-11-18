@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { NumberInput } from './NumberInput';
 import { useMutation, useQueryClient, useQuery } from '@tanstack/react-query';
 import { Plug, Power, PowerOff, Loader2, Trash2, Settings2, Thermometer, Clock, Wifi, WifiOff, Edit2, Bell, Calendar, LayoutGrid, ExternalLink, Home, Radio, Eye, Globe, SlidersHorizontal, AlertTriangle } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -508,24 +509,26 @@ export function SmartPlugCard({ plug, onEdit }: SmartPlugCardProps) {
                   {plug.off_delay_mode === 'time' ? (
                     <div>
                       <label className="block text-xs text-bambu-gray mb-1">{t('smartPlugs.delayMinutes')}</label>
-                      <input
-                        type="number"
-                        min="1"
-                        max="60"
+                      <NumberInput
+                        min={1}
+                        max={60}
                         value={plug.off_delay_minutes}
-                        onChange={(e) => updateMutation.mutate({ off_delay_minutes: parseInt(e.target.value) || 5 })}
+                        onCommit={(v) => updateMutation.mutate({ off_delay_minutes: v })}
+                        integer
+                        fallback={5}
                         className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:border-bambu-green focus:outline-none"
                       />
                     </div>
                   ) : (
                     <div>
                       <label className="block text-xs text-bambu-gray mb-1">{t('smartPlugs.tempThreshold')}</label>
-                      <input
-                        type="number"
-                        min="30"
-                        max="100"
+                      <NumberInput
+                        min={30}
+                        max={100}
                         value={plug.off_temp_threshold}
-                        onChange={(e) => updateMutation.mutate({ off_temp_threshold: parseInt(e.target.value) || 70 })}
+                        onCommit={(v) => updateMutation.mutate({ off_temp_threshold: v })}
+                        integer
+                        fallback={70}
                         className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:border-bambu-green focus:outline-none"
                       />
                       <p className="text-xs text-bambu-gray mt-1">{t('smartPlugs.tempThresholdDescription')}</p>
@@ -559,12 +562,13 @@ export function SmartPlugCard({ plug, onEdit }: SmartPlugCardProps) {
               {plug.auto_off_after_drying && (
                 <div className="pl-4 border-l-2 border-bambu-dark-tertiary">
                   <label className="block text-xs text-bambu-gray mb-1">{t('smartPlugs.delayAfterDryingMinutes')}</label>
-                  <input
-                    type="number"
-                    min="0"
-                    max="120"
+                  <NumberInput
+                    min={0}
+                    max={120}
                     value={plug.off_delay_after_drying_minutes}
-                    onChange={(e) => updateMutation.mutate({ off_delay_after_drying_minutes: parseInt(e.target.value) || 10 })}
+                    onCommit={(v) => updateMutation.mutate({ off_delay_after_drying_minutes: v })}
+                    integer
+                    fallback={10}
                     className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:border-bambu-green focus:outline-none"
                   />
                 </div>

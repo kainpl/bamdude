@@ -4,6 +4,8 @@ from datetime import datetime
 
 from pydantic import BaseModel
 
+from backend.app.schemas.not_null import IgnoresNullForRequiredColumns
+
 
 class GroupBrief(BaseModel):
     """Brief group info for embedding in other responses."""
@@ -23,8 +25,10 @@ class GroupCreate(BaseModel):
     permissions: list[str] = []
 
 
-class GroupUpdate(BaseModel):
+class GroupUpdate(IgnoresNullForRequiredColumns):
     """Schema for updating a group."""
+
+    __orm_table__ = "groups"
 
     name: str | None = None
     description: str | None = None

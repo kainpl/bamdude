@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useId, useMemo } from 'react';
+import { NumberInput } from '../NumberInput';
 import { Scale } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useToast } from '../../contexts/ToastContext';
@@ -155,17 +156,14 @@ function SpoolWeightPicker({
           )}
         </div>
         <div className="flex items-center gap-1 shrink-0">
-          <input
-            type="number"
+          <NumberInput
             className="w-16 px-2 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm text-center font-mono focus:outline-none focus:border-bambu-green"
             aria-label={t('inventory.coreWeight')}
             value={value}
             min={0}
             max={2000}
-            onChange={(e) => {
-              const val = parseInt(e.target.value);
-              if (!isNaN(val) && val >= 0) onChange(val);
-            }}
+            onChange={onChange}
+            integer
           />
           <span className="text-bambu-gray text-sm">g</span>
         </div>

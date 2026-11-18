@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field, computed_field, field_validator, model_va
 
 from backend.app.schemas.archive import ArchivePartDefective, ArchivePartRow
 from backend.app.schemas.auto_stock_spool import AutoStockSpoolPolicy
+from backend.app.schemas.not_null import IgnoresNullForRequiredColumns
 from backend.app.schemas.plate_detection import PlatePolygon
 from backend.app.schemas.printer_location import PrinterLocationOut, reject_legacy_key
 from backend.app.schemas.printer_tag import PrinterTagOut
@@ -134,7 +135,9 @@ class PlateDetectionROI(BaseModel):
     h: float = Field(..., ge=0.0, le=1.0)  # Height %
 
 
-class PrinterUpdate(BaseModel):
+class PrinterUpdate(IgnoresNullForRequiredColumns):
+    __orm_table__ = "printers"
+
     secret_actions: dict[str, Literal["keep", "clear", "replace"]] | None = None
     name: str | None = None
     ip_address: str | None = Field(

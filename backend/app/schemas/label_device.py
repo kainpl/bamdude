@@ -6,6 +6,8 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field
 
+from backend.app.schemas.not_null import IgnoresNullForRequiredColumns
+
 
 class LabelSpoolEntry(BaseModel):
     """One spool to print.
@@ -77,8 +79,10 @@ class LabelDeviceOut(BaseModel):
     fitting_design_ids: list[int] | None = None
 
 
-class LabelDeviceUpdate(BaseModel):
+class LabelDeviceUpdate(IgnoresNullForRequiredColumns):
     """What a person may change about a device. Everything else is reported."""
+
+    __orm_table__ = "label_devices"
 
     name: str | None = None
     enabled: bool | None = None

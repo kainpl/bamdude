@@ -11,7 +11,7 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { pickActivePrint, type ProgressStatus } from '../../hooks/usePrintProgressTitle';
+import { pickActivePrint, tabTitleValue, type ProgressStatus } from '../../hooks/usePrintProgressTitle';
 
 const running = (progress: number, remaining_time: number | null): ProgressStatus => ({
   state: 'RUNNING',
@@ -67,5 +67,22 @@ describe('pickActivePrint', () => {
   it('skips a RUNNING printer that reports no progress at all', () => {
     const noProgress: ProgressStatus = { state: 'RUNNING', progress: null, remaining_time: 5 };
     expect(pickActivePrint([noProgress])).toBeNull();
+  });
+});
+
+describe('tabTitleValue', () => {
+  it('shows the percentage by default', () => {
+    expect(tabTitleValue(running(41.6, 75), 'percentage')).toBe('42%');
+  });
+
+  it('shows the time left when that is what the browser asks for', () => {
+    expect(tabTitleValue(running(42, 75), 'time')).toBe('1h 15m');
+    expect(tabTitleValue(running(42, 9), 'time')).toBe('9m');
+  });
+
+  it('falls back to the percentage while the estimate is unknown', () => {
+    // 0 is the backend's "not known yet", never "finishes now".
+    expect(tabTitleValue(running(42, 0), 'time')).toBe('42%');
+    expect(tabTitleValue(running(42, null), 'time')).toBe('42%');
   });
 });

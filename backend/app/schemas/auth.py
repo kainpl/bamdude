@@ -3,6 +3,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from backend.app.schemas.not_null import IgnoresNullForRequiredColumns
+
 MIN_PASSWORD_LENGTH = 8
 
 
@@ -78,7 +80,9 @@ class UserCreate(BaseModel):
         return v
 
 
-class UserUpdate(BaseModel):
+class UserUpdate(IgnoresNullForRequiredColumns):
+    __orm_table__ = "users"
+
     username: str | None = Field(default=None, max_length=150)
     password: str | None = Field(default=None, max_length=256)  # M-NEW-4: cap before pbkdf2
     email: str | None = Field(default=None, max_length=254)  # L-NEW-5: RFC 5321 max
@@ -499,7 +503,9 @@ class OIDCProviderCreate(BaseModel):
         return self
 
 
-class OIDCProviderUpdate(BaseModel):
+class OIDCProviderUpdate(IgnoresNullForRequiredColumns):
+    __orm_table__ = "oidc_providers"
+
     secret_actions: dict[str, str] | None = None
     name: str | None = Field(default=None, max_length=100)
     issuer_url: str | None = None

@@ -1216,10 +1216,14 @@ describe('PrintersPage', () => {
       release_notes: 'New features added.',
     };
 
+    // What a batch route answers: the same value under every id it was asked for.
+    const byIds = (request: Request, value: unknown) =>
+      Object.fromEntries(new URL(request.url).searchParams.getAll('ids').map((id) => [id, value]));
+
     it('shows green badge when firmware is up to date', async () => {
       server.use(
-        http.get('/api/v1/firmware/updates/:id', () => {
-          return HttpResponse.json(firmwareUpToDate);
+        http.get('/api/v1/firmware/updates/batch', ({ request }) => {
+          return HttpResponse.json(byIds(request, firmwareUpToDate));
         }),
         http.get('/api/v1/settings/', () => {
           return HttpResponse.json({
@@ -1243,8 +1247,8 @@ describe('PrintersPage', () => {
 
     it('shows orange badge when firmware update is available', async () => {
       server.use(
-        http.get('/api/v1/firmware/updates/:id', () => {
-          return HttpResponse.json(firmwareUpdateAvailable);
+        http.get('/api/v1/firmware/updates/batch', ({ request }) => {
+          return HttpResponse.json(byIds(request, firmwareUpdateAvailable));
         }),
         http.get('/api/v1/settings/', () => {
           return HttpResponse.json({
@@ -1299,8 +1303,8 @@ describe('PrintersPage', () => {
       };
 
       server.use(
-        http.get('/api/v1/firmware/updates/:id', () => {
-          return HttpResponse.json(firmwareNoData);
+        http.get('/api/v1/firmware/updates/batch', ({ request }) => {
+          return HttpResponse.json(byIds(request, firmwareNoData));
         }),
         http.get('/api/v1/settings/', () => {
           return HttpResponse.json({

@@ -1,4 +1,5 @@
 import { useQuery, useQueries, useMutation, useQueryClient } from '@tanstack/react-query';
+import { NumberInput } from '../components/NumberInput';
 import { Loader2, Archive, MapPin, Plus, Plug, AlertTriangle, RotateCcw, Bell, Download, RefreshCw, ExternalLink, Globe, Droplets, Thermometer, FileText, Edit2, Send, CheckCircle, XCircle, History, Trash2, Zap, TrendingUp, Calendar, DollarSign, Power, PowerOff, Key, Copy, Database, X, Shield, Printer, Cylinder, Wifi, Home, Video, Users, Lock, ChevronDown, Save, Mail, Flame, Code, Pencil, ScanEye, Sparkles, MonitorPlay, Tag, Clock } from 'lucide-react';
 import { availableEngines, hasEngineChoice, resolveEngine, type SliceEngineId } from '../lib/sliceEngines';
 import { useTranslation } from 'react-i18next';
@@ -285,11 +286,11 @@ export function SettingsPage() {
     mode, resolvedMode,
     darkStyle, darkBackground, darkAccent,
     lightStyle, lightBackground, lightAccent,
-    progressInTitle,
+    progressInTitle, tabDisplay,
     setMode,
     setDarkStyle, setDarkBackground, setDarkAccent,
     setLightStyle, setLightBackground, setLightAccent,
-    setProgressInTitle,
+    setProgressInTitle, setTabDisplay,
   } = useTheme();
   const releaseNotesHeadingId = useId();
   const macroHeadingId = useId();
@@ -1302,7 +1303,6 @@ export function SettingsPage() {
 
     // Check if there are actual changes
     const hasChanges =
-      baseline.save_thumbnails !== localSettings.save_thumbnails ||
       baseline.capture_finish_photo !== localSettings.capture_finish_photo ||
       (baseline.camera_light_auto ?? false) !== (localSettings.camera_light_auto ?? false) ||
       (baseline.camera_light_auto_obico ?? false) !== (localSettings.camera_light_auto_obico ?? false) ||
@@ -1386,7 +1386,6 @@ export function SettingsPage() {
       baseline.per_printer_mapping_expanded !== localSettings.per_printer_mapping_expanded ||
       baseline.date_format !== localSettings.date_format ||
       baseline.time_format !== localSettings.time_format ||
-      baseline.default_printer_id !== localSettings.default_printer_id ||
       baseline.ftp_retry_enabled !== localSettings.ftp_retry_enabled ||
       baseline.ftp_retry_count !== localSettings.ftp_retry_count ||
       baseline.ftp_retry_delay !== localSettings.ftp_retry_delay ||
@@ -1434,7 +1433,6 @@ export function SettingsPage() {
       isSavingRef.current = true;
       // Only send the fields we manage on this page (exclude virtual_printer_* which are managed separately)
       const settingsToSave: AppSettingsUpdate = {
-        save_thumbnails: localSettings.save_thumbnails,
         capture_finish_photo: localSettings.capture_finish_photo,
         camera_light_auto: localSettings.camera_light_auto,
         camera_light_auto_obico: localSettings.camera_light_auto_obico,
@@ -1510,7 +1508,6 @@ export function SettingsPage() {
         per_printer_mapping_expanded: localSettings.per_printer_mapping_expanded,
         date_format: localSettings.date_format,
         time_format: localSettings.time_format,
-        default_printer_id: localSettings.default_printer_id,
         ftp_retry_enabled: localSettings.ftp_retry_enabled,
         ftp_retry_count: localSettings.ftp_retry_count,
         ftp_retry_delay: localSettings.ftp_retry_delay,
@@ -2027,26 +2024,6 @@ export function SettingsPage() {
                   </Select>
                 </div>
               </div>
-              <div>
-                <label className="block text-sm text-bambu-gray mb-1">
-                  {t('settings.defaultPrinter')}
-                </label>
-                <Select
-                  className="w-full"
-                  value={localSettings.default_printer_id ?? ''}
-                  onChange={(e) => updateSetting('default_printer_id', e.target.value ? Number(e.target.value) : null)}
-                >
-                  <option value="">{t('settings.noDefaultPrinter')}</option>
-                  {printers?.map((printer) => (
-                    <option key={printer.id} value={printer.id}>
-                      {printer.name}
-                    </option>
-                  ))}
-                </Select>
-                <p className="text-xs text-bambu-gray mt-1">
-                  {t('settings.defaultPrinterDescription')}
-                </p>
-              </div>
             </CardContent>
           </Card>
 
@@ -2203,6 +2180,19 @@ export function SettingsPage() {
                   aria-label={t('settings.progressInTitle')}
                 />
               </div>
+              {progressInTitle && (
+                <div className="flex items-center justify-between gap-4">
+                  <label htmlFor="tab-display" className="block text-sm text-white">{t('settings.tabDisplay')}</label>
+                  <Select
+                    id="tab-display"
+                    value={tabDisplay}
+                    onChange={(e) => setTabDisplay(e.target.value === 'time' ? 'time' : 'percentage')}
+                  >
+                    <option value="percentage">{t('settings.tabDisplayPercentage')}</option>
+                    <option value="time">{t('settings.tabDisplayTime')}</option>
+                  </Select>
+                </div>
+              )}
             </CardContent>
           </Card>
 
@@ -2260,23 +2250,6 @@ export function SettingsPage() {
               <h2 className="text-lg font-semibold text-white">{t('settings.archiveSettings')}</h2>
             </CardHeader>
             <CardContent className="space-y-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-white">{t('settings.saveThumbnails')}</p>
-                  <p className="text-sm text-bambu-gray">
-                    {t('settings.saveThumbnailsDescription')}
-                  </p>
-                </div>
-                <label className="relative inline-flex items-center cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={localSettings.save_thumbnails}
-                    onChange={(e) => updateSetting('save_thumbnails', e.target.checked)}
-                    className="sr-only peer"
-                  />
-                  <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
-                </label>
-              </div>
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-white">{t('settings.captureFinishPhoto')}</p>
@@ -2352,16 +2325,13 @@ export function SettingsPage() {
                       {t('archiveAutoPurge.retentionLabel')}
                     </label>
                     <div className="flex items-center gap-2">
-                      <input
-                        type="number"
+                      <NumberInput
                         min={1}
                         max={365}
                         value={archiveTrashSettings.retention_days}
-                        onChange={(e) =>
-                          updateArchiveTrashSettingsMutation.mutate({
-                            retention_days: Math.max(1, Math.min(365, parseInt(e.target.value || '0', 10) || 0)),
-                          })
-                        }
+                        onCommit={(v) => updateArchiveTrashSettingsMutation.mutate({ retention_days: v })}
+                        integer
+                        fallback={1}
                         className="w-24 px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
                       />
                       <span className="text-bambu-gray">{t('archiveAutoPurge.days')}</span>
@@ -2389,13 +2359,13 @@ export function SettingsPage() {
                   {t('settings.lowDiskSpaceWarning')}
                 </label>
                 <div className="flex items-center gap-2">
-                  <input
-                    type="number"
-                    min="0.5"
-                    max="100"
+                  <NumberInput
+                    min={0.5}
+                    max={100}
                     step="0.5"
                     value={localSettings.library_disk_warning_gb ?? 5}
-                    onChange={(e) => updateSetting('library_disk_warning_gb', parseFloat(e.target.value) || 5)}
+                    onChange={(v) => updateSetting('library_disk_warning_gb', v)}
+                    fallback={5}
                     className="w-24 px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
                   />
                   <span className="text-bambu-gray">GB</span>
@@ -2454,16 +2424,13 @@ export function SettingsPage() {
                             {t('libraryAutoPurge.ageLabel')}
                           </label>
                           <div className="flex items-center gap-2">
-                            <input
-                              type="number"
+                            <NumberInput
                               min={7}
                               max={3650}
                               value={trashSettings.auto_purge_days}
-                              onChange={(e) =>
-                                saveTrashSettings({
-                                  auto_purge_days: Math.max(7, Math.min(3650, parseInt(e.target.value || '0', 10) || 0)),
-                                })
-                              }
+                              onCommit={(v) => saveTrashSettings({ auto_purge_days: v })}
+                              integer
+                              fallback={7}
                               className="w-24 px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
                             />
                             <span className="text-bambu-gray">{t('libraryAutoPurge.days')}</span>
@@ -2513,16 +2480,13 @@ export function SettingsPage() {
                         {t('libraryAutoPurge.retentionLabel')}
                       </label>
                       <div className="flex items-center gap-2">
-                        <input
-                          type="number"
+                        <NumberInput
                           min={1}
                           max={365}
                           value={trashSettings.retention_days}
-                          onChange={(e) =>
-                            saveTrashSettings({
-                              retention_days: Math.max(1, Math.min(365, parseInt(e.target.value || '0', 10) || 0)),
-                            })
-                          }
+                          onCommit={(v) => saveTrashSettings({ retention_days: v })}
+                          integer
+                          fallback={1}
                           className="w-24 px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
                         />
                         <span className="text-bambu-gray">{t('libraryAutoPurge.days')}</span>
@@ -2907,12 +2871,13 @@ export function SettingsPage() {
                   </p>
                 </div>
                 <div className="flex items-center gap-2 flex-shrink-0">
-                  <input
-                    type="number"
+                  <NumberInput
                     min={1}
                     max={365}
                     value={localSettings.log_retention_days ?? 7}
-                    onChange={(e) => updateSetting('log_retention_days', parseInt(e.target.value) || 7)}
+                    onChange={(v) => updateSetting('log_retention_days', v)}
+                    integer
+                    fallback={7}
                     className="w-20 px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
                   />
                   <span className="text-bambu-gray text-sm">{t('common.days')}</span>
@@ -2929,18 +2894,14 @@ export function SettingsPage() {
                   </p>
                 </div>
                 <div className="flex items-center gap-2 flex-shrink-0">
-                  <input
-                    type="number"
+                  <NumberInput
                     min={0}
                     max={60000}
                     value={localSettings.slow_query_ms ?? 0}
-                    onChange={(e) => {
-                      // ⚠️ Never `parseInt(...) || 0` here: 0 is a meaningful
-                      // value (off), and `||` would swallow it the way it once
-                      // swallowed a stagger interval of 0.
-                      const parsed = parseInt(e.target.value, 10);
-                      updateSetting('slow_query_ms', Number.isNaN(parsed) ? 0 : Math.max(0, parsed));
-                    }}
+                    // 0 is a meaningful value (off); an emptied field settles on it.
+                    onChange={(v) => updateSetting('slow_query_ms', v)}
+                    integer
+                    fallback={0}
                     className="w-24 px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
                   />
                   <span className="text-bambu-gray text-sm">{t('common.ms', 'ms')}</span>
@@ -2957,15 +2918,13 @@ export function SettingsPage() {
                   </p>
                 </div>
                 <div className="flex items-center gap-2 flex-shrink-0">
-                  <input
-                    type="number"
+                  <NumberInput
                     min={0}
                     max={600000}
                     value={localSettings.slow_request_ms ?? 0}
-                    onChange={(e) => {
-                      const parsed = parseInt(e.target.value, 10);
-                      updateSetting('slow_request_ms', Number.isNaN(parsed) ? 0 : Math.max(0, parsed));
-                    }}
+                    onChange={(v) => updateSetting('slow_request_ms', v)}
+                    integer
+                    fallback={0}
                     className="w-24 px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
                   />
                   <span className="text-bambu-gray text-sm">{t('common.ms', 'ms')}</span>
@@ -3285,14 +3244,11 @@ export function SettingsPage() {
                       <label className="block text-sm text-bambu-gray mb-1">
                         {t('settings.slicerStallTimeout', 'Slicer stall timeout (minutes)')}
                       </label>
-                      <input
-                        type="number"
+                      <NumberInput
                         min={1}
                         max={240}
                         value={localSettings.slicer_stall_timeout_minutes ?? 15}
-                        onChange={(e) =>
-                          updateSetting('slicer_stall_timeout_minutes', Number(e.target.value))
-                        }
+                        onChange={(v) => updateSetting('slicer_stall_timeout_minutes', v)}
                         className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
                       />
                       <p className="text-xs text-bambu-gray mt-1">
@@ -3418,14 +3374,12 @@ export function SettingsPage() {
                   <span className="absolute left-3 top-1/2 -translate-y-1/2 text-bambu-gray text-sm pointer-events-none">
                     {getCurrencySymbol(localSettings.currency)}
                   </span>
-                  <input
-                    type="number"
+                  <NumberInput
                     step="0.01"
-                    min="0"
+                    min={0}
                     value={localSettings.default_filament_cost}
-                    onChange={(e) =>
-                      updateSetting('default_filament_cost', parseFloat(e.target.value) || 0)
-                    }
+                    onChange={(v) => updateSetting('default_filament_cost', v)}
+                    fallback={0}
                     style={{ paddingLeft: `${Math.max(2, getCurrencySymbol(localSettings.currency).length * 0.6 + 1)}rem` }}
                     className="w-full pr-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
                   />
@@ -3439,14 +3393,12 @@ export function SettingsPage() {
                   <span className="absolute left-3 top-1/2 -translate-y-1/2 text-bambu-gray text-sm pointer-events-none">
                     {getCurrencySymbol(localSettings.currency)}
                   </span>
-                  <input
-                    type="number"
+                  <NumberInput
                     step="0.001"
-                    min="0"
+                    min={0}
                     value={localSettings.energy_cost_per_kwh}
-                    onChange={(e) =>
-                      updateSetting('energy_cost_per_kwh', parseFloat(e.target.value) || 0)
-                    }
+                    onChange={(v) => updateSetting('energy_cost_per_kwh', v)}
+                    fallback={0}
                     style={{ paddingLeft: `${Math.max(2, getCurrencySymbol(localSettings.currency).length * 0.6 + 1)}rem` }}
                     className="w-full pr-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
                   />
@@ -3689,13 +3641,14 @@ export function SettingsPage() {
                           {t(staggerSplitOn ? 'settings.staggerConcurrentPerGroupDescription' : 'settings.staggerConcurrentDescription')}
                         </p>
                       </div>
-                      <input
-                        type="number"
-                        min="1"
-                        max="50"
+                      <NumberInput
+                        min={1}
+                        max={50}
                         step="1"
                         value={localSettings.stagger_concurrent ?? 2}
-                        onChange={(e) => updateSetting('stagger_concurrent', Math.max(1, parseInt(e.target.value) || 2))}
+                        onChange={(v) => updateSetting('stagger_concurrent', v)}
+                        integer
+                        fallback={2}
                         className="w-20 px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none text-center"
                       />
                     </div>
@@ -3712,19 +3665,14 @@ export function SettingsPage() {
                           for the bed, if that is on) but add no delay on top. The old
                           `parseInt(...) || 5` could never store it: 0 is falsy, so typing
                           zero silently became five. */}
-                      <input
-                        type="number"
-                        min="0"
-                        max="60"
+                      <NumberInput
+                        min={0}
+                        max={60}
                         step="1"
                         value={localSettings.stagger_interval_minutes ?? 5}
-                        onChange={(e) => {
-                          const parsed = parseInt(e.target.value, 10);
-                          updateSetting(
-                            'stagger_interval_minutes',
-                            Number.isNaN(parsed) ? 5 : Math.min(60, Math.max(0, parsed))
-                          );
-                        }}
+                        onChange={(v) => updateSetting('stagger_interval_minutes', v)}
+                        integer
+                        fallback={5}
                         className="w-20 px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none text-center"
                       />
                     </div>
@@ -3799,19 +3747,14 @@ export function SettingsPage() {
                     <p className="text-xs text-bambu-gray mt-0.5">{t('settings.etaUploadSecondsDescription')}</p>
                   </div>
                   {/* 0 is a real value here: no allowance at all. */}
-                  <input
-                    type="number"
-                    min="0"
-                    max="3600"
+                  <NumberInput
+                    min={0}
+                    max={3600}
                     step="10"
                     value={localSettings.forecast_upload_seconds ?? 120}
-                    onChange={(e) => {
-                      const parsed = parseInt(e.target.value, 10);
-                      updateSetting(
-                        'forecast_upload_seconds',
-                        Number.isNaN(parsed) ? 120 : Math.min(3600, Math.max(0, parsed))
-                      );
-                    }}
+                    onChange={(v) => updateSetting('forecast_upload_seconds', v)}
+                    integer
+                    fallback={120}
                     className="w-20 px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none text-center"
                   />
                 </div>
@@ -3820,19 +3763,14 @@ export function SettingsPage() {
                     <label className="block text-sm text-white">{t('settings.etaPlateClearMinutes')}</label>
                     <p className="text-xs text-bambu-gray mt-0.5">{t('settings.etaPlateClearMinutesDescription')}</p>
                   </div>
-                  <input
-                    type="number"
-                    min="0"
-                    max="1440"
+                  <NumberInput
+                    min={0}
+                    max={1440}
                     step="1"
                     value={localSettings.forecast_plate_clear_minutes ?? 10}
-                    onChange={(e) => {
-                      const parsed = parseInt(e.target.value, 10);
-                      updateSetting(
-                        'forecast_plate_clear_minutes',
-                        Number.isNaN(parsed) ? 10 : Math.min(1440, Math.max(0, parsed))
-                      );
-                    }}
+                    onChange={(v) => updateSetting('forecast_plate_clear_minutes', v)}
+                    integer
+                    fallback={10}
                     className="w-20 px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none text-center"
                   />
                 </div>
@@ -3995,13 +3933,12 @@ export function SettingsPage() {
                     </label>
                   </div>
                   <div className="flex items-center gap-1">
-                    <input
-                      type="number"
+                    <NumberInput
                       min={20}
                       max={80}
                       step={1}
                       value={localSettings.bed_cooled_threshold ?? 35}
-                      onChange={(e) => updateSetting('bed_cooled_threshold', Number(e.target.value))}
+                      onChange={(v) => updateSetting('bed_cooled_threshold', v)}
                       className="w-20 px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none text-center"
                     />
                     <span className="text-bambu-gray">°C</span>
@@ -4019,19 +3956,14 @@ export function SettingsPage() {
                     <p className="text-xs text-bambu-gray mt-1">{t('settings.pauseWarningMinutesHelp')}</p>
                   </div>
                   <div className="flex shrink-0 items-center gap-1">
-                    <input
+                    <NumberInput
                       id="pause-warning-minutes"
-                      type="number"
                       min={0}
                       max={120}
                       step={1}
                       value={localSettings.pause_warning_minutes ?? 5}
-                      onChange={(e) =>
-                        updateSetting(
-                          'pause_warning_minutes',
-                          Math.min(120, Math.max(0, Math.round(Number(e.target.value) || 0))),
-                        )
-                      }
+                      onChange={(v) => updateSetting('pause_warning_minutes', Math.round(v))}
+                      fallback={0}
                       className="w-20 px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none text-center"
                     />
                     <span className="text-bambu-gray">{t('settings.pauseWarningMinutesUnit')}</span>
@@ -4079,12 +4011,13 @@ export function SettingsPage() {
                   <label className="block text-xs text-bambu-gray mb-1">
                     {t('settings.preheatMaxWait')}
                   </label>
-                  <input
-                    type="number"
+                  <NumberInput
                     min={60}
                     max={3600}
                     value={localSettings.preheat_max_wait_seconds ?? 900}
-                    onChange={(e) => updateSetting('preheat_max_wait_seconds', Math.max(60, Math.min(3600, parseInt(e.target.value) || 900)))}
+                    onChange={(v) => updateSetting('preheat_max_wait_seconds', v)}
+                    integer
+                    fallback={900}
                     className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:outline-none focus:border-bambu-green disabled:opacity-50"
                     disabled={!(localSettings.preheat_enabled ?? false)}
                   />
@@ -4096,12 +4029,13 @@ export function SettingsPage() {
                   <label className="block text-xs text-bambu-gray mb-1">
                     {t('settings.preheatSoak')}
                   </label>
-                  <input
-                    type="number"
+                  <NumberInput
                     min={0}
                     max={1800}
                     value={localSettings.preheat_soak_seconds ?? 300}
-                    onChange={(e) => updateSetting('preheat_soak_seconds', Math.max(0, Math.min(1800, parseInt(e.target.value) || 0)))}
+                    onChange={(v) => updateSetting('preheat_soak_seconds', v)}
+                    integer
+                    fallback={0}
                     className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:outline-none focus:border-bambu-green disabled:opacity-50"
                     disabled={!(localSettings.preheat_enabled ?? false)}
                   />
@@ -4486,12 +4420,13 @@ export function SettingsPage() {
                       <label className="block text-sm text-bambu-gray mb-1">
                         {t('settings.port')}
                       </label>
-                      <input disabled={!isAdmin || !hasPermission('settings:update')}
-                        type="number"
-                        min="1"
-                        max="65535"
+                      <NumberInput disabled={!isAdmin || !hasPermission('settings:update')}
+                        min={1}
+                        max={65535}
                         value={localSettings.mqtt_port ?? 1883}
-                        onChange={(e) => updateSetting('mqtt_port', Math.min(65535, Math.max(1, parseInt(e.target.value) || 1883)))}
+                        onChange={(v) => updateSetting('mqtt_port', v)}
+                        integer
+                        fallback={1883}
                         className="accent-bambu-green w-24 px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
                       />
                     </div>
@@ -6134,12 +6069,13 @@ export function SettingsPage() {
                     <p className="text-white">{t('settings.usageAccuracy.purgeGrams')}</p>
                     <p className="text-sm text-bambu-gray">{t('settings.usageAccuracy.purgeGramsDesc')}</p>
                   </div>
-                  <input
-                    type="number"
+                  <NumberInput
                     min={0}
                     max={500}
                     value={localSettings.runout_purge_grams ?? 0}
-                    onChange={(e) => updateSetting('runout_purge_grams', Math.max(0, parseInt(e.target.value) || 0))}
+                    onChange={(v) => updateSetting('runout_purge_grams', v)}
+                    integer
+                    fallback={0}
                     className="w-20 px-2 py-1 bg-bambu-dark border border-bambu-dark-tertiary rounded text-white text-right"
                   />
                 </div>
@@ -6148,12 +6084,13 @@ export function SettingsPage() {
                     <p className="text-white">{t('settings.usageAccuracy.journalRetention')}</p>
                     <p className="text-sm text-bambu-gray">{t('settings.usageAccuracy.journalRetentionDesc')}</p>
                   </div>
-                  <input
-                    type="number"
+                  <NumberInput
                     min={1}
                     max={8760}
                     value={localSettings.usage_events_retention_hours ?? 72}
-                    onChange={(e) => updateSetting('usage_events_retention_hours', Math.max(1, parseInt(e.target.value) || 72))}
+                    onChange={(v) => updateSetting('usage_events_retention_hours', v)}
+                    integer
+                    fallback={72}
                     className="w-20 px-2 py-1 bg-bambu-dark border border-bambu-dark-tertiary rounded text-white text-right"
                   />
                 </div>
@@ -6181,12 +6118,13 @@ export function SettingsPage() {
                         {t('settings.goodGreen')} ≤
                       </label>
                       <div className="flex items-center gap-2">
-                        <input
-                          type="number"
-                          min="0"
-                          max="100"
+                        <NumberInput
+                          min={0}
+                          max={100}
                           value={localSettings.ams_humidity_good ?? 40}
-                          onChange={(e) => updateSetting('ams_humidity_good', parseInt(e.target.value) || 40)}
+                          onChange={(v) => updateSetting('ams_humidity_good', v)}
+                          integer
+                          fallback={40}
                           className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
                         />
                         <span className="text-bambu-gray">%</span>
@@ -6197,12 +6135,13 @@ export function SettingsPage() {
                         {t('settings.fairOrange')} ≤
                       </label>
                       <div className="flex items-center gap-2">
-                        <input
-                          type="number"
-                          min="0"
-                          max="100"
+                        <NumberInput
+                          min={0}
+                          max={100}
                           value={localSettings.ams_humidity_fair ?? 60}
-                          onChange={(e) => updateSetting('ams_humidity_fair', parseInt(e.target.value) || 60)}
+                          onChange={(v) => updateSetting('ams_humidity_fair', v)}
+                          integer
+                          fallback={60}
                           className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
                         />
                         <span className="text-bambu-gray">%</span>
@@ -6229,13 +6168,13 @@ export function SettingsPage() {
                         {t('settings.goodBlue')} ≤
                       </label>
                       <div className="flex items-center gap-2">
-                        <input
-                          type="number"
+                        <NumberInput
                           step="0.5"
-                          min="0"
-                          max="60"
+                          min={0}
+                          max={60}
                           value={localSettings.ams_temp_good ?? 28}
-                          onChange={(e) => updateSetting('ams_temp_good', parseFloat(e.target.value) || 28)}
+                          onChange={(v) => updateSetting('ams_temp_good', v)}
+                          fallback={28}
                           className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
                         />
                         <span className="text-bambu-gray">°C</span>
@@ -6246,13 +6185,13 @@ export function SettingsPage() {
                         {t('settings.fairOrange')} ≤
                       </label>
                       <div className="flex items-center gap-2">
-                        <input
-                          type="number"
+                        <NumberInput
                           step="0.5"
-                          min="0"
-                          max="60"
+                          min={0}
+                          max={60}
                           value={localSettings.ams_temp_fair ?? 35}
-                          onChange={(e) => updateSetting('ams_temp_fair', parseFloat(e.target.value) || 35)}
+                          onChange={(v) => updateSetting('ams_temp_fair', v)}
+                          fallback={35}
                           className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
                         />
                         <span className="text-bambu-gray">°C</span>
@@ -6311,12 +6250,13 @@ export function SettingsPage() {
                       {t('settings.keepSensorHistory')}
                     </label>
                     <div className="flex items-center gap-2">
-                      <input
-                        type="number"
-                        min="1"
-                        max="365"
+                      <NumberInput
+                        min={1}
+                        max={365}
                         value={localSettings.ams_history_retention_days ?? 30}
-                        onChange={(e) => updateSetting('ams_history_retention_days', parseInt(e.target.value) || 30)}
+                        onChange={(v) => updateSetting('ams_history_retention_days', v)}
+                        integer
+                        fallback={30}
                         className="w-24 px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
                       />
                       <span className="text-bambu-gray">{t('common.days')}</span>
@@ -6616,12 +6556,13 @@ export function SettingsPage() {
                                 <td className="py-1.5 pr-2 text-white font-medium">{fil}</td>
                                 <td className="py-1 px-1">
                                   <div className="flex items-center justify-end gap-1">
-                                    <input
-                                      type="number"
-                                      min={30}
+                                    <NumberInput
+                                      min={1}
                                       max={65}
                                       value={preset.n3f}
-                                      onChange={e => updatePreset(fil, 'n3f', Math.max(1, parseInt(e.target.value) || 0))}
+                                      onChange={(v) => updatePreset(fil, 'n3f', v)}
+                                      integer
+                                      fallback={0}
                                       className="w-14 px-1.5 py-1 bg-bambu-dark border border-bambu-dark-tertiary rounded text-white text-center text-xs focus:border-amber-500/50 focus:outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
                                     />
                                     <span className="text-bambu-gray">°C</span>
@@ -6629,12 +6570,13 @@ export function SettingsPage() {
                                 </td>
                                 <td className="py-1 px-1">
                                   <div className="flex items-center gap-1">
-                                    <input
-                                      type="number"
+                                    <NumberInput
                                       min={1}
                                       max={24}
                                       value={preset.n3f_hours}
-                                      onChange={e => updatePreset(fil, 'n3f_hours', Math.max(1, parseInt(e.target.value) || 0))}
+                                      onChange={(v) => updatePreset(fil, 'n3f_hours', v)}
+                                      integer
+                                      fallback={0}
                                       className="w-14 px-1.5 py-1 bg-bambu-dark border border-bambu-dark-tertiary rounded text-white text-center text-xs focus:border-amber-500/50 focus:outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
                                     />
                                     <span className="text-bambu-gray">h</span>
@@ -6642,12 +6584,13 @@ export function SettingsPage() {
                                 </td>
                                 <td className="py-1 px-1">
                                   <div className="flex items-center justify-end gap-1">
-                                    <input
-                                      type="number"
-                                      min={30}
+                                    <NumberInput
+                                      min={1}
                                       max={85}
                                       value={preset.n3s}
-                                      onChange={e => updatePreset(fil, 'n3s', Math.max(1, parseInt(e.target.value) || 0))}
+                                      onChange={(v) => updatePreset(fil, 'n3s', v)}
+                                      integer
+                                      fallback={0}
                                       className="w-14 px-1.5 py-1 bg-bambu-dark border border-bambu-dark-tertiary rounded text-white text-center text-xs focus:border-amber-500/50 focus:outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
                                     />
                                     <span className="text-bambu-gray">°C</span>
@@ -6655,12 +6598,13 @@ export function SettingsPage() {
                                 </td>
                                 <td className="py-1 px-1">
                                   <div className="flex items-center gap-1">
-                                    <input
-                                      type="number"
+                                    <NumberInput
                                       min={1}
                                       max={24}
                                       value={preset.n3s_hours}
-                                      onChange={e => updatePreset(fil, 'n3s_hours', Math.max(1, parseInt(e.target.value) || 0))}
+                                      onChange={(v) => updatePreset(fil, 'n3s_hours', v)}
+                                      integer
+                                      fallback={0}
                                       className="w-14 px-1.5 py-1 bg-bambu-dark border border-bambu-dark-tertiary rounded text-white text-center text-xs focus:border-amber-500/50 focus:outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
                                     />
                                     <span className="text-bambu-gray">h</span>
@@ -7026,19 +6970,15 @@ export function SettingsPage() {
                               {t('settings.sessionPolicy.customHoursLabel')}
                             </label>
                             <div className="flex items-center gap-1">
-                              <input
+                              <NumberInput
                                 id="session-max-hours-input"
-                                type="number"
                                 min={1}
                                 max={720}
                                 step={1}
                                 disabled={!isAdmin || !hasPermission('settings:update') || (sessionDisabled)}
                                 value={currentHours}
-                                onChange={(e) => {
-                                  const raw = parseInt(e.target.value, 10);
-                                  if (Number.isNaN(raw)) return;
-                                  updateSetting('session_max_hours', Math.min(720, Math.max(1, raw)));
-                                }}
+                                onChange={(v) => updateSetting('session_max_hours', v)}
+                                integer
                                 className="w-24 px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none text-center disabled:opacity-50 disabled:cursor-not-allowed"
                               />
                               <span className="text-bambu-gray text-sm">
@@ -7864,14 +7804,15 @@ export function SettingsPage() {
                 {macroForm.event === 'layer_reached' && (
                   <div>
                     <label className="block text-sm text-bambu-gray mb-1">{t('settings.macroTriggerLayer')}</label>
-                    <input
-                      type="number"
+                    <NumberInput
                       min={1}
                       value={macroForm.trigger_layer ?? 1}
-                      onChange={(e) => setMacroForm(prev => ({
+                      onChange={(v) => setMacroForm(prev => ({
                         ...prev,
-                        trigger_layer: Math.max(1, parseInt(e.target.value, 10) || 1),
+                        trigger_layer: v,
                       }))}
+                      integer
+                      fallback={1}
                       className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none text-sm"
                     />
                     <p className="text-xs text-bambu-gray mt-1">{t('settings.macroTriggerLayerHint')}</p>
@@ -7968,15 +7909,16 @@ export function SettingsPage() {
                   <label className="block text-sm text-bambu-gray mb-1">
                     {t('settings.macroDelaySeconds')}
                   </label>
-                  <input
-                    type="number"
+                  <NumberInput
                     min={0}
                     max={3600}
                     value={macroForm.delay_seconds ?? 0}
-                    onChange={(e) => setMacroForm(prev => ({
+                    onChange={(v) => setMacroForm(prev => ({
                       ...prev,
-                      delay_seconds: Math.max(0, Math.min(3600, parseInt(e.target.value, 10) || 0)),
+                      delay_seconds: v,
                     }))}
+                    integer
+                    fallback={0}
                     className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none text-sm"
                   />
                   <p className="text-xs text-bambu-gray mt-1">{t('settings.macroDelayHint')}</p>

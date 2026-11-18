@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.core.auth import RequirePermission
+from backend.app.core.auth import RequireAnyPermission, RequirePermission
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.models.local_preset import LocalPreset
@@ -36,10 +36,13 @@ router = APIRouter(prefix="/local-presets", tags=["Local Presets"])
 
 @router.get("/", response_model=LocalPresetsResponse)
 async def list_local_presets(
-    _: User | None = RequirePermission(Permission.SETTINGS_READ),
+    _: User | None = RequireAnyPermission(Permission.SETTINGS_READ, Permission.INVENTORY_READ),
     db: AsyncSession = Depends(get_db),
 ):
-    """List all local presets grouped by type."""
+    """List all local presets grouped by type.
+
+    The spool forms offer them, so an inventory reader may list them.
+    """
     result = await db.execute(select(LocalPreset).order_by(LocalPreset.name))
     presets = result.scalars().all()
 
@@ -59,7 +62,7 @@ async def list_local_presets(
 @router.get("/{preset_id}", response_model=LocalPresetDetail)
 async def get_local_preset(
     preset_id: int,
-    _: User | None = RequirePermission(Permission.SETTINGS_READ),
+    _: User | None = RequireAnyPermission(Permission.SETTINGS_READ, Permission.INVENTORY_READ),
     db: AsyncSession = Depends(get_db),
 ):
     """Get full detail for a local preset including the setting JSON."""

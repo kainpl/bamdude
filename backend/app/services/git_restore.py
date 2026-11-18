@@ -426,6 +426,7 @@ _RESTORABLE_SETTING_KEYS = frozenset(
         "stagger_concurrent",
         "stagger_interval_minutes",
         "stagger_wait_for_bed",
+        "stagger_strict_for_direct_dispatch",
         "forecast_upload_seconds",
         "forecast_operator_absence_enabled",
         "forecast_operator_absence_start",

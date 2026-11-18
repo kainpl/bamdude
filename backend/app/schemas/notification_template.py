@@ -5,6 +5,8 @@ from enum import StrEnum
 
 from pydantic import BaseModel, Field
 
+from backend.app.schemas.not_null import IgnoresNullForRequiredColumns
+
 
 class EventType(StrEnum):
     """Supported notification event types."""
@@ -561,8 +563,10 @@ class NotificationTemplateBase(BaseModel):
     body_template: str = Field(..., min_length=1, max_length=2000)
 
 
-class NotificationTemplateUpdate(BaseModel):
+class NotificationTemplateUpdate(IgnoresNullForRequiredColumns):
     """Schema for updating a notification template."""
+
+    __orm_table__ = "notification_templates"
 
     title_template: str | None = Field(default=None, min_length=1, max_length=200)
     body_template: str | None = Field(default=None, min_length=1, max_length=2000)

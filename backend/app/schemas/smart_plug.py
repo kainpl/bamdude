@@ -3,6 +3,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, computed_field, model_validator
 
+from backend.app.schemas.not_null import IgnoresNullForRequiredColumns
+
 SMART_PLUG_SECRET_FIELDS = (
     "password",
     "rest_headers",
@@ -163,7 +165,9 @@ class SmartPlugCreate(SmartPlugBase):
     secret_actions: dict[str, str] | None = None
 
 
-class SmartPlugUpdate(BaseModel):
+class SmartPlugUpdate(IgnoresNullForRequiredColumns):
+    __orm_table__ = "smart_plugs"
+
     secret_actions: dict[str, str] | None = None
     name: str | None = None
     plug_type: Literal["tasmota", "homeassistant", "mqtt", "rest", "zigbee"] | None = None

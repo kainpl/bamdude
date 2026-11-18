@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { NumberInput } from './NumberInput';
 import { useTranslation } from 'react-i18next';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Repeat } from 'lucide-react';
@@ -137,13 +138,13 @@ export function DryingScheduleModal({
           <label htmlFor="drying-rule-temp" className="text-sm text-bambu-gray">
             {t('printers.drying.temperature')} (°C)
           </label>
-          <input
+          <NumberInput
             id="drying-rule-temp"
-            type="number"
             min={45}
             max={ceiling}
             value={temp}
-            onChange={(e) => setTemp(Math.min(ceiling, Math.max(45, Number(e.target.value) || 45)))}
+            onChange={(v) => setTemp(v)}
+            fallback={45}
             className={`${INPUT} w-20 text-center`}
           />
         </div>
@@ -151,13 +152,13 @@ export function DryingScheduleModal({
           <label htmlFor="drying-rule-duration" className="text-sm text-bambu-gray">
             {t('printers.drying.duration')} ({t('printers.drying.hours')})
           </label>
-          <input
+          <NumberInput
             id="drying-rule-duration"
-            type="number"
             min={1}
             max={24}
             value={duration}
-            onChange={(e) => setDuration(Math.min(24, Math.max(1, Number(e.target.value) || 1)))}
+            onChange={(v) => setDuration(v)}
+            fallback={1}
             className={`${INPUT} w-20 text-center`}
           />
         </div>

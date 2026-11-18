@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field, PlainSerializer, field_validator, model_v
 
 from backend.app.schemas.calibration_mode import CalibrationMode
 from backend.app.schemas.filament_routing import FilamentOverride
+from backend.app.schemas.not_null import IgnoresNullForRequiredColumns
 from backend.app.schemas.order_auto_eject import AutoEjectSelection, AutoEjectSettings
 from backend.app.schemas.print_queue import serialize_utc_datetime
 from backend.app.schemas.printer_location import PrinterLocationOut, reject_legacy_key
@@ -100,12 +101,14 @@ class AutoQueueItemCreate(AutoEjectSelection):
         return value
 
 
-class AutoQueueItemUpdate(BaseModel):
+class AutoQueueItemUpdate(IgnoresNullForRequiredColumns):
     """Editable fields for items still in status='pending'.
 
     Once assigned, the per-printer item is the source of truth and is
     edited via the existing ``PATCH /queue/{id}`` endpoint.
     """
+
+    __orm_table__ = "auto_queue_items"
 
     position: int | None = None
     target_model: str | None = None

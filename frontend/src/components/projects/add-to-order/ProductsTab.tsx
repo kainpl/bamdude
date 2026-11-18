@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { NumberInput } from '../../NumberInput';
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Package } from 'lucide-react';
@@ -501,11 +502,11 @@ function StockCell({
   const nothing = known && suggestion.finished_free === 0 && suggestion.kits_free === 0;
   const field = (name: 'fromFinished' | 'fromKits', label: string, word: string, free: number | undefined) => (
     <span className="flex items-center gap-1 whitespace-nowrap">
-      <input
-        type="number"
+      <NumberInput
         min={0}
         value={shown[name]}
-        onChange={(e) => onChange(withStock(pick, known ? suggestion : undefined, name, Number(e.target.value)))}
+        onChange={(v) => onChange(withStock(pick, known ? suggestion : undefined, name, v))}
+        fallback={0}
         aria-label={label}
         className="w-[68px] rounded-lg border border-bambu-dark-tertiary bg-bambu-dark px-2 py-0.5 text-white"
       />

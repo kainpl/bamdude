@@ -1,4 +1,5 @@
 import { QueueStateBadge } from '../components/QueueStateBadge';
+import { NumberInput } from '../components/NumberInput';
 import { QueueDuration } from '../components/QueueDuration';
 import { useState, useEffect, useId, useLayoutEffect, useMemo, useRef, useCallback, memo } from 'react';
 import { PlateDetectionAreaEditor } from '../components/PlateDetectionAreaEditor';
@@ -2541,13 +2542,14 @@ const PrinterCard = memo(function PrinterCard({
   // Combine both sources: queue item user takes precedence, then reprint user
   const currentPrintUser = printingQueueItems?.[0]?.created_by_username || reprintUser?.username;
 
-  // Fetch last completed print for this printer
-  const { data: lastPrints } = useQuery({
+  // The printer's newest archive. One request for the page: the cards' reads of a tick
+  // travel together (`api.getLastPrint`). Kept under `['archives', …]` so whatever
+  // refreshes the archive lists refreshes this line too.
+  const { data: lastPrint } = useQuery({
     queryKey: ['archives', printer.id, 'last'],
-    queryFn: () => api.getArchives({ printer_id: printer.id, per_page: 1 }),
+    queryFn: () => api.getLastPrint(printer.id),
     enabled: status?.connected && status?.state !== 'RUNNING',
   });
-  const lastPrint = lastPrints?.data?.[0];
 
   // Plate-clear status pill + button (#939, ported from upstream b046c2ca).
   const requirePlateClear = printer.require_plate_clear;
@@ -4575,7 +4577,7 @@ const PrinterCard = memo(function PrinterCard({
                           </div>
                           {lastPrint ? (
                             <p className="text-xs text-bambu-gray mt-2 truncate" title={lastPrint.print_name || lastPrint.filename}>
-                              Last: {lastPrint.print_name || lastPrint.filename}
+                              {t('printers.lastPrint', { name: lastPrint.print_name || lastPrint.filename })}
                               {lastPrint.completed_at && (
                                 <span className="ml-1 text-bambu-gray/60">
                                   • {formatDateOnly(lastPrint.completed_at, { month: 'short', day: 'numeric' }, dateFormat)}
@@ -7686,12 +7688,12 @@ const PrinterCard = memo(function PrinterCard({
                   <div className="flex items-center justify-between mb-1">
                     <label className="text-[length:var(--pc-t10,10px)] text-bambu-gray">{t('printers.drying.temperature')}</label>
                     <div className="flex items-center gap-1">
-                      <input
-                        type="number"
+                      <NumberInput
                         min={45}
                         max={maxTemp}
                         value={dryingTemp}
-                        onChange={e => setDryingTemp(Math.min(maxTemp, Math.max(45, Number(e.target.value) || 45)))}
+                        onChange={(v) => setDryingTemp(v)}
+                        fallback={45}
                         className="w-12 px-1 py-0.5 bg-bambu-dark border border-bambu-dark-tertiary rounded text-white text-[length:var(--pc-t11,11px)] text-center focus:outline-none focus:border-amber-500/50 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
                       />
                       <span className="text-[length:var(--pc-t10,10px)] text-bambu-gray">°C</span>
@@ -7715,12 +7717,12 @@ const PrinterCard = memo(function PrinterCard({
                   <div className="flex items-center justify-between mb-1">
                     <label className="text-[length:var(--pc-t10,10px)] text-bambu-gray">{t('printers.drying.duration')}</label>
                     <div className="flex items-center gap-1">
-                      <input
-                        type="number"
+                      <NumberInput
                         min={1}
                         max={24}
                         value={dryingDuration}
-                        onChange={e => setDryingDuration(Math.min(24, Math.max(1, Number(e.target.value) || 1)))}
+                        onChange={(v) => setDryingDuration(v)}
+                        fallback={1}
                         className="w-10 px-1 py-0.5 bg-bambu-dark border border-bambu-dark-tertiary rounded text-white text-[length:var(--pc-t11,11px)] text-center focus:outline-none focus:border-amber-500/50 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
                       />
                       <span className="text-[length:var(--pc-t10,10px)] text-bambu-gray">{t('printers.drying.hours')}</span>
@@ -7767,13 +7769,13 @@ const PrinterCard = memo(function PrinterCard({
                   {dryingMode === 'delay' && (
                     <div className="flex items-center justify-between mt-2">
                       <label htmlFor="drying-delay-hours" className="text-[length:var(--pc-t10,10px)] text-bambu-gray">{t('printers.drying.delayHours')}</label>
-                      <input
+                      <NumberInput
                         id="drying-delay-hours"
-                        type="number"
                         min={1}
                         max={48}
                         value={dryingDelayHours}
-                        onChange={e => setDryingDelayHours(Math.min(48, Math.max(1, Number(e.target.value) || 1)))}
+                        onChange={(v) => setDryingDelayHours(v)}
+                        fallback={1}
                         className="w-12 px-1 py-0.5 bg-bambu-dark border border-bambu-dark-tertiary rounded text-white text-[length:var(--pc-t11,11px)] text-center focus:outline-none focus:border-amber-500/50"
                       />
                     </div>
@@ -8479,12 +8481,13 @@ export function AddPrinterModal({
                   {t('printers.modal.mqttConnectionTimeoutLabel')}
                 </label>
                 <div className="flex items-center gap-2">
-                  <input
-                    type="number"
-                    min="0"
-                    max="3600"
+                  <NumberInput
+                    min={0}
+                    max={3600}
                     value={form.mqtt_connection_timeout}
-                    onChange={(e) => setForm({ ...form, mqtt_connection_timeout: parseInt(e.target.value) || 0 })}
+                    onChange={(v) => setForm({ ...form, mqtt_connection_timeout: v })}
+                    integer
+                    fallback={0}
                     className="w-24 px-3 py-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:border-bambu-green focus:ring-1 focus:ring-bambu-green"
                   />
                   <span className="text-xs text-bambu-gray">{t('printers.modal.mqttConnectionTimeoutHint')}</span>
@@ -8493,12 +8496,13 @@ export function AddPrinterModal({
               <div>
                 <label className="block text-sm text-bambu-gray mb-1">{t('printers.modal.staggerInterval')}</label>
                 <div className="flex items-center gap-2">
-                  <input
-                    type="number"
-                    min="0"
-                    max="60"
+                  <NumberInput
+                    min={0}
+                    max={60}
                     value={form.stagger_interval_minutes ?? 0}
-                    onChange={(e) => setForm({ ...form, stagger_interval_minutes: parseInt(e.target.value) || 0 })}
+                    onChange={(v) => setForm({ ...form, stagger_interval_minutes: v })}
+                    integer
+                    fallback={0}
                     className="w-24 px-3 py-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:border-bambu-green focus:ring-1 focus:ring-bambu-green"
                   />
                   <span className="text-xs text-bambu-gray">{t('printers.modal.staggerIntervalHint')}</span>
@@ -9177,12 +9181,13 @@ export function EditPrinterModal({
                   {t('printers.modal.mqttConnectionTimeoutLabel')}
                 </label>
                 <div className="flex items-center gap-2">
-                  <input
-                    type="number"
-                    min="0"
-                    max="3600"
+                  <NumberInput
+                    min={0}
+                    max={3600}
                     value={form.mqtt_connection_timeout}
-                    onChange={(e) => setForm({ ...form, mqtt_connection_timeout: parseInt(e.target.value) || 0 })}
+                    onChange={(v) => setForm({ ...form, mqtt_connection_timeout: v })}
+                    integer
+                    fallback={0}
                     className="w-24 px-3 py-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:border-bambu-green focus:ring-1 focus:ring-bambu-green"
                   />
                   <span className="text-xs text-bambu-gray">{t('printers.modal.mqttConnectionTimeoutHint')}</span>
@@ -9191,12 +9196,13 @@ export function EditPrinterModal({
               <div>
                 <label className="block text-sm font-medium text-bambu-gray mb-1">{t('printers.modal.staggerInterval')}</label>
                 <div className="flex items-center gap-2">
-                  <input
-                    type="number"
-                    min="0"
-                    max="60"
+                  <NumberInput
+                    min={0}
+                    max={60}
                     value={form.stagger_interval_minutes ?? 0}
-                    onChange={(e) => setForm({ ...form, stagger_interval_minutes: parseInt(e.target.value) || 0 })}
+                    onChange={(v) => setForm({ ...form, stagger_interval_minutes: v })}
+                    integer
+                    fallback={0}
                     className="w-24 px-3 py-1.5 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:border-bambu-green focus:ring-1 focus:ring-bambu-green"
                   />
                   <span className="text-xs text-bambu-gray">{t('printers.modal.staggerIntervalHint')}</span>

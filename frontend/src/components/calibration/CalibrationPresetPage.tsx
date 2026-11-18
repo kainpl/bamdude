@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { NumberInput } from '../NumberInput';
 import { useTranslation } from 'react-i18next';
 import { useQuery } from '@tanstack/react-query';
 
@@ -800,11 +801,11 @@ export function CalibrationPresetPage({
                   <span className="text-xs text-bambu-gray">
                     {t('filamentCali.verifyDownload.startK')}
                   </span>
-                  <input
-                    type="number"
+                  <NumberInput
                     step="0.001"
                     value={paStart}
-                    onChange={(e) => setPaStart(parseFloat(e.target.value) || 0)}
+                    onChange={(v) => setPaStart(v)}
+                    fallback={0}
                     className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
                   />
                 </label>
@@ -812,11 +813,11 @@ export function CalibrationPresetPage({
                   <span className="text-xs text-bambu-gray">
                     {t('filamentCali.verifyDownload.endK')}
                   </span>
-                  <input
-                    type="number"
+                  <NumberInput
                     step="0.001"
                     value={paEnd}
-                    onChange={(e) => setPaEnd(parseFloat(e.target.value) || 0)}
+                    onChange={(v) => setPaEnd(v)}
+                    fallback={0}
                     className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
                   />
                 </label>
@@ -824,11 +825,11 @@ export function CalibrationPresetPage({
                   <span className="text-xs text-bambu-gray">
                     {t('filamentCali.verifyDownload.stepK')}
                   </span>
-                  <input
-                    type="number"
+                  <NumberInput
                     step="0.001"
                     value={paStep}
-                    onChange={(e) => setPaStep(parseFloat(e.target.value) || 0)}
+                    onChange={(v) => setPaStep(v)}
+                    fallback={0}
                     className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
                   />
                 </label>
@@ -836,11 +837,11 @@ export function CalibrationPresetPage({
                   <span className="text-xs text-bambu-gray">
                     {t('filamentCali.verifyDownload.layerHeight')}
                   </span>
-                  <input
-                    type="number"
+                  <NumberInput
                     step="0.05"
                     value={paLayerHeight}
-                    onChange={(e) => setPaLayerHeight(parseFloat(e.target.value) || 0.2)}
+                    onChange={(v) => setPaLayerHeight(v)}
+                    fallback={0.2}
                     className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
                   />
                 </label>
@@ -858,11 +859,11 @@ export function CalibrationPresetPage({
                   <span className="text-xs text-bambu-gray">
                     {t('filamentCali.verifyDownload.startK')}
                   </span>
-                  <input
-                    type="number"
+                  <NumberInput
                     step="0.001"
                     value={patternStart}
-                    onChange={(e) => setPatternStart(parseFloat(e.target.value) || 0)}
+                    onChange={(v) => setPatternStart(v)}
+                    fallback={0}
                     className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
                   />
                 </label>
@@ -870,11 +871,11 @@ export function CalibrationPresetPage({
                   <span className="text-xs text-bambu-gray">
                     {t('filamentCali.verifyDownload.endK')}
                   </span>
-                  <input
-                    type="number"
+                  <NumberInput
                     step="0.001"
                     value={patternEnd}
-                    onChange={(e) => setPatternEnd(parseFloat(e.target.value) || 0)}
+                    onChange={(v) => setPatternEnd(v)}
+                    fallback={0}
                     className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
                   />
                 </label>
@@ -882,11 +883,11 @@ export function CalibrationPresetPage({
                   <span className="text-xs text-bambu-gray">
                     {t('filamentCali.verifyDownload.stepK')}
                   </span>
-                  <input
-                    type="number"
+                  <NumberInput
                     step="0.001"
                     value={patternStep}
-                    onChange={(e) => setPatternStep(parseFloat(e.target.value) || 0)}
+                    onChange={(v) => setPatternStep(v)}
+                    fallback={0}
                     className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
                   />
                 </label>
@@ -904,11 +905,11 @@ export function CalibrationPresetPage({
                   <span className="text-xs text-bambu-gray">
                     {t('filamentCali.verifyDownload.startK')}
                   </span>
-                  <input
-                    type="number"
+                  <NumberInput
                     step="0.001"
                     value={paLineStart}
-                    onChange={(e) => setPaLineStart(parseFloat(e.target.value) || 0)}
+                    onChange={(v) => setPaLineStart(v)}
+                    fallback={0}
                     className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
                   />
                 </label>
@@ -916,11 +917,11 @@ export function CalibrationPresetPage({
                   <span className="text-xs text-bambu-gray">
                     {t('filamentCali.verifyDownload.endK')}
                   </span>
-                  <input
-                    type="number"
+                  <NumberInput
                     step="0.001"
                     value={paLineEnd}
-                    onChange={(e) => setPaLineEnd(parseFloat(e.target.value) || 0)}
+                    onChange={(v) => setPaLineEnd(v)}
+                    fallback={0}
                     className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
                   />
                 </label>
@@ -928,11 +929,11 @@ export function CalibrationPresetPage({
                   <span className="text-xs text-bambu-gray">
                     {t('filamentCali.verifyDownload.stepK')}
                   </span>
-                  <input
-                    type="number"
+                  <NumberInput
                     step="0.001"
                     value={paLineStep}
-                    onChange={(e) => setPaLineStep(parseFloat(e.target.value) || 0)}
+                    onChange={(v) => setPaLineStep(v)}
+                    fallback={0}
                     className="accent-bambu-green w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
                   />
                 </label>
@@ -959,11 +960,11 @@ export function CalibrationPresetPage({
                   <span className="text-xs text-bambu-gray">
                     {t('filamentCali.verifyDownload.startVol')}
                   </span>
-                  <input
-                    type="number"
+                  <NumberInput
                     step="0.5"
                     value={volStart}
-                    onChange={(e) => setVolStart(parseFloat(e.target.value) || 0)}
+                    onChange={(v) => setVolStart(v)}
+                    fallback={0}
                     className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
                   />
                 </label>
@@ -971,11 +972,11 @@ export function CalibrationPresetPage({
                   <span className="text-xs text-bambu-gray">
                     {t('filamentCali.verifyDownload.endVol')}
                   </span>
-                  <input
-                    type="number"
+                  <NumberInput
                     step="0.5"
                     value={volEnd}
-                    onChange={(e) => setVolEnd(parseFloat(e.target.value) || 0)}
+                    onChange={(v) => setVolEnd(v)}
+                    fallback={0}
                     className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
                   />
                 </label>
@@ -983,11 +984,11 @@ export function CalibrationPresetPage({
                   <span className="text-xs text-bambu-gray">
                     {t('filamentCali.verifyDownload.stepVol')}
                   </span>
-                  <input
-                    type="number"
+                  <NumberInput
                     step="0.1"
                     value={volStep}
-                    onChange={(e) => setVolStep(parseFloat(e.target.value) || 0)}
+                    onChange={(v) => setVolStep(v)}
+                    fallback={0}
                     className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
                   />
                 </label>
@@ -1005,11 +1006,11 @@ export function CalibrationPresetPage({
                   <span className="text-xs text-bambu-gray">
                     {t('filamentCali.verifyDownload.startSpeed')}
                   </span>
-                  <input
-                    type="number"
+                  <NumberInput
                     step="1"
                     value={vfaStart}
-                    onChange={(e) => setVfaStart(parseFloat(e.target.value) || 0)}
+                    onChange={(v) => setVfaStart(v)}
+                    fallback={0}
                     className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
                   />
                 </label>
@@ -1017,11 +1018,11 @@ export function CalibrationPresetPage({
                   <span className="text-xs text-bambu-gray">
                     {t('filamentCali.verifyDownload.endSpeed')}
                   </span>
-                  <input
-                    type="number"
+                  <NumberInput
                     step="1"
                     value={vfaEnd}
-                    onChange={(e) => setVfaEnd(parseFloat(e.target.value) || 0)}
+                    onChange={(v) => setVfaEnd(v)}
+                    fallback={0}
                     className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
                   />
                 </label>
@@ -1029,11 +1030,11 @@ export function CalibrationPresetPage({
                   <span className="text-xs text-bambu-gray">
                     {t('filamentCali.verifyDownload.stepSpeed')}
                   </span>
-                  <input
-                    type="number"
+                  <NumberInput
                     step="1"
                     value={vfaStep}
-                    onChange={(e) => setVfaStep(parseFloat(e.target.value) || 0)}
+                    onChange={(v) => setVfaStep(v)}
+                    fallback={0}
                     className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
                   />
                 </label>
@@ -1051,11 +1052,11 @@ export function CalibrationPresetPage({
                   <span className="text-xs text-bambu-gray">
                     {t('filamentCali.verifyDownload.startTemp')}
                   </span>
-                  <input
-                    type="number"
+                  <NumberInput
                     step="5"
                     value={tempStart}
-                    onChange={(e) => setTempStart(parseFloat(e.target.value) || 0)}
+                    onChange={(v) => setTempStart(v)}
+                    fallback={0}
                     className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
                   />
                 </label>
@@ -1063,11 +1064,11 @@ export function CalibrationPresetPage({
                   <span className="text-xs text-bambu-gray">
                     {t('filamentCali.verifyDownload.endTemp')}
                   </span>
-                  <input
-                    type="number"
+                  <NumberInput
                     step="5"
                     value={tempEnd}
-                    onChange={(e) => setTempEnd(parseFloat(e.target.value) || 0)}
+                    onChange={(v) => setTempEnd(v)}
+                    fallback={0}
                     className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
                   />
                 </label>
@@ -1157,29 +1158,31 @@ export function CalibrationPresetPage({
         <section className="grid grid-cols-3 gap-2">
           <label className="block">
             <span className="text-xs text-bambu-gray">{t('filamentCali.preset.bedTemp')}</span>
-            <input
-              type="number"
+            <NumberInput
               value={current.bedTemp}
-              onChange={(e) => patchCurrent({ bedTemp: parseInt(e.target.value, 10) || 0 })}
+              onChange={(v) => patchCurrent({ bedTemp: v })}
+              integer
+              fallback={0}
               className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
             />
           </label>
           <label className="block">
             <span className="text-xs text-bambu-gray">{t('filamentCali.preset.nozzleTemp')}</span>
-            <input
-              type="number"
+            <NumberInput
               value={current.nozzleTemp}
-              onChange={(e) => patchCurrent({ nozzleTemp: parseInt(e.target.value, 10) || 0 })}
+              onChange={(v) => patchCurrent({ nozzleTemp: v })}
+              integer
+              fallback={0}
               className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
             />
           </label>
           <label className="block">
             <span className="text-xs text-bambu-gray">{t('filamentCali.preset.maxVolSpeed')}</span>
-            <input
-              type="number"
+            <NumberInput
               step="0.5"
               value={current.maxVolSpeed}
-              onChange={(e) => patchCurrent({ maxVolSpeed: parseFloat(e.target.value) || 0 })}
+              onChange={(v) => patchCurrent({ maxVolSpeed: v })}
+              fallback={0}
               className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
             />
           </label>

@@ -69,7 +69,10 @@ describe('Settings — pause heads-up lead time', () => {
     // The page holds back auto-save briefly after the settings load.
     await new Promise((resolve) => setTimeout(resolve, 200));
 
+    // An out-of-range number stays as typed and is clamped when the field is left.
     fireEvent.change(input, { target: { value: '500' } });
+    expect(input).toHaveValue(500);
+    fireEvent.blur(input);
     expect(input).toHaveValue(120);
     await waitFor(() => expect(saved?.pause_warning_minutes).toBe(120), { timeout: 5000 });
 

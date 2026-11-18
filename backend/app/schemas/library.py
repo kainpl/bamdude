@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field, model_validator
 from backend.app.schemas.archive import PaginationMeta
 from backend.app.schemas.calibration_mode import CalibrationMode
 from backend.app.schemas.filament_routing import FilamentRoutingChoices
+from backend.app.schemas.not_null import IgnoresNullForRequiredColumns
 from backend.app.schemas.project import LineConfigurationOut
 from backend.app.schemas.timelapse import TimelapseStorage
 
@@ -45,12 +46,14 @@ class ExternalFolderCreate(BaseModel):
     parent_id: int | None = None
 
 
-class FolderUpdate(BaseModel):
+class FolderUpdate(IgnoresNullForRequiredColumns):
     """Schema for updating a folder.
 
     ``product_ids``: ``None`` = leave links untouched, ``[]`` = unlink
     from every product, otherwise replace the whole list.
     """
+
+    __orm_table__ = "library_folders"
 
     name: str | None = Field(None, min_length=1, max_length=255)
     parent_id: int | None = None
@@ -118,24 +121,28 @@ class FolderTreeItem(BaseModel):
 # ============ File Schemas ============
 
 
-class FileUpdate(BaseModel):
+class FileUpdate(IgnoresNullForRequiredColumns):
     """Schema for updating a file.
 
     ``product_ids``: ``None`` = leave links untouched, ``[]`` = unlink
     from every product, otherwise replace the whole list.
     """
 
+    __orm_table__ = "library_files"
+
     filename: str | None = Field(None, min_length=1, max_length=255)
     folder_id: int | None = None
     product_ids: list[int] | None = None
 
 
-class FileExternalUrlUpdate(BaseModel):
+class FileExternalUrlUpdate(IgnoresNullForRequiredColumns):
     """The operator's own link on a file; ``null`` or an empty string clears it.
 
     Deliberately unvalidated here: the route refuses a bad link with one sentence
     the error boundary can translate, where a pydantic refusal is a list.
     """
+
+    __orm_table__ = "library_files"
 
     external_url: str | None = None
 

@@ -21,6 +21,7 @@
  * it for good (`StreamOverlayBuilderToken.test.tsx`).
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { NumberInput } from './NumberInput';
 import { useTranslation } from 'react-i18next';
 import { Copy, ExternalLink, Eye, EyeOff, Import, Plus, RotateCcw } from 'lucide-react';
 import { api, type Printer } from '../api/client';
@@ -509,13 +510,13 @@ export function StreamOverlayBuilder({ onTokenCreated }: StreamOverlayBuilderPro
           <label htmlFor="overlay-builder-fps" className="block text-sm font-medium text-white mb-1">
             {t('streamOverlay.builder.fps', 'Frame rate')}
           </label>
-          <input
+          <NumberInput
             id="overlay-builder-fps"
-            type="number"
             min={1}
             max={30}
             value={fps}
-            onChange={(e) => setFps(Math.min(Math.max(Number(e.target.value) || 1, 1), 30))}
+            onChange={setFps}
+            fallback={1}
             className="w-full px-3 py-2 bg-bambu-dark rounded-md text-white border border-bambu-dark-tertiary focus:border-bambu-green focus:outline-none"
           />
           <p className="text-xs text-bambu-gray mt-1">
@@ -586,13 +587,13 @@ export function StreamOverlayBuilder({ onTokenCreated }: StreamOverlayBuilderPro
                   <label htmlFor="overlay-builder-token-days" className="block text-xs text-bambu-gray mb-1">
                     {t('streamOverlay.builder.tokenDays', 'Valid for (days)')}
                   </label>
-                  <input
+                  <NumberInput
                     id="overlay-builder-token-days"
-                    type="number"
                     min={1}
                     max={MAX_TOKEN_DAYS}
                     value={tokenDays}
-                    onChange={(e) => setTokenDays(Math.min(Math.max(Math.round(Number(e.target.value)) || 1, 1), MAX_TOKEN_DAYS))}
+                    onChange={(v) => setTokenDays(Math.min(Math.max(Math.round(v), 1), MAX_TOKEN_DAYS))}
+                    fallback={1}
                     className="w-full px-3 py-2 bg-bambu-dark rounded-md text-white border border-bambu-dark-tertiary focus:border-bambu-green focus:outline-none"
                   />
                 </div>

@@ -2,6 +2,7 @@ import { useQueries, useQuery } from '@tanstack/react-query';
 import { useEffect, useRef } from 'react';
 import { api } from '../api/client';
 import { useTheme } from '../contexts/ThemeContext';
+import { formatDuration } from '../utils/date';
 
 const FALLBACK_ACCENT = '#00ae42'; // BamDude green, if --accent cannot be read (e.g. jsdom)
 
@@ -37,6 +38,20 @@ export function pickActivePrint<T extends ProgressStatus>(statuses: (T | undefin
     }
   }
   return best;
+}
+
+/**
+ * What the tab title says of the picked print: the time it has left (minutes on the wire) when
+ * that was asked for and is known, its percentage otherwise — so a print whose estimate has
+ * not arrived yet still shows something. Null when it reports no progress.
+ */
+export function tabTitleValue(status: ProgressStatus, display: 'percentage' | 'time'): string | null {
+  if (status.progress == null) return null;
+  const remaining = status.remaining_time;
+  if (display === 'time' && remaining != null && Number.isFinite(remaining) && remaining > 0) {
+    return formatDuration(remaining * 60);
+  }
+  return `${Math.round(status.progress)}%`;
 }
 
 // Draw a 32x32 progress ring in the current accent colour and return a PNG data
@@ -92,14 +107,14 @@ function setFavicon(dataUrl: string | null, originals: Map<HTMLLinkElement, stri
 
 /**
  * With the "progress in tab" preference on, reflect the soonest-finishing
- * print's percentage in `document.title` and draw a matching progress-ring
- * favicon. Stays completely inert until enabled, and hands the tab back to its
+ * print's percentage — or its time left, by the browser's choice — in
+ * `document.title` and draw a matching progress-ring favicon. Stays completely inert until enabled, and hands the tab back to its
  * defaults once disabled, idle, or unmounted.
  *
  * Mounted once, globally, inside WebSocketProvider.
  */
 export function usePrintProgressTitle() {
-  const { progressInTitle, resolvedMode, darkAccent, lightAccent } = useTheme();
+  const { progressInTitle, tabDisplay, resolvedMode, darkAccent, lightAccent } = useTheme();
   // Re-draw the ring when the active accent changes.
   const accent = resolvedMode === 'dark' ? darkAccent : lightAccent;
 
@@ -132,10 +147,11 @@ export function usePrintProgressTitle() {
 
   const active = progressInTitle ? pickActivePrint(statusQueries.map((q) => q.data)) : null;
   const pct = active && active.progress != null ? Math.round(active.progress) : null;
+  const titleValue = active ? tabTitleValue(active, tabDisplay) : null;
 
   useEffect(() => {
     if (progressInTitle && pct != null) {
-      document.title = `${pct}% · ${defaultTitleRef.current}`;
+      document.title = `${titleValue} · ${defaultTitleRef.current}`;
       setFavicon(drawProgressFavicon(pct), originalsRef.current);
       ownsRef.current = true;
     } else if (ownsRef.current) {
@@ -145,7 +161,7 @@ export function usePrintProgressTitle() {
       ownsRef.current = false;
     }
     // else: never owned the tab → leave it entirely alone.
-  }, [progressInTitle, pct, accent]);
+  }, [progressInTitle, pct, titleValue, accent]);
 
   // Restore on unmount, but only if we own it.
   useEffect(() => {

@@ -14,7 +14,16 @@ from sqlalchemy import delete, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core import query_timing
-from backend.app.core.auth import RequireAdmin, RequirePermission, get_current_user_optional, require_energy_cost_update
+from backend.app.core.auth import (
+    RequestCredentials,
+    RequireAdmin,
+    RequireAnyPermission,
+    RequirePermission,
+    get_current_user_optional,
+    request_credentials,
+    require_energy_cost_update,
+    require_permission,
+)
 from backend.app.core.config import settings as app_settings
 from backend.app.core.credential_config import canonical_url, lock_credential_config, merge_secret_fields
 from backend.app.core.database import get_db
@@ -33,6 +42,8 @@ from backend.app.schemas.settings import (
 )
 
 logger = logging.getLogger(__name__)
+
+_settings_read_gate = require_permission(Permission.SETTINGS_READ)
 
 router = APIRouter(prefix="/settings", tags=["settings"])
 
@@ -289,130 +300,168 @@ async def _load_settings(db: AsyncSession, *, effective_env: bool = True) -> App
 
     for setting in db_settings:
         if setting.key in settings_dict:
-            # Parse the value based on the expected type
-            if setting.key in [
-                "save_thumbnails",
-                "mcp_enabled",
-                "mcp_allow_http",
-                "capture_finish_photo",
-                "camera_light_auto",
-                "camera_light_auto_obico",
-                "archive_3mf_retention_enabled",
-                "spoolman_enabled",
-                "spoolman_disable_weight_sync",
-                "spoolman_report_partial_usage",
-                "auto_add_unknown_rfid",
-                "disable_filament_warnings",
-                "check_updates",
-                "check_printer_firmware",
-                "include_beta_updates",
-                "telemetry_enabled",
-                "virtual_printer_enabled",
-                "connector_enabled",
-                "ftp_retry_enabled",
-                "mqtt_enabled",
-                "mqtt_use_tls",
-                "mqtt_tls_verify",
-                "ha_enabled",
-                "per_printer_mapping_expanded",
-                "prometheus_enabled",
-                "user_notifications_enabled",
-                "prefer_lowest_filament",
-                "queue_shortest_first",
-                "forecast_operator_absence_enabled",
-                "auto_queue_rebalance_models",
-                "auto_queue_return_failed",
-                "auto_queue_compatible_models",
-                "auto_order_for_batches",
-                "default_force_color_match",
-                "queue_drying_enabled",
-                "queue_drying_block",
-                "ambient_drying_enabled",
-                "print_drying_enabled",
-                "stagger_enabled",
-                "stagger_wait_for_bed",
-                "stagger_strict_for_direct_dispatch",
-                "stagger_split_by_tags",
-                "stagger_split_by_location",
-                "ldap_enabled",
-                "ldap_auto_provision",
-                "library_all_files_recursive",
-                "local_login_enabled",
-                "runout_archive_spool_enabled",
-            ]:
-                settings_dict[setting.key] = setting.value.lower() == "true"
-            elif setting.key in ["runout_zero_point_enabled", "ams_sync_bidirectional"]:
-                # On unless the row says "false" — exactly how usage_tracker and
-                # main.on_ams_change read these two, so a stored "None" (a PUT
-                # with null) neither 500s here nor reads off while acting on.
-                settings_dict[setting.key] = setting.value.lower() != "false"
-            elif setting.key in [
-                "default_filament_cost",
-                "energy_cost_per_kwh",
-                "ams_temp_good",
-                "ams_temp_fair",
-                "library_disk_warning_gb",
-                "low_stock_threshold",
-            ]:
-                settings_dict[setting.key] = float(setting.value)
-            elif setting.key == "ams_temp_alarm":
-                # Nullable float. Storage stringifies None to "None", so it cannot
-                # join the list above — float("None") would take the whole
-                # settings response down with it (upstream #2905). Garbage reads
-                # as unset, the same fallback the alarm itself applies — a
-                # non-finite value too, which JSON could not carry anyway.
-                try:
-                    value = float(setting.value)
-                except (TypeError, ValueError):
-                    value = None
-                settings_dict[setting.key] = value if value is not None and math.isfinite(value) else None
-            elif setting.key in [
-                "ams_humidity_good",
-                "ams_humidity_fair",
-                "ams_history_retention_days",
-                "inbox_retention_days",
-                "pause_warning_minutes",
-                "printer_sensor_history_retention_days",
-                "archive_3mf_retention_days",
-                "log_retention_days",
-                "slow_query_ms",
-                "slow_request_ms",
-                "ftp_retry_count",
-                "ftp_retry_delay",
-                "ftp_timeout",
-                "mqtt_port",
-                "stagger_concurrent",
-                "stagger_interval_minutes",
-                "forecast_global_lead_time_days",
-                "auto_drying_sustained_minutes",
-                "location_sensor_poll_interval",
-                "forecast_upload_seconds",
-                "forecast_plate_clear_minutes",
-                "firmware_batch_concurrency",
-                "session_max_hours",
-                "connector_max_upload_bytes",
-            ]:
-                settings_dict[setting.key] = int(setting.value)
-            elif setting.key == "default_printer_id":
-                # Handle nullable integer
-                settings_dict[setting.key] = int(setting.value) if setting.value and setting.value != "None" else None
-            elif setting.key == "open_in_slicer":
-                # None means "inherit from preferred_slicer" (#1329). The PUT path
-                # serializes None as the literal string "None"; strip it back so
-                # the frontend sees a true null and falls back as intended.
-                settings_dict[setting.key] = setting.value if setting.value and setting.value != "None" else None
-            elif setting.key in {"mcp_allowed_hosts", "mcp_allowed_origins"}:
-                import json
-
-                settings_dict[setting.key] = json.loads(setting.value)
-            else:
-                settings_dict[setting.key] = setting.value
+            try:
+                settings_dict[setting.key] = _parse_stored(setting.key, setting.value)
+            except (TypeError, ValueError, AttributeError):
+                _warn_unreadable(setting.key)
 
     # Get Home Assistant settings (with environment variable overrides)
     if effective_env:
         settings_dict.update(await get_homeassistant_settings(db))
 
-    return AppSettings(**settings_dict)
+    return _validated_snapshot(settings_dict)
+
+
+_unreadable_reported: set[str] = set()
+
+
+def _warn_unreadable(key: str) -> None:
+    # Once per key and process: this runs on every settings read.
+    if key not in _unreadable_reported:
+        _unreadable_reported.add(key)
+        logger.warning("Stored setting %r cannot be read; using its default until it is saved again", key)
+
+
+def _validated_snapshot(settings_dict: dict) -> AppSettings:
+    """A stored row outside its field's bounds reads as the default (upstream #2518).
+
+    One bad row used to fail every settings read, ``ui-preferences`` and every save -- so the row
+    could not be repaired from the interface. The value on disk is left alone; saving the field
+    replaces it.
+    """
+    try:
+        return AppSettings(**settings_dict)
+    except ValidationError as exc:
+        defaults = DEFAULT_SETTINGS.model_dump()
+        bad = {str(error["loc"][0]) for error in exc.errors() if error.get("loc")}
+        if not bad or not bad <= defaults.keys():
+            raise
+        for key in bad:
+            _warn_unreadable(key)
+            settings_dict[key] = defaults[key]
+        return AppSettings(**settings_dict)
+
+
+def _parse_stored(key: str, value: str):
+    """One stored row as its field's type; raises for a row that is not readable as that type."""
+    # Parse the value based on the expected type
+    if key in [
+        "save_thumbnails",
+        "mcp_enabled",
+        "mcp_allow_http",
+        "capture_finish_photo",
+        "camera_light_auto",
+        "camera_light_auto_obico",
+        "archive_3mf_retention_enabled",
+        "spoolman_enabled",
+        "spoolman_disable_weight_sync",
+        "spoolman_report_partial_usage",
+        "auto_add_unknown_rfid",
+        "disable_filament_warnings",
+        "check_updates",
+        "check_printer_firmware",
+        "include_beta_updates",
+        "telemetry_enabled",
+        "virtual_printer_enabled",
+        "connector_enabled",
+        "ftp_retry_enabled",
+        "mqtt_enabled",
+        "mqtt_use_tls",
+        "mqtt_tls_verify",
+        "ha_enabled",
+        "per_printer_mapping_expanded",
+        "prometheus_enabled",
+        "user_notifications_enabled",
+        "prefer_lowest_filament",
+        "queue_shortest_first",
+        "forecast_operator_absence_enabled",
+        "auto_queue_rebalance_models",
+        "auto_queue_return_failed",
+        "auto_queue_compatible_models",
+        "auto_order_for_batches",
+        "default_force_color_match",
+        "queue_drying_enabled",
+        "queue_drying_block",
+        "ambient_drying_enabled",
+        "print_drying_enabled",
+        "stagger_enabled",
+        "stagger_wait_for_bed",
+        "stagger_strict_for_direct_dispatch",
+        "stagger_split_by_tags",
+        "stagger_split_by_location",
+        "ldap_enabled",
+        "ldap_auto_provision",
+        "library_all_files_recursive",
+        "local_login_enabled",
+        "runout_archive_spool_enabled",
+    ]:
+        return value.lower() == "true"
+    elif key in ["runout_zero_point_enabled", "ams_sync_bidirectional"]:
+        # On unless the row says "false" — exactly how usage_tracker and
+        # main.on_ams_change read these two, so a stored "None" (a PUT
+        # with null) neither 500s here nor reads off while acting on.
+        return value.lower() != "false"
+    elif key in [
+        "default_filament_cost",
+        "energy_cost_per_kwh",
+        "ams_temp_good",
+        "ams_temp_fair",
+        "library_disk_warning_gb",
+        "low_stock_threshold",
+    ]:
+        return float(value)
+    elif key == "ams_temp_alarm":
+        # Nullable float. Storage stringifies None to "None", so it cannot
+        # join the list above — float("None") would take the whole
+        # settings response down with it (upstream #2905). Garbage reads
+        # as unset, the same fallback the alarm itself applies — a
+        # non-finite value too, which JSON could not carry anyway.
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return None
+        return number if math.isfinite(number) else None
+    elif key in [
+        "ams_humidity_good",
+        "ams_humidity_fair",
+        "ams_history_retention_days",
+        "inbox_retention_days",
+        "pause_warning_minutes",
+        "printer_sensor_history_retention_days",
+        "archive_3mf_retention_days",
+        "log_retention_days",
+        "slow_query_ms",
+        "slow_request_ms",
+        "ftp_retry_count",
+        "ftp_retry_delay",
+        "ftp_timeout",
+        "mqtt_port",
+        "stagger_concurrent",
+        "stagger_interval_minutes",
+        "forecast_global_lead_time_days",
+        "auto_drying_sustained_minutes",
+        "location_sensor_poll_interval",
+        "forecast_upload_seconds",
+        "forecast_plate_clear_minutes",
+        "firmware_batch_concurrency",
+        "session_max_hours",
+        "connector_max_upload_bytes",
+    ]:
+        return int(value)
+    elif key == "default_printer_id":
+        # Handle nullable integer
+        return int(value) if value and value != "None" else None
+    elif key == "open_in_slicer":
+        # None means "inherit from preferred_slicer" (#1329). The PUT path
+        # serializes None as the literal string "None"; strip it back so
+        # the frontend sees a true null and falls back as intended.
+        return value if value and value != "None" else None
+    elif key in {"mcp_allowed_hosts", "mcp_allowed_origins"}:
+        import json
+
+        return json.loads(value)
+    else:
+        return value
 
 
 async def resolve_settings_credentials(db: AsyncSession, changes: dict, actions: dict | None = None) -> dict:
@@ -849,9 +898,18 @@ async def check_ffmpeg():
 @router.get("/spoolman")
 async def get_spoolman_settings(
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermission(Permission.SETTINGS_READ),
+    _: User | None = RequireAnyPermission(Permission.SETTINGS_READ, Permission.INVENTORY_READ),
+    creds: RequestCredentials = Depends(request_credentials),
 ):
-    """Get Spoolman integration settings."""
+    """Get Spoolman integration settings.
+
+    The inventory and printers pages decide by ``spoolman_enabled`` which inventory they show,
+    so an inventory reader gets the mode; the server address stays with ``settings:read``.
+    """
+    return await _spoolman_settings(db, with_address=await creds.allows(_settings_read_gate))
+
+
+async def _spoolman_settings(db: AsyncSession, *, with_address: bool) -> dict:
     spoolman_enabled = await get_setting(db, "spoolman_enabled") or "false"
     spoolman_url = await get_setting(db, "spoolman_url") or ""
     spoolman_sync_mode = await get_setting(db, "spoolman_sync_mode") or "auto"
@@ -861,7 +919,7 @@ async def get_spoolman_settings(
 
     return {
         "spoolman_enabled": spoolman_enabled,
-        "spoolman_url": spoolman_url,
+        "spoolman_url": spoolman_url if with_address else "",
         "spoolman_sync_mode": spoolman_sync_mode,
         "spoolman_disable_weight_sync": spoolman_disable_weight_sync,
         "spoolman_report_partial_usage": spoolman_report_partial_usage,
@@ -993,7 +1051,7 @@ async def update_spoolman_settings(
             await db.commit()
 
     # Return updated settings
-    return await get_spoolman_settings(db)
+    return await _spoolman_settings(db, with_address=True)
 
 
 async def get_homeassistant_settings(db: AsyncSession) -> dict:

@@ -45,6 +45,7 @@ from backend.app.schemas.forecast import (
     UnmatchedReservedResponse,
 )
 from backend.app.schemas.location import LocationCreate, LocationResponse, LocationUpdate
+from backend.app.schemas.not_null import IgnoresNullForRequiredColumns
 from backend.app.schemas.spool import (
     InventoryStatsResponse,
     SpoolAssignmentCreate,
@@ -380,7 +381,9 @@ class ColorEntryCreate(BaseModel):
     effect_type: str | None = Field(default=None, max_length=20)
 
 
-class ColorEntryUpdate(BaseModel):
+class ColorEntryUpdate(IgnoresNullForRequiredColumns):
+    __orm_table__ = "color_catalog"
+
     manufacturer: str
     color_name: str
     hex_color: str

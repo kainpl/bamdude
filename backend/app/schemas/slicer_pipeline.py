@@ -10,6 +10,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field
 
+from backend.app.schemas.not_null import IgnoresNullForRequiredColumns
 from backend.app.schemas.slicer import BedType, PresetRef
 
 
@@ -36,10 +37,12 @@ class SlicerPipelineCreate(SlicerPipelineBase):
     """Payload for POST /slicer-pipelines."""
 
 
-class SlicerPipelineUpdate(BaseModel):
+class SlicerPipelineUpdate(IgnoresNullForRequiredColumns):
     """Payload for PUT /slicer-pipelines/{id}. All fields optional; only those
     present are written. Preset and filament list are replaced wholesale when
     set (we don't support partial filament-slot edits)."""
+
+    __orm_table__ = "slicer_pipelines"
 
     name: str | None = Field(default=None, min_length=1, max_length=200)
     description: str | None = Field(default=None, max_length=1000)

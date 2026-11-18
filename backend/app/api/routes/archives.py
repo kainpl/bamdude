@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.api.routes._workshop_rights import ensure_may_file, ensure_may_file_future
 from backend.app.core import case_folding
+from backend.app.core.api_key_scope import in_key_scope
 from backend.app.core.auth import (
     RequestCredentials,
     RequirePermission,
@@ -279,6 +280,66 @@ def archive_to_response(
     return data
 
 
+@router.get("/last-by-printer")
+async def last_print_by_printer(
+    request: Request,
+    ids: list[int] = Query(min_length=1, max_length=100),
+    db: AsyncSession = Depends(get_db),
+    auth_result: tuple[User | None, bool] = Depends(
+        require_ownership_permission(
+            Permission.ARCHIVES_READ_ALL,
+            Permission.ARCHIVES_READ_OWN,
+        )
+    ),
+) -> dict[int, dict]:
+    """The newest archive of each named printer, for the printer cards' "last print" line.
+
+    One request for the page instead of a one-row archive list per idle card. The same rows the
+    list shows first: not trashed, and only the caller's own when it reads own archives only.
+    A printer with no visible archive is left out, and so is one outside an API key's list --
+    the list route refuses such a key's ``printer_id`` in the gate, which does not read ``ids``.
+    """
+    user, can_read_all = auth_result
+    wanted = {pid for pid in ids if in_key_scope(request, pid)}
+    if not wanted:
+        return {}
+    conditions = [PrintArchive.deleted_at.is_(None), PrintArchive.printer_id.in_(wanted)]
+    if user is not None and not can_read_all:
+        conditions.append(PrintArchive.created_by_id == user.id)
+    newest = (
+        select(
+            PrintArchive.id,
+            func.row_number()
+            .over(
+                partition_by=PrintArchive.printer_id, order_by=(PrintArchive.created_at.desc(), PrintArchive.id.desc())
+            )
+            .label("rank"),
+        )
+        .where(*conditions)
+        .subquery()
+    )
+    rows = await db.execute(
+        select(
+            PrintArchive.printer_id,
+            PrintArchive.id,
+            PrintArchive.print_name,
+            PrintArchive.filename,
+            PrintArchive.status,
+            PrintArchive.completed_at,
+        ).join(newest, and_(newest.c.id == PrintArchive.id, newest.c.rank == 1))
+    )
+    return {
+        printer_id: {
+            "id": archive_id,
+            "print_name": print_name,
+            "filename": filename,
+            "status": status,
+            "completed_at": completed_at,
+        }
+        for printer_id, archive_id, print_name, filename, status, completed_at in rows.all()
+    }
+
+
 @router.get("/", response_model=PaginatedArchiveResponse)
 async def list_archives(
     printer_id: int | None = None,
@@ -352,7 +413,11 @@ async def list_archives(
     # patched archives group with their unpatched ancestors. Page-side matching below must
     # therefore project each row to its effective hash too — `source_content_hash` first,
     # `content_hash` as defence fallback for any (post-m039) row that still has NULL source.
-    duplicate_hashes, duplicate_name_hash_pairs = await service.get_duplicate_hashes_and_names()
+    # Only the hashes on this page are asked about: the unscoped pair of GROUP BYs walked the
+    # whole table on every list request, the printer cards' one-row reads included.
+    duplicate_hashes, duplicate_name_hash_pairs = await service.get_duplicate_hashes_and_names(
+        {h for a in archives if (h := a.source_content_hash or a.content_hash)}
+    )
 
     def _eff(archive: PrintArchive) -> str | None:
         return archive.source_content_hash or archive.content_hash

@@ -28,6 +28,7 @@ vi.mock('../../api/client', async (importOriginal) => {
     api: {
       ...actual.api,
       getWebSocketToken: vi.fn().mockResolvedValue({ token: 'test-ws-token' }),
+      getCurrentUser: vi.fn().mockResolvedValue({ id: 1 }),
     },
   };
 });
@@ -1204,6 +1205,10 @@ describe('useWebSocket hook', () => {
         await vi.advanceTimersByTimeAsync(3000);
       });
       expect(wsInstances.length).toBe(instanceCountBefore);
+      // ...but the session is asked about once, so an ended one reaches the sign-in page now.
+      const { api } = await import('../../api/client');
+      expect(api.getCurrentUser).toHaveBeenCalledTimes(1);
+      vi.mocked(api.getCurrentUser).mockClear();
 
       vi.useRealTimers();
     });

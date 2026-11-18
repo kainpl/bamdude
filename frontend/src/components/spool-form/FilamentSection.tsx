@@ -1,4 +1,5 @@
 import { Fragment, useState, useRef, useEffect, useMemo } from 'react';
+import { NumberInput } from '../NumberInput';
 import { ChevronDown } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { FilamentSectionProps } from './types';
@@ -337,16 +338,14 @@ export function FilamentSection({
       {quickAdd && (
         <div>
           <label className="block text-sm font-medium text-bambu-gray mb-1">{t('inventory.quantity')}</label>
-          <input
-            type="number"
+          <NumberInput
             className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:outline-none focus:border-bambu-green"
             value={quantity}
             min={1}
             max={100}
-            onChange={(e) => {
-              const val = Math.max(1, Math.min(100, parseInt(e.target.value) || 1));
-              onQuantityChange(val);
-            }}
+            onChange={onQuantityChange}
+            integer
+            fallback={1}
           />
         </div>
       )}

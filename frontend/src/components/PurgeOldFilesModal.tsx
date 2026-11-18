@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { NumberInput } from './NumberInput';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { AlertTriangle, Loader2, Trash2 } from 'lucide-react';
@@ -70,13 +71,14 @@ export function PurgeOldFilesModal({ onClose }: PurgeOldFilesModalProps) {
             {t('libraryPurge.ageLabel')}
           </label>
           <div className="flex items-center gap-3">
-            <input
+            <NumberInput
               id="purge-days"
-              type="number"
               min={1}
               max={3650}
               value={days}
-              onChange={(e) => setDays(Math.max(1, Math.min(3650, parseInt(e.target.value || '0', 10) || 0)))}
+              onChange={(v) => setDays(v)}
+              integer
+              fallback={0}
               className="accent-bambu-green w-24 px-2 py-1 bg-bambu-dark border border-bambu-dark-tertiary rounded text-sm text-white focus:border-bambu-green focus:outline-none"
             />
             <span className="text-sm text-bambu-gray">{t('libraryPurge.days')}</span>

@@ -6,6 +6,8 @@ is refused rather than ignored — see :func:`reject_legacy_key`.
 
 from pydantic import BaseModel, Field, field_validator
 
+from backend.app.schemas.not_null import IgnoresNullForRequiredColumns
+
 
 class PrinterLocationCreate(BaseModel):
     name: str = Field(min_length=1, max_length=100)
@@ -20,13 +22,15 @@ class PrinterLocationCreate(BaseModel):
         return value
 
 
-class PrinterLocationUpdate(BaseModel):
+class PrinterLocationUpdate(IgnoresNullForRequiredColumns):
     """Both fields optional, and "not sent" is distinguished from "sent as null".
 
     Renaming must not move a location, and moving one to the top level must be
     sayable — which it is not if an omitted ``parent_id`` and an explicit null
     look the same. The route reads ``model_fields_set``.
     """
+
+    __orm_table__ = "printer_locations"
 
     name: str | None = Field(default=None, min_length=1, max_length=100)
     parent_id: int | None = None

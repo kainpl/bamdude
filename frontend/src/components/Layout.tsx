@@ -1337,7 +1337,7 @@ export function Layout() {
                 )}
               </span>
               {/* A run started from the bug-report panel ends at that panel's
-                  Stop & Submit, so send the user back there rather than to the
+                  its Stop button, so send the user back there rather than to the
                   System page's raw toggle, which would drop the logs and the
                   description already written (upstream #2847). */}
               {bugReportLogging && (

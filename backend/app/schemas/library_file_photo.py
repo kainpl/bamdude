@@ -4,6 +4,8 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict
 
+from backend.app.schemas.not_null import IgnoresNullForRequiredColumns
+
 
 class LibraryFilePhotoResponse(BaseModel):
     """One photo. The name its bytes are stored under is not part of the answer:
@@ -23,8 +25,10 @@ class LibraryFilePhotoResponse(BaseModel):
     created_at: datetime
 
 
-class LibraryFilePhotoUpdate(BaseModel):
+class LibraryFilePhotoUpdate(IgnoresNullForRequiredColumns):
     """``null`` or an empty string clears the caption. The length is the writer's
     to refuse, with a sentence the error boundary can translate."""
+
+    __orm_table__ = "library_file_photos"
 
     caption: str | None = None

@@ -1,4 +1,5 @@
 import { useTranslation } from 'react-i18next';
+import { NumberInput } from './NumberInput';
 import { PackageX } from 'lucide-react';
 import type { ArchivePart } from '../api/client';
 
@@ -38,15 +39,13 @@ export function DefectsFields({ parts, values, onChange, quantity, flat, onFlatC
             <div key={part.id} className="flex items-center justify-between gap-3">
               <span className="text-sm text-white truncate flex-1">{part.name}</span>
               <span className="text-xs text-bambu-gray whitespace-nowrap">&times; {part.quantity}</span>
-              <input
-                type="number"
+              <NumberInput
                 min={0}
                 max={part.quantity}
                 value={values[part.id] ?? 0}
-                onChange={(e) => {
-                  const raw = parseInt(e.target.value) || 0;
-                  onChange(part.id, Math.min(part.quantity, Math.max(0, raw)));
-                }}
+                onChange={(v) => onChange(part.id, v)}
+                integer
+                fallback={0}
                 data-testid={`part-defective-${part.id}`}
                 className={`w-20 ${FIELD}`}
               />
@@ -67,12 +66,13 @@ export function DefectsFields({ parts, values, onChange, quantity, flat, onFlatC
         <PackageX className="w-4 h-4 inline mr-1" />
         {t('editArchive.defectiveParts')}
       </label>
-      <input
-        type="number"
+      <NumberInput
         min={0}
         max={quantity}
         value={flat}
-        onChange={(e) => onFlatChange(Math.min(quantity, Math.max(0, parseInt(e.target.value) || 0)))}
+        onChange={onFlatChange}
+        integer
+        fallback={0}
         data-testid="defective-count-input"
         className={`w-full ${FIELD}`}
         placeholder="0"

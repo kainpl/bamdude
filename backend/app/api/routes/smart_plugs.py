@@ -5,11 +5,12 @@ import os
 from datetime import datetime, timedelta, timezone
 from typing import Literal
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Request
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, TypeAdapter, ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.core.api_key_scope import in_key_scope
 from backend.app.core.auth import RequestCredentials, RequirePermission, request_credentials, require_permission
 from backend.app.core.credential_config import canonical_url, lock_credential_config, merge_secret_fields
 from backend.app.core.database import get_db
@@ -362,6 +363,39 @@ async def _plugs_for_printer(db: AsyncSession, printer_id: int) -> list[SmartPlu
     return list(result.scalars().all())
 
 
+class PrinterCardPlugs(BaseModel):
+    main: SmartPlugResponse | None = None
+    scripts: list[SmartPlugResponse] = []
+
+
+@router.get("/by-printer/batch", response_model=dict[int, PrinterCardPlugs])
+async def get_card_plugs_batch(
+    request: Request,
+    ids: list[int] = Query(min_length=1, max_length=100),
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermission(Permission.SMART_PLUGS_READ),
+):
+    """What several printer cards show of their plugs, in one answer.
+
+    ``main`` and ``scripts`` are exactly what the two single-printer routes below answer; a
+    printer with no plug answers the empty pair, one outside an API key's list is left out.
+    """
+    wanted = sorted({pid for pid in ids if in_key_scope(request, pid)})
+    by_printer: dict[int, list[SmartPlug]] = {pid: [] for pid in wanted}
+    if wanted:
+        rows = await db.execute(select(SmartPlug).where(SmartPlug.printer_id.in_(wanted)).order_by(SmartPlug.id))
+        for plug in rows.scalars().all():
+            by_printer[plug.printer_id].append(plug)
+
+    def shown(plug: SmartPlug | None) -> SmartPlugResponse | None:
+        return SmartPlugResponse.model_validate(plug, from_attributes=True) if plug is not None else None
+
+    return {
+        pid: PrinterCardPlugs(main=shown(_pick_main_plug(plugs)), scripts=[shown(p) for p in _card_script_plugs(plugs)])
+        for pid, plugs in by_printer.items()
+    }
+
+
 @router.get("/by-printer/{printer_id}", response_model=SmartPlugResponse | None)
 async def get_smart_plug_by_printer(
     printer_id: int,
@@ -396,6 +430,10 @@ async def get_script_plugs_by_printer(
     # twice. A SCRIPT is not excluded, because a printer whose only entities are
     # scripts falls back to showing one of them in the power row — taking it out
     # of this row too would cost the one-click run it has always had there.
+    return _card_script_plugs(plugs)
+
+
+def _card_script_plugs(plugs: list[SmartPlug]) -> list[SmartPlug]:
     main_plug = _pick_main_plug(plugs)
     duplicate_of_power_row = main_plug.id if main_plug and not _is_script_plug(main_plug) else None
 

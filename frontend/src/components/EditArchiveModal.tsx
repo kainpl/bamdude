@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
+import { NumberInput } from './NumberInput';
 import { useMutation, useQueryClient, useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { X, Save, Tag, Camera, Trash2, Loader2, Plus, FolderKanban, Hash, Link, PackagePlus, Weight } from 'lucide-react';
@@ -507,11 +508,12 @@ export function EditArchiveModal({ archive, onClose, existingTags = [] }: EditAr
             <Hash className="w-4 h-4 inline mr-1" />
             {t('editArchive.itemsPrinted')}
           </label>
-          <input
-            type="number"
+          <NumberInput
             min={1}
             value={quantity}
-            onChange={(e) => setQuantity(Math.max(1, parseInt(e.target.value) || 1))}
+            onChange={(v) => setQuantity(v)}
+            integer
+            fallback={1}
             className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
             placeholder="1"
           />

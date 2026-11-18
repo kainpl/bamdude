@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { NumberInput } from '../NumberInput';
 import { useTranslation } from 'react-i18next';
 import { useMutation } from '@tanstack/react-query';
 import { Check, Info } from 'lucide-react';
@@ -86,15 +87,15 @@ export function CalibrationTowerFinishPage({ session, spec, onClose, onCalibrate
             <span className="text-xs text-bambu-gray">
               {t('filamentCali.towerFinish.measuredHeight')}
             </span>
-            <input
-              type="number"
+            <NumberInput
               min={0}
               step={1}
               value={heightMm}
-              onChange={(e) => {
-                setHeightMm(parseFloat(e.target.value) || 0);
+              onChange={(v) => {
+                setHeightMm(v);
                 setSaved(false);
               }}
+              fallback={0}
               className="w-full bg-bambu-dark border border-bambu-dark-tertiary rounded px-2 py-1.5 text-white"
             />
           </label>

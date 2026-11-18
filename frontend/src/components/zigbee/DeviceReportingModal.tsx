@@ -1,4 +1,5 @@
 import { useEffect, useId, useState } from 'react';
+import { NumberInput } from '../NumberInput';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 
@@ -205,12 +206,11 @@ function Target({
           <label key={field.name} className="text-xs text-bambu-gray">
             {t(field.labelKey)}
             <div className="flex items-center gap-1">
-              <input
-                type="number"
+              <NumberInput
                 aria-label={t(field.labelKey)}
                 className="w-full px-2 py-1 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded text-white"
                 value={value[field.name]}
-                onChange={(e) => onChange({ ...value, [field.name]: Number(e.target.value) })}
+                onChange={(v) => onChange({ ...value, [field.name]: v })}
               />
               <span className="text-xs text-bambu-gray shrink-0">
                 {field.name === 'reportable_change' ? unit : t('settings.zigbee.reporting.seconds')}
@@ -239,13 +239,12 @@ function Seconds({
     <label className="flex items-center justify-between gap-3 text-sm text-bambu-gray" htmlFor={id}>
       {label}
       <span className="flex items-center gap-2">
-        <input
+        <NumberInput
           id={id}
-          type="number"
           aria-label={label}
           className="w-28 px-2 py-1 bg-bambu-dark border border-bambu-dark-tertiary rounded text-white text-right"
           value={value}
-          onChange={(e) => onChange(Number(e.target.value))}
+          onChange={onChange}
         />
         <span className="text-xs">
           {t('settings.zigbee.reporting.seconds')}{' '}

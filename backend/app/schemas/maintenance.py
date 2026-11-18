@@ -4,6 +4,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field, field_validator
 
+from backend.app.schemas.not_null import IgnoresNullForRequiredColumns
 from backend.app.schemas.printer_location import PrinterLocationOut
 
 
@@ -23,7 +24,9 @@ class MaintenanceTypeCreate(MaintenanceTypeBase):
     pass
 
 
-class MaintenanceTypeUpdate(BaseModel):
+class MaintenanceTypeUpdate(IgnoresNullForRequiredColumns):
+    __orm_table__ = "maintenance_types"
+
     name: str | None = None
     description: str | None = None
     default_interval_hours: float | None = Field(default=None, ge=1.0)
@@ -63,7 +66,9 @@ class PrinterMaintenanceBase(BaseModel):
     enabled: bool = True
 
 
-class PrinterMaintenanceUpdate(BaseModel):
+class PrinterMaintenanceUpdate(IgnoresNullForRequiredColumns):
+    __orm_table__ = "printer_maintenance"
+
     custom_interval_hours: float | None = None
     custom_interval_type: str | None = Field(default=None, pattern="^(hours|days)$")
     enabled: bool | None = None

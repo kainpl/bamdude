@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { NumberInput } from './NumberInput';
 import { useTranslation } from 'react-i18next';
 import { cameraWallPrintName } from '../utils/cameraWall';
 import { useQueries } from '@tanstack/react-query';
@@ -291,18 +292,12 @@ export function CameraWall({
                 <span className="text-xs font-medium text-white">
                   {t('printers.camWall.settings.snapshotInterval')}
                 </span>
-                <input
-                  type="number"
+                <NumberInput
                   min={MIN_SNAPSHOT_SEC}
                   max={MAX_SNAPSHOT_SEC}
                   value={snapshotIntervalSec}
-                  onChange={(e) => {
-                    const n = Math.min(
-                      MAX_SNAPSHOT_SEC,
-                      Math.max(MIN_SNAPSHOT_SEC, Number(e.target.value) || MIN_SNAPSHOT_SEC),
-                    );
-                    onChangeSnapshotIntervalSec(n);
-                  }}
+                  onChange={onChangeSnapshotIntervalSec}
+                  fallback={MIN_SNAPSHOT_SEC}
                   className="w-full rounded-md border border-bambu-dark-tertiary bg-bambu-dark px-2 py-1 text-sm text-white"
                 />
                 <span className="block text-[11px] text-bambu-gray">

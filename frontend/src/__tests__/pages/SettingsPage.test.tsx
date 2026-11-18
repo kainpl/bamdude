@@ -327,12 +327,15 @@ describe('SettingsPage', () => {
       });
     });
 
-    it('shows default printer setting', async () => {
+    it('offers no control for a setting nothing reads', async () => {
       render(<SettingsPage />);
 
       await waitFor(() => {
-        expect(screen.getByText('Default Printer')).toBeInTheDocument();
+        expect(screen.getByText('Time Format')).toBeInTheDocument();
       });
+      // "Default printer" and "Save thumbnails" were saved and never read.
+      expect(screen.queryByText('Default Printer')).not.toBeInTheDocument();
+      expect(screen.queryByText('Save thumbnails')).not.toBeInTheDocument();
     });
 
     it('shows appearance section', async () => {
