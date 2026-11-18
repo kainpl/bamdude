@@ -10915,36 +10915,39 @@ async def _on_print_complete_impl(
                             or layer_archive.recovery_identity == terminal_archive_identity
                         ):
                             layer_started_from = await archive_media.primary_token(db, layer_archive)
-                timelapse_path = await finish_session(layer_session)
+                # The frames stay until the video is published (G10 F): a stitch that fails, or a
+                # result the archive refuses, leaves them retained for a manual recovery.
+                timelapse_path = await finish_session(layer_session, keep_frames=True)
                 if timelapse_path and archive_id:
                     logger.info("[LAYER-TL] Attaching timelapse %s to archive %s", timelapse_path, archive_id)
                     async with async_session() as db:
                         service = ArchiveService(db)
-                        timelapse_data = await asyncio.to_thread(timelapse_path.read_bytes)
-                        attached = await service.attach_timelapse(
+                        # As a file: a long high-resolution video is never read into memory.
+                        attached = await service.attach_timelapse_file(
                             archive_id,
-                            timelapse_data,
+                            timelapse_path,
                             "layer_timelapse.mp4",
                             expected_identity=terminal_archive_identity,
                             expected_epoch=completion_epoch,
                             expected_token=layer_started_from,
                             origin="layer",
                         )
-                        # Clean up the temp file
-                        await asyncio.to_thread(timelapse_path.unlink, missing_ok=True)
                         if attached:
+                            layer_session.cleanup()
                             logger.info("[LAYER-TL] Layer timelapse attached successfully")
                             # Open Archives pages learn of it, as they do for a printer's recording.
                             await ws_manager.send_archive_updated({"id": archive_id, "timelapse_attached": True})
                         else:
+                            layer_session.retain(f"not_published_{service.media_refusal or 'unknown'}")
                             logger.info(
-                                "[LAYER-TL] Layer timelapse was not attached to archive %s (%s)",
+                                "[LAYER-TL] Layer timelapse was not attached to archive %s (%s); its frames are kept",
                                 archive_id,
                                 service.media_refusal,
                             )
                 elif timelapse_path:
                     # Timelapse created but no archive - just clean up
                     await asyncio.to_thread(timelapse_path.unlink, missing_ok=True)
+                    layer_session.cleanup()
             else:
                 # Print failed or cancelled - cancel timelapse session
                 layer_session.cleanup()
@@ -10953,11 +10956,15 @@ async def _on_print_complete_impl(
                 )
         except Exception as e:
             logger.warning("[LAYER-TL] Failed: %s", e)
-            # Try to cancel session on error
+            # An error after the frames were captured keeps them for a recovery; a print that
+            # did not complete has no video to recover.
             try:
-                layer_session.cleanup()
+                if print_status == "completed":
+                    layer_session.retain("finish_error")
+                else:
+                    layer_session.cleanup()
             except Exception:
-                pass  # Best-effort timelapse session cancellation on error
+                pass  # Best-effort: the startup janitor settles what is left
 
     _spawn_finish_task(_background_layer_timelapse(), name="finish-layer-timelapse")
 
@@ -12275,13 +12282,16 @@ async def _application_lifespan(app: FastAPI):
     except Exception as _zb_exc:
         logging.getLogger(__name__).warning("Zigbee coordinator not started: %s", _zb_exc)
 
-    # Drop timelapse frame directories no session will reclaim. Sessions are
-    # tracked in memory, so a restart mid-print orphans one permanently and
-    # nothing else ever walks that tree. Filesystem-only and best-effort — a
-    # failure here must never keep the app from starting.
+    # Settle the timelapse frame directories earlier runs left. Sessions are
+    # tracked in memory, so a restart mid-print leaves one nothing comes back
+    # for: it becomes "retained" by its own manifest and the retention bounds
+    # decide (G10 F). Filesystem-only and best-effort — a failure here must
+    # never keep the app from starting.
     try:
+        from backend.app.services import layer_timelapse as _layer_timelapse
         from backend.app.services.layer_timelapse import sweep_orphaned_frames
 
+        _layer_timelapse.reopen()
         await asyncio.to_thread(sweep_orphaned_frames)
     except Exception as _tl_sweep_exc:
         logging.getLogger(__name__).debug("Timelapse frame sweep skipped: %s", _tl_sweep_exc)
@@ -13291,6 +13301,12 @@ async def _application_lifespan(app: FastAPI):
         logging.getLogger(__name__).warning(
             "Printer file operations did not end before shutdown; admission stays closed"
         )
+    # Layer recording: no new frame is written and a running stitch is stopped (its frames
+    # stay retained) before the seam is drained (G10 F).
+    from backend.app.services import layer_timelapse as _layer_timelapse_stop
+
+    if not await _layer_timelapse_stop.quiesce(15):
+        logging.getLogger(__name__).warning("Layer timelapse work did not end before shutdown; recording stays closed")
     # Edit jobs stop their encoders before the seam they publish through is drained (G10 E).
     if not await timelapse_edit_runtime.quiesce(15):
         logging.getLogger(__name__).warning("Timelapse edits did not end before shutdown; admission stays closed")

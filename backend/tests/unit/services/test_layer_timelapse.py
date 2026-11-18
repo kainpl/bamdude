@@ -4,9 +4,6 @@ Tests for the layer timelapse service.
 These tests cover session management and pure logic functions.
 """
 
-import os
-import time
-from datetime import datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -136,8 +133,8 @@ class TestTimelapseSessionManagement:
 class TestTimelapseSession:
     """Tests for TimelapseSession class."""
 
-    def test_session_id_format(self, tmp_path):
-        """Verify session ID follows expected datetime format."""
+    def test_session_id_is_a_uuid_and_never_the_clock(self, tmp_path):
+        """Two sessions of one printer started in the same second do not share a directory (G10 F)."""
         from backend.app.services.layer_timelapse import TimelapseSession, _active_sessions
 
         _active_sessions.clear()
@@ -145,22 +142,13 @@ class TestTimelapseSession:
         with patch("backend.app.services.layer_timelapse.settings") as mock_settings:
             mock_settings.base_dir = tmp_path
 
-            session = TimelapseSession(
-                printer_id=1,
-                archive_id=100,
-                camera_url="http://test/",
-                camera_type="mjpeg",
-            )
+            first = TimelapseSession(printer_id=1, archive_id=100, camera_url="http://test/", camera_type="mjpeg")
+            second = TimelapseSession(printer_id=1, archive_id=101, camera_url="http://test/", camera_type="mjpeg")
 
-            # Session ID should be timestamp format YYYYMMDD_HHMMSS
-            assert len(session.session_id) == 15
-            assert session.session_id[8] == "_"
-
-            # Should be parseable as datetime
-            try:
-                datetime.strptime(session.session_id, "%Y%m%d_%H%M%S")
-            except ValueError:
-                pytest.fail("Session ID is not valid datetime format")
+            assert len(first.session_id) == 32 and int(first.session_id, 16) >= 0
+            assert first.session_id != second.session_id
+            assert first.frames_dir != second.frames_dir
+            assert first.frames_dir.is_dir() and second.frames_dir.is_dir()
 
     def test_frames_dir_path_structure(self, tmp_path):
         """Verify frames directory path is structured correctly."""
@@ -320,62 +308,3 @@ class TestGetActiveSessions:
                 assert 1 in _active_sessions
 
                 cancel_session(1)
-
-
-class TestSweepOrphanedFrames:
-    """Startup sweep for frame directories no session will reclaim.
-
-    Sessions live in the in-memory ``_active_sessions`` dict, so a restart or a
-    crash mid-print leaves a directory behind that nothing else ever walks.
-    """
-
-    def _make_session_dir(self, tmp_path, printer_id, name, *, age_hours):
-        d = tmp_path / "timelapse_frames" / str(printer_id) / name
-        d.mkdir(parents=True)
-        (d / "layer_00001.jpg").write_bytes(b"x")
-        stamp = time.time() - age_hours * 3600
-        os.utime(d, (stamp, stamp))
-        return d
-
-    def test_removes_stale_directories(self, tmp_path):
-        from backend.app.services.layer_timelapse import sweep_orphaned_frames
-
-        with patch("backend.app.services.layer_timelapse.settings") as mock_settings:
-            mock_settings.base_dir = tmp_path
-            stale = self._make_session_dir(tmp_path, 1, "20260101_010101", age_hours=48)
-
-            assert sweep_orphaned_frames() == 1
-            assert not stale.exists()
-
-    def test_leaves_recent_directories_alone(self, tmp_path):
-        """A second instance sharing DATA_DIR may be filming right now.
-
-        A live session's directory mtime moves with every captured frame, so
-        recency is the only signal this process has that it is not alone.
-        """
-        from backend.app.services.layer_timelapse import sweep_orphaned_frames
-
-        with patch("backend.app.services.layer_timelapse.settings") as mock_settings:
-            mock_settings.base_dir = tmp_path
-            fresh = self._make_session_dir(tmp_path, 1, "20260101_020202", age_hours=0)
-
-            assert sweep_orphaned_frames() == 0
-            assert fresh.exists()
-
-    def test_drops_emptied_printer_directory(self, tmp_path):
-        from backend.app.services.layer_timelapse import sweep_orphaned_frames
-
-        with patch("backend.app.services.layer_timelapse.settings") as mock_settings:
-            mock_settings.base_dir = tmp_path
-            self._make_session_dir(tmp_path, 7, "20260101_030303", age_hours=48)
-
-            sweep_orphaned_frames()
-
-            assert not (tmp_path / "timelapse_frames" / "7").exists()
-
-    def test_missing_root_is_not_an_error(self, tmp_path):
-        from backend.app.services.layer_timelapse import sweep_orphaned_frames
-
-        with patch("backend.app.services.layer_timelapse.settings") as mock_settings:
-            mock_settings.base_dir = tmp_path / "nonexistent"
-            assert sweep_orphaned_frames() == 0

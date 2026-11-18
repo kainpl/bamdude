@@ -1471,6 +1471,13 @@ async def _restore_backup(
 
                 if not await printer_file_runtime.quiesce():
                     raise HTTPException(409, "Printer file transfers have not stopped; retry restore after they finish")
+                # A layer recording writes frames and its stitch reads them and publishes through
+                # the seam below (G10 F): capture closes, a running stitch is stopped with its
+                # frames retained, and the end of every writer and encoder is proven.
+                from backend.app.services import layer_timelapse
+
+                if not await layer_timelapse.quiesce():
+                    raise HTTPException(409, "Layer timelapse work has not stopped; retry restore after it finishes")
                 # An edit's encoder writes beside the archive's video and publishes through the
                 # seam below (G10 E): admission closes, every job is stopped, and the end of
                 # each encoder is PROVEN -- an unreaped ffmpeg refuses the restore.

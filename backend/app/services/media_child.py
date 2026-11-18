@@ -97,8 +97,9 @@ class ChildResult:
 class _Watcher:
     """Spawns one child in its own thread, drains its pipes and reaps it."""
 
-    def __init__(self, argv: list[str], *, stdout_limit: int, on_line: Callable[[str], None] | None) -> None:
+    def __init__(self, argv: list[str], *, stdout_limit: int, on_line: Callable[[str], None] | None, cwd=None) -> None:
         self.argv = argv
+        self.cwd = cwd
         self.stdout_limit = stdout_limit
         self.on_line = on_line
         self.process: subprocess.Popen | None = None
@@ -119,6 +120,7 @@ class _Watcher:
             try:
                 process = subprocess.Popen(  # nosec B603 — argv list, no shell
                     self.argv,
+                    cwd=self.cwd,
                     stdin=subprocess.DEVNULL,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
@@ -215,17 +217,19 @@ async def run(
     stop: asyncio.Event | None = None,
     stdout_limit: int = 0,
     on_line: Callable[[str], None] | None = None,
+    cwd=None,
 ) -> ChildResult:
     """Run one child to its end and say how it ended. Never raises for the child's own failure.
 
     ``on_line`` is called on the watcher's thread with each stdout line (and
     marks progress for ``idle_seconds``); without it up to ``stdout_limit``
-    bytes of stdout are returned. The caller's cancellation ends the child and
+    bytes of stdout are returned. ``cwd`` is the child's working directory (the
+    stitch names its frames relatively). The caller's cancellation ends the child and
     is re-raised only after the child has been reaped (or declared unreaped).
     """
     run_id = uuid.uuid4().hex[:8]
     started = time.monotonic()
-    watcher = _Watcher(argv, stdout_limit=stdout_limit, on_line=on_line)
+    watcher = _Watcher(argv, stdout_limit=stdout_limit, on_line=on_line, cwd=cwd)
     with _live_lock:
         _live.add(watcher)
     try:

@@ -1,25 +1,102 @@
-"""Layer-based timelapse for external cameras.
+"""Layer-based timelapse for external cameras (G10 F).
 
-Captures a frame on each layer change and stitches them into a video on print completion.
+A frame is captured on each layer change and the frames are stitched into a
+video when the print completes.
+
+What this unit changed, and why:
+
+* **A session is a UUID, and its directory says whose it is.** The directory
+  used to be named by the second the print started, so two sessions of one
+  printer could share it; and the only thing that ever cleaned the tree was an
+  age rule. Every session directory now carries a manifest (:data:`MANIFEST`)
+  written by the session itself: its id, its printer, its archive and its
+  STATE — ``active`` while frames are captured, ``finalizing`` from before the
+  stitch starts, ``retained`` when the stitch did not produce a published
+  video.
+* **Nothing is removed under a writer or a reader.** A frame being written and
+  an ffmpeg reading the frames both hold the session (:attr:`TimelapseSession._busy`);
+  ``cleanup`` asked meanwhile is carried out when the last of them has ended. A
+  stitch whose ffmpeg could not be reaped pins the directory for the life of
+  the process.
+* **The stitch is an owned, bounded child** (``media_child``): two encoder
+  threads and a short lookahead, a time limit that grows with the number of
+  frames (:func:`stitch_limit`), an idle limit on ffmpeg's own progress output,
+  and its stderr held only as a tail. The source resolution is kept (OD-6).
+* **A failed stitch keeps its frames.** Failure, a cancelled stitch, a
+  publication that was refused and a restart leave the frames ``retained`` for
+  a manual recovery — bounded: :data:`RETAIN_SECONDS` and :data:`RETAIN_BYTES`
+  over all retained sessions, oldest first. The unfinished output is removed
+  by the stitch that made it. Frames go only after the video was published
+  (the caller says so) or the print itself failed.
+* **Capture is bounded too.** When the frames of the sessions being recorded
+  reach :data:`ACTIVE_BYTES`, or the volume is down to its reserve, capture
+  stops for that session with one warning; the print is not affected.
+* **The janitor reads manifests, never ages of unknown directories.** At
+  startup a directory with our manifest that no live session owns becomes
+  ``retained`` (an interrupted run) and then falls under the bounds above. A
+  directory in the shape the old code wrote is adopted the same way. Anything
+  else under the tree — a foreign file, a directory without a manifest, a link
+  — is left alone and never entered.
+* **A restore waits for it.** :func:`quiesce` closes capture, stops every
+  stitch (its frames stay retained) and proves writers and encoders ended.
+
+The camera side is untouched: frames still come from the live view's buffer or
+the capture runtime (G09), and no recorder ever stops the shared producer.
 """
 
 import asyncio
+import contextlib
+import json
 import logging
+import os
+import re
 import shutil
+import stat
 import time
 from dataclasses import dataclass, field
-from datetime import datetime
 from pathlib import Path
+from uuid import uuid4
 
 from backend.app.core.config import settings
+from backend.app.services import media_child
 from backend.app.services.camera import apply_camera_rotation
 from backend.app.services.camera_runtime import CameraCaptureRequest, capture
-from backend.app.utils.ffmpeg_output import NO_FFMPEG_OUTPUT, summarize_ffmpeg_stderr
 
 logger = logging.getLogger(__name__)
 
+FRAMES_DIRNAME = "timelapse_frames"
+#: The owner manifest of a session directory.
+MANIFEST = "session.json"
+MANIFEST_KIND = "bamdude-layer-timelapse"
+
+STATE_ACTIVE = "active"
+STATE_FINALIZING = "finalizing"
+STATE_RETAINED = "retained"
+
+GIB = 1024**3
+MIB = 1024**2
+#: Starting bounds (spec r4 §12, GP3).
+RETAIN_SECONDS = 24 * 3600
+RETAIN_BYTES = 2 * GIB
+ACTIVE_BYTES = 10 * GIB
+RESERVE_FLOOR = 512 * MIB
+RESERVE_SHARE = 0.05
+STITCH_MIN_SECONDS = 300.0
+STITCH_SECONDS_PER_FRAME = 0.5
+STITCH_MAX_SECONDS = 3600.0
+STITCH_IDLE_SECONDS = 60.0
+ENCODER_THREADS = 2
+ENCODER_LOOKAHEAD = 10
+
+_FRAME_NAME = re.compile(r"layer_\d{5}\.jpg")
+_LEGACY_SESSION = re.compile(r"\d{8}_\d{6}")
+_OUTPUT_NAME = re.compile(r"timelapse_([0-9a-f]{32})\.mp4")
+
 # Active timelapse sessions: {printer_id: TimelapseSession}
 _active_sessions: dict[int, "TimelapseSession"] = {}
+# Sessions detached from their printer and being stitched: {session_id: TimelapseSession}
+_finalizing: dict[str, "TimelapseSession"] = {}
+_closed = False
 
 
 def get_ffmpeg_path() -> str | None:
@@ -35,9 +112,58 @@ def get_ffmpeg_path() -> str | None:
     return None
 
 
-@dataclass
+def frames_root() -> Path:
+    return settings.base_dir / FRAMES_DIRNAME  # SEC-PATH-OK: a module constant under DATA_DIR
+
+
+def stitch_limit(frames: int) -> float:
+    """The hard time limit of a stitch: it grows with the frames, between the two bounds."""
+    return max(STITCH_MIN_SECONDS, min(STITCH_MAX_SECONDS, STITCH_MIN_SECONDS + STITCH_SECONDS_PER_FRAME * frames))
+
+
+def _write_manifest(directory: Path, data: dict) -> None:
+    """Replace the manifest in one step: a reader never sees half of it."""
+    staged = directory / f".{MANIFEST}.{uuid4().hex[:8]}"
+    staged.write_text(json.dumps(data, sort_keys=True), encoding="utf-8")
+    os.replace(staged, directory / MANIFEST)
+
+
+def _read_manifest(directory: Path) -> dict | None:
+    """Our manifest of ``directory``, or ``None`` — also when it is not a plain file or names another session."""
+    path = directory / MANIFEST
+    try:
+        if not stat.S_ISREG(path.lstat().st_mode):
+            return None
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or data.get("kind") != MANIFEST_KIND or data.get("session_id") != directory.name:
+        return None
+    return data
+
+
+def _is_real_directory(path: Path) -> bool:
+    try:
+        return stat.S_ISDIR(path.lstat().st_mode) and not path.is_symlink() and not path.is_junction()
+    except OSError:
+        return False
+
+
+def _directory_bytes(directory: Path) -> int:
+    total = 0
+    try:
+        for entry in os.scandir(directory):
+            with contextlib.suppress(OSError):
+                if entry.is_file(follow_symlinks=False):
+                    total += entry.stat(follow_symlinks=False).st_size
+    except OSError:
+        return total
+    return total
+
+
+@dataclass(eq=False)
 class TimelapseSession:
-    """Active timelapse recording session."""
+    """One recording: its frames directory and everything that may touch it."""
 
     printer_id: int
     archive_id: int | None
@@ -47,13 +173,111 @@ class TimelapseSession:
     rotation: int = 0  # The printer's configured camera_rotation, degrees clockwise
     last_layer: int = -1
     frame_count: int = 0
-    session_id: str = field(default_factory=lambda: datetime.now().strftime("%Y%m%d_%H%M%S"))
+    # A UUID, never the clock: two sessions of one printer never share a directory.
+    session_id: str = field(default_factory=lambda: uuid4().hex)
     frames_dir: Path = field(init=False)
+    state: str = STATE_ACTIVE
+    bytes_written: int = 0
+    #: Why the last stitch did not give a video (a ``media_child`` status, or a code of ours).
+    failure: str | None = None
+    stop: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
+    _busy: int = field(default=0, repr=False)  # writers and the encoder holding the directory
+    _discard: bool = field(default=False, repr=False)
+    _pinned: bool = field(default=False, repr=False)  # an unreaped encoder may still be reading
+    _capped: bool = field(default=False, repr=False)
+    _created: float = field(default_factory=time.time, repr=False)
 
     def __post_init__(self):
-        self.frames_dir = settings.base_dir / "timelapse_frames" / str(self.printer_id) / self.session_id
-        self.frames_dir.mkdir(parents=True, exist_ok=True)
+        self.frames_dir = frames_root() / str(self.printer_id) / self.session_id
+        self.frames_dir.mkdir(parents=True, exist_ok=False)
+        self._save()
         logger.info("Created timelapse session %s for printer %s", self.session_id, self.printer_id)
+
+    # -- ownership ---------------------------------------------------------------------
+
+    def manifest(self, **extra) -> dict:
+        return {
+            "kind": MANIFEST_KIND,
+            "session_id": self.session_id,
+            "printer_id": self.printer_id,
+            "archive_id": self.archive_id,
+            "state": self.state,
+            "created_at": self._created,
+            "frames": self.frame_count,
+            **extra,
+        }
+
+    def _save(self, **extra) -> None:
+        try:
+            _write_manifest(self.frames_dir, self.manifest(**extra))
+        except OSError as exc:
+            logger.warning("Timelapse session %s: its manifest could not be written (%s)", self.session_id, exc)
+
+    @property
+    def busy(self) -> bool:
+        return self._busy > 0
+
+    def _hold(self) -> None:
+        self._busy += 1
+
+    def _release(self) -> None:
+        self._busy -= 1
+        if self._busy == 0 and self._discard:
+            self._remove()
+
+    def _remove(self) -> None:
+        if self._pinned:
+            return
+        try:
+            if self.frames_dir.exists():
+                shutil.rmtree(self.frames_dir, ignore_errors=True)
+                logger.info("Cleaned up timelapse frames for session %s", self.session_id)
+        except Exception as e:
+            logger.warning("Failed to cleanup timelapse frames: %s", e)
+
+    def cleanup(self):
+        """Remove the frames directory — now, or as soon as nothing is writing to it or reading it."""
+        self._discard = True
+        if self._busy == 0:
+            self._remove()
+
+    def retain(self, reason: str) -> None:
+        """Keep the frames for a manual recovery, within the retention bounds. Never undoes a ``cleanup``."""
+        if self._discard:
+            return
+        self.state = STATE_RETAINED
+        self._save(reason=reason, retained_at=time.time())
+        logger.info(
+            "Timelapse session %s of printer %s: %s frames kept for recovery (%s)",
+            self.session_id,
+            self.printer_id,
+            self.frame_count,
+            reason,
+        )
+
+    # -- capture -----------------------------------------------------------------------
+
+    def _may_capture(self) -> bool:
+        """The capture bounds: the frames of every session being recorded, and the volume's reserve."""
+        if self._capped:
+            return False
+        recording = sum(session.bytes_written for session in (*_active_sessions.values(), *_finalizing.values()))
+        over = recording >= ACTIVE_BYTES
+        if not over:
+            try:
+                usage = shutil.disk_usage(self.frames_dir)
+                over = usage.free < max(RESERVE_FLOOR, int(usage.total * RESERVE_SHARE))
+            except OSError:
+                over = False
+        if over:
+            self._capped = True
+            logger.warning(
+                "Layer timelapse of printer %s stopped capturing after %s frames: the frame storage limit "
+                "or the disk reserve is reached. The print is not affected.",
+                self.printer_id,
+                self.frame_count,
+            )
+        return not over
 
     async def capture_layer(self, layer_num: int) -> bool:
         """Capture frame if layer changed.
@@ -69,7 +293,11 @@ class TimelapseSession:
             return False
 
         self.last_layer = layer_num
+        if _closed or self.state != STATE_ACTIVE or self._discard or not self._may_capture():
+            return False
 
+        # Held from before the capture: the directory is not removed under the write below.
+        self._hold()
         try:
             # Reuse the live view's frame rather than opening a second handle on
             # a single-reader device (#2707). Unguarded, a print watched from
@@ -110,9 +338,12 @@ class TimelapseSession:
                 # loop — PIL is synchronous and this runs once per layer.
                 if self.rotation:
                     frame_data = await asyncio.to_thread(apply_camera_rotation, frame_data, self.rotation, logger)
+                if self._discard or self.state != STATE_ACTIVE:
+                    return False  # cancelled or detached while the camera answered: nothing is written
                 frame_path = self.frames_dir / f"layer_{layer_num:05d}.jpg"
                 await asyncio.to_thread(frame_path.write_bytes, frame_data)
                 self.frame_count += 1
+                self.bytes_written += len(frame_data)
                 logger.debug(
                     "Captured layer %s for printer %s (frame %s)", layer_num, self.printer_id, self.frame_count
                 )
@@ -123,111 +354,120 @@ class TimelapseSession:
         except Exception as e:
             logger.error("Error capturing timelapse frame: %s", e)
             return False
+        finally:
+            self._release()
+
+    # -- stitch ------------------------------------------------------------------------
+
+    def _write_concat(self, fps: int) -> int:
+        """List the frames for ffmpeg's concat demuxer. Returns how many there are."""
+        # Sorted names handle gaps in layer numbers (e.g., if some captures failed)
+        frames = sorted(path.name for path in self.frames_dir.glob("layer_*.jpg") if _FRAME_NAME.fullmatch(path.name))
+        if not frames:
+            return 0
+        with open(self.frames_dir / "frames.txt", "w", encoding="utf-8") as handle:
+            for name in frames:
+                # Each frame shown for 1/fps duration
+                handle.write(f"file '{name}'\n")
+                handle.write(f"duration {1.0 / fps}\n")
+            # Add last frame again (required by concat demuxer)
+            handle.write(f"file '{frames[-1]}'\n")
+        return len(frames)
 
     async def stitch(self, output_path: Path, fps: int = 30) -> bool:
-        """Create MP4 from captured frames using ffmpeg.
-
-        Args:
-            output_path: Path for output video file
-            fps: Frames per second for output video
-
-        Returns:
-            True if stitching succeeded, False otherwise
-        """
+        """Create MP4 from captured frames using ffmpeg. ``self.failure`` says why it did not."""
+        self.failure = None
         if self.frame_count == 0:
             logger.warning("No frames to stitch")
+            self.failure = "no_frames"
             return False
 
         ffmpeg = get_ffmpeg_path()
         if not ffmpeg:
             logger.error("ffmpeg not found - required for timelapse stitching")
+            self.failure = "ffmpeg_missing"
             return False
 
-        # Find all frame files and create a sequential list
-        # This handles gaps in layer numbers (e.g., if some captures failed)
-        frame_files = sorted(self.frames_dir.glob("layer_*.jpg"))
-        if not frame_files:
-            logger.warning("No frame files found in timelapse directory")
-            return False
-
-        # Create a concat file listing all frames
-        concat_file = self.frames_dir / "frames.txt"
+        self._hold()  # the encoder reads the frames: nothing removes them until it has ended
         try:
-            with open(concat_file, "w") as f:
-                for frame in frame_files:
-                    # Each frame shown for 1/fps duration
-                    f.write(f"file '{frame.name}'\n")
-                    f.write(f"duration {1.0 / fps}\n")
-                # Add last frame again (required by concat demuxer)
-                if frame_files:
-                    f.write(f"file '{frame_files[-1].name}'\n")
-        except Exception as e:
-            logger.error("Failed to create concat file: %s", e)
-            return False
-
-        # Use ffmpeg concat demuxer for variable-gap frame sequences
-        cmd = [
-            ffmpeg,
-            "-y",  # Overwrite output
-            "-f",
-            "concat",
-            "-safe",
-            "0",
-            "-i",
-            str(concat_file),
-            "-c:v",
-            "libx264",
-            "-pix_fmt",
-            "yuv420p",
-            "-preset",
-            "medium",
-            "-crf",
-            "23",
-            str(output_path),
-        ]
-
-        process = None
-        try:
-            process = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=str(self.frames_dir),  # Run in frames dir so relative paths work
-            )
-
-            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=300)
-
-            if process.returncode != 0:
-                logger.error("ffmpeg timelapse stitch failed: %s", summarize_ffmpeg_stderr(stderr) or NO_FFMPEG_OUTPUT)
+            try:
+                frames = await asyncio.to_thread(self._write_concat, fps)
+            except OSError as e:
+                logger.error("Failed to create concat file: %s", e)
+                self.failure = "concat_failed"
+                return False
+            if not frames:
+                logger.warning("No frame files found in timelapse directory")
+                self.failure = "no_frames"
                 return False
 
-            logger.info("Created timelapse video: %s (%s frames)", output_path, self.frame_count)
+            # The concat demuxer reads the frames off disk one by one; nothing here holds them in memory.
+            cmd = [
+                ffmpeg,
+                "-y",
+                "-nostdin",
+                "-v",
+                "error",
+                "-progress",
+                "pipe:1",
+                "-nostats",
+                "-f",
+                "concat",
+                "-safe",
+                "0",
+                "-i",
+                "frames.txt",
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+                "-preset",
+                "medium",
+                "-crf",
+                "23",
+                "-threads",
+                str(ENCODER_THREADS),
+                "-x264-params",
+                f"rc-lookahead={ENCODER_LOOKAHEAD}",
+                "-f",
+                "mp4",
+                str(output_path),
+            ]
+            result = await media_child.run(
+                cmd,
+                name="timelapse-stitch",
+                hard_seconds=stitch_limit(frames),
+                idle_seconds=STITCH_IDLE_SECONDS,
+                stop=self.stop,
+                on_line=lambda _line: None,  # progress lines keep the idle limit away
+                cwd=self.frames_dir,  # the concat list names the frames relatively
+            )
+            if result.status == media_child.UNREAPED:
+                # It may still be reading the frames and writing the output: neither is touched again.
+                self._pinned = True
+                self.failure = result.status
+                return False
+            if not result.ok:
+                self.failure = result.status
+                return False
+            if not await _is_video(output_path):
+                self.failure = "output_invalid"
+                return False
+            logger.info("Created timelapse video: %s (%s frames)", output_path.name, frames)
             return True
-
-        except TimeoutError:
-            logger.error("Timelapse stitching timed out")
-            return False
-        except Exception as e:
-            logger.error("Timelapse stitch failed: %s", e)
-            return False
         finally:
-            # Cancellation at shutdown must not leave ffmpeg using a session
-            # whose frames are about to be removed by finish_session.
-            if process is not None and process.returncode is None:
-                try:
-                    process.kill()
-                    await asyncio.wait_for(process.wait(), timeout=5)
-                except (ProcessLookupError, TimeoutError):
-                    logger.debug("Timelapse ffmpeg already exited or did not drain in time")
+            self._release()
 
-    def cleanup(self):
-        """Remove temporary frames directory."""
-        try:
-            if self.frames_dir.exists():
-                shutil.rmtree(self.frames_dir, ignore_errors=True)
-                logger.info("Cleaned up timelapse frames for session %s", self.session_id)
-        except Exception as e:
-            logger.warning("Failed to cleanup timelapse frames: %s", e)
+
+async def _is_video(path: Path) -> bool:
+    """Is the stitched file a playable video? One bounded probe."""
+    from backend.app.services.timelapse_processor import ProbeFailed, TimelapseProcessor
+
+    try:
+        info = await TimelapseProcessor(path).get_info()
+    except (ProbeFailed, RuntimeError, OSError):
+        return False
+    return bool(info.get("has_video")) and info["duration"] > 0
 
 
 def start_session(
@@ -237,7 +477,7 @@ def start_session(
     cam_type: str,
     snapshot_url: str | None = None,
     rotation: int = 0,
-) -> TimelapseSession:
+) -> TimelapseSession | None:
     """Start new timelapse session for a printer.
 
     Args:
@@ -253,10 +493,13 @@ def start_session(
             comes out rotated while a snapshot of the same print does not (#2708).
 
     Returns:
-        The new TimelapseSession
+        The new TimelapseSession, or ``None`` while a restore holds recording closed.
     """
     # Cancel any existing session
     cancel_session(printer_id)
+    if _closed:
+        logger.info("Layer timelapse for printer %s not started: recording is closed for a restore", printer_id)
+        return None
 
     session = TimelapseSession(
         printer_id=printer_id,
@@ -308,8 +551,15 @@ def take_session(printer_id: int, expected: TimelapseSession | None) -> Timelaps
     return None
 
 
-async def finish_session(session: TimelapseSession | None) -> Path | None:
-    """Stitch an already detached session; cleanup cannot affect a newer run."""
+async def finish_session(session: TimelapseSession | None, *, keep_frames: bool = False) -> Path | None:
+    """Stitch an already detached session; nothing here can affect a newer run.
+
+    On success the video's path is returned. With ``keep_frames`` the frames
+    stay until the caller has published the video and calls ``cleanup`` — or
+    ``retain`` when the publication was refused; without it they go at once. On
+    a failure the frames are RETAINED for a manual recovery and the unfinished
+    output is removed.
+    """
     if not session:
         return None
 
@@ -320,23 +570,36 @@ async def finish_session(session: TimelapseSession | None) -> Path | None:
 
     # Create output path in parent of frames dir
     output_path = session.frames_dir.parent / f"timelapse_{session.session_id}.mp4"
-
+    # Durable before the encoder starts: a restart finds a session that was being finalised.
+    session.state = STATE_FINALIZING
+    session._save()
+    _finalizing[session.session_id] = session
+    ok = False
     try:
-        success = await session.stitch(output_path)
-        if success:
-            # Cleanup frames after successful stitch
-            session.cleanup()
+        ok = await session.stitch(output_path)
+        if ok:
+            if not keep_frames:
+                session.cleanup()
             return output_path
-        else:
-            session.cleanup()
-            return None
+        logger.error("Timelapse stitch for printer %s did not give a video (%s)", session.printer_id, session.failure)
+        session.retain(f"stitch_{session.failure}")
+        return None
     except asyncio.CancelledError:
-        session.cleanup()
+        session.retain("stitch_cancelled")
         raise
     except Exception as e:
         logger.error("Timelapse completion failed: %s", e)
-        session.cleanup()
+        session.retain("stitch_error")
         return None
+    finally:
+        _finalizing.pop(session.session_id, None)
+        if not ok and not session._pinned:
+            # The unfinished output is this stitch's own, and its encoder has ended.
+            with contextlib.suppress(OSError):
+                await asyncio.to_thread(output_path.unlink, missing_ok=True)
+        if not ok:
+            with contextlib.suppress(Exception):
+                await asyncio.to_thread(apply_retention)
 
 
 def cancel_session(printer_id: int):
@@ -356,52 +619,192 @@ def get_active_sessions() -> dict[int, TimelapseSession]:
     return _active_sessions.copy()
 
 
-def sweep_orphaned_frames(max_age_hours: float = 6.0) -> int:
-    """Delete frame directories no session will ever come back for.
+# -- restore and shutdown ----------------------------------------------------------------
 
-    ``_active_sessions`` lives in memory only, so a restart or a crash during a
-    print drops the handle to a directory that is already on disk — and nothing
-    else ever walks ``timelapse_frames/``. Every other exit (complete, fail,
-    cancel, a new session displacing an old one) does clean up; a restart is the
-    one hole, and it leaks a directory per interrupted print, forever.
 
-    Called at startup, where ``_active_sessions`` is empty by definition, so
-    everything on disk is orphaned as far as this process is concerned. The age
-    floor exists for the case it is *not* the only process: a second instance
-    sharing DATA_DIR may have a live session, and its directory's mtime moves
-    with every captured frame, so a recently-touched one is left alone.
+def admitting() -> bool:
+    return not _closed
 
-    Returns:
-        Number of directories removed.
+
+def reopen() -> None:
+    """Only lifespan startup reopens recording."""
+    global _closed
+    _closed = False
+
+
+async def quiesce(seconds: float = 30.0) -> bool:
+    """Close capture, stop every stitch and prove that writers and encoders ended.
+
+    A stopped stitch keeps its frames (``retained``). False = something is
+    still writing or reading: a restore is refused.
     """
-    root = settings.base_dir / "timelapse_frames"
-    if not root.is_dir():
+    global _closed
+    _closed = True
+    for session in list(_finalizing.values()):
+        session.stop.set()
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if not _finalizing and not any(session.busy for session in _active_sessions.values()):
+            return True
+        await asyncio.sleep(0.2)
+    logger.warning(
+        "Layer timelapse not drained after %.0fs: %s stitch(es), %s capture write(s) still running",
+        seconds,
+        len(_finalizing),
+        sum(1 for session in _active_sessions.values() if session.busy),
+    )
+    return False
+
+
+# -- the janitor -------------------------------------------------------------------------
+
+
+def _live_ids() -> set[str]:
+    return {session.session_id for session in (*_active_sessions.values(), *_finalizing.values())}
+
+
+def _adopt_legacy(directory: Path) -> dict | None:
+    """A directory in the shape the old code wrote, taken as an interrupted session of ours.
+
+    Only when its name is the old timestamp and it holds nothing but frames and
+    the concat list: anything else is not provably ours and stays untouched.
+    """
+    if not _LEGACY_SESSION.fullmatch(directory.name):
+        return None
+    try:
+        entries = list(os.scandir(directory))
+    except OSError:
+        return None
+    for entry in entries:
+        if not entry.is_file(follow_symlinks=False):
+            return None
+        if entry.name != "frames.txt" and not _FRAME_NAME.fullmatch(entry.name):
+            return None
+    try:
+        retained_at = directory.stat().st_mtime
+    except OSError:
+        return None
+    return {
+        "kind": MANIFEST_KIND,
+        "session_id": directory.name,
+        "state": STATE_RETAINED,
+        "reason": "legacy",
+        "retained_at": retained_at,
+    }
+
+
+def _owned_sessions(root: Path) -> list[tuple[Path, dict]]:
+    """Every session directory under ``root`` that is provably ours, with its manifest."""
+    owned: list[tuple[Path, dict]] = []
+    if not _is_real_directory(root):
+        return owned
+    try:
+        printers = [Path(entry.path) for entry in os.scandir(root)]
+    except OSError:
+        return owned
+    for printer_dir in printers:
+        if not _is_real_directory(printer_dir):
+            continue
+        try:
+            sessions = [Path(entry.path) for entry in os.scandir(printer_dir)]
+        except OSError:
+            continue
+        for session_dir in sessions:
+            if not _is_real_directory(session_dir):
+                continue
+            manifest = _read_manifest(session_dir)
+            if manifest is None:
+                manifest = _adopt_legacy(session_dir)
+                if manifest is None:
+                    continue  # foreign: never entered further, never removed
+                with contextlib.suppress(OSError):
+                    _write_manifest(session_dir, manifest)
+            owned.append((session_dir, manifest))
+    return owned
+
+
+def apply_retention(now: float | None = None) -> int:
+    """Enforce the retention bounds on retained sessions no live session owns. Returns how many went."""
+    now = time.time() if now is None else now
+    root = frames_root()
+    live = _live_ids()
+    kept: list[tuple[float, int, Path]] = []
+    removed = 0
+    for directory, manifest in _owned_sessions(root):
+        if manifest.get("session_id") in live or manifest.get("state") != STATE_RETAINED:
+            continue
+        try:
+            retained_at = float(manifest.get("retained_at") or 0.0)
+        except (TypeError, ValueError):
+            retained_at = 0.0
+        if now - retained_at > RETAIN_SECONDS:
+            removed += _remove_session(directory)
+        else:
+            kept.append((retained_at, _directory_bytes(directory), directory))
+    total = sum(size for _at, size, _dir in kept)
+    for _retained_at, size, directory in sorted(kept, key=lambda item: item[0]):
+        if total <= RETAIN_BYTES:
+            break
+        if _remove_session(directory):
+            removed += 1
+            total -= size
+    return removed
+
+
+def _remove_session(directory: Path) -> int:
+    try:
+        shutil.rmtree(directory)
+        return 1
+    except OSError as exc:
+        logger.debug("Could not remove retained timelapse frames %s: %s", directory.name, exc)
         return 0
 
-    cutoff = time.time() - max_age_hours * 3600
-    removed = 0
-    for printer_dir in root.iterdir():
-        if not printer_dir.is_dir():
+
+def sweep_orphaned_frames(max_age_hours: float | None = None) -> int:
+    """Startup: settle what earlier runs left under the frames tree. Returns how many directories went.
+
+    ``_active_sessions`` lives in memory only, so a restart during a print
+    leaves a directory nothing will come back for. Such a directory — one with
+    our manifest, in a state only a live session can have — becomes
+    ``retained``, and the retention bounds then decide. A stitched output file
+    whose session no longer exists is removed. Nothing is decided by the age of
+    a directory that is not provably ours (``max_age_hours`` is ignored and
+    kept only for callers of the old signature).
+    """
+    root = frames_root()
+    if not _is_real_directory(root):
+        return 0
+    live = _live_ids()
+    now = time.time()
+    for directory, manifest in _owned_sessions(root):
+        if manifest.get("session_id") in live or manifest.get("state") == STATE_RETAINED:
             continue
-        for session_dir in printer_dir.iterdir():
-            if not session_dir.is_dir():
-                continue
-            try:
-                if session_dir.stat().st_mtime > cutoff:
-                    continue
-                shutil.rmtree(session_dir)
-                removed += 1
-            except OSError as exc:
-                logger.debug("Could not sweep %s: %s", session_dir, exc)
-        # Drop the per-printer directory once its last session is gone, so a
-        # printer that never films again stops leaving an empty shell behind.
+        manifest = {**manifest, "state": STATE_RETAINED, "reason": "interrupted", "retained_at": now}
+        with contextlib.suppress(OSError):
+            _write_manifest(directory, manifest)
+    removed = apply_retention(now)
+
+    # Outputs a dead stitch left, and per-printer directories that are now empty.
+    try:
+        printers = [Path(entry.path) for entry in os.scandir(root)]
+    except OSError:
+        printers = []
+    for printer_dir in printers:
+        if not _is_real_directory(printer_dir):
+            continue
         try:
-            next(printer_dir.iterdir())
-        except StopIteration:
-            printer_dir.rmdir()
+            for entry in os.scandir(printer_dir):
+                match = _OUTPUT_NAME.fullmatch(entry.name)
+                if match and match.group(1) not in live and entry.is_file(follow_symlinks=False):
+                    with contextlib.suppress(OSError):
+                        os.unlink(entry.path)
+            # Drop the per-printer directory once its last session is gone, so a
+            # printer that never films again stops leaving an empty shell behind.
+            if not any(os.scandir(printer_dir)):
+                printer_dir.rmdir()
         except OSError:
-            pass
+            continue
 
     if removed:
-        logger.info("Swept %s orphaned timelapse frame director%s", removed, "y" if removed == 1 else "ies")
+        logger.info("Removed %s retained timelapse frame director%s", removed, "y" if removed == 1 else "ies")
     return removed

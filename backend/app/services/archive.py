@@ -2441,10 +2441,53 @@ class ArchiveService:
             self.media_refusal = archive_media.REFUSED_RESTORING
             return False
 
+    async def attach_timelapse_file(
+        self,
+        archive_id: int,
+        source_file: Path,
+        filename: str = "timelapse.mp4",
+        **kwargs,
+    ) -> bool:
+        """Attach a video that already is a FILE, without reading it into memory (G10 F).
+
+        The same seam and the same checks as :meth:`attach_timelapse`. The file
+        is moved into the archive's own staging when it is on the same volume,
+        and copied in chunks otherwise; either way it is hashed in chunks and
+        ``source_file`` is gone when this returns — published, or removed as
+        this attach's own input.
+        """
+        from backend.app.services import archive_media
+        from backend.app.services.archive_media_runtime import MediaAdmissionClosed, archive_media_runtime
+
+        self.media_refusal: str | None = None
+        try:
+            return await archive_media_runtime.own(
+                f"attach:{archive_id}",
+                self._attach_timelapse(
+                    archive_id,
+                    None,
+                    filename,
+                    source_file=source_file,
+                    expected_identity=kwargs.pop("expected_identity", None),
+                    expected_epoch=kwargs.pop("expected_epoch", None),
+                    origin=kwargs.pop("origin", "upload"),
+                    remote=kwargs.pop("remote", None),
+                    expected_token=kwargs.pop("expected_token", None),
+                    **kwargs,
+                ),
+            )
+        except MediaAdmissionClosed:
+            self.media_refusal = archive_media.REFUSED_RESTORING
+            return False
+        finally:
+            import asyncio
+
+            await asyncio.shield(asyncio.to_thread(Path(source_file).unlink, missing_ok=True))
+
     async def _attach_timelapse(
         self,
         archive_id: int,
-        timelapse_data: bytes,
+        timelapse_data: bytes | None,
         filename: str,
         *,
         expected_identity: str | None,
@@ -2455,6 +2498,7 @@ class ArchiveService:
         authority=None,
         permissions: tuple = (),
         may_run=None,
+        source_file: Path | None = None,
     ) -> bool:
         import asyncio
         import hashlib
@@ -2517,11 +2561,26 @@ class ArchiveService:
         # timelapse can be 100 MB+, and a sync write blocks the loop for seconds.
         staged = archive_dir / f".{uuid4().hex}.part"
 
-        def _stage() -> str:
-            staged.write_bytes(timelapse_data)
-            return hashlib.sha256(timelapse_data).hexdigest()
+        def _stage() -> tuple[str, int]:
+            if source_file is None:
+                staged.write_bytes(timelapse_data)
+                return hashlib.sha256(timelapse_data).hexdigest(), len(timelapse_data)
+            try:
+                os.replace(source_file, staged)  # the same volume: no second copy of a large video
+            except OSError:
+                shutil.copyfile(source_file, staged)
+            digest, size = hashlib.sha256(), 0
+            with staged.open("rb") as handle:
+                while chunk := handle.read(1024 * 1024):
+                    digest.update(chunk)
+                    size += len(chunk)
+            return digest.hexdigest(), size
 
-        digest = await asyncio.to_thread(_stage)
+        try:
+            digest, staged_size = await asyncio.to_thread(_stage)
+        except BaseException:
+            await asyncio.shield(asyncio.to_thread(staged.unlink, missing_ok=True))
+            raise
         result = await archive_media.publish_primary(
             self.db,
             archive_id,
@@ -2534,7 +2593,7 @@ class ArchiveService:
             expected_epoch=epoch,
             expected_token=expected_token,
             content_sha256=digest,
-            size_bytes=len(timelapse_data),
+            size_bytes=staged_size,
             remote=remote,
             authority=authority,
             permissions=permissions,
