@@ -21,6 +21,8 @@ from backend.app.services.source_io import SOURCE_FAILURES
 #: ``retry_later``: back to pending with its own wait reason, the scheduler's bounded cooldown deciding when.
 DISPOSITION_FAILED = "failed"
 DISPOSITION_RETRY_LATER = "retry_later"
+# ``order_auto_eject.dispatch_admission``: the printer still waits for its plate answer.
+PLATE_WAIT_REASON = "plate_manual_inspection"
 #: The wait reason of a queued job whose source copy found the spool busy.
 SOURCE_CAPTURE_WAIT_CODE = "source_capture"
 
@@ -169,6 +171,14 @@ async def defer_claim(
     else:
         terminal = direct or disposition != DISPOSITION_RETRY_LATER
     terminal = terminal or swap_started or published
+    # The one refusal a direct print outlives (owner, 2026-11-18): the operator asked for this print
+    # NEXT on a printer whose plate is still occupied. Nothing was sent and nothing physical ran, so
+    # the row waits FIRST in that printer's queue and starts when the plate is answered -- failing
+    # it made them retry it, move it to the top and clear the plate by hand, and clearing the plate
+    # first let the queue start its own next job instead.
+    plate_wait = direct and reason == PLATE_WAIT_REASON and not swap_started and not published
+    if plate_wait:
+        terminal = False
     code = None
     if terminal:
         code = failure_code or (DISPATCH_SOURCE_UNAVAILABLE if reason in SOURCE_FAILURES else DISPATCH_START_REFUSED)
@@ -188,6 +198,9 @@ async def defer_claim(
     wait_code = SOURCE_CAPTURE_WAIT_CODE if disposition == DISPOSITION_RETRY_LATER else "filament_unavailable"
     if runtime_conflict:
         wait_code = "dispatch_runtime_conflict"
+    if plate_wait:
+        # The scheduler's own words for a job that waits on the plate.
+        message, wait_code = "Plate not cleared", "plate_not_cleared"
     # Only a refusal proven to have had no effect clears the claim time: a row sent back to
     # pending, or one refused before its attempt had an execution archive (nothing reached
     # the printer — such a failed job stays refreshable, swap-source-declaration §6). Any
@@ -209,6 +222,10 @@ async def defer_claim(
         values["dispatch_attempts"] = case(
             (PrintQueueItem.dispatch_attempts > 0, PrintQueueItem.dispatch_attempts - 1), else_=0
         )
+    if plate_wait:
+        # A queued job from here on, and its completion is reported as one. −1 is before every waiting
+        # row (theirs start at 0); the renumbering below turns it into the queue's ordinary first place.
+        values.update(position=-1, origin="queue")
     if restore_source:
         values.update(archive_id=source_archive_id, library_file_id=source_library_file_id)
     if terminal:
@@ -237,6 +254,12 @@ async def defer_claim(
     )
     if not owned:
         return DeferResult(False)
+    if plate_wait:
+        # First, ahead of every job that already waits -- the renumbering «Run next» uses. Unlocked: this
+        # runs inside the attempt's own compare-and-set, which already holds the row.
+        from backend.app.services.queue_ops import _bump_block_to_top_unlocked
+
+        await _bump_block_to_top_unlocked(db, item.queue_id, [item_id])
     if halts_queue:
         await set_queue_error(db, item.queue_id, failed_item_id=item_id, expected_item_id=item_id)
     else:

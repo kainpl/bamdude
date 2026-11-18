@@ -2709,6 +2709,17 @@ class BackgroundDispatchService:
             # operator cancelled, another attempt reclaimed or somebody deleted is
             # not a failure to report — and not one to count.
             not_started = released or job.queue_item_id is None
+            if released and getattr(released, "terminal", True) is False:
+                # The row went back to the queue (an uncleared plate): nothing failed and nothing is
+                # announced as a failure -- the window says where the job is now.
+                await self._mark_job_finished(
+                    job,
+                    failed=False,
+                    message="The plate is not cleared. The job is first in the printer's queue and "
+                    "starts when the plate is cleared.",
+                    deferred=True,
+                )
+                return
             await self._mark_job_finished(job, failed=not_started, message=reason["message"], deferred=True)
             if not_started:
                 await announce_not_started(job, reason["message"])
@@ -2992,6 +3003,14 @@ class BackgroundDispatchService:
 
             ftp_retry_enabled, ftp_retry_count, ftp_retry_delay, ftp_timeout = await get_ftp_retry_settings()
             self._raise_if_cancel_requested(job)
+
+            # The plate is asked about BEFORE the upload (and again after it, below): a printer that still
+            # waits for its plate answer was sent the whole file first and refused afterwards. A session of
+            # its own, so the runner's stays without an open transaction for the length of the upload.
+            from backend.app.services.order_auto_eject import dispatch_admission as plate_admission
+
+            async with async_session() as admission_db:
+                await plate_admission(admission_db, job, printer)
 
             await self._set_active_message(job, f"Preparing upload to {printer_name}...")
             # One gate for this run's every delete and for the upload itself (G10 B).
@@ -3997,6 +4016,14 @@ class BackgroundDispatchService:
 
             ftp_retry_enabled, ftp_retry_count, ftp_retry_delay, ftp_timeout = await get_ftp_retry_settings()
             self._raise_if_cancel_requested(job)
+
+            # The plate is asked about BEFORE the upload (and again after it, below): a printer that still
+            # waits for its plate answer was sent the whole file first and refused afterwards. A session of
+            # its own, so the runner's stays without an open transaction for the length of the upload.
+            from backend.app.services.order_auto_eject import dispatch_admission as plate_admission
+
+            async with async_session() as admission_db:
+                await plate_admission(admission_db, job, printer)
 
             await self._set_active_message(job, f"Preparing upload to {printer_name}...")
             # One gate for this run's every delete and for the upload itself (G10 B).
