@@ -20,20 +20,17 @@ import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from typing import Any
 
-from sqlalchemy import and_, delete, func, or_, select, update
+from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.core.config import settings as app_settings
 from backend.app.core.database import async_session
 from backend.app.models.archive import PrintArchive
 from backend.app.models.library import LibraryFile
 from backend.app.models.library_file_note import LibraryFileNote
 from backend.app.models.settings import Settings
-from backend.app.services import library_file_photos, library_import_meta, part_images, queue_source_release
-from backend.app.services.product_sync import purge_file_product_links
+from backend.app.services import part_images, queue_source_release
 
 logger = logging.getLogger(__name__)
 
@@ -61,22 +58,6 @@ AUTO_PURGE_LAST_MOVED_KEY = "library_auto_purge_last_moved"
 DEFAULT_AUTO_PURGE_DAYS = 90
 MIN_AUTO_PURGE_DAYS = 7  # anything shorter is begging for accidents
 MAX_AUTO_PURGE_DAYS = 3650
-
-
-def _to_absolute_path(relative_path: str | None) -> Path | None:
-    """Mirror of the routes helper so this service has no route-module import.
-
-    Accepts the legacy absolute paths that predate the relative-path migration
-    verbatim; new rows always store paths relative to ``base_dir``.
-    """
-    if not relative_path:
-        return None
-    path = Path(relative_path)
-    if path.is_absolute():
-        return path
-    return (
-        Path(app_settings.base_dir) / path
-    )  # SEC-PATH-OK: path is row.file_path/thumbnail_path — a server-generated base_dir-relative stored path, not request input
 
 
 def _age_cutoff(now: datetime, older_than_days: int) -> datetime:
@@ -515,6 +496,17 @@ class LibraryTrashService:
         )
         return int(result.scalar() or 0)
 
+    async def _purge_retention_batch(self, db, batch):
+        from backend.app.services.library_delete_cleanup import finish
+        from backend.app.services.library_delete_scope import library_delete_scope
+
+        async with library_delete_scope(db, batch):
+            for proof in batch:
+                current = await db.get(LibraryFile, proof.id, populate_existing=True)
+                await self.purge_rows(db, current)
+            await db.commit()
+        await finish(db)
+
     async def _sweep(self, db: AsyncSession) -> int:
         """Hard-delete trashed rows whose retention window has elapsed.
 
@@ -538,76 +530,35 @@ class LibraryTrashService:
         if not rows:
             return 0
 
-        deleted = 0
-        for row in rows:
-            self._unlink_on_disk(row)
-            deleted += 1
-        row_ids = [r.id for r in rows]
-        # Detach archive rows BEFORE deleting library files. The FK column
-        # ``print_archives.library_file_id`` is declared ``ON DELETE SET
-        # NULL``, but SQLite ignores FK actions unless ``PRAGMA
-        # foreign_keys = ON`` is set on every connection — which BamDude
-        # deliberately doesn't (would require a separate audit of every
-        # other FK in the schema). Without this explicit UPDATE the
-        # archive rows would be left with stale ``library_file_id``
-        # pointers to a now-gone library file. The two route-side delete
-        # paths in ``api/routes/library.py`` already do the same thing —
-        # this brings the sweeper + hard_delete_now in line with them.
-        await db.execute(
-            update(PrintArchive).where(PrintArchive.library_file_id.in_(row_ids)).values(library_file_id=None)
-        )
-        # ⚠️ And the queue, for exactly the same reason. ``print_queue.
-        # library_file_id`` is ``ON DELETE SET NULL`` so a row OUTLIVES the file
-        # it was queued from — that is deliberate, it is the operator's record
-        # of what was asked for. With FK actions off the nulling never happened
-        # here, so a row cancelled when the file went to the trash ended up,
-        # after the retention window, pointing at a library file that no longer
-        # exists. The route-side delete paths already do this; the sweeper did
-        # it for archives and forgot the queue.
-        #
-        # Both tiers now, through the one service: the auto-queue row has the same
-        # FK with the same non-enforcement, and a job that owns its bytes is not
-        # cancelled by a retention window (spec §10).
-        await queue_source_release.source_purged(
-            db, library_file_ids=row_ids, reason=queue_source_release.REASON_FILE_DELETED
-        )
-        # ⚠️ And the product pivot + plates, for the third time the same reason:
-        # both are ``ON DELETE CASCADE`` and SQLite ignores that, so a purged
-        # file would leave a plate row a product still renders and nothing can
-        # open.
-        await purge_file_product_links(db, row_ids)
-        # And the photos (m233): their rows have no cascade on SQLite either, and
-        # their folder is named by the id the next file may be given.
-        await library_file_photos.forget_files(db, row_ids)
-        # And the record of where a model source imported them from (m235).
-        await library_import_meta.forget_files(db, row_ids)
-        # And the notes: a bulk DELETE goes past the ORM cascade that removes them.
-        await forget_file_notes(db, row_ids)
-        await db.execute(delete(LibraryFile).where(LibraryFile.id.in_(row_ids)))
+        from backend.app.services.library_identity import LibraryIdentity
+
+        proofs = [LibraryIdentity.capture(row) for row in rows]
         await db.commit()
+        deleted, failures = 0, 0
+
+        for start in range(0, len(proofs), 100):
+            batch = proofs[start : start + 100]
+            try:
+                await self._purge_retention_batch(db, batch)
+                deleted += len(batch)
+            except Exception:
+                await db.rollback()
+                if len(batch) == 1:
+                    failures += 1
+                    continue
+                # The refused batch rolled back as a whole. A busy/retained
+                # neighbour must not pin every other expired file indefinitely.
+                for proof in batch:
+                    try:
+                        await self._purge_retention_batch(db, [proof])
+                        deleted += 1
+                    except Exception:
+                        await db.rollback()
+                        failures += 1
+        if failures:
+            logger.warning("Library trash sweep retained %d row(s)", failures)
         logger.info("Library trash sweeper: hard-deleted %d row(s) past %d-day retention", deleted, retention)
         return deleted
-
-    @staticmethod
-    def _unlink_on_disk(row: LibraryFile) -> None:
-        """Best-effort cleanup of the file + thumbnail on disk."""
-        for rel in (row.file_path, row.thumbnail_path):
-            abs_path = _to_absolute_path(rel)
-            if abs_path is None:
-                continue
-            try:
-                if abs_path.exists():
-                    abs_path.unlink()
-            except OSError as e:
-                logger.warning("Trash sweep: failed to unlink %s: %s", abs_path, e)
-        # m056 — MakerWorld cover JPGs live in a separate dir; FK-CASCADE
-        # drops the meta row but the on-disk covers need explicit wipe.
-        try:
-            from backend.app.services.model_providers.makerworld.meta import cleanup_cover_files
-
-            cleanup_cover_files(row.id)
-        except Exception as e:
-            logger.debug("Trash sweep: cover cleanup skipped for %s: %s", row.id, e)
 
     # ---- User-facing trash ops ----------------------------------------
     async def trash_or_purge(self, db: AsyncSession, file: LibraryFile, *, detach_folder: bool = False) -> bool:
@@ -632,31 +583,11 @@ class LibraryTrashService:
         at the library root, which is the only honest destination once its
         folder is gone. Does not commit; the caller owns the transaction.
         """
+        from backend.app.services.library_delete_scope import require_library_plan
+
+        require_library_plan(db, file)
         if file.is_external:
-            abs_thumb = _to_absolute_path(file.thumbnail_path)
-            if abs_thumb is not None:
-                try:
-                    if abs_thumb.exists():
-                        abs_thumb.unlink()
-                except OSError as e:
-                    logger.warning("Failed to delete thumbnail from disk: %s", e)
-            await db.execute(
-                update(PrintArchive).where(PrintArchive.library_file_id == file.id).values(library_file_id=None)
-            )
-            # ⚠️ **The queue rows used to be DELETED here.** An external file's
-            # bytes live outside BamDude, so an SMB share that goes away took every
-            # job queued from it with no error and no history (#2819's second face)
-            # — and that is precisely the loss the queue source exists to prevent:
-            # a job holding its own copy prints fine without the share. So the rows
-            # stay, unhooked; only the ones with nothing of their own are cancelled,
-            # exactly as the managed branch below does it (spec §10).
-            await queue_source_release.source_purged(
-                db, library_file_ids=[file.id], reason=queue_source_release.REASON_FILE_DELETED
-            )
-            await purge_file_product_links(db, [file.id])
-            await library_file_photos.forget_files(db, [file.id])
-            await library_import_meta.forget_files(db, [file.id])
-            await db.delete(file)
+            await self.purge_rows(db, file)
             return False
 
         await _cancel_pending_queue_items(db, file.id)
@@ -674,35 +605,49 @@ class LibraryTrashService:
         await db.refresh(file)
         return file
 
+    async def purge_rows(self, db: AsyncSession, file: LibraryFile, *, reason=queue_source_release.REASON_FILE_DELETED):
+        """Flush-only shared hard-delete phase under the caller's whole plan."""
+        from backend.app.services.content_delete_rows import library_rows
+        from backend.app.services.library_delete_scope import require_library_plan
+
+        require_library_plan(db, file)
+        from fastapi import HTTPException
+
+        from backend.app.models.auto_queue import AutoQueueItem
+        from backend.app.models.print_queue import PrintQueueItem
+        from backend.app.models.queue_source import QueueSource
+
+        for model in (PrintQueueItem, AutoQueueItem):
+            active = await db.execute(
+                select(model.id, QueueSource.state)
+                .outerjoin(QueueSource, QueueSource.id == model.queue_source_id)
+                .where(
+                    model.library_file_id == file.id,
+                    model.status.in_(("printing", "paused", "dispatching", "assigned")),
+                )
+            )
+            if any(state != "ready" for _row_id, state in active):
+                raise HTTPException(
+                    409,
+                    {
+                        "error": "file_in_use",
+                        "message": "An active print still needs this original file. Wait for it to finish, then retry.",
+                    },
+                )
+        return await library_rows(db, file, reason=reason)
+
     async def hard_delete_now(self, db: AsyncSession, file: LibraryFile) -> None:
-        """Bypass retention and delete this trashed file + its bytes immediately.
+        """Standalone hard delete; compound roots use purge_rows without a nested commit."""
+        from backend.app.services.library_delete_cleanup import finish
+        from backend.app.services.library_delete_scope import library_delete_scope
+        from backend.app.services.library_identity import LibraryIdentity
 
-        Caller is expected to verify there are no active archive references
-        first (via :meth:`active_archive_references` or the count helper) and
-        return 409 to the user if there are. We don't raise here so the
-        sweeper / empty-trash path can keep its existing skip-and-log shape.
-
-        Trashed archives that still reference this row by hash get their
-        ``library_file_id`` blanked out (not cascade-deleted) — see the
-        comment in ``_sweep`` for why we do this in code rather than relying
-        on the schema-level ``ON DELETE SET NULL``.
-
-        ⚠️ It did that for archives and nothing at all for the queue, so this path
-        left a row naming a library file that no longer existed — the same gap the
-        sweeper had. Both tiers go through the one service now.
-        """
-        self._unlink_on_disk(file)
-        await db.execute(
-            update(PrintArchive).where(PrintArchive.library_file_id == file.id).values(library_file_id=None)
-        )
-        await queue_source_release.source_purged(
-            db, library_file_ids=[file.id], reason=queue_source_release.REASON_FILE_DELETED
-        )
-        await purge_file_product_links(db, [file.id])
-        await library_file_photos.forget_files(db, [file.id])
-        await library_import_meta.forget_files(db, [file.id])
-        await db.delete(file)
-        await db.commit()
+        identity = LibraryIdentity.capture(file)
+        async with library_delete_scope(db, [identity]):
+            current = await db.get(LibraryFile, identity.id, populate_existing=True)
+            await self.purge_rows(db, current)
+            await db.commit()
+        await finish(db)
 
     async def active_archive_references(self, db: AsyncSession, file_id: int) -> int:
         """Public wrapper around the internal counter — for routes / API."""

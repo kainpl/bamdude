@@ -37,9 +37,11 @@ async def backed_up(db, rows: list[PrintArchive]) -> list[dict]:
     return files["archives/print_archives.json"]["archives"]
 
 
-async def restore(db, entries, *, overwrite=False) -> None:
-    await GitRestoreService()._restore_archives(db, {"archives": entries}, overwrite, _CategoryTally(), {})
+async def restore(db, entries, *, overwrite=False) -> _CategoryTally:
+    tally = _CategoryTally()
+    await GitRestoreService()._restore_archives(db, {"archives": entries}, overwrite, tally, {})
     await db.commit()
+    return tally
 
 
 async def by_name(db) -> dict[str, PrintArchive]:
@@ -117,6 +119,7 @@ async def test_old_git_backup_absence_differs_from_explicit_unknown(db_session):
 )
 async def test_an_invalid_backed_up_record_restores_as_unknown(projection, record, db_session):
     entry = {"id": 9, "filename": "x.3mf", "print_name": "x", "status": "completed", "swap_compatible": projection}
+    entry["started_at"] = "2026-10-01T12:00:00"
     entry[sc.CARRIER_KEY] = record
 
     await restore(db_session, [entry])
@@ -126,13 +129,14 @@ async def test_an_invalid_backed_up_record_restores_as_unknown(projection, recor
 
 
 async def test_a_legacy_true_comes_across_only_as_an_explicit_strict_bool(db_session):
+    # Separate physical starts provide identities independently of declarations.
     base = {"filename": "x.3mf", "status": "completed"}
     await restore(
         db_session,
         [
-            {**base, "id": 1, "print_name": "strict", "swap_compatible": True},
-            {**base, "id": 2, "print_name": "truthy", "swap_compatible": 1},
-            {**base, "id": 3, "print_name": "absent"},
+            {**base, "id": 1, "print_name": "strict", "swap_compatible": True, "started_at": "2026-10-01T12:00:00"},
+            {**base, "id": 2, "print_name": "truthy", "swap_compatible": 1, "started_at": "2026-10-01T13:00:00"},
+            {**base, "id": 3, "print_name": "absent", "started_at": "2026-10-01T14:00:00"},
         ],
     )
     restored = await by_name(db_session)
@@ -141,12 +145,13 @@ async def test_a_legacy_true_comes_across_only_as_an_explicit_strict_bool(db_ses
     assert sc.archive_fact(restored["absent"]).value is None
 
 
-async def test_restored_pending_has_no_external_or_dispatch_authority(db_session, tmp_path):
+async def test_restored_pending_has_no_external_or_dispatch_authority(db_session, tmp_path, printer_factory):
     from backend.app.core.config import settings
     from backend.app.services.archive import ArchiveService
     from backend.tests.integration.test_dispatch_without_original import a_sliced_file
 
-    pending = a_row("pending", status="printing")
+    printer = await printer_factory()
+    pending = a_row("pending", status="printing", printer_id=printer.id)
     sc.write_archive_fact(pending, None, pending_external=True)
     entries = await backed_up(db_session, [pending])
     for row in (await db_session.execute(select(PrintArchive))).scalars():
@@ -155,7 +160,8 @@ async def test_restored_pending_has_no_external_or_dispatch_authority(db_session
 
     await restore(db_session, entries)
     restored = (await by_name(db_session))["pending"]
-    assert restored.status == "printing" and restored.file_path == ""
+    assert restored.status == "cancelled" and restored.file_path == ""
+    assert restored.extra_data["recovered_outcome_uncertain"] is True
     assert sc.archive_fact(restored) == sc.ArchiveFact(None, recorded=True)
 
     # A manual retry that downloads a marked file now does not promote it: the backup proved no origin.
@@ -168,6 +174,19 @@ async def test_restored_pending_has_no_external_or_dispatch_authority(db_session
     # The attach renames the row after the file's own metadata; read it back by id.
     restored = await db_session.get(PrintArchive, restored.id, populate_existing=True)
     assert sc.archive_fact(restored) == sc.ArchiveFact(None, recorded=True)
+
+
+async def test_pending_without_a_proven_printer_is_skipped_without_authority(db_session):
+    pending = a_row("unproven-pending", status="printing")
+    sc.write_archive_fact(pending, None, pending_external=True)
+    entries = await backed_up(db_session, [pending])
+    await db_session.delete(pending)
+    await db_session.commit()
+
+    tally = await restore(db_session, entries)
+
+    assert await by_name(db_session) == {}
+    assert tally.restored == 0 and tally.skipped == 1 and tally.failed == 0
 
 
 async def test_the_backup_carries_the_source_hash_for_identity(db_session):

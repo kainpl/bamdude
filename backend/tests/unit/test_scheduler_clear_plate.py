@@ -189,10 +189,12 @@ class TestSchedulerQueueCheckLogging:
 
             await scheduler.check_queue()
 
-        queue_logs = [r for r in caplog.records if "Queue check" in r.message]
+        # Read the record itself, not a formatter side effect: other threads
+        # can publish a captured record before formatting it.
+        queue_logs = [r.getMessage() for r in caplog.records if "Queue check" in r.getMessage()]
         assert len(queue_logs) == 1
-        assert "1 pending items" in queue_logs[0].message
-        assert "42" in queue_logs[0].message  # item ID
+        assert "1 pending items" in queue_logs[0]
+        assert "42" in queue_logs[0]  # item ID
 
     @pytest.mark.asyncio
     async def test_check_queue_no_log_when_empty(self, scheduler, caplog):
@@ -211,5 +213,5 @@ class TestSchedulerQueueCheckLogging:
 
             await scheduler.check_queue()
 
-        queue_logs = [r for r in caplog.records if "Queue check" in r.message]
+        queue_logs = [r.getMessage() for r in caplog.records if "Queue check" in r.getMessage()]
         assert len(queue_logs) == 0

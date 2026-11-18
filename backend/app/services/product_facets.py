@@ -98,3 +98,9 @@ async def refresh_all(db: AsyncSession) -> None:
 async def delete_for_product(db: AsyncSession, product_id: int) -> None:
     """SQLite runs no FK actions — the product's rows go in code."""
     await db.execute(delete(ProductFacet).where(ProductFacet.product_id == product_id))
+
+
+async def delete_for_files(db: AsyncSession, file_ids: Iterable[int]) -> None:
+    """Forget facets of purged files, including stale facet-only links. Never commits."""
+    for ids in id_chunks(file_ids):
+        await db.execute(delete(ProductFacet).where(ProductFacet.library_file_id.in_(ids)))

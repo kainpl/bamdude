@@ -56,6 +56,13 @@ def startup(tmp_path, monkeypatch):
             self.closed = True
             self.ready.clear()
 
+        def close_admission(self):
+            self.ready.clear()
+
+        @property
+        def connections(self):
+            return SimpleNamespace(cuts=0)
+
         def set_bridge(self, bridge):
             self.bridge = bridge
 

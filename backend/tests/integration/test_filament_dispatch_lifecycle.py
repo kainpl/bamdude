@@ -17,6 +17,7 @@ from backend.app.services.background_dispatch import BackgroundDispatchService, 
 from backend.app.services.filament_policy_write import prepare_routing
 from backend.app.services.filament_preflight import preflight_item
 from backend.app.services.filament_routing import RoutingDeferred
+from backend.app.services.library_identity import LibraryIdentity
 from backend.app.services.print_scheduler import PrintScheduler
 from backend.app.services.printer_manager import printer_manager
 from backend.app.services.queue_counters import get_queue_terminal_counts
@@ -246,6 +247,7 @@ async def test_late_refusal_restores_source_and_does_not_count_a_print(
             options=options,
             queue_item_id=item_id,
             cleanup_library_after_dispatch=True,
+            library_identity=LibraryIdentity.capture(source) if library_id is not None else None,
         )
         await service._run_active_job(job)
         assert job.completion_event.is_set()

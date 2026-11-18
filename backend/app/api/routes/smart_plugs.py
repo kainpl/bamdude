@@ -170,7 +170,7 @@ async def create_smart_plug(
             changes.pop(field, None)
     plug_data = _resolve_plug(None, changes, data.secret_actions)
     # Validate printer_id if provided
-    if data.printer_id:
+    if data.printer_id is not None:
         result = await db.execute(select(Printer).where(Printer.id == data.printer_id))
         if not result.scalar_one_or_none():
             raise HTTPException(400, "Printer not found")
@@ -230,7 +230,7 @@ async def create_smart_plug(
         if not mqtt_relay.smart_plug_service.is_configured():
             raise HTTPException(400, "MQTT broker connection failed. Check the broker settings in Settings → Network.")
         await lock_credential_config(db)
-        if data.printer_id and not await db.scalar(select(Printer.id).where(Printer.id == data.printer_id)):
+        if data.printer_id is not None and not await db.scalar(select(Printer.id).where(Printer.id == data.printer_id)):
             raise HTTPException(400, "Printer not found")
 
     # For HA entities, default auto_on and auto_off to False
@@ -855,7 +855,7 @@ async def update_smart_plug(
         }
 
         # Validate new printer_id if being changed
-        if "printer_id" in update_data and update_data["printer_id"]:
+        if "printer_id" in update_data and update_data["printer_id"] is not None:
             new_printer_id = update_data["printer_id"]
 
             # Check printer exists

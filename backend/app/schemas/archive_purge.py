@@ -32,5 +32,11 @@ class ArchiveTrashSettings(BaseModel):
     retention_days: int = Field(ge=1, le=365)
 
 
+class ArchiveRetainedItem(BaseModel):
+    id: int
+    reasons: list[str]
+
+
 class ArchiveEmptyTrashResponse(BaseModel):
     deleted: int
+    retained: list[ArchiveRetainedItem] = Field(default_factory=list)

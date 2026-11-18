@@ -101,7 +101,7 @@ async def test_two_tick_waiters_share_one_owned_pass(monkeypatch):
     assert await runtime.quiesce_for_restore(1)
 
 
-async def test_real_restore_refuses_before_file_preparation(async_client, monkeypatch):
+async def test_real_restore_refuses_before_file_preparation(async_client, monkeypatch, tmp_path):
     from io import BytesIO
     from zipfile import ZipFile
 
@@ -146,9 +146,20 @@ async def test_real_restore_refuses_before_file_preparation(async_client, monkey
     monkeypatch.setattr(obico_history_files, "validate_history", lambda *a: None)
     monkeypatch.setattr(farm_startup_guard, "hold", lambda *a: None)
     monkeypatch.setattr("backend.app.services.connector_runtime.connector_runtime.clear_restore_fence", lambda: None)
+    # Admission proof is downstream of the real source preflight. A genuine
+    # image must reach that boundary; invalid bytes only test source refusal.
+    import sqlite3
+    from contextlib import closing
+
+    source = tmp_path / "restore-source.db"
+    with closing(sqlite3.connect(source)) as db:
+        db.executescript(
+            "CREATE TABLE printers(id INTEGER); CREATE TABLE settings(key TEXT,value TEXT);"
+            "CREATE TABLE _migrations(version INTEGER); INSERT INTO _migrations VALUES(41);"
+        )
     body = BytesIO()
     with ZipFile(body, "w") as archive:
-        archive.writestr("bamdude.db", b"preflight is outside this test")
+        archive.writestr("bamdude.db", source.read_bytes())
     try:
         response = await async_client.post(
             "/api/v1/settings/restore", files={"file": ("backup.zip", body.getvalue(), "application/zip")}

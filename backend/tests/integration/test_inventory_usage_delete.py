@@ -143,7 +143,8 @@ async def test_cost_recalculation_uses_only_print_rows_not_lifetime_corrections(
     response = await async_client.post("/api/v1/statistics/recalculate-costs")
     assert response.status_code == 200, response.text
     await db_session.refresh(archive)
-    assert archive.cost == (2.65 if linked else 1.25)
+    # Only linked print rows are evidence; unlinked rows leave the 120g estimate.
+    assert archive.cost == (2.65 if linked else 2.40)
     assert archive.filament_used_grams == 120
 
 

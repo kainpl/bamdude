@@ -12,7 +12,19 @@ following migration records retirement facts; notifications are runtime work.
 
 import uuid
 
-from sqlalchemy import BigInteger, Boolean, Column, DateTime, ForeignKey, Integer, MetaData, String, Table, text
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    Column,
+    DateTime,
+    ForeignKey,
+    Integer,
+    MetaData,
+    String,
+    Table,
+    inspect,
+    text,
+)
 
 from backend.app.migrations.helpers import add_column, column_exists, table_exists
 
@@ -142,9 +154,27 @@ async def upgrade(conn):
     if await table_exists(conn, "user_notifications"):
         if not await column_exists(conn, "user_notifications", "dedupe_key"):
             await add_column(conn, "user_notifications", "dedupe_key VARCHAR(160)")
-        await conn.execute(
-            text(
-                "CREATE UNIQUE INDEX IF NOT EXISTS uq_user_notifications_dedupe_key ON user_notifications (dedupe_key)"
+
+        def has_unique(sync):
+            inspector = inspect(sync)
+            if any(
+                row["column_names"] == ["dedupe_key"] for row in inspector.get_unique_constraints("user_notifications")
+            ):
+                return True
+            return any(
+                row.get("unique")
+                and row.get("column_names") == ["dedupe_key"]
+                and not row.get("expressions")
+                and not row.get("column_sorting")
+                and not any(v is not None and v != [] for v in row.get("dialect_options", {}).values())
+                for row in inspector.get_indexes("user_notifications")
             )
-        )
+
+        if not await conn.run_sync(has_unique):
+            await conn.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_user_notifications_dedupe_key "
+                    "ON user_notifications (dedupe_key)"
+                )
+            )
     await _utc_auth_timestamps(conn)

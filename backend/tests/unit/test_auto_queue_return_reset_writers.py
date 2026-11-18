@@ -71,6 +71,9 @@ def test_auto_assignment_reset_writers_are_reviewed():
         ("services/queue_auto_transfer.py", "apply", "assigned_to_item_id"),
         ("services/auto_queue_return.py", "return_ready", "assigned_at"),
         ("services/auto_queue_return.py", "return_ready", "assigned_to_item_id"),
+        # Same as FK SET NULL on PG: navigation only. Assignment time and
+        # irreversible return facts/count survive; routing still requires pending.
+        ("services/queue_counters.py", "detach_print_queue_refs", "assigned_to_item_id"),
     }, "Review a new reset writer: dispatched-return proof and count must survive"
 
 

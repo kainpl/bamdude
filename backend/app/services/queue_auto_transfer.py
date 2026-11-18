@@ -416,6 +416,10 @@ async def apply(item_id, actor, payload):
         await db.flush()
         result = {"old_item_id": item.id, "resulting_auto_item_id": ancestor.id, "mode": pre["mode"]}
         item.source_auto_item_id = None
+        from backend.app.services.queue_counters import detach_print_queue_refs
+
+        await db.flush()
+        await detach_print_queue_refs(db, [item.id])
         await db.delete(item)
         await update_queue_counters(db, queue.id)
         await db.commit()

@@ -98,6 +98,8 @@ class Row:
     settings: bytes = b""
     parts: list = field(default_factory=list)
     files: list = field(default_factory=list)
+    cleanup_proofs: dict = field(default_factory=dict, repr=False)
+    cleanup_authority: object = field(default=None, repr=False)
     plates: list = field(default_factory=list)
     fill_counts: dict = field(default_factory=dict)
     fill_limited: list = field(default_factory=list)
@@ -415,22 +417,42 @@ async def _withdraw(row: Row) -> None:
     "file per plate" set would look like a project and could never be laid out again."""
     from backend.app.core.database import async_session
     from backend.app.models.library import LibraryFile
+    from backend.app.services.domain_authority import guard
+    from backend.app.services.library_delete_cleanup import finish
+    from backend.app.services.library_delete_scope import library_delete_scope
     from backend.app.services.library_trash import library_trash_service
 
-    try:
-        async with async_session() as db:
-            for entry in row.files:
-                file = await db.scalar(LibraryFile.active().where(LibraryFile.id == entry["library_file_id"]))
-                if file is None:
+    remaining = []
+    for entry in row.files:
+        proof = row.cleanup_proofs.get(entry["library_file_id"])
+        if proof is None:
+            remaining.append(entry)
+            continue
+        try:
+            async with async_session() as db:
+                current = await db.get(LibraryFile, proof.id)
+                if current is None:
                     continue
-                if await library_trash_service.trash_or_purge(db, file):
-                    await library_trash_service.hard_delete_now(db, file)
-            await db.commit()
-    except Exception as error:  # what could not be taken back stays, and the row says "partial"
-        logger.warning("Assembly withdrawal failed: error=%s", type(error).__name__)
-        return
-    row.files.clear()
-    row.status = "failed"
+                if not proof.matches(current):
+                    remaining.append(entry)
+                    continue
+                async with library_delete_scope(
+                    db,
+                    [proof],
+                    first=lambda session: guard(
+                        session, row.cleanup_authority, permissions=(Permission.LIBRARY_UPLOAD.value,)
+                    ),
+                ):
+                    current = await db.get(LibraryFile, proof.id, populate_existing=True)
+                    await library_trash_service.purge_rows(db, current)
+                    await db.commit()
+                await finish(db)
+        except Exception as error:
+            logger.warning("Assembly withdrawal failed: error=%s", type(error).__name__)
+            remaining.append(entry)
+    row.files[:] = remaining
+    if not remaining:
+        row.status = "failed"
 
 
 async def _publish(plan: Plan, row: Row, outputs: list[tuple[str, int | None]], root: Path, snapshots: list) -> None:
@@ -484,6 +506,10 @@ async def _publish(plan: Plan, row: Row, outputs: list[tuple[str, int | None]], 
                     "plate": plate,
                     "fallback_reason": saved.fallback_reason or fallback,
                 }
+                from backend.app.services.library_identity import LibraryIdentity
+
+                row.cleanup_proofs[saved.file.id] = LibraryIdentity.capture(saved.file)
+                row.cleanup_authority = plan.authority
         except HTTPException as error:
             row.fail(_reason_of(error))
             await _withdraw(row)
@@ -541,27 +567,55 @@ async def _trash_previous(plan: Plan) -> tuple[list[int], list[int], list[int]]:
     trashed: list[int] = []
     removed: list[int] = []
     kept: list[int] = []
-    async with async_session() as db:
-        proof, _principal = await guard(db, plan.authority, permissions=(Permission.LIBRARY_UPLOAD.value,))
-        rights = (True, None) if plan.authority is None else await _delete_rights(db, plan.authority, proof)
-        for file_id in plan.trash_ids:
-            file = await db.scalar(LibraryFile.active().where(LibraryFile.id == file_id))
-            if file is None:
-                continue
-            if not _may_delete(file, rights):
-                kept.append(file_id)
-                continue
-            printing = await db.scalar(
-                select(PrintQueueItem.id)
-                .where(PrintQueueItem.library_file_id == file_id, PrintQueueItem.status == "printing")
-                .limit(1)
-            )
-            if printing is not None:
-                kept.append(file_id)
-                continue
-            in_trash = await library_trash_service.trash_or_purge(db, file)
-            (trashed if in_trash else removed).append(file_id)
-        await db.commit()
+    from backend.app.services.library_delete_cleanup import finish
+    from backend.app.services.library_delete_scope import library_delete_scope
+    from backend.app.services.library_identity import LibraryIdentity
+
+    proofs = {source.proof[0]: LibraryIdentity.from_proof(source.proof) for source in plan.sources}
+    for file_id in plan.trash_ids:
+        proof = proofs.get(file_id)
+        if proof is None:
+            kept.append(file_id)
+            continue
+        try:
+            async with async_session() as db:
+                current = await db.get(LibraryFile, file_id)
+                if current is None:
+                    continue
+                if not proof.matches(current):
+                    kept.append(file_id)
+                    continue
+                actor_proof = None
+
+                async def first(session):
+                    nonlocal actor_proof
+                    actor_proof, _principal = await guard(
+                        session, plan.authority, permissions=(Permission.LIBRARY_UPLOAD.value,)
+                    )
+
+                async with library_delete_scope(db, [proof], first=first):
+                    rights = (
+                        (True, None)
+                        if plan.authority is None
+                        else await _delete_rights(db, plan.authority, actor_proof)
+                    )
+                    file = await db.get(LibraryFile, file_id, populate_existing=True)
+                    printing = await db.scalar(
+                        select(PrintQueueItem.id)
+                        .where(PrintQueueItem.library_file_id == file_id, PrintQueueItem.status == "printing")
+                        .limit(1)
+                    )
+                    if not _may_delete(file, rights) or printing is not None:
+                        kept.append(file_id)
+                        await db.rollback()
+                        continue
+                    in_trash = await library_trash_service.trash_or_purge(db, file)
+                    await db.commit()
+                await finish(db)
+                (trashed if in_trash else removed).append(file_id)
+        except Exception as error:
+            logger.warning("Assembly previous-file cleanup retained a file: error=%s", type(error).__name__)
+            kept.append(file_id)
     return trashed, removed, kept
 
 

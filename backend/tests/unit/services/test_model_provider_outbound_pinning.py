@@ -145,7 +145,7 @@ async def test_a_certificate_for_another_name_fails_the_second_name():
         async with transport.stream("/models/m/raw/a.stl", bearer="tok", foreign_hop=True):
             pass
     await transport.aclose()
-    assert caught.value.reason == "unreachable"
+    assert caught.value.reason == "storage_unreachable"
     assert [stream.server_hostname for stream in sockets.opened] == ["a.example.com", "b.example.com"]
 
 
